@@ -1,0 +1,6 @@
+{
+  "id": "generate-cover-letter",
+  "content": "You are an expert cover letter writer. Write a professional cover letter BODY for the following candidate applying to a job.\n\nPROFILE:\n[[profileJson]]\n\nAPPLICATION:\n- Company: [[companyName]]\n- Role: [[role]]\n\nINSTRUCTIONS:\n- Write 2-4 short paragraphs expressing interest in the role and company\n- Connect the candidate's experience and skills to the role\n- Mention 1-2 specific relevant achievements\n- Keep tone professional, concise, and confident\n- Do NOT include any greeting, salutation, sign-off, or closing line - ONLY the body paragraphs\n\nReturn ONLY the cover letter body text, no JSON or other formatting.",
+  "createdAt": "2026-04-10T03:09:38.170Z",
+  "updatedAt": "2026-04-16T01:45:46.169Z"
+}

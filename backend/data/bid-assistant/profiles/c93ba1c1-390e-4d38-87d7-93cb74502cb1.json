@@ -1,0 +1,70 @@
+{
+  "name": "Leo Wu",
+  "title": "Senior Software Engineer",
+  "totalYearsExperience": 10,
+  "preferredTemplate": "new_leo",
+  "disabled": false,
+  "contact": {
+    "phone": "(571) 559-1582",
+    "email": "wuleo465@gmail.com",
+    "linkedin": "https://www.linkedin.com/in/leowu2/",
+    "github": "",
+    "portfolio": "",
+    "location": "San Jose, CA"
+  },
+  "summary": "",
+  "experience": [
+    {
+      "title": "Senior Software Engineer",
+      "company": "Samsara",
+      "startDate": "03/2019",
+      "endDate": "Present",
+      "location": "",
+      "description": "Samsara is the pioneer of the Connected Operations® Platform — an open platform that connects the people, devices, and systems of complex physical operations, enabling actionable insights across industries like transportation, construction, logistics, manufacturing, and utilities. Founded in 2015 and based in San Francisco, it currently has a market cap of ~$16.9B with trailing 12-month revenue of $1.62B.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Cisco Meraki",
+      "startDate": "06/2016",
+      "endDate": "03/2019",
+      "location": "",
+      "description": "Cisco Meraki is Cisco's cloud-managed IT division, offering a unified platform for managing networking hardware — including wireless access points, switches, security appliances, and cameras — entirely through a centralized cloud dashboard. It's widely used by enterprises and schools for simplified, scalable network management without on-premise controllers.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer Intern",
+      "company": "Splunk",
+      "startDate": "05/2015",
+      "endDate": "08/2015",
+      "location": "",
+      "description": "Splunk is a data analytics and security platform that helps organizations search, monitor, and analyze machine-generated data in real time. It's heavily used for IT operations, cybersecurity (SIEM), and observability. Cisco acquired Splunk in March 2024, integrating it into its broader security and networking portfolio.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer Intern",
+      "company": "Thermo Fisher Scientific",
+      "startDate": "06/2014",
+      "endDate": "08/2014",
+      "location": "",
+      "description": "Thermo Fisher Scientific is a world leader in life sciences, providing analytical instruments, laboratory equipment, reagents, consumables, software, and services. It serves customers in healthcare, pharmaceuticals, biotech, academia, and government — essentially powering research, diagnostics, and drug manufacturing globally. It's one of the largest companies in the life sciences tools industry with revenues exceeding $40B annually.",
+      "achievements": []
+    }
+  ],
+  "strengths": [],
+  "skills": [],
+  "education": [
+    {
+      "degree": "Bachelor's Degree, Computer Science",
+      "institution": "University of California, Berkeley",
+      "startDate": "2012",
+      "endDate": "2016",
+      "location": "Berkeley, CA",
+      "gpa": ""
+    }
+  ],
+  "certifications": [],
+  "id": "c93ba1c1-390e-4d38-87d7-93cb74502cb1",
+  "createdAt": "2026-03-26T19:16:18.496Z",
+  "updatedAt": "2026-06-04T20:35:11.801Z"
+}

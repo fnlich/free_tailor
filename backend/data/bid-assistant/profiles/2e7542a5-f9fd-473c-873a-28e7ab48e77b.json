@@ -1,0 +1,61 @@
+{
+  "name": "David Kimura",
+  "title": "Senior Software Engineer",
+  "totalYearsExperience": 16,
+  "preferredTemplate": "kimura",
+  "disabled": false,
+  "contact": {
+    "phone": "(425) 998-7794",
+    "email": "dkimura216@gmail.com",
+    "linkedin": "https://www.linkedin.com/in/david-kimura-275b7856/",
+    "github": "",
+    "portfolio": "",
+    "location": "Kirkland, WA"
+  },
+  "summary": "",
+  "experience": [
+    {
+      "title": "Senior Software Engineer",
+      "company": "Pivotal, Inc.",
+      "startDate": "11/2015",
+      "endDate": "Present",
+      "location": "",
+      "description": "Pivotal focused on enterprise software development practices, helping large organizations modernize how they build and ship applications. The company combined consulting and engineering services to help businesses transition from traditional software delivery to faster, more iterative development models. It worked across industries like finance, retail, and insurance, where large enterprises needed to compete with more agile, digitally native companies.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Microsoft",
+      "startDate": "12/2012",
+      "endDate": "07/2015",
+      "location": "",
+      "description": "Microsoft operates across a wide range of domains including productivity software, enterprise cloud services, operating systems, and business applications used by organizations of nearly every size and industry. Its enterprise customers span government, healthcare, finance, retail, and education, with a strong focus on hybrid work, data security, and digital transformation. The company also has a significant presence in gaming and consumer hardware, alongside its core enterprise business. Working there typically means exposure to large scale systems and enterprise grade reliability requirements.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer",
+      "company": "F5 Networks",
+      "startDate": "04/2010",
+      "endDate": "11/2012",
+      "location": "",
+      "description": "F5 specializes in application delivery and security, helping organizations ensure that the applications running their businesses are fast, available, and protected from attacks. Its customers are typically large enterprises and service providers in finance, healthcare, telecom, and government, where uptime and security are critical. The company's work centers on traffic management and protecting applications as businesses move between data centers and cloud environments. Domain knowledge there tends to focus heavily on networking, security, and enterprise infrastructure reliability.",
+      "achievements": []
+    }
+  ],
+  "strengths": [],
+  "skills": [],
+  "education": [
+    {
+      "degree": "Bachelor's in Computer Science",
+      "institution": "University of Washington",
+      "startDate": "2007",
+      "endDate": "2010",
+      "location": "Seattle, WA",
+      "gpa": ""
+    }
+  ],
+  "certifications": [],
+  "id": "2e7542a5-f9fd-473c-873a-28e7ab48e77b",
+  "createdAt": "2026-06-21T17:09:40.013Z",
+  "updatedAt": "2026-06-22T06:55:33.299Z"
+}

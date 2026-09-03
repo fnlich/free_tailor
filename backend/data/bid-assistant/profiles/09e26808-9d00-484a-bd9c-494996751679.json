@@ -1,0 +1,61 @@
+{
+  "name": "Kevin Shen",
+  "title": "Senior Software Engineer",
+  "totalYearsExperience": 11,
+  "preferredTemplate": "new_kevin",
+  "disabled": false,
+  "contact": {
+    "phone": "(703) 829-6574",
+    "email": "swkevin926@gmail.com",
+    "linkedin": "https://www.linkedin.com/in/kevinwshen",
+    "github": "",
+    "portfolio": "",
+    "location": "San Francisco, CA"
+  },
+  "summary": "",
+  "experience": [
+    {
+      "title": "Senior Software Engineer",
+      "company": "VotingWorks",
+      "startDate": "02/2023",
+      "endDate": "Present",
+      "location": "",
+      "description": "VotingWorks is a non-profit building election technology everyone can trust.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Stripe",
+      "startDate": "06/2019",
+      "endDate": "11/2022",
+      "location": "",
+      "description": "Stripe builds programmable financial services. Millions of companies-from the world’s largest enterprises to the most ambitious startups-use Stripe to accept payments, grow their revenue, and accelerate new business opportunities. Headquartered in San Francisco and Dublin, the company aims to increase the GDP of the internet.",
+      "achievements": []
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Clever Inc.",
+      "startDate": "07/2014",
+      "endDate": "04/2019",
+      "location": "",
+      "description": "Clever is on a mission to unlock new ways to learn for all students. More than 77% of U.S. K-12 schools now use Clever to simplify access and improve engagement with digital learning. With our free platform for schools and a network of leading application providers, we’re committed to advancing educational equity.",
+      "achievements": []
+    }
+  ],
+  "strengths": [],
+  "skills": [],
+  "education": [
+    {
+      "degree": "Bachelor of Science in Engineering, Computer Science",
+      "institution": "University of Pennsylvania",
+      "startDate": "2010",
+      "endDate": "2014",
+      "location": "Philadelphia, PA",
+      "gpa": ""
+    }
+  ],
+  "certifications": [],
+  "id": "09e26808-9d00-484a-bd9c-494996751679",
+  "createdAt": "2026-03-02T00:43:05.678Z",
+  "updatedAt": "2026-06-04T17:12:34.726Z"
+}
