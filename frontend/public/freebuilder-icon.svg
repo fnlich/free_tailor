@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FreeBuilder">
+  <defs>
+    <linearGradient id="freeBuilderSurface" x1="8" x2="56" y1="7" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2A2338"/>
+      <stop offset="0.56" stop-color="#181926"/>
+      <stop offset="1" stop-color="#0B1020"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#freeBuilderSurface)"/>
+  <path fill="#FFF7ED" d="M19 13h22l9 9v26a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V17a4 4 0 0 1 4-4Z"/>
+  <path fill="#FB7185" d="M41 13v7a4 4 0 0 0 4 4h5l-9-11Z"/>
+  <path fill="#292524" fill-opacity=".16" d="M15 43h35v5a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4v-5Z"/>
+  <path fill="#292524" d="M22 25h19v4H22v-4Zm0 9h14v4H22v-4Z"/>
+  <path fill="#F59E0B" d="M41.7 42.1 50 33.8l3 3-11.3 11.3-6.5-6.5 3-3 3.5 3.5Z"/>
+</svg>

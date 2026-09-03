@@ -1,0 +1,776 @@
+.pageShell {
+  display: grid;
+  gap: 0.45rem;
+  width: 100%;
+  font-size: 0.88rem;
+}
+
+.panel,
+.toolbar,
+.agendaDay,
+.dayCard,
+.detailsPanel {
+  border: 1px solid var(--border-color);
+  background: var(--surface-secondary);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+}
+
+.shareForm {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
+
+.shareLabel {
+  display: block;
+  margin-bottom: 0.24rem;
+  color: var(--text-subtle);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shareRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem;
+}
+
+.input,
+.searchInput,
+.select {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  color: var(--foreground);
+  padding: 0.42rem 0.52rem;
+  font-size: 0.76rem;
+  min-height: 2rem;
+}
+
+.input:focus,
+.searchInput:focus,
+.select:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
+}
+
+.primaryButton,
+.secondaryButton,
+.ghostButton,
+.legendItem,
+.eventChip,
+.agendaEvent {
+  cursor: pointer;
+}
+
+.primaryButton,
+.secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  padding: 0.42rem 0.58rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  min-height: 2rem;
+}
+
+.primaryButton {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.secondaryButton {
+  background: var(--surface-muted);
+  border-color: var(--border-color);
+  color: var(--foreground);
+}
+
+.errorBanner {
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  background: rgba(254, 242, 242, 0.92);
+  padding: 0.45rem 0.6rem;
+  color: #991b1b;
+  font-size: 0.74rem;
+}
+
+.appFrame {
+  display: grid;
+  grid-template-columns: minmax(12rem, 13.5rem) minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
+}
+
+.sidebar,
+.calendarStage {
+  min-width: 0;
+}
+
+.panel,
+.detailsPanel {
+  padding: 0.6rem;
+}
+
+.panel + .panel,
+.detailsPanel + .detailsPanel {
+  margin-top: 0.45rem;
+}
+
+.panelTitleRow,
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-muted);
+  padding: 0.18rem 0.4rem;
+  color: #334155;
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.metaGrid {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.45rem;
+}
+
+.metaLabel {
+  display: block;
+  color: var(--text-subtle);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metaValue {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--foreground);
+  font-size: 0.74rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.metaLink {
+  color: #2563eb;
+}
+
+.selectWrap {
+  margin-top: 0.15rem;
+}
+
+.legendList {
+  display: grid;
+  gap: 0.28rem;
+  margin-top: 0.45rem;
+}
+
+.legendItem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  padding: 0.42rem 0.5rem;
+  color: var(--foreground);
+  text-align: left;
+  font-size: 0.72rem;
+}
+
+.legendItemActive {
+  border-color: rgba(37, 99, 235, 0.32);
+  background: rgba(219, 234, 254, 0.38);
+}
+
+.legendSwatch {
+  width: 0.55rem;
+  height: 0.55rem;
+  background: var(--legend-color);
+}
+
+.ghostButton {
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  color: var(--text-muted);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  min-height: 1.8rem;
+}
+
+.toolbar {
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.45rem;
+}
+
+.navGroup,
+.viewSwitcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+}
+
+.toolbarTitle {
+  min-width: 0;
+  text-align: center;
+}
+
+.toolbarTitle h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.toolbarTitle span {
+  display: block;
+  margin-top: 0.12rem;
+  color: var(--text-muted);
+  font-size: 0.66rem;
+}
+
+.viewSwitcher button,
+.navGroup button {
+  min-width: 3.9rem;
+}
+
+.isActive {
+  background: #dbeafe;
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #1e3a8a;
+}
+
+.monthGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.2rem;
+}
+
+.monthGridHeader {
+  color: var(--text-subtle);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.dayCard {
+  display: grid;
+  align-content: start;
+  min-height: 5.5rem;
+  padding: 0.38rem;
+}
+
+.dayCardMuted {
+  opacity: 0.55;
+}
+
+.dayCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.3rem;
+  color: var(--foreground);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.dayCardHeader small {
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.dayCardEvents {
+  display: grid;
+  gap: 0.16rem;
+  margin-top: 0.28rem;
+  overflow: hidden;
+}
+
+.eventChip {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  width: 100%;
+  border: 1px solid var(--event-border-color);
+  background: var(--event-background);
+  padding: 0.18rem 0.32rem;
+  color: var(--event-text-color);
+  text-align: left;
+  text-shadow: 0 1px 1px rgba(15, 23, 42, 0.3);
+  min-width: 0;
+}
+
+.eventChip strong {
+  flex: none;
+  font-size: 0.62rem;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.eventChip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.66rem;
+  line-height: 1.15;
+  color: inherit;
+}
+
+.agendaList {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.agendaDay {
+  padding: 0.55rem;
+}
+
+.agendaDayTitle {
+  margin-bottom: 0.35rem;
+  color: var(--foreground);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.agendaDayEvents {
+  display: grid;
+  gap: 0.24rem;
+}
+
+.agendaEvent {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--event-border-color);
+  background: var(--event-background);
+  padding: 0.28rem 0.38rem;
+  color: var(--event-text-color);
+  text-align: left;
+  text-shadow: 0 1px 1px rgba(15, 23, 42, 0.3);
+}
+
+.agendaEventContent {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.agendaEventTime {
+  flex: none;
+  color: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agendaEventTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: inherit;
+}
+
+.agendaEventMeta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  font-size: 0.64rem;
+}
+
+.detailsAccent {
+  height: 0.2rem;
+  margin: 0.45rem 0 0.6rem;
+}
+
+.detailsHeading {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+.detailsTime {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.detailsCopy,
+.detailsMeta {
+  margin: 0.45rem 0 0;
+  color: var(--foreground);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.emptyState {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 6, 23, 0.58);
+  padding: 0.75rem;
+}
+
+.modalPanel {
+  width: min(100%, 32rem);
+  border: 1px solid var(--border-color);
+  background: var(--surface-secondary);
+  box-shadow: 0 16px 44px rgba(15, 23, 42, 0.2);
+  padding: 0.75rem;
+}
+
+.availabilityModal {
+  width: min(100%, 44rem);
+  max-height: min(90vh, 52rem);
+  overflow: auto;
+}
+
+.jobLinksModal {
+  width: min(100%, 44rem);
+  max-height: min(90vh, 48rem);
+  overflow: auto;
+}
+
+.availabilityFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+
+.jobLinksFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+
+.availabilityTimeRange {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  grid-column: 1 / -1;
+}
+
+.availabilityControlRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  grid-column: 1 / -1;
+}
+
+.availabilityUsers {
+  margin-top: 0.75rem;
+}
+
+.availabilityUserList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+
+.availabilityUserItem {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  padding: 0.48rem 0.55rem;
+  color: var(--foreground);
+  font-size: 0.74rem;
+}
+
+.availabilityUserItem input {
+  margin: 0;
+}
+
+.availabilityUserItemActive {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: rgba(219, 234, 254, 0.4);
+}
+
+.availabilityActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.jobLinksActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.availabilitySummary,
+.availabilityUsersText,
+.jobLinksSummary {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.availabilityUsersText {
+  margin: 0.35rem 0 0;
+}
+
+.availabilityResults {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.jobLinksResults {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.availabilityDay {
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  padding: 0.6rem;
+}
+
+.availabilityDayTitle {
+  margin: 0 0 0.4rem;
+  color: var(--foreground);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.availabilityWindowList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.availabilityWindow {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  background: rgba(219, 234, 254, 0.58);
+  padding: 0.32rem 0.46rem;
+  color: #1e3a8a;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.availabilityTextBlock {
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  padding: 0.7rem;
+}
+
+.availabilityTextHeader {
+  margin: 0 0 0.45rem;
+  color: var(--foreground);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.availabilityTextLine {
+  margin: 0.22rem 0 0;
+  color: var(--foreground);
+  font-size: 0.73rem;
+  line-height: 1.45;
+}
+
+.jobLinksCount {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.jobLinkCard {
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  padding: 0.7rem;
+}
+
+.jobLinkCardHeader {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.jobLinkEventTitle {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.jobLinkEventTime {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.jobLinkList {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.jobLinkAnchor {
+  display: block;
+  color: #2563eb;
+  font-size: 0.73rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.availabilityFooter {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.availabilityCopyStatus {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :global(html.dark) .legendItemActive {
+    background: rgba(30, 41, 59, 0.72);
+    color: #bfdbfe;
+  }
+
+  :global(html.dark) .pill {
+    background: rgba(148, 163, 184, 0.16);
+    color: #e2e8f0;
+  }
+
+  :global(html.dark) .metaLink {
+    color: #93c5fd;
+  }
+
+  :global(html.dark) .availabilityUserItemActive {
+    background: rgba(30, 41, 59, 0.72);
+    color: #bfdbfe;
+  }
+
+  :global(html.dark) .availabilityWindow {
+    background: rgba(30, 64, 175, 0.28);
+    color: #dbeafe;
+  }
+
+  :global(html.dark) .metaValue,
+  :global(html.dark) .panelTitle,
+  :global(html.dark) .toolbarTitle h2,
+  :global(html.dark) .dayCardHeader,
+  :global(html.dark) .agendaDayTitle,
+  :global(html.dark) .availabilityDayTitle,
+  :global(html.dark) .availabilityTextHeader,
+  :global(html.dark) .availabilityTextLine,
+  :global(html.dark) .jobLinkEventTitle,
+  :global(html.dark) .detailsHeading,
+  :global(html.dark) .detailsMeta strong {
+    color: #f8fafc;
+  }
+
+  :global(html.dark) .errorBanner {
+    background: rgba(69, 10, 10, 0.42);
+    color: #fecaca;
+  }
+
+  :global(html.dark) .isActive {
+    background: rgba(30, 64, 175, 0.3);
+    color: #dbeafe;
+  }
+
+  :global(html.dark) .modalBackdrop {
+    background: rgba(2, 6, 23, 0.72);
+  }
+}
+
+@media (max-width: 1200px) {
+  .appFrame {
+    grid-template-columns: minmax(11rem, 12.5rem) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  .appFrame {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbarTitle {
+    text-align: left;
+  }
+}
+
+@media (max-width: 760px) {
+  .shareRow {
+    grid-template-columns: 1fr;
+  }
+
+  .availabilityFields,
+  .jobLinksFields,
+  .availabilityUserList,
+  .availabilityTimeRange,
+  .availabilityControlRow {
+    grid-template-columns: 1fr;
+  }
+
+  .monthGrid {
+    gap: 0.15rem;
+  }
+
+  .monthGridHeader {
+    font-size: 0.54rem;
+  }
+
+  .dayCard {
+    min-height: 4.8rem;
+    padding: 0.26rem;
+  }
+}

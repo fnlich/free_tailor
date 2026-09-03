@@ -1,0 +1,318 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #ffffff;
+  --foreground: #111827;
+  --surface-primary: rgba(255, 255, 255, 0.9);
+  --surface-secondary: #ffffff;
+  --surface-muted: #f3f4f6;
+  --surface-strong: #e5e7eb;
+  --border-color: #d1d5db;
+  --border-strong: #c7d2fe;
+  --text-muted: #4b5563;
+  --text-subtle: #6b7280;
+  --layer-page: 0;
+  --layer-page-toolbar: 20;
+  --layer-page-overlay: 200;
+  --layer-floating-control: 400;
+  --layer-app-nav: 1000;
+  --layer-app-nav-menu: 1100;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html.dark {
+  --background: #07111f;
+  --foreground: #e8eef8;
+  --surface-primary: rgba(15, 23, 42, 0.88);
+  --surface-secondary: #101a2c;
+  --surface-muted: #162338;
+  --surface-strong: #22314b;
+  --border-color: #2e3e5a;
+  --border-strong: #475a80;
+  --text-muted: #c6d1e3;
+  --text-subtle: #93a4bf;
+  color-scheme: dark;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  background-image:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(245, 247, 251, 0.92) 100%);
+  background-attachment: fixed;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.app-top-nav {
+  z-index: var(--layer-app-nav);
+  isolation: isolate;
+}
+
+.app-top-nav-menu {
+  z-index: var(--layer-app-nav-menu);
+}
+
+.app-theme-toggle {
+  z-index: var(--layer-floating-control);
+}
+
+html.dark body {
+  background-image:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.16), transparent 24%),
+    linear-gradient(180deg, rgba(7, 17, 31, 0.98) 0%, rgba(10, 20, 36, 0.98) 100%);
+}
+
+body,
+a,
+button,
+input,
+select,
+textarea {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+button:not(:disabled),
+input[type="button"]:not(:disabled),
+input[type="submit"]:not(:disabled),
+input[type="reset"]:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+input[type="button"]:disabled,
+input[type="submit"]:disabled,
+input[type="reset"]:disabled {
+  cursor: not-allowed;
+}
+
+html.dark .resume-paper-shell {
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  color-scheme: light;
+}
+
+html.dark .border,
+html.dark .border-t,
+html.dark .border-r,
+html.dark .border-b,
+html.dark .border-l,
+html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--border-color);
+}
+
+html.dark .bg-white {
+  background-color: var(--surface-secondary);
+}
+
+html.dark .bg-gray-50 {
+  background-color: var(--surface-primary);
+}
+
+html.dark .bg-gray-100 {
+  background-color: var(--surface-muted);
+}
+
+html.dark .bg-gray-200 {
+  background-color: var(--surface-strong);
+}
+
+html.dark .bg-gray-400 {
+  background-color: #51627f;
+}
+
+html.dark .bg-gray-800 {
+  background-color: #334155;
+}
+
+html.dark .bg-gray-900 {
+  background-color: #43526c;
+}
+
+html.dark .bg-blue-50,
+html.dark .bg-blue-50\/50 {
+  background-color: rgba(25, 74, 151, 0.22);
+}
+
+html.dark .bg-blue-100 {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+html.dark .bg-green-50,
+html.dark .bg-emerald-50 {
+  background-color: rgba(16, 185, 129, 0.16);
+}
+
+html.dark .bg-green-100 {
+  background-color: rgba(52, 211, 153, 0.22);
+}
+
+html.dark .bg-red-50 {
+  background-color: rgba(239, 68, 68, 0.14);
+}
+
+html.dark .bg-red-100 {
+  background-color: rgba(248, 113, 113, 0.2);
+}
+
+html.dark .text-black,
+html.dark .text-gray-900 {
+  color: var(--foreground);
+}
+
+html.dark .text-gray-800 {
+  color: #dce6f5;
+}
+
+html.dark .text-gray-700 {
+  color: var(--text-muted);
+}
+
+html.dark .text-gray-600 {
+  color: #aebdd3;
+}
+
+html.dark .text-gray-500 {
+  color: var(--text-subtle);
+}
+
+html.dark .text-gray-400 {
+  color: #7f92b2;
+}
+
+html.dark .text-blue-600,
+html.dark .text-blue-700,
+html.dark .text-blue-800 {
+  color: #8ec5ff;
+}
+
+html.dark .text-green-700,
+html.dark .text-emerald-700 {
+  color: #7be0b7;
+}
+
+html.dark .text-red-600,
+html.dark .text-red-700,
+html.dark .text-red-900 {
+  color: #ffb4be;
+}
+
+html.dark .border-gray-100 {
+  border-color: #24354f;
+}
+
+html.dark .border-gray-200 {
+  border-color: var(--border-color);
+}
+
+html.dark .border-gray-300 {
+  border-color: var(--border-strong);
+}
+
+html.dark .border-blue-200,
+html.dark .border-blue-400 {
+  border-color: rgba(96, 165, 250, 0.45);
+}
+
+html.dark .border-green-200,
+html.dark .border-emerald-200 {
+  border-color: rgba(52, 211, 153, 0.34);
+}
+
+html.dark .border-red-200 {
+  border-color: rgba(248, 113, 113, 0.34);
+}
+
+html.dark .ring-blue-300 {
+  --tw-ring-color: rgba(96, 165, 250, 0.32);
+}
+
+html.dark .hover\:bg-gray-50:hover {
+  background-color: rgba(51, 65, 85, 0.52);
+}
+
+html.dark .hover\:bg-gray-100:hover {
+  background-color: rgba(71, 85, 105, 0.54);
+}
+
+html.dark .hover\:bg-gray-200:hover {
+  background-color: rgba(100, 116, 139, 0.56);
+}
+
+html.dark .hover\:bg-gray-900:hover {
+  background-color: #54657f;
+}
+
+html.dark .hover\:bg-blue-50:hover {
+  background-color: rgba(59, 130, 246, 0.18);
+}
+
+html.dark .hover\:bg-red-50:hover {
+  background-color: rgba(248, 113, 113, 0.16);
+}
+
+html.dark .hover\:bg-red-100:hover {
+  background-color: rgba(248, 113, 113, 0.22);
+}
+
+html.dark .hover\:text-gray-700:hover,
+html.dark .hover\:text-gray-900:hover {
+  color: var(--foreground);
+}
+
+html.dark .hover\:text-red-900:hover {
+  color: #ffc9d0;
+}
+
+html.dark .disabled\:bg-gray-100:disabled {
+  background-color: rgba(30, 41, 59, 0.7);
+}
+
+html.dark .disabled\:bg-gray-400:disabled {
+  background-color: #51627f;
+}
+
+html.dark .disabled\:text-gray-400:disabled {
+  color: #7183a0;
+}
+
+html.dark .placeholder-gray-500::placeholder {
+  color: #7f92b2;
+}
+
+html.dark input:not([type='radio']):not([type='checkbox']):not([type='color']),
+html.dark textarea,
+html.dark select {
+  background-color: var(--surface-secondary);
+  color: var(--foreground);
+  border-color: var(--border-strong);
+}
+
+html.dark option {
+  background-color: #0f172a;
+  color: var(--foreground);
+}
+
+html.dark .shadow,
+html.dark .shadow-md,
+html.dark .shadow-lg,
+html.dark .shadow-xl,
+html.dark .shadow-2xl {
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+}
