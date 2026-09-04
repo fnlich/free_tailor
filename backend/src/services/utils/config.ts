@@ -1,25 +1,3 @@
-export const supplimentTechSkills = [
-    'Agile Development',
-    'Apache Kafka',
-    'API Development',
-    'AWS Lambda',
-    'AWS S3',
-    'Azure Kubernetes Service',
-    'CI/CD',
-    'Docker',
-    'Elasticsearch',
-    'Git',
-    'Kubernetes',
-    'Node.js',
-    'Python',
-    'React',
-    'Redis',
-    'SQL',
-    'Terraform',
-    'WebSocket Protocol',
-    'AWS DynamoDB',
-]
-
 export const supplimentSoftSkills = [
     'Accountability',
     'Adaptability',

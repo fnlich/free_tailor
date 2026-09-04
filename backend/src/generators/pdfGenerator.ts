@@ -4,7 +4,6 @@ import Handlebars from 'handlebars';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
 import { Profile } from '../types/profile';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
@@ -19,28 +18,6 @@ import {
 const MAX_ROLE_BRIEF_LENGTH = 1200;
 const A4_PRINTABLE_WIDTH_PX = 698; // A4 width (8.27in) minus 0.5in margins on both sides at 96 DPI
 const A4_PRINTABLE_HEIGHT_PX = 1026; // A4 height (11.69in) minus 0.5in margins top/bottom at 96 DPI
-const SOFT_SKILL_SIGNALS = [
-  'communication',
-  'collaboration',
-  'mindset',
-  'mentality',
-  'ownership',
-  'autonomy',
-  'independent',
-  'self-directed',
-  'adapt',
-  'ambiguity',
-  'passion',
-  'attention to detail',
-  'team player',
-  'cross-functional',
-  'stakeholder',
-  'leadership',
-  'problem-solving',
-  'product-minded',
-  'driving clarity',
-  'transparency',
-];
 const LANGUAGE_SKILLS = new Set([
   'python',
   'javascript',
@@ -188,23 +165,21 @@ const OTHER_TECH_SKILLS = new Set([
   'dynamodb',
 ]);
 
-type KimuraSkillCategory = HardSkillCategory;
+type SkillCategory = HardSkillCategory;
 
-type KimuraSkillCategoryGroup = {
-  category: KimuraSkillCategory;
+type SkillCategoryGroup = {
+  category: SkillCategory;
   skills: string[];
 };
 
-const KIMURA_SKILL_CATEGORY_ORDER: KimuraSkillCategory[] = [...HARD_SKILL_CATEGORIES];
-const DAVID_KIMURA_PROFILE_ID = '2e7542a5-f9fd-473c-873a-28e7ab48e77b';
-const LEO_WU_PROFILE_ID = 'c93ba1c1-390e-4d38-87d7-93cb74502cb1';
-const KIMURA_LANGUAGE_CATEGORY: KimuraSkillCategory = 'Languages';
-const KIMURA_MIN_LANGUAGE_SKILLS = 3;
-const KIMURA_MAX_LANGUAGE_SKILLS = 5;
-const KIMURA_MIN_SKILLS_PER_CATEGORY = 5;
-const KIMURA_MAX_SKILLS_PER_CATEGORY = 10;
-const KIMURA_MIN_CATEGORY_COUNT = 5;
-const KIMURA_LANGUAGE_FILL_EXCLUDED_SKILLS = new Set(['bash', 'c#', 'html', 'css']);
+const SKILL_CATEGORY_ORDER: SkillCategory[] = [...HARD_SKILL_CATEGORIES];
+const SKILL_CATEGORY_LANGUAGE_CATEGORY: SkillCategory = 'Languages';
+const SKILL_CATEGORY_MIN_LANGUAGE_SKILLS = 3;
+const SKILL_CATEGORY_MAX_LANGUAGE_SKILLS = 5;
+const SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY = 5;
+const SKILL_CATEGORY_MAX_SKILLS_PER_CATEGORY = 10;
+const SKILL_CATEGORY_MIN_CATEGORY_COUNT = 5;
+const SKILL_CATEGORY_LANGUAGE_FILL_EXCLUDED_SKILLS = new Set(['bash', 'c#', 'html', 'css']);
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -265,7 +240,7 @@ async function getSharedPdfBrowser(): Promise<Browser> {
   return sharedPdfBrowserLaunch;
 }
 
-const KIMURA_LANGUAGE_SKILLS = new Set([
+const SKILL_CATEGORY_LANGUAGE_SKILLS = new Set([
   ...LANGUAGE_SKILLS,
   'dart',
   'perl',
@@ -281,7 +256,7 @@ const KIMURA_LANGUAGE_SKILLS = new Set([
   'css3',
 ]);
 
-const KIMURA_FRAMEWORK_SKILLS = new Set([
+const SKILL_CATEGORY_FRAMEWORK_SKILLS = new Set([
   ...FRAMEWORK_SKILLS,
   'babel',
   'chakra ui',
@@ -314,7 +289,7 @@ const KIMURA_FRAMEWORK_SKILLS = new Set([
   'swiftui',
 ]);
 
-const KIMURA_INFRASTRUCTURE_SKILLS = new Set([
+const SKILL_CATEGORY_INFRASTRUCTURE_SKILLS = new Set([
   'amazon web services',
   'ansible',
   'api gateway',
@@ -367,7 +342,7 @@ const KIMURA_INFRASTRUCTURE_SKILLS = new Set([
   'vercel',
 ]);
 
-const KIMURA_DATABASE_SKILLS = new Set([
+const SKILL_CATEGORY_DATABASE_SKILLS = new Set([
   'activerecord',
   'cassandra',
   'couchdb',
@@ -409,7 +384,7 @@ const KIMURA_DATABASE_SKILLS = new Set([
   'warehouse',
 ]);
 
-const KIMURA_TOOL_PRACTICE_SKILLS = new Set([
+const SKILL_CATEGORY_TOOL_PRACTICE_SKILLS = new Set([
   ...OTHER_TECH_SKILLS,
   'airflow',
   'api',
@@ -436,7 +411,7 @@ const KIMURA_TOOL_PRACTICE_SKILLS = new Set([
   'tdd',
 ]);
 
-const KIMURA_CATEGORY_FALLBACK_SKILLS: Record<KimuraSkillCategory, string[]> = {
+const SKILL_CATEGORY_CATEGORY_FALLBACK_SKILLS: Record<SkillCategory, string[]> = {
   Languages: ['Python', 'Java', 'JavaScript', 'TypeScript', 'Go', 'Ruby', 'PHP', 'SQL', 'Swift', 'Kotlin', 'Rust'],
   'Frameworks and Libraries': [
     'React',
@@ -477,7 +452,7 @@ const KIMURA_CATEGORY_FALLBACK_SKILLS: Record<KimuraSkillCategory, string[]> = {
   'Mobile Development': ['React Native', 'Flutter', 'iOS', 'Android', 'SwiftUI'],
 };
 
-const KIMURA_LANGUAGE_FRAMEWORK_SKILLS: Array<{ languages: string[]; frameworks: string[] }> = [
+const SKILL_CATEGORY_LANGUAGE_FRAMEWORK_SKILLS: Array<{ languages: string[]; frameworks: string[] }> = [
   {
     languages: ['javascript', 'typescript'],
     frameworks: ['React', 'Node.js', 'Next.js', 'Express', 'Vue.js', 'Angular', 'NestJS', 'Fastify'],
@@ -592,96 +567,6 @@ function normalizeExperienceDescriptions<T extends { experience?: Array<{ descri
   };
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function getBoldKeywordPool(data: {
-  hardSkills?: string[];
-  skills?: string[];
-  softSkills?: string[];
-}): string[] {
-  const all = [...(data.hardSkills ?? []), ...(data.skills ?? []), ...(data.softSkills ?? [])]
-    .map((s) => s.trim())
-    .filter((s) => s.length >= 3)
-    .filter((s) => !/[<>]/.test(s));
-  const seen = new Set<string>();
-  return all.filter((s) => {
-    const key = s.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).sort((a, b) => b.length - a.length);
-}
-
-function boldKeywordsInText(text: string, keywords: string[]): string {
-  let out = text;
-  for (const keyword of keywords) {
-    const pattern = new RegExp(`(^|[^A-Za-z0-9_])(${escapeRegExp(keyword)})(?=[^A-Za-z0-9_]|$)`, 'gi');
-    out = out.replace(pattern, (match, left, term) => `${left}<strong>${term}</strong>`);
-  }
-  return out;
-}
-
-function applyKeywordBolding<T extends {
-  summary?: string;
-  experience?: Array<{ description?: string; achievements?: string[] }>;
-  hardSkills?: string[];
-  skills?: string[];
-  softSkills?: string[];
-}>(data: T): T {
-  const keywords = getBoldKeywordPool(data);
-  if (keywords.length === 0) return data;
-
-  const experience = Array.isArray(data.experience)
-    ? data.experience.map((entry) => ({
-      ...entry,
-      description: entry.description ? boldKeywordsInText(entry.description, keywords) : entry.description,
-      achievements: Array.isArray(entry.achievements)
-        ? entry.achievements.map((a) => boldKeywordsInText(a, keywords))
-        : entry.achievements,
-    }))
-    : data.experience;
-
-  const hardSkills = Array.isArray(data.hardSkills)
-    ? data.hardSkills.map((skill) => `<strong>${skill}</strong>`)
-    : data.hardSkills;
-  const skills = Array.isArray(data.skills)
-    ? data.skills.map((skill) => `<strong>${skill}</strong>`)
-    : data.skills;
-  const softSkills = Array.isArray(data.softSkills)
-    ? data.softSkills.map((skill) => `<strong>${skill}</strong>`)
-    : data.softSkills;
-
-  return {
-    ...data,
-    summary: data.summary ? boldKeywordsInText(data.summary, keywords) : data.summary,
-    experience,
-    hardSkills,
-    skills,
-    softSkills,
-  };
-}
-
-function decodeAllowedTags(html: string): string {
-  return html
-    .replace(/&lt;(\/?)strong&gt;/gi, '<$1strong>')
-    .replace(/&lt;(\/?)b&gt;/gi, '<$1b>');
-}
-
-const JOB_TITLE_EXCLUSIONS = new Set([
-  'full stack developer', 'fullstack developer', 'full-stack developer',
-  'frontend developer', 'front-end developer', 'frotnend developer',
-  'backend developer', 'back-end developer',
-  'full stack engineer', 'frontend engineer', 'backend engineer',
-  'software developer', 'software engineer',
-]);
-
-function capitalizeHardSkill(s: string): string {
-  if (!s || s.length === 0) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 function normalizeHardSkillAlias(skill: string): string {
   return skill.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -704,26 +589,26 @@ function matchesAnySkillTerm(normalizedSkill: string, terms: Iterable<string>): 
   return false;
 }
 
-function getKimuraSkillCategory(skill: string): KimuraSkillCategory {
+function getSkillCategory(skill: string): SkillCategory {
   const normalized = normalizeHardSkillAlias(skill);
   if (!normalized) return 'Frameworks and Libraries';
 
   const libraryRecord = readHardSkillRecords().find((record) => normalizeHardSkillAlias(record.skill) === normalized);
   if (libraryRecord) return libraryRecord.category;
 
-  if (matchesAnySkillTerm(normalized, KIMURA_DATABASE_SKILLS)) {
+  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_DATABASE_SKILLS)) {
     return 'Databases and Storage';
   }
-  if (matchesAnySkillTerm(normalized, KIMURA_INFRASTRUCTURE_SKILLS)) {
+  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_INFRASTRUCTURE_SKILLS)) {
     return 'Cloud and Infrastructure';
   }
-  if (matchesAnySkillTerm(normalized, KIMURA_FRAMEWORK_SKILLS)) {
+  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_FRAMEWORK_SKILLS)) {
     return 'Frameworks and Libraries';
   }
-  if (matchesAnySkillTerm(normalized, KIMURA_LANGUAGE_SKILLS)) {
-    return KIMURA_LANGUAGE_CATEGORY;
+  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_LANGUAGE_SKILLS)) {
+    return SKILL_CATEGORY_LANGUAGE_CATEGORY;
   }
-  if (matchesAnySkillTerm(normalized, KIMURA_TOOL_PRACTICE_SKILLS)) {
+  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_TOOL_PRACTICE_SKILLS)) {
     return 'APIs and Integration';
   }
 
@@ -758,7 +643,7 @@ function getRelatedFrameworkSkillsForLanguages(languageSkills: string[]): string
   const normalizedLanguages = languageSkills.map(normalizeHardSkillAlias);
 
   for (const language of normalizedLanguages) {
-    const rule = KIMURA_LANGUAGE_FRAMEWORK_SKILLS.find((candidateRule) =>
+    const rule = SKILL_CATEGORY_LANGUAGE_FRAMEWORK_SKILLS.find((candidateRule) =>
       candidateRule.languages.some((candidate) => matchesSkillTerm(language, candidate))
     );
     if (!rule) continue;
@@ -798,18 +683,18 @@ function prioritizeRelatedFrameworkCandidates(
   ];
 }
 
-type KimuraSkillCategoryBuildOptions = {
+type SkillCategoryBuildOptions = {
   forceAllCategories?: boolean;
   relateFrameworksToLanguages?: boolean;
 };
 
-function buildKimuraSkillCategories(
+function buildSkillCategories(
   skills: string[],
   supplementalSkills: string[] = [],
-  options: KimuraSkillCategoryBuildOptions = {}
-): KimuraSkillCategoryGroup[] {
-  const grouped = new Map<KimuraSkillCategory, string[]>(
-    KIMURA_SKILL_CATEGORY_ORDER.map((category) => [category, []])
+  options: SkillCategoryBuildOptions = {}
+): SkillCategoryGroup[] {
+  const grouped = new Map<SkillCategory, string[]>(
+    SKILL_CATEGORY_ORDER.map((category) => [category, []])
   );
   const used = new Set<string>();
 
@@ -817,15 +702,15 @@ function buildKimuraSkillCategories(
     const key = normalizeHardSkillAlias(skill);
     if (used.has(key)) continue;
     used.add(key);
-    grouped.get(getKimuraSkillCategory(skill))?.push(skill);
+    grouped.get(getSkillCategory(skill))?.push(skill);
   }
 
-  const candidateByCategory = new Map<KimuraSkillCategory, string[]>(
-    KIMURA_SKILL_CATEGORY_ORDER.map((category) => [category, []])
+  const candidateByCategory = new Map<SkillCategory, string[]>(
+    SKILL_CATEGORY_ORDER.map((category) => [category, []])
   );
   const candidateSeen = new Set<string>();
 
-  const addKimuraFillCandidate = (skill: string) => {
+  const addFillCandidate = (skill: string) => {
     const record = getLibraryHardSkillRecord(skill);
     if (!record) return;
     const key = normalizeHardSkillAlias(record.skill);
@@ -835,24 +720,24 @@ function buildKimuraSkillCategories(
   };
 
   for (const skill of sortHardSkillsByPriority(supplementalSkills)) {
-    addKimuraFillCandidate(skill);
+    addFillCandidate(skill);
   }
 
-  for (const category of KIMURA_SKILL_CATEGORY_ORDER) {
-    for (const skill of KIMURA_CATEGORY_FALLBACK_SKILLS[category]) {
-      if (getKimuraSkillCategory(skill) === category) {
-        addKimuraFillCandidate(skill);
+  for (const category of SKILL_CATEGORY_ORDER) {
+    for (const skill of SKILL_CATEGORY_CATEGORY_FALLBACK_SKILLS[category]) {
+      if (getSkillCategory(skill) === category) {
+        addFillCandidate(skill);
       }
     }
   }
 
   for (const skill of sortHardSkillsByPriority(readSkills('hard'))) {
-    addKimuraFillCandidate(skill);
+    addFillCandidate(skill);
   }
 
-  const includedCategories = new Set<KimuraSkillCategory>([KIMURA_LANGUAGE_CATEGORY]);
-  for (const category of KIMURA_SKILL_CATEGORY_ORDER) {
-    if (category !== KIMURA_LANGUAGE_CATEGORY && (grouped.get(category)?.length ?? 0) > 0) {
+  const includedCategories = new Set<SkillCategory>([SKILL_CATEGORY_LANGUAGE_CATEGORY]);
+  for (const category of SKILL_CATEGORY_ORDER) {
+    if (category !== SKILL_CATEGORY_LANGUAGE_CATEGORY && (grouped.get(category)?.length ?? 0) > 0) {
       includedCategories.add(category);
     }
   }
@@ -863,32 +748,32 @@ function buildKimuraSkillCategories(
   }
 
   if (options.forceAllCategories) {
-    for (const category of KIMURA_SKILL_CATEGORY_ORDER) {
-      if (includedCategories.size >= KIMURA_MIN_CATEGORY_COUNT) break;
-      if (category !== KIMURA_LANGUAGE_CATEGORY) {
+    for (const category of SKILL_CATEGORY_ORDER) {
+      if (includedCategories.size >= SKILL_CATEGORY_MIN_CATEGORY_COUNT) break;
+      if (category !== SKILL_CATEGORY_LANGUAGE_CATEGORY) {
         includedCategories.add(category);
       }
     }
   }
 
-  for (const category of KIMURA_SKILL_CATEGORY_ORDER) {
+  for (const category of SKILL_CATEGORY_ORDER) {
     if (!includedCategories.has(category)) continue;
     const categorySkills = grouped.get(category) ?? [];
-    if (category === KIMURA_LANGUAGE_CATEGORY) {
+    if (category === SKILL_CATEGORY_LANGUAGE_CATEGORY) {
       for (const skill of candidateByCategory.get(category) ?? []) {
         const targetCount = options.forceAllCategories
-          ? KIMURA_MIN_LANGUAGE_SKILLS
-          : KIMURA_MAX_LANGUAGE_SKILLS;
+          ? SKILL_CATEGORY_MIN_LANGUAGE_SKILLS
+          : SKILL_CATEGORY_MAX_LANGUAGE_SKILLS;
         if (categorySkills.length >= targetCount) break;
         const key = normalizeHardSkillAlias(skill);
-        if (KIMURA_LANGUAGE_FILL_EXCLUDED_SKILLS.has(key)) continue;
+        if (SKILL_CATEGORY_LANGUAGE_FILL_EXCLUDED_SKILLS.has(key)) continue;
         if (used.has(key)) continue;
         used.add(key);
         categorySkills.push(skill);
       }
 
       if (!options.forceAllCategories) {
-        categorySkills.splice(KIMURA_MAX_LANGUAGE_SKILLS);
+        categorySkills.splice(SKILL_CATEGORY_MAX_LANGUAGE_SKILLS);
       }
       if (options.relateFrameworksToLanguages) {
         candidateByCategory.set(
@@ -904,14 +789,14 @@ function buildKimuraSkillCategories(
     }
 
     if (
-      categorySkills.length >= KIMURA_MIN_SKILLS_PER_CATEGORY ||
+      categorySkills.length >= SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY ||
       (!options.forceAllCategories && categorySkills.length === 0)
     ) {
       continue;
     }
 
     for (const skill of candidateByCategory.get(category) ?? []) {
-      if (categorySkills.length >= KIMURA_MIN_SKILLS_PER_CATEGORY) break;
+      if (categorySkills.length >= SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY) break;
       const key = normalizeHardSkillAlias(skill);
       if (used.has(key)) continue;
       used.add(key);
@@ -919,26 +804,8 @@ function buildKimuraSkillCategories(
     }
   }
 
-  return KIMURA_SKILL_CATEGORY_ORDER
+  return SKILL_CATEGORY_ORDER
     .filter((category) => includedCategories.has(category))
-    .map((category) => ({
-      category,
-      skills: grouped.get(category) ?? [],
-    }))
-    .filter((group) => group.skills.length > 0);
-}
-
-function groupSelectedSkillsByKimuraCategory(skills: string[]): KimuraSkillCategoryGroup[] {
-  const grouped = new Map<KimuraSkillCategory, string[]>(
-    KIMURA_SKILL_CATEGORY_ORDER.map((category) => [category, []])
-  );
-
-  for (const skill of normalizeSkills(skills)) {
-    if (!passesPromptHardSkillGate(skill)) continue;
-    grouped.get(getKimuraSkillCategory(skill))?.push(skill);
-  }
-
-  return KIMURA_SKILL_CATEGORY_ORDER
     .map((category) => ({
       category,
       skills: grouped.get(category) ?? [],
@@ -973,10 +840,10 @@ function passesPromptHardSkillGate(skill: string): boolean {
 function enforcePromptSkillCategoryCounts(
   skills: string[],
   supplementalSkills: string[] = []
-): KimuraSkillCategoryGroup[] {
+): SkillCategoryGroup[] {
   const promptHardSkills = normalizeSkills(skills).filter(passesPromptHardSkillGate);
   const promptSupplementalSkills = normalizeSkills(supplementalSkills).filter(passesPromptHardSkillGate);
-  const groups = buildKimuraSkillCategories(promptHardSkills, promptSupplementalSkills, {
+  const groups = buildSkillCategories(promptHardSkills, promptSupplementalSkills, {
     forceAllCategories: true,
     relateFrameworksToLanguages: true,
   });
@@ -985,7 +852,7 @@ function enforcePromptSkillCategoryCounts(
     ...group,
     skills: group.skills.slice(
       0,
-      group.category === KIMURA_LANGUAGE_CATEGORY ? KIMURA_MAX_LANGUAGE_SKILLS : KIMURA_MAX_SKILLS_PER_CATEGORY
+      group.category === SKILL_CATEGORY_LANGUAGE_CATEGORY ? SKILL_CATEGORY_MAX_LANGUAGE_SKILLS : SKILL_CATEGORY_MAX_SKILLS_PER_CATEGORY
     ),
   }));
 }
@@ -1008,67 +875,6 @@ export function refreshAllowedTechSkills() {
 }
 
 
-const MAX_SOFT_SKILL_LENGTH = 30;
-const SOFT_SKILL_CONDENSE: Array<{ patterns: string[]; key: string }> = [
-  { patterns: ['excellent communication', 'communication and collaboration', 'communication skills'], key: 'Communication' },
-  { patterns: ['collaboration', 'collaborative'], key: 'Collaboration' },
-  { patterns: ['cross-functional', 'cross functional'], key: 'Cross-functional' },
-  { patterns: ['problem-solving', 'problem solving'], key: 'Problem-solving' },
-  { patterns: ['ownership', 'high ownership'], key: 'Ownership' },
-  { patterns: ['autonomy', 'self-directed', 'independent'], key: 'Autonomy' },
-  { patterns: ['transparency', 'transparent'], key: 'Transparency' },
-  { patterns: ['reliability', 'reliable'], key: 'Reliability' },
-  { patterns: ['supportive', 'support'], key: 'Supportive' },
-  { patterns: ['passionate', 'passion'], key: 'Passion' },
-  { patterns: ['mentorship', 'mentor', 'help fellow'], key: 'Mentorship' },
-  { patterns: ['adaptability', 'adapt'], key: 'Adaptability' },
-  { patterns: ['eager to learn', 'lifelong learning'], key: 'Eager to learn' },
-  { patterns: ['accountability', 'accountable'], key: 'Accountability' },
-  { patterns: ['attention to detail', 'detail-oriented'], key: 'Attention to detail' },
-  { patterns: ['team player', 'we are one team'], key: 'Team player' },
-  { patterns: ['diverse', 'diversity'], key: 'Diversity' },
-  { patterns: ['innovative', 'innovation', 'great ideas'], key: 'Innovation' },
-];
-
-function condenseSoftSkill(s: string): string {
-  const trimmed = s.trim();
-  if (trimmed.length <= MAX_SOFT_SKILL_LENGTH) {
-    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-  }
-  const lower = trimmed.toLowerCase();
-  for (const { patterns, key } of SOFT_SKILL_CONDENSE) {
-    if (patterns.some((p) => lower.includes(p))) return key;
-  }
-  const firstWord = trimmed.split(/\s+/)[0];
-  return firstWord ? firstWord.charAt(0).toUpperCase() + firstWord.slice(1) : trimmed;
-}
-
-function isTechnicalSkill(skill: string): boolean {
-  const normalized = skill.trim().replace(/\s+/g, ' ');
-  if (!normalized || normalized.length > 50 || /[.!?]/.test(normalized)) return false;
-
-  const lower = normalized.toLowerCase();
-  if (JOB_TITLE_EXCLUSIONS.has(lower)) return false;
-  // Exclude soft skills (communication, collaboration, ownership, etc.)
-  if (SOFT_SKILL_SIGNALS.some((signal) => lower.includes(signal))) return false;
-
-  const allowedKey = normalizeHardSkillAlias(normalized);
-  if (!ALLOWED_TECH_SKILLS.has(allowedKey)) return false;
-
-  // If whitelisted, treat as technical
-  return true;
-}
-
-function prioritizeSoftSkills(skills: string[]): string[] {
-  const prioritized = skills.filter((skill) =>
-    SOFT_SKILL_SIGNALS.some((signal) => skill.toLowerCase().includes(signal))
-  );
-  const remainder = skills.filter((skill) =>
-    !SOFT_SKILL_SIGNALS.some((signal) => skill.toLowerCase().includes(signal))
-  );
-  return [...prioritized, ...remainder];
-}
-
 function sortHardSkillsByPriority(skills: string[]): string[] {
   return [...normalizeSkills(skills)].sort((a, b) => {
     const aPriority = hardSkillPriorityMap.get(normalizeHardSkillAlias(a)) ?? Number.MAX_SAFE_INTEGER;
@@ -1086,64 +892,52 @@ type SkillsData = {
   hardSkills?: string[];
   softSkills?: string[];
   skills?: string[];
-  kimuraSkillInventory?: string[];
-  isDavidKimuraResume?: boolean;
-  isLeoWuResume?: boolean;
+  skillInventory?: string[];
 };
 
 type SkillsLimitedData<T> = T & {
   hardSkills: string[];
   softSkills: string[];
   skills: string[];
-  kimuraSkillCategories: KimuraSkillCategoryGroup[];
+  skillCategories: SkillCategoryGroup[];
 };
 
 function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
   const hasTailoredHardSkills = Array.isArray(data.hardSkills) && data.hardSkills.length > 0;
   if (hasTailoredHardSkills) {
     const selectedHardSkills = normalizeSkills(data.hardSkills ?? []);
-    const kimuraSkillCategories = enforcePromptSkillCategoryCounts(
+    const skillCategories = enforcePromptSkillCategoryCounts(
       selectedHardSkills,
-      data.kimuraSkillInventory
+      data.skillInventory
     );
 
     return {
       ...data,
-      hardSkills: kimuraSkillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
+      hardSkills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
       softSkills: [],
-      skills: kimuraSkillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
+      skills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
       strengths: [],
-      kimuraSkillCategories,
+      skillCategories,
     } as SkillsLimitedData<T>;
   }
 
-  const combinedHardRaw = data.hardSkills ?? data.skills ?? [];
-  const hardLimited = sortHardSkillsByPriority(combinedHardRaw);
-  const kimuraSkillRaw = data.hardSkills && data.hardSkills.length > 0
+  const skillInventoryRaw = data.hardSkills && data.hardSkills.length > 0
     ? data.hardSkills
     : data.skills ?? [];
-  const kimuraBaseSkills = sortHardSkillsByPriority(kimuraSkillRaw);
-  const kimuraSkillCategories = buildKimuraSkillCategories(kimuraBaseSkills, data.kimuraSkillInventory, {
+  const baseSkills = sortHardSkillsByPriority(skillInventoryRaw);
+  const skillCategories = buildSkillCategories(baseSkills, data.skillInventory, {
     forceAllCategories: true,
     relateFrameworksToLanguages: true,
   });
 
   return {
     ...data,
-    hardSkills: kimuraSkillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
+    hardSkills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
     softSkills: [],
-    skills: kimuraSkillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
+    skills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
     strengths: [],
-    kimuraSkillCategories,
+    skillCategories,
   } as SkillsLimitedData<T>;
-}
-
-function sanitizeFilename(str: string): string {
-  return str
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_|_$/g, '');
 }
 
 function getResumeTitle(profile: Profile): string {
@@ -1159,14 +953,6 @@ function sanitizeTitleForATS(title: string): string {
     .replace(/[-.,;:'"()\[\]\/\\@#$%&*+=<>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function isDavidKimuraProfile(profile: Profile): boolean {
-  return profile.id === DAVID_KIMURA_PROFILE_ID || profile.name.trim().toLowerCase() === 'david kimura';
-}
-
-function isLeoWuProfile(profile: Profile): boolean {
-  return profile.id === LEO_WU_PROFILE_ID || profile.name.trim().toLowerCase() === 'leo wu';
 }
 
 function normalizeExternalUrl(value: string | undefined): string {
@@ -1292,23 +1078,23 @@ function normalizeTemplateSkillsSections(html: string): string {
     .replace(/Hard Skills/g, 'Technical Skills')
     .replace(
       /\{\{#if hardSkills\.length\}\}\s*\{\{#each hardSkills\}\}\s*<div class="skill-box">\{\{this\}\}<\/div>\s*\{\{\/each\}\}\s*\{\{else\}\}\s*\{\{#each skills\}\}\s*<div class="skill-box">\{\{this\}\}<\/div>\s*\{\{\/each\}\}\s*\{\{\/if\}\}/g,
-      '{{#each kimuraSkillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
+      '{{#each skillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
     )
     .replace(
       /\{\{#if hardSkills\.length\}\}\s*\{\{#each hardSkills\}\}<span>\{\{this\}\}\{\{#unless @last\}\} . \{\{\/unless\}\}<\/span>\{\{\/each\}\}\s*\{\{else\}\}\s*\{\{#each skills\}\}<span>\{\{this\}\}\{\{#unless @last\}\} . \{\{\/unless\}\}<\/span>\{\{\/each\}\}\s*\{\{\/if\}\}/g,
-      '{{#each kimuraSkillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
+      '{{#each skillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
     )
     .replace(
       /\{\{#if hardSkills\.length\}\}\s*\{\{#each hardSkills\}\}\s*<span class="skill-chip">\{\{this\}\}<\/span>\s*\{\{\/each\}\}\s*\{\{else\}\}\s*\{\{#each skills\}\}\s*<span class="skill-chip">\{\{this\}\}<\/span>\s*\{\{\/each\}\}\s*\{\{\/if\}\}/g,
-      '{{#each kimuraSkillCategories}}<div class="skill-category skill-chip"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
+      '{{#each skillCategories}}<div class="skill-category skill-chip"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
     )
     .replace(
       /\{\{#if hardSkills\.length\}\}\s*\{\{#each hardSkills\}\}<span>\{\{this\}\}\{\{#unless @last\}\}[^{}]*\{\{\/unless\}\}<\/span>\{\{\/each\}\}\s*\{\{else\}\}\s*\{\{#each skills\}\}<span>\{\{this\}\}\{\{#unless @last\}\}[^{}]*\{\{\/unless\}\}<\/span>\{\{\/each\}\}\s*\{\{\/if\}\}/g,
-      '{{#each kimuraSkillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
+      '{{#each skillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
     )
     .replace(
       /\{\{#each hardSkills\}\}\s*<li[^>]*>\{\{this\}\}<\/li>\s*\{\{\/each\}\}/g,
-      '{{#each kimuraSkillCategories}}<li><strong>{{category}}</strong><br>{{join skills ", "}}</li>{{/each}}'
+      '{{#each skillCategories}}<li><strong>{{category}}</strong><br>{{join skills ", "}}</li>{{/each}}'
     );
 
   return output;
@@ -1324,8 +1110,6 @@ export function prepareResumeRenderData(
   const linkedinDisplay = getExternalUrlDisplay(profile.contact?.linkedin);
   const tailoredHardSkills = tailoredContent?.hardSkills ?? [];
   const tailoredSkills = tailoredContent?.skills ?? [];
-  const isDavidKimuraResume = isDavidKimuraProfile(profile);
-  const isLeoWuResume = isLeoWuProfile(profile);
   const data = {
     ...profile,
     contact: {
@@ -1337,9 +1121,7 @@ export function prepareResumeRenderData(
     companyName: companyName || '',
     role: role || '',
     title: sanitizeTitleForATS(getResumeTitle(profile)),
-    isDavidKimuraResume,
-    isLeoWuResume,
-    kimuraSkillInventory: normalizeSkills([
+    skillInventory: normalizeSkills([
       ...(profile.skills ?? []),
       ...tailoredHardSkills,
       ...tailoredSkills,

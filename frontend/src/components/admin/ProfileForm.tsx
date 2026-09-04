@@ -14,6 +14,7 @@ import {
   Template,
   PromptSummary,
   ProfileSettings,
+  HardSkillOrdering,
 } from '@/lib/api';
 
 interface ProfileFormProps {
@@ -47,21 +48,32 @@ interface ManualProfileFormData {
 
 const DEFAULT_PROFILE_SETTINGS: Required<ProfileSettings> = {
   resumePromptId: 'tailor-resume',
-  analyzeJobPromptId: 'custom-analyze-job-description-extracting-prompt-v2',
+  analyzeJobPromptId: 'analyze-job-description',
   coverLetterPromptId: 'generate-cover-letter',
   resumeFileNameTemplate: '{{profile name}}',
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
   companyFolderNameTemplate: '{{row number}}_{{company name}}',
+  hardSkillOrdering: 'library',
 };
+
+const HARD_SKILL_ORDERING_OPTIONS: Array<{ value: HardSkillOrdering; label: string; description: string }> = [
+  {
+    value: 'library',
+    label: 'Skill library priority',
+    description: 'Order hard skills by the priority stored in the skill library.',
+  },
+  {
+    value: 'job-priority',
+    label: 'Job relevance',
+    description: 'Order hard skills by how strongly the analyzed job description asks for them.',
+  },
+];
 
 const FILE_NAME_TOKENS = '{{profile name}}, {{company name}}, {{row number}}, {{job title}}, {{date}}';
 const FOLDER_NAME_TOKENS = '{{company name}}, {{row number}}';
 
-function normalizeAnalyzeJobPromptId(promptId?: string): string {
-  if (!promptId || promptId === 'analyze-job-description') {
-    return DEFAULT_PROFILE_SETTINGS.analyzeJobPromptId;
-  }
-  return promptId;
+function normalizeHardSkillOrdering(value?: string): HardSkillOrdering {
+  return value === 'job-priority' ? 'job-priority' : DEFAULT_PROFILE_SETTINGS.hardSkillOrdering;
 }
 
 function normalizeExperienceList(experience?: Experience[]): Experience[] {
@@ -77,7 +89,7 @@ function getInitialProfileSettings(profile?: Profile): Required<ProfileSettings>
     resumePromptId:
       profile?.profileSettings?.resumePromptId || DEFAULT_PROFILE_SETTINGS.resumePromptId,
     analyzeJobPromptId:
-      normalizeAnalyzeJobPromptId(profile?.profileSettings?.analyzeJobPromptId),
+      profile?.profileSettings?.analyzeJobPromptId || DEFAULT_PROFILE_SETTINGS.analyzeJobPromptId,
     coverLetterPromptId:
       profile?.profileSettings?.coverLetterPromptId || DEFAULT_PROFILE_SETTINGS.coverLetterPromptId,
     resumeFileNameTemplate:
@@ -89,6 +101,7 @@ function getInitialProfileSettings(profile?: Profile): Required<ProfileSettings>
     companyFolderNameTemplate:
       profile?.profileSettings?.companyFolderNameTemplate ||
       DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
+    hardSkillOrdering: normalizeHardSkillOrdering(profile?.profileSettings?.hardSkillOrdering),
   };
 }
 
@@ -205,6 +218,7 @@ export default function ProfileForm({
           companyFolderNameTemplate:
             formData.profileSettings.companyFolderNameTemplate.trim() ||
             DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
+          hardSkillOrdering: normalizeHardSkillOrdering(formData.profileSettings.hardSkillOrdering),
         },
         skills: formData.hardSkills,
       });
@@ -560,6 +574,25 @@ export default function ProfileForm({
             />
             <p className="mt-1 text-xs text-gray-500">
               Available tokens: {FILE_NAME_TOKENS}
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Hard Skill Ordering
+            </label>
+            <select
+              value={formData.profileSettings.hardSkillOrdering}
+              onChange={(e) => updateProfileSetting('hardSkillOrdering', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {HARD_SKILL_ORDERING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              {HARD_SKILL_ORDERING_OPTIONS.find((option) => option.value === formData.profileSettings.hardSkillOrdering)?.description}
             </p>
           </div>
           <div>

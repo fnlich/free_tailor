@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import fs from 'fs/promises';
 import path from 'path';
 import {
   analyzeJobDescription,
@@ -12,15 +11,15 @@ import { generateResumePDF, generatePreviewHTML, getGeneratedPDFPath } from '../
 import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
 import { getGeneratedOutputPath } from '../utils/generatedPath';
-import { getTemplateById, createDefaultTemplate } from '../extractors/templateExtractor';
+import { getTemplateById } from '../extractors/templateExtractor';
 import { getPublicAppSettings, resolveRequestedAIModel } from '../config/aiModelConfig';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
+import { getProfile, listProfiles } from '../database/profileRepository';
+import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
 import { AIProvider, GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
 
 const router = Router();
-const PROFILES_DIR = path.join(__dirname, '../../data/profiles');
-const DEFAULT_ANALYZE_JOB_PROMPT_ID = 'custom-analyze-job-description-extracting-prompt-v2';
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -63,12 +62,8 @@ async function resolveTemplateForProfile(profile: Profile, requestedTemplateId?:
   return null;
 }
 
-function getProfileAnalyzeJobPromptId(profile?: Profile): string | undefined {
-  const promptId = profile?.profileSettings?.analyzeJobPromptId?.trim();
-  if (!promptId || promptId === 'analyze-job-description') {
-    return DEFAULT_ANALYZE_JOB_PROMPT_ID;
-  }
-  return promptId;
+function getProfileAnalyzeJobPromptId(profile?: Profile): string {
+  return profile?.profileSettings?.analyzeJobPromptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
 }
 
 // Get enabled AI models
@@ -272,22 +267,9 @@ async function loadAllProfiles(profileIds?: string[]): Promise<Profile[]> {
   const selectedIds = Array.isArray(profileIds)
     ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
     : null;
-  const files = await fs.readdir(PROFILES_DIR);
-  const profiles: Profile[] = [];
-  for (const file of files) {
-    if (file.endsWith('.json')) {
-      try {
-        const content = await fs.readFile(path.join(PROFILES_DIR, file), 'utf-8');
-        const profile = JSON.parse(content) as Profile;
-        if (profile.disabled) continue;
-        if (selectedIds && !selectedIds.has(profile.id)) continue;
-        profiles.push(profile);
-      } catch {
-        // Skip invalid profile files
-      }
-    }
-  }
-  return profiles.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  return listProfiles()
+    .filter((profile) => !selectedIds || selectedIds.has(profile.id))
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
 function collectUnconfirmedSkillMaps(
@@ -380,7 +362,6 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       return;
     }
 
-    await createDefaultTemplate();
 
     let analysis: JobAnalysis | undefined;
 
@@ -525,7 +506,6 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       includeCoverLetterDocx?: boolean;
     };
 
-    const appSettings = await getPublicAppSettings();
     const selectedModel = await resolveRequestedAIModel(model);
 
     if (!Array.isArray(jobs) || jobs.length === 0) {
@@ -539,8 +519,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       return;
     }
 
-    await createDefaultTemplate();
-
+    const appSettings = await getPublicAppSettings();
     const normalizedJobs = jobs.map((job, index) => {
       const normalizedCompanyName = typeof job.companyName === 'string' ? job.companyName.trim() : '';
       const trimmedJobDescription = typeof job.jobDescription === 'string' ? job.jobDescription.trim() : '';
@@ -581,7 +560,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
     const unconfirmedHardMap = new Map<string, string>();
     const unconfirmedSoftMap = new Map<string, string>();
 
-    for (const [jobIndex, job] of normalizedJobs.entries()) {
+    for (const job of normalizedJobs) {
       for (const profile of profiles) {
         try {
           const template = await resolveTemplateForProfile(profile, templateId);
@@ -695,7 +674,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       profileIds?: string[];
     };
 
-    const appSettings = await getPublicAppSettings();
     const selectedModel = await resolveRequestedAIModel(model);
 
     const profiles = await loadAllProfiles(profileIds);
@@ -704,7 +682,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       return;
     }
 
-    await createDefaultTemplate();
 
     let analysis: JobAnalysis | undefined;
     const trimmedJobDescription = jobDescription?.trim();
@@ -807,12 +784,8 @@ router.post('/generate', async (req: Request, res: Response) => {
     }
 
     // Load profile
-    const profilePath = path.join(PROFILES_DIR, `${profileId}.json`);
-    let profile: Profile;
-    try {
-      const content = await fs.readFile(profilePath, 'utf-8');
-      profile = JSON.parse(content);
-    } catch {
+    const profile = getProfile(profileId);
+    if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
@@ -822,7 +795,6 @@ router.post('/generate', async (req: Request, res: Response) => {
     }
 
     // Ensure built-in templates exist, then load requested template
-    await createDefaultTemplate();
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
       res.status(500).json({ error: 'Default template not available' });
@@ -966,12 +938,8 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     // Load profile
-    const profilePath = path.join(PROFILES_DIR, `${profileId}.json`);
-    let profile: Profile;
-    try {
-      const content = await fs.readFile(profilePath, 'utf-8');
-      profile = JSON.parse(content);
-    } catch {
+    const profile = getProfile(profileId);
+    if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
     }
@@ -981,7 +949,6 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     // Ensure built-in templates exist, then load requested template
-    await createDefaultTemplate();
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
       res.status(500).json({ error: 'Default template not available' });

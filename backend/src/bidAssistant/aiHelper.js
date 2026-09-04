@@ -71,7 +71,7 @@ function fillPromptTemplate(template, variables) {
 function getProfilePromptData(profile) {
   return {
     profileId: profile?.id || '',
-    candidateName: profile?.name || profile?.fullName || 'Candidate',
+    candidateName: profile?.name || 'Candidate',
     candidateSkills: getProfileSkills(profile),
     candidateExperience: getProfileExperience(profile),
     candidateEducation: getProfileEducation(profile),

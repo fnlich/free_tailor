@@ -1,8 +1,4 @@
-import { sampleCalendar } from '@/lib/calendar/sampleCalendar';
-import { sampleEvents } from '@/lib/calendar/sampleEvents';
 import type { CalendarApiResponse, CalendarEvent, CalendarMetadata } from '@/lib/calendar/types';
-
-export const SAMPLE_SHARE_ID = sampleCalendar.capabilityId;
 
 const CALENDAR_API = 'https://api.calendar.online/calendar';
 const EVENTS_API = 'https://api.calendar.online/event';
@@ -17,21 +13,6 @@ function asApiDate(date: Date): string {
     pad(date.getMonth() + 1),
     pad(date.getDate()),
   ].join('-') + ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
-function parseEventDate(value: string): Date {
-  return new Date(value.replace(' ', 'T'));
-}
-
-function filterSampleEvents(events: CalendarEvent[], startDate: string, endDate: string): CalendarEvent[] {
-  const start = parseEventDate(startDate);
-  const end = parseEventDate(endDate);
-
-  return events.filter((event) => {
-    const eventStart = parseEventDate(event.start_date);
-    const eventEnd = parseEventDate(event.end_date);
-    return eventStart <= end && eventEnd >= start;
-  });
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -53,17 +34,10 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 export async function getCalendar(shareId: string): Promise<CalendarApiResponse<CalendarMetadata>> {
-  try {
-    const payload = await fetchJson<CalendarMetadata>(
-      `${CALENDAR_API}?capabilityId=${encodeURIComponent(shareId)}`
-    );
-    return { source: 'live', data: payload };
-  } catch (error) {
-    if (shareId === SAMPLE_SHARE_ID) {
-      return { source: 'fixture', data: sampleCalendar };
-    }
-    throw error;
-  }
+  const payload = await fetchJson<CalendarMetadata>(
+    `${CALENDAR_API}?capabilityId=${encodeURIComponent(shareId)}`
+  );
+  return { source: 'live', data: payload };
 }
 
 export async function getEvents(
@@ -78,25 +52,15 @@ export async function getEvents(
     timeZone?: string;
   }
 ): Promise<CalendarApiResponse<CalendarEvent[]>> {
-  try {
-    const params = new URLSearchParams({
-      capabilityId: shareId,
-      startDate,
-      endDate,
-      timeZone: timeZone || 'America/Los_Angeles',
-    });
+  const params = new URLSearchParams({
+    capabilityId: shareId,
+    startDate,
+    endDate,
+    timeZone: timeZone || 'America/Los_Angeles',
+  });
 
-    const payload = await fetchJson<CalendarEvent[]>(`${EVENTS_API}?${params.toString()}`);
-    return { source: 'live', data: payload };
-  } catch (error) {
-    if (shareId === SAMPLE_SHARE_ID) {
-      return {
-        source: 'fixture',
-        data: filterSampleEvents(sampleEvents, startDate, endDate),
-      };
-    }
-    throw error;
-  }
+  const payload = await fetchJson<CalendarEvent[]>(`${EVENTS_API}?${params.toString()}`);
+  return { source: 'live', data: payload };
 }
 
 export async function getEvent(
@@ -104,30 +68,15 @@ export async function getEvent(
   eventId: string,
   { timeZone }: { timeZone?: string }
 ): Promise<CalendarApiResponse<CalendarEvent>> {
-  try {
-    const params = new URLSearchParams({
-      capabilityId: shareId,
-      timeZone: timeZone || 'America/Los_Angeles',
-    });
+  const params = new URLSearchParams({
+    capabilityId: shareId,
+    timeZone: timeZone || 'America/Los_Angeles',
+  });
 
-    const payload = await fetchJson<CalendarEvent>(
-      `${EVENTS_API}/${encodeURIComponent(eventId)}?${params.toString()}`
-    );
-    return { source: 'live', data: payload };
-  } catch (error) {
-    if (shareId === SAMPLE_SHARE_ID) {
-      const event = sampleEvents.find((item) => item.id === eventId);
-
-      if (event) {
-        return {
-          source: 'fixture',
-          data: event,
-        };
-      }
-    }
-
-    throw error;
-  }
+  const payload = await fetchJson<CalendarEvent>(
+    `${EVENTS_API}/${encodeURIComponent(eventId)}?${params.toString()}`
+  );
+  return { source: 'live', data: payload };
 }
 
 export function getDefaultRange(): { startDate: string; endDate: string } {

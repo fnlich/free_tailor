@@ -4,21 +4,21 @@ import pdf from 'pdf-parse';
 import { extractTemplateFromPDF } from '../services/claude';
 import { Template } from '../types/template';
 import { v4 as uuidv4 } from 'uuid';
+import { getStaticTemplatesDir } from '../config/staticPaths';
+import {
+  deleteStoredTemplate,
+  getStoredTemplate,
+  getTemplateOverride,
+  hasStoredTemplate,
+  listStoredTemplates,
+  saveStoredTemplate,
+  saveTemplateOverride,
+} from '../database/templateRepository';
 
-const TEMPLATES_DIR = path.join(__dirname, '../../data/templates');
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
-async function ensureDirectories() {
-  try {
-    await fs.access(TEMPLATES_DIR);
-  } catch {
-    await fs.mkdir(TEMPLATES_DIR, { recursive: true });
-  }
-  try {
-    await fs.access(UPLOADS_DIR);
-  } catch {
-    await fs.mkdir(UPLOADS_DIR, { recursive: true });
-  }
+async function ensureUploadsDir() {
+  await fs.mkdir(UPLOADS_DIR, { recursive: true });
 }
 
 export async function extractAndSaveTemplate(
@@ -26,7 +26,7 @@ export async function extractAndSaveTemplate(
   templateName: string,
   originalFilename: string
 ): Promise<Template> {
-  await ensureDirectories();
+  await ensureUploadsDir();
 
   // Parse PDF to extract text
   const pdfData = await pdf(pdfBuffer);
@@ -56,26 +56,9 @@ export async function extractAndSaveTemplate(
     updatedAt: new Date().toISOString()
   };
 
-  // Save template
-  const templatePath = path.join(TEMPLATES_DIR, `${template.id}.json`);
-  await fs.writeFile(templatePath, JSON.stringify(template, null, 2));
+  saveStoredTemplate(template);
 
   return template;
-}
-
-async function findTemplateFiles(dir: string, baseDir: string): Promise<string[]> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    const relativePath = path.relative(baseDir, fullPath);
-    if (entry.isDirectory()) {
-      files.push(...(await findTemplateFiles(fullPath, baseDir)));
-    } else if (entry.isFile() && entry.name.endsWith('.json')) {
-      files.push(relativePath.replace(/\\/g, '/'));
-    }
-  }
-  return files;
 }
 
 function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
@@ -119,78 +102,118 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
   };
 }
 
-export async function getAllTemplates(): Promise<Template[]> {
-  await ensureDirectories();
+function normalizeTemplateId(id: string): string {
+  return id.replace(/\.json$/, '');
+}
 
-  const relativePaths = await findTemplateFiles(TEMPLATES_DIR, TEMPLATES_DIR);
-  const templates: Template[] = [];
+function applyTemplateOverride(template: Template): Template {
+  const override = getTemplateOverride(template.id);
+  if (!override) return template;
+  return {
+    ...template,
+    ...(typeof override.name === 'string' && override.name.trim() ? { name: override.name } : {}),
+    ...(typeof override.description === 'string' ? { description: override.description } : {}),
+    ...(typeof override.disabled === 'boolean' ? { disabled: override.disabled } : {}),
+    updatedAt: override.updatedAt,
+  };
+}
 
-  for (const relPath of relativePaths) {
-    const templatePath = path.join(TEMPLATES_DIR, relPath);
-    try {
-      const content = await fs.readFile(templatePath, 'utf-8');
-      const id = relPath.replace(/\.json$/, '');
-      const template = normalizeTemplateRecord(id, JSON.parse(content));
-      if (!template) {
-        console.warn(`Skipped invalid template: ${relPath}`);
-        continue;
-      }
-      templates.push(template);
-    } catch {
-      console.warn(`Skipped invalid template: ${relPath}`);
+/** Reads one built-in template shipped as a static JSON file. */
+async function readStaticTemplate(id: string): Promise<Template | null> {
+  const templatePath = path.join(getStaticTemplatesDir(), `${id}.json`);
+  try {
+    const content = await fs.readFile(templatePath, 'utf-8');
+    const template = normalizeTemplateRecord(id, JSON.parse(content));
+    if (!template) {
+      console.warn(`Static template "${id}" is invalid and cannot be rendered`);
+      return null;
     }
+    return applyTemplateOverride({ ...template, isBuiltIn: true });
+  } catch {
+    return null;
+  }
+}
+
+async function listStaticTemplates(): Promise<Template[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(getStaticTemplatesDir());
+  } catch {
+    return [];
   }
 
-  return templates.sort((a, b) =>
+  const templates: Template[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue;
+    const template = await readStaticTemplate(normalizeTemplateId(entry));
+    if (template) templates.push(template);
+  }
+  return templates;
+}
+
+export async function isBuiltInTemplate(id: string): Promise<boolean> {
+  return (await readStaticTemplate(normalizeTemplateId(id))) !== null;
+}
+
+export async function getAllTemplates(): Promise<Template[]> {
+  const staticTemplates = await listStaticTemplates();
+  const staticIds = new Set(staticTemplates.map((template) => template.id));
+  const storedTemplates = listStoredTemplates()
+    .filter((template) => !staticIds.has(template.id))
+    .map((template) => normalizeTemplateRecord(template.id, template))
+    .filter((template): template is Template => template !== null);
+
+  return [...staticTemplates, ...storedTemplates].sort((a, b) =>
     new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
   );
 }
 
 export async function getTemplateById(id: string): Promise<Template | null> {
-  const normalizedId = id.replace(/\.json$/, '');
-  const templatePath = path.join(TEMPLATES_DIR, `${normalizedId}.json`);
-  try {
-    const content = await fs.readFile(templatePath, 'utf-8');
-    const template = normalizeTemplateRecord(normalizedId, JSON.parse(content));
-    if (!template) {
-      console.warn(`Template "${normalizedId}" is invalid and cannot be rendered`);
-      return null;
-    }
-    return template;
-  } catch {
+  const normalizedId = normalizeTemplateId(id);
+  const staticTemplate = await readStaticTemplate(normalizedId);
+  if (staticTemplate) {
+    return staticTemplate;
+  }
+
+  const stored = getStoredTemplate(normalizedId);
+  if (!stored) return null;
+
+  const template = normalizeTemplateRecord(normalizedId, stored);
+  if (!template) {
+    console.warn(`Template "${normalizedId}" is invalid and cannot be rendered`);
     return null;
   }
+  return template;
 }
 
 export async function updateTemplate(id: string, updates: Partial<Pick<Template, 'disabled' | 'name' | 'description'>>): Promise<Template | null> {
   const template = await getTemplateById(id);
   if (!template) return null;
 
+  const updatedAt = new Date().toISOString();
+  if (template.isBuiltIn) {
+    const existing = getTemplateOverride(template.id);
+    saveTemplateOverride({
+      ...(existing ?? { id: template.id, createdAt: updatedAt }),
+      ...updates,
+      updatedAt,
+    });
+    return getTemplateById(template.id);
+  }
+
   const updated: Template = {
     ...template,
     ...updates,
-    updatedAt: new Date().toISOString(),
+    updatedAt,
   };
-
-  const normalizedId = id.replace(/\.json$/, '');
-  const templatePath = path.join(TEMPLATES_DIR, `${normalizedId}.json`);
-  await fs.writeFile(templatePath, JSON.stringify(updated, null, 2));
+  saveStoredTemplate(updated);
   return updated;
 }
-
-const BUILT_IN_TEMPLATE_IDS = new Set([
-  'default', 'one-column', 'one-column-modern',
-  'two-column-navy', 'one-column-emerald', 'one-column-violet', 'one-column-rose',
-  'two-column-slate', 'one-column-amber', 'one-column-indigo', 'two-column-minimal',
-  'one-column-serif', 'two-column-teal', 'one-column-coral', 'two-column-forest',
-]);
 
 export async function uploadJsonTemplate(
   jsonBuffer: Buffer,
   options?: { overrideId?: string }
 ): Promise<Template> {
-  await ensureDirectories();
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonBuffer.toString('utf-8'));
@@ -215,15 +238,10 @@ export async function uploadJsonTemplate(
     throw new Error('Template must have a "sections" array');
   }
 
-  let id = typeof obj.id === 'string' ? obj.id.replace(/\.json$/, '').trim() : '';
-  if (options?.overrideId) id = options.overrideId.replace(/\.json$/, '').trim();
-  if (!id || BUILT_IN_TEMPLATE_IDS.has(id)) {
-    id = `u-${uuidv4().slice(0, 8)}`;
-  }
+  let id = typeof obj.id === 'string' ? normalizeTemplateId(obj.id).trim() : '';
+  if (options?.overrideId) id = normalizeTemplateId(options.overrideId).trim();
   id = id.replace(/[^a-zA-Z0-9\-_]/g, '-');
-
-  const existing = await getTemplateById(id);
-  if (existing) {
+  if (!id || (await isBuiltInTemplate(id)) || hasStoredTemplate(id)) {
     id = `u-${uuidv4().slice(0, 8)}`;
   }
 
@@ -243,260 +261,12 @@ export async function uploadJsonTemplate(
       : {}),
   };
 
-  const templatePath = path.join(TEMPLATES_DIR, `${template.id}.json`);
-  await fs.writeFile(templatePath, JSON.stringify(template, null, 2));
+  saveStoredTemplate(template);
   return template;
 }
 
 export async function deleteTemplate(id: string): Promise<boolean> {
-  const normalizedId = id.replace(/\.json$/, '');
-  const templatePath = path.join(TEMPLATES_DIR, `${normalizedId}.json`);
-  try {
-    await fs.unlink(templatePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function createDefaultTemplate(): Promise<Template> {
-  await ensureDirectories();
-  const existingDefault = await getTemplateById('default');
-  if (existingDefault) {
-    return existingDefault;
-  }
-
-  const defaultTemplate: Template = {
-    id: 'default',
-    name: 'Two-Column Professional',
-    description: '2-column ATS-friendly resume template with skills and education on the right',
-    htmlContent: `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <style>
-    @page {
-      margin: 0.3in;
-    }
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      font-family: Calibri, 'Segoe UI', Arial, sans-serif;
-      font-size: 9pt;
-      line-height: 1.25;
-      color: #000;
-      margin: 0;
-      padding: 0;
-    }
-    .section:last-child {
-      margin-bottom: 0;
-    }
-    .header {
-      text-align: center;
-      margin-bottom: 8px;
-      border-bottom: 2px solid #2563eb;
-      padding-bottom: 8px;
-    }
-    .name {
-      font-size: 24pt;
-      font-weight: bold;
-      color: #1e40af;
-      margin-bottom: 2px;
-    }
-    .title {
-      font-size: 10pt;
-      color: #1e40af;
-      margin-bottom: 4px;
-    }
-    .contact {
-      font-size: 8pt;
-      color: #333;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .contact-item {
-      display: flex;
-      align-items: center;
-      gap: 3px;
-    }
-    .contact-icon {
-      color: #2563eb;
-    }
-    .contact a {
-      color: #000;
-      text-decoration: none;
-    }
-    .main-container {
-      display: flex;
-      gap: 15px;
-    }
-    .left-column {
-      flex: 0 0 62%;
-    }
-    .right-column {
-      flex: 0 0 35%;
-    }
-    .section {
-      margin-bottom: 8px;
-    }
-    .section-title {
-      font-size: 10pt;
-      font-weight: bold;
-      color: #1e40af;
-      text-transform: uppercase;
-      border-bottom: 1px solid #1e40af;
-      padding-bottom: 2px;
-      margin-bottom: 5px;
-    }
-    .summary {
-      font-size: 9pt;
-      line-height: 1.3;
-      text-align: justify;
-    }
-    .experience-item {
-      margin-bottom: 8px;
-    }
-    .job-title {
-      font-weight: bold;
-      font-size: 10pt;
-      color: #1e40af;
-    }
-    .company-line {
-      display: flex;
-      justify-content: space-between;
-      font-size: 9pt;
-      color: #555;
-      margin-bottom: 2px;
-    }
-    .description {
-      font-size: 9pt;
-      margin-bottom: 3px;
-      line-height: 1.3;
-    }
-    .achievements {
-      margin: 0;
-      padding-left: 14px;
-      font-size: 8.5pt;
-    }
-    .achievements li {
-      margin-bottom: 1px;
-      line-height: 1.25;
-    }
-    .skills-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px 8px;
-    }
-    .skill-box {
-      font-size: 8pt;
-      padding: 2px 0;
-      border-bottom: 1px solid #ddd;
-      text-align: center;
-    }
-    .education-item {
-      margin-bottom: 6px;
-    }
-    .degree {
-      font-weight: bold;
-      font-size: 9pt;
-      color: #1e40af;
-    }
-    .institution {
-      font-size: 8pt;
-      color: #555;
-    }
-    .edu-date {
-      font-size: 8pt;
-      color: #777;
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <div class="name">{{name}}</div>
-    <div class="title">{{title}}</div>
-    <div class="contact">
-      <span class="contact-item"><span class="contact-icon">📞</span> {{contact.phone}}</span>
-      <span class="contact-item"><span class="contact-icon">✉</span> {{contact.email}}</span>
-      {{#if contact.linkedinHref}}<span class="contact-item"><span class="contact-icon">🔗</span> <a href="{{contact.linkedinHref}}">{{contact.linkedinDisplay}}</a></span>{{/if}}
-      <span class="contact-item"><span class="contact-icon">📍</span> {{contact.location}}</span>
-    </div>
-  </div>
-
-  <div class="main-container">
-    <div class="left-column">
-      <div class="section">
-        <div class="section-title">Summary</div>
-        <div class="summary">{{summary}}</div>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Experience</div>
-        {{#each experience}}
-        <div class="experience-item">
-          <div class="job-title">{{title}}</div>
-          <div class="company-line">
-            <span>{{company}}</span>
-            <span>{{startDate}} - {{endDate}}{{#if location}} | {{location}}{{/if}}</span>
-          </div>
-          <div class="description">{{description}}</div>
-          <ul class="achievements">
-            {{#each achievements}}
-            <li>{{this}}</li>
-            {{/each}}
-          </ul>
-        </div>
-        {{/each}}
-      </div>
-    </div>
-
-    <div class="right-column">
-
-      <div class="section">
-        <div class="section-title">Hard Skills</div>
-        <div class="skills-grid">
-          {{#if hardSkills.length}}
-          {{#each hardSkills}}
-          <div class="skill-box">{{this}}</div>
-          {{/each}}
-          {{else}}
-          {{#each skills}}
-          <div class="skill-box">{{this}}</div>
-          {{/each}}
-          {{/if}}
-        </div>
-      </div>
-
-      <div class="section">
-      <div class="section-title">Education</div>
-        {{#each education}}
-        <div class="education-item">
-          <div class="degree">{{degree}}</div>
-          <div class="institution">{{institution}}</div>
-          <div class="edu-date">{{startDate}} - {{endDate}}{{#if location}} | {{location}}{{/if}}</div>
-        </div>
-        {{/each}}
-      </div>
-    </div>
-  </div>
-</body>
-</html>`,
-    cssContent: '',
-    sections: ['summary', 'experience', 'hardSkills', 'education'],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-
-  const defaultTemplatePath = path.join(TEMPLATES_DIR, `${defaultTemplate.id}.json`);
-  await fs.writeFile(defaultTemplatePath, JSON.stringify(defaultTemplate, null, 2));
-
-  return defaultTemplate;
+  return deleteStoredTemplate(normalizeTemplateId(id));
 }
 
 export interface ElementStyle {
@@ -837,8 +607,6 @@ ${mainContent}
 }
 
 export async function createManualTemplate(config: ManualTemplateConfig): Promise<Template> {
-  await ensureDirectories();
-
   const sectionOrder = config.sectionOrder?.length
     ? config.sectionOrder.filter((s) => MANUAL_SECTIONS.includes(s as typeof MANUAL_SECTIONS[number]))
     : [...MANUAL_SECTIONS];
@@ -866,10 +634,9 @@ export async function createManualTemplate(config: ManualTemplateConfig): Promis
     manualConfig: fullConfig as Template['manualConfig'],
   };
 
-  const templatePath = path.join(TEMPLATES_DIR, `${template.id}.json`);
-  await fs.writeFile(templatePath, JSON.stringify(template, null, 2));
+  saveStoredTemplate(template);
 
-  return { ...template, id: template.id };
+  return template;
 }
 
 export async function updateManualTemplate(id: string, config: ManualTemplateConfig): Promise<Template | null> {
@@ -904,7 +671,6 @@ export async function updateManualTemplate(id: string, config: ManualTemplateCon
     manualConfig: fullConfig as Template['manualConfig'],
   };
 
-  const templatePath = path.join(TEMPLATES_DIR, `${id.replace(/\.json$/, '')}.json`);
-  await fs.writeFile(templatePath, JSON.stringify(updated, null, 2));
+  saveStoredTemplate(updated);
   return updated;
 }

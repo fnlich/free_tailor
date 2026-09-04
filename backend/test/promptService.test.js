@@ -1,29 +1,21 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
-const { loadFresh, makeTempDataDir, readJson } = require('./helpers');
+const { loadFresh, readDocument, readJson, readSettingRaw, useTempStorage, writeStaticJson } = require('./helpers');
 
-function writePrompt(dataDir, id, content, extra = {}) {
-  const promptsDir = path.join(dataDir, 'prompts');
-  fs.mkdirSync(promptsDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(promptsDir, `${id}.json`),
-    `${JSON.stringify({
-      id,
-      content,
-      ...extra,
-      createdAt: '2026-04-18T00:00:00.000Z',
-      updatedAt: '2026-04-18T00:00:00.000Z',
-    }, null, 2)}\n`
-  );
+function writeDefaultPrompt(staticDir, id, content, extra = {}) {
+  return writeStaticJson(staticDir, `prompts/${id}.json`, {
+    id,
+    content,
+    ...extra,
+    createdAt: '2026-04-18T00:00:00.000Z',
+    updatedAt: '2026-04-18T00:00:00.000Z',
+  });
 }
 
-test('prompt service lists and renders built-in JSON prompts', async () => {
-  const dataDir = makeTempDataDir('prompts-built-in');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  writePrompt(dataDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
+test('prompt service lists and renders default prompts from static files', async () => {
+  const { staticDir } = useTempStorage('prompts-built-in');
+  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
 
   const promptService = loadFresh('../dist/services/promptService');
   const prompts = await promptService.listPrompts();
@@ -42,9 +34,8 @@ test('prompt service lists and renders built-in JSON prompts', async () => {
   );
 });
 
-test('prompt service creates, previews, updates, and deletes custom JSON prompts', async () => {
-  const dataDir = makeTempDataDir('prompts-custom');
-  process.env.TAILOR_DATA_DIR = dataDir;
+test('prompt service creates, previews, updates, and deletes custom prompts in the database', async () => {
+  const { dbDir } = useTempStorage('prompts-custom');
   const promptService = loadFresh('../dist/services/promptService');
 
   const created = await promptService.createPrompt({
@@ -64,10 +55,11 @@ test('prompt service creates, previews, updates, and deletes custom JSON prompts
   assert.equal(created.modelName, 'google/gemini-2.5-flash');
   assert.deepEqual(created.validation, { usedVariables: ['name'], unknownVariables: [] });
 
-  const promptPath = path.join(dataDir, 'prompts', `${created.id}.json`);
-  assert.equal(readJson(promptPath).content, 'Hello [[name]]');
-  assert.equal(readJson(promptPath).modelProvider, 'openrouter');
-  assert.equal(readJson(promptPath).modelName, 'google/gemini-2.5-flash');
+  const storedRecord = readDocument(dbDir, 'prompts', created.id);
+  assert.equal(storedRecord.content, 'Hello [[name]]');
+  assert.equal(storedRecord.modelProvider, 'openrouter');
+  assert.equal(storedRecord.modelName, 'google/gemini-2.5-flash');
+  assert.equal(storedRecord.isBuiltIn, false);
 
   const preview = await promptService.previewPrompt({
     id: created.id,
@@ -93,13 +85,12 @@ test('prompt service creates, previews, updates, and deletes custom JSON prompts
 
   assert.equal(await promptService.deletePrompt(created.id), true);
   assert.equal(await promptService.getPromptById(created.id), null);
-  assert.equal(fs.existsSync(promptPath), false);
+  assert.equal(readDocument(dbDir, 'prompts', created.id), null);
 });
 
 test('prompt service supports multiple prompt variants per feature and active selection', async () => {
-  const dataDir = makeTempDataDir('prompts-feature-variants');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  writePrompt(dataDir, 'filter-google-sheet-job', 'Default filter [[jobContent]]');
+  const { dbDir, staticDir } = useTempStorage('prompts-feature-variants');
+  writeDefaultPrompt(staticDir, 'filter-google-sheet-job', 'Default filter [[jobContent]]');
 
   const promptService = loadFresh('../dist/services/promptService');
 
@@ -139,8 +130,8 @@ test('prompt service supports multiple prompt variants per feature and active se
   assert.equal(runtimePrompt?.modelProvider, 'claude');
   assert.equal(runtimePrompt?.modelName, 'claude-sonnet-4-20250514');
 
-  const storedConfig = readJson(path.join(dataDir, 'config', 'prompt-library.json'));
-  assert.equal(storedConfig.activePrompts['filter-google-sheet-job'], variantB.id);
+  const activePrompts = JSON.parse(readSettingRaw(dbDir, 'active-prompts'));
+  assert.equal(activePrompts['filter-google-sheet-job'], variantB.id);
 
   await promptService.deletePrompt(variantB.id);
   assert.equal(
@@ -152,8 +143,7 @@ test('prompt service supports multiple prompt variants per feature and active se
 });
 
 test('prompt validation rejects unknown variables', async () => {
-  const dataDir = makeTempDataDir('prompts-validation');
-  process.env.TAILOR_DATA_DIR = dataDir;
+  useTempStorage('prompts-validation');
   const promptService = loadFresh('../dist/services/promptService');
 
   assert.deepEqual(promptService.extractPromptVariables('[[one]] and [[ two ]] and [[one]]'), ['one', 'two']);
@@ -174,9 +164,8 @@ test('prompt validation rejects unknown variables', async () => {
 });
 
 test('feature-linked prompts derive variables from prompt content', async () => {
-  const dataDir = makeTempDataDir('prompts-feature-variables');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  writePrompt(dataDir, 'tailor-resume', 'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]]');
+  const { staticDir } = useTempStorage('prompts-feature-variables');
+  writeDefaultPrompt(staticDir, 'tailor-resume', 'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]]');
 
   const promptService = loadFresh('../dist/services/promptService');
   const prompt = await promptService.getPromptById('tailor-resume');
@@ -202,10 +191,9 @@ test('feature-linked prompts derive variables from prompt content', async () => 
   );
 });
 
-test('built-in prompts persist optional model overrides alongside content', async () => {
-  const dataDir = makeTempDataDir('prompts-built-in-model');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  writePrompt(dataDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
+test('editing a built-in prompt stores the edit in the database and keeps the static default untouched', async () => {
+  const { dbDir, staticDir } = useTempStorage('prompts-built-in-model');
+  const defaultPath = writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
 
   const promptService = loadFresh('../dist/services/promptService');
   const updated = await promptService.updatePrompt('analyze-job-description', {
@@ -217,16 +205,23 @@ test('built-in prompts persist optional model overrides alongside content', asyn
   assert.equal(updated.content, 'Analyze deeply [[jobDescription]]');
   assert.equal(updated.modelProvider, 'openrouter');
   assert.equal(updated.modelName, 'deepseek/deepseek-chat');
+  assert.equal(updated.isBuiltIn, true);
 
-  const stored = readJson(path.join(dataDir, 'prompts', 'analyze-job-description.json'));
+  const stored = readDocument(dbDir, 'prompts', 'analyze-job-description');
+  assert.equal(stored.isBuiltIn, true);
   assert.equal(stored.modelProvider, 'openrouter');
   assert.equal(stored.modelName, 'deepseek/deepseek-chat');
+
+  assert.equal(readJson(defaultPath).content, 'Analyze [[jobDescription]]');
+  assert.equal(
+    await promptService.renderPrompt('analyze-job-description', { jobDescription: 'Backend role' }),
+    'Analyze deeply Backend role'
+  );
 });
 
 test('prompt service renders prompt segments in template order', async () => {
-  const dataDir = makeTempDataDir('prompts-segments');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  writePrompt(dataDir, 'analyze-job-description', 'Intro [[jobDescription]] outro');
+  const { staticDir } = useTempStorage('prompts-segments');
+  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Intro [[jobDescription]] outro');
 
   const promptService = loadFresh('../dist/services/promptService');
   const segments = await promptService.renderPromptSegments('analyze-job-description', {

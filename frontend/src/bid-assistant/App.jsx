@@ -134,19 +134,11 @@ function buildDisplayRowNumberMap(jobList) {
 
 // Returns a stable label for one profile record.
 function getProfileDisplayName(profile) {
-  return profile?.name || profile?.fullName || profile?.id || 'Untitled Profile';
+  return profile?.name || profile?.id || 'Untitled Profile';
 }
 
-// Prefers the Leo Wu profile when available, otherwise falls back to alphabetical order.
+// Picks the first profile in alphabetical order as the default selection.
 function getDefaultProfile(profiles) {
-  const leoWuProfile = profiles.find(
-    (profile) => getProfileDisplayName(profile).trim().toLowerCase() === 'leo wu'
-  );
-
-  if (leoWuProfile) {
-    return leoWuProfile;
-  }
-
   const sortedProfiles = [...profiles].sort((left, right) =>
     getProfileDisplayName(left).localeCompare(getProfileDisplayName(right))
   );
@@ -555,7 +547,6 @@ export default function App() {
           onOpenAskModal={handleOpenAskModal}
           onJobErrorUpdated={handleJobErrorUpdated}
           onJobDeleted={handleJobDeleted}
-          onAnswersReady={handleAnswersReady}
           answersRefreshToken={answersRefreshToken}
         />
       </div>

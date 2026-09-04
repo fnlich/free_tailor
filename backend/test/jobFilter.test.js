@@ -1,9 +1,7 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
-const { loadFresh, makeTempDataDir } = require('./helpers');
+const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
 
 const {
   evaluateJobFilterAnalysis,
@@ -147,23 +145,18 @@ test('evaluateJobFilterAnalysis fails later conditions when earlier ones pass', 
 });
 
 test('buildJobFilterPrompt renders the managed prompt with jobContent and legacy jobDescription support', async () => {
-  const dataDir = makeTempDataDir('job-filter-prompt');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  fs.mkdirSync(path.join(dataDir, 'prompts'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dataDir, 'prompts', 'filter-google-sheet-job.json'),
-    `${JSON.stringify({
-      id: 'filter-google-sheet-job',
-      content: 'Analyze [[jobContent]] from [[jobLink]] and legacy [[jobDescription]].',
-      createdAt: '2026-05-02T00:00:00.000Z',
-      updatedAt: '2026-05-02T00:00:00.000Z',
-      allowedVariables: [
-        { name: 'jobContent' },
-        { name: 'jobLink' },
-        { name: 'jobDescription' },
-      ],
-    }, null, 2)}\n`
-  );
+  const { staticDir } = useTempStorage('job-filter-prompt');
+  writeStaticJson(staticDir, 'prompts/filter-google-sheet-job.json', {
+    id: 'filter-google-sheet-job',
+    content: 'Analyze [[jobContent]] from [[jobLink]] and legacy [[jobDescription]].',
+    createdAt: '2026-05-02T00:00:00.000Z',
+    updatedAt: '2026-05-02T00:00:00.000Z',
+    allowedVariables: [
+      { name: 'jobContent' },
+      { name: 'jobLink' },
+      { name: 'jobDescription' },
+    ],
+  });
 
   loadFresh('../dist/services/promptService');
   const { buildJobFilterPrompt } = loadFresh('../dist/services/jobFilter');

@@ -7,7 +7,7 @@ import {
   getTemplateById,
   updateTemplate,
   deleteTemplate,
-  createDefaultTemplate,
+  isBuiltInTemplate,
   createManualTemplate,
   updateManualTemplate,
   uploadJsonTemplate,
@@ -44,9 +44,6 @@ const uploadJson = multer({
 // Get all templates
 router.get('/', async (req: Request, res: Response) => {
   try {
-    // Ensure default template exists
-    await createDefaultTemplate();
-
     const includeDisabled = req.query.includeDisabled === 'true';
     const templates = await getAllTemplates();
     const filtered = includeDisabled
@@ -230,13 +227,7 @@ router.patch('/:id', authMiddleware, async (req: Request<{ id: string }>, res: R
 // Delete template (protected)
 router.delete('/:id', authMiddleware, async (req: Request<{ id: string }>, res: Response) => {
   try {
-    const builtInTemplates = [
-      'default', 'one-column', 'one-column-modern',
-      'two-column-navy', 'one-column-emerald', 'one-column-violet', 'one-column-rose',
-      'two-column-slate', 'one-column-amber', 'one-column-indigo', 'two-column-minimal',
-      'one-column-serif', 'two-column-teal', 'one-column-coral', 'two-column-forest'
-    ];
-    if (builtInTemplates.includes(req.params.id)) {
+    if (await isBuiltInTemplate(req.params.id)) {
       res.status(400).json({ error: 'Cannot delete built-in templates' });
       return;
     }

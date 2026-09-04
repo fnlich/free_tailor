@@ -1,14 +1,14 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { loadFresh, makeTempDataDir, readJson } = require('./helpers');
+const { loadFresh, readSettingRaw, useTempStorage, writeSettingRaw } = require('./helpers');
 
-test('app settings persist entirely in JSON', async () => {
-  const dataDir = makeTempDataDir('settings');
-  const outputDir = path.join(dataDir, 'generated-output');
-  process.env.TAILOR_DATA_DIR = dataDir;
+const APP_SETTINGS_KEY = 'app-settings';
+
+test('app settings persist in the SQLite settings table', async () => {
+  const { rootDir, dbDir } = useTempStorage('settings');
+  const outputDir = path.join(rootDir, 'generated-output');
   process.env.OPENAI_API_KEY = '';
   process.env.ANTHROPIC_API_KEY = '';
   process.env.OPENROUTER_API_KEY = '';
@@ -19,7 +19,7 @@ test('app settings persist entirely in JSON', async () => {
   assert.equal(defaults.openaiEnabled, true);
   assert.equal(defaults.deepseekEnabled, true);
   assert.equal(defaults.defaultMode, 'preview');
-  assert.equal(fs.existsSync(path.join(dataDir, 'config', 'ai-models.json')), false);
+  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), null);
 
   const updated = await config.updateAppSettings({
     openaiEnabled: false,
@@ -62,16 +62,13 @@ test('app settings persist entirely in JSON', async () => {
   assert.equal(updated.apiKeys.claude.activePreview, 'clau...cret');
   assert.equal(await config.getProviderApiKey('claude'), 'claude-secret');
 
-  const stored = readJson(path.join(dataDir, 'config', 'ai-models.json'));
+  const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
   assert.equal(stored.apiKeys.claude.entries[0].value, 'claude-secret');
   assert.equal(stored.googleSheetsSources[0].sheetId, 'abc123');
-  assert.equal(fs.existsSync(path.join(dataDir, 'config', 'settings.sqlite')), false);
 });
 
-test('reading settings does not rewrite an existing settings file', async () => {
-  const dataDir = makeTempDataDir('settings-readonly');
-  const configDir = path.join(dataDir, 'config');
-  const configFile = path.join(configDir, 'ai-models.json');
+test('reading settings does not rewrite an existing settings record', async () => {
+  const { rootDir, dbDir } = useTempStorage('settings-readonly');
   const originalJson = `{
   "openaiEnabled": true,
   "claudeEnabled": true,
@@ -84,7 +81,7 @@ test('reading settings does not rewrite an existing settings file', async () => 
   "defaultProfileId": "",
   "defaultResumeDocxEnabled": true,
   "defaultCoverLetterDocxEnabled": true,
-  "outputBaseDir": "${path.join(dataDir, 'generated-output').replace(/\\/g, '\\\\')}",
+  "outputBaseDir": "${path.join(rootDir, 'generated-output').replace(/\\/g, '\\\\')}",
   "outputPathTemplate": "/{{date}}/{{profile name}}/{{company name}}",
   "googleSheetsSources": [],
   "apiKeys": {
@@ -95,10 +92,8 @@ test('reading settings does not rewrite an existing settings file', async () => 
   }
 }`;
 
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configFile, originalJson);
+  writeSettingRaw(dbDir, APP_SETTINGS_KEY, originalJson);
 
-  process.env.TAILOR_DATA_DIR = dataDir;
   process.env.OPENAI_API_KEY = '';
   process.env.ANTHROPIC_API_KEY = '';
   process.env.OPENROUTER_API_KEY = '';
@@ -107,19 +102,15 @@ test('reading settings does not rewrite an existing settings file', async () => 
 
   const loaded = await config.getAdminAppSettings();
   assert.equal(loaded.outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
-  assert.equal(fs.readFileSync(configFile, 'utf8'), originalJson);
+  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), originalJson);
 });
 
 test('invalid settings JSON is reported and never overwritten with defaults', async () => {
-  const dataDir = makeTempDataDir('settings-invalid');
-  const configDir = path.join(dataDir, 'config');
-  const configFile = path.join(configDir, 'ai-models.json');
+  const { dbDir } = useTempStorage('settings-invalid');
   const invalidJson = '{ invalid json';
 
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configFile, invalidJson);
+  writeSettingRaw(dbDir, APP_SETTINGS_KEY, invalidJson);
 
-  process.env.TAILOR_DATA_DIR = dataDir;
   process.env.OPENAI_API_KEY = '';
   process.env.ANTHROPIC_API_KEY = '';
   process.env.OPENROUTER_API_KEY = '';
@@ -131,12 +122,11 @@ test('invalid settings JSON is reported and never overwritten with defaults', as
     /contains invalid JSON/
   );
 
-  assert.equal(fs.readFileSync(configFile, 'utf8'), invalidJson);
+  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), invalidJson);
 });
 
 test('app settings preserve at least one enabled provider and can fall back to environment keys', async () => {
-  const dataDir = makeTempDataDir('settings-env');
-  process.env.TAILOR_DATA_DIR = dataDir;
+  useTempStorage('settings-env');
   process.env.OPENAI_API_KEY = 'openai-env-secret';
   process.env.ANTHROPIC_API_KEY = '';
   process.env.OPENROUTER_API_KEY = '';
@@ -158,10 +148,9 @@ test('app settings preserve at least one enabled provider and can fall back to e
   assert.equal(admin.apiKeys.openai.activeSource, 'environment');
 });
 
-test('generated path helpers read output settings from the JSON config', async () => {
-  const dataDir = makeTempDataDir('generated-path');
-  const outputDir = path.join(dataDir, 'output');
-  process.env.TAILOR_DATA_DIR = dataDir;
+test('generated path helpers read output settings from the stored settings', async () => {
+  const { rootDir } = useTempStorage('generated-path');
+  const outputDir = path.join(rootDir, 'output');
   const config = loadFresh('../dist/config/aiModelConfig');
   const generatedPath = loadFresh('../dist/utils/generatedPath');
 
@@ -184,9 +173,8 @@ test('generated path helpers read output settings from the JSON config', async (
 });
 
 test('generated path helpers apply per-profile company folder name templates', async () => {
-  const dataDir = makeTempDataDir('generated-folder-name');
-  const outputDir = path.join(dataDir, 'output');
-  process.env.TAILOR_DATA_DIR = dataDir;
+  const { rootDir } = useTempStorage('generated-folder-name');
+  const outputDir = path.join(rootDir, 'output');
   const config = loadFresh('../dist/config/aiModelConfig');
   const generatedPath = loadFresh('../dist/utils/generatedPath');
 
@@ -222,9 +210,8 @@ test('generated path helpers apply per-profile company folder name templates', a
 });
 
 test('generated path helpers apply per-profile output file name templates', async () => {
-  const dataDir = makeTempDataDir('generated-file-names');
-  const outputDir = path.join(dataDir, 'output');
-  process.env.TAILOR_DATA_DIR = dataDir;
+  const { rootDir } = useTempStorage('generated-file-names');
+  const outputDir = path.join(rootDir, 'output');
   const config = loadFresh('../dist/config/aiModelConfig');
   const generatedPath = loadFresh('../dist/utils/generatedPath');
 
@@ -235,7 +222,7 @@ test('generated path helpers apply per-profile output file name templates', asyn
 
   const result = await generatedPath.getGeneratedOutputPath(
     {
-      name: 'Kevin Shen',
+      name: 'Jane Doe',
       profileSettings: {
         resumeFileNameTemplate: '{{profile name}} Resume for {{company name}}',
         coverLetterFileNameTemplate: '{{profile name}} Cover Letter for {{job title}}',
@@ -245,16 +232,16 @@ test('generated path helpers apply per-profile output file name templates', asyn
     'Senior Engineer'
   );
 
-  assert.equal(result.resumeFileStem, 'Kevin_Shen_Resume_for_Acme_Inc');
-  assert.equal(result.coverLetterFileStem, 'Kevin_Shen_Cover_Letter_for_Senior_Engineer');
-  assert.equal(generatedPath.getResumeOutputFilename(result, 'pdf'), 'Kevin_Shen_Resume_for_Acme_Inc.pdf');
-  assert.equal(generatedPath.getResumeOutputFilename(result, 'docx'), 'Kevin_Shen_Resume_for_Acme_Inc.docx');
+  assert.equal(result.resumeFileStem, 'Jane_Doe_Resume_for_Acme_Inc');
+  assert.equal(result.coverLetterFileStem, 'Jane_Doe_Cover_Letter_for_Senior_Engineer');
+  assert.equal(generatedPath.getResumeOutputFilename(result, 'pdf'), 'Jane_Doe_Resume_for_Acme_Inc.pdf');
+  assert.equal(generatedPath.getResumeOutputFilename(result, 'docx'), 'Jane_Doe_Resume_for_Acme_Inc.docx');
   assert.equal(
     generatedPath.getCoverLetterOutputFilename(result, 'pdf'),
-    'Kevin_Shen_Cover_Letter_for_Senior_Engineer.pdf'
+    'Jane_Doe_Cover_Letter_for_Senior_Engineer.pdf'
   );
   assert.equal(
     generatedPath.getCoverLetterOutputFilename(result, 'docx'),
-    'Kevin_Shen_Cover_Letter_for_Senior_Engineer.docx'
+    'Jane_Doe_Cover_Letter_for_Senior_Engineer.docx'
   );
 });

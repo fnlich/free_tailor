@@ -618,12 +618,14 @@ export default function TemplatesPage() {
                   >
                     {template.disabled ? 'Enable' : 'Disable'}
                   </button>
-                  <button
-                    onClick={() => handleDelete(template.id)}
-                    className="px-3 py-1 text-sm text-red-600 hover:bg-red-50 rounded"
-                  >
-                    Delete
-                  </button>
+                  {!template.isBuiltIn && (
+                    <button
+                      onClick={() => handleDelete(template.id)}
+                      className="px-3 py-1 text-sm text-red-600 hover:bg-red-50 rounded"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

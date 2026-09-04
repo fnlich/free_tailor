@@ -1,6 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
 import { randomUUID } from 'crypto';
+import { getSetting, setSetting } from '../database/settingsRepository';
 import { AIProvider } from '../types/template';
 import {
   DEFAULT_CLAUDE_MODEL,
@@ -134,11 +133,7 @@ export type AppSettingsUpdate = Partial<PublicAppSettings> & {
   apiKeys?: Partial<Record<AIProvider, ApiKeyUpdate | string>>;
 };
 
-const DATA_DIR = process.env.TAILOR_DATA_DIR
-  ? path.resolve(process.env.TAILOR_DATA_DIR)
-  : path.join(__dirname, '../../data');
-const CONFIG_DIR = path.join(DATA_DIR, 'config');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'ai-models.json');
+export const APP_SETTINGS_KEY = 'app-settings';
 
 function slugifyModelPart(value: string): string {
   return value
@@ -872,49 +867,23 @@ function toAdminProviderKeyState(provider: AIProvider, store: ProviderKeyStore):
   };
 }
 
-async function ensureConfigDir(): Promise<void> {
-  try {
-    await fs.access(CONFIG_DIR);
-  } catch {
-    await fs.mkdir(CONFIG_DIR, { recursive: true });
-  }
-}
-
-async function readSettingsFile(): Promise<AppSettings> {
-  try {
-    const raw = await fs.readFile(CONFIG_FILE, 'utf-8');
-    let parsed: unknown;
-
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch (error) {
-      throw new Error(
-        `Settings file "${CONFIG_FILE}" contains invalid JSON: ${error instanceof Error ? error.message : 'Unknown parse error'}`
-      );
-    }
-
-    const settings = normalizeSettings(parsed, cloneDefaultSettings(), true);
-    assertAtLeastOneProviderEnabled(settings);
-    assertAtLeastOneRunnableModel(settings);
-    return settings;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
-      return cloneDefaultSettings();
-    }
-    throw error;
-  }
-}
-
 async function readSettings(): Promise<AppSettings> {
-  return readSettingsFile();
+  const stored = getSetting<unknown>(APP_SETTINGS_KEY);
+  if (stored === null) {
+    return cloneDefaultSettings();
+  }
+
+  const settings = normalizeSettings(stored, cloneDefaultSettings(), true);
+  assertAtLeastOneProviderEnabled(settings);
+  assertAtLeastOneRunnableModel(settings);
+  return settings;
 }
 
 async function writeSettings(settings: AppSettings): Promise<AppSettings> {
   const normalized = normalizeSettings(settings, cloneDefaultSettings(), true);
   assertAtLeastOneProviderEnabled(normalized);
   assertAtLeastOneRunnableModel(normalized);
-  await ensureConfigDir();
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(normalized, null, 2));
+  setSetting(APP_SETTINGS_KEY, normalized);
   return normalized;
 }
 

@@ -1,12 +1,14 @@
 .env
+.DS_Store
+._*
 generated/
 service-account-key.json
 backend/service-account-key.json
 node_modules
 backend/node_modules
 backend/dist
+backend/uploads
 frontend/node_modules
 frontend/.agents
 frontend/.next
 frontend/.codex
-generated

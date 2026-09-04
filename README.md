@@ -6,9 +6,8 @@
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![Express](https://img.shields.io/badge/Express-4-green?logo=express)](https://expressjs.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite)](https://sqlite.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.1-412991?logo=openai)](https://openai.com/)
-[![Anthropic](https://img.shields.io/badge/Anthropic-Claude-orange)](https://anthropic.com/)
 
 </div>
 
@@ -22,12 +21,12 @@ Tailored Resume Builder is a full-stack application that generates tailored resu
 
 | Feature | Description |
 |---------|-------------|
-| **Single or Batch** | Generate for one profile or all profiles at once |
+| **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
-| **Multiple Templates** | Choose from various resume styles (one-column, two-column, etc.) |
+| **Templates** | Built-in professional templates plus manual and uploaded templates |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
-| **Profile Templates** | Each profile can have its own preferred template style |
-| **Admin Panel** | Manage profiles, templates, and AI model settings |
+| **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skill ordering |
+| **Admin Panel** | Manage profiles, groups, templates, prompts, skills, and AI model settings |
 | **PDF & DOCX** | Export resumes in both formats |
 
 ---
@@ -37,15 +36,25 @@ Tailored Resume Builder is a full-stack application that generates tailored resu
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │   Next.js 16    │────▶│  Express API    │────▶│  OpenAI/Claude   │
-│   Frontend      │     │  Backend        │     │  AI Services     │
-│   (React 19)    │     │  (Port 9001)    │     │                  │
+│   Frontend      │     │  Backend        │     │  OpenRouter/...  │
+│   (React 19)    │     │  (Port 3001)    │     │                  │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                        │
-        │                        ├── Profiles (JSON)
-        │                        ├── Templates (HTML/Handlebars)
-        │                        └── Generated (PDF/DOCX)
-        └── Admin Panel (Profiles, Templates, Settings)
+                                 │
+                                 ├── SQLite database  (/data/db) — all dynamic data
+                                 ├── Static assets    (backend/static) — defaults only
+                                 └── Generated files  (PDF/DOCX)
 ```
+
+### Where data lives
+
+| Data | Storage |
+|------|---------|
+| Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
+| Default prompts (one per feature) | `backend/static/prompts/*.json` |
+| Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
+| Built-in resume templates | `backend/static/templates/*.json` |
+
+Nothing under `backend/static` is written to at runtime. Edits made in the admin panel always go to the database.
 
 ---
 
@@ -54,108 +63,94 @@ Tailored Resume Builder is a full-stack application that generates tailored resu
 ### Prerequisites
 
 - **Node.js** 18+
-- **OpenAI API Key** (for GPT-5.1)
-- **Anthropic API Key** (optional, for Claude)
-- **OpenRouter API Key** (optional, for OpenRouter)
+- A writable database directory (default `/data/db`; override with `DB_DIR`)
+- **OpenAI**, **Anthropic**, **OpenRouter**, or **DeepSeek** API key (at least one)
 
 ### 1. Clone & Install
 
 ```bash
 git clone <repo-url>
-cd ResumeBuilder
+cd free_tailor
 
-# Install backend dependencies
-cd backend && npm install && cd ..
-
-# Install frontend dependencies
-cd frontend && npm install && cd ..
+npm install
+npm install --prefix backend
+npm install --prefix frontend
 ```
 
 ### 2. Environment Setup
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` in the project root and fill in the values you need. The important ones:
 
 ```env
-# Required for OpenAI
-OPENAI_API_KEY=sk-your-openai-key
-
-# Optional for Claude
-ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
-
-# Optional for OpenRouter
-OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-
-# Admin panel password
-ADMIN_PASSWORD=your-secure-password
-
-# Server config
-PORT=9001
-FRONTEND_URL=http://localhost:3000
+HOST=0.0.0.0             # backend listens on every interface
+PORT=3001
+DB_DIR=/data/db          # SQLite database directory
+NEXT_PUBLIC_API_URL=http://localhost:3001/api
+ADMIN_PASSWORD=change-me
+OPENAI_API_KEY=...
 ```
 
-Create `frontend/.env.local`:
-
-```env
-NEXT_PUBLIC_API_URL=http://localhost:9001/api
-```
+The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the page was loaded from, and the backend accepts requests from any origin on the same host as the API. That means you can open the app through `localhost`, a LAN IP, or a hostname without changing configuration.
 
 ### 3. Run
 
 ```bash
-# Stable multi-tab mode
 npm run dev
 ```
 
-This starts:
-
-- backend in watch mode
-- frontend with `next build && next start` to avoid Next.js dev websocket reloads across tabs
-
-If you want live frontend hot reload while developing UI code, use:
+This starts the backend in watch mode and the frontend dev server. For a production-style frontend build use `npm run dev:poll` or run each side separately:
 
 ```bash
-# Terminal 1: Start backend
-cd backend && npm run dev
-
-# Terminal 2: Start frontend with live reload
-cd frontend && npm run dev:live
+cd backend && npm run dev        # http://<server-ip>:3001
+cd frontend && npm run dev:live  # http://<server-ip>:3000
 ```
 
-- **Frontend:** http://localhost:3000  
-- **Backend API:** http://localhost:9001  
-- **Admin Panel:** http://localhost:3000/admin  
+The backend prints every address it is reachable on when it starts.
+
+### 4. Import data from the old JSON layout (optional)
+
+If you are upgrading from a version that stored data as JSON files under `backend/data`, import it once:
+
+```bash
+cd backend
+npm run migrate:legacy -- /path/to/old/backend/data
+```
+
+Existing database records are never overwritten.
 
 ---
 
 ## 📁 Project Structure
 
 ```
-ResumeBuilder/
+free_tailor/
 ├── backend/                 # Express API
 │   ├── src/
-│   │   ├── routes/         # API routes (profiles, templates, resume, admin)
-│   │   ├── services/       # AI, PDF, DOCX, cover letter generation
-│   │   ├── config/         # Storage paths
+│   │   ├── config/         # App settings + static asset paths
+│   │   ├── database/       # SQLite connection, schema, repositories
+│   │   ├── routes/         # API routes
+│   │   ├── services/       # AI orchestration, prompts, profiles
+│   │   ├── generators/     # PDF, DOCX, cover letter generation
+│   │   ├── scripts/        # Legacy data import
 │   │   └── types/          # TypeScript types
-│   └── data/
-│       ├── profiles/       # Profile JSON files
-│       ├── templates/      # Resume templates (JSON with HTML)
-│       │   └── m/          # Custom templates (e.g. one-column-clean)
-│       └── config/         # AI model config
+│   ├── static/
+│   │   ├── prompts/        # Default prompt per feature
+│   │   ├── skills/         # Skill library seed
+│   │   └── templates/      # Built-in templates
+│   └── test/               # node:test suite
 ├── frontend/               # Next.js app
 │   └── src/
-│       ├── app/            # Pages (/, /admin/*)
+│       ├── app/            # Pages (/, /admin/*, /jobs, /bid-assistant, /calendar)
 │       ├── components/     # Reusable UI components
 │       └── lib/            # API client
-└── generated/              # Output: resumes, cover letters (PDF/DOCX)
+└── generated/              # Default output location for resumes and cover letters
 ```
 
 ---
 
 ## 📤 Output Structure
 
-Generated files are saved in:
+Generated files are saved under the configured output directory using the output path template from the admin settings, for example:
 
 ```
 {profile}/{date}/{company}/{role}/
@@ -165,8 +160,7 @@ Generated files are saved in:
 └── {profile}_cover_letter.docx
 ```
 
-- **Date** uses CST (America/Chicago) timezone  
-- **Example:** `john_doe/2025-02-21/acme_corp/software_engineer/`
+File and folder names are templated per profile.
 
 ---
 
@@ -174,9 +168,12 @@ Generated files are saved in:
 
 | Section | Purpose |
 |---------|---------|
-| **Profiles** | Create/edit candidate profiles (experience, skills, education, preferred template) |
-| **Templates** | Upload PDF templates, preview styles, enable/disable |
-| **Settings** | Configure AI model providers (OpenAI, Claude, OpenRouter) |
+| **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering |
+| **Groups** | Group profiles for batch generation |
+| **Templates** | Built-in, manual, and uploaded resume templates |
+| **Prompts** | Edit default prompts or add custom variants per feature |
+| **Skills** | Maintain the hard/soft skill library |
+| **Settings** | AI providers, models, API keys, output location |
 
 ---
 
@@ -184,14 +181,26 @@ Generated files are saved in:
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | Required for OpenAI (GPT) |
-| `ANTHROPIC_API_KEY` | Optional for Claude |
-| `OPENROUTER_API_KEY` | Optional for OpenRouter |
-| `OPENROUTER_MODEL` | Optional OpenRouter model slug (default: `openai/gpt-4o-mini`) |
+| `HOST` / `PORT` | Backend bind address and port (default `0.0.0.0:3001`) |
+| `DB_DIR` | SQLite database directory (default `/data/db`) |
+| `FRONTEND_URL` | Extra allowed CORS origins, comma separated (same-host origins are always allowed) |
+| `FRONTEND_HOST` / `FRONTEND_PORT` | Frontend bind address and port (default `0.0.0.0:3000`) |
+| `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime |
+| `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
+| `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
 | `ADMIN_PASSWORD` | Admin login password |
-| `PORT` | Backend port (default: 9001) |
-| `FRONTEND_URL` | Allowed CORS origin |
-| `OPENAI_MODEL` | Override default model (default: `gpt-5.1`) |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` | Provider keys (can also be stored from the admin panel) |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
+
+---
+
+## 🧪 Tests
+
+```bash
+npm test
+```
+
+Runs the backend `node:test` suite against temporary SQLite databases and static directories.
 
 ---
 
@@ -200,8 +209,8 @@ Generated files are saved in:
 | Layer | Technologies |
 |-------|--------------|
 | **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
-| **Backend** | Express, TypeScript |
-| **AI** | OpenAI SDK (GPT-5.1), Anthropic API (Claude), OpenRouter API |
+| **Backend** | Express, TypeScript, better-sqlite3 |
+| **AI** | OpenAI, Anthropic Claude, OpenRouter, DeepSeek |
 | **PDF** | Puppeteer |
 | **DOCX** | html-to-docx |
 | **Templates** | Handlebars |
@@ -211,11 +220,3 @@ Generated files are saved in:
 ## 📄 License
 
 ISC
-
----
-
-<div align="center">
-
-**Built with ❤️ for job seekers**
-
-</div>

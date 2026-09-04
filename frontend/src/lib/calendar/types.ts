@@ -62,6 +62,6 @@ export type CalendarEvent = {
 } & Record<string, unknown>;
 
 export type CalendarApiResponse<T> = {
-  source: 'live' | 'fixture';
+  source: 'live';
   data: T;
 };

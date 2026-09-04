@@ -1,5 +1,6 @@
 import fs from 'fs';
-import path from 'path';
+import { getStaticSkillsFile } from '../config/staticPaths';
+import { getDb } from './sqlite';
 
 export type SkillType = 'hard' | 'soft';
 export type HardSkillCategory =
@@ -81,11 +82,6 @@ export class SkillDatabaseError extends Error {
   }
 }
 
-const DATA_DIR = process.env.TAILOR_DATA_DIR
-  ? path.resolve(process.env.TAILOR_DATA_DIR)
-  : path.join(__dirname, '../../data');
-const SKILLS_DIR = path.join(DATA_DIR, 'skills');
-const SKILLS_FILE = path.join(SKILLS_DIR, 'skills.json');
 
 function cleanSkill(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -425,28 +421,70 @@ function normalizeStore(input: unknown): SkillsStore {
   };
 }
 
-function ensureSkillsFile(): void {
-  fs.mkdirSync(SKILLS_DIR, { recursive: true });
+type SkillRow = {
+  type: SkillType;
+  skill: string;
+  priority: number | null;
+  category: string | null;
+};
 
-  if (!fs.existsSync(SKILLS_FILE)) {
-    writeStore({ hard: [], soft: [] });
-  }
-}
-
-function readStore(): SkillsStore {
-  ensureSkillsFile();
-
+/** Reads the shipped skill library used to seed an empty database. */
+function readSeedStore(): SkillsStore {
   try {
-    const parsed = JSON.parse(fs.readFileSync(SKILLS_FILE, 'utf8')) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(getStaticSkillsFile(), 'utf8')) as unknown;
     return normalizeStore(parsed);
   } catch {
     return { hard: [], soft: [] };
   }
 }
 
+function countSkillRows(): number {
+  const row = getDb().prepare('SELECT COUNT(*) AS count FROM skills').get() as { count: number };
+  return row.count;
+}
+
 function writeStore(store: SkillsStore): void {
-  fs.mkdirSync(SKILLS_DIR, { recursive: true });
-  fs.writeFileSync(SKILLS_FILE, `${JSON.stringify(normalizeStore(store), null, 2)}\n`, 'utf8');
+  const normalized = normalizeStore(store);
+  const db = getDb();
+  const insert = db.prepare(
+    'INSERT INTO skills (type, skill_key, skill, priority, category) VALUES (@type, @skill_key, @skill, @priority, @category)'
+  );
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM skills').run();
+    for (const record of normalized.hard) {
+      insert.run({
+        type: 'hard',
+        skill_key: normalizeSkillValue(record.skill),
+        skill: record.skill,
+        priority: record.priority,
+        category: record.category,
+      });
+    }
+    for (const skill of normalized.soft) {
+      insert.run({ type: 'soft', skill_key: normalizeSkillValue(skill), skill, priority: null, category: null });
+    }
+  })();
+}
+
+/** Seeds the skills table from the static skill library when it is still empty. */
+function ensureSeeded(): void {
+  if (countSkillRows() === 0) {
+    const seed = readSeedStore();
+    if (seed.hard.length > 0 || seed.soft.length > 0) {
+      writeStore(seed);
+    }
+  }
+}
+
+function readStore(): SkillsStore {
+  ensureSeeded();
+
+  const rows = getDb().prepare('SELECT type, skill, priority, category FROM skills').all() as SkillRow[];
+  return normalizeStore({
+    hard: rows.filter((row) => row.type === 'hard'),
+    soft: rows.filter((row) => row.type === 'soft').map((row) => row.skill),
+  });
 }
 
 function findSoftSkillIndex(skills: string[], skill: string): number {
@@ -460,7 +498,7 @@ function findHardSkillIndex(skills: HardSkillRecord[], skill: string): number {
 }
 
 export function ensureSkillsDatabase(): void {
-  ensureSkillsFile();
+  ensureSeeded();
 }
 
 export function isSkillType(value: unknown): value is SkillType {

@@ -1,11 +1,7 @@
-const path = require('path');
-const Database = require('better-sqlite3');
+const { getDb } = require('../database/sqlite');
 
-const backendDirectory = path.join(__dirname, '..', '..');
-const databasePath = path.join(backendDirectory, 'data', 'bid-assistant', 'job-applications.db');
-const db = new Database(databasePath);
-
-db.pragma('journal_mode = WAL');
+// Bid-assistant tables live in the shared application database.
+const db = getDb();
 
 function createJobsTable(tableName = 'jobs') {
   db.exec(`
