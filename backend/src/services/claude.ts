@@ -23,6 +23,12 @@ import { moveCaseInsensitiveMatches, uniqueCaseInsensitive } from '../utils/arra
 import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { supplimentSoftSkills } from './utils/config';
+import {
+  DEFAULT_ANALYZE_JOB_PROMPT_ID,
+  DEFAULT_COVER_LETTER_PROMPT_ID,
+  DEFAULT_RESUME_PROMPT_ID,
+  getProfileHardSkillOrdering,
+} from './profileService';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_DEEPSEEK_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENROUTER_MODEL } from './aiModelCatalog';
 
 // Ensure the repo .env file is loaded for this module even when it is imported
@@ -33,7 +39,6 @@ const technicalSkills = readSkills('hard');
 const softSkills = readSkills('soft');
 let hardSkillPriorityMap = readHardSkillPriorityMap();
 let hardSkillRecords = readHardSkillRecords();
-const DEFAULT_ANALYZE_JOB_PROMPT_ID = 'custom-analyze-job-description-extracting-prompt-v2';
 const resumeBuildTiming = new WeakMap<JobAnalysis, { firstCallEndedAt: bigint }>();
 
 function formatDuration(start: bigint, end: bigint): string {
@@ -154,13 +159,10 @@ function capitalizeFirstCharacter(value: string): string {
 }
 
 const DEFAULT_PROVIDER: AIProvider = 'openai';
-const DAVID_KIMURA_PROFILE_ID = '2e7542a5-f9fd-473c-873a-28e7ab48e77b';
 const ANTHROPIC_MAX_RETRIES = 4;
 const ANTHROPIC_BASE_RETRY_DELAY_MS = 600;
 const MAX_ROLE_BRIEF_LENGTH = 900;
-const MAX_HARD_SKILLS = 25;
 const MIN_EXPERIENCE_SKILLS = 10;
-const MAX_HARD_SKILLS_PER_CATEGORY = 5;
 const MAX_SOFT_SKILLS = 10;
 const SOFT_SKILL_SIGNALS = [
   'accountability',
@@ -200,45 +202,6 @@ const ATS_SOFT_SKILL_RULES: Array<{ canonical: string; patterns: string[] }> = [
   { canonical: 'Strong problem-solving skills', patterns: ['problem-solving', 'problem solving'] },
   { canonical: 'Eager to learn', patterns: ['eager to learn', 'lifelong learning'] },
   { canonical: 'Accountability', patterns: ['accountability', 'accountable'] },
-];
-// const HARD_SKILL_PRIORITY_SIGNALS = [
-//   'ai',
-//   'ruby',
-//   'sre',
-//   'cloud infrastructure',
-//   'cloud technologies',
-//   'automation',
-//   'aws',
-//   'kubernetes',
-//   'docker',
-//   'linux',
-//   'infrastructure as code',
-//   'iac',
-//   'devops',
-//   'ci/cd',
-//   'terraform',
-//   'monitoring',
-//   'observability',
-//   'bash scripting',
-//   'troubleshoot',
-//   'log analysis',
-//   'server-side',
-//   'abstraction',
-//   'debugging',
-//   'aws cloud',
-//   'tooling',
-//   'version control',
-// ];
-const HARD_SKILL_RULES: Array<{ canonical: string; patterns: string[] }> = [
-  { canonical: 'Bash scripting', patterns: ['bash scripting', 'bash'] },
-  { canonical: 'Troubleshoot', patterns: ['troubleshoot', 'troubleshooting'] },
-  { canonical: 'Log analysis', patterns: ['log analysis', 'logging'] },
-  { canonical: 'Server-side', patterns: ['server-side', 'server side'] },
-  { canonical: 'Abstraction', patterns: ['abstraction'] },
-  { canonical: 'Debugging', patterns: ['debugging', 'debug'] },
-  { canonical: 'AWS cloud', patterns: ['aws cloud', 'aws'] },
-  { canonical: 'Tooling', patterns: ['tooling', 'tools'] },
-  { canonical: 'Version control', patterns: ['version control', 'git'] },
 ];
 type HardSkillCategory =
   | 'backend'
@@ -293,17 +256,6 @@ type HardSkillSeed = {
   display: string;
   aliases?: string[];
 };
-
-const HARD_SKILL_CATEGORY_ORDER: HardSkillCategory[] = [
-  'backend',
-  'frontend',
-  'databases',
-  'cloud-devops',
-  'testing-automation',
-  'ai-ml',
-  'tools-methodologies',
-  'other',
-];
 
 const HARD_SKILL_CATEGORY_SEEDS: Array<{
   category: Exclude<HardSkillCategory, 'other'>;
@@ -636,8 +588,8 @@ const HARD_SKILL_CATEGORY_WEIGHT: Record<HardSkillCategory, number> = {
 };
 const JSON_ONLY_SYSTEM_PROMPT = 'You are a strict JSON generator. Return valid JSON only, with no markdown fences or extra text.';
 
-function isDavidKimuraProfile(profile?: Profile): boolean {
-  return profile?.id === DAVID_KIMURA_PROFILE_ID || profile?.name.trim().toLowerCase() === 'david kimura';
+function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
+  return getProfileHardSkillOrdering(profile) === 'job-priority';
 }
 
 export function resolveAIProvider(model?: string): AIProvider {
@@ -1355,10 +1307,6 @@ function getSkillTools(jobAnalysis?: JobAnalysis): string[] {
   return normalizeSkillsList(jobAnalysis?.skills?.tools);
 }
 
-function getSkillTechnologies(jobAnalysis?: JobAnalysis): string[] {
-  return getTechnologies(jobAnalysis);
-}
-
 function getTechnologies(jobAnalysis?: JobAnalysis): string[] {
   return normalizeSkillsList([
     ...(jobAnalysis?.technologies ?? []),
@@ -1428,19 +1376,6 @@ function getHardSkillChecklist(jobAnalysis?: JobAnalysis): string[] {
     ...getArchitecturePatterns(jobAnalysis),
     ...getKeywordChecklist(jobAnalysis),
     ...getIndustryTerms(jobAnalysis),
-  ]);
-}
-
-function getExtractedSkillsForPrompt(jobAnalysis?: JobAnalysis): string[] {
-  return normalizeSkillsList([
-    ...getTechnicalSkills(jobAnalysis),
-    ...getRequiredSkills(jobAnalysis),
-    ...getPreferredSkills(jobAnalysis),
-    ...getSkillTools(jobAnalysis),
-    ...getTechnologies(jobAnalysis),
-    ...getProtocols(jobAnalysis),
-    ...getMethodologies(jobAnalysis),
-    ...getArchitecturePatterns(jobAnalysis),
   ]);
 }
 
@@ -1522,10 +1457,6 @@ const LANGUAGE_FILL_PRIORITY = new Map(
 function getHardSkillRecord(skill: string): (typeof hardSkillRecords)[number] | undefined {
   const normalized = normalizeHardSkillAlias(skill);
   return hardSkillRecords.find((record) => normalizeHardSkillAlias(record.skill) === normalized);
-}
-
-function getLibrarySkillCategory(skill: string): LibraryHardSkillCategory {
-  return getHardSkillRecord(skill)?.category ?? 'Frameworks and Libraries';
 }
 
 function getLibraryPriority(skill: string): number {
@@ -1863,19 +1794,6 @@ function getHardSkillPriority(skill: string): number {
   return hardSkillPriorityMap.get(skill.trim().toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
 }
 
-function getProfileHardSkillInventory(profile?: Profile): Set<string> {
-  return new Set(normalizeAllowedHardSkills(profile?.skills ?? []).map((skill) => skill.toLowerCase()));
-}
-
-function restrictHardSkillsToProfileInventory(skills: string[], profile?: Profile): string[] {
-  const inventory = getProfileHardSkillInventory(profile);
-  if (inventory.size === 0) {
-    return skills;
-  }
-
-  return skills.filter((skill) => inventory.has(skill.toLowerCase()));
-}
-
 function containsHardSkillPhrase(text: string, skill: string): boolean {
   const escaped = skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const flags = skill === 'Go' ? '' : 'i';
@@ -2093,10 +2011,6 @@ export function enrichProfileExperienceSkillsForJob(profile: Profile, jobAnalysi
   };
 }
 
-function isTechnicalSkill(skill: string): boolean {
-  return resolveHardSkill(skill) !== null;
-}
-
 const MAX_SOFT_SKILL_LENGTH = 30;
 
 /** Map long soft skill phrases to short key points */
@@ -2173,13 +2087,6 @@ function inferAtsSoftSkillsFromAnalysis(jobAnalysis?: JobAnalysis): string[] {
   return inferAtsSoftSkillsFromText(text);
 }
 
-function inferHardSkillsFromText(text: string): string[] {
-  const lower = text.toLowerCase();
-  return HARD_SKILL_RULES
-    .filter((rule) => rule.patterns.some((pattern) => lower.includes(pattern)))
-    .map((rule) => rule.canonical);
-}
-
 function buildJobDescriptionSkillPriority(jobAnalysis?: JobAnalysis): Map<string, number> {
   const normalized = normalizeAllowedHardSkills(getHardSkillChecklist(jobAnalysis));
   const priorityMap = new Map<string, number>();
@@ -2237,42 +2144,6 @@ function prioritizeHardSkills(skills: string[], jobAnalysis?: JobAnalysis): stri
 
     return (originalOrder.get(a.toLowerCase()) ?? 0) - (originalOrder.get(b.toLowerCase()) ?? 0);
   });
-}
-
-function finalizeHardSkills(skills: string[], jobAnalysis?: JobAnalysis): string[] {
-  const prioritized = prioritizeHardSkills(skills, jobAnalysis);
-  const categoryCounts = new Map<HardSkillCategory, number>();
-  const limited: string[] = [];
-
-  for (const skill of prioritized) {
-    const category = resolveHardSkill(skill)?.category ?? 'other';
-    const currentCount = categoryCounts.get(category) ?? 0;
-
-    if (currentCount >= MAX_HARD_SKILLS_PER_CATEGORY) {
-      continue;
-    }
-
-    limited.push(skill);
-    categoryCounts.set(category, currentCount + 1);
-
-    if (limited.length >= MAX_HARD_SKILLS) {
-      break;
-    }
-  }
-
-  return limited;
-}
-
-function finalizeHardSkillsForProfile(
-  skills: string[],
-  jobAnalysis?: JobAnalysis,
-  profile?: Profile
-): string[] {
-  if (isDavidKimuraProfile(profile)) {
-    return prioritizeHardSkills(skills, jobAnalysis);
-  }
-
-  return finalizeHardSkills(skills, jobAnalysis);
 }
 
 function sortHardSkillsByLibraryPriority(skills: string[]): string[] {
@@ -2459,7 +2330,7 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
   const atsSoftPriority = inferAtsSoftSkillsFromAnalysis(jobAnalysis);
   const finalizedHardSkills = normalizeSkillsList(codeDecidedHardSkills);
-  const hardSkills = isDavidKimuraProfile(profile)
+  const hardSkills = usesJobPriorityHardSkillOrdering(profile)
     ? prioritizeHardSkills(finalizedHardSkills, jobAnalysis)
     : sortHardSkillsByLibraryPriority(finalizedHardSkills);
   const softFromModel = normalizeSkillsList(content.softSkills);
@@ -2722,11 +2593,11 @@ export function parseTailoredResumeContent(
 }
 
 function getProfileResumePromptId(profile: Profile): string {
-  return profile.profileSettings?.resumePromptId?.trim() || 'tailor-resume';
+  return profile.profileSettings?.resumePromptId?.trim() || DEFAULT_RESUME_PROMPT_ID;
 }
 
 function getProfileCoverLetterPromptId(profile: Profile): string {
-  return profile.profileSettings?.coverLetterPromptId?.trim() || 'generate-cover-letter';
+  return profile.profileSettings?.coverLetterPromptId?.trim() || DEFAULT_COVER_LETTER_PROMPT_ID;
 }
 
 export async function tailorResume(

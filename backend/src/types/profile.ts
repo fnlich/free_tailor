@@ -41,6 +41,13 @@ export interface Certification {
   credentialId?: string;
 }
 
+/**
+ * How hard skills are ordered on the rendered resume:
+ * - `library`: by the priority stored in the skill library (default)
+ * - `job-priority`: by relevance to the analyzed job description
+ */
+export type HardSkillOrdering = 'library' | 'job-priority';
+
 export interface ProfileSettings {
   resumePromptId?: string;
   analyzeJobPromptId?: string;
@@ -48,6 +55,7 @@ export interface ProfileSettings {
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
+  hardSkillOrdering?: HardSkillOrdering;
 }
 
 export interface Profile {

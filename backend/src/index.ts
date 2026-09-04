@@ -1,8 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import os from 'os';
 import path from 'path';
 import { getGeneratedFilePath } from './utils/generatedPath';
+import { getDatabasePath, getDb } from './database/sqlite';
 
 import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
@@ -17,31 +19,54 @@ import bidAssistantRoutes from './routes/bidAssistant';
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
-const configuredFrontendOrigins = (process.env.FRONTEND_URL || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-const allowedOrigins = new Set<string>([
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:3001',
-  'http://127.0.0.1:3001',
-  ...configuredFrontendOrigins,
-]);
+const configuredFrontendOrigins = new Set(
+  (process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
+function getHostname(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value.includes('://') ? value : `http://${value}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Allows an origin when it is explicitly configured or when it points at the
+ * same host the API request arrived on. This keeps CORS working for whatever
+ * IP or hostname the server is reached through without hard-coding addresses.
+ */
+function isOriginAllowed(origin: string | undefined, requestHost: string | undefined): boolean {
+  if (!origin) return true;
+  if (configuredFrontendOrigins.has(origin)) return true;
+
+  const originHost = getHostname(origin);
+  const serverHost = getHostname(requestHost);
+  if (!originHost || !serverHost) return false;
+
+  const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
+  return originHost === serverHost || (localHosts.has(originHost) && localHosts.has(serverHost));
+}
 
 // Middleware
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.has(origin)) {
-      callback(null, true);
-      return;
-    }
-    callback(new Error(`CORS blocked for origin: ${origin}`));
-  },
-  credentials: true
-}));
+app.use((req, res, next) => {
+  cors({
+    origin(origin, callback) {
+      if (isOriginAllowed(origin, req.headers.host)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true,
+  })(req, res, next);
+});
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -82,8 +107,29 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(Number(PORT), HOST, () => {
-  console.log(`Server running on http://${HOST}:${PORT}`);
+/** Lists the addresses the server is reachable on, resolved at runtime. */
+function listServerUrls(): string[] {
+  if (HOST !== '0.0.0.0' && HOST !== '::') {
+    return [`http://${HOST}:${PORT}`];
+  }
+
+  const urls = [`http://localhost:${PORT}`];
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    for (const entry of interfaces ?? []) {
+      if (entry.family === 'IPv4' && !entry.internal) {
+        urls.push(`http://${entry.address}:${PORT}`);
+      }
+    }
+  }
+  return urls;
+}
+
+// Open the database eagerly so schema problems surface at startup.
+getDb();
+
+app.listen(PORT, HOST, () => {
+  console.log(`Database: ${getDatabasePath()}`);
+  console.log(`Server listening on ${listServerUrls().join(', ')}`);
 });
 
 export default app;

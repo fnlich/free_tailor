@@ -28,6 +28,8 @@ export interface Template {
   updatedAt: string;
   /** Stored config for manual templates; enables edit */
   manualConfig?: ManualTemplateConfigStored;
+  /** True for templates shipped as static files; their HTML cannot be edited or deleted */
+  isBuiltIn?: boolean;
 }
 
 export interface CreateTemplateDTO {

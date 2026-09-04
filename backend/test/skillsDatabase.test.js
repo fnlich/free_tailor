@@ -1,20 +1,15 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
-const { loadFresh, makeTempDataDir, readJson } = require('./helpers');
+const { loadFresh, readJson, useTempStorage, writeStaticJson } = require('./helpers');
 
-test('skills JSON database supports CRUD and duplicate protection', () => {
-  const dataDir = makeTempDataDir('skills');
-  process.env.TAILOR_DATA_DIR = dataDir;
+test('skills database supports CRUD and duplicate protection', () => {
+  useTempStorage('skills');
   const skillsDb = loadFresh('../dist/database/skillsDatabase');
 
   skillsDb.ensureSkillsDatabase();
-
-  const skillsFile = path.join(dataDir, 'skills', 'skills.json');
-  assert.equal(fs.existsSync(skillsFile), true);
-  assert.deepEqual(readJson(skillsFile), { hard: [], soft: [] });
+  assert.deepEqual(skillsDb.readSkills('hard'), []);
+  assert.deepEqual(skillsDb.readSkills('soft'), []);
 
   assert.deepEqual(skillsDb.addSkill('hard', 'TypeScript', {
     priority: 1,
@@ -79,12 +74,30 @@ test('skills JSON database supports CRUD and duplicate protection', () => {
   assert.equal(skillsDb.inferHardSkillCategory('AWS S3'), 'Databases and Storage');
 });
 
-test('skills JSON database normalizes corrupt or malformed files to empty lists', () => {
-  const dataDir = makeTempDataDir('skills-malformed');
-  process.env.TAILOR_DATA_DIR = dataDir;
-  const skillsDir = path.join(dataDir, 'skills');
-  fs.mkdirSync(skillsDir, { recursive: true });
-  fs.writeFileSync(path.join(skillsDir, 'skills.json'), '{"hard":"bad","soft":[1," Teamwork ","teamwork"]}\n');
+test('skills database seeds from the static skill library and then persists edits in SQLite', () => {
+  const { staticDir } = useTempStorage('skills-seed');
+  const seedPath = writeStaticJson(staticDir, 'skills/skills.json', {
+    hard: [{ skill: 'Go', priority: 1, category: 'Languages' }],
+    soft: ['Teamwork'],
+  });
+
+  const skillsDb = loadFresh('../dist/database/skillsDatabase');
+  assert.deepEqual(skillsDb.readSkills('hard'), ['Go']);
+  assert.deepEqual(skillsDb.readSkills('soft'), ['Teamwork']);
+
+  skillsDb.addSkill('soft', 'Leadership');
+  assert.deepEqual(skillsDb.readSkills('soft'), ['Leadership', 'Teamwork']);
+
+  // The static seed is read-only: edits never flow back into it.
+  assert.deepEqual(readJson(seedPath).soft, ['Teamwork']);
+});
+
+test('skills database normalizes a corrupt or malformed static seed to empty lists', () => {
+  const { staticDir } = useTempStorage('skills-malformed');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  fs.mkdirSync(path.join(staticDir, 'skills'), { recursive: true });
+  fs.writeFileSync(path.join(staticDir, 'skills', 'skills.json'), '{"hard":"bad","soft":[1," Teamwork ","teamwork"]}\n');
 
   const skillsDb = loadFresh('../dist/database/skillsDatabase');
 

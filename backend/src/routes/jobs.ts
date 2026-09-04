@@ -96,25 +96,6 @@ function normalizeCompanyName(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function normalizeJobTitle(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
-function normalizeJobLink(value: string): string {
-  const trimmedValue = value.trim();
-  if (!trimmedValue) {
-    return '';
-  }
-
-  try {
-    const parsedUrl = new URL(trimmedValue);
-    parsedUrl.hash = '';
-    return parsedUrl.toString();
-  } catch {
-    return trimmedValue;
-  }
-}
-
 type ExportRowIdentity = {
   companyName: string;
   jobTitle: string;

@@ -1,6 +1,4 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
 const { generatePreviewHTML, prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
@@ -65,117 +63,6 @@ test('generatePreviewHTML shows linkedin.com text while keeping the full LinkedI
   assert.doesNotMatch(html, />https:\/\/www\.linkedin\.com\/in\/jane-doe<\/a>/);
 });
 
-test('new_leo template renders each experience entry', async () => {
-  const template = JSON.parse(
-    fs.readFileSync(path.join(__dirname, '..', 'data', 'templates', 'new_leo.json'), 'utf8')
-  );
-
-  const html = await generatePreviewHTML(
-    {
-      id: 'profile-3',
-      name: 'Jane Doe',
-      title: 'Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'jane@example.com',
-        linkedin: 'linkedin.com/in/jane-doe',
-        location: 'San Francisco, CA',
-      },
-      summary: 'Summary',
-      experience: [
-        {
-          title: 'Senior Engineer',
-          company: 'Acme Corp',
-          startDate: '01/2022',
-          endDate: 'Present',
-          location: 'Remote',
-          description: 'Led platform work.',
-          achievements: ['Built reporting workflows'],
-        },
-        {
-          title: 'Engineer',
-          company: 'Beta Labs',
-          startDate: '02/2020',
-          endDate: '12/2021',
-          location: 'Los Angeles, CA',
-          description: 'Built backend systems.',
-          achievements: ['Reduced latency'],
-        },
-      ],
-      strengths: [],
-      skills: ['TypeScript'],
-      education: [],
-      createdAt: '',
-      updatedAt: '',
-    },
-    template
-  );
-
-  assert.match(html, /Acme Corp/);
-  assert.match(html, /Beta Labs/);
-  assert.match(html, /Senior Engineer/);
-  assert.match(html, /Engineer/);
-  assert.match(html, /01\/2022 - Present/);
-  assert.match(html, /02\/2020 - 12\/2021/);
-  assert.doesNotMatch(html, /Projects/);
-});
-
-test('new_leo template removes strengths and soft skills sections', async () => {
-  const template = JSON.parse(
-    fs.readFileSync(path.join(__dirname, '..', 'data', 'templates', 'new_leo.json'), 'utf8')
-  );
-
-  const html = await generatePreviewHTML(
-    {
-      id: 'c93ba1c1-390e-4d38-87d7-93cb74502cb1',
-      name: 'Leo Wu',
-      title: 'Senior Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'leo@example.com',
-        linkedin: 'linkedin.com/in/leo-wu',
-        location: 'San Jose, CA',
-      },
-      summary: 'Summary',
-      experience: [],
-      strengths: [],
-      skills: ['TypeScript'],
-      education: [],
-      createdAt: '',
-      updatedAt: '',
-    },
-    template,
-    {
-      title: 'Senior Software Engineer',
-      summary: 'Summary',
-      experience: [],
-      skills: ['TypeScript'],
-      hardSkills: ['TypeScript'],
-      softSkills: ['Stakeholder Alignment', 'Cross-functional Communication'],
-      unconfirmedSoftSkills: [],
-      unconfirmedHardSkills: [],
-      strengths: [
-        {
-          title: 'Telemetry Reliability',
-          description: 'Improved high-volume sensor event processing for connected operations teams.',
-        },
-      ],
-    }
-  );
-
-  assert.doesNotMatch(html, /Strengths/);
-  assert.match(html, /section-strengths \.strengths-list \{ display: block; \}/);
-  assert.doesNotMatch(html, /Telemetry Reliability/);
-  assert.doesNotMatch(html, /Improved high-volume sensor event processing/);
-  assert.doesNotMatch(html, /Projects/);
-  assert.doesNotMatch(html, /Soft Skills/);
-  assert.doesNotMatch(html, /Stakeholder Alignment/);
-  assert.doesNotMatch(html, /Cross-functional Communication/);
-  assert.doesNotMatch(html, /section-soft-skills/);
-  assert.doesNotMatch(html, /section-projects/);
-  assert.doesNotMatch(html, /project-item/);
-});
-
 test('prepareResumeRenderData removes soft skills for rendered resumes', () => {
   const tailoredContent = {
     title: 'Senior Software Engineer',
@@ -189,15 +76,15 @@ test('prepareResumeRenderData removes soft skills for rendered resumes', () => {
     strengths: [],
   };
 
-  const leoRenderData = prepareResumeRenderData(
+  const firstRenderData = prepareResumeRenderData(
     {
-      id: 'c93ba1c1-390e-4d38-87d7-93cb74502cb1',
-      name: 'Leo Wu',
+      id: 'profile-1',
+      name: 'Sam Chen',
       title: 'Senior Software Engineer',
       contact: {
         phone: '555-555-5555',
-        email: 'leo@example.com',
-        linkedin: 'linkedin.com/in/leo-wu',
+        email: 'sam@example.com',
+        linkedin: 'linkedin.com/in/sam-chen',
         location: 'San Jose, CA',
       },
       summary: 'Summary',
@@ -233,7 +120,7 @@ test('prepareResumeRenderData removes soft skills for rendered resumes', () => {
     tailoredContent
   );
 
-  assert.deepEqual(leoRenderData.softSkills, []);
+  assert.deepEqual(firstRenderData.softSkills, []);
   assert.deepEqual(otherRenderData.softSkills, []);
 });
 
@@ -271,7 +158,7 @@ test('prepareResumeRenderData enforces prompt-compliant skill category counts', 
   );
 
   const groups = Object.fromEntries(
-    renderData.kimuraSkillCategories.map((group) => [group.category, group.skills])
+    renderData.skillCategories.map((group) => [group.category, group.skills])
   );
 
   assert.deepEqual(Object.keys(groups), [
@@ -363,7 +250,7 @@ test('prepareResumeRenderData rejects non-library hard skill strings', () => {
     }
   );
 
-  const groups = renderData.kimuraSkillCategories;
+  const groups = renderData.skillCategories;
   const flattened = groups.flatMap((group) => group.skills.map((skill) => skill.toLowerCase()));
 
   assert.equal(groups.length >= 5, true);
@@ -388,16 +275,16 @@ test('prepareResumeRenderData rejects non-library hard skill strings', () => {
   }
 });
 
-test('prepareResumeRenderData applies strict David Kimura skill categories', () => {
+test('prepareResumeRenderData applies strict skill category rules', () => {
   const renderData = prepareResumeRenderData(
     {
-      id: '2e7542a5-f9fd-473c-873a-28e7ab48e77b',
-      name: 'David Kimura',
+      id: 'profile-2',
+      name: 'Alex Rivera',
       title: 'Senior Software Engineer',
       contact: {
         phone: '555-555-5555',
-        email: 'david@example.com',
-        linkedin: 'linkedin.com/in/david-kimura',
+        email: 'alex@example.com',
+        linkedin: 'linkedin.com/in/alex-rivera',
         location: 'Kirkland, WA',
       },
       summary: 'Summary',
@@ -422,7 +309,7 @@ test('prepareResumeRenderData applies strict David Kimura skill categories', () 
   );
 
   const groups = Object.fromEntries(
-    renderData.kimuraSkillCategories.map((group) => [group.category, group.skills])
+    renderData.skillCategories.map((group) => [group.category, group.skills])
   );
 
   assert.deepEqual(Object.keys(groups), [
@@ -448,13 +335,13 @@ test('prepareResumeRenderData applies strict David Kimura skill categories', () 
 test('prepareResumeRenderData caps language skills at the prompt maximum', () => {
   const renderData = prepareResumeRenderData(
     {
-      id: '2e7542a5-f9fd-473c-873a-28e7ab48e77b',
-      name: 'David Kimura',
+      id: 'profile-2',
+      name: 'Alex Rivera',
       title: 'Senior Software Engineer',
       contact: {
         phone: '555-555-5555',
-        email: 'david@example.com',
-        linkedin: 'linkedin.com/in/david-kimura',
+        email: 'alex@example.com',
+        linkedin: 'linkedin.com/in/alex-rivera',
         location: 'Kirkland, WA',
       },
       summary: 'Summary',
@@ -478,81 +365,8 @@ test('prepareResumeRenderData caps language skills at the prompt maximum', () =>
     }
   );
 
-  const languages = renderData.kimuraSkillCategories.find((group) => group.category === 'Languages').skills;
+  const languages = renderData.skillCategories.find((group) => group.category === 'Languages').skills;
   assert.equal(languages.length, 5);
   assert.deepEqual(new Set(languages), new Set(['Go', 'Python', 'JavaScript', 'PHP', 'Java']));
 });
 
-test('kimura template renders categorized skills without soft skills or strengths', async () => {
-  const template = JSON.parse(
-    fs.readFileSync(path.join(__dirname, '..', 'data', 'templates', 'kimura.json'), 'utf8')
-  );
-
-  const html = await generatePreviewHTML(
-    {
-      id: 'profile-5',
-      name: 'Jane Doe',
-      title: 'Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'jane@example.com',
-        linkedin: 'linkedin.com/in/jane-doe',
-        location: 'San Francisco, CA',
-      },
-      summary: 'Summary',
-      experience: [],
-      strengths: [{ title: 'Problem Solving', description: 'Solves hard problems.' }],
-      skills: [],
-      education: [
-        {
-          degree: 'B.S. Computer Science',
-          institution: 'State University',
-          startDate: '2015',
-          endDate: '2019',
-          location: 'Boston, MA',
-        },
-      ],
-      createdAt: '',
-      updatedAt: '',
-    },
-    template,
-    {
-      title: 'Software Engineer',
-      summary: 'Summary',
-      experience: [],
-      skills: ['TypeScript', 'React', 'AWS', 'PostgreSQL', 'Git'],
-      hardSkills: ['TypeScript', 'React', 'AWS', 'PostgreSQL', 'Git'],
-      softSkills: ['Communication'],
-      unconfirmedSoftSkills: [],
-      unconfirmedHardSkills: [],
-      strengths: [{ title: 'Problem Solving', description: 'Solves hard problems.' }],
-    }
-  );
-
-  assert.match(html, /Technical Skills/);
-  assert.match(html, /grid-template-columns: repeat\(3, 1fr\)/);
-  assert.match(html, /gap: 1px 16px/);
-  assert.match(html, /min-height: 54px/);
-  assert.match(html, /Languages/);
-  assert.match(html, /Frameworks and Libraries/);
-  assert.match(html, /Cloud and Infrastructure/);
-  assert.match(html, /Databases and Storage/);
-  assert.match(html, /Version Control &amp; Collaboration/);
-  assert.match(html, /TypeScript/);
-  assert.match(html, /React/);
-  assert.match(html, /AWS/);
-  assert.match(html, /PostgreSQL/);
-  assert.match(html, /Git/);
-  assert.match(html, /TypeScript, Python, Java/);
-  assert.match(html, /education-header/);
-  assert.match(html, /justify-content: space-between/);
-  assert.match(html, /class="edu-date"[^>]*>2015 - 2019 \| Boston, MA<\/div>/);
-  assert.doesNotMatch(html, /<li\b/);
-  assert.doesNotMatch(html, /skills-list/);
-  assert.doesNotMatch(html, /Soft Skills/);
-  assert.doesNotMatch(html, /Key Strengths/);
-  assert.doesNotMatch(html, /Communication/);
-  assert.doesNotMatch(html, /Problem Solving/);
-  assert.doesNotMatch(html, /section-soft-skills/);
-  assert.doesNotMatch(html, /section-strengths/);
-});

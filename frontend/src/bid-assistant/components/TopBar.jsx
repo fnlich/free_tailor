@@ -49,7 +49,7 @@ function createEmptyProfileTemplate() {
 
 // Returns a stable display label for a profile.
 function getProfileDisplayName(profile) {
-  return profile?.name || profile?.fullName || profile?.id || 'Untitled Profile';
+  return profile?.name || profile?.id || 'Untitled Profile';
 }
 
 // Returns pretty JSON text for the profile editor.

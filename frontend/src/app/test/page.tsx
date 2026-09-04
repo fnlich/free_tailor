@@ -274,29 +274,12 @@ function renderHighlightedText(text: string, matches: HighlightMatch[]): ReactNo
   return nodes;
 }
 
-function countByKind(matches: HighlightMatch[]): Record<HighlightKind, number> {
-  return matches.reduce(
-    (acc, match) => {
-      acc[match.kind] += 1;
-      return acc;
-    },
-    {
-      required: 0,
-      preferred: 0,
-      keyword: 0,
-      industry: 0,
-      domain: 0,
-      soft: 0,
-    } as Record<HighlightKind, number>
-  );
-}
-
 export default function TestPage() {
   const [jobDescription, setJobDescription] = useState('');
   const [analysis, setAnalysis] = useState<unknown>(null);
   const [selectedModel, setSelectedModel] = useState<AIProvider>('openrouter');
   const [analyzePrompts, setAnalyzePrompts] = useState<PromptSummary[]>([]);
-  const [selectedPromptId, setSelectedPromptId] = useState('custom-analyze-job-description-extracting-prompt-v2');
+  const [selectedPromptId, setSelectedPromptId] = useState('analyze-job-description');
   const [modelSettings, setModelSettings] = useState<PublicAppSettings>(DEFAULT_MODEL_SETTINGS);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState('');
@@ -315,7 +298,7 @@ export default function TestPage() {
         setSelectedPromptId((current) =>
           analyzerPrompts.some((prompt) => prompt.id === current)
             ? current
-            : analyzerPrompts[0]?.id ?? 'custom-analyze-job-description-extracting-prompt-v2'
+            : analyzerPrompts[0]?.id ?? 'analyze-job-description'
         );
         setSelectedModel((current) => (isEnabled(settings, current) ? current : pickDefaultProvider(settings)));
         setStoredDefaultTheme(settings.defaultTheme);

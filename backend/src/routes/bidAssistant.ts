@@ -7,6 +7,8 @@ const path = require('path');
 const Papa = require('papaparse');
 const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
+const profileRepository = require('../database/profileRepository');
+const profileService = require('../services/profileService');
 
 const backendDirectory = path.join(__dirname, '..', '..');
 const repoDirectory = path.join(backendDirectory, '..');
@@ -36,7 +38,6 @@ const {
 const { generateAnswers } = require('../bidAssistant/aiHelper');
 
 const router = express.Router();
-const profilesDirectory = path.join(backendDirectory, 'data', 'bid-assistant', 'profiles');
 const googleSheetsScopes = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const promptTemplateSettingKey = 'ask_ai_prompt_template';
 const defaultPromptTemplate = `Candidate:
@@ -59,12 +60,7 @@ Avoid corporate buzzwords and make it sound like a real person.`;
 
 router.use(express.json({ limit: '2mb' }));
 
-// Returns the full file path for a profile id.
-function getProfilePath(profileId) {
-  return path.join(profilesDirectory, `${profileId}.json`);
-}
-
-// Ensures a profile id is safe to use as a file name.
+// Ensures a profile id is safe to use as a record key.
 function validateProfileId(profileId) {
   if (!/^[a-z0-9_-]+$/i.test(profileId || '')) {
     throw new Error('Profile id may only contain letters, numbers, underscores, and hyphens.');
@@ -73,7 +69,7 @@ function validateProfileId(profileId) {
 
 // Returns a stable display name for sorting and UI labels.
 function getProfileDisplayName(profile) {
-  return profile?.name || profile?.fullName || profile?.id || 'Untitled Profile';
+  return profile?.name || profile?.id || 'Untitled Profile';
 }
 
 // Returns the persisted Ask AI prompt template or the application default.
@@ -119,82 +115,65 @@ function validateJobErrorPayload(payload) {
   };
 }
 
-// Reads one profile JSON file from disk.
-async function readProfile(profileId) {
-  const filePath = getProfilePath(profileId);
-  const fileContents = await fs.readFile(filePath, 'utf8');
-  return JSON.parse(fileContents);
-}
-
-// Reads every profile JSON file from disk.
-async function readAllProfiles() {
-  const fileNames = await fs.readdir(profilesDirectory);
-  const profileFiles = fileNames.filter((fileName) => fileName.endsWith('.json'));
-  const profiles = [];
-
-  for (const fileName of profileFiles) {
-    const filePath = path.join(profilesDirectory, fileName);
-    const fileContents = await fs.readFile(filePath, 'utf8');
-    profiles.push(JSON.parse(fileContents));
+class ProfileNotFoundError extends Error {
+  constructor() {
+    super('Profile not found.');
+    this.name = 'ProfileNotFoundError';
   }
-
-  return profiles.sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)));
 }
 
-// Normalizes a full profile JSON payload for storage.
-function normalizeProfilePayload(payload, options = {}) {
+// Reads one profile record from the shared database.
+function readProfile(profileId) {
+  const profile = profileRepository.getProfile(profileId);
+  if (!profile) {
+    throw new ProfileNotFoundError();
+  }
+  return profile;
+}
+
+// Reads every profile record from the shared database.
+function readAllProfiles() {
+  return profileRepository
+    .listProfiles({ includeDisabled: true })
+    .sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)));
+}
+
+function assertProfilePayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new Error('Profile payload must be a JSON object.');
   }
+}
 
-  const profileData = JSON.parse(JSON.stringify(payload));
-  const existingProfile = options.existingProfile || null;
-  const nextId = existingProfile?.id || (typeof profileData.id === 'string' ? profileData.id.trim() : '') || randomUUID();
+// Applies a full profile JSON payload on top of an existing record.
+function updateProfile(profileId, nextProfile) {
+  assertProfilePayload(nextProfile);
+  const currentProfile = readProfile(profileId);
+  return profileRepository.saveProfile(profileService.buildUpdatedProfile(currentProfile, nextProfile));
+}
 
+// Creates a new profile record from the provided payload.
+function createProfile(profile) {
+  assertProfilePayload(profile);
+  const requestedId = typeof profile.id === 'string' ? profile.id.trim() : '';
+  const nextId = requestedId || randomUUID();
   validateProfileId(nextId);
 
-  return {
-    ...profileData,
-    id: nextId,
-    createdAt: existingProfile?.createdAt || profileData.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-}
-
-// Writes one full profile JSON object back to disk.
-async function updateProfile(profileId, nextProfile) {
-  const currentProfile = await readProfile(profileId);
-  const normalizedProfile = normalizeProfilePayload(nextProfile, { existingProfile: currentProfile });
-
-  await fs.writeFile(getProfilePath(profileId), `${JSON.stringify(normalizedProfile, null, 2)}\n`);
-  return normalizedProfile;
-}
-
-// Creates a new profile JSON file from the provided payload.
-async function createProfile(profile) {
-  const normalizedProfile = normalizeProfilePayload(profile);
-  const filePath = getProfilePath(normalizedProfile.id);
-
-  try {
-    await fs.access(filePath);
+  if (profileRepository.hasProfile(nextId)) {
     throw new Error('A profile with this id already exists.');
-  } catch (error) {
-    if (error.code && error.code !== 'ENOENT') {
-      throw error;
-    }
   }
 
-  await fs.writeFile(filePath, `${JSON.stringify(normalizedProfile, null, 2)}\n`);
-  return normalizedProfile;
+  return profileRepository.saveProfile(profileService.buildNewProfile(profile, nextId));
 }
 
-// Deletes one profile JSON file from disk.
-async function deleteProfile(profileId) {
+// Deletes one profile record.
+function deleteProfile(profileId) {
   validateProfileId(profileId);
-  await fs.unlink(getProfilePath(profileId));
+  if (!profileRepository.deleteProfile(profileId)) {
+    throw new ProfileNotFoundError();
+  }
 }
 
-// Maps profile validation and file errors to cleaner API responses.
+// Maps profile validation and lookup errors to cleaner API responses.
 function getProfileErrorDetails(error) {
   const clientMessages = [
     'Profile payload must be a JSON object.',
@@ -209,10 +188,10 @@ function getProfileErrorDetails(error) {
     };
   }
 
-  if (error.code === 'ENOENT') {
+  if (error instanceof ProfileNotFoundError) {
     return {
       status: 404,
-      message: 'Profile not found.'
+      message: error.message
     };
   }
 
@@ -796,20 +775,19 @@ router.put('/settings/prompt-template', async (req, res) => {
   }
 });
 
-// Returns all profile JSON records from disk.
-router.get('/profiles', async (req, res) => {
+// Returns all profile records.
+router.get('/profiles', (req, res) => {
   try {
-    const profiles = await readAllProfiles();
-    res.json(profiles);
+    res.json(readAllProfiles());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Creates one new profile JSON record on disk.
-router.post('/profiles', async (req, res) => {
+// Creates one new profile record.
+router.post('/profiles', (req, res) => {
   try {
-    const profile = await createProfile(req.body || {});
+    const profile = createProfile(req.body || {});
     res.json(profile);
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -817,20 +795,20 @@ router.post('/profiles', async (req, res) => {
   }
 });
 
-// Returns one profile JSON record from disk.
-router.get('/profiles/:profileId', async (req, res) => {
+// Returns one profile record.
+router.get('/profiles/:profileId', (req, res) => {
   try {
-    const profile = await readProfile(req.params.profileId);
-    res.json(profile);
+    res.json(readProfile(req.params.profileId));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    const errorDetails = getProfileErrorDetails(error);
+    res.status(errorDetails.status).json({ error: errorDetails.message });
   }
 });
 
-// Updates selected editable fields in one profile JSON record.
-router.put('/profiles/:profileId', async (req, res) => {
+// Replaces one profile record with the submitted JSON.
+router.put('/profiles/:profileId', (req, res) => {
   try {
-    const profile = await updateProfile(req.params.profileId, req.body || {});
+    const profile = updateProfile(req.params.profileId, req.body || {});
     res.json({ message: 'Profile saved successfully.', profile });
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -838,10 +816,10 @@ router.put('/profiles/:profileId', async (req, res) => {
   }
 });
 
-// Deletes one profile JSON record from disk.
-router.delete('/profiles/:profileId', async (req, res) => {
+// Deletes one profile record.
+router.delete('/profiles/:profileId', (req, res) => {
   try {
-    await deleteProfile(req.params.profileId);
+    deleteProfile(req.params.profileId);
     res.json({ message: 'Profile deleted successfully.' });
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -921,8 +899,7 @@ router.post('/ask', async (req, res) => {
     });
 
     for (const profileId of targetProfileIds || []) {
-      const profile = await readProfile(profileId);
-      targetProfiles.push(profile);
+      targetProfiles.push(readProfile(profileId));
     }
 
     if (normalizedQuestions.some((item) => item.isManualAnswer && !item.manualAnswer)) {

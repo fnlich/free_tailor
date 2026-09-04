@@ -48,7 +48,7 @@ async function deleteSavedAnswer(jobId, profileId, question) {
 
 // Returns a display name for the selected profile.
 function getProfileDisplayName(profile) {
-  return profile?.name || profile?.fullName || profile?.id || 'Untitled Profile';
+  return profile?.name || profile?.id || 'Untitled Profile';
 }
 
 // Returns the contact object for a profile record.
@@ -323,7 +323,6 @@ export default function JobDetail({
   onOpenAskModal,
   onJobErrorUpdated,
   onJobDeleted,
-  onAnswersReady,
   answersRefreshToken
 }) {
   const [activeModal, setActiveModal] = useState(null);
@@ -407,7 +406,7 @@ export default function JobDetail({
       window.setTimeout(() => {
         setCopiedQuestion((currentQuestion) => (currentQuestion === question ? '' : currentQuestion));
       }, 1500);
-    } catch (error) {
+    } catch {
       setErrorMessage('Could not copy answer.');
     }
   }
@@ -417,7 +416,7 @@ export default function JobDetail({
       await navigator.clipboard.writeText(jobUrl);
       setErrorMessage('');
       setActionMessage('Job link copied to clipboard.');
-    } catch (error) {
+    } catch {
       setErrorMessage('Could not copy job link.');
     }
   }

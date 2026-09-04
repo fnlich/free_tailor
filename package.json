@@ -2,7 +2,7 @@
   "name": "free_tailor",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix backend\" \"cd frontend && npx next dev --webpack --hostname 127.0.0.1 --port 3000\"",
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
     "dev:poll": "sh -c 'trap \"kill 0\" EXIT INT TERM; npm run dev:poll --prefix backend & npm run dev --prefix frontend & wait'",
     "dev:live": "sh -c 'trap \"kill 0\" EXIT INT TERM; npm run dev --prefix backend & npm run dev:live --prefix frontend & wait'",
     "dev:backend": "npm run dev --prefix backend",

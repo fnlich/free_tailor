@@ -33,9 +33,9 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
 
   const accentColor = '#2B5C8A';
   const sectionStyle = `margin: 5pt 0 6pt 0; font-size: 11pt; font-weight: bold; color: ${accentColor}; border-bottom: 1px solid ${accentColor}; padding-bottom: 2pt;`;
-  const kimuraSkillCategories = data.kimuraSkillCategories ?? [];
-  const technicalSkillsHtml = kimuraSkillCategories.length > 0
-    ? kimuraSkillCategories
+  const skillCategories = data.skillCategories ?? [];
+  const technicalSkillsHtml = skillCategories.length > 0
+    ? skillCategories
       .map((group) => `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 4pt 0; line-height: 1.35;"><strong>${esc(group.category)}</strong><br>${esc(group.skills.join(', '))}</p>`)
       .join('\n  ')
     : `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 14pt 0; line-height: 1.35;">${esc(

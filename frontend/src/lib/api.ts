@@ -35,6 +35,11 @@ function getCurrentApiBase(): string {
   return resolvedApiBase;
 }
 
+/** API base for callers that issue their own fetches: prefers the host the page was loaded from. */
+export function getPreferredApiBase(): string {
+  return getBrowserMatchedApiBase() ?? getCurrentApiBase();
+}
+
 export function getApiOrigin(): string {
   return getCurrentApiBase().replace(/\/api$/, '');
 }
@@ -775,6 +780,8 @@ export interface Education {
   location: string;
 }
 
+export type HardSkillOrdering = 'library' | 'job-priority';
+
 export interface ProfileSettings {
   resumePromptId?: string;
   analyzeJobPromptId?: string;
@@ -782,6 +789,7 @@ export interface ProfileSettings {
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
+  hardSkillOrdering?: HardSkillOrdering;
 }
 
 export interface Profile {
@@ -863,6 +871,7 @@ export interface Template {
   createdAt: string;
   updatedAt: string;
   manualConfig?: ManualTemplateConfigStored;
+  isBuiltIn?: boolean;
 }
 
 export type PromptResponseFormat = 'json' | 'text';

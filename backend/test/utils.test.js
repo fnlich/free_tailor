@@ -49,7 +49,7 @@ test('extractJSON throws when no parseable JSON exists', () => {
 
 test('output path helpers normalize, render, and validate paths', () => {
   assert.equal(sanitizePathSegment(' Senior Engineer / Platform '), 'senior_engineer_platform');
-  assert.equal(sanitizeFileNameStem(' Kevin_Shen_Resume '), 'Kevin_Shen_Resume');
+  assert.equal(sanitizeFileNameStem(' Jane_Doe_Resume '), 'Jane_Doe_Resume');
   assert.equal(normalizeOutputPathTemplate('profile\\{{date}}//{{company}}/'), '/profile/{{date}}/{{company}}');
   assert.equal(validateOutputPathTemplate('/{{profile name}}/{{role}}'), '/{{profile name}}/{{role}}');
   assert.throws(() => validateOutputPathTemplate('/{{unknown}}'), /Unsupported output path token/);
@@ -81,17 +81,17 @@ test('output path helpers normalize, render, and validate paths', () => {
   assert.equal(
     renderOutputFileNameTemplate('{{profile name}}_Resume', {
       date: '2026-04-18',
-      profileName: 'Kevin Shen',
+      profileName: 'Jane Doe',
       companyName: 'Acme Inc.',
       jobTitle: 'Senior Engineer',
     }, '{{profile name}}'),
-    'Kevin_Shen_Resume'
+    'Jane_Doe_Resume'
   );
   assert.equal(normalizeOutputFolderNameTemplate('row\\{{company name}}', '{{company name}}'), 'row {{company name}}');
   assert.equal(
     renderOutputFolderNameTemplate('{{row number}}_{{company name}}', {
       date: '2026-04-18',
-      profileName: 'Kevin Shen',
+      profileName: 'Jane Doe',
       companyName: 'Acme Inc.',
       rowNumber: '12',
       jobTitle: 'Senior Engineer',
@@ -101,7 +101,7 @@ test('output path helpers normalize, render, and validate paths', () => {
   assert.throws(
     () => renderOutputFolderNameTemplate('{{job title}}', {
       date: '2026-04-18',
-      profileName: 'Kevin Shen',
+      profileName: 'Jane Doe',
       companyName: 'Acme Inc.',
       rowNumber: '12',
       jobTitle: 'Senior Engineer',

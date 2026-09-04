@@ -44,7 +44,7 @@ function getFilledQuestions(questions) {
 
 // Returns a display label for one profile record.
 function getProfileDisplayName(profile) {
-  return profile?.name || profile?.fullName || profile?.id || 'Untitled Profile';
+  return profile?.name || profile?.id || 'Untitled Profile';
 }
 
 // Renders the modal for generating AI answers for selected profiles.

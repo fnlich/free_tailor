@@ -1,13 +1,14 @@
 {
   "name": "resume-builder-backend",
   "version": "1.0.0",
-  "description": "Backend for tailored resume builder",
+  "description": "Backend for the tailored resume builder (Express + SQLite)",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --watch src --ignore-watch data --ignore-watch dist --ignore-watch generated --ignore-watch ../generated --ignore-watch .git src/index.ts",
-    "dev:poll": "CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=1000 ts-node-dev --respawn --transpile-only --watch src --ignore-watch data --ignore-watch dist --ignore-watch generated --ignore-watch ../generated --ignore-watch .git src/index.ts",
+    "dev": "ts-node-dev --respawn --watch src --ignore-watch static --ignore-watch dist --ignore-watch generated --ignore-watch ../generated --ignore-watch .git src/index.ts",
+    "dev:poll": "CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=1000 ts-node-dev --respawn --transpile-only --watch src --ignore-watch static --ignore-watch dist --ignore-watch generated --ignore-watch ../generated --ignore-watch .git src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "migrate:legacy": "npm run build && node dist/scripts/migrateLegacyData.js",
     "test": "npm run build && node --test test/*.test.js"
   },
   "keywords": [],
@@ -24,7 +25,6 @@
     "handlebars": "^4.7.8",
     "html-to-docx": "^1.8.0",
     "multer": "^1.4.5-lts.1",
-    "nodemailer": "^9.0.3",
     "openai": "^6.22.0",
     "papaparse": "^5.4.1",
     "pdf-parse": "^1.1.1",
@@ -32,6 +32,7 @@
     "uuid": "^11.0.5"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/multer": "^1.4.12",

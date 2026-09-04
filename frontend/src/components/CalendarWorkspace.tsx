@@ -6,8 +6,8 @@ import styles from '@/components/CalendarWorkspace.module.css';
 import type { CalendarExtractedLink } from '@/lib/calendar/linkExtractor';
 import type { CalendarApiResponse, CalendarEvent, CalendarMetadata } from '@/lib/calendar/types';
 
-const DEFAULT_SHARE_URL =
-  process.env.NEXT_PUBLIC_CALENDAR_SHARE_URL ?? 'https://calendar.online/ec52dc9ed413134fcc88';
+// Optional default share link, configured per environment. Empty means the user pastes one.
+const DEFAULT_SHARE_URL = process.env.NEXT_PUBLIC_CALENDAR_SHARE_URL ?? '';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const TIME_ZONE_OPTIONS = [
   { label: 'PT', value: 'America/Los_Angeles' },

@@ -22,9 +22,3 @@ export function ensureMinTechSkills(
 
   return hardSkills; // Return the original array if it already has 20 or more skills
 }
-
-// Example usage:
-
-let finalResult = {
-  hardSkills: ['aaa', 'bbb']
-};
