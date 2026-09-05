@@ -22,10 +22,12 @@ test('app settings persist in the SQLite settings table', async () => {
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), null);
 
   const updated = await config.updateAppSettings({
-    openaiEnabled: false,
-    claudeEnabled: true,
-    openrouterEnabled: false,
-    deepseekEnabled: true,
+    providersEnabled: {
+      'claude-cli': true,
+      claude: true,
+      openai: false,
+      deepseek: true,
+    },
     defaultMode: 'generate',
     defaultTheme: 'dark',
     defaultResumeSelection: 'group',
@@ -50,9 +52,21 @@ test('app settings persist in the SQLite settings table', async () => {
     },
   });
 
+  assert.equal(updated.providersEnabled.openai, false);
+  assert.equal(updated.providersEnabled.claude, true);
+  assert.equal(updated.providersEnabled['claude-cli'], true);
+  assert.equal(updated.providersEnabled.deepseek, true);
+  // The flat booleans stay on the wire, derived, so a browser tab loaded
+  // before this release keeps working.
   assert.equal(updated.openaiEnabled, false);
   assert.equal(updated.claudeEnabled, true);
+  assert.equal(updated.claudeCliEnabled, true);
   assert.equal(updated.deepseekEnabled, true);
+  // A subscription-seat provider has no key to store and must never be
+  // rendered with one.
+  assert.equal(updated.apiKeys['claude-cli'].requiresApiKey, false);
+  assert.equal(updated.apiKeys['claude-cli'].activeSource, 'subscription');
+  assert.equal(await config.getProviderApiKey('claude-cli'), '');
   assert.equal(updated.defaultMode, 'generate');
   assert.equal(updated.defaultTheme, 'dark');
   assert.equal(updated.outputBaseDir, outputDir);
@@ -70,10 +84,12 @@ test('app settings persist in the SQLite settings table', async () => {
 test('reading settings does not rewrite an existing settings record', async () => {
   const { rootDir, dbDir } = useTempStorage('settings-readonly');
   const originalJson = `{
-  "openaiEnabled": true,
-  "claudeEnabled": true,
-  "openrouterEnabled": true,
-  "deepseekEnabled": true,
+  "providersEnabled": {
+    "claude-cli": true,
+    "claude": true,
+    "openai": true,
+    "deepseek": true
+  },
   "defaultMode": "preview",
   "defaultTheme": "light",
   "defaultResumeSelection": "single",
@@ -85,9 +101,9 @@ test('reading settings does not rewrite an existing settings record', async () =
   "outputPathTemplate": "/{{date}}/{{profile name}}/{{company name}}",
   "googleSheetsSources": [],
   "apiKeys": {
+    "claude-cli": { "activeKeyId": "", "entries": [] },
     "openai": { "activeKeyId": "", "entries": [] },
     "claude": { "activeKeyId": "", "entries": [] },
-    "openrouter": { "activeKeyId": "", "entries": [] },
     "deepseek": { "activeKeyId": "", "entries": [] }
   }
 }`;
@@ -135,10 +151,12 @@ test('app settings preserve at least one enabled provider and can fall back to e
 
   await assert.rejects(
     () => config.updateAppSettings({
-      openaiEnabled: false,
-      claudeEnabled: false,
-      openrouterEnabled: false,
-      deepseekEnabled: false,
+      providersEnabled: {
+        'claude-cli': false,
+        claude: false,
+        openai: false,
+        deepseek: false,
+      },
     }),
     /At least one AI model must remain enabled/
   );

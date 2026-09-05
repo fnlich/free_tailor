@@ -10,7 +10,7 @@ import {
   updateSkill,
 } from '../database/skillsDatabase';
 import { refreshAllowedTechSkills } from '../generators/pdfGenerator';
-import { refreshSkillCaches } from '../services/claude';
+import { refreshSkillCaches } from '../services/resumeService';
 
 type SkillBody = {
   type?: unknown;

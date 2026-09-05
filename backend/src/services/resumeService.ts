@@ -1,17 +1,6 @@
-import OpenAI from 'openai';
-import dotenv from 'dotenv';
 import { Profile } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, TailoredContent } from '../types/template';
-import path from "path";
-import {
-  renderPrompt,
-  renderPromptByExactId,
-  renderPromptSegments,
-  renderPromptSegmentsByExactId,
-  resolvePromptByExactId,
-  resolvePromptByRuntimeId,
-} from './promptService';
-import { getAIModelSettings, getProviderApiKey, isProviderEnabled } from '../config/aiModelConfig';
+import { createPromptCompletion, DEFAULT_PROVIDER } from './ai';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory as LibraryHardSkillCategory,
@@ -29,11 +18,16 @@ import {
   DEFAULT_RESUME_PROMPT_ID,
   getProfileHardSkillOrdering,
 } from './profileService';
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_DEEPSEEK_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENROUTER_MODEL } from './aiModelCatalog';
 
-// Ensure the repo .env file is loaded for this module even when it is imported
-// before index.ts finishes bootstrapping, and prefer .env over inherited shell vars.
-dotenv.config({ path: path.join(__dirname, '../../../.env'), override: true });
+/**
+ * Resume and cover-letter domain logic.
+ *
+ * Everything about HOW a model is reached now lives in `services/ai`; this
+ * module only decides what to ask, and how to read the answer. The `.env` load
+ * that used to sit here (with `override: true`, quietly beating the process
+ * environment for every importer) belongs to the entry point and lives in
+ * index.ts.
+ */
 
 const technicalSkills = readSkills('hard');
 const softSkills = readSkills('soft');
@@ -62,10 +56,6 @@ export function refreshSkillCaches(): void {
 }
 
 // Lazy initialization to ensure env vars are loaded first
-let openaiClient: OpenAI | null = null;
-let openaiClientKey = '';
-let deepseekClient: OpenAI | null = null;
-let deepseekClientKey = '';
 
 function extractTechSkills(text: string): string[] {
   return technicalSkills.filter((item: string) => {
@@ -158,9 +148,6 @@ function capitalizeFirstCharacter(value: string): string {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
-const DEFAULT_PROVIDER: AIProvider = 'openai';
-const ANTHROPIC_MAX_RETRIES = 4;
-const ANTHROPIC_BASE_RETRY_DELAY_MS = 600;
 const MAX_ROLE_BRIEF_LENGTH = 900;
 const MIN_EXPERIENCE_SKILLS = 10;
 const MAX_SOFT_SKILLS = 10;
@@ -212,39 +199,6 @@ type HardSkillCategory =
   | 'ai-ml'
   | 'tools-methodologies'
   | 'other';
-type CompletionResponseFormat = 'json' | 'text';
-
-type AnthropicTextBlock = {
-  type: 'text';
-  text: string;
-};
-
-type AnthropicMessageParam = {
-  role: 'user' | 'assistant';
-  content: string | AnthropicTextBlock[];
-};
-
-type AnthropicMessageRequestParams = {
-  model: string;
-  max_tokens: number;
-  temperature?: number;
-  system?: AnthropicTextBlock[];
-  messages: AnthropicMessageParam[];
-};
-
-type AnthropicMessageResponse = {
-  content?: Array<{ type: string; text?: string }>;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-  };
-};
-
-type ProviderChatMessage = {
-  role: 'system' | 'user';
-  content: string;
-};
-
 type HardSkillDefinition = {
   display: string;
   category: HardSkillCategory;
@@ -586,525 +540,21 @@ const HARD_SKILL_CATEGORY_WEIGHT: Record<HardSkillCategory, number> = {
   'tools-methodologies': 6,
   other: 7,
 };
-const JSON_ONLY_SYSTEM_PROMPT = 'You are a strict JSON generator. Return valid JSON only, with no markdown fences or extra text.';
+/**
+ * Appended to the tailor-resume turn.
+ *
+ * The code below decides every skill list from the skill library and the job
+ * analysis, then overwrites whatever the model returned. Telling the model to
+ * omit those fields is therefore not a preference, it is what keeps the model
+ * from spending output tokens on text that is discarded. It lives here rather
+ * than in the stored prompt so an admin editing the prompt cannot remove it
+ * without also changing the code that depends on it.
+ */
+const FINAL_SKILL_OVERRIDE = `FINAL SKILL OVERRIDE:
+Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills", "softSkills", "unconfirmedHardSkills", and "unconfirmedSoftSkills" from the JSON output. Technical skills and soft-skill keywords are already decided by code from skillsJSON and keywordsJson.`;
 
 function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
   return getProfileHardSkillOrdering(profile) === 'job-priority';
-}
-
-export function resolveAIProvider(model?: string): AIProvider {
-  if (model === 'openai' || model?.startsWith('gpt-')) {
-    return 'openai';
-  }
-  if (model === 'claude' || model?.startsWith('claude-')) {
-    return 'claude';
-  }
-  if (model === 'openrouter' || model?.startsWith('openrouter/')) {
-    return 'openrouter';
-  }
-  if (
-    model === 'deepseek' ||
-    model?.startsWith('deepseek-') ||
-    model === 'deepseek-chat' ||
-    model === 'deepseek-reasoner'
-  ) {
-    return 'deepseek';
-  }
-  return DEFAULT_PROVIDER;
-}
-
-async function getOpenAIClient(): Promise<OpenAI> {
-  const apiKey = await getProviderApiKey('openai');
-  if (!apiKey) {
-    throw new Error('OpenAI API key is not set');
-  }
-
-  if (!openaiClient || openaiClientKey !== apiKey) {
-    openaiClient = new OpenAI({
-      apiKey,
-    });
-    openaiClientKey = apiKey;
-  }
-  return openaiClient;
-}
-
-async function getDeepSeekClient(): Promise<OpenAI> {
-  const apiKey = await getProviderApiKey('deepseek');
-  if (!apiKey) {
-    throw new Error('DeepSeek API key is not set');
-  }
-
-  if (!deepseekClient || deepseekClientKey !== apiKey) {
-    deepseekClient = new OpenAI({
-      apiKey,
-      baseURL: 'https://api.deepseek.com',
-    });
-    deepseekClientKey = apiKey;
-  }
-  return deepseekClient;
-}
-
-type OpenRouterChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string | Array<{ type?: string; text?: string }>;
-    };
-  }>;
-  error?: {
-    message?: string;
-    code?: string | number;
-  };
-};
-
-async function createOpenRouterCompletion(input: {
-  model: string;
-  maxTokens: number;
-  temperature: number;
-  responseFormat: CompletionResponseFormat;
-  messages: ProviderChatMessage[];
-}): Promise<string> {
-  const apiKey = await getProviderApiKey('openrouter');
-  if (!apiKey) {
-    throw new Error('OpenRouter API key is not set');
-  }
-
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3001',
-      'X-Title': process.env.OPENROUTER_APP_NAME || 'Tailored Resume Builder',
-    },
-    body: JSON.stringify({
-      model: input.model,
-      max_tokens: input.maxTokens,
-      temperature: input.temperature,
-      top_p: 1,
-      ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
-      messages: input.messages,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenRouter API error (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json() as OpenRouterChatCompletionResponse;
-  const rawContent = data.choices?.[0]?.message?.content;
-
-  if (typeof rawContent === 'string' && rawContent.trim()) {
-    return rawContent;
-  }
-
-  if (Array.isArray(rawContent)) {
-    const text = rawContent
-      .filter((item) => item?.type === 'text' && typeof item.text === 'string')
-      .map((item) => item.text ?? '')
-      .join('')
-      .trim();
-
-    if (text) {
-      return text;
-    }
-  }
-
-  throw new Error('Unexpected response from OpenRouter');
-}
-
-async function createOpenAIChatCompletion(input: {
-  model: string;
-  maxTokens: number;
-  temperature: number;
-  responseFormat: CompletionResponseFormat;
-  messages: ProviderChatMessage[];
-}): Promise<string> {
-  const response = await (await getOpenAIClient()).chat.completions.create({
-    model: input.model,
-    max_completion_tokens: input.maxTokens,
-    temperature: input.temperature,
-    top_p: 1,
-    ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' as const } } : {}),
-    messages: input.messages,
-  });
-
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error('Unexpected response from OpenAI');
-  }
-
-  return content;
-}
-
-async function createDeepSeekChatCompletion(input: {
-  model: string;
-  maxTokens: number;
-  temperature: number;
-  responseFormat: CompletionResponseFormat;
-  messages: ProviderChatMessage[];
-}): Promise<string> {
-  const response = await (await getDeepSeekClient()).chat.completions.create({
-    model: input.model,
-    max_tokens: input.maxTokens,
-    temperature: input.temperature,
-    top_p: 1,
-    ...(input.responseFormat === 'json' ? { response_format: { type: 'json_object' as const } } : {}),
-    messages: input.messages,
-  });
-
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error('Unexpected response from DeepSeek');
-  }
-
-  return content;
-}
-
-async function createAnthropicMessage(
-  prompt: string,
-  maxTokens: number,
-  temperature = 0,
-  modelName = DEFAULT_CLAUDE_MODEL
-): Promise<string> {
-  return createAnthropicStructuredMessage(
-    {
-      model: modelName,
-      max_tokens: maxTokens,
-      temperature,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    }
-  );
-}
-
-async function createAnthropicStructuredMessage(request: AnthropicMessageRequestParams): Promise<string> {
-  const apiKey = await getProviderApiKey('claude');
-  if (!apiKey) {
-    throw new Error('Claude API key is not set');
-  }
-
-  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-  const getRetryDelayMs = (attempt: number, retryAfterHeader: string | null): number => {
-    // Honor provider hint when present, otherwise use capped exponential backoff with jitter.
-    const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : NaN;
-    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
-      return Math.min(Math.round(retryAfterSeconds * 1000), 15000);
-    }
-    const exponential = ANTHROPIC_BASE_RETRY_DELAY_MS * (2 ** (attempt - 1));
-    const jitter = Math.round(Math.random() * 300);
-    return Math.min(exponential + jitter, 15000);
-  };
-  const isRetriableStatus = (status: number): boolean =>
-    status === 429 || status === 529 || (status >= 500 && status < 600);
-
-  let lastError: Error | null = null;
-
-  for (let attempt = 1; attempt <= ANTHROPIC_MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify(request),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        const error = new Error(`Anthropic API error (${response.status}): ${errorText}`);
-        if (!isRetriableStatus(response.status) || attempt === ANTHROPIC_MAX_RETRIES) {
-          throw error;
-        }
-
-        const delayMs = getRetryDelayMs(attempt, response.headers.get('retry-after'));
-        console.warn(
-          `Anthropic returned ${response.status} (attempt ${attempt}/${ANTHROPIC_MAX_RETRIES}); retrying in ${delayMs}ms.`
-        );
-        await sleep(delayMs);
-        continue;
-      }
-
-      const data = await response.json() as AnthropicMessageResponse;
-      const textBlock = data.content?.find((block) => block.type === 'text' && typeof block.text === 'string');
-
-      if (!textBlock?.text) {
-        throw new Error('Unexpected response from Anthropic');
-      }
-
-      return textBlock.text;
-    } catch (error) {
-      const maybeError = error instanceof Error ? error : new Error(String(error));
-      lastError = maybeError;
-
-      const isLastAttempt = attempt === ANTHROPIC_MAX_RETRIES;
-      const isNetworkFailure =
-        maybeError.name === 'TypeError' || maybeError.message.toLowerCase().includes('fetch failed');
-
-      if (!isNetworkFailure || isLastAttempt) {
-        throw maybeError;
-      }
-
-      const delayMs = getRetryDelayMs(attempt, null);
-      console.warn(
-        `Anthropic request failed due to network issue (attempt ${attempt}/${ANTHROPIC_MAX_RETRIES}); retrying in ${delayMs}ms.`
-      );
-      await sleep(delayMs);
-    }
-  }
-
-  throw lastError ?? new Error('Anthropic request failed');
-}
-
-async function buildAnthropicPromptRequest(input: {
-  promptId: string;
-  values: Record<string, string>;
-  maxTokens: number;
-  temperature: number;
-  responseFormat: CompletionResponseFormat;
-  modelName: string;
-  useExactPromptId?: boolean;
-}): Promise<AnthropicMessageRequestParams> {
-  const segments = input.useExactPromptId
-    ? await renderPromptSegmentsByExactId(input.promptId, input.values)
-    : await renderPromptSegments(input.promptId, input.values);
-  const systemBlocks: AnthropicTextBlock[] = [];
-
-  if (input.responseFormat === 'json') {
-    systemBlocks.push({
-      type: 'text',
-      text: JSON_ONLY_SYSTEM_PROMPT,
-    });
-  }
-
-  let leadingLiteralIndex = 0;
-  let leadingLiteralText = '';
-  while (leadingLiteralIndex < segments.length && !segments[leadingLiteralIndex].variableName) {
-    leadingLiteralText += segments[leadingLiteralIndex].text;
-    leadingLiteralIndex += 1;
-  }
-
-  if (leadingLiteralText.trim()) {
-    systemBlocks.push({
-      type: 'text',
-      text: leadingLiteralText,
-    });
-  }
-
-  const userBlocks: AnthropicTextBlock[] = [];
-  for (const segment of segments.slice(leadingLiteralIndex)) {
-    if (!segment.text) {
-      continue;
-    }
-
-    const previous = userBlocks[userBlocks.length - 1];
-    if (previous) {
-      previous.text += segment.text;
-    } else {
-      userBlocks.push({
-        type: 'text',
-        text: segment.text,
-      });
-    }
-  }
-
-  if (userBlocks.length === 0) {
-    userBlocks.push({
-      type: 'text',
-      text: leadingLiteralText || ' ',
-    });
-  }
-
-  return {
-    model: input.modelName,
-    max_tokens: input.maxTokens,
-    temperature: input.temperature,
-    ...(systemBlocks.length > 0 ? { system: systemBlocks } : {}),
-    messages: [
-      {
-        role: 'user',
-        content: userBlocks,
-      },
-    ],
-  };
-}
-
-async function createAnthropicPromptCompletion(input: {
-  promptId: string;
-  values: Record<string, string>;
-  maxTokens?: number;
-  temperature?: number;
-  responseFormat?: CompletionResponseFormat;
-  modelName?: string;
-  useExactPromptId?: boolean;
-}): Promise<string> {
-  const request = await buildAnthropicPromptRequest({
-    promptId: input.promptId,
-    values: input.values,
-    maxTokens: input.maxTokens ?? 4000,
-    temperature: input.temperature ?? 0,
-    responseFormat: input.responseFormat ?? 'json',
-    modelName: input.modelName || DEFAULT_CLAUDE_MODEL,
-    useExactPromptId: input.useExactPromptId,
-  });
-
-  return createAnthropicStructuredMessage(request);
-}
-
-export async function createTextCompletion(
-  prompt: string,
-  provider: AIProvider = DEFAULT_PROVIDER,
-  maxTokens = 4000,
-  temperature = 0,
-  responseFormat: CompletionResponseFormat = 'json',
-  modelName?: string
-): Promise<string> {
-  const settings = await getAIModelSettings();
-  if (!isProviderEnabled(provider, settings)) {
-    throw new Error(`Selected AI model provider '${provider}' is disabled by admin.`);
-  }
-
-  if (provider === 'openai') {
-    const messages: ProviderChatMessage[] = [];
-    if (responseFormat === 'json') {
-      messages.push({
-        role: 'system',
-        content: JSON_ONLY_SYSTEM_PROMPT,
-      });
-    }
-    messages.push({
-      role: 'user',
-      content: prompt,
-    });
-
-    return createOpenAIChatCompletion({
-      model: modelName || DEFAULT_OPENAI_MODEL,
-      maxTokens,
-      temperature,
-      responseFormat,
-      messages,
-    });
-  }
-
-  if (provider === 'openrouter') {
-    const messages: ProviderChatMessage[] = [];
-    if (responseFormat === 'json') {
-      messages.push({
-        role: 'system',
-        content: JSON_ONLY_SYSTEM_PROMPT,
-      });
-    }
-
-    messages.push({
-      role: 'user',
-      content: prompt,
-    });
-
-    return createOpenRouterCompletion({
-      model: modelName || DEFAULT_OPENROUTER_MODEL,
-      maxTokens,
-      temperature,
-      responseFormat,
-      messages,
-    });
-  }
-
-  if (provider === 'deepseek') {
-    const messages: ProviderChatMessage[] = [];
-    if (responseFormat === 'json') {
-      messages.push({
-        role: 'system',
-        content: JSON_ONLY_SYSTEM_PROMPT,
-      });
-    }
-
-    messages.push({
-      role: 'user',
-      content: prompt,
-    });
-
-    return createDeepSeekChatCompletion({
-      model: modelName || DEFAULT_DEEPSEEK_MODEL,
-      maxTokens,
-      temperature,
-      responseFormat,
-      messages,
-    });
-  }
-
-  return createAnthropicMessage(prompt, maxTokens, temperature, modelName || DEFAULT_CLAUDE_MODEL);
-}
-
-export async function resolvePromptExecutionConfig(
-  promptId: string,
-  fallbackProvider: AIProvider,
-  fallbackModelName?: string,
-  useExactPromptId = false
-): Promise<{ provider: AIProvider; modelName?: string }> {
-  const prompt = useExactPromptId
-    ? await resolvePromptByExactId(promptId)
-    : await resolvePromptByRuntimeId(promptId);
-  if (!prompt?.modelProvider || !prompt.modelName) {
-    return {
-      provider: fallbackProvider,
-      modelName: fallbackModelName,
-    };
-  }
-
-  return {
-    provider: prompt.modelProvider,
-    modelName: prompt.modelName,
-  };
-}
-
-export async function createPromptCompletion(input: {
-  promptId: string;
-  prompt: string;
-  promptValues?: Record<string, string>;
-  fallbackProvider?: AIProvider;
-  fallbackModelName?: string;
-  maxTokens?: number;
-  temperature?: number;
-  responseFormat?: CompletionResponseFormat;
-  useExactPromptId?: boolean;
-}): Promise<string> {
-  const executionConfig = await resolvePromptExecutionConfig(
-    input.promptId,
-    input.fallbackProvider || DEFAULT_PROVIDER,
-    input.fallbackModelName,
-    input.useExactPromptId
-  );
-  const settings = await getAIModelSettings();
-  if (!isProviderEnabled(executionConfig.provider, settings)) {
-    throw new Error(`Selected AI model provider '${executionConfig.provider}' is disabled by admin.`);
-  }
-
-  if (executionConfig.provider === 'claude' && input.promptValues) {
-    return createAnthropicPromptCompletion({
-      promptId: input.promptId,
-      values: input.promptValues,
-      maxTokens: input.maxTokens,
-      temperature: input.temperature,
-      responseFormat: input.responseFormat,
-      modelName: executionConfig.modelName,
-      useExactPromptId: input.useExactPromptId,
-    });
-  }
-
-  return createTextCompletion(
-    input.prompt,
-    executionConfig.provider,
-    input.maxTokens,
-    input.temperature,
-    input.responseFormat,
-    executionConfig.modelName
-  );
 }
 
 function normalizeSkillsList(skills: string[] | undefined): string[] {
@@ -2466,22 +1916,26 @@ export async function analyzeJobDescription(
   jobDescription: string,
   provider: AIProvider = DEFAULT_PROVIDER,
   modelName?: string,
-  promptId?: string
+  promptId?: string,
+  signal?: AbortSignal
 ): Promise<JobAnalysis> {
   const resolvedPromptId = promptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
   const promptValues = buildAnalyzeJobDescriptionPromptValues(jobDescription);
-  const prompt = await renderPromptByExactId(resolvedPromptId, { jobDescription });
   const firstCallStartedAt = process.hrtime.bigint();
   console.log(`[Resume timing] First LLM call started: analyze job description (${provider}${modelName ? `/${modelName}` : ''})`);
   const content = await createPromptCompletion({
     promptId: resolvedPromptId,
-    prompt,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
     maxTokens: 7000,
     temperature: 0,
     responseFormat: 'json',
+    // Rendered by exact id, so resolved by exact id too. These used to
+    // disagree: the text came from this literal record while the model
+    // override came from whichever record was activated for the feature.
+    useExactPromptId: true,
+    signal,
   });
   const firstCallEndedAt = process.hrtime.bigint();
   console.log(`[Resume timing] First LLM call finished in ${formatDuration(firstCallStartedAt, firstCallEndedAt)}`);
@@ -2499,16 +1953,15 @@ export async function analyzeJobDescriptionPromptRaw(
 ): Promise<unknown> {
   const resolvedPromptId = promptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
   const promptValues = buildAnalyzeJobDescriptionPromptValues(jobDescription);
-  const prompt = await renderPromptByExactId(resolvedPromptId, { jobDescription });
   const content = await createPromptCompletion({
     promptId: resolvedPromptId,
-    prompt,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
     maxTokens: 7000,
     temperature: 0,
     responseFormat: 'json',
+    useExactPromptId: true,
   });
 
   try {
@@ -2604,15 +2057,11 @@ export async function tailorResume(
   profile: Profile,
   jobAnalysis: JobAnalysis,
   provider: AIProvider = DEFAULT_PROVIDER,
-  modelName?: string
+  modelName?: string,
+  signal?: AbortSignal
 ): Promise<TailoredContent> {
   const promptId = getProfileResumePromptId(profile);
   const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
-  const renderedPrompt = await renderPromptByExactId(promptId, promptValues);
-  const prompt = `${renderedPrompt}
-
-FINAL SKILL OVERRIDE:
-Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills", "softSkills", "unconfirmedHardSkills", and "unconfirmedSoftSkills" from the JSON output. Technical skills and soft-skill keywords are already decided by code from skillsJSON and keywordsJson.`;
   const secondCallStartedAt = process.hrtime.bigint();
   const timing = resumeBuildTiming.get(jobAnalysis);
   if (timing) {
@@ -2621,7 +2070,6 @@ Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills
   console.log(`[Resume timing] Second LLM call started: tailor resume (${provider}${modelName ? `/${modelName}` : ''})`);
   const content = await createPromptCompletion({
     promptId,
-    prompt,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
@@ -2629,6 +2077,13 @@ Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills
     temperature: 0.2,
     responseFormat: 'json',
     useExactPromptId: true,
+    // Appended to the user turn rather than concatenated onto the rendered
+    // text, which is what it used to be. That concatenation only reached
+    // providers taking a single flat string, so the instruction was silently
+    // absent on the structured path - and the code below assumes the model
+    // obeyed it, because skills are decided here, not by the model.
+    appendToUserBody: FINAL_SKILL_OVERRIDE,
+    signal,
   });
   const secondCallEndedAt = process.hrtime.bigint();
   console.log(`[Resume timing] Second LLM call finished in ${formatDuration(secondCallStartedAt, secondCallEndedAt)}`);
@@ -2650,7 +2105,8 @@ export async function generateCoverLetter(
   companyName: string,
   role: string,
   provider: AIProvider = DEFAULT_PROVIDER,
-  modelName?: string
+  modelName?: string,
+  signal?: AbortSignal
 ): Promise<string> {
   const promptId = getProfileCoverLetterPromptId(profile);
   const promptValues = {
@@ -2658,21 +2114,19 @@ export async function generateCoverLetter(
     companyName,
     role,
   };
-  const prompt = await renderPromptByExactId(promptId, {
-    profileJson: promptValues.profileJson,
-    companyName,
-    role,
-  });
   const content = await createPromptCompletion({
     promptId,
-    prompt,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
     maxTokens: 1500,
+    // The only caller that wants sampling variety rather than determinism.
+    // The CLI provider cannot honour it and says so once; pin this prompt to
+    // the `claude` provider in the admin UI if the prose becomes too uniform.
     temperature: 0.7,
     responseFormat: 'text',
     useExactPromptId: true,
+    signal,
   });
   return content.trim();
 }
@@ -2686,18 +2140,14 @@ export async function extractTemplateFromPDF(
     pdfText,
     templateName,
   };
-  const prompt = await renderPrompt('extract-template-from-pdf', {
-    pdfText,
-    templateName,
-  });
   const content = await createPromptCompletion({
     promptId: 'extract-template-from-pdf',
-    prompt,
     promptValues,
     fallbackProvider: provider,
     maxTokens: 8000,
     temperature: 0,
     responseFormat: 'json',
+    useExactPromptId: true,
   });
 
   try {
@@ -2716,17 +2166,14 @@ export async function extractProfileFromResume(
   const promptValues = {
     resumeText,
   };
-  const prompt = await renderPrompt('extract-profile-from-resume', {
-    resumeText,
-  });
   const content = await createPromptCompletion({
     promptId: 'extract-profile-from-resume',
-    prompt,
     promptValues,
     fallbackProvider: provider,
     maxTokens: 4000,
     temperature: 0,
     responseFormat: 'json',
+    useExactPromptId: true,
   });
 
   try {

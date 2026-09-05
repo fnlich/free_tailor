@@ -14,6 +14,8 @@ import {
   groupsApi,
   Profile,
   profilesApi,
+  providerRequiresApiKey,
+  ProviderHealthReport,
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
@@ -33,10 +35,7 @@ type ApiKeyProviderFormState = {
 };
 
 type SettingsFormState = {
-  openaiEnabled: boolean;
-  claudeEnabled: boolean;
-  openrouterEnabled: boolean;
-  deepseekEnabled: boolean;
+  providersEnabled: Record<AIProvider, boolean>;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -78,6 +77,96 @@ function buildPathPreview(template: string): string {
     .replace(/\{\{\s*(job title|role)\s*\}\}/gi, 'senior_engineer');
 }
 
+function describeProviderHealth(
+  health: ProviderHealthReport | null,
+  provider: AIProvider
+): string {
+  if (!health) return 'Checking the sign-in on the server...';
+  const entry = health.providers.find((item) => item.id === provider);
+  if (!entry) return 'No status reported.';
+  return entry.warning ? `${entry.detail} ${entry.warning}` : entry.detail;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? 'unknown' : `${Math.round(value * 100)}%`;
+}
+
+/**
+ * Readiness of the Claude subscription seat.
+ *
+ * A seat fails in ways an API key cannot - the binary is not on PATH, the
+ * sign-in expired, the five-hour window is spent - and none of those are
+ * visible from a settings page that only knows how to render a key.
+ */
+function SubscriptionCard({ health }: { health: ProviderHealthReport | null }) {
+  const provider = health?.providers.find((item) => item.id === 'claude-cli');
+  const seat = health?.subscription.seat;
+  const outages = health?.subscription.outages ?? [];
+
+  const tone = !health
+    ? { dot: 'bg-gray-300', box: 'border-gray-200 bg-gray-50' }
+    : provider?.ok && !provider.warning
+      ? { dot: 'bg-green-500', box: 'border-green-200 bg-green-50' }
+      : provider?.ok
+        ? { dot: 'bg-amber-500', box: 'border-amber-200 bg-amber-50' }
+        : { dot: 'bg-red-500', box: 'border-red-200 bg-red-50' };
+
+  return (
+    <section className={`space-y-3 rounded-md border p-4 ${tone.box}`}>
+      <div className="flex items-center gap-2">
+        <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone.dot}`} aria-hidden />
+        <h2 className="text-lg font-semibold text-gray-900">Claude Subscription</h2>
+      </div>
+
+      <p className="text-sm text-gray-700">
+        {health ? provider?.detail ?? 'No status reported.' : 'Checking the Claude CLI on the server...'}
+      </p>
+      {provider?.warning && <p className="text-sm font-medium text-amber-800">{provider.warning}</p>}
+
+      <dl className="grid gap-x-6 gap-y-1 text-sm text-gray-700 sm:grid-cols-2">
+        <div className="flex gap-2">
+          <dt className="text-gray-500">Sign-in</dt>
+          <dd>{provider?.authMethod === 'oauth_token' ? 'Subscription (OAuth)' : provider?.authMethod ?? 'unknown'}</dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="text-gray-500">Usage window</dt>
+          <dd>
+            {formatPercent(seat?.utilization ?? null)}
+            {seat?.resetsAt ? ` (resets ${new Date(seat.resetsAt).toLocaleTimeString()})` : ''}
+          </dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="text-gray-500">In flight</dt>
+          <dd>
+            {health?.concurrency['claude-cli']
+              ? `${health.concurrency['claude-cli'].inFlight} of ${health.concurrency['claude-cli'].limit}` +
+                (health.concurrency['claude-cli'].queued ? `, ${health.concurrency['claude-cli'].queued} queued` : '')
+              : 'idle'}
+          </dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="text-gray-500">Calls this run</dt>
+          <dd>
+            {health?.usage.totals.calls ?? 0}
+            {health?.usage.totals.failures ? `, ${health.usage.totals.failures} failed` : ''}
+          </dd>
+        </div>
+      </dl>
+
+      {outages.length > 0 && (
+        <ul className="space-y-1 text-sm text-red-800">
+          {outages.map((outage) => (
+            <li key={`${outage.scope}-${outage.expiresAt}`}>
+              {outage.scope === '*' ? 'All models' : outage.scope} paused until{' '}
+              {new Date(outage.expiresAt).toLocaleTimeString()}: {outage.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function toApiKeyFormState(settings: AdminAppSettings['apiKeys']): Record<AIProvider, ApiKeyProviderFormState> {
   const next = {} as Record<AIProvider, ApiKeyProviderFormState>;
 
@@ -96,10 +185,7 @@ function toApiKeyFormState(settings: AdminAppSettings['apiKeys']): Record<AIProv
 
 function toFormState(settings: AdminAppSettings): SettingsFormState {
   return {
-    openaiEnabled: settings.openaiEnabled,
-    claudeEnabled: settings.claudeEnabled,
-    openrouterEnabled: settings.openrouterEnabled,
-    deepseekEnabled: settings.deepseekEnabled,
+    providersEnabled: { ...settings.providersEnabled },
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
     defaultResumeSelection: settings.defaultResumeSelection,
@@ -130,10 +216,7 @@ function mergeSavedSection(
   if (section === 'providers') {
     return {
       ...current,
-      openaiEnabled: updated.openaiEnabled,
-      claudeEnabled: updated.claudeEnabled,
-      openrouterEnabled: updated.openrouterEnabled,
-      deepseekEnabled: updated.deepseekEnabled,
+      providersEnabled: { ...updated.providersEnabled },
     };
   }
 
@@ -168,8 +251,16 @@ export default function AdminSettingsPage() {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
+  const [health, setHealth] = useState<ProviderHealthReport | null>(null);
+
   useEffect(() => {
     loadSettings();
+    // Provider readiness is a separate, slower call (it shells out to check
+    // the CLI sign-in), so it must not hold up the settings form.
+    adminApi
+      .getAiHealth()
+      .then(setHealth)
+      .catch(() => setHealth(null));
   }, []);
 
   const loadSettings = async () => {
@@ -278,21 +369,12 @@ export default function AdminSettingsPage() {
 
   const handleSaveProviders = async () => {
     if (!form) return;
-    if (!form.openaiEnabled && !form.claudeEnabled && !form.openrouterEnabled && !form.deepseekEnabled) {
+    if (!Object.values(form.providersEnabled).some(Boolean)) {
       setError('At least one AI model must remain enabled.');
       return;
     }
 
-    await saveSection(
-      'providers',
-      {
-        openaiEnabled: form.openaiEnabled,
-        claudeEnabled: form.claudeEnabled,
-        openrouterEnabled: form.openrouterEnabled,
-        deepseekEnabled: form.deepseekEnabled,
-      },
-      'AI providers saved.'
-    );
+    await saveSection('providers', { providersEnabled: form.providersEnabled }, 'AI providers saved.');
   };
 
   const handleSaveDefaults = async () => {
@@ -383,7 +465,10 @@ export default function AdminSettingsPage() {
 
     const providerPayload: NonNullable<AdminAppSettingsUpdate['apiKeys']> = {};
 
-    for (const provider of AI_PROVIDERS) {
+    // Keyless providers are skipped entirely. Sending them the usual
+    // "no stored key, fall back to the environment" payload would be an
+    // instruction to look for an environment key that must never exist.
+    for (const provider of AI_PROVIDERS.filter(providerRequiresApiKey)) {
       const providerState = form.apiKeys[provider];
       const draftValue = providerState.pendingValue.trim();
       const pendingAdds = draftValue
@@ -424,12 +509,7 @@ export default function AdminSettingsPage() {
     );
   }
 
-  const providerEnabled = {
-    openai: form.openaiEnabled,
-    claude: form.claudeEnabled,
-    openrouter: form.openrouterEnabled,
-    deepseek: form.deepseekEnabled,
-  } satisfies Record<AIProvider, boolean>;
+  const providerEnabled = form.providersEnabled;
   const availableDefaultModels = settings.aiModels.filter(
     (model) => model.enabled && providerEnabled[model.provider]
   );
@@ -523,6 +603,8 @@ export default function AdminSettingsPage() {
           </div>
         </section>
 
+        <SubscriptionCard health={health} />
+
         <section className="space-y-4">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">AI Providers</h2>
@@ -536,21 +618,20 @@ export default function AdminSettingsPage() {
               <div>
                 <div className="font-medium text-gray-900">{getAIProviderLabel(provider)}</div>
                 <div className="text-sm text-gray-500">
-                  {settings.apiKeys[provider].configured
-                    ? `Active key: ${settings.apiKeys[provider].activePreview}`
-                    : 'No API key configured'}
+                  {!settings.apiKeys[provider].requiresApiKey
+                    ? describeProviderHealth(health, provider)
+                    : settings.apiKeys[provider].configured
+                      ? `Active key: ${settings.apiKeys[provider].activePreview}`
+                      : 'No API key configured'}
                 </div>
               </div>
               <input
                 type="checkbox"
                 checked={providerEnabled[provider]}
                 disabled={savingSection === 'providers'}
-                onChange={(e) => {
-                  if (provider === 'openai') setField('openaiEnabled', e.target.checked);
-                  if (provider === 'claude') setField('claudeEnabled', e.target.checked);
-                  if (provider === 'openrouter') setField('openrouterEnabled', e.target.checked);
-                  if (provider === 'deepseek') setField('deepseekEnabled', e.target.checked);
-                }}
+                onChange={(e) =>
+                  setField('providersEnabled', { ...form.providersEnabled, [provider]: e.target.checked })
+                }
               />
             </label>
           ))}
@@ -775,7 +856,7 @@ export default function AdminSettingsPage() {
             </p>
           </div>
 
-          {AI_PROVIDERS.map((provider) => {
+          {AI_PROVIDERS.filter(providerRequiresApiKey).map((provider) => {
             const providerSettings = settings.apiKeys[provider];
             const providerForm = form.apiKeys[provider];
             const visibleStoredKeys = providerSettings.entries.filter((entry) => !providerForm.removeIds.includes(entry.id));

@@ -1,11 +1,19 @@
 import { randomUUID } from 'crypto';
 import { getSetting, setSetting } from '../database/settingsRepository';
+import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
 import {
+  AI_PROVIDER_IDS,
+  coerceProviderId,
+  getProviderDescriptor,
+  getProviderLabel as getCatalogProviderLabel,
+  providerRequiresApiKey,
+} from './providerCatalog';
+import {
+  DEFAULT_CLAUDE_CLI_MODEL,
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_OPENAI_MODEL,
-  DEFAULT_OPENROUTER_MODEL,
 } from '../services/aiModelCatalog';
 import {
   buildOutputPathPreview,
@@ -65,11 +73,16 @@ export type AIModelRecord = {
   updatedAt: string;
 };
 
+/** Which providers an admin has left switched on, keyed by provider id. */
+export type ProvidersEnabled = Record<AIProvider, boolean>;
+
 type AppSettings = {
-  openaiEnabled: boolean;
-  claudeEnabled: boolean;
-  openrouterEnabled: boolean;
-  deepseekEnabled: boolean;
+  /**
+   * Canonical enable flags. Replaces the four hand-written booleans this type
+   * used to carry; those survive only as derived, read-only fields on the wire
+   * so an already-loaded browser tab does not break across a deploy.
+   */
+  providersEnabled: ProvidersEnabled;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -85,9 +98,20 @@ type AppSettings = {
   apiKeys: ProviderKeyStores;
 };
 
-export type AIModelSettings = Pick<AppSettings, 'openaiEnabled' | 'claudeEnabled' | 'openrouterEnabled' | 'deepseekEnabled'>;
+export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
 
-export type PublicAppSettings = AIModelSettings & Pick<
+/**
+ * The flat per-provider booleans older clients read. Derived from
+ * `providersEnabled` on the way out; accepted on the way in.
+ */
+export type LegacyProviderFlags = {
+  claudeCliEnabled: boolean;
+  claudeEnabled: boolean;
+  openaiEnabled: boolean;
+  deepseekEnabled: boolean;
+};
+
+export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   AppSettings,
   | 'defaultMode'
   | 'defaultTheme'
@@ -111,8 +135,10 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
   outputPathPreview: string;
   apiKeys: {
     [K in AIProvider]: {
+      /** false for a provider that authenticates without a key at all. */
+      requiresApiKey: boolean;
       configured: boolean;
-      activeSource: 'stored' | 'environment' | 'none';
+      activeSource: 'stored' | 'environment' | 'subscription' | 'none';
       activeKeyId: string | null;
       activePreview: string | null;
       environmentPreview: string | null;
@@ -128,6 +154,8 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
 };
 
 export type AppSettingsUpdate = Partial<PublicAppSettings> & {
+  /** Accepted for one release so a stale client can still save. */
+  openrouterEnabled?: boolean;
   outputBaseDir?: string;
   outputPathTemplate?: string;
   apiKeys?: Partial<Record<AIProvider, ApiKeyUpdate | string>>;
@@ -151,6 +179,27 @@ function buildModelId(provider: AIProvider, modelName: string): string {
 function createDefaultModelRecords(): AIModelRecord[] {
   const now = new Date().toISOString();
   const seeds: Array<Pick<AIModelRecord, 'name' | 'provider' | 'modelName' | 'description'>> = [
+    // The subscription-seat models come first so `runnableModels[0]` - the
+    // fallback whenever a stored default no longer resolves - is a model that
+    // costs nothing to run.
+    {
+      name: 'Claude Sonnet (subscription)',
+      provider: 'claude-cli',
+      modelName: 'sonnet',
+      description: 'Balanced default for tailoring, analysis and extraction on the subscription seat.',
+    },
+    {
+      name: 'Claude Opus (subscription)',
+      provider: 'claude-cli',
+      modelName: 'opus',
+      description: 'Highest-capability model on the subscription seat, for the most demanding prompts.',
+    },
+    {
+      name: 'Claude Haiku (subscription)',
+      provider: 'claude-cli',
+      modelName: 'haiku',
+      description: 'Fastest model on the subscription seat, for classification and short extractions.',
+    },
     {
       name: DEFAULT_OPENAI_MODEL,
       provider: 'openai',
@@ -180,48 +229,6 @@ function createDefaultModelRecords(): AIModelRecord[] {
       provider: 'claude',
       modelName: DEFAULT_CLAUDE_MODEL,
       description: 'Anthropic direct default configured for this app.',
-    },
-    {
-      name: DEFAULT_OPENROUTER_MODEL,
-      provider: 'openrouter',
-      modelName: DEFAULT_OPENROUTER_MODEL,
-      description: 'OpenRouter default configured for this app.',
-    },
-    {
-      name: 'GPT-5.4',
-      provider: 'openrouter',
-      modelName: 'openai/gpt-5.4',
-      description: 'High-end OpenRouter general-purpose model.',
-    },
-    {
-      name: 'GPT-5.4 mini',
-      provider: 'openrouter',
-      modelName: 'openai/gpt-5.4-mini',
-      description: 'Balanced OpenRouter option for resume drafting and structured prompt work.',
-    },
-    {
-      name: 'GPT-5.4 nano',
-      provider: 'openrouter',
-      modelName: 'openai/gpt-5.4-nano',
-      description: 'Low-latency OpenRouter option for lightweight prompt stages.',
-    },
-    {
-      name: 'Gemini 2.5 Flash',
-      provider: 'openrouter',
-      modelName: 'google/gemini-2.5-flash',
-      description: 'Google Gemini through OpenRouter for drafting and broad reasoning.',
-    },
-    {
-      name: 'DeepSeek V3',
-      provider: 'openrouter',
-      modelName: 'deepseek/deepseek-chat',
-      description: 'DeepSeek through OpenRouter for extraction and structured analysis.',
-    },
-    {
-      name: 'DeepSeek R1',
-      provider: 'openrouter',
-      modelName: 'deepseek/deepseek-r1',
-      description: 'Reasoning-focused DeepSeek option through OpenRouter.',
     },
     {
       name: DEFAULT_DEEPSEEK_MODEL,
@@ -260,54 +267,50 @@ function createDefaultModelRecords(): AIModelRecord[] {
     }));
 }
 
+function allProvidersEnabled(value = true): ProvidersEnabled {
+  return AI_PROVIDER_IDS.reduce((acc, id) => {
+    acc[id] = value;
+    return acc;
+  }, {} as ProvidersEnabled);
+}
+
+function emptyProviderKeyStores(): ProviderKeyStores {
+  return AI_PROVIDER_IDS.reduce((acc, id) => {
+    acc[id] = { activeKeyId: '', entries: [] };
+    return acc;
+  }, {} as ProviderKeyStores);
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
-  openaiEnabled: true,
-  claudeEnabled: true,
-  openrouterEnabled: true,
-  deepseekEnabled: true,
+  providersEnabled: allProvidersEnabled(),
   defaultMode: 'preview',
   defaultTheme: 'light',
   defaultResumeSelection: 'single',
   defaultGroupId: '',
   defaultProfileId: '',
-  defaultModelId: buildModelId('openrouter', DEFAULT_OPENROUTER_MODEL),
+  defaultModelId: buildModelId('claude-cli', DEFAULT_CLAUDE_CLI_MODEL),
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
   outputBaseDir: DEFAULT_GENERATED_RESUMES_DIR,
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
   aiModels: createDefaultModelRecords(),
   googleSheetsSources: [],
-  apiKeys: {
-    openai: { activeKeyId: '', entries: [] },
-    claude: { activeKeyId: '', entries: [] },
-    openrouter: { activeKeyId: '', entries: [] },
-    deepseek: { activeKeyId: '', entries: [] },
-  },
+  apiKeys: emptyProviderKeyStores(),
 };
 
 function cloneDefaultSettings(): AppSettings {
   return {
     ...DEFAULT_SETTINGS,
+    providersEnabled: { ...DEFAULT_SETTINGS.providersEnabled },
     aiModels: DEFAULT_SETTINGS.aiModels.map((model) => ({ ...model })),
     googleSheetsSources: [...DEFAULT_SETTINGS.googleSheetsSources],
-    apiKeys: {
-      openai: {
-        activeKeyId: DEFAULT_SETTINGS.apiKeys.openai.activeKeyId,
-        entries: [...DEFAULT_SETTINGS.apiKeys.openai.entries],
-      },
-      claude: {
-        activeKeyId: DEFAULT_SETTINGS.apiKeys.claude.activeKeyId,
-        entries: [...DEFAULT_SETTINGS.apiKeys.claude.entries],
-      },
-      openrouter: {
-        activeKeyId: DEFAULT_SETTINGS.apiKeys.openrouter.activeKeyId,
-        entries: [...DEFAULT_SETTINGS.apiKeys.openrouter.entries],
-      },
-      deepseek: {
-        activeKeyId: DEFAULT_SETTINGS.apiKeys.deepseek.activeKeyId,
-        entries: [...DEFAULT_SETTINGS.apiKeys.deepseek.entries],
-      },
-    },
+    apiKeys: AI_PROVIDER_IDS.reduce((acc, id) => {
+      acc[id] = {
+        activeKeyId: DEFAULT_SETTINGS.apiKeys[id].activeKeyId,
+        entries: [...DEFAULT_SETTINGS.apiKeys[id].entries],
+      };
+      return acc;
+    }, {} as ProviderKeyStores),
   };
 }
 
@@ -331,16 +334,11 @@ function normalizeDefaultResumeSelection(
 }
 
 function getEnvironmentApiKey(provider: AIProvider): string {
-  if (provider === 'openai') {
-    return process.env.OPENAI_API_KEY?.trim() || '';
+  const envVar = getProviderDescriptor(provider).envKeyVar;
+  if (!envVar) {
+    return '';
   }
-  if (provider === 'claude') {
-    return process.env.ANTHROPIC_API_KEY?.trim() || '';
-  }
-  if (provider === 'openrouter') {
-    return process.env.OPENROUTER_API_KEY?.trim() || '';
-  }
-  return process.env.DEEPSEEK_API_KEY?.trim() || '';
+  return process.env[envVar]?.trim() || '';
 }
 
 function normalizeApiKeyName(value: unknown, fallback: string): string {
@@ -450,12 +448,10 @@ function normalizeProviderKeyStores(input: unknown, fallback: ProviderKeyStores,
     ? input as Partial<Record<AIProvider, unknown>>
     : {};
 
-  return {
-    openai: normalizeProviderKeyStore(source.openai, fallback.openai, 'openai', strict),
-    claude: normalizeProviderKeyStore(source.claude, fallback.claude, 'claude', strict),
-    openrouter: normalizeProviderKeyStore(source.openrouter, fallback.openrouter, 'openrouter', strict),
-    deepseek: normalizeProviderKeyStore(source.deepseek, fallback.deepseek, 'deepseek', strict),
-  };
+  return AI_PROVIDER_IDS.reduce((acc, id) => {
+    acc[id] = normalizeProviderKeyStore(source[id], fallback[id], id, strict);
+    return acc;
+  }, {} as ProviderKeyStores);
 }
 
 function normalizeGoogleSheetSourceName(value: unknown, fallback: string): string {
@@ -516,7 +512,7 @@ function normalizeGoogleSheetsSources(input: unknown, fallback: GoogleSheetSourc
 }
 
 function normalizeAIModelProvider(value: unknown): AIProvider | null {
-  return value === 'openai' || value === 'claude' || value === 'openrouter' || value === 'deepseek' ? value : null;
+  return coerceProviderId(value);
 }
 
 function normalizeAIModelText(value: unknown, fallback = ''): string {
@@ -620,6 +616,57 @@ function getRunnableModels(settings: AppSettings): AIModelRecord[] {
   );
 }
 
+/**
+ * Reads the enable flags from a stored row.
+ *
+ * Accepts three shapes, in order: the canonical `providersEnabled` record; the
+ * flat per-provider booleans an older release wrote (including
+ * `openrouterEnabled`, which becomes the CLI provider's flag - so an install
+ * whose ONLY enabled provider was OpenRouter comes back with a working one
+ * rather than a settings row that fails `assertAtLeastOneProviderEnabled`);
+ * and, failing both, the fallback.
+ */
+function normalizeProvidersEnabled(
+  source: Record<string, unknown>,
+  fallback: ProvidersEnabled,
+  strict: boolean
+): ProvidersEnabled {
+  const record =
+    typeof source.providersEnabled === 'object' && source.providersEnabled !== null
+      ? (source.providersEnabled as Record<string, unknown>)
+      : null;
+
+  const result = {} as ProvidersEnabled;
+  for (const id of AI_PROVIDER_IDS) {
+    const fromRecord = record?.[id];
+    if (typeof fromRecord === 'boolean') {
+      result[id] = fromRecord;
+      continue;
+    }
+
+    const legacyField = getProviderDescriptor(id).legacyEnabledField;
+    const fromLegacy = source[legacyField];
+    if (typeof fromLegacy === 'boolean') {
+      result[id] = fromLegacy;
+      continue;
+    }
+    if (strict && hasOwnProperty(source, legacyField)) {
+      throw new Error(`${legacyField} must be a boolean`);
+    }
+
+    // The one alias that carries meaning: a row written before the CLI
+    // provider existed says `openrouterEnabled`, and that flag is what the
+    // admin actually chose for the provider this one replaced.
+    if (id === 'claude-cli' && typeof source.openrouterEnabled === 'boolean') {
+      result[id] = source.openrouterEnabled;
+      continue;
+    }
+
+    result[id] = fallback[id] ?? true;
+  }
+  return result;
+}
+
 function normalizeSettings(
   input: unknown,
   fallback: AppSettings = DEFAULT_SETTINGS,
@@ -629,45 +676,15 @@ function normalizeSettings(
     throw new Error('Settings file must contain a JSON object');
   }
 
-  const source = typeof input === 'object' && input !== null ? input as Partial<AppSettings> & {
-    apiKeys?: unknown;
-    defaultProfileId?: unknown;
-    defaultModelId?: unknown;
-    aiModels?: unknown;
-  } : {};
+  const source: Partial<AppSettings> & Record<string, unknown> =
+    typeof input === 'object' && input !== null
+      ? (input as Partial<AppSettings> & Record<string, unknown>)
+      : {};
 
-  const openaiEnabled =
-    typeof source.openaiEnabled === 'boolean'
-      ? source.openaiEnabled
-      : strict && hasOwnProperty(source, 'openaiEnabled')
-        ? (() => { throw new Error('openaiEnabled must be a boolean'); })()
-        : fallback.openaiEnabled;
-  const claudeEnabled =
-    typeof source.claudeEnabled === 'boolean'
-      ? source.claudeEnabled
-      : strict && hasOwnProperty(source, 'claudeEnabled')
-        ? (() => { throw new Error('claudeEnabled must be a boolean'); })()
-        : fallback.claudeEnabled;
-  const openrouterEnabled =
-    typeof source.openrouterEnabled === 'boolean'
-      ? source.openrouterEnabled
-      : strict && hasOwnProperty(source, 'openrouterEnabled')
-        ? (() => { throw new Error('openrouterEnabled must be a boolean'); })()
-        : fallback.openrouterEnabled;
-  const deepseekEnabled =
-    typeof source.deepseekEnabled === 'boolean'
-      ? source.deepseekEnabled
-      : strict && hasOwnProperty(source, 'deepseekEnabled')
-        ? (() => { throw new Error('deepseekEnabled must be a boolean'); })()
-        : fallback.deepseekEnabled;
+  const providersEnabled = normalizeProvidersEnabled(source, fallback.providersEnabled, strict);
 
   const aiModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
-  const providerSettings: AIModelSettings = {
-    openaiEnabled,
-    claudeEnabled,
-    openrouterEnabled,
-    deepseekEnabled,
-  };
+  const providerSettings: AIModelSettings = { providersEnabled };
   const defaultModelId = resolveDefaultModelId(
     source.defaultModelId,
     aiModels,
@@ -676,10 +693,7 @@ function normalizeSettings(
   );
 
   return {
-    openaiEnabled,
-    claudeEnabled,
-    openrouterEnabled,
-    deepseekEnabled,
+    providersEnabled,
     defaultMode:
       typeof source.defaultMode === 'undefined'
         ? fallback.defaultMode
@@ -754,7 +768,7 @@ function normalizeSettings(
 }
 
 function assertAtLeastOneProviderEnabled(settings: AppSettings): void {
-  if (!settings.openaiEnabled && !settings.claudeEnabled && !settings.openrouterEnabled && !settings.deepseekEnabled) {
+  if (!AI_PROVIDER_IDS.some((id) => settings.providersEnabled[id])) {
     throw new Error('At least one AI model must remain enabled');
   }
 }
@@ -765,13 +779,21 @@ function assertAtLeastOneRunnableModel(settings: AppSettings): void {
   }
 }
 
+/** The flat booleans older clients still read, derived from the record. */
+function toLegacyProviderFlags(settings: AppSettings): LegacyProviderFlags {
+  return {
+    claudeCliEnabled: settings.providersEnabled['claude-cli'],
+    claudeEnabled: settings.providersEnabled.claude,
+    openaiEnabled: settings.providersEnabled.openai,
+    deepseekEnabled: settings.providersEnabled.deepseek,
+  };
+}
+
 function toPublicSettings(settings: AppSettings): PublicAppSettings {
   const runnableModels = getRunnableModels(settings);
   return {
-    openaiEnabled: settings.openaiEnabled,
-    claudeEnabled: settings.claudeEnabled,
-    openrouterEnabled: settings.openrouterEnabled,
-    deepseekEnabled: settings.deepseekEnabled,
+    providersEnabled: { ...settings.providersEnabled },
+    ...toLegacyProviderFlags(settings),
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
     defaultResumeSelection: settings.defaultResumeSelection,
@@ -815,22 +837,36 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
     outputPathPreview: buildOutputPathPreview(settings.outputPathTemplate),
-    apiKeys: {
-      openai: toAdminProviderKeyState('openai', settings.apiKeys.openai),
-      claude: toAdminProviderKeyState('claude', settings.apiKeys.claude),
-      openrouter: toAdminProviderKeyState('openrouter', settings.apiKeys.openrouter),
-      deepseek: toAdminProviderKeyState('deepseek', settings.apiKeys.deepseek),
-    },
+    apiKeys: AI_PROVIDER_IDS.reduce((acc, id) => {
+      acc[id] = toAdminProviderKeyState(id, settings.apiKeys[id]);
+      return acc;
+    }, {} as AdminAppSettings['apiKeys']),
   };
 }
 
 function toAdminProviderKeyState(provider: AIProvider, store: ProviderKeyStore): AdminAppSettings['apiKeys'][AIProvider] {
+  // A subscription-seat provider has no key to configure. Reporting it as
+  // "configured" via a credential it does not use is what stops the admin UI
+  // rendering a password field and an inert "Add key" button for it.
+  if (!providerRequiresApiKey(provider)) {
+    return {
+      requiresApiKey: false,
+      configured: true,
+      activeSource: 'subscription',
+      activeKeyId: null,
+      activePreview: null,
+      environmentPreview: null,
+      entries: [],
+    };
+  }
+
   const activeStoredEntry = getStoredActiveApiKey(store);
   const environmentValue = getEnvironmentApiKey(provider);
   const environmentPreview = maskApiKey(environmentValue);
 
   if (activeStoredEntry) {
     return {
+      requiresApiKey: true,
       configured: true,
       activeSource: 'stored',
       activeKeyId: activeStoredEntry.id,
@@ -848,6 +884,7 @@ function toAdminProviderKeyState(provider: AIProvider, store: ProviderKeyStore):
 
   if (environmentValue) {
     return {
+      requiresApiKey: true,
       configured: true,
       activeSource: 'environment',
       activeKeyId: null,
@@ -858,6 +895,7 @@ function toAdminProviderKeyState(provider: AIProvider, store: ProviderKeyStore):
   }
 
   return {
+    requiresApiKey: true,
     configured: false,
     activeSource: 'none',
     activeKeyId: null,
@@ -867,15 +905,51 @@ function toAdminProviderKeyState(provider: AIProvider, store: ProviderKeyStore):
   };
 }
 
+/**
+ * A short-lived cache of the parsed settings row.
+ *
+ * `readSettings` does a SQLite read, a JSON.parse and a full strict normalize
+ * of the model list and every provider key store - and `getProviderApiKey`
+ * called it on EVERY model request. A few seconds of cache takes that off the
+ * hot path without letting an admin's change go unnoticed; every write path
+ * invalidates it explicitly, so the TTL only covers changes made by another
+ * process against the same database.
+ */
+const SETTINGS_CACHE_TTL_MS = 5_000;
+
+/**
+ * Keyed on the DATABASE PATH, not just held in a module variable.
+ *
+ * `getDatabasePath()` is resolved from `DB_DIR` on every call, so a single
+ * process can legitimately address more than one database - which the test
+ * suite does, giving each case a fresh temp directory. An unkeyed cache would
+ * then serve one database's settings for another: reads that silently return
+ * the wrong providers, models and keys.
+ */
+let settingsCache: { path: string; value: AppSettings; at: number } | null = null;
+
+export function invalidateSettingsCache(): void {
+  settingsCache = null;
+}
+
 async function readSettings(): Promise<AppSettings> {
+  const path = getDatabasePath();
+  const cached = settingsCache;
+  if (cached && cached.path === path && Date.now() - cached.at < SETTINGS_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
   const stored = getSetting<unknown>(APP_SETTINGS_KEY);
   if (stored === null) {
-    return cloneDefaultSettings();
+    const defaults = cloneDefaultSettings();
+    settingsCache = { path, value: defaults, at: Date.now() };
+    return defaults;
   }
 
   const settings = normalizeSettings(stored, cloneDefaultSettings(), true);
   assertAtLeastOneProviderEnabled(settings);
   assertAtLeastOneRunnableModel(settings);
+  settingsCache = { path, value: settings, at: Date.now() };
   return settings;
 }
 
@@ -884,6 +958,7 @@ async function writeSettings(settings: AppSettings): Promise<AppSettings> {
   assertAtLeastOneProviderEnabled(normalized);
   assertAtLeastOneRunnableModel(normalized);
   setSetting(APP_SETTINGS_KEY, normalized);
+  settingsCache = { path: getDatabasePath(), value: normalized, at: Date.now() };
   return normalized;
 }
 
@@ -959,12 +1034,10 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
 
   const next: AppSettings = {
     ...nextBase,
-    apiKeys: {
-      openai: applyApiKeyUpdate(current.apiKeys.openai, input.apiKeys?.openai),
-      claude: applyApiKeyUpdate(current.apiKeys.claude, input.apiKeys?.claude),
-      openrouter: applyApiKeyUpdate(current.apiKeys.openrouter, input.apiKeys?.openrouter),
-      deepseek: applyApiKeyUpdate(current.apiKeys.deepseek, input.apiKeys?.deepseek),
-    },
+    apiKeys: AI_PROVIDER_IDS.reduce((acc, id) => {
+      acc[id] = applyApiKeyUpdate(current.apiKeys[id], input.apiKeys?.[id]);
+      return acc;
+    }, {} as ProviderKeyStores),
   };
 
   assertAtLeastOneProviderEnabled(next);
@@ -983,10 +1056,7 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
 }
 
 function getProviderLabel(provider: AIProvider): string {
-  if (provider === 'openai') return 'OpenAI';
-  if (provider === 'claude') return 'Claude';
-  if (provider === 'openrouter') return 'OpenRouter';
-  return 'DeepSeek';
+  return getCatalogProviderLabel(provider);
 }
 
 export async function listAdminAIModels(): Promise<AIModelRecord[]> {
@@ -1040,10 +1110,11 @@ export async function resolveRequestedAIModel(requestedModelId?: string): Promis
     return requestedModel;
   }
 
-  if (requested === 'openai' || requested === 'claude' || requested === 'openrouter' || requested === 'deepseek') {
-    const providerModels = runnableModels.filter((model) => model.provider === requested);
+  const requestedProvider = coerceProviderId(requested);
+  if (requestedProvider) {
+    const providerModels = runnableModels.filter((model) => model.provider === requestedProvider);
     if (providerModels.length === 0) {
-      throw new Error(`No enabled models are configured for provider "${requested}".`);
+      throw new Error(`No enabled models are configured for provider "${getProviderLabel(requestedProvider)}".`);
     }
     return providerModels.find((model) => model.id === settings.defaultModelId) ?? providerModels[0];
   }
@@ -1078,7 +1149,7 @@ function normalizeAIModelMutationInput(
 ): Omit<AIModelRecord, 'id' | 'createdAt' | 'updatedAt'> {
   const provider = normalizeAIModelProvider(input.provider ?? fallback?.provider);
   if (!provider) {
-    throw new Error('Model provider must be one of: openai, claude, openrouter, deepseek.');
+    throw new Error(`Model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`);
   }
 
   const modelName = normalizeAIModelText(input.modelName, fallback?.modelName || '');
@@ -1186,40 +1257,27 @@ export async function deleteAIModel(id: string): Promise<AdminAppSettings> {
 
 export async function getAIModelSettings(): Promise<AIModelSettings> {
   const settings = await readSettings();
-  return {
-    openaiEnabled: settings.openaiEnabled,
-    claudeEnabled: settings.claudeEnabled,
-    openrouterEnabled: settings.openrouterEnabled,
-    deepseekEnabled: settings.deepseekEnabled,
-  };
+  return { providersEnabled: { ...settings.providersEnabled } };
 }
 
 export async function updateAIModelSettings(input: Partial<AIModelSettings>): Promise<AIModelSettings> {
   const updated = await updateAppSettings(input);
-  return {
-    openaiEnabled: updated.openaiEnabled,
-    claudeEnabled: updated.claudeEnabled,
-    openrouterEnabled: updated.openrouterEnabled,
-    deepseekEnabled: updated.deepseekEnabled,
-  };
+  return { providersEnabled: { ...updated.providersEnabled } };
 }
 
 export async function getProviderApiKey(provider: AIProvider): Promise<string> {
+  // A subscription-seat provider has no key, so it never reaches the database.
+  if (!providerRequiresApiKey(provider)) {
+    return '';
+  }
+
   const settings = await readSettings();
   const activeStoredKey = getStoredActiveApiKey(settings.apiKeys[provider]);
   if (activeStoredKey?.value.trim()) {
-    const resolved = activeStoredKey.value.trim();
-    console.log(
-      `[AI_KEY_DEBUG] provider=${provider} source=stored key=${maskApiKey(resolved) ?? 'missing'}`
-    );
-    return resolved;
+    return activeStoredKey.value.trim();
   }
 
-  const environmentKey = getEnvironmentApiKey(provider);
-  console.log(
-    `[AI_KEY_DEBUG] provider=${provider} source=environment key=${maskApiKey(environmentKey) ?? 'missing'}`
-  );
-  return environmentKey;
+  return getEnvironmentApiKey(provider);
 }
 
 export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'outputBaseDir' | 'outputPathTemplate'>> {
@@ -1231,15 +1289,13 @@ export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'out
 }
 
 export function isProviderEnabled(provider: AIProvider, settings: AIModelSettings): boolean {
-  if (provider === 'openai') return settings.openaiEnabled;
-  if (provider === 'claude') return settings.claudeEnabled;
-  if (provider === 'openrouter') return settings.openrouterEnabled;
-  return settings.deepseekEnabled;
+  return settings.providersEnabled[provider] === true;
 }
 
+/**
+ * The first enabled provider in catalog order, which puts the keyless
+ * subscription seat ahead of every metered one.
+ */
 export function getDefaultEnabledProvider(settings: AIModelSettings): AIProvider {
-  if (settings.openaiEnabled) return 'openai';
-  if (settings.claudeEnabled) return 'claude';
-  if (settings.openrouterEnabled) return 'openrouter';
-  return 'deepseek';
+  return AI_PROVIDER_IDS.find((id) => settings.providersEnabled[id]) ?? AI_PROVIDER_IDS[0];
 }

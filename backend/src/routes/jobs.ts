@@ -13,7 +13,7 @@ import {
   resolveLinkedInPostedSince,
   searchLinkedInRemoteJobs,
 } from '../services/linkedinJobs';
-import { resolvePromptExecutionConfig } from '../services/claude';
+import { resolvePromptExecutionConfig } from '../services/ai';
 import {
   evaluateJobFilterAnalysis,
   evaluateJobContentAgainstFilter,

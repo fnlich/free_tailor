@@ -20,6 +20,7 @@ import { getGroup, saveGroup } from '../database/groupRepository';
 import { hasStoredTemplate, saveStoredTemplate } from '../database/templateRepository';
 import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompts } from '../database/promptRepository';
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
+import { runDataMigrations } from '../database/migrations';
 import { APP_SETTINGS_KEY } from '../config/aiModelConfig';
 import { addSkill, isHardSkillCategory } from '../database/skillsDatabase';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
@@ -156,6 +157,11 @@ function importAppSettings(configDir: string): boolean {
   const filePath = path.join(configDir, 'ai-models.json');
   if (!fs.existsSync(filePath) || getSettingRaw(APP_SETTINGS_KEY) !== null) return false;
   setSetting(APP_SETTINGS_KEY, JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  // A legacy `ai-models.json` is written here VERBATIM and unnormalized, and
+  // this importer can run at any time - long after the boot migration has
+  // already stamped itself as done. Running the migration again on the row we
+  // just planted is what keeps that from re-introducing the removed provider.
+  runDataMigrations(getDb());
   return true;
 }
 

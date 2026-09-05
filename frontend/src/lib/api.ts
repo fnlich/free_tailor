@@ -125,14 +125,58 @@ async function apiFetch<T>(
   throw lastConnectionError ?? new Error('Unable to connect to backend');
 }
 
-export type AIProvider = 'openai' | 'claude' | 'openrouter' | 'deepseek';
-export const AI_PROVIDERS: AIProvider[] = ['openai', 'claude', 'openrouter', 'deepseek'];
+/**
+ * `claude-cli` runs the server's local `claude` binary on a Claude
+ * subscription seat; `claude` is the metered Anthropic API. They are separate
+ * ids on purpose - one costs nothing per request and the other bills.
+ *
+ * The former `openrouter` id was replaced by `claude-cli`.
+ */
+export type AIProvider = 'claude-cli' | 'claude' | 'openai' | 'deepseek';
+
+export type ProviderMeta = {
+  label: string;
+  requiresApiKey: boolean;
+  /** Placeholder for the model-name field on the Models admin page. */
+  modelNameHint: string;
+};
+
+/**
+ * Mirrors backend/src/config/providerCatalog.ts. `satisfies` makes a missing
+ * entry a build error rather than a label that silently reads as another
+ * provider - which is what the old label function did, falling through to
+ * "DeepSeek" for anything it did not recognise.
+ */
+export const PROVIDER_META = {
+  'claude-cli': {
+    label: 'Claude (subscription)',
+    requiresApiKey: false,
+    modelNameHint: 'sonnet, opus, haiku',
+  },
+  claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
+  openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },
+  deepseek: { label: 'DeepSeek', requiresApiKey: true, modelNameHint: 'deepseek-v4-flash' },
+} as const satisfies Record<AIProvider, ProviderMeta>;
+
+export const AI_PROVIDERS: AIProvider[] = Object.keys(PROVIDER_META) as AIProvider[];
 
 export function getAIProviderLabel(provider: AIProvider): string {
-  if (provider === 'openai') return 'OpenAI';
-  if (provider === 'claude') return 'Claude';
-  if (provider === 'openrouter') return 'OpenRouter';
-  return 'DeepSeek';
+  return PROVIDER_META[provider]?.label ?? provider;
+}
+
+export function providerRequiresApiKey(provider: AIProvider): boolean {
+  return PROVIDER_META[provider]?.requiresApiKey ?? true;
+}
+
+/** Provider ids an older release wrote, and what they mean now. */
+const LEGACY_PROVIDER_ALIASES: Record<string, AIProvider> = { openrouter: 'claude-cli' };
+
+/** Narrows an untrusted provider string, following legacy aliases. */
+export function coerceProvider(value: unknown): AIProvider | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed in PROVIDER_META) return trimmed as AIProvider;
+  return LEGACY_PROVIDER_ALIASES[trimmed] ?? null;
 }
 export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';
@@ -311,10 +355,8 @@ export interface GoogleSheetJobFilterResponse {
 
 // Admin API
 export interface PublicAppSettings {
-  openaiEnabled: boolean;
-  claudeEnabled: boolean;
-  openrouterEnabled: boolean;
-  deepseekEnabled: boolean;
+  /** Canonical enable flags, keyed by provider id. */
+  providersEnabled: Record<AIProvider, boolean>;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -339,8 +381,10 @@ export interface AdminApiKeyEntry {
 }
 
 export interface AdminApiKeyProviderSettings {
+  /** false for a provider that authenticates without a key at all. */
+  requiresApiKey: boolean;
   configured: boolean;
-  activeSource: 'stored' | 'environment' | 'none';
+  activeSource: 'stored' | 'environment' | 'subscription' | 'none';
   activeKeyId: string | null;
   activePreview: string | null;
   environmentPreview: string | null;
@@ -369,14 +413,72 @@ function normalizeGoogleSheetSources(value: unknown): GoogleSheetSource[] {
     .filter((entry) => entry.id && entry.name && entry.sheetId);
 }
 
+/**
+ * Reads the enable flags, accepting the canonical record and the flat
+ * per-provider booleans an older backend sends (including `openrouterEnabled`,
+ * which was the flag for the provider `claude-cli` replaced).
+ */
+function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIProvider, boolean> {
+  const record =
+    typeof source.providersEnabled === 'object' && source.providersEnabled !== null
+      ? (source.providersEnabled as Record<string, unknown>)
+      : null;
+
+  const legacyField: Record<AIProvider, string> = {
+    'claude-cli': 'claudeCliEnabled',
+    claude: 'claudeEnabled',
+    openai: 'openaiEnabled',
+    deepseek: 'deepseekEnabled',
+  };
+
+  const result = {} as Record<AIProvider, boolean>;
+  for (const provider of AI_PROVIDERS) {
+    const fromRecord = record?.[provider];
+    if (typeof fromRecord === 'boolean') {
+      result[provider] = fromRecord;
+      continue;
+    }
+    const flat = source[legacyField[provider]];
+    if (typeof flat === 'boolean') {
+      result[provider] = flat;
+      continue;
+    }
+    if (provider === 'claude-cli' && typeof source.openrouterEnabled === 'boolean') {
+      result[provider] = source.openrouterEnabled as boolean;
+      continue;
+    }
+    result[provider] = true;
+  }
+  return result;
+}
+
+/** The shape used before any settings have loaded. Exported so pages that
+ * need an optimistic default do not each hand-copy a literal that has to stay
+ * structurally identical to this interface. */
+export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
+  providersEnabled: AI_PROVIDERS.reduce(
+    (acc, provider) => ({ ...acc, [provider]: true }),
+    {} as Record<AIProvider, boolean>
+  ),
+  defaultMode: 'preview',
+  defaultTheme: 'light',
+  defaultResumeSelection: 'single',
+  defaultGroupId: '',
+  defaultProfileId: '',
+  defaultModelId: '',
+  defaultResumeDocxEnabled: true,
+  defaultCoverLetterDocxEnabled: true,
+  outputPathUsesJobTitle: true,
+  aiModels: [],
+  googleSheetsSources: [],
+};
+
 function normalizePublicAppSettings(value: unknown): PublicAppSettings {
-  const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<PublicAppSettings>;
+  const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<PublicAppSettings> &
+    Record<string, unknown>;
 
   return {
-    openaiEnabled: typeof source.openaiEnabled === 'boolean' ? source.openaiEnabled : true,
-    claudeEnabled: typeof source.claudeEnabled === 'boolean' ? source.claudeEnabled : true,
-    openrouterEnabled: typeof source.openrouterEnabled === 'boolean' ? source.openrouterEnabled : true,
-    deepseekEnabled: typeof source.deepseekEnabled === 'boolean' ? source.deepseekEnabled : true,
+    providersEnabled: normalizeProvidersEnabled(source),
     defaultMode: source.defaultMode === 'generate' ? 'generate' : 'preview',
     defaultTheme: source.defaultTheme === 'dark' ? 'dark' : 'light',
     defaultResumeSelection:
@@ -398,10 +500,10 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
           .map((entry) => ({
             id: typeof entry.id === 'string' ? entry.id : '',
             name: typeof entry.name === 'string' ? entry.name : '',
-            provider:
-              entry.provider === 'claude' || entry.provider === 'openrouter' || entry.provider === 'openai' || entry.provider === 'deepseek'
-                ? entry.provider
-                : 'openai',
+            // Coerced, not whitelisted: this used to rewrite anything it did
+            // not recognise to 'openai', so a model row for a newer provider
+            // displayed, filtered and default-gated as OpenAI.
+            provider: coerceProvider(entry.provider) ?? 'claude-cli',
             modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
             description: typeof entry.description === 'string' ? entry.description : '',
             enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
@@ -414,51 +516,43 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
   };
 }
 
+function emptyApiKeyState(provider: AIProvider): AdminApiKeyProviderSettings {
+  const keyless = !providerRequiresApiKey(provider);
+  return {
+    requiresApiKey: !keyless,
+    configured: keyless,
+    activeSource: keyless ? 'subscription' : 'none',
+    activeKeyId: null,
+    activePreview: null,
+    environmentPreview: null,
+    entries: [],
+  };
+}
+
 function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
   const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<AdminAppSettings>;
+  const rawKeys =
+    typeof source.apiKeys === 'object' && source.apiKeys !== null
+      ? (source.apiKeys as Partial<Record<AIProvider, Partial<AdminApiKeyProviderSettings>>>)
+      : {};
+
+  // Every provider gets an entry, present in the payload or not. The settings
+  // page indexes this map unguarded in several places, so a provider the
+  // backend does not send back - which is exactly what a deploy-order skew
+  // produces - used to blank the whole admin page with a TypeError.
+  const apiKeys = AI_PROVIDERS.reduce((acc, provider) => {
+    const fallback = emptyApiKeyState(provider);
+    const incoming = rawKeys[provider];
+    acc[provider] = incoming ? { ...fallback, ...incoming } : fallback;
+    return acc;
+  }, {} as Record<AIProvider, AdminApiKeyProviderSettings>);
 
   return {
     ...normalizePublicAppSettings(source),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
-    apiKeys:
-      typeof source.apiKeys === 'object' && source.apiKeys !== null
-        ? source.apiKeys as Record<AIProvider, AdminApiKeyProviderSettings>
-        : {
-            openai: {
-              configured: false,
-              activeSource: 'none',
-              activeKeyId: null,
-              activePreview: null,
-              environmentPreview: null,
-              entries: [],
-            },
-            claude: {
-              configured: false,
-              activeSource: 'none',
-              activeKeyId: null,
-              activePreview: null,
-              environmentPreview: null,
-              entries: [],
-            },
-            openrouter: {
-              configured: false,
-              activeSource: 'none',
-              activeKeyId: null,
-              activePreview: null,
-              environmentPreview: null,
-              entries: [],
-            },
-            deepseek: {
-              configured: false,
-              activeSource: 'none',
-              activeKeyId: null,
-              activePreview: null,
-              environmentPreview: null,
-              entries: [],
-            },
-          },
+    apiKeys,
   };
 }
 
@@ -581,7 +675,41 @@ export interface GoogleSheetsUpdateRangeResponse {
   updatedCells: number;
 }
 
+/** Shape of GET /api/admin/ai/health. */
+export interface ProviderHealthReport {
+  providers: Array<{
+    id: AIProvider;
+    label: string;
+    summary: string;
+    credentialKind: 'api-key' | 'subscription-seat';
+    requiresApiKey: boolean;
+    ok: boolean;
+    detail: string;
+    warning: string | null;
+    authMethod: string | null;
+    checkedAt: string;
+  }>;
+  subscription: {
+    seat: { utilization: number | null; resetsAt: string | null; observedAt: string | null };
+    outages: Array<{ scope: string; reason: string; expiresAt: string }>;
+  };
+  concurrency: Record<string, { limit: number; inFlight: number; queued: number }>;
+  usage: {
+    totals: {
+      calls: number;
+      failures: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+      costUsd: number;
+    };
+  };
+}
+
 export const adminApi = {
+  getAiHealth: () => apiFetch<ProviderHealthReport>('/admin/ai/health'),
+
   login: (password: string) =>
     apiFetch<{ token: string; message: string }>('/admin/login', {
       method: 'POST',

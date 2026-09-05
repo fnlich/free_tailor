@@ -35,7 +35,7 @@ const {
   getAppSetting,
   setAppSetting
 } = require('../bidAssistant/database');
-const { generateAnswers } = require('../bidAssistant/aiHelper');
+import { generateAnswers } from '../bidAssistant/aiHelper';
 
 const router = express.Router();
 const googleSheetsScopes = ['https://www.googleapis.com/auth/spreadsheets.readonly'];

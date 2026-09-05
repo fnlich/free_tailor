@@ -2,7 +2,17 @@
 
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import AppTopNav from '@/components/AppTopNav';
-import { AIProvider, PromptSummary, PublicAppSettings, promptsApi, resumeApi } from '@/lib/api';
+import {
+  AI_PROVIDERS,
+  AIProvider,
+  coerceProvider,
+  DEFAULT_PUBLIC_APP_SETTINGS,
+  getAIProviderLabel,
+  PromptSummary,
+  PublicAppSettings,
+  promptsApi,
+  resumeApi,
+} from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 
 type HighlightKind = 'required' | 'preferred' | 'keyword' | 'industry' | 'domain' | 'soft';
@@ -22,23 +32,7 @@ type OutputKeySummary = {
   count: number;
 };
 
-const DEFAULT_MODEL_SETTINGS: PublicAppSettings = {
-  openaiEnabled: true,
-  claudeEnabled: true,
-  openrouterEnabled: true,
-  deepseekEnabled: true,
-  defaultMode: 'preview',
-  defaultTheme: 'light',
-  defaultResumeSelection: 'single',
-  defaultGroupId: '',
-  defaultProfileId: '',
-  defaultModelId: '',
-  defaultResumeDocxEnabled: true,
-  defaultCoverLetterDocxEnabled: true,
-  outputPathUsesJobTitle: true,
-  aiModels: [],
-  googleSheetsSources: [],
-};
+const DEFAULT_MODEL_SETTINGS: PublicAppSettings = DEFAULT_PUBLIC_APP_SETTINGS;
 
 const KIND_LABELS: Record<HighlightKind, string> = {
   required: 'Required',
@@ -68,17 +62,16 @@ const OUTPUT_KEY_CLASSES = [
 ];
 
 function isEnabled(settings: PublicAppSettings, provider: AIProvider): boolean {
-  if (provider === 'openai') return settings.openaiEnabled;
-  if (provider === 'claude') return settings.claudeEnabled;
-  if (provider === 'openrouter') return settings.openrouterEnabled;
-  return settings.deepseekEnabled;
+  return settings.providersEnabled[provider] === true;
 }
 
+/**
+ * The first enabled provider in catalog order, which puts the keyless
+ * subscription seat ahead of every metered one. Both of these used to end in
+ * an unguarded fall-through to DeepSeek.
+ */
 function pickDefaultProvider(settings: PublicAppSettings): AIProvider {
-  if (settings.openrouterEnabled) return 'openrouter';
-  if (settings.openaiEnabled) return 'openai';
-  if (settings.claudeEnabled) return 'claude';
-  return 'deepseek';
+  return AI_PROVIDERS.find((provider) => settings.providersEnabled[provider]) ?? AI_PROVIDERS[0];
 }
 
 function normalizeTerm(value: string): string {
@@ -277,7 +270,7 @@ function renderHighlightedText(text: string, matches: HighlightMatch[]): ReactNo
 export default function TestPage() {
   const [jobDescription, setJobDescription] = useState('');
   const [analysis, setAnalysis] = useState<unknown>(null);
-  const [selectedModel, setSelectedModel] = useState<AIProvider>('openrouter');
+  const [selectedModel, setSelectedModel] = useState<AIProvider>('claude-cli');
   const [analyzePrompts, setAnalyzePrompts] = useState<PromptSummary[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState('analyze-job-description');
   const [modelSettings, setModelSettings] = useState<PublicAppSettings>(DEFAULT_MODEL_SETTINGS);
@@ -349,11 +342,8 @@ export default function TestPage() {
     }
   };
 
-  const hasAnyProvider =
-    modelSettings.openaiEnabled ||
-    modelSettings.claudeEnabled ||
-    modelSettings.openrouterEnabled ||
-    modelSettings.deepseekEnabled;
+  const enabledProviders = AI_PROVIDERS.filter((provider) => isEnabled(modelSettings, provider));
+  const hasAnyProvider = enabledProviders.length > 0;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -406,14 +396,15 @@ export default function TestPage() {
             <span className="mb-2 block text-sm font-medium text-gray-700">Model provider</span>
             <select
               value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value as AIProvider)}
+              onChange={(event) => setSelectedModel(coerceProvider(event.target.value) ?? selectedModel)}
               className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               disabled={!hasAnyProvider || isAnalyzing}
             >
-              {modelSettings.openrouterEnabled && <option value="openrouter">OpenRouter</option>}
-              {modelSettings.openaiEnabled && <option value="openai">OpenAI</option>}
-              {modelSettings.claudeEnabled && <option value="claude">Claude</option>}
-              {modelSettings.deepseekEnabled && <option value="deepseek">DeepSeek</option>}
+              {enabledProviders.map((provider) => (
+                <option key={provider} value={provider}>
+                  {getAIProviderLabel(provider)}
+                </option>
+              ))}
             </select>
           </label>
 

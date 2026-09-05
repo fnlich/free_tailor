@@ -6,13 +6,15 @@ import {
   generateCoverLetter,
   parseTailoredResumeContent,
   tailorResume,
-} from '../services/claude';
+} from '../services/resumeService';
 import { generateResumePDF, generatePreviewHTML, getGeneratedPDFPath } from '../generators/pdfGenerator';
 import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
 import { getGeneratedOutputPath } from '../utils/generatedPath';
 import { getTemplateById } from '../extractors/templateExtractor';
 import { getPublicAppSettings, resolveRequestedAIModel } from '../config/aiModelConfig';
+import { mapWithConcurrency } from '../services/ai';
+import { sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
 import { getProfile, listProfiles } from '../database/profileRepository';
@@ -20,6 +22,37 @@ import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
 import { AIProvider, GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
 
 const router = Router();
+
+/**
+ * A signal that fires when the client goes away before the response is sent.
+ *
+ * Threaded down to the AI transport so a user who closes the tab mid-batch
+ * kills the model calls (and, on the CLI provider, the child processes) rather
+ * than leaving them to run out the clock against the subscription seat.
+ *
+ * Keyed on `res` rather than `req`: `req` emits 'close' on normal completion
+ * too, so listening there would abort work that had already succeeded.
+ */
+const requestControllers = new WeakMap<Response, AbortController>();
+
+function requestSignal(req: Request, res: Response): AbortSignal {
+  // Memoised per response. All current callers ask once, but the helper reads
+  // as though it were safe to call in a loop - and there it would attach a
+  // listener per iteration and trip Node's max-listeners warning.
+  const existing = requestControllers.get(res);
+  if (existing) {
+    return existing.signal;
+  }
+
+  const controller = new AbortController();
+  requestControllers.set(res, controller);
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      controller.abort();
+    }
+  });
+  return controller.signal;
+}
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -119,8 +152,9 @@ router.post('/analyze', async (req: Request, res: Response) => {
     res.json(analysis);
   } catch (error) {
     console.error('Error analyzing job description:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Failed to analyze job description' 
+    if (sendAiError(res, error)) return;
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to analyze job description'
     });
   }
 });
@@ -224,28 +258,33 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       analysis: JobAnalysis;
     }> = [];
 
-    for (const job of validJobs) {
-      try {
-        const analysis = await analyzeJobDescription(
-          job.jobDescription,
-          selectedModel.provider,
-          selectedModel.modelName
-        );
+    const analysisOutcomes = await mapWithConcurrency(validJobs, BATCH_AI_CONCURRENCY, (job) =>
+      analyzeJobDescription(
+        job.jobDescription,
+        selectedModel.provider,
+        selectedModel.modelName,
+        undefined,
+        requestSignal(req, res)
+      )
+    );
 
+    analysisOutcomes.forEach((outcome, index) => {
+      const job = validJobs[index];
+      if (outcome.ok) {
         analyses.push({
           companyName: job.companyName,
           sourceRowNumber: job.sourceRowNumber,
           jobDescription: job.jobDescription,
-          analysis,
+          analysis: outcome.value,
         });
-      } catch (error) {
-        failures.push({
-          companyName: job.companyName,
-          sourceRowNumber: job.sourceRowNumber,
-          error: error instanceof Error ? error.message : 'Analysis failed',
-        });
+        return;
       }
-    }
+      failures.push({
+        companyName: job.companyName,
+        sourceRowNumber: job.sourceRowNumber,
+        error: outcome.error instanceof Error ? outcome.error.message : 'Analysis failed',
+      });
+    });
 
     res.json({
       provider: selectedModel.provider,
@@ -294,11 +333,22 @@ function collectUnconfirmedSkillMaps(
   }
 }
 
+/**
+ * How many AI-only batch items run at once.
+ *
+ * The provider keeps its own process-wide semaphore, which is what actually
+ * bounds concurrent `claude` processes across simultaneous requests; this only
+ * decides how many items one request offers up at a time. Kept a little above
+ * the provider limit so a slot never sits idle waiting for this loop.
+ */
+const BATCH_AI_CONCURRENCY = Number.parseInt(process.env.AI_BATCH_CONCURRENCY || '', 10) || 6;
+
 async function tailorResumesForProfiles(
   profiles: Profile[],
   analysis: JobAnalysis,
   provider: AIProvider,
-  modelName?: string
+  modelName?: string,
+  signal?: AbortSignal
 ): Promise<{
   tailoredByProfileId: Map<string, TailoredContent>;
   failures: Array<{ profileId: string; profileName: string; error: string }>;
@@ -310,19 +360,28 @@ async function tailorResumesForProfiles(
   const unconfirmedHardMap = new Map<string, string>();
   const unconfirmedSoftMap = new Map<string, string>();
 
-  for (const profile of profiles) {
-    try {
-      const tailored = await tailorResume(profile, analysis, provider, modelName);
-      tailoredByProfileId.set(profile.id, tailored);
-      collectUnconfirmedSkillMaps(tailored, unconfirmedHardMap, unconfirmedSoftMap);
-    } catch (error) {
-      failures.push({
-        profileId: profile.id,
-        profileName: profile.name,
-        error: error instanceof Error ? error.message : 'Failed to tailor resume',
-      });
+  // Tailoring is pure model work with no shared state, so running profiles in
+  // parallel is only a question of how many at once. It used to be one - a
+  // five-profile batch was five full model calls end to end, with the user
+  // waiting through all of them. Failures are still collected per profile
+  // rather than aborting the batch, exactly as the sequential loop did.
+  const outcomes = await mapWithConcurrency(profiles, BATCH_AI_CONCURRENCY, (profile) =>
+    tailorResume(profile, analysis, provider, modelName, signal)
+  );
+
+  outcomes.forEach((outcome, index) => {
+    const profile = profiles[index];
+    if (outcome.ok) {
+      tailoredByProfileId.set(profile.id, outcome.value);
+      collectUnconfirmedSkillMaps(outcome.value, unconfirmedHardMap, unconfirmedSoftMap);
+      return;
     }
-  }
+    failures.push({
+      profileId: profile.id,
+      profileName: profile.name,
+      error: outcome.error instanceof Error ? outcome.error.message : 'Failed to tailor resume',
+    });
+  });
 
   return {
     tailoredByProfileId,
@@ -390,7 +449,13 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     const formatNorm = (format as string) === 'both' ? 'both' : format === 'docx' ? 'docx' : 'pdf';
     const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
     const bulkTailoring = analysis
-      ? await tailorResumesForProfiles(profiles, analysis, selectedModel.provider, selectedModel.modelName)
+      ? await tailorResumesForProfiles(
+          profiles,
+          analysis,
+          selectedModel.provider,
+          selectedModel.modelName,
+          requestSignal(req, res)
+        )
       : null;
 
     for (const profile of profiles) {
@@ -476,6 +541,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error generating resumes for all profiles:', error);
+    if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to generate resumes'
     });
@@ -703,7 +769,13 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     const unconfirmedHardMap = new Map<string, string>();
     const unconfirmedSoftMap = new Map<string, string>();
     const bulkTailoring = analysis
-      ? await tailorResumesForProfiles(profiles, analysis, selectedModel.provider, selectedModel.modelName)
+      ? await tailorResumesForProfiles(
+          profiles,
+          analysis,
+          selectedModel.provider,
+          selectedModel.modelName,
+          requestSignal(req, res)
+        )
       : null;
 
     if (bulkTailoring && bulkTailoring.failures.length > 0) {
@@ -747,6 +819,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error previewing resumes for all profiles:', error);
+    if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to preview resumes'
     });
@@ -918,6 +991,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     }
   } catch (error) {
     console.error('Error generating resume:', error);
+    if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to generate resume'
     });
@@ -983,8 +1057,9 @@ router.post('/preview', async (req: Request, res: Response) => {
     res.json({ html, tailored: !!tailoredContent, tailoredContent });
   } catch (error) {
     console.error('Error generating preview:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Failed to generate preview' 
+    if (sendAiError(res, error)) return;
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to generate preview'
     });
   }
 });

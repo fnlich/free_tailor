@@ -5,6 +5,7 @@ import {
   profilesApi,
   groupsApi,
   resumeApi,
+  DEFAULT_PUBLIC_APP_SETTINGS,
   PublicAppSettings,
   Profile,
   Group,
@@ -66,23 +67,7 @@ export default function Home() {
   const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState('');
   const [jobDescription, setJobDescription] = useState('');
-  const [modelSettings, setModelSettings] = useState<PublicAppSettings>({
-    openaiEnabled: true,
-    claudeEnabled: true,
-    openrouterEnabled: true,
-    deepseekEnabled: true,
-    defaultMode: 'preview',
-    defaultTheme: 'light',
-    defaultResumeSelection: 'single',
-    defaultGroupId: '',
-    defaultProfileId: '',
-    defaultModelId: '',
-    defaultResumeDocxEnabled: true,
-    defaultCoverLetterDocxEnabled: true,
-    outputPathUsesJobTitle: true,
-    aiModels: [],
-    googleSheetsSources: [],
-  });
+  const [modelSettings, setModelSettings] = useState<PublicAppSettings>(DEFAULT_PUBLIC_APP_SETTINGS);
   const [jobAnalysis, setJobAnalysis] = useState<JobAnalysis | null>(null);
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewTailored, setPreviewTailored] = useState(false);
@@ -138,23 +123,7 @@ export default function Home() {
       const [profilesData, groupsData, modelData] = await Promise.all([
         profilesApi.getAll({ includeDisabled: true }),
         groupsApi.getAll().catch(() => []),
-        resumeApi.getModels().catch(() => ({
-          openaiEnabled: true,
-          claudeEnabled: true,
-          openrouterEnabled: true,
-          deepseekEnabled: true,
-          defaultMode: 'preview' as const,
-          defaultTheme: 'light' as const,
-          defaultResumeSelection: 'single' as const,
-          defaultGroupId: '',
-          defaultProfileId: '',
-          defaultModelId: '',
-          defaultResumeDocxEnabled: true,
-          defaultCoverLetterDocxEnabled: true,
-          outputPathUsesJobTitle: true,
-          aiModels: [],
-          googleSheetsSources: [],
-        })),
+        resumeApi.getModels().catch(() => DEFAULT_PUBLIC_APP_SETTINGS),
       ]);
       const enabledProfiles = profilesData.filter((p) => !p.disabled);
       setProfiles(enabledProfiles);
@@ -1948,7 +1917,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="mt-auto py-6 text-center text-sm text-gray-500">
-        <p>Tailored Resume Builder - Powered by OpenAI, Anthropic, OpenRouter, and DeepSeek</p>
+        <p>Tailored Resume Builder - Powered by your Claude subscription, with OpenAI, Anthropic and DeepSeek as options</p>
       </footer>
     </div>
   );
