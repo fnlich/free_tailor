@@ -79,8 +79,10 @@ function buildPathPreview(template: string): string {
 
 function describeProviderHealth(
   health: ProviderHealthReport | null,
-  provider: AIProvider
+  provider: AIProvider,
+  healthError = ''
 ): string {
+  if (healthError) return `Could not read provider status: ${healthError}`;
   if (!health) return 'Checking the sign-in on the server...';
   const entry = health.providers.find((item) => item.id === provider);
   if (!entry) return 'No status reported.';
@@ -98,12 +100,23 @@ function formatPercent(value: number | null): string {
  * sign-in expired, the five-hour window is spent - and none of those are
  * visible from a settings page that only knows how to render a key.
  */
-function SubscriptionCard({ health }: { health: ProviderHealthReport | null }) {
+function SubscriptionCard({
+  health,
+  healthError,
+}: {
+  health: ProviderHealthReport | null;
+  healthError: string;
+}) {
   const provider = health?.providers.find((item) => item.id === 'claude-cli');
   const seat = health?.subscription.seat;
   const outages = health?.subscription.outages ?? [];
+  // This provider's own numbers. The process-wide totals include every metered
+  // provider, and reporting those here would credit them to the seat.
+  const usage = health?.usage.byProvider['claude-cli'];
 
-  const tone = !health
+  const tone = healthError
+    ? { dot: 'bg-red-500', box: 'border-red-200 bg-red-50' }
+    : !health
     ? { dot: 'bg-gray-300', box: 'border-gray-200 bg-gray-50' }
     : provider?.ok && !provider.warning
       ? { dot: 'bg-green-500', box: 'border-green-200 bg-green-50' }
@@ -119,7 +132,11 @@ function SubscriptionCard({ health }: { health: ProviderHealthReport | null }) {
       </div>
 
       <p className="text-sm text-gray-700">
-        {health ? provider?.detail ?? 'No status reported.' : 'Checking the Claude CLI on the server...'}
+        {healthError
+          ? `Could not read provider status: ${healthError}`
+          : health
+            ? provider?.detail ?? 'No status reported.'
+            : 'Checking the Claude CLI on the server...'}
       </p>
       {provider?.warning && <p className="text-sm font-medium text-amber-800">{provider.warning}</p>}
 
@@ -147,8 +164,8 @@ function SubscriptionCard({ health }: { health: ProviderHealthReport | null }) {
         <div className="flex gap-2">
           <dt className="text-gray-500">Calls this run</dt>
           <dd>
-            {health?.usage.totals.calls ?? 0}
-            {health?.usage.totals.failures ? `, ${health.usage.totals.failures} failed` : ''}
+            {usage?.calls ?? 0}
+            {usage?.failures ? `, ${usage.failures} failed` : ''}
           </dd>
         </div>
       </dl>
@@ -252,15 +269,21 @@ export default function AdminSettingsPage() {
   const [successMessage, setSuccessMessage] = useState('');
 
   const [health, setHealth] = useState<ProviderHealthReport | null>(null);
+  const [healthError, setHealthError] = useState('');
 
   useEffect(() => {
     loadSettings();
     // Provider readiness is a separate, slower call (it shells out to check
-    // the CLI sign-in), so it must not hold up the settings form.
+    // the CLI sign-in), so it must not hold up the settings form. A failure is
+    // recorded separately from "not loaded yet" - collapsing the two left the
+    // card reading "Checking..." forever.
     adminApi
       .getAiHealth()
-      .then(setHealth)
-      .catch(() => setHealth(null));
+      .then((report) => {
+        setHealth(report);
+        setHealthError('');
+      })
+      .catch((err) => setHealthError(err instanceof Error ? err.message : 'Could not read provider status'));
   }, []);
 
   const loadSettings = async () => {
@@ -603,7 +626,7 @@ export default function AdminSettingsPage() {
           </div>
         </section>
 
-        <SubscriptionCard health={health} />
+        <SubscriptionCard health={health} healthError={healthError} />
 
         <section className="space-y-4">
           <div>
@@ -619,7 +642,7 @@ export default function AdminSettingsPage() {
                 <div className="font-medium text-gray-900">{getAIProviderLabel(provider)}</div>
                 <div className="text-sm text-gray-500">
                   {!settings.apiKeys[provider].requiresApiKey
-                    ? describeProviderHealth(health, provider)
+                    ? describeProviderHealth(health, provider, healthError)
                     : settings.apiKeys[provider].configured
                       ? `Active key: ${settings.apiKeys[provider].activePreview}`
                       : 'No API key configured'}

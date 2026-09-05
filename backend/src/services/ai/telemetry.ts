@@ -32,7 +32,10 @@ export function resetWarnOnceForTests(): void {
 export type CallSiteUsage = {
   callSite: string;
   provider: AIProvider;
+  /** The model the caller asked for. */
   model: string;
+  /** The models that actually answered (differs after a CLI fallback). */
+  resolvedModels: Set<string>;
   calls: number;
   failures: number;
   inputTokens: number;
@@ -56,6 +59,7 @@ function bucket(callSite: string, provider: AIProvider, model: string): CallSite
     callSite,
     provider,
     model,
+    resolvedModels: new Set<string>(),
     calls: 0,
     failures: 0,
     inputTokens: 0,
@@ -70,8 +74,16 @@ function bucket(callSite: string, provider: AIProvider, model: string): CallSite
   return created;
 }
 
-export function recordCompletion(callSite: string, result: CompletionResult): void {
-  const entry = bucket(callSite, result.providerId, result.resolvedModel);
+/**
+ * Both success and failure bucket on the model that was REQUESTED.
+ *
+ * Bucketing successes on `resolvedModel` and failures on the requested name
+ * split one call site across two rows, so the success row always reported zero
+ * failures. The requested name is the one the caller can act on.
+ */
+export function recordCompletion(callSite: string, requestedModel: string, result: CompletionResult): void {
+  const entry = bucket(callSite, result.providerId, requestedModel);
+  entry.resolvedModels.add(result.resolvedModel);
   entry.calls += 1;
   entry.inputTokens += result.usage?.inputTokens ?? 0;
   entry.outputTokens += result.usage?.outputTokens ?? 0;
@@ -85,6 +97,9 @@ export function recordCompletion(callSite: string, result: CompletionResult): vo
 export function recordFailure(callSite: string, provider: AIProvider, model: string): void {
   bucket(callSite, provider, model).failures += 1;
 }
+
+/** Serialisable form of a usage row, for the admin health endpoint. */
+export type UsageRow = Omit<CallSiteUsage, 'resolvedModels'> & { resolvedModels: string[] };
 
 export type UsageSnapshot = {
   entries: CallSiteUsage[];
@@ -100,7 +115,10 @@ export type UsageSnapshot = {
 };
 
 export function getUsageSnapshot(): UsageSnapshot {
-  const entries = Array.from(usage.values()).map((entry) => ({ ...entry }));
+  const entries = Array.from(usage.values()).map((entry) => ({
+    ...entry,
+    resolvedModels: new Set(entry.resolvedModels),
+  }));
   const totals = entries.reduce(
     (acc, entry) => {
       acc.calls += entry.calls;

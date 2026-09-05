@@ -20,7 +20,7 @@ import { getGroup, saveGroup } from '../database/groupRepository';
 import { hasStoredTemplate, saveStoredTemplate } from '../database/templateRepository';
 import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompts } from '../database/promptRepository';
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
-import { runDataMigrations } from '../database/migrations';
+import { migrate001 } from '../database/migrations/001_openrouter_to_claude_cli';
 import { APP_SETTINGS_KEY } from '../config/aiModelConfig';
 import { addSkill, isHardSkillCategory } from '../database/skillsDatabase';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
@@ -158,10 +158,11 @@ function importAppSettings(configDir: string): boolean {
   if (!fs.existsSync(filePath) || getSettingRaw(APP_SETTINGS_KEY) !== null) return false;
   setSetting(APP_SETTINGS_KEY, JSON.parse(fs.readFileSync(filePath, 'utf8')));
   // A legacy `ai-models.json` is written here VERBATIM and unnormalized, and
-  // this importer can run at any time - long after the boot migration has
-  // already stamped itself as done. Running the migration again on the row we
-  // just planted is what keeps that from re-introducing the removed provider.
-  runDataMigrations(getDb());
+  // this importer runs long after the boot migration stamped itself as done -
+  // so `runDataMigrations` would return immediately on the version check and
+  // leave the row we just planted un-migrated. `migrate001` is called directly
+  // because it is idempotent by inspection rather than by version stamp.
+  migrate001(getDb());
   return true;
 }
 

@@ -142,6 +142,13 @@ export function createEventReducer(state: CliTurnState): Reducer {
 
     if (kind === 'assistant') {
       const message = event.message as Record<string, unknown> | undefined;
+      // The model that actually ANSWERED. `system/init` names the model the CLI
+      // was asked for, which after --fallback-model is not the same thing, and
+      // reporting the wrong one makes the usage figures quietly wrong.
+      const answeringModel = asString(message?.model);
+      if (answeringModel && answeringModel !== '<synthetic>') {
+        state.model = answeringModel;
+      }
       // The assistant message is an Anthropic Messages payload, where
       // `stop_reason` is guaranteed. The result event may or may not repeat it,
       // so this is the primary source for truncation detection.

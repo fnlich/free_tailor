@@ -143,10 +143,10 @@ const server = app.listen(PORT, HOST, () => {
   void preflightAllProviders();
 });
 
-// A batch generation legitimately runs for many minutes. Node's default
-// request timeout is 5 minutes, which severed those mid-flight with no partial
-// result and nothing in the log; the AI layer's own per-call deadlines are the
-// real bound.
+// Node's `requestTimeout` bounds RECEIVING a request, and `headersTimeout` its
+// headers; neither bounds producing the response. They are raised here so a
+// slow or large upload on a busy box is not cut off, not because they limit
+// generation - the AI layer's own per-call deadlines are what bound that.
 server.requestTimeout = 15 * 60_000;
 server.headersTimeout = 15 * 60_000 + 10_000;
 

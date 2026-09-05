@@ -259,3 +259,68 @@ test('prompt records naming the removed provider are repointed and backed up', a
     db2.close();
   }
 });
+
+test('a row that never customised its model library keeps every provider model', async () => {
+  // A row with no `aiModels` key inherits the full default catalogue at read
+  // time. Writing an explicit list would freeze that into a CLI-only list and
+  // permanently remove every OpenAI, Anthropic and DeepSeek model from an
+  // install that had simply never touched the model library.
+  const { rootDir, dbDir } = useTempStorage('migration-implicit-models');
+  const partial = legacySettings(rootDir);
+  delete partial.aiModels;
+  writeSettingRaw(dbDir, APP_SETTINGS_KEY, JSON.stringify(partial, null, 2));
+
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const loaded = await config.getAdminAppSettings();
+
+  const providers = new Set(loaded.aiModels.map((model) => model.provider));
+  assert.ok(providers.has('claude-cli'));
+  assert.ok(providers.has('openai'), 'the OpenAI models must survive');
+  assert.ok(providers.has('claude'), 'the Anthropic models must survive');
+  assert.ok(providers.has('deepseek'), 'the DeepSeek models must survive');
+  assert.equal(providers.has('openrouter'), false);
+});
+
+test('the legacy data importer migrates the row it plants, even after boot stamped the version', async () => {
+  // runDataMigrations returns immediately once the version is stamped, so the
+  // importer has to call the migration itself - otherwise a legacy
+  // ai-models.json planted long after boot stays un-migrated forever.
+  const { rootDir, dbDir } = useTempStorage('migration-legacy-import');
+  const migration = loadFresh('../dist/database/migrations/001_openrouter_to_claude_cli');
+  const migrations = loadFresh('../dist/database/migrations/index');
+
+  const db = openDb(dbDir);
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS prompts (
+        id TEXT PRIMARY KEY, name TEXT, disabled INTEGER DEFAULT 0,
+        data TEXT NOT NULL, created_at TEXT, updated_at TEXT
+      );
+    `);
+
+    // Boot: nothing to do, but the version gets stamped.
+    migrations.runDataMigrations(db);
+    migrations.runDataMigrations(db);
+
+    // The importer plants a legacy row afterwards...
+    db.prepare('INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)').run(
+      APP_SETTINGS_KEY,
+      JSON.stringify(legacySettings(rootDir)),
+      new Date().toISOString()
+    );
+
+    // ...and the stamped wrapper would now be a no-op, so it calls this.
+    const report = migration.migrate001(db);
+    assert.equal(report.ran, true, 'the planted legacy row must still be migrated');
+
+    const after = JSON.parse(
+      db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_SETTINGS_KEY).value
+    );
+    assert.equal('openrouterEnabled' in after, false);
+    assert.equal(after.providersEnabled['claude-cli'], true);
+  } finally {
+    db.close();
+  }
+});

@@ -95,7 +95,11 @@ export function readClaudeCliConfig(): ClaudeCliConfig {
       .map((entry) => entry.trim())
       .filter(Boolean),
     concurrency: intFlag('AI_CLI_CONCURRENCY', 4, 1, 32),
-    queueWaitMs: intFlag('AI_CLI_QUEUE_WAIT_MS', 30_000, 1_000, 600_000),
+    // Long by default so the CALLER'S deadline is what actually bounds the
+    // wait (acquireSlot takes the smaller of the two). A short cap here made a
+    // batch wider than the concurrency limit fail its queued items after 30s,
+    // even though a tailor call is allowed five minutes.
+    queueWaitMs: intFlag('AI_CLI_QUEUE_WAIT_MS', 600_000, 1_000, 3_600_000),
     firstEventMs: intFlag('AI_CLI_FIRST_EVENT_MS', 30_000, 1_000, 300_000),
     defaultTimeoutMs,
     timeoutMsByCallSite: {

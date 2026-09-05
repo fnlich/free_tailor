@@ -44,6 +44,31 @@ router.get('/health', authMiddleware, async (_req: Request, res: Response) => {
 
     const cli = getClaudeCliAdapter();
 
+    const snapshot = getUsageSnapshot();
+    const usageRows = snapshot.entries.map((entry) => ({
+      ...entry,
+      // A Set does not survive JSON serialisation.
+      resolvedModels: Array.from(entry.resolvedModels),
+    }));
+
+    // Totalled PER PROVIDER. A single process-wide total attributed every
+    // metered provider's calls to the subscription seat on the admin card.
+    const usageByProvider: Record<string, { calls: number; failures: number; inputTokens: number; outputTokens: number; costUsd: number }> = {};
+    for (const entry of usageRows) {
+      const totals = (usageByProvider[entry.provider] ??= {
+        calls: 0,
+        failures: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
+      totals.calls += entry.calls;
+      totals.failures += entry.failures;
+      totals.inputTokens += entry.inputTokens;
+      totals.outputTokens += entry.outputTokens;
+      totals.costUsd += entry.costUsd;
+    }
+
     res.json({
       providers,
       subscription: {
@@ -51,7 +76,7 @@ router.get('/health', authMiddleware, async (_req: Request, res: Response) => {
         outages: cli.outages(),
       },
       concurrency: getSemaphoreStats(),
-      usage: getUsageSnapshot(),
+      usage: { entries: usageRows, totals: snapshot.totals, byProvider: usageByProvider },
     });
   } catch (error) {
     res.status(500).json({

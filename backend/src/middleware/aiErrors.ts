@@ -35,6 +35,21 @@ export function describeAiError(error: unknown): { status: number; body: AiError
   };
 }
 
+/**
+ * The sentence to show a user for any failure.
+ *
+ * For an AIProviderError that is `userMessage`, NOT `message` - `message`
+ * appends the operator-facing detail, which the single-error path already
+ * takes care to withhold. The per-item failure lists in batch responses reach
+ * the same browser and must withhold it too.
+ */
+export function describeFailure(error: unknown, fallback: string): string {
+  if (isAIProviderError(error)) {
+    return error.userMessage;
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 /** Sends an AI error on a response, or returns false if it is not one. */
 export function sendAiError(res: Response, error: unknown): boolean {
   const described = describeAiError(error);

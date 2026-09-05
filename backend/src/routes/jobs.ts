@@ -927,6 +927,17 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
 
     const executionConfig = await resolvePromptExecutionConfig('filter-google-sheet-job', JOB_FILTER_PROVIDER);
 
+    // A sheet filter is the longest-running AI loop in the app - one call per
+    // row. Without this, closing the tab left it running to the end of the
+    // sheet against the subscription window.
+    const filterController = new AbortController();
+    const filterSignal = filterController.signal;
+    res.on('close', () => {
+      if (!res.writableFinished) {
+        filterController.abort();
+      }
+    });
+
     const fromCol = Math.min(...distinctColumns);
     const toCol = Math.max(...distinctColumns);
     const sheetRange = await fetchGoogleSheetsRange({
@@ -974,6 +985,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         const analysis = await evaluateJobContentAgainstFilter({
           jobContent,
           jobLink,
+          signal: filterSignal,
         });
         const decision = evaluateJobFilterAnalysis(analysis);
 

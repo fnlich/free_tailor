@@ -66,6 +66,14 @@ function configFromRecord(
 export type CreatePromptCompletionInput = {
   promptId: string;
   /**
+   * Stable id of the calling FEATURE, for timeouts and usage buckets.
+   *
+   * Distinct from `promptId`, which is a prompt-record id and can be a custom
+   * per-profile record. Keying the tailor-resume timeout on the record id
+   * meant a profile with a custom prompt silently got the default budget.
+   */
+  callSite?: string;
+  /**
    * Values for the prompt's `[[variables]]`. The prompt is rendered here, once,
    * from these - callers no longer render it themselves and pass the text.
    */
@@ -159,7 +167,7 @@ async function runAssembled(
 
   try {
     const result = await adapter.complete(request);
-    recordCompletion(input.callSite, result);
+    recordCompletion(input.callSite, modelName, result);
     return result;
   } catch (error) {
     recordFailure(input.callSite, config.provider, modelName);
@@ -184,7 +192,7 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
   );
 
   const result = await runAssembled(assembled, config, {
-    callSite: input.promptId,
+    callSite: input.callSite || input.promptId,
     responseFormat: input.responseFormat ?? 'json',
     maxTokens: input.maxTokens,
     temperature: input.temperature,

@@ -255,3 +255,53 @@ test('a disabled provider is refused with a status a route can act on', async ()
     (error) => ai.isAIProviderError(error) && error.kind === 'disabled' && error.httpStatus === 409
   );
 });
+
+test('an explicitly registered adapter wins, and the other providers still exist', async () => {
+  // registerDefaults used to bail when the factory map was non-empty, so a
+  // single overridden provider left every other one unregistered - and once
+  // fixed, the defaults must still not clobber the explicit registration.
+  const ai = loadAi();
+  const { adapter } = stubAdapter();
+  ai.registerAdapter('claude-cli', () => adapter);
+
+  const capabilities = ai.listProviderCapabilities();
+  const ids = capabilities.map((entry) => entry.id).sort();
+  assert.deepEqual(ids, ['claude', 'claude-cli', 'deepseek', 'openai']);
+  assert.equal(
+    capabilities.find((entry) => entry.id === 'claude-cli').label,
+    'stub',
+    'the explicitly registered adapter must not be replaced by the built-in'
+  );
+});
+
+test('the call site can be named separately from the prompt record', async () => {
+  // Timeouts and usage buckets key on callSite. Defaulting it to the prompt id
+  // meant a profile with a CUSTOM resume prompt silently got the short default
+  // budget instead of the long tailor-resume one.
+  const { staticDir } = useTempStorage('facade-callsite');
+  writePrompt(staticDir, 'tailor-resume', 'Tailor.\n[[profileJson]]');
+
+  // A per-profile custom prompt is a database record, which is exactly why its
+  // id is a bad key for a feature-level timeout.
+  const promptService = loadFresh('../dist/services/promptService');
+  const custom = await promptService.createPrompt({
+    name: 'My Resume Prompt',
+    content: 'Tailor mine.\n[[profileJson]]',
+    allowedVariables: [{ name: 'profileJson', description: 'Profile', sampleValue: '{}' }],
+  });
+
+  const ai = loadAi();
+  const { adapter, requests } = stubAdapter();
+  ai.registerAdapter('claude-cli', () => adapter);
+
+  await ai.createPromptCompletion({
+    promptId: custom.id,
+    callSite: 'tailor-resume',
+    promptValues: { profileJson: '{}' },
+    useExactPromptId: true,
+  });
+
+  assert.notEqual(custom.id, 'tailor-resume');
+
+  assert.equal(requests[0].callSite, 'tailor-resume');
+});

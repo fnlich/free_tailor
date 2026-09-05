@@ -1023,10 +1023,29 @@ export async function getAdminAppSettings(): Promise<AdminAppSettings> {
 
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
   const current = await readSettings();
+
+  // A client that still sends the flat per-provider booleans has to be heard.
+  // Merged naively they never would be: `current` always carries a
+  // `providersEnabled` record, and the record wins over the flat fields, so an
+  // older client's provider toggle would appear to save and change nothing.
+  const legacyFlags = input as Record<string, unknown>;
+  const providersEnabled = input.providersEnabled
+    ? { ...current.providersEnabled, ...input.providersEnabled }
+    : AI_PROVIDER_IDS.reduce((acc, id) => {
+        const legacyField =
+          id === 'claude-cli' && typeof legacyFlags.openrouterEnabled === 'boolean'
+            ? 'openrouterEnabled'
+            : getProviderDescriptor(id).legacyEnabledField;
+        const flat = legacyFlags[legacyField];
+        acc[id] = typeof flat === 'boolean' ? flat : current.providersEnabled[id];
+        return acc;
+      }, {} as ProvidersEnabled);
+
   const nextBase = normalizeSettings(
     {
       ...current,
       ...input,
+      providersEnabled,
       apiKeys: current.apiKeys,
     },
     current

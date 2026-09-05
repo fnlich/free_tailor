@@ -74,6 +74,21 @@ export function interpretRateLimitEvent(
     }
   }
 
+  // Checked FIRST, before the status branch. The CLI reports isUsingOverage
+  // alongside a non-allowed status, so testing status first returned early and
+  // left this branch unreachable - accepting the one kind of turn this
+  // provider exists to refuse.
+  if (info.isUsingOverage === true && !options.allowOverage) {
+    return {
+      limited: true,
+      scope: '*',
+      reason: 'the subscription window is spent and the plan is billing extra usage',
+      resetsAt,
+      utilization,
+      refuseEvenWithText: true,
+    };
+  }
+
   const status = String(info.status ?? '');
   if (status && !ALLOWED_STATUSES.has(status)) {
     return {
@@ -86,26 +101,16 @@ export function interpretRateLimitEvent(
     };
   }
 
-  // Refusing paid overage by default is the difference between "the migration
-  // removed metered spend" and "the migration removed metered spend until the
-  // window fills, silently, weeks later".
-  if (info.isUsingOverage === true && !options.allowOverage) {
-    return {
-      limited: true,
-      scope: '*',
-      reason: 'the subscription window is spent and the plan is billing extra usage',
-      resetsAt,
-      utilization,
-      refuseEvenWithText: true,
-    };
-  }
-
   // A window at 100% blocks the next turn without necessarily emitting another
   // event, so treat it as limited even while `status` still says allowed.
   if (spentWindow) {
     return {
       limited: true,
-      scope,
+      // Scoped by the window that is ACTUALLY spent, not by rateLimitType.
+      // They can differ: a five_hour event can carry a spent seven_day_opus
+      // window, and holding the wrong scope either parks a healthy model or
+      // leaves a spent one in rotation.
+      scope: MODEL_SCOPED_WINDOWS[spentWindow] ?? '*',
       reason: `the ${spentWindow} usage window is fully used`,
       resetsAt,
       utilization,

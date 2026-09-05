@@ -27,26 +27,40 @@ type AdapterFactory = () => AIProviderAdapter;
 
 const factories = new Map<AIProvider, AdapterFactory>();
 const instances = new Map<AIProvider, AIProviderAdapter>();
+let defaultsRegistered = false;
 
 export function registerAdapter(id: AIProvider, factory: AdapterFactory): void {
   factories.set(id, factory);
   instances.delete(id);
 }
 
+/** Registers a built-in only where nothing has claimed that id already. */
+function registerDefault(id: AIProvider, factory: AdapterFactory): void {
+  if (!factories.has(id)) {
+    factories.set(id, factory);
+  }
+}
+
 function registerDefaults(): void {
-  if (factories.size > 0) {
+  // Guarded on its own flag, not on `factories.size`. Sharing the map with
+  // registerAdapter meant a single explicitly registered provider would count
+  // as "the defaults are present" and leave every other provider missing.
+  // And each default is registered only where nothing already holds that id,
+  // so an explicit registerAdapter always wins over the built-in.
+  if (defaultsRegistered) {
     return;
   }
-  registerAdapter('claude-cli', () => createClaudeCliAdapter());
-  registerAdapter('claude', () => createAnthropicHttpAdapter({ defaultModel: DEFAULT_CLAUDE_MODEL }));
-  registerAdapter('openai', () =>
+  defaultsRegistered = true;
+  registerDefault('claude-cli', () => createClaudeCliAdapter());
+  registerDefault('claude', () => createAnthropicHttpAdapter({ defaultModel: DEFAULT_CLAUDE_MODEL }));
+  registerDefault('openai', () =>
     createOpenAICompatibleAdapter({
       id: 'openai',
       defaultModel: DEFAULT_OPENAI_MODEL,
       tokenLimitField: 'max_completion_tokens',
     })
   );
-  registerAdapter('deepseek', () =>
+  registerDefault('deepseek', () =>
     createOpenAICompatibleAdapter({
       id: 'deepseek',
       baseURL: 'https://api.deepseek.com',
@@ -131,4 +145,5 @@ export async function preflightAllProviders(): Promise<ProviderHealthReport[]> {
 export function resetRegistryForTests(): void {
   factories.clear();
   instances.clear();
+  defaultsRegistered = false;
 }

@@ -263,3 +263,22 @@ test('generated path helpers apply per-profile output file name templates', asyn
     'Jane_Doe_Cover_Letter_for_Senior_Engineer.docx'
   );
 });
+
+test('a client that still sends the flat provider booleans is heard', async () => {
+  // The stored row always carries a providersEnabled record, and the record
+  // wins over the flat fields - so merging an older client's payload naively
+  // made its provider toggle appear to save and change nothing.
+  useTempStorage('settings-legacy-flags');
+  process.env.OPENAI_API_KEY = '';
+  process.env.ANTHROPIC_API_KEY = '';
+  process.env.DEEPSEEK_API_KEY = '';
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  await config.getAdminAppSettings();
+  const updated = await config.updateAppSettings({ openaiEnabled: false, deepseekEnabled: false });
+
+  assert.equal(updated.providersEnabled.openai, false);
+  assert.equal(updated.providersEnabled.deepseek, false);
+  assert.equal(updated.providersEnabled['claude-cli'], true, 'untouched providers keep their setting');
+  assert.equal(updated.openaiEnabled, false);
+});

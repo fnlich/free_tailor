@@ -626,3 +626,71 @@ test('the concurrency limit is shared across simultaneous requests, not per requ
   assert.ok(results.every((result) => result.text === '{"capital": "Paris"}'));
   assert.ok(peak <= 2, `at most 2 calls may be in flight at once, saw ${peak}`);
 });
+
+// -- regressions ----------------------------------------------------------- //
+// Each of these pins a defect found by an adversarial review of this change.
+
+test('overage is refused even when the CLI also reports the window rejected', async () => {
+  // The overage check used to sit AFTER the status check, and the CLI reports
+  // isUsingOverage alongside status "rejected" - so the status branch returned
+  // first and the refusal was unreachable. A turn that produced an answer
+  // while being billed as extra usage was accepted silently.
+  const runner = makeFakeCliRunner({ lines: readCliFixture('overage-rejected') });
+  await assert.rejects(
+    () => makeAdapter(runner).complete(makeRequest()),
+    (error) => error.kind === 'rateLimited' && /extra usage/.test(error.message)
+  );
+
+  const allowed = makeFakeCliRunner({ lines: readCliFixture('overage-rejected') });
+  const result = await makeAdapter(allowed, { allowOverage: true }).complete(makeRequest());
+  assert.equal(result.text, '{"capital": "Paris"}');
+});
+
+test('a limit recorded on an answered turn is not erased by that turn succeeding', async () => {
+  // noteSuccess clears the model entry AND the seat-wide one, so calling it at
+  // the end of a limited-but-answered turn deleted the hold the same call had
+  // just recorded - and every following request rediscovered the limit.
+  const runner = makeFakeCliRunner({ lines: readCliFixture('limited-but-answered') });
+  const adapter = makeAdapter(runner);
+
+  const result = await adapter.complete(makeRequest());
+  assert.equal(result.text, '{"capital": "Paris"}', 'the answer is kept: the limit is about the NEXT call');
+  assert.ok(adapter.outages().length > 0, 'the hold must survive the turn that recorded it');
+
+  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'rateLimited');
+  assert.equal(runner.calls.length, 1, 'the next call is refused without reaching the runner');
+});
+
+test('a successful turn is not failed by a benign warning on stderr', async () => {
+  // Classification used to run on every turn and read stderr unconditionally,
+  // so a warning containing a word the classifier looks for threw away a
+  // perfectly good answer.
+  const runner = makeFakeCliRunner({
+    lines: readCliFixture('noisy-stderr-success'),
+    stderr: '(node:1) Warning: the connection pool timed out while warming up',
+  });
+
+  const result = await makeAdapter(runner).complete(makeRequest());
+  assert.equal(result.text, '{"capital": "Paris"}');
+});
+
+test('the model reported is the one that answered, not the one that was asked for', async () => {
+  // --fallback-model is passed on every call, so `system/init` names the
+  // primary while a different model may actually answer. Reporting the primary
+  // makes the usage figures quietly wrong.
+  const runner = makeFakeCliRunner({ lines: readCliFixture('fallback-model') });
+  const result = await makeAdapter(runner).complete(makeRequest({ modelName: 'opus' }));
+  assert.equal(result.resolvedModel, 'claude-haiku-4-5-20251001');
+});
+
+test('a queued call waits for the caller deadline, not a short fixed cap', async () => {
+  // The queue wait defaulted to 30s while a tailor call is allowed 300s, so a
+  // batch wider than the concurrency limit failed its queued items even though
+  // a slot would have freed long before the caller gave up.
+  const { readClaudeCliConfig } = load('../dist/services/ai/providers/claudeCli/options');
+  const config = readClaudeCliConfig();
+  assert.ok(
+    config.queueWaitMs >= config.defaultTimeoutMs,
+    `the queue cap (${config.queueWaitMs}ms) must not bite before the call deadline (${config.defaultTimeoutMs}ms)`
+  );
+});

@@ -2070,6 +2070,9 @@ export async function tailorResume(
   console.log(`[Resume timing] Second LLM call started: tailor resume (${provider}${modelName ? `/${modelName}` : ''})`);
   const content = await createPromptCompletion({
     promptId,
+    // The prompt record can be a per-profile custom one; the timeout and the
+    // usage bucket belong to the FEATURE, which is always this.
+    callSite: DEFAULT_RESUME_PROMPT_ID,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
@@ -2116,6 +2119,7 @@ export async function generateCoverLetter(
   };
   const content = await createPromptCompletion({
     promptId,
+    callSite: DEFAULT_COVER_LETTER_PROMPT_ID,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
@@ -2134,7 +2138,8 @@ export async function generateCoverLetter(
 export async function extractTemplateFromPDF(
   pdfText: string,
   templateName: string,
-  provider: AIProvider = DEFAULT_PROVIDER
+  provider: AIProvider = DEFAULT_PROVIDER,
+  signal?: AbortSignal
 ): Promise<{ html: string; css: string; sections: string[] }> {
   const promptValues = {
     pdfText,
@@ -2142,6 +2147,7 @@ export async function extractTemplateFromPDF(
   };
   const content = await createPromptCompletion({
     promptId: 'extract-template-from-pdf',
+    signal,
     promptValues,
     fallbackProvider: provider,
     maxTokens: 8000,
@@ -2161,13 +2167,15 @@ export async function extractTemplateFromPDF(
 
 export async function extractProfileFromResume(
   resumeText: string,
-  provider: AIProvider = DEFAULT_PROVIDER
+  provider: AIProvider = DEFAULT_PROVIDER,
+  signal?: AbortSignal
 ): Promise<Omit<Profile, 'id' | 'createdAt' | 'updatedAt'>> {
   const promptValues = {
     resumeText,
   };
   const content = await createPromptCompletion({
     promptId: 'extract-profile-from-resume',
+    signal,
     promptValues,
     fallbackProvider: provider,
     maxTokens: 4000,

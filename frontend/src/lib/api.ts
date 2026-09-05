@@ -704,6 +704,11 @@ export interface ProviderHealthReport {
       cacheWriteTokens: number;
       costUsd: number;
     };
+    /** Per-provider totals, so a card can report only its own provider. */
+    byProvider: Record<
+      string,
+      { calls: number; failures: number; inputTokens: number; outputTokens: number; costUsd: number }
+    >;
   };
 }
 

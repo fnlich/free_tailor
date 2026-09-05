@@ -152,22 +152,29 @@ function migrateSettings(db: Database.Database, report: MigrationReport): void {
   //    "google/gemini-2.5-flash") mean nothing to the Claude CLI, so they are
   //    removed rather than remapped - remapping six of them onto one alias
   //    would just produce six duplicates of the same model.
-  const models = Array.isArray(settings.aiModels) ? settings.aiModels : [];
-  const kept = models.filter((model) => !(isObject(model) && model.provider === LEGACY_PROVIDER));
-  report.removedModels = models.length - kept.length;
-
   const now = new Date().toISOString();
-  const haveCli = new Set(
-    kept.filter((model) => isObject(model) && model.provider === NEW_PROVIDER).map((model) => (model as Json).id)
-  );
-  const seeds = CLI_SEED_MODELS.filter((seed) => !haveCli.has(seed.id)).map((seed) => ({
-    ...seed,
-    enabled: true,
-    createdAt: now,
-    updatedAt: now,
-  }));
-  report.seededModels = seeds.length;
-  if (models.length > 0 || seeds.length > 0) {
+  const hasExplicitModels = Array.isArray(settings.aiModels);
+
+  // A row with no `aiModels` key inherits the full default catalogue at read
+  // time, and the defaults already include the subscription models. Writing an
+  // explicit list here would freeze that inheritance into a CLI-only list and
+  // permanently remove every OpenAI, Anthropic and DeepSeek model from an
+  // install that had simply never customised its model library.
+  if (hasExplicitModels) {
+    const models = settings.aiModels as unknown[];
+    const kept = models.filter((model) => !(isObject(model) && model.provider === LEGACY_PROVIDER));
+    report.removedModels = models.length - kept.length;
+
+    const haveCli = new Set(
+      kept.filter((model) => isObject(model) && model.provider === NEW_PROVIDER).map((model) => (model as Json).id)
+    );
+    const seeds = CLI_SEED_MODELS.filter((seed) => !haveCli.has(seed.id)).map((seed) => ({
+      ...seed,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    report.seededModels = seeds.length;
     settings.aiModels = [...seeds, ...kept];
   }
 

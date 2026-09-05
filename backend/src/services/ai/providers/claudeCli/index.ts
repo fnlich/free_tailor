@@ -248,6 +248,10 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       // the exact failure this provider exists to prevent - and it is
       // otherwise completely invisible. Free to assert, so assert it.
       if (state.apiKeySource && state.apiKeySource !== 'none' && !config.allowApiKey) {
+        // Held as an outage too. Failing only this call leaves the operator
+        // free to retry straight into another billed request; every call until
+        // the environment is fixed would be metered.
+        outages.noteAuth(`the CLI is authenticating with ${state.apiKeySource}, not the subscription`);
         throw fail(
           'auth',
           `the CLI reported apiKeySource="${state.apiKeySource}", so this call was billed per token rather than run on the subscription`,
@@ -258,14 +262,21 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         );
       }
 
-      const kind = classifyCliFailure({
-        apiErrorStatus: state.apiErrorStatus,
-        isError: state.isError,
-        exitCode: outcome.exitCode,
-        stderrTail: outcome.stderrTail,
-        resultText: state.resultText ?? '',
-        errors: state.errors,
-      });
+      // Only consulted when something actually says the turn failed. Run on
+      // every turn it would read stderr from a SUCCESSFUL call - where a
+      // benign warning containing "timed out" or a bare "ETIMEDOUT" would be
+      // classified as a service failure and throw away a good answer.
+      const looksFailed = state.isError || (outcome.exitCode !== null && outcome.exitCode !== 0) || !text;
+      const kind = looksFailed
+        ? classifyCliFailure({
+            apiErrorStatus: state.apiErrorStatus,
+            isError: state.isError,
+            exitCode: outcome.exitCode,
+            stderrTail: outcome.stderrTail,
+            resultText: state.resultText ?? '',
+            errors: state.errors,
+          })
+        : null;
 
       // A classified failure fails the turn whether or not text arrived. Text
       // that arrived and was then cut off by an error is a fragment of a reply,
@@ -318,7 +329,13 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         );
       }
 
-      outages.noteSuccess(model);
+      // Not on a turn that reported a limit. noteSuccess clears both the model
+      // entry and the seat-wide one, so calling it here would delete the hold
+      // this same call just recorded and let every following request
+      // rediscover the limit the hard way.
+      if (!rate.limited) {
+        outages.noteSuccess(model);
+      }
 
       return {
         text,

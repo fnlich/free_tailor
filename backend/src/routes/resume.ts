@@ -14,7 +14,7 @@ import { getGeneratedOutputPath } from '../utils/generatedPath';
 import { getTemplateById } from '../extractors/templateExtractor';
 import { getPublicAppSettings, resolveRequestedAIModel } from '../config/aiModelConfig';
 import { mapWithConcurrency } from '../services/ai';
-import { sendAiError } from '../middleware/aiErrors';
+import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
 import { getProfile, listProfiles } from '../database/profileRepository';
@@ -146,7 +146,8 @@ router.post('/analyze', async (req: Request, res: Response) => {
       jobDescription,
       selectedModel.provider,
       selectedModel.modelName,
-      promptId
+      promptId,
+      requestSignal(req, res)
     );
     console.log(`[Resume timing] /resume/analyze finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
     res.json(analysis);
@@ -282,7 +283,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       failures.push({
         companyName: job.companyName,
         sourceRowNumber: job.sourceRowNumber,
-        error: outcome.error instanceof Error ? outcome.error.message : 'Analysis failed',
+        error: describeFailure(outcome.error, 'Analysis failed'),
       });
     });
 
@@ -334,14 +335,19 @@ function collectUnconfirmedSkillMaps(
 }
 
 /**
- * How many AI-only batch items run at once.
+ * How many AI-only batch items one request offers up at once.
  *
- * The provider keeps its own process-wide semaphore, which is what actually
- * bounds concurrent `claude` processes across simultaneous requests; this only
- * decides how many items one request offers up at a time. Kept a little above
- * the provider limit so a slot never sits idle waiting for this loop.
+ * The provider's own process-wide semaphore is what actually bounds concurrent
+ * `claude` processes across simultaneous requests; this only decides how many
+ * items this loop hands it. Deliberately NOT set above that limit: the excess
+ * can do nothing but queue, and a queued item still spends its caller's
+ * deadline, so a wider fan-out buys nothing and risks turning a slow batch
+ * into a failed one.
  */
-const BATCH_AI_CONCURRENCY = Number.parseInt(process.env.AI_BATCH_CONCURRENCY || '', 10) || 6;
+const BATCH_AI_CONCURRENCY =
+  Number.parseInt(process.env.AI_BATCH_CONCURRENCY || '', 10) ||
+  Number.parseInt(process.env.AI_CLI_CONCURRENCY || '', 10) ||
+  4;
 
 async function tailorResumesForProfiles(
   profiles: Profile[],
@@ -379,7 +385,7 @@ async function tailorResumesForProfiles(
     failures.push({
       profileId: profile.id,
       profileName: profile.name,
-      error: outcome.error instanceof Error ? outcome.error.message : 'Failed to tailor resume',
+      error: describeFailure(outcome.error, 'Failed to tailor resume'),
     });
   });
 
@@ -431,7 +437,8 @@ router.post('/generate-all', async (req: Request, res: Response) => {
         trimmedJobDescription,
         selectedModel.provider,
         selectedModel.modelName,
-        getProfileAnalyzeJobPromptId(profiles[0])
+        getProfileAnalyzeJobPromptId(profiles[0]),
+        requestSignal(req, res)
       );
     }
 
@@ -488,7 +495,8 @@ router.post('/generate-all', async (req: Request, res: Response) => {
             normalizedCompanyName,
             resolvedRole,
             selectedModel.provider,
-            selectedModel.modelName
+            selectedModel.modelName,
+            requestSignal(req, res)
           );
         }
         const pathInfo = await getGeneratedOutputPath(profile, normalizedCompanyName, resolvedRole);
@@ -654,7 +662,8 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
               job.companyName,
               job.role,
               selectedModel.provider,
-              selectedModel.modelName
+              selectedModel.modelName,
+            requestSignal(req, res)
             );
           }
 
@@ -689,7 +698,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
 
           results.push(entry);
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Failed to generate resume';
+          const message = describeFailure(error, 'Failed to generate resume');
           console.error(
             `Error generating resume for profile ${profile.id} (${profile.name}) at ${job.companyName}:`,
             error
@@ -756,7 +765,8 @@ router.post('/preview-all', async (req: Request, res: Response) => {
         trimmedJobDescription,
         selectedModel.provider,
         selectedModel.modelName,
-        getProfileAnalyzeJobPromptId(profiles[0])
+        getProfileAnalyzeJobPromptId(profiles[0]),
+        requestSignal(req, res)
       );
     }
 
@@ -883,7 +893,8 @@ router.post('/generate', async (req: Request, res: Response) => {
         jobDescription,
         selectedModel.provider,
         selectedModel.modelName,
-        getProfileAnalyzeJobPromptId(profile)
+        getProfileAnalyzeJobPromptId(profile),
+        requestSignal(req, res)
       );
     }
     if (tailoredContent && analysis) {
@@ -1038,7 +1049,8 @@ router.post('/preview', async (req: Request, res: Response) => {
         jobDescription,
         selectedModel.provider,
         selectedModel.modelName,
-        getProfileAnalyzeJobPromptId(profile)
+        getProfileAnalyzeJobPromptId(profile),
+        requestSignal(req, res)
       );
     }
     if (tailoredContent && analysis) {
