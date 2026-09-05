@@ -32,7 +32,11 @@ function main(): void {
       `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     ).run(SETTINGS_KEY, backup.value, new Date().toISOString());
-    console.log('Restored the pre-migration settings row.');
+    // Deleted once restored. The snapshot holds every provider's API keys in
+    // plaintext; keeping a second permanent copy of them after it has served
+    // its only purpose is a credential sitting somewhere nobody looks.
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(SETTINGS_BACKUP_KEY);
+    console.log('Restored the pre-migration settings row and deleted the snapshot.');
   }
 
   const hasPromptBackups = db
@@ -49,7 +53,8 @@ function main(): void {
     for (const row of rows) {
       update.run(row.data, now, row.id);
     }
-    console.log(`Restored ${rows.length} prompt record(s).`);
+    db.exec(`DROP TABLE IF EXISTS ${PROMPTS_BACKUP_TABLE}`);
+    console.log(`Restored ${rows.length} prompt record(s) and dropped the backup table.`);
   } else {
     console.log('No prompt backups found; nothing to restore.');
   }

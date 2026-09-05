@@ -694,3 +694,35 @@ test('a queued call waits for the caller deadline, not a short fixed cap', async
     `the queue cap (${config.queueWaitMs}ms) must not bite before the call deadline (${config.defaultTimeoutMs}ms)`
   );
 });
+
+test('a provider string naming an inherited property is not a provider', () => {
+  // `in` and a plain index both walk the prototype chain, so "constructor" or
+  // "toString" would otherwise resolve to an Object.prototype member and be
+  // handed back as a provider id.
+  const { coerceProviderId } = load('../dist/config/providerCatalog');
+
+  for (const hostile of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(coerceProviderId(hostile), null, `"${hostile}" must not resolve to a provider`);
+  }
+
+  assert.equal(coerceProviderId('claude-cli'), 'claude-cli');
+  assert.equal(coerceProviderId('openrouter'), 'claude-cli', 'the one real legacy alias still resolves');
+});
+
+test('a spent seat-wide window parks the seat, whatever rateLimitType names', () => {
+  // rateLimitType names the window currently limiting; the spent window is
+  // found by scanning, and every window the CLI reports there is seat-wide.
+  // Scoping the hold by rateLimitType parked one model while the whole seat
+  // was out.
+  const verdict = limits.interpretRateLimitEvent(
+    {
+      status: 'allowed',
+      rateLimitType: 'seven_day_opus',
+      unifiedWindows: { seven_day: { utilization: 1 } },
+    },
+    { allowOverage: false }
+  );
+
+  assert.equal(verdict.limited, true);
+  assert.equal(verdict.scope, '*', 'a spent seat-wide window is not an Opus-only problem');
+});

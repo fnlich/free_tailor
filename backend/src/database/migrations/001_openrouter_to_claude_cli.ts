@@ -205,8 +205,15 @@ function migrateSettings(db: Database.Database, report: MigrationReport): void {
 
   report.settingsRewritten = true;
   if (report.discardedApiKeys > 0) {
+    // Said precisely, because "discarded" alone would be false: the key is
+    // gone from the live settings but the verbatim backup still holds it, and
+    // an operator who reads "discarded" would reasonably stop treating it as a
+    // live credential.
     report.notes.push(
-      `Discarded ${report.discardedApiKeys} stored OpenRouter API key(s). The pre-migration settings row is preserved under "${SETTINGS_BACKUP_KEY}".`
+      `Removed ${report.discardedApiKeys} OpenRouter API key(s) from the active settings. They are still ` +
+        `present in the pre-migration snapshot under app_settings["${SETTINGS_BACKUP_KEY}"], which is what ` +
+        `makes "npm run ai:rollback" possible. Once you no longer need to roll back, run that command (it ` +
+        `deletes the snapshot) or revoke the key at the provider.`
     );
   }
 }

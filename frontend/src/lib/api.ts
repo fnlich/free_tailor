@@ -161,7 +161,9 @@ export const PROVIDER_META = {
 export const AI_PROVIDERS: AIProvider[] = Object.keys(PROVIDER_META) as AIProvider[];
 
 export function getAIProviderLabel(provider: AIProvider): string {
-  return PROVIDER_META[provider]?.label ?? provider;
+  return Object.prototype.hasOwnProperty.call(PROVIDER_META, provider)
+    ? PROVIDER_META[provider].label
+    : provider;
 }
 
 export function providerRequiresApiKey(provider: AIProvider): boolean {
@@ -171,12 +173,21 @@ export function providerRequiresApiKey(provider: AIProvider): boolean {
 /** Provider ids an older release wrote, and what they mean now. */
 const LEGACY_PROVIDER_ALIASES: Record<string, AIProvider> = { openrouter: 'claude-cli' };
 
-/** Narrows an untrusted provider string, following legacy aliases. */
+/**
+ * Narrows an untrusted provider string, following legacy aliases.
+ *
+ * Own-property checks throughout: `in` and a plain index both walk the
+ * prototype chain, so "constructor" or "toString" would otherwise be accepted
+ * as a provider id and resolve to an Object.prototype member.
+ */
 export function coerceProvider(value: unknown): AIProvider | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  if (trimmed in PROVIDER_META) return trimmed as AIProvider;
-  return LEGACY_PROVIDER_ALIASES[trimmed] ?? null;
+  if (Object.prototype.hasOwnProperty.call(PROVIDER_META, trimmed)) return trimmed as AIProvider;
+  if (Object.prototype.hasOwnProperty.call(LEGACY_PROVIDER_ALIASES, trimmed)) {
+    return LEGACY_PROVIDER_ALIASES[trimmed];
+  }
+  return null;
 }
 export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';

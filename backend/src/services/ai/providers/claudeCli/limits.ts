@@ -107,9 +107,11 @@ export function interpretRateLimitEvent(
     return {
       limited: true,
       // Scoped by the window that is ACTUALLY spent, not by rateLimitType.
-      // They can differ: a five_hour event can carry a spent seven_day_opus
-      // window, and holding the wrong scope either parks a healthy model or
-      // leaves a spent one in rotation.
+      // The two are independent: `rateLimitType` names the window currently
+      // doing the limiting, while this one was found by scanning. Every window
+      // the CLI can put in `unifiedWindows` is seat-wide, so in practice this
+      // resolves to '*' - which is the right answer, and is what the previous
+      // code got wrong when rateLimitType happened to name a per-model window.
       scope: MODEL_SCOPED_WINDOWS[spentWindow] ?? '*',
       reason: `the ${spentWindow} usage window is fully used`,
       resetsAt,

@@ -108,9 +108,14 @@ export function providerRequiresApiKey(id: AIProvider): boolean {
  * verbatim at any later time. Coercing on read means none of those can brick
  * the app; the migration is then an improvement rather than a prerequisite.
  */
-export const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, AIProvider>> = Object.freeze({
-  openrouter: 'claude-cli',
-});
+export const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, AIProvider>> = Object.freeze(
+  // Null prototype: a plain object would resolve "constructor", "toString" and
+  // every other inherited name to an Object.prototype member, and a stored
+  // provider string of that shape would then be handed back as a provider id.
+  Object.assign(Object.create(null) as Record<string, AIProvider>, {
+    openrouter: 'claude-cli' as AIProvider,
+  })
+);
 
 const warnedAliases = new Set<string>();
 
@@ -133,7 +138,9 @@ export function coerceProviderId(value: unknown): AIProvider | null {
     return trimmed as AIProvider;
   }
 
-  const alias = LEGACY_PROVIDER_ALIASES[trimmed];
+  const alias = Object.prototype.hasOwnProperty.call(LEGACY_PROVIDER_ALIASES, trimmed)
+    ? LEGACY_PROVIDER_ALIASES[trimmed]
+    : undefined;
   if (alias) {
     if (!warnedAliases.has(trimmed)) {
       warnedAliases.add(trimmed);

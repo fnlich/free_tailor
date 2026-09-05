@@ -1,11 +1,11 @@
-import { getAIModelSettings, isProviderEnabled } from '../../config/aiModelConfig';
+import { getAIModelSettings, getDefaultEnabledProvider, isProviderEnabled } from '../../config/aiModelConfig';
 import { coerceProviderId, getProviderLabel } from '../../config/providerCatalog';
 import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
 import { resolvePromptByExactId, resolvePromptByRuntimeId } from '../promptService';
 import { assemblePrompt, assembleRawPrompt, JSON_ONLY_SYSTEM_PROMPT, type AssembledPrompt, type PromptRef } from './promptAssembly';
 import { getAdapter } from './registry';
-import { recordCompletion, recordFailure } from './telemetry';
+import { recordCompletion, recordFailure, warnOnce } from './telemetry';
 import {
   createDeadline,
   isEffortLevel,
@@ -32,6 +32,14 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 export type PromptExecutionConfig = {
   provider: AIProvider;
   modelName?: string;
+  /**
+   * True when a prompt record or a caller named this provider on purpose.
+   * False when it is only the default, in which case an admin disabling it
+   * should reroute rather than fail - there is no UI for the bid assistant to
+   * pick a provider, so a hard failure would leave it unusable with no way
+   * back.
+   */
+  explicit?: boolean;
 };
 
 /**
@@ -54,13 +62,14 @@ export async function resolvePromptExecutionConfig(
 function configFromRecord(
   record: { modelProvider?: AIProvider; modelName?: string } | null,
   fallbackProvider: AIProvider,
-  fallbackModelName?: string
+  fallbackModelName?: string,
+  explicitFallback = true
 ): PromptExecutionConfig {
   const provider = coerceProviderId(record?.modelProvider);
   if (!provider || !record?.modelName) {
-    return { provider: fallbackProvider, modelName: fallbackModelName };
+    return { provider: fallbackProvider, modelName: fallbackModelName, explicit: explicitFallback };
   }
-  return { provider, modelName: record.modelName };
+  return { provider, modelName: record.modelName, explicit: true };
 }
 
 export type CreatePromptCompletionInput = {
@@ -120,16 +129,37 @@ async function runAssembled(
   }
 ): Promise<CompletionResult> {
   const settings = await getAIModelSettings();
-  if (!isProviderEnabled(config.provider, settings)) {
-    throw new AIProviderError({
-      provider: config.provider,
-      kind: 'disabled',
-      detail: `Provider "${getProviderLabel(config.provider)}" is disabled by an administrator`,
-    });
+  let provider = config.provider;
+
+  if (!isProviderEnabled(provider, settings)) {
+    if (config.explicit !== false) {
+      throw new AIProviderError({
+        provider,
+        kind: 'disabled',
+        detail: `Provider "${getProviderLabel(provider)}" is disabled by an administrator`,
+      });
+    }
+    // Nobody chose this provider - it was only the default. Reroute rather
+    // than fail, so a caller with no provider setting of its own does not
+    // become unusable the moment an admin unticks a box.
+    const alternative = getDefaultEnabledProvider(settings);
+    if (!isProviderEnabled(alternative, settings)) {
+      throw new AIProviderError({
+        provider,
+        kind: 'disabled',
+        detail: 'No AI provider is enabled',
+      });
+    }
+    warnOnce(
+      `reroute:${provider}->${alternative}`,
+      `The default provider "${getProviderLabel(provider)}" is disabled; calls that name no provider ` +
+        `are running on "${getProviderLabel(alternative)}" instead.`
+    );
+    provider = alternative;
   }
 
-  const adapter = getAdapter(config.provider);
-  const modelName = config.modelName || adapter.defaultModelName();
+  const adapter = getAdapter(provider);
+  const modelName = config.explicit && config.modelName ? config.modelName : adapter.defaultModelName();
 
   const userBody = input.appendToUserBody
     ? `${assembled.userBody}\n\n${input.appendToUserBody}`
@@ -170,7 +200,7 @@ async function runAssembled(
     recordCompletion(input.callSite, modelName, result);
     return result;
   } catch (error) {
-    recordFailure(input.callSite, config.provider, modelName);
+    recordFailure(input.callSite, provider, modelName);
     throw error;
   }
 }
@@ -188,7 +218,11 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
   const config = configFromRecord(
     assembled.record,
     input.fallbackProvider || DEFAULT_PROVIDER,
-    input.fallbackModelName
+    input.fallbackModelName,
+    // A caller that named a provider chose it; one that fell through to the
+    // default did not, and should be rerouted rather than failed if an admin
+    // has disabled that default.
+    Boolean(input.fallbackProvider)
   );
 
   const result = await runAssembled(assembled, config, {
@@ -229,7 +263,13 @@ export async function createRawCompletion(input: CreateRawCompletionInput): Prom
   const assembled = assembleRawPrompt({ system: input.system, user: input.user });
   const result = await runAssembled(
     assembled,
-    { provider: input.provider || DEFAULT_PROVIDER, modelName: input.modelName },
+    {
+      provider: input.provider || DEFAULT_PROVIDER,
+      modelName: input.modelName,
+      // The bid assistant has no provider setting of its own, so an unnamed
+      // provider here is the default rather than a choice.
+      explicit: Boolean(input.provider),
+    },
     {
       callSite: input.callSite,
       responseFormat: input.responseFormat ?? 'json',

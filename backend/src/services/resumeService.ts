@@ -2153,7 +2153,10 @@ export async function extractTemplateFromPDF(
     maxTokens: 8000,
     temperature: 0,
     responseFormat: 'json',
-    useExactPromptId: true,
+    // Runtime resolution on purpose: this feature's prompt can be replaced by
+    // an activated custom variant in the admin panel, and pinning the exact id
+    // would ignore it. (The tailor and analyze callers are exact because that
+    // is what their rendering already used.)
   });
 
   try {
@@ -2181,7 +2184,7 @@ export async function extractProfileFromResume(
     maxTokens: 4000,
     temperature: 0,
     responseFormat: 'json',
-    useExactPromptId: true,
+    // Runtime resolution: see the note in extractTemplateFromPDF.
   });
 
   try {
