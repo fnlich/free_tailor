@@ -247,7 +247,7 @@ File and folder names are templated per profile.
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Frontend bind address and port (default `0.0.0.0:3000`) |
 | `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime |
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
-| | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory)* |
+| | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
 | `ADMIN_PASSWORD` | Admin login password |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
@@ -268,6 +268,7 @@ See `.env.example` for the full `AI_CLI_*` list.
 |---------|---------------|
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
 | `SQLITE_CANTOPEN` or a permission error on startup | `DB_DIR` points at `/data/db`, which usually does not exist. Set it to a writable path such as `./data/db`. |
+| `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | `The Claude CLI is not installed or is not on the server PATH` | The CLI is on your shell's PATH but not the server process's - common under systemd or Docker, which get a minimal PATH. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
 | Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
