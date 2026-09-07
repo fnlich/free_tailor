@@ -23,6 +23,11 @@ Coverage currently focuses on:
 - app settings persistence and the provider migration
 - the Claude CLI provider: argv, child environment, event reduction, failure
   classification, rate limits, outages and concurrency
+- the platform-dependent decisions - the default database directory, Windows
+  binary resolution, the Windows command-line budget and the path characters
+  Windows reserves. Each of those takes its platform as an argument rather than
+  reading `process.platform`, so both branches are covered from either host and
+  a Windows-only regression fails on Linux CI.
 - generated output paths
 - JSON extraction utilities
 - array utilities

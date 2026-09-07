@@ -8,6 +8,22 @@ const configuredDevOrigins = (process.env.NEXT_PUBLIC_ALLOWED_DEV_ORIGINS ?? "")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+/**
+ * Glob patterns that exclude a sibling directory of `frontend/` from the dev
+ * watcher.
+ *
+ * The separator conversion is what makes this work on Windows. watchpack
+ * matches through anymatch, which normalises the path it is TESTING to forward
+ * slashes but leaves the pattern alone - so a pattern built with
+ * `path.join` carries backslashes on Windows and can never match. The result
+ * was a frontend dev server that rebuilt every time the backend watcher wrote
+ * a file, on Windows only.
+ */
+function siblingIgnorePatterns(name: string): string[] {
+  const absolute = path.join(__dirname, "..", name).replace(/\\/g, "/");
+  return [absolute, `${absolute}/**`];
+}
+
 const nextConfig: NextConfig = {
   allowedDevOrigins: [
     "http://localhost:3000",
@@ -26,8 +42,8 @@ const nextConfig: NextConfig = {
           "**/node_modules/**",
           "**/.git/**",
           "**/.next/**",
-          path.join(__dirname, "..", "backend"),
-          path.join(__dirname, "..", "generated"),
+          ...siblingIgnorePatterns("backend"),
+          ...siblingIgnorePatterns("generated"),
         ],
         aggregateTimeout: 300,
       };

@@ -84,6 +84,8 @@ export type ClaudeArgvOptions = {
   jsonSchema?: Readonly<Record<string, unknown>>;
   fallbackModels?: readonly string[];
   maxBudgetUsd?: number;
+  /** Injected in tests so the Windows budget is covered from any host. */
+  platform?: NodeJS.Platform;
 };
 
 export type ClaudeInvocation = {
@@ -99,19 +101,37 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
 
-export function buildClaudeArgv(options: ClaudeArgvOptions): ClaudeInvocation {
-  const systemPrompt = options.systemPrompt.trim() || CLI_BASE_SYSTEM_PROMPT;
-  const fitsInArgv = byteLength(systemPrompt) <= MAX_SYSTEM_PROMPT_ARG_BYTES;
-  const systemArg = fitsInArgv ? systemPrompt : CLI_BASE_SYSTEM_PROMPT;
+/**
+ * What the whole command line costs on Windows.
+ *
+ * Windows has no per-argument limit; it has a limit on the WHOLE command line,
+ * 32767 UTF-16 units for `CreateProcessW`, and argv is joined into one string
+ * to get there. So the POSIX rule - "each argument may be up to 128 KiB" - is
+ * the wrong question on Windows, and a 40 KB instruction block that is well
+ * inside the per-argument cap kills the spawn outright.
+ *
+ * Node quotes each entry and escapes the quotes and backslashes inside it, so
+ * a value dense in either (a JSON schema, say) grows on the way to the child.
+ * Those are counted rather than guessed at.
+ */
+function windowsCommandLineCost(args: readonly string[]): number {
+  return args.reduce((total, arg) => {
+    const escaped = (arg.match(/["\\]/g) ?? []).length;
+    // + 3: the pair of quotes Node adds and the separating space.
+    return total + arg.length + escaped + 3;
+  }, 0);
+}
 
-  if (!fitsInArgv) {
-    warnOnce(
-      'cli-system-prompt-overflow',
-      `A prompt's instruction block is larger than ${MAX_SYSTEM_PROMPT_ARG_BYTES} bytes, which ` +
-        'exceeds the per-argument limit the operating system enforces on exec. It is being sent ' +
-        'at the head of the message instead of as --system-prompt. Behaviour is equivalent.'
-    );
-  }
+/**
+ * The command line budget, leaving room for what this function cannot see:
+ * the resolved interpreter and script paths the runner puts in front of argv
+ * on Windows, and Windows' own accounting slack.
+ */
+const WINDOWS_COMMAND_LINE_BUDGET = 30_000;
+
+export function buildClaudeArgv(options: ClaudeArgvOptions): ClaudeInvocation {
+  const platform = options.platform ?? process.platform;
+  const systemPrompt = options.systemPrompt.trim() || CLI_BASE_SYSTEM_PROMPT;
 
   const argv = [
     '-p',
@@ -143,8 +163,9 @@ export function buildClaudeArgv(options: ClaudeArgvOptions): ClaudeInvocation {
     // transcript per call into the config directory and never removes it.
     '--no-session-persistence',
     '--system-prompt',
-    systemArg,
+    systemPrompt,
   ];
+  const systemArgIndex = argv.length - 1;
 
   if (options.jsonSchema) {
     argv.push('--json-schema', JSON.stringify(options.jsonSchema));
@@ -158,8 +179,31 @@ export function buildClaudeArgv(options: ClaudeArgvOptions): ClaudeInvocation {
     argv.push('--max-budget-usd', String(options.maxBudgetUsd));
   }
 
-  return {
-    argv,
-    systemPromptOverflow: fitsInArgv ? '' : systemPrompt,
-  };
+  // The two operating systems fail in different places, so both are checked:
+  // Linux and macOS on the size of this one argument, Windows on the size of
+  // the command line it will be joined into.
+  const overflows =
+    platform === 'win32'
+      ? windowsCommandLineCost(argv) > WINDOWS_COMMAND_LINE_BUDGET
+      : byteLength(systemPrompt) > MAX_SYSTEM_PROMPT_ARG_BYTES;
+
+  if (!overflows) {
+    return { argv, systemPromptOverflow: '' };
+  }
+
+  // Sending it at the head of the message is equivalent: the model reads the
+  // same text in the same order, it is simply not carried by exec.
+  argv[systemArgIndex] = CLI_BASE_SYSTEM_PROMPT;
+  warnOnce(
+    'cli-system-prompt-overflow',
+    platform === 'win32'
+      ? `This call's command line is longer than the ${WINDOWS_COMMAND_LINE_BUDGET} characters Windows ` +
+          'allows for one. The prompt\'s instruction block is being sent at the head of the message ' +
+          'instead of as --system-prompt, which shortens it. Behaviour is equivalent.'
+      : `A prompt's instruction block is larger than ${MAX_SYSTEM_PROMPT_ARG_BYTES} bytes, which ` +
+          'exceeds the per-argument limit the operating system enforces on exec. It is being sent ' +
+          'at the head of the message instead of as --system-prompt. Behaviour is equivalent.'
+  );
+
+  return { argv, systemPromptOverflow: systemPrompt };
 }

@@ -196,7 +196,9 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         if (outcome.spawnError.code === 'ENOENT') {
           throw fail('binaryMissing', `spawn ${config.binary}: ${outcome.spawnError.message}`, {
             adminAction:
-              'Install Claude Code (npm i -g @anthropic-ai/claude-code), run `claude auth login` as the user this server runs as, or point AI_CLI_BIN at the binary.',
+              'Install Claude Code (npm i -g @anthropic-ai/claude-code) and run `claude auth login` as the ' +
+              'user this server runs as. If it IS installed, the server process has a different PATH than ' +
+              'your shell - set AI_CLI_BIN to the full path from `which claude` (`where claude` on Windows).',
           });
         }
         throw fail('failed', outcome.spawnError.message);

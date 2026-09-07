@@ -118,3 +118,40 @@ test('resolveStoredFilePath keeps paths inside the configured base directory', (
   assert.equal(resolveStoredFilePath(base, '../outside.pdf'), null);
   assert.equal(resolveStoredFilePath(base, ''), null);
 });
+
+// -- Cross-platform path safety --------------------------------------------- //
+
+test('sanitizePathSegment escapes the device names Windows reserves', () => {
+  // A company called "Con" or a profile called "Aux" is legal input, and the
+  // filesystem refuses the directory with EINVAL rather than creating it.
+  assert.equal(sanitizePathSegment('Con'), '_con');
+  assert.equal(sanitizePathSegment('AUX'), '_aux');
+  assert.equal(sanitizePathSegment('com1'), '_com1');
+  assert.equal(sanitizePathSegment('lpt9'), '_lpt9');
+  // Only the exact names, not anything containing them.
+  assert.equal(sanitizePathSegment('Concorde'), 'concorde');
+  assert.equal(sanitizePathSegment('Nuland'), 'nuland');
+});
+
+test('sanitizeFileNameStem escapes reserved names and Windows-illegal characters', () => {
+  // Windows matches the name before the FIRST dot, extension irrelevant.
+  assert.equal(sanitizeFileNameStem('nul.v2'), '_nul.v2');
+  assert.equal(sanitizeFileNameStem('PRN'), '_PRN');
+  assert.equal(sanitizeFileNameStem('Acme: Inc <2026>'), 'Acme_Inc_2026');
+  assert.equal(sanitizeFileNameStem('a/b\\c'), 'a_b_c');
+  // A trailing dot or space is silently stripped by Windows; strip it here so
+  // the name on disk is the name that was asked for.
+  assert.equal(sanitizeFileNameStem('report. '), 'report');
+});
+
+test('renderOutputPathTemplate produces a path that is legal on both platforms', () => {
+  const rendered = renderOutputPathTemplate('/{{profile name}}/{{company name}}', {
+    date: '2026-04-10',
+    profileName: 'Jane Doe',
+    companyName: 'CON',
+    rowNumber: '12',
+    jobTitle: 'Senior Engineer',
+  });
+
+  assert.equal(rendered, 'jane_doe/_con');
+});

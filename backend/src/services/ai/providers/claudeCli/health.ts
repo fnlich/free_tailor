@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { resolveCliExecPlan } from './resolveBinary';
 import type { ProviderHealth } from '../../types';
 
 /**
@@ -21,11 +22,25 @@ function run(
   env: NodeJS.ProcessEnv,
   timeoutMs: number
 ): Promise<{ ok: boolean; stdout: string; stderr: string; code: string | null }> {
+  // Resolved the same way the runner does, so the health card reports what a
+  // real request would actually find - a `.cmd` shim on Windows included.
+  let plan;
+  try {
+    plan = resolveCliExecPlan(binary);
+  } catch (error) {
+    return Promise.resolve({
+      ok: false,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+      code: 'ENOENT',
+    });
+  }
+
   return new Promise((resolve) => {
     execFile(
-      binary,
-      args,
-      { env, timeout: timeoutMs, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' },
+      plan.command,
+      [...plan.prefixArgs, ...args],
+      { env, timeout: timeoutMs, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL', windowsHide: true },
       (error, stdout, stderr) => {
         const code = (error as NodeJS.ErrnoException | null)?.code ?? null;
         resolve({

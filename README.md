@@ -89,8 +89,13 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 
 ### Prerequisites
 
-- **Node.js** 18+
-- A writable database directory (default `/data/db`; override with `DB_DIR`)
+- **Node.js** 18+ (the same major version for installing and running - see the
+  `NODE_MODULE_VERSION` row under Troubleshooting)
+- **Windows 10/11, Ubuntu, or macOS.** Every command in this guide is the same
+  on all three; where a default differs it is called out below.
+- A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
+  Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
+  backend prints the resolved path at startup.
 - **Claude Code** installed and signed in on the machine running the backend:
 
   ```bash
@@ -98,6 +103,11 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   claude auth login
   claude auth status     # must print "loggedIn": true and "authMethod": "oauth_token"
   ```
+
+  On Windows npm installs this as `claude.cmd`, which Node cannot spawn
+  directly; the backend resolves the shim to the script behind it, so no extra
+  configuration is needed. If that ever fails it says so and asks for
+  `AI_CLI_BIN`.
 
   `oauth_token` is what a subscription looks like. Any other `authMethod` means
   the CLI found an API key and every request will be billed per token; the
@@ -124,10 +134,15 @@ Copy `.env.example` to `.env` in the project root and fill in the values you nee
 ```env
 HOST=0.0.0.0             # backend listens on every interface
 PORT=3001
-DB_DIR=/data/db          # SQLite database directory
+#DB_DIR=                 # SQLite database directory; see the note below
 NEXT_PUBLIC_API_URL=http://localhost:3001/api
 ADMIN_PASSWORD=change-me
 ```
+
+`DB_DIR` is commented out in `.env.example` on purpose, so a fresh checkout
+picks the writable default for the platform it is on. Set it when you want the
+data somewhere specific - `DB_DIR=./data/db` works on both Windows and Ubuntu
+and is resolved from the directory the backend was started in.
 
 Nothing else is required for AI generation: the default provider uses the
 subscription seat you signed in to above. The `AI_CLI_*` variables in
@@ -156,9 +171,12 @@ a readiness line for each AI provider. The one that matters is the first:
 ```
 
 Both sides read the single `.env` at the repository root, on Windows as well as
-macOS and Linux. If `DB_DIR` still points at the default `/data/db`, either
-create that directory and make it writable or point it somewhere local
-(`DB_DIR=./data/db`) - it is the most common first-run failure.
+macOS and Linux, and every npm script here runs under `cmd.exe` and PowerShell
+as well as `bash`. If you set `DB_DIR=/data/db` on Ubuntu, create it and make it
+writable first (`sudo mkdir -p /data/db && sudo chown "$USER" /data/db`); on
+Windows that path means `C:\data\db` and needs an administrator, so leave
+`DB_DIR` unset or point it at something local. A directory the backend cannot
+create is the most common first-run failure, and it says exactly that.
 
 ### 4. Import data from the old JSON layout (optional)
 
@@ -242,12 +260,12 @@ File and folder names are templated per profile.
 | Variable | Description |
 |----------|-------------|
 | `HOST` / `PORT` | Backend bind address and port (default `0.0.0.0:3001`) |
-| `DB_DIR` | SQLite database directory (default `/data/db`) |
+| `DB_DIR` | SQLite database directory. Default `/data/db` on Linux and macOS, `%LOCALAPPDATA%\free_tailor\db` on Windows |
 | `FRONTEND_URL` | Extra allowed CORS origins, comma separated (same-host origins are always allowed) |
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Frontend bind address and port (default `0.0.0.0:3000`) |
 | `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime |
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
-| | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory)* |
+| | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
 | `ADMIN_PASSWORD` | Admin login password |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
@@ -256,9 +274,9 @@ File and folder names are templated per profile.
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
 
 See `.env.example` for the full `AI_CLI_*` list.
-| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
 
 ---
 
@@ -267,8 +285,9 @@ See `.env.example` for the full `AI_CLI_*` list.
 | Symptom | Cause and fix |
 |---------|---------------|
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
-| `SQLITE_CANTOPEN` or a permission error on startup | `DB_DIR` points at `/data/db`, which usually does not exist. Set it to a writable path such as `./data/db`. |
-| `The Claude CLI is not installed or is not on the server PATH` | The CLI is on your shell's PATH but not the server process's - common under systemd or Docker, which get a minimal PATH. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). |
+| `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
+| `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
+| `The Claude CLI is not installed or is not on the server PATH` | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows, point it at `claude.exe` or the CLI's `cli.js` rather than `claude.cmd` if a shim cannot be resolved. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
 | Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
 

@@ -39,22 +39,48 @@ const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
   'job title': 'jobTitle',
 };
 
+/**
+ * The MS-DOS device names Windows still reserves, at every directory level and
+ * with any extension: `CON`, `nul.pdf` and `foo/AUX/bar` are all rejected by
+ * the filesystem with EINVAL rather than created.
+ *
+ * A profile called "Aux" or a company called "Con" is rare but entirely legal,
+ * and without this the failure surfaces as an unexplained write error deep in
+ * generation. Applied on every platform, not just Windows, so a tree generated
+ * on Linux stays portable when it is synced to a Windows machine and so both
+ * platforms produce the same paths for the same inputs.
+ */
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+
+function escapeReservedName(value: string): string {
+  if (!value) {
+    return value;
+  }
+  // Windows matches the name before the FIRST dot, so "nul.tar.gz" is reserved.
+  const stem = value.split('.')[0];
+  return WINDOWS_RESERVED_NAME.test(stem) ? `_${value}` : value;
+}
+
 export function sanitizePathSegment(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+  return escapeReservedName(
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+  );
 }
 
 export function sanitizeFileNameStem(value: string): string {
-  return value
-    .trim()
-    .replace(/[<>:"|?*\x00-\x1F]+/g, '_')
-    .replace(/[/\\]+/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^[_. ]+|[_. ]+$/g, '');
+  return escapeReservedName(
+    value
+      .trim()
+      .replace(/[<>:"|?*\x00-\x1F]+/g, '_')
+      .replace(/[/\\]+/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^[_. ]+|[_. ]+$/g, '')
+  );
 }
 
 function expandUserPath(input: string): string {
