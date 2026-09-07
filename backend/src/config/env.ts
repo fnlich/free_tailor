@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import { readEnvFileText } from './envFile';
 
 /**
  * Loads the repository `.env`, and does it FIRST.
@@ -11,9 +12,15 @@ import path from 'path';
  * `process.env.OPENAI_MODEL` in aiModelCatalog never saw the file at all.
  * Putting the load in its own module makes "first import wins" do the work.
  *
- * `override: true` preserves the behaviour the old per-module load had: the
- * checked-in `.env` beats whatever the shell happens to export.
+ * `override: true` semantics are preserved below: the checked-in `.env` beats
+ * whatever the shell happens to export.
  */
-dotenv.config({ path: path.join(__dirname, '../../../.env'), override: true });
+
+const ENV_PATH = path.join(__dirname, '../../../.env');
+
+const parsed = dotenv.parse(readEnvFileText(ENV_PATH));
+for (const [key, value] of Object.entries(parsed)) {
+  process.env[key] = value;
+}
 
 export const ENV_LOADED = true;

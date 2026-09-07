@@ -343,6 +343,35 @@ function getTimeZoneLabel(timeZone: SupportedTimeZone): string {
   return TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label ?? 'PT';
 }
 
+/**
+ * Reads a calendar API response without assuming it is JSON.
+ *
+ * The four calendar fetches bypass `apiFetch` because they are same-origin
+ * calls to the Next route handlers, not to the Express API - but they had the
+ * same defect it did, in a sharper form: they parsed the body BEFORE checking
+ * the status. Any response Next itself produces is HTML, so `response.json()`
+ * threw `SyntaxError: Unexpected token '<'` and the catch put a JSON parser
+ * message in the error banner. Checking the status first, and treating a
+ * missing or unparseable body as absent rather than as a throw, means the user
+ * is told the status instead of how the body failed to parse.
+ */
+async function readCalendarResponse<T>(
+  response: Response,
+  fallbackMessage: string
+): Promise<T> {
+  const payload = (await response
+    .json()
+    .catch(() => null)) as (CalendarApiResponse<T> & { message?: string }) | null;
+
+  if (!response.ok) {
+    throw new Error(payload?.message || `${fallbackMessage} (HTTP ${response.status})`);
+  }
+  if (!payload) {
+    throw new Error(`${fallbackMessage} (the server did not return JSON)`);
+  }
+  return payload.data;
+}
+
 export default function CalendarWorkspace() {
   const initialShareId = parseShareId(DEFAULT_SHARE_URL);
   const defaultAvailabilityStart = toDateInputValue(addDays(new Date(), 1));
@@ -395,16 +424,12 @@ export default function CalendarWorkspace() {
       setError('');
 
       try {
-        const response = await fetch(`/api/calendars/${shareId}`);
-        const payload = (await response.json()) as CalendarApiResponse<CalendarMetadata> & { message?: string };
-
-        if (!response.ok) {
-          throw new Error(payload.message || 'Failed to load calendar');
-        }
+        const response = await fetch(`/api/calendars/${encodeURIComponent(shareId)}`);
+        const data = await readCalendarResponse<CalendarMetadata>(response, 'Failed to load calendar');
 
         if (!cancelled) {
-          setMetadata(payload.data);
-          setActiveSubCalendars(new Set(payload.data.subCalendars.map((item) => item.id)));
+          setMetadata(data);
+          setActiveSubCalendars(new Set(data.subCalendars.map((item) => item.id)));
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -417,6 +442,19 @@ export default function CalendarWorkspace() {
           setIsLoadingMeta(false);
         }
       }
+    }
+
+    // NEXT_PUBLIC_CALENDAR_SHARE_URL is optional, so a default install has no
+    // share id at all. Without this guard the page requested `/api/calendars/`
+    // on every mount, which matches no route handler, and the resulting Next
+    // 404 page became an error banner on a first visit. There is nothing to
+    // load until the visitor pastes a link; say so instead of failing.
+    if (!shareId) {
+      setMetadata(null);
+      setEvents([]);
+      setIsLoadingMeta(false);
+      setIsLoadingEvents(false);
+      return;
     }
 
     loadCalendar();
@@ -443,15 +481,13 @@ export default function CalendarWorkspace() {
       });
 
       try {
-        const response = await fetch(`/api/calendars/${shareId}/events?${params.toString()}`);
-        const payload = (await response.json()) as CalendarApiResponse<CalendarEvent[]> & { message?: string };
-
-        if (!response.ok) {
-          throw new Error(payload.message || 'Failed to load events');
-        }
+        const response = await fetch(
+          `/api/calendars/${encodeURIComponent(shareId)}/events?${params.toString()}`
+        );
+        const data = await readCalendarResponse<CalendarEvent[]>(response, 'Failed to load events');
 
         if (!cancelled) {
-          setEvents(payload.data);
+          setEvents(data);
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -684,15 +720,13 @@ export default function CalendarWorkspace() {
         endDate: `${availabilityToDate} 23:59:59`,
         timeZone: availabilityTimeZone,
       });
-      const response = await fetch(`/api/calendars/${shareId}/events?${params.toString()}`);
-      const payload = (await response.json()) as CalendarApiResponse<CalendarEvent[]> & { message?: string };
-
-      if (!response.ok) {
-        throw new Error(payload.message || 'Failed to load availability.');
-      }
+      const response = await fetch(
+        `/api/calendars/${encodeURIComponent(shareId)}/events?${params.toString()}`
+      );
+      const data = await readCalendarResponse<CalendarEvent[]>(response, 'Failed to load availability.');
 
       const selectedIds = availabilityUserIds;
-      const relevantEvents = payload.data.filter((event) => event.subCalendars.some((id) => selectedIds.has(id)));
+      const relevantEvents = data.filter((event) => event.subCalendars.some((id) => selectedIds.has(id)));
 
       const nextResults = enumerateDayKeys(availabilityFromDate, availabilityToDate).map((dayKey) => {
         const dayDate = utcDateFromDayKey(dayKey);
@@ -805,19 +839,15 @@ export default function CalendarWorkspace() {
         endDate: `${jobLinksToDate} 23:59:59`,
         timeZone: selectedTimeZone,
       });
-      const response = await fetch(`/api/calendars/${shareId}/links?${params.toString()}`);
-      const payload = (await response.json()) as {
-        data?: {
-          results: JobLinkResult[];
-        };
-        message?: string;
-      };
+      const response = await fetch(
+        `/api/calendars/${encodeURIComponent(shareId)}/links?${params.toString()}`
+      );
+      const data = await readCalendarResponse<{ results: JobLinkResult[] }>(
+        response,
+        'Failed to load links.'
+      );
 
-      if (!response.ok) {
-        throw new Error(payload.message || 'Failed to load links.');
-      }
-
-      setJobLinkResults(payload.data?.results ?? []);
+      setJobLinkResults(data?.results ?? []);
     } catch (loadError) {
       setJobLinksError(loadError instanceof Error ? loadError.message : 'Failed to load links.');
       setJobLinkResults([]);

@@ -34,13 +34,38 @@ const require = createRequire(import.meta.url);
  * optional surrounding quotes. Enough for this file, and it keeps the frontend
  * free of a dependency it would otherwise need only here.
  */
+/**
+ * Reads a `.env` as text, whatever encoding Windows wrote it in.
+ *
+ * PowerShell 5.1 - still the default `powershell.exe` on Windows 10 and 11 -
+ * writes UTF-16LE from both `>` and `Set-Content`. Read as UTF-8 that file
+ * parses into mangled keys with NUL bytes in them, so every variable in it is
+ * silently ignored and the frontend builds against the built-in defaults. No
+ * error, no warning, and a `.env` that visibly exists but does nothing.
+ *
+ * backend/src/config/env.ts decodes the same file for the backend and must
+ * agree with this; change the two together.
+ */
+function readEnvText(filePath) {
+  const buffer = readFileSync(filePath);
+
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString('utf16le');
+  }
+  // UTF-16BE: Node cannot decode it directly, so swap to LE first.
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return Buffer.from(buffer.subarray(2)).swap16().toString('utf16le');
+  }
+  return buffer.toString('utf8').replace(/^\uFEFF/, '');
+}
+
 function parseEnvFile(filePath) {
   const parsed = {};
   if (!existsSync(filePath)) {
     return parsed;
   }
 
-  for (const rawLine of readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+  for (const rawLine of readEnvText(filePath).split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) {
       continue;
