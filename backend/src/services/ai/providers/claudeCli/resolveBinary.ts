@@ -159,12 +159,43 @@ export class CliBinaryUnresolvableError extends Error {
   }
 }
 
+/**
+ * Successful Windows resolutions, keyed on everything that could change one.
+ *
+ * The search is a synchronous PATH scan: PATHEXT variants times PATH entries,
+ * which on a normal Windows box is several hundred `statSync` calls. Doing
+ * that on every completion would block the event loop for every concurrent
+ * request, and the answer is the same every time. Only successes are cached -
+ * a failure is re-scanned so that installing the CLI and re-checking health
+ * does not require a restart - and a cached entry is confirmed with a single
+ * stat, so an uninstall is noticed rather than spawned into.
+ */
+const planCache = new Map<string, CliExecPlan>();
+
+function cacheKey(binary: string, deps: ResolveDeps): string {
+  return [binary, deps.execPath, deps.pathExt.join(';'), deps.pathEntries.join(';')].join('\u0000');
+}
+
+/** Exposed for tests; nothing in the running server needs to call it. */
+export function clearCliExecPlanCache(): void {
+  planCache.clear();
+}
+
 export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultResolveDeps()): CliExecPlan {
   // On POSIX, spawn resolves PATH itself and executes scripts by shebang, so
   // there is nothing to do. Keeping this branch trivial also keeps the
   // behaviour that has been running in production unchanged.
   if (deps.platform !== 'win32') {
     return { command: binary, prefixArgs: [], kind: 'direct', resolvedFrom: binary };
+  }
+
+  const key = cacheKey(binary, deps);
+  const cached = planCache.get(key);
+  if (cached) {
+    if (deps.exists(cached.resolvedFrom)) {
+      return cached;
+    }
+    planCache.delete(key);
   }
 
   const candidates = candidatePaths(binary, deps);
@@ -181,18 +212,18 @@ export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultRe
 
   // A real executable: spawn it, and let Node quote the arguments.
   if (extension === '.exe' || extension === '.com') {
-    return { command: found, prefixArgs: [], kind: 'windows-exe', resolvedFrom: found };
+    return remember(key, { command: found, prefixArgs: [], kind: 'windows-exe', resolvedFrom: found });
   }
 
   // A .js entry point named directly.
   if (extension === '.js' || extension === '.cjs' || extension === '.mjs') {
-    return { command: deps.execPath, prefixArgs: [found], kind: 'node-script', resolvedFrom: found };
+    return remember(key, { command: deps.execPath, prefixArgs: [found], kind: 'node-script', resolvedFrom: found });
   }
 
   // A .cmd/.bat/.ps1 shim: run what it wraps, so no shell is involved.
   const script = scriptBehindShim(found, deps);
   if (script) {
-    return { command: deps.execPath, prefixArgs: [script], kind: 'node-script', resolvedFrom: found };
+    return remember(key, { command: deps.execPath, prefixArgs: [script], kind: 'node-script', resolvedFrom: found });
   }
 
   // Deliberately NOT falling back to cmd.exe. Doing so would put an
@@ -203,4 +234,9 @@ export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultRe
     `Found "${found}", but it is a shim this server cannot run safely and the script it wraps could not be located. ` +
       'Set AI_CLI_BIN to the claude executable (claude.exe) or to the CLI\'s cli.js.'
   );
+}
+
+function remember(key: string, plan: CliExecPlan): CliExecPlan {
+  planCache.set(key, plan);
+  return plan;
 }

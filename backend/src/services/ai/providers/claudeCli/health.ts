@@ -40,7 +40,7 @@ function run(
     execFile(
       plan.command,
       [...plan.prefixArgs, ...args],
-      { env, timeout: timeoutMs, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL' },
+      { env, timeout: timeoutMs, maxBuffer: 1024 * 1024, killSignal: 'SIGKILL', windowsHide: true },
       (error, stdout, stderr) => {
         const code = (error as NodeJS.ErrnoException | null)?.code ?? null;
         resolve({

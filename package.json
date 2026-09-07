@@ -2,9 +2,9 @@
   "name": "free_tailor",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
-    "dev:poll": "sh -c 'trap \"kill 0\" EXIT INT TERM; npm run dev:poll --prefix backend & npm run dev --prefix frontend & wait'",
-    "dev:live": "sh -c 'trap \"kill 0\" EXIT INT TERM; npm run dev --prefix backend & npm run dev:live --prefix frontend & wait'",
+    "dev": "concurrently --kill-others --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
+    "dev:poll": "concurrently --kill-others --names backend,frontend --prefix-colors cyan,magenta \"npm run dev:poll --prefix backend\" \"npm run dev --prefix frontend\"",
+    "dev:live": "concurrently --kill-others --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
     "dev:backend": "npm run dev --prefix backend",
     "dev:backend:poll": "npm run dev:poll --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",

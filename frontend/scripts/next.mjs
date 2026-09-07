@@ -149,8 +149,15 @@ child.on('error', (error) => {
 });
 child.on('exit', (code, signal) => {
   if (signal) {
-    process.kill(process.pid, signal);
-    return;
+    // Re-raise so the shell sees the same cause of death. Windows has no POSIX
+    // signals and process.kill only accepts a few names there, so a signal it
+    // does not know must not become an unhandled throw out of the launcher.
+    try {
+      process.kill(process.pid, signal);
+      return;
+    } catch {
+      process.exit(1);
+    }
   }
   process.exit(code ?? 0);
 });

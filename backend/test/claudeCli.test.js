@@ -111,6 +111,59 @@ test('a JSON schema is passed only when one is supplied', () => {
   assert.equal(with_.argv[with_.argv.indexOf('--json-schema') + 1], JSON.stringify(schema));
 });
 
+test('the Linux argument limit is measured on the argument, not the command line', () => {
+  // 40 KB is well inside MAX_ARG_STRLEN, so POSIX keeps it in argv - where it
+  // saves prepending it to every message - even though Windows could not.
+  const prompt = 'x'.repeat(40_000);
+  const built = argv.buildClaudeArgv({
+    model: 'sonnet',
+    effort: 'low',
+    systemPrompt: prompt,
+    platform: 'linux',
+  });
+
+  assert.equal(built.systemPromptOverflow, '');
+  assert.equal(built.argv[built.argv.indexOf('--system-prompt') + 1], prompt);
+});
+
+test('Windows measures the whole command line, which is where it actually fails', () => {
+  // Windows has no per-argument cap; CreateProcessW caps the joined command
+  // line at 32767 UTF-16 units. The same 40 KB block that is fine on Linux
+  // kills the spawn here before the CLI is ever reached, so it goes to stdin.
+  const prompt = 'x'.repeat(40_000);
+  const built = argv.buildClaudeArgv({
+    model: 'sonnet',
+    effort: 'low',
+    systemPrompt: prompt,
+    platform: 'win32',
+  });
+
+  assert.equal(built.systemPromptOverflow, prompt);
+  assert.equal(built.argv[built.argv.indexOf('--system-prompt') + 1], argv.CLI_BASE_SYSTEM_PROMPT);
+
+  const commandLine = built.argv.join(' ');
+  assert.ok(
+    commandLine.length < 32_767,
+    `the command line must stay under the Windows limit, was ${commandLine.length}`
+  );
+});
+
+test('an ordinary prompt stays in argv on Windows too', () => {
+  // The Windows budget must not push every call onto stdin: the overwhelming
+  // majority of instruction blocks are a few kilobytes.
+  const prompt = 'Answer in JSON.'.repeat(200);
+  const built = argv.buildClaudeArgv({
+    model: 'sonnet',
+    effort: 'low',
+    systemPrompt: prompt,
+    jsonSchema: { type: 'object', properties: { verdict: { type: 'string' } } },
+    platform: 'win32',
+  });
+
+  assert.equal(built.systemPromptOverflow, '');
+  assert.equal(built.argv[built.argv.indexOf('--system-prompt') + 1], prompt);
+});
+
 test('an oversized system prompt moves to stdin instead of blowing the exec argument limit', () => {
   // Measured: a 150 KB --system-prompt fails the exec outright with
   // "Argument list too long", because Linux caps one argv entry at 128 KiB
@@ -732,7 +785,7 @@ test('a spent seat-wide window parks the seat, whatever rateLimitType names', ()
 // and filesystem as injected dependencies, which is the only honest way to
 // cover a Windows-only failure from a Linux CI.
 
-const { resolveCliExecPlan, CliBinaryUnresolvableError } = load(
+const { resolveCliExecPlan, CliBinaryUnresolvableError, clearCliExecPlanCache } = load(
   '../dist/services/ai/providers/claudeCli/resolveBinary'
 );
 
@@ -821,4 +874,50 @@ test('an unrunnable shim asks for AI_CLI_BIN rather than falling back to a shell
     () => resolveCliExecPlan('claude', windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' })),
     (error) => error instanceof CliBinaryUnresolvableError && /AI_CLI_BIN/.test(error.message)
   );
+});
+
+test('a resolved Windows plan is reused instead of rescanning PATH', () => {
+  // The scan is PATHEXT variants times PATH entries of synchronous statSync,
+  // and it runs before every completion. On Windows that is hundreds of
+  // blocking syscalls per request for an answer that never changes.
+  clearCliExecPlanCache();
+
+  const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
+  const base = windowsDeps({ [exe]: '' });
+  let stats = 0;
+  const counting = { ...base, exists: (filePath) => { stats += 1; return base.exists(filePath); } };
+
+  const first = resolveCliExecPlan('claude', counting);
+  const afterFirst = stats;
+  const second = resolveCliExecPlan('claude', counting);
+
+  assert.deepEqual(second, first);
+  assert.ok(afterFirst > 1, 'the first resolution should have scanned PATH');
+  // Exactly one stat on the second call: the confirmation that it is still there.
+  assert.equal(stats - afterFirst, 1);
+});
+
+test('a cached plan is dropped when the binary it points at goes away', () => {
+  clearCliExecPlanCache();
+
+  const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
+  const cli = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
+
+  assert.equal(resolveCliExecPlan('claude', windowsDeps({ [exe]: '' })).kind, 'windows-exe');
+
+  // Same key, different filesystem: an npm reinstall that replaced the native
+  // executable with a shim must not keep serving the stale path.
+  const plan = resolveCliExecPlan('claude', windowsDeps({ [shim]: NPM_CMD_SHIM, [cli]: '' }));
+  assert.equal(plan.kind, 'node-script');
+  assert.deepEqual(plan.prefixArgs, [cli]);
+});
+
+test('a failed resolution is not cached, so installing the CLI needs no restart', () => {
+  clearCliExecPlanCache();
+
+  assert.throws(() => resolveCliExecPlan('claude', windowsDeps({})), CliBinaryUnresolvableError);
+
+  const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
+  assert.equal(resolveCliExecPlan('claude', windowsDeps({ [exe]: '' })).kind, 'windows-exe');
 });

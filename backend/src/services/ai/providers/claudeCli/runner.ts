@@ -113,6 +113,46 @@ function lastLine(text: string): string {
   return lines.length ? lines[lines.length - 1] : '';
 }
 
+/** Retry schedule for the scratch file below, in ms. */
+const UNLINK_RETRY_DELAYS_MS = [50, 500, 3_000, 8_000];
+
+/**
+ * Deletes the scratch file the child wrote its stderr to, on Windows too.
+ *
+ * POSIX unlinks a file that is still open without complaint. Windows does not:
+ * the child inherited the handle, and every path that ends a turn early - the
+ * deadline, the stall timer, an abort - deletes while the child is still being
+ * killed, so the delete fails with EPERM/EBUSY and the file stays in %TEMP%
+ * forever. One per aborted request adds up on a long-running server.
+ *
+ * So the delete is retried on a short schedule, on timers that are unref'd:
+ * this is cleanup, and it must never be the reason the process stays alive.
+ */
+function removeWhenClosed(filePath: string): void {
+  let attempt = 0;
+
+  const tryUnlink = (): void => {
+    try {
+      fs.unlinkSync(filePath);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Already gone, or never created: nothing to retry.
+      if (code === 'ENOENT') {
+        return;
+      }
+      if (attempt >= UNLINK_RETRY_DELAYS_MS.length) {
+        return;
+      }
+      const timer = setTimeout(tryUnlink, UNLINK_RETRY_DELAYS_MS[attempt]);
+      attempt += 1;
+      timer.unref?.();
+    }
+  };
+
+  tryUnlink();
+}
+
 export function createSpawnRunner(): CliRunner {
   return {
     run(spec: CliRunSpec): Promise<CliRunOutcome> {
@@ -155,12 +195,9 @@ export function createSpawnRunner(): CliRunner {
             } catch {
               /* already closed */
             }
+            errFd = null;
           }
-          try {
-            fs.unlinkSync(errPath);
-          } catch {
-            /* never created */
-          }
+          removeWhenClosed(errPath);
           const enoent = Object.assign(
             new Error(error instanceof Error ? error.message : String(error)),
             { code: 'ENOENT' }
@@ -182,6 +219,10 @@ export function createSpawnRunner(): CliRunner {
           cwd: spec.cwd,
           env: spec.env,
           stdio: ['pipe', 'pipe', errFd ?? 'ignore'],
+          // Windows would otherwise allocate a console for the child when the
+          // server itself has none - running as a service, or from a GUI
+          // launcher - which flashes a window per request. No effect on POSIX.
+          windowsHide: true,
         });
 
         const readStderr = (): string => {
@@ -208,12 +249,9 @@ export function createSpawnRunner(): CliRunner {
             } catch {
               /* already closed */
             }
+            errFd = null;
           }
-          try {
-            fs.unlinkSync(errPath);
-          } catch {
-            /* never created, or already gone */
-          }
+          removeWhenClosed(errPath);
         };
 
         const finish = (outcome: Omit<CliRunOutcome, 'stderrTail' | 'bytesRead'>): void => {

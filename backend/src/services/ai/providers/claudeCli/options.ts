@@ -16,10 +16,14 @@ export const DEFAULT_CLI_MODEL = 'sonnet';
 export const DEFAULT_CLI_EFFORT: EffortLevel = 'low';
 
 /**
- * Linux caps a SINGLE argv entry at MAX_ARG_STRLEN (128 KiB), independently of
- * the much larger ARG_MAX total. Measured here: a 150 KB `--system-prompt`
- * fails the exec outright with "Argument list too long". Anything longer than
- * this threshold is moved to the head of stdin instead, which has no such cap.
+ * The POSIX limit. Linux caps a SINGLE argv entry at MAX_ARG_STRLEN (128 KiB),
+ * independently of the much larger ARG_MAX total. Measured here: a 150 KB
+ * `--system-prompt` fails the exec outright with "Argument list too long".
+ * Anything longer than this threshold is moved to the head of stdin instead,
+ * which has no such cap.
+ *
+ * Windows is limited differently - on the whole command line rather than on
+ * one argument - and `buildClaudeArgv` measures that separately.
  */
 export const MAX_SYSTEM_PROMPT_ARG_BYTES = 60_000;
 
