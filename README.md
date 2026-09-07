@@ -148,7 +148,17 @@ cd backend && npm run dev        # http://<server-ip>:3001
 cd frontend && npm run dev:live  # http://<server-ip>:3000
 ```
 
-The backend prints every address it is reachable on when it starts.
+The backend prints every address it is reachable on when it starts, followed by
+a readiness line for each AI provider. The one that matters is the first:
+
+```
+[ai] claude-cli: Signed in on a Claude subscription (OAuth).
+```
+
+Both sides read the single `.env` at the repository root, on Windows as well as
+macOS and Linux. If `DB_DIR` still points at the default `/data/db`, either
+create that directory and make it writable or point it somewhere local
+(`DB_DIR=./data/db`) - it is the most common first-run failure.
 
 ### 4. Import data from the old JSON layout (optional)
 
@@ -237,6 +247,7 @@ File and folder names are templated per profile.
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Frontend bind address and port (default `0.0.0.0:3000`) |
 | `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime |
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
+| | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
 | `ADMIN_PASSWORD` | Admin login password |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
@@ -250,6 +261,16 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
 
 ---
+
+## 🩺 Troubleshooting
+
+| Symptom | Cause and fix |
+|---------|---------------|
+| `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
+| `SQLITE_CANTOPEN` or a permission error on startup | `DB_DIR` points at `/data/db`, which usually does not exist. Set it to a writable path such as `./data/db`. |
+| `The Claude CLI is not installed or is not on the server PATH` | The CLI is on your shell's PATH but not the server process's - common under systemd or Docker, which get a minimal PATH. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). |
+| Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
+| Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
 
 ## 🧪 Tests
 
