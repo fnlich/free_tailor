@@ -1,13 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { applyTheme, getStoredTheme, THEME_STORAGE_KEY } from '@/lib/theme';
+import { applyTheme, getStoredTheme, resolvePreferredTheme, THEME_STORAGE_KEY } from '@/lib/theme';
 
 type Theme = 'light' | 'dark';
 
-function getResolvedTheme(): Theme {
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-}
 
 export default function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>('light');
@@ -16,15 +13,28 @@ export default function ThemeToggle() {
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
+    // Re-derives the theme from storage and RE-APPLIES it, rather than reading
+    // it back off <html>. The inline script in the root layout normally has
+    // already set it, but there are ways for that not to hold by the time this
+    // runs: a Content-Security-Policy that blocks inline scripts, an extension
+    // that removes them, or a hydration mismatch severe enough that React
+    // regenerates the tree and resets the attributes the script wrote. Reading
+    // the DOM inherits all of those failures silently and leaves the app stuck
+    // in light mode; re-applying repairs them.
     const syncTheme = () => {
-      setTheme(getResolvedTheme());
+      const resolved = resolvePreferredTheme();
+      applyTheme(resolved);
+      setTheme(resolved);
       setMounted(true);
     };
 
     const handleSystemThemeChange = () => {
+      // Only follow the system when the visitor has made no choice of their
+      // own. resolvePreferredTheme still prefers the configured default over
+      // the system, so this cannot override an administrator's setting either.
       if (getStoredTheme()) return;
 
-      const nextTheme: Theme = mediaQuery.matches ? 'dark' : 'light';
+      const nextTheme = resolvePreferredTheme();
       applyTheme(nextTheme);
       setTheme(nextTheme);
     };

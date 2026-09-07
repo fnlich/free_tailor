@@ -75,6 +75,46 @@ function getAuthHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * The backend answered, and said no.
+ *
+ * This exists so the retry loop below can tell "nothing is listening" from
+ * "the server replied with an error", by TYPE rather than by reading the
+ * message. The previous test was `message.includes('fetch')`, and almost every
+ * error string the backend produces for a failed read is of the form
+ * "Failed to fetch settings" / "Failed to fetch prompts" / "Failed to fetch
+ * templates" (backend/src/routes/*.ts). Every one of those matched, so a plain
+ * server-side 500 was classified as a lost connection and replayed against
+ * every remaining candidate base - measured in a browser: 6 requests where 3
+ * were made, for a page whose API was answering 500s. Retrying cannot help
+ * there, because the server that answered is the right server.
+ */
+export class ApiResponseError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly url: string
+  ) {
+    super(message);
+    this.name = 'ApiResponseError';
+  }
+}
+
+/** Nothing answered at any candidate base. */
+export class ApiUnreachableError extends Error {
+  constructor(
+    readonly triedUrls: string[],
+    readonly cause: Error
+  ) {
+    super(
+      `Cannot reach the backend at ${triedUrls.join(' or ')}. ` +
+        'Check that it is running and listening on that port. ' +
+        `(${cause.message})`
+    );
+    this.name = 'ApiUnreachableError';
+  }
+}
+
 // Generic fetch wrapper
 async function apiFetch<T>(
   endpoint: string,
@@ -91,38 +131,43 @@ async function apiFetch<T>(
   }
 
   let lastConnectionError: Error | null = null;
+  const tried: string[] = [];
 
   for (const apiBase of buildApiBaseCandidates()) {
     const url = `${apiBase}${endpoint}`;
+    tried.push(apiBase);
+
+    let response: Response;
     try {
-      const response = await fetch(url, {
-        ...options,
-        headers,
-      });
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: 'Request failed' }));
-        throw new Error(error.error || 'Request failed');
-      }
-
-      resolvedApiBase = apiBase;
-      return response.json();
+      response = await fetch(url, { ...options, headers });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isConnectionIssue =
-        message.includes('fetch') ||
-        message.includes('Failed to fetch') ||
-        message.includes('NetworkError');
-
-      if (!isConnectionIssue) {
-        throw error;
-      }
-
-      lastConnectionError = error instanceof Error ? error : new Error(message);
+      // `fetch` rejects only when the request never completed: no server, DNS
+      // failure, a refused CORS preflight, or a dropped connection. That, and
+      // only that, is worth trying the next base for.
+      lastConnectionError = error instanceof Error ? error : new Error(String(error));
+      continue;
     }
+
+    // From here the server answered, so the candidate is the right one even if
+    // the answer is an error. Trying another base would only repeat it.
+    resolvedApiBase = apiBase;
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}) as { error?: string });
+      throw new ApiResponseError(
+        body.error || `Request failed with HTTP ${response.status}`,
+        response.status,
+        url
+      );
+    }
+
+    return response.json() as Promise<T>;
   }
 
-  throw lastConnectionError ?? new Error('Unable to connect to backend');
+  throw new ApiUnreachableError(
+    tried,
+    lastConnectionError ?? new Error('no API base was configured')
+  );
 }
 
 /**
