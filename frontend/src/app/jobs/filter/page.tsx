@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import AppTopNav from '@/components/AppTopNav';
 import {
+  getAIProviderLabel,
   GoogleSheetJobFilterResponse,
   GoogleSheetSource,
   GoogleSheetTab,
@@ -380,7 +381,7 @@ export default function JobFilterPage() {
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 <div>Scanned: {summary.scannedRows}</div>
-                <div>Runtime provider: {summary.provider}</div>
+                <div>Runtime provider: {getAIProviderLabel(summary.provider)}</div>
                 <div>Runtime model: {summary.modelName || 'default'}</div>
                 <div>Scraped pages: {summary.scrapedRows}</div>
                 <div>Skipped rows: {summary.skippedRows}</div>

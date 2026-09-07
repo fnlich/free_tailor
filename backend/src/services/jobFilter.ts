@@ -1,9 +1,16 @@
 import type { AIProvider } from '../types/template';
 import { extractJSON } from '../utils/json';
-import { createPromptCompletion } from './claude';
+import { createPromptCompletion } from './ai';
 import { renderPrompt } from './promptService';
 
-export const JOB_FILTER_PROVIDER: AIProvider = 'openrouter';
+/**
+ * The provider a sheet-filter row runs on when nothing else names one.
+ *
+ * Sheet filtering is the highest-volume AI call in the app - one per row - so
+ * it is the call that most wants a subscription seat rather than metered
+ * tokens.
+ */
+export const JOB_FILTER_PROVIDER: AIProvider = 'claude-cli';
 export const JOB_FILTER_PROMPT_ID = 'filter-google-sheet-job';
 export const JOB_FILTER_MIN_CONTENT_LENGTH = 50;
 
@@ -210,24 +217,38 @@ export async function buildJobFilterPrompt(jobContent: string, jobLink = ''): Pr
   });
 }
 
+export function buildJobFilterPromptValues(jobContent: string, jobLink = ''): Record<string, string> {
+  return {
+    jobContent,
+    jobDescription: jobContent,
+    jobLink: jobLink.trim(),
+  };
+}
+
 export async function evaluateJobContentAgainstFilter(input: {
   jobContent: string;
   jobLink?: string;
   provider?: AIProvider;
+  modelName?: string;
+  signal?: AbortSignal;
 }): Promise<JobFilterAnalysis> {
   const jobContent = normalizeText(input.jobContent);
   if (jobContent.length < JOB_FILTER_MIN_CONTENT_LENGTH) {
     return getEmptyJobFilterAnalysis();
   }
 
-  const prompt = await buildJobFilterPrompt(jobContent, input.jobLink);
+  // Passing values rather than pre-rendered text is what lets the transport
+  // put the prompt's instruction preamble in the system channel. This call
+  // used to pass neither, which meant it also got no JSON-only instruction.
   const responseText = await createPromptCompletion({
     promptId: JOB_FILTER_PROMPT_ID,
-    prompt,
+    promptValues: buildJobFilterPromptValues(jobContent, input.jobLink),
     fallbackProvider: input.provider || JOB_FILTER_PROVIDER,
+    fallbackModelName: input.modelName,
     maxTokens: 500,
     temperature: 0,
     responseFormat: 'json',
+    signal: input.signal,
   });
   const responseJson = JSON.parse(extractJSON(responseText)) as unknown;
   return normalizeJobFilterAnalysis(responseJson);

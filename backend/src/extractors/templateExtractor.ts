@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import pdf from 'pdf-parse';
-import { extractTemplateFromPDF } from '../services/claude';
+import { extractTemplateFromPDF } from '../services/resumeService';
 import { Template } from '../types/template';
 import { v4 as uuidv4 } from 'uuid';
 import { getStaticTemplatesDir } from '../config/staticPaths';

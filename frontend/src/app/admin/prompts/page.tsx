@@ -130,12 +130,12 @@ function getFeatureRank(featureKey: PromptFeatureKey): number {
 export default function PromptsPage() {
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
   const [modelOptions, setModelOptions] = useState<AIModelOption[]>([]);
-  const [enabledProviders, setEnabledProviders] = useState<Record<AIProvider, boolean>>({
-    openai: true,
-    claude: true,
-    openrouter: true,
-    deepseek: true,
-  });
+  // Seeded empty rather than optimistically all-true: an all-true seed made
+  // the model dropdown briefly offer models from providers the admin had
+  // disabled, with no "(provider disabled)" suffix to say so.
+  const [enabledProviders, setEnabledProviders] = useState<Record<AIProvider, boolean>>(
+    () => ({}) as Record<AIProvider, boolean>
+  );
   const [selectedFeatureKey, setSelectedFeatureKey] = useState<PromptFeatureKey | null>(null);
   const [activeCandidateId, setActiveCandidateId] = useState('');
   const [draft, setDraft] = useState<PromptDraft | null>(null);
@@ -294,12 +294,7 @@ export default function PromptsPage() {
         if (!isMounted) return;
 
         setModelOptions(options);
-        setEnabledProviders({
-          openai: settings.openaiEnabled,
-          claude: settings.claudeEnabled,
-          openrouter: settings.openrouterEnabled,
-          deepseek: settings.deepseekEnabled,
-        });
+        setEnabledProviders(settings.providersEnabled);
       } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load prompt model options');
@@ -803,7 +798,7 @@ export default function PromptsPage() {
                 </select>
                 {draft.modelProvider && draft.modelName && (
                   <p className="mt-1 text-xs text-gray-500">
-                    Saved override: {draft.modelProvider} / {draft.modelName}
+                    Saved override: {getAIProviderLabel(draft.modelProvider)} / {draft.modelName}
                   </p>
                 )}
               </div>

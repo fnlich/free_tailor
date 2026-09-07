@@ -1,6 +1,7 @@
+// Must be first: it loads .env before any other module reads process.env.
+import './config/env';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import os from 'os';
 import path from 'path';
 import { getGeneratedFilePath } from './utils/generatedPath';
@@ -15,8 +16,9 @@ import importRoutes from './routes/import';
 import promptRoutes from './routes/prompts';
 import jobRoutes from './routes/jobs';
 import bidAssistantRoutes from './routes/bidAssistant';
-
-dotenv.config({ path: path.join(__dirname, '../../.env') });
+import aiHealthRoutes from './routes/aiHealth';
+import { aiErrorHandler } from './middleware/aiErrors';
+import { preflightAllProviders } from './services/ai';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -95,11 +97,16 @@ app.use('/api/import', importRoutes);
 app.use('/api/prompts', promptRoutes);
 app.use('/api/jobs', jobRoutes);
 app.use('/api/bid-assistant', bidAssistantRoutes);
+app.use('/api/admin/ai', aiHealthRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// AI transport failures answer with a status and a message a person can act
+// on; everything else falls through to the generic handler below.
+app.use(aiErrorHandler);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -124,12 +131,23 @@ function listServerUrls(): string[] {
   return urls;
 }
 
-// Open the database eagerly so schema problems surface at startup.
+// Open the database eagerly so schema problems - and the provider migration -
+// surface at startup rather than on the first request.
 getDb();
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);
   console.log(`Server listening on ${listServerUrls().join(', ')}`);
+  // Reports a missing binary or a signed-out subscription seat where an
+  // operator can see it, instead of hours later as a failed generation.
+  void preflightAllProviders();
 });
+
+// Node's `requestTimeout` bounds RECEIVING a request, and `headersTimeout` its
+// headers; neither bounds producing the response. They are raised here so a
+// slow or large upload on a busy box is not cut off, not because they limit
+// generation - the AI layer's own per-call deadlines are what bound that.
+server.requestTimeout = 15 * 60_000;
+server.headersTimeout = 15 * 60_000 + 10_000;
 
 export default app;

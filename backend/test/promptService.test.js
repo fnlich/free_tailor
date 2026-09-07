@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const path = require('node:path');
+const Database = require('better-sqlite3');
 
 const { loadFresh, readDocument, readJson, readSettingRaw, useTempStorage, writeStaticJson } = require('./helpers');
 
@@ -43,22 +45,22 @@ test('prompt service creates, previews, updates, and deletes custom prompts in t
     description: 'Simple greeting',
     content: 'Hello [[name]]',
     responseFormat: 'text',
-    modelProvider: 'openrouter',
-    modelName: 'google/gemini-2.5-flash',
+    modelProvider: 'claude-cli',
+    modelName: 'opus',
     allowedVariables: [{ name: 'name', description: 'Recipient name', sampleValue: 'Jane' }],
   });
 
   assert.equal(created.id, 'custom-greeting-prompt');
   assert.equal(created.isBuiltIn, false);
   assert.equal(created.content, 'Hello [[name]]');
-  assert.equal(created.modelProvider, 'openrouter');
-  assert.equal(created.modelName, 'google/gemini-2.5-flash');
+  assert.equal(created.modelProvider, 'claude-cli');
+  assert.equal(created.modelName, 'opus');
   assert.deepEqual(created.validation, { usedVariables: ['name'], unknownVariables: [] });
 
   const storedRecord = readDocument(dbDir, 'prompts', created.id);
   assert.equal(storedRecord.content, 'Hello [[name]]');
-  assert.equal(storedRecord.modelProvider, 'openrouter');
-  assert.equal(storedRecord.modelName, 'google/gemini-2.5-flash');
+  assert.equal(storedRecord.modelProvider, 'claude-cli');
+  assert.equal(storedRecord.modelName, 'opus');
   assert.equal(storedRecord.isBuiltIn, false);
 
   const preview = await promptService.previewPrompt({
@@ -98,8 +100,8 @@ test('prompt service supports multiple prompt variants per feature and active se
     name: 'Filter Variant A',
     featureKey: 'filter-google-sheet-job',
     content: 'Variant A [[jobContent]]',
-    modelProvider: 'openrouter',
-    modelName: 'deepseek/deepseek-chat',
+    modelProvider: 'claude-cli',
+    modelName: 'sonnet',
   });
   const variantB = await promptService.createPrompt({
     name: 'Filter Variant B',
@@ -198,19 +200,19 @@ test('editing a built-in prompt stores the edit in the database and keeps the st
   const promptService = loadFresh('../dist/services/promptService');
   const updated = await promptService.updatePrompt('analyze-job-description', {
     content: 'Analyze deeply [[jobDescription]]',
-    modelProvider: 'openrouter',
-    modelName: 'deepseek/deepseek-chat',
+    modelProvider: 'claude-cli',
+    modelName: 'haiku',
   });
 
   assert.equal(updated.content, 'Analyze deeply [[jobDescription]]');
-  assert.equal(updated.modelProvider, 'openrouter');
-  assert.equal(updated.modelName, 'deepseek/deepseek-chat');
+  assert.equal(updated.modelProvider, 'claude-cli');
+  assert.equal(updated.modelName, 'haiku');
   assert.equal(updated.isBuiltIn, true);
 
   const stored = readDocument(dbDir, 'prompts', 'analyze-job-description');
   assert.equal(stored.isBuiltIn, true);
-  assert.equal(stored.modelProvider, 'openrouter');
-  assert.equal(stored.modelName, 'deepseek/deepseek-chat');
+  assert.equal(stored.modelProvider, 'claude-cli');
+  assert.equal(stored.modelName, 'haiku');
 
   assert.equal(readJson(defaultPath).content, 'Analyze [[jobDescription]]');
   assert.equal(
@@ -233,4 +235,39 @@ test('prompt service renders prompt segments in template order', async () => {
     { text: 'Backend role', variableName: 'jobDescription' },
     { text: ' outro' },
   ]);
+});
+
+test('a prompt record naming the removed openrouter provider still loads', async () => {
+  const { dbDir, staticDir } = useTempStorage('prompts-legacy-provider');
+  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
+
+  const promptService = loadFresh('../dist/services/promptService');
+  const created = await promptService.createPrompt({
+    name: 'Legacy Provider Prompt',
+    content: 'Legacy [[name]]',
+    modelProvider: 'claude-cli',
+    modelName: 'sonnet',
+    allowedVariables: [{ name: 'name', description: 'Recipient name', sampleValue: 'Jane' }],
+  });
+
+  // Rewrite the stored record by hand to the shape an older release wrote.
+  // This is not a hypothetical: it is what a restored backup, a hand-edited
+  // row, or the legacy JSON importer produces.
+  const db = new Database(path.join(dbDir, 'free_tailor.db'));
+  try {
+    const row = db.prepare('SELECT data FROM prompts WHERE id = ?').get(created.id);
+    const record = JSON.parse(row.data);
+    record.modelProvider = 'openrouter';
+    record.modelName = 'openai/gpt-5.4-nano';
+    db.prepare('UPDATE prompts SET data = ? WHERE id = ?').run(JSON.stringify(record), created.id);
+  } finally {
+    db.close();
+  }
+
+  const reloaded = loadFresh('../dist/services/promptService');
+  const listed = await reloaded.listPrompts();
+  const legacy = listed.find((prompt) => prompt.id === created.id);
+
+  assert.ok(legacy, 'the legacy prompt must still be listed rather than throwing');
+  assert.equal(legacy.modelProvider, 'claude-cli');
 });

@@ -1,9 +1,14 @@
 import type { AIProvider } from '../types/template';
+import { AI_PROVIDER_IDS, coerceProviderId } from '../config/providerCatalog';
 
 export const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.1';
-export const DEFAULT_OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-5.4-nano';
 export const DEFAULT_CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
 export const DEFAULT_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+/**
+ * The `--model` value the CLI provider uses when nothing else names one.
+ * An alias rather than a dated model name, so it follows the current release.
+ */
+export const DEFAULT_CLAUDE_CLI_MODEL = process.env.AI_CLI_MODEL || 'sonnet';
 
 export type AIModelOption = {
   id: string;
@@ -24,13 +29,12 @@ export function normalizePromptModelSelection(
     return null;
   }
 
-  if (
-    normalizedProvider !== 'openai' &&
-    normalizedProvider !== 'claude' &&
-    normalizedProvider !== 'openrouter' &&
-    normalizedProvider !== 'deepseek'
-  ) {
-    throw new Error('Prompt model provider must be one of: openai, claude, openrouter, deepseek.');
+  // Coerced rather than compared, because this runs on the prompt READ path:
+  // a stored record naming a provider that no longer exists must resolve, not
+  // make listing prompts throw.
+  const resolvedProvider = coerceProviderId(normalizedProvider);
+  if (!resolvedProvider) {
+    throw new Error(`Prompt model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`);
   }
 
   if (!normalizedModelName) {
@@ -38,7 +42,7 @@ export function normalizePromptModelSelection(
   }
 
   return {
-    provider: normalizedProvider,
+    provider: resolvedProvider,
     modelName: normalizedModelName,
   };
 }

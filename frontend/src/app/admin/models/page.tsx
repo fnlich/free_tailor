@@ -1,7 +1,16 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { adminApi, AdminAppSettings, AIModelRecord, AIProvider, getAIProviderLabel } from '@/lib/api';
+import {
+  adminApi,
+  AdminAppSettings,
+  AI_PROVIDERS,
+  AIModelRecord,
+  AIProvider,
+  coerceProvider,
+  getAIProviderLabel,
+  PROVIDER_META,
+} from '@/lib/api';
 
 type ModelDraft = {
   name: string;
@@ -13,7 +22,8 @@ type ModelDraft = {
 
 const EMPTY_DRAFT: ModelDraft = {
   name: '',
-  provider: 'deepseek',
+  // The keyless subscription provider is the sensible default to add to.
+  provider: 'claude-cli',
   modelName: '',
   description: '',
   enabled: true,
@@ -170,12 +180,7 @@ export default function ModelsPage() {
     );
   }
 
-  const providerEnabled = {
-    openai: settings.openaiEnabled,
-    claude: settings.claudeEnabled,
-    openrouter: settings.openrouterEnabled,
-    deepseek: settings.deepseekEnabled,
-  } satisfies Record<AIProvider, boolean>;
+  const providerEnabled = settings.providersEnabled;
 
   return (
     <div className="space-y-6">
@@ -238,15 +243,19 @@ export default function ModelsPage() {
             <select
               value={draft.provider}
               onChange={(e) =>
-                setDraft((current) => ({ ...current, provider: e.target.value as AIProvider }))
+                setDraft((current) => ({
+                  ...current,
+                  provider: coerceProvider(e.target.value) ?? current.provider,
+                }))
               }
               disabled={isSaving}
               className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="openai">OpenAI</option>
-              <option value="claude">Claude</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="deepseek">DeepSeek</option>
+              {AI_PROVIDERS.map((provider) => (
+                <option key={provider} value={provider}>
+                  {getAIProviderLabel(provider)}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -257,7 +266,7 @@ export default function ModelsPage() {
               value={draft.modelName}
               onChange={(e) => setDraft((current) => ({ ...current, modelName: e.target.value }))}
               disabled={isSaving}
-              placeholder="gpt-5-mini, claude-sonnet-4, or deepseek-v4-flash"
+              placeholder={PROVIDER_META[draft.provider]?.modelNameHint ?? 'model name'}
               className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>

@@ -6,7 +6,7 @@ import multer from 'multer';
 import pdf from 'pdf-parse';
 import { CreateProfileDTO } from '../types/profile';
 import { authMiddleware } from '../middleware/auth';
-import { extractProfileFromResume } from '../services/claude';
+import { extractProfileFromResume } from '../services/resumeService';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
 import { deleteProfile, getProfile, listProfiles, saveProfile } from '../database/profileRepository';
 

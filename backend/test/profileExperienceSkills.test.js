@@ -6,7 +6,7 @@ const {
   enrichProfileExperienceSkillsForJob,
   parseJobAnalysisContent,
   parseTailoredResumeContent,
-} = require('../dist/services/claude');
+} = require('../dist/services/resumeService');
 
 function makeProfile() {
   return {

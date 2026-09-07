@@ -3,12 +3,13 @@ const test = require('node:test');
 
 const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
 
+const jobFilter = require('../dist/services/jobFilter');
 const {
   evaluateJobFilterAnalysis,
   getEmptyJobFilterAnalysis,
   normalizeJobFilterAnalysis,
   stringifySalary,
-} = require('../dist/services/jobFilter');
+} = jobFilter;
 
 test('normalizeJobFilterAnalysis reads the new snake_case payload and keeps salary.raw', () => {
   assert.deepEqual(
@@ -164,4 +165,11 @@ test('buildJobFilterPrompt renders the managed prompt with jobContent and legacy
     await buildJobFilterPrompt('Remote role in the US.', 'https://jobs.example.com/1'),
     'Analyze Remote role in the US. from https://jobs.example.com/1 and legacy Remote role in the US..'
   );
+});
+
+test('the job filter runs on the subscription seat by default', () => {
+  // The highest-volume AI call in the app - one per sheet row - so the one
+  // that most wants a seat rather than metered tokens. Flipping this constant
+  // was previously completely silent.
+  assert.equal(jobFilter.JOB_FILTER_PROVIDER, 'claude-cli');
 });

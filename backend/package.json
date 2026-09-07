@@ -9,13 +9,13 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate:legacy": "npm run build && node dist/scripts/migrateLegacyData.js",
-    "test": "npm run build && node --test test/*.test.js"
+    "test": "npm run build && node --test test/*.test.js",
+    "ai:rollback": "npm run build && node dist/scripts/rollbackProviderMigration.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@openrouter/sdk": "^0.9.11",
     "apify-client": "^2.23.0",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",

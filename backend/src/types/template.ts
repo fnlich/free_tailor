@@ -67,7 +67,18 @@ export interface JobAnalysis {
   sourceJobDescription?: string;
 }
 
-export type AIProvider = 'openai' | 'claude' | 'openrouter' | 'deepseek';
+/**
+ * The AI providers this app can run a completion on.
+ *
+ * `claude-cli` drives the locally installed `claude` binary against the
+ * operator's Claude subscription seat; `claude` is the metered Anthropic HTTP
+ * API. They are deliberately separate ids: conflating a keyless seat with a
+ * billed API key is exactly the invisible-spend failure this app avoids.
+ *
+ * The former `openrouter` id was replaced by `claude-cli`; stored records that
+ * still carry it are coerced by `coerceProviderId` in config/providerCatalog.
+ */
+export type AIProvider = 'claude-cli' | 'claude' | 'openai' | 'deepseek';
 
 export type RawNestedJobAnalysis = Partial<JobAnalysis> & {
   jobMeta?: {

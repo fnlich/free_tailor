@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { runDataMigrations } from './migrations';
 
 export const DEFAULT_DATABASE_DIR = '/data/db';
 const DATABASE_FILE_NAME = 'free_tailor.db';
@@ -64,6 +65,12 @@ const SCHEMA = `
     value      TEXT NOT NULL,
     updated_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS schema_meta (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT
+  );
 `;
 
 const connections = new Map<string, Database.Database>();
@@ -92,6 +99,11 @@ export function getDb(): Database.Database {
   const db = new Database(filePath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
+  // The connection is registered BEFORE the migrations run. That ordering is
+  // load-bearing: a migration (or anything it logs through) that reaches for
+  // getDb() would otherwise recurse into opening a second connection to the
+  // same file. Do not move this line below runDataMigrations.
   connections.set(filePath, db);
+  runDataMigrations(db);
   return db;
 }
