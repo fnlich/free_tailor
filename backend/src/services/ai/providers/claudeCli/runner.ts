@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { resolveCliExecPlan } from './resolveBinary';
 
 /**
  * The process seam.
@@ -140,7 +141,44 @@ export function createSpawnRunner(): CliRunner {
         let deadlineTimer: NodeJS.Timeout | undefined;
         let stallTimer: NodeJS.Timeout | undefined;
 
-        const child = spawn(spec.binary, [...spec.argv], {
+        // On Windows `claude` is an npm `.cmd` shim, which spawn cannot execute
+        // without a shell - and a shell here would concatenate the arguments
+        // rather than escape them, with an admin-editable system prompt among
+        // them. resolveCliExecPlan finds something runnable directly instead.
+        let plan;
+        try {
+          plan = resolveCliExecPlan(spec.binary);
+        } catch (error) {
+          if (errFd !== null) {
+            try {
+              fs.closeSync(errFd);
+            } catch {
+              /* already closed */
+            }
+          }
+          try {
+            fs.unlinkSync(errPath);
+          } catch {
+            /* never created */
+          }
+          const enoent = Object.assign(
+            new Error(error instanceof Error ? error.message : String(error)),
+            { code: 'ENOENT' }
+          ) as NodeJS.ErrnoException;
+          resolve({
+            exitCode: null,
+            signal: null,
+            stderrTail: '',
+            timedOut: false,
+            stalled: false,
+            aborted: false,
+            spawnError: enoent,
+            bytesRead: 0,
+          });
+          return;
+        }
+
+        const child = spawn(plan.command, [...plan.prefixArgs, ...spec.argv], {
           cwd: spec.cwd,
           env: spec.env,
           stdio: ['pipe', 'pipe', errFd ?? 'ignore'],

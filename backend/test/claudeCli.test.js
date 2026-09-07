@@ -726,3 +726,99 @@ test('a spent seat-wide window parks the seat, whatever rateLimitType names', ()
   assert.equal(verdict.limited, true);
   assert.equal(verdict.scope, '*', 'a spent seat-wide window is not an Opus-only problem');
 });
+
+// -- Windows binary resolution --------------------------------------------- //
+// These run on any platform: the resolver takes its platform, PATH, PATHEXT
+// and filesystem as injected dependencies, which is the only honest way to
+// cover a Windows-only failure from a Linux CI.
+
+const { resolveCliExecPlan, CliBinaryUnresolvableError } = load(
+  '../dist/services/ai/providers/claudeCli/resolveBinary'
+);
+
+/** A fake Windows box with the given files present. */
+function windowsDeps(files) {
+  return {
+    platform: 'win32',
+    pathEntries: ['C:\\Windows\\system32', 'C:\\Users\\dev\\AppData\\Roaming\\npm'],
+    pathExt: ['.COM', '.EXE', '.BAT', '.CMD'],
+    exists: (filePath) => Object.prototype.hasOwnProperty.call(files, filePath),
+    readFile: (filePath) => files[filePath] ?? '',
+    execPath: 'C:\\Program Files\\nodejs\\node.exe',
+  };
+}
+
+// The real npm shim template, which is what makes this resolvable at all.
+const NPM_CMD_SHIM = [
+  '@ECHO off',
+  'SETLOCAL',
+  'CALL :find_dp0',
+  'IF EXIST "%dp0%\\node.exe" (SET "_prog=%dp0%\\node.exe") ELSE (SET "_prog=node")',
+  'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  ' +
+    '"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+].join('\r\n');
+
+test('on POSIX the binary is spawned as configured', () => {
+  const plan = resolveCliExecPlan('claude', {
+    platform: 'linux',
+    pathEntries: ['/usr/bin'],
+    pathExt: [],
+    exists: () => false,
+    readFile: () => '',
+    execPath: '/usr/bin/node',
+  });
+
+  // spawn resolves PATH and shebangs itself here; nothing to rewrite.
+  assert.equal(plan.command, 'claude');
+  assert.deepEqual(plan.prefixArgs, []);
+  assert.equal(plan.kind, 'direct');
+});
+
+test('a Windows npm .cmd shim resolves to the script it wraps, with no shell', () => {
+  // This is the exact failure reported from Windows: spawn cannot execute a
+  // .cmd, so it threw ENOENT even though the CLI was installed and on PATH.
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
+  const cli = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
+  const plan = resolveCliExecPlan('claude', windowsDeps({ [shim]: NPM_CMD_SHIM, [cli]: '' }));
+
+  assert.equal(plan.kind, 'node-script');
+  assert.equal(plan.command, 'C:\\Program Files\\nodejs\\node.exe');
+  assert.deepEqual(plan.prefixArgs, [cli]);
+  // No shell anywhere: a shell would concatenate rather than escape the
+  // arguments, and --system-prompt carries admin-editable text.
+  assert.equal(plan.command.toLowerCase().includes('cmd.exe'), false);
+});
+
+test('a native Windows executable is spawned directly', () => {
+  const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
+  const plan = resolveCliExecPlan('claude', windowsDeps({ [exe]: '' }));
+
+  assert.equal(plan.kind, 'windows-exe');
+  assert.equal(plan.command, exe);
+  assert.deepEqual(plan.prefixArgs, []);
+});
+
+test('AI_CLI_BIN pointing straight at a cli.js is honoured', () => {
+  const cli = 'D:\\tools\\claude\\cli.js';
+  const plan = resolveCliExecPlan(cli, windowsDeps({ [cli]: '' }));
+
+  assert.equal(plan.kind, 'node-script');
+  assert.deepEqual(plan.prefixArgs, [cli]);
+});
+
+test('a missing Windows binary is reported as missing, not as something else', () => {
+  assert.throws(
+    () => resolveCliExecPlan('claude', windowsDeps({})),
+    (error) => error instanceof CliBinaryUnresolvableError && /No "claude" found on PATH/.test(error.message)
+  );
+});
+
+test('an unrunnable shim asks for AI_CLI_BIN rather than falling back to a shell', () => {
+  // Falling back to cmd.exe would work and would be a command-injection hole,
+  // so this deliberately fails with something an operator can act on.
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
+  assert.throws(
+    () => resolveCliExecPlan('claude', windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' })),
+    (error) => error instanceof CliBinaryUnresolvableError && /AI_CLI_BIN/.test(error.message)
+  );
+});
