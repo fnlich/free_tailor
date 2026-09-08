@@ -249,7 +249,7 @@ File and folder names are templated per profile.
 |---------|---------|
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering |
 | **Groups** | Group profiles for batch generation |
-| **Templates** | Fifteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold and Amber Gradient - plus manual and uploaded ones. **View** renders any of them with a full sample resume at the exact page size the PDF prints, so the preview and the output agree |
+| **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | AI providers, models, API keys, output location, and live Claude subscription status (sign-in, usage window, in-flight calls) |

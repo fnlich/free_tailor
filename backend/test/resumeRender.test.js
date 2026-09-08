@@ -6,6 +6,7 @@ const {
   generateTemplatePreviewHTML,
   prepareResumeRenderData,
   RESUME_PAGE_GEOMETRY,
+  resolveTemplatePageBox,
 } = require('../dist/generators/pdfGenerator');
 const { getAllTemplates, getTemplateById } = require('../dist/extractors/templateExtractor');
 
@@ -383,7 +384,7 @@ test('prepareResumeRenderData caps language skills at the prompt maximum', () =>
 // whatever width the iframe happened to be. Column counts, line wraps and page
 // breaks all move with width, so the two were only loosely related.
 
-test('the page geometry is one definition, not two', () => {
+test('the fallback page geometry is A4 with the margins page.pdf is called with', () => {
   assert.equal(RESUME_PAGE_GEOMETRY.format, 'A4');
   assert.deepEqual(RESUME_PAGE_GEOMETRY.margin, {
     top: '0.4in',
@@ -391,8 +392,42 @@ test('the page geometry is one definition, not two', () => {
     bottom: '0.3in',
     left: '0.5in',
   });
-  // A4 is 8.27in wide; minus 0.5in of margin either side, at 96 DPI.
+  // A4 at 96 DPI, minus 0.5in of margin either side.
+  assert.equal(RESUME_PAGE_GEOMETRY.pageWidthPx, 794);
   assert.equal(RESUME_PAGE_GEOMETRY.contentWidthPx, 698);
+});
+
+// Chrome honours a template's own `@page` rule and ignores the margin handed to
+// `page.pdf()`. Print the same markup with and without an `@page { margin:
+// 0.35in }` rule and the ink starts 34px in rather than 48px in. Every built-in
+// template declares one, so a preview built from the fallback geometry above was
+// 30-96px narrower than the page it was previewing, and wrapped its lines and
+// filled its pages differently. The page box has to be read per template.
+test('the page box is read from the template, not assumed', async () => {
+  const cases = [
+    // id, margin shorthand it declares, content width that leaves on A4
+    ['developer-mono', '0.35in', 794 - 2 * 33.6],
+    ['timeline-bars', '0.2in', 794 - 2 * 19.2],
+    ['azure-stack', '0.3in', 794 - 2 * 28.8],
+  ];
+  for (const [id, margin, contentWidthPx] of cases) {
+    const template = await getTemplateById(id);
+    assert.ok(template, `${id} should be a built-in template`);
+    const box = resolveTemplatePageBox(template);
+    assert.equal(box.margin.top, margin, `${id} margin`);
+    assert.equal(Math.round(box.contentWidthPx), Math.round(contentWidthPx), `${id} content width`);
+    assert.equal(box.mediaScale, 1, `${id} is already A4`);
+  }
+
+  // charcoal-sidebar asks for letter with no margins. It is laid out at letter
+  // and scaled down to fit the A4 media box, which is what printing does to it.
+  const letter = await getTemplateById('charcoal-sidebar');
+  const letterBox = resolveTemplatePageBox(letter);
+  assert.equal(letterBox.pageWidthPx, 816);
+  assert.equal(letterBox.pageHeightPx, 1056);
+  assert.equal(letterBox.contentWidthPx, 816, 'no margins means the content is the whole page');
+  assert.ok(letterBox.mediaScale < 1 && letterBox.mediaScale > 0.9, 'letter is scaled to fit A4');
+  assert.ok(letterBox.usesViewportUnits, 'charcoal-sidebar sizes itself in vh');
 });
 
 test('a template preview carries the printed page box, not an arbitrary width', async () => {
@@ -400,12 +435,12 @@ test('a template preview carries the printed page box, not an arbitrary width', 
   assert.ok(template, 'developer-mono should be a built-in template');
 
   const preview = generateTemplatePreviewHTML(template);
-  const { margin, contentWidthPx, contentHeightPx } = RESUME_PAGE_GEOMETRY;
+  const { margin, contentWidthPx, contentHeightPx } = resolveTemplatePageBox(template);
 
   // The width every width-dependent CSS decision resolves against.
-  assert.match(preview, new RegExp(`width:\\s*${contentWidthPx}px`));
-  assert.match(preview, new RegExp(`min-height:\\s*${contentHeightPx}px`));
-  // All four PDF margins, in PDF order. They are set on `html`, never on the
+  assert.match(preview, new RegExp(`width:\\s*${contentWidthPx.toFixed(2)}px`));
+  assert.match(preview, new RegExp(`min-height:\\s*${contentHeightPx.toFixed(2)}px`));
+  // All four page margins, in PDF order. They are set on `html`, never on the
   // body: a border or padding on the body stops the first child's top margin
   // collapsing through it, and timeline-bars pulls its header up with a
   // negative margin. Measured, doing it on the body put every element below
@@ -413,6 +448,11 @@ test('a template preview carries the printed page box, not an arbitrary width', 
   assert.match(
     preview,
     new RegExp(`padding:\\s*${margin.top}\\s+${margin.right}\\s+${margin.bottom}\\s+${margin.left}`)
+  );
+  // Print cuts anything that bleeds past the margins off at the margin edge.
+  assert.match(
+    preview,
+    new RegExp(`clip-path:\\s*inset\\(${margin.top}\\s+${margin.right}\\s+${margin.bottom}\\s+${margin.left}\\)`)
   );
   const bodyRule = /body\s*\{[^}]*\}/.exec(preview.slice(preview.indexOf('resume-preview-page')));
   assert.ok(bodyRule, 'the chrome should style the body');
@@ -451,15 +491,19 @@ test('every built-in template is present and described', async () => {
 
   assert.deepEqual(ids, [
     'amber-gradient',
+    'azure-stack',
     'burgundy-rule',
     'charcoal-sidebar',
     'classic-serif',
     'contrast-cards',
     'default',
     'developer-mono',
+    'dossier-panel',
     'editorial-italic',
     'forest-chips',
+    'framed-serif',
     'indigo-band',
+    'ink-ledger',
     'navy-gold',
     'navy-rule',
     'slate-italic',
@@ -469,11 +513,20 @@ test('every built-in template is present and described', async () => {
 });
 
 test('a template of each layout shape renders the sample resume end to end', async () => {
-  // One flow-layout template and one CSS-grid one. Rendering all six costs
-  // about two minutes of skill-categorisation per template for no extra
-  // coverage - the shapes are what differ, not the count.
+  // One template per layout shape: flow, CSS grid, a sidebar, a date-column
+  // ledger and a single-column stack. Rendering every one of them adds cost
+  // without coverage - the shapes are what differ, not the count.
   const templates = await Promise.all(
-    ['developer-mono', 'contrast-cards', 'charcoal-sidebar', 'burgundy-rule'].map((id) => getTemplateById(id))
+    [
+      'developer-mono',
+      'contrast-cards',
+      'charcoal-sidebar',
+      'burgundy-rule',
+      'ink-ledger',
+      'dossier-panel',
+      'framed-serif',
+      'azure-stack',
+    ].map((id) => getTemplateById(id))
   );
 
   for (const template of templates) {
@@ -494,7 +547,7 @@ test('no built-in template is still named after the person who wrote it', async 
   for (const template of templates) {
     assert.doesNotMatch(
       template.name,
-      /rista_|jacky_/i,
+      /rista_|jacky_|new_leo|new_abe|new_kevin|^Test \d/i,
       `${template.id} kept an authoring name: ${template.name}`
     );
     assert.ok(template.description && template.description.length > 20, `${template.id} needs a description`);

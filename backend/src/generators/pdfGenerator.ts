@@ -16,25 +16,210 @@ import {
   readSkills,
 } from '../database/skillsDatabase';
 const MAX_ROLE_BRIEF_LENGTH = 1200;
-const A4_PRINTABLE_WIDTH_PX = 698; // A4 width (8.27in) minus 0.5in margins on both sides at 96 DPI
-const A4_PRINTABLE_HEIGHT_PX = 1026; // A4 height (11.69in) minus 0.5in margins top/bottom at 96 DPI
+/** CSS absolute length units expressed in px at 96 DPI. */
+const CSS_LENGTH_PX: Record<string, number> = {
+  px: 1,
+  in: 96,
+  cm: 96 / 2.54,
+  mm: 96 / 25.4,
+  q: 96 / 101.6,
+  pt: 96 / 72,
+  pc: 16,
+};
+
+/** Named `@page size` keywords, in px at 96 DPI. */
+const PAGE_SIZE_PX: Record<string, { width: number; height: number }> = {
+  a3: { width: 1123, height: 1587 },
+  a4: { width: 794, height: 1123 },
+  a5: { width: 559, height: 794 },
+  letter: { width: 816, height: 1056 },
+  legal: { width: 816, height: 1344 },
+  tabloid: { width: 1056, height: 1632 },
+  ledger: { width: 1632, height: 1056 },
+};
+
+const A4_PAGE_WIDTH_PX = PAGE_SIZE_PX.a4.width;
+const A4_PAGE_HEIGHT_PX = PAGE_SIZE_PX.a4.height;
 
 /**
- * The page box every resume is printed into.
+ * The page box used when a template does not say otherwise.
  *
- * ONE definition, used by `page.pdf()` and by the on-screen preview alike. They
- * used to be unrelated: the PDF printed A4 with these margins at a 698px
- * viewport, while the preview rendered at whatever width the iframe happened to
- * be, inside a second wrapper document. Column counts, line wraps and page
- * breaks all differ with width, so "preview" and "what you get" were only ever
- * loosely related. Anything that changes here changes both.
+ * `format` and `margin` are what `page.pdf()` is called with. Note that the
+ * margin here is a FALLBACK, not a guarantee: Chrome honours a template's own
+ * `@page { margin }` and ignores the value passed to `page.pdf()`. That is
+ * measurable - print the same markup with and without an `@page` rule and the
+ * ink starts 34px in rather than 48px in - and every built-in template declares
+ * one, so this margin only ever applies to a template that has no `@page` rule
+ * at all. Use `resolveTemplatePageBox` to learn the box a given template will
+ * actually be printed into; the preview is built from that, which is the whole
+ * reason a preview resembles the PDF it is previewing.
  */
 export const RESUME_PAGE_GEOMETRY = {
   format: 'A4',
   margin: { top: '0.4in', right: '0.5in', bottom: '0.3in', left: '0.5in' },
-  contentWidthPx: A4_PRINTABLE_WIDTH_PX,
-  contentHeightPx: A4_PRINTABLE_HEIGHT_PX,
+  pageWidthPx: A4_PAGE_WIDTH_PX,
+  pageHeightPx: A4_PAGE_HEIGHT_PX,
+  contentWidthPx: A4_PAGE_WIDTH_PX - 96, // 0.5in either side
+  contentHeightPx: A4_PAGE_HEIGHT_PX - 38.4 - 28.8, // 0.4in top, 0.3in bottom
 } as const;
+
+export interface ResumePageBox {
+  /** The page Chrome lays the document out on, per its `@page size`. */
+  pageWidthPx: number;
+  pageHeightPx: number;
+  /** Page margins, as CSS lengths, per its `@page margin`. */
+  margin: { top: string; right: string; bottom: string; left: string };
+  /** The area content is laid out into: page minus margins. */
+  contentWidthPx: number;
+  contentHeightPx: number;
+  /**
+   * `page.pdf()` is always asked for A4, so a document that declares a
+   * different `@page size` is laid out at that size and then scaled to fit the
+   * A4 media box, centred. 1 and 0 when the sizes already agree.
+   */
+  mediaScale: number;
+  mediaOffsetYPx: number;
+  /** True when the CSS uses viewport units, whose basis differs off-page. */
+  usesViewportUnits: boolean;
+}
+
+function parseCssLengthPx(value: string): number | null {
+  const match = /^([+-]?(?:\d+\.?\d*|\.\d+))([a-z]*)$/i.exec(value.trim());
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+  const factor = CSS_LENGTH_PX[(match[2] || 'px').toLowerCase()];
+  return factor === undefined ? null : amount * factor;
+}
+
+/**
+ * The declarations of every `@page` rule in `css`, concatenated in source
+ * order so that later rules win, with nested at-rules (`@top-center` and
+ * friends) dropped.
+ */
+function collectAtPageDeclarations(css: string): string[] {
+  const declarations: string[] = [];
+  const ruleStart = /@page\b[^{]*\{/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = ruleStart.exec(css)) !== null) {
+    let cursor = ruleStart.lastIndex;
+    let depth = 1;
+    while (cursor < css.length && depth > 0) {
+      if (css[cursor] === '{') depth += 1;
+      else if (css[cursor] === '}') depth -= 1;
+      cursor += 1;
+    }
+    const body = css.slice(ruleStart.lastIndex, Math.max(cursor - 1, ruleStart.lastIndex));
+    declarations.push(body.replace(/[^;{}]*\{[^{}]*\}/g, ''));
+    ruleStart.lastIndex = cursor;
+  }
+
+  return declarations
+    .join(';')
+    .split(';')
+    .map((declaration) => declaration.trim())
+    .filter(Boolean);
+}
+
+function expandMarginShorthand(value: string): string[] | null {
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length < 1 || parts.length > 4) return null;
+  const [top, right = top, bottom = top, left = right] = parts;
+  return [top, right, bottom, left];
+}
+
+function applyPageSize(
+  value: string,
+  fallback: { width: number; height: number }
+): { width: number; height: number } {
+  const tokens = value.toLowerCase().split(/\s+/).filter(Boolean);
+  let size = fallback;
+  let orientation: 'portrait' | 'landscape' | null = null;
+  const lengths: number[] = [];
+
+  for (const token of tokens) {
+    if (token === 'auto') continue;
+    if (token === 'portrait' || token === 'landscape') {
+      orientation = token;
+      continue;
+    }
+    if (PAGE_SIZE_PX[token]) {
+      size = PAGE_SIZE_PX[token];
+      continue;
+    }
+    const length = parseCssLengthPx(token);
+    if (length !== null && length > 0) lengths.push(length);
+  }
+
+  if (lengths.length === 1) size = { width: lengths[0], height: lengths[0] };
+  else if (lengths.length >= 2) size = { width: lengths[0], height: lengths[1] };
+
+  if (orientation === 'landscape' && size.height > size.width) {
+    size = { width: size.height, height: size.width };
+  } else if (orientation === 'portrait' && size.width > size.height) {
+    size = { width: size.height, height: size.width };
+  }
+
+  return size;
+}
+
+/**
+ * The page box `page.pdf()` will actually print `template` into.
+ *
+ * Read from the template's own `@page` rule, because that is what Chrome
+ * obeys - the margin handed to `page.pdf()` applies only in its absence.
+ */
+export function resolveTemplatePageBox(template: Template): ResumePageBox {
+  const css = `${template.cssContent ?? ''}\n${template.htmlContent ?? ''}`;
+  const fallback = RESUME_PAGE_GEOMETRY.margin;
+  const margin: ResumePageBox['margin'] = { ...fallback };
+  let size = { width: RESUME_PAGE_GEOMETRY.pageWidthPx, height: RESUME_PAGE_GEOMETRY.pageHeightPx };
+
+  for (const declaration of collectAtPageDeclarations(css)) {
+    const separator = declaration.indexOf(':');
+    if (separator === -1) continue;
+    const property = declaration.slice(0, separator).trim().toLowerCase();
+    const value = declaration.slice(separator + 1).trim();
+    if (!value) continue;
+
+    if (property === 'size') {
+      size = applyPageSize(value, size);
+    } else if (property === 'margin') {
+      const sides = expandMarginShorthand(value);
+      if (sides) [margin.top, margin.right, margin.bottom, margin.left] = sides;
+    } else if (property === 'margin-top') margin.top = value;
+    else if (property === 'margin-right') margin.right = value;
+    else if (property === 'margin-bottom') margin.bottom = value;
+    else if (property === 'margin-left') margin.left = value;
+  }
+
+  const px = (value: string, fallbackValue: string) =>
+    parseCssLengthPx(value) ?? parseCssLengthPx(fallbackValue) ?? 0;
+  const marginPx = {
+    top: px(margin.top, fallback.top),
+    right: px(margin.right, fallback.right),
+    bottom: px(margin.bottom, fallback.bottom),
+    left: px(margin.left, fallback.left),
+  };
+
+  const mediaScale = Math.min(
+    1,
+    A4_PAGE_WIDTH_PX / size.width,
+    A4_PAGE_HEIGHT_PX / size.height
+  );
+
+  return {
+    pageWidthPx: size.width,
+    pageHeightPx: size.height,
+    margin,
+    contentWidthPx: Math.max(1, size.width - marginPx.left - marginPx.right),
+    contentHeightPx: Math.max(1, size.height - marginPx.top - marginPx.bottom),
+    mediaScale,
+    mediaOffsetYPx: (A4_PAGE_HEIGHT_PX - size.height * mediaScale) / 2,
+    usesViewportUnits: /\b\d*\.?\d+(vh|vw|vmin|vmax)\b/i.test(css),
+  };
+}
 const LANGUAGE_SKILLS = new Set([
   'python',
   'javascript',
@@ -1187,6 +1372,7 @@ export async function generateResumePDF(
   const fullHtml = timePdfStageSync('HTML assembly', () => assembleResumeDocument(template, html));
 
   // Generate PDF with Puppeteer
+  const pageBox = resolveTemplatePageBox(template);
   const browser = await timePdfStage('browser ready', () => getSharedPdfBrowser());
   let page: Awaited<ReturnType<Browser['newPage']>> | null = null;
 
@@ -1194,9 +1380,12 @@ export async function generateResumePDF(
     const activePage = await timePdfStage('new page', () => browser.newPage());
     page = activePage;
     await timePdfStage('page setup', async () => {
+      // The viewport is what viewport units and the pre-print layout resolve
+      // against, so give it this template's own content box rather than a
+      // fixed one that may be up to 96px narrower than the page it prints on.
       await activePage.setViewport({
-        width: RESUME_PAGE_GEOMETRY.contentWidthPx,
-        height: RESUME_PAGE_GEOMETRY.contentHeightPx,
+        width: Math.round(pageBox.contentWidthPx),
+        height: Math.round(pageBox.contentHeightPx),
         deviceScaleFactor: 1,
       });
       await activePage.emulateMediaType('print');
@@ -1400,31 +1589,67 @@ function assembleResumeDocument(template: Template, body: string): string {
  *
  * Appended last so it wins ties against the template's own `body` rules.
  */
-function previewPageChrome(): string {
-  const { margin, contentWidthPx, contentHeightPx } = RESUME_PAGE_GEOMETRY;
+function previewPageChrome(box: ResumePageBox): string {
+  const { margin, pageWidthPx, pageHeightPx, contentWidthPx, contentHeightPx } = box;
+
+  /* A document that asks for a page size other than the A4 `page.pdf()` is
+     called with is laid out at its own size and then scaled to fit, centred.
+     Mirror that instead of showing the user an unscaled page. */
+  const fitToMediaBox =
+    box.mediaScale === 1
+      ? ''
+      : `
+      transform: translateY(${box.mediaOffsetYPx.toFixed(2)}px) scale(${box.mediaScale.toFixed(5)});
+      transform-origin: top left;`;
+
+  /* `vh` and friends resolve against the viewport, which off-page is the
+     preview iframe rather than the printed page. Only templates that actually
+     use viewport units need the correction, so only they get it: pinning
+     `body > *` on every template would force a full-page box on wrappers that
+     paint a background. */
+  const viewportUnitFix = box.usesViewportUnits
+    ? `
+    body > * {
+      min-height: ${contentHeightPx.toFixed(2)}px !important;
+    }`
+    : '';
+
   return `<style id="resume-preview-page">
     html {
+      box-sizing: border-box;
+      width: ${pageWidthPx}px;
+      min-height: ${pageHeightPx}px;
       background: #ffffff;
-      /* The printed page margins. On html, so the body's box is untouched. */
+      /* The page margins this template declares, taken from its own @page
+         rule. On html, so the body's box is untouched: a border or padding on
+         body would stop a first child's top margin collapsing through it and
+         shift the whole document relative to the print. */
       padding: ${margin.top} ${margin.right} ${margin.bottom} ${margin.left};
+      /* Print clips to the page area, so an element that bleeds outside the
+         margins - a header with a negative margin, say - is cut off at the
+         margin edge rather than painted into it. A clip-path reproduces that
+         without the layout side effects overflow would bring: a clip on body
+         would open a block formatting context and stop the first child's top
+         margin collapsing, moving the whole document down instead. */
+      clip-path: inset(${margin.top} ${margin.right} ${margin.bottom} ${margin.left});
       /* page.pdf runs with printBackground: true, so colours must not be
          dropped the way a screen render would drop them. */
       -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
+      print-color-adjust: exact;${fitToMediaBox}
     }
     body {
-      width: ${contentWidthPx}px !important;
-      min-height: ${contentHeightPx}px !important;
+      width: ${contentWidthPx.toFixed(2)}px !important;
+      min-height: ${contentHeightPx.toFixed(2)}px !important;
       margin-left: auto !important;
       margin-right: auto !important;
-    }
+    }${viewportUnitFix}
   </style>`;
 }
 
 export function generateTemplatePreviewHTML(template: Template): string {
   const renderData = prepareResumeRenderData(SAMPLE_PROFILE);
   const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
-  return `${document}${previewPageChrome()}`;
+  return `${document}${previewPageChrome(resolveTemplatePageBox(template))}`;
 }
 
 export async function getGeneratedPDFPath(filename: string): Promise<string | null> {
