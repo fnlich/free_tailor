@@ -679,6 +679,10 @@ export default function TemplatesPage() {
                   src={`${getApiOrigin()}/api/templates/${encodeURIComponent(template.id)}/preview`}
                   title={`Preview of ${template.name}`}
                   scrolling="no"
+                  // Every card holds a real render of the resume, so without
+                  // this the whole grid fetches at once and the last cards are
+                  // still blank seconds after the page settles.
+                  loading="lazy"
                   className="absolute top-0 border-0 pointer-events-none"
                   style={{
                     transform: `scale(${PREVIEW_THUMBNAIL_SCALE})`,

@@ -405,11 +405,24 @@ test('a template preview carries the printed page box, not an arbitrary width', 
   // The width every width-dependent CSS decision resolves against.
   assert.match(preview, new RegExp(`width:\\s*${contentWidthPx}px`));
   assert.match(preview, new RegExp(`min-height:\\s*${contentHeightPx}px`));
-  // All four PDF margins, in PDF order, drawn as the page's white border.
+  // All four PDF margins, in PDF order. They are set on `html`, never on the
+  // body: a border or padding on the body stops the first child's top margin
+  // collapsing through it, and timeline-bars pulls its header up with a
+  // negative margin. Measured, doing it on the body put every element below
+  // that header 10px out against the PDF.
   assert.match(
     preview,
-    new RegExp(`border-width:\\s*${margin.top}\\s+${margin.right}\\s+${margin.bottom}\\s+${margin.left}`)
+    new RegExp(`padding:\\s*${margin.top}\\s+${margin.right}\\s+${margin.bottom}\\s+${margin.left}`)
   );
+  const bodyRule = /body\s*\{[^}]*\}/.exec(preview.slice(preview.indexOf('resume-preview-page')));
+  assert.ok(bodyRule, 'the chrome should style the body');
+  for (const forbidden of ['border', 'padding', 'margin-top', 'margin-bottom']) {
+    assert.equal(
+      bodyRule[0].includes(forbidden),
+      false,
+      `the preview must not set ${forbidden} on the body - it changes margin collapsing`
+    );
+  }
   // page.pdf runs with printBackground: true, so the preview must not let the
   // browser drop backgrounds the way a screen render would.
   assert.match(preview, /print-color-adjust:\s*exact/);
@@ -437,12 +450,17 @@ test('every built-in template is present and described', async () => {
   const ids = templates.map((entry) => entry.id).sort();
 
   assert.deepEqual(ids, [
+    'charcoal-sidebar',
     'classic-serif',
     'contrast-cards',
     'default',
     'developer-mono',
     'editorial-italic',
+    'forest-chips',
+    'indigo-band',
+    'slate-italic',
     'structured-slate',
+    'timeline-bars',
   ]);
 });
 
@@ -451,7 +469,7 @@ test('a template of each layout shape renders the sample resume end to end', asy
   // about two minutes of skill-categorisation per template for no extra
   // coverage - the shapes are what differ, not the count.
   const templates = await Promise.all(
-    ['developer-mono', 'contrast-cards'].map((id) => getTemplateById(id))
+    ['developer-mono', 'contrast-cards', 'charcoal-sidebar'].map((id) => getTemplateById(id))
   );
 
   for (const template of templates) {

@@ -1385,35 +1385,38 @@ function assembleResumeDocument(template: Template, body: string): string {
  * Turns the printed page into something a browser can show, WITHOUT changing
  * the document the PDF renderer sees.
  *
- * The body is given the exact content box `page.pdf()` prints into, so every
- * width-dependent decision the template makes - `column-count`, flex wrapping,
- * where a line breaks - resolves the same way it will in the PDF. The four
- * margins are drawn as white borders rather than padding so the content box
- * keeps its exact width, and `background-clip: content-box` keeps a template's
- * own body background off them, which is what the printer does: margins are
- * paper, not page.
+ * The body is given the exact content width `page.pdf()` prints into, so every
+ * width-dependent decision a template makes - `column-count`, flex wrapping,
+ * where a line breaks - resolves the same way it will in the PDF.
  *
- * Appended last so it wins ties against the template's own `body` rules, and
- * scoped to `body`/`html` so it cannot touch anything the template styles.
+ * WIDTH IS ALL IT SETS ON THE BODY, and that restraint is load-bearing. An
+ * earlier version drew the page margins as a border on the body, which looked
+ * right and was wrong: a border stops the first child's top margin collapsing
+ * through the body, and `timeline-bars` pulls its header up with
+ * `margin: -10px`. Measured, that put every element below it 10px out against
+ * the PDF. Padding and vertical margins on the body break collapsing the same
+ * way, so the page margins go on `html`, where they cannot reach the body's
+ * own box.
+ *
+ * Appended last so it wins ties against the template's own `body` rules.
  */
 function previewPageChrome(): string {
   const { margin, contentWidthPx, contentHeightPx } = RESUME_PAGE_GEOMETRY;
   return `<style id="resume-preview-page">
-    html { background: #f3f4f6; }
-    body {
-      box-sizing: content-box !important;
-      width: ${contentWidthPx}px !important;
-      min-height: ${contentHeightPx}px !important;
-      margin: 24px auto !important;
-      border-style: solid !important;
-      border-color: #ffffff !important;
-      border-width: ${margin.top} ${margin.right} ${margin.bottom} ${margin.left} !important;
-      background-clip: content-box !important;
-      box-shadow: 0 2px 12px rgba(15, 23, 42, 0.18);
+    html {
+      background: #ffffff;
+      /* The printed page margins. On html, so the body's box is untouched. */
+      padding: ${margin.top} ${margin.right} ${margin.bottom} ${margin.left};
       /* page.pdf runs with printBackground: true, so colours must not be
          dropped the way a screen render would drop them. */
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
+    }
+    body {
+      width: ${contentWidthPx}px !important;
+      min-height: ${contentHeightPx}px !important;
+      margin-left: auto !important;
+      margin-right: auto !important;
     }
   </style>`;
 }
