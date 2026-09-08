@@ -2,6 +2,9 @@
 .DS_Store
 ._*
 generated/
+# The README suggests DB_DIR=./data/db as the writable local default.
+data/db/
+backend/data/
 service-account-key.json
 backend/service-account-key.json
 node_modules

@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const { getDefaultDatabaseDir } = require('../dist/database/sqlite');
 const { readEnvFileText } = require('../dist/config/envFile');
+const { findApiPortMismatch } = require('../dist/config/apiUrl');
 
 // The app has to start on Windows and on Ubuntu from the same checkout, and
 // the default data directory is the one place where the right answer genuinely
@@ -95,4 +96,46 @@ test('a UTF-16BE .env is decoded too', () => {
 
 test('a missing .env is empty, not a crash', () => {
   assert.equal(readEnvFileText(path.join(os.tmpdir(), 'tailor-no-such-dir', '.env')), '');
+});
+
+// -- PORT vs NEXT_PUBLIC_API_URL -------------------------------------------- //
+// Two variables that must agree, both spelled out in .env.example. Changing one
+// and not the other produces a frontend that builds and runs perfectly while
+// every request fails, and the browser cannot describe it: a wrong port and a
+// stopped server are the same TypeError. Reported once at startup instead.
+
+test('a same-machine port disagreement is reported', () => {
+  const mismatch = findApiPortMismatch('http://localhost:9001/api', 3001);
+  assert.ok(mismatch, 'a frontend pointed at 9001 while the server is on 3001 is a mistake');
+  assert.equal(mismatch.configuredPort, '9001');
+  assert.equal(mismatch.serverPort, '3001');
+  assert.equal(mismatch.configuredOrigin, 'http://localhost:9001');
+});
+
+test('matching ports say nothing, however the port is written', () => {
+  assert.equal(findApiPortMismatch('http://localhost:3001/api', 3001), null);
+  assert.equal(findApiPortMismatch('http://127.0.0.1:3001/api', '3001'), null);
+  assert.equal(findApiPortMismatch('http://[::1]:3001/api', 3001), null);
+});
+
+test('a different host is a split deployment, not a mistake', () => {
+  // The port on another machine has nothing to do with this server's, so
+  // warning here would cry wolf at every real remote setup.
+  assert.equal(findApiPortMismatch('https://api.example.com/api', 3001), null);
+  assert.equal(findApiPortMismatch('http://192.168.1.50:9001/api', 3001), null);
+});
+
+test('an omitted port is compared as the protocol default', () => {
+  // http://localhost/api means port 80, which the backend is not on either.
+  const mismatch = findApiPortMismatch('http://localhost/api', 3001);
+  assert.ok(mismatch);
+  assert.equal(mismatch.configuredPort, '80');
+  assert.equal(findApiPortMismatch('https://localhost/api', 443), null);
+});
+
+test('an unset or unparseable NEXT_PUBLIC_API_URL is not a mismatch', () => {
+  assert.equal(findApiPortMismatch(undefined, 3001), null);
+  assert.equal(findApiPortMismatch('', 3001), null);
+  assert.equal(findApiPortMismatch('   ', 3001), null);
+  assert.equal(findApiPortMismatch('not a url', 3001), null);
 });

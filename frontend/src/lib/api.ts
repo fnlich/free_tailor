@@ -100,6 +100,17 @@ export class ApiResponseError extends Error {
   }
 }
 
+/**
+ * Set by frontend/scripts/next.mjs, and ONLY when it detected that
+ * NEXT_PUBLIC_API_URL names a different port on this machine than the `PORT`
+ * the backend listens on. That is the one failure a browser cannot describe:
+ * a wrong port and a stopped server are the same `TypeError` to it. Carrying
+ * the expected port into the bundle lets the message below name the real
+ * problem instead of sending the reader off to check a port that was never
+ * the one in question.
+ */
+const EXPECTED_API_PORT = process.env.NEXT_PUBLIC_EXPECTED_API_PORT || '';
+
 /** Nothing answered at any candidate base. */
 export class ApiUnreachableError extends Error {
   constructor(
@@ -108,7 +119,10 @@ export class ApiUnreachableError extends Error {
   ) {
     super(
       `Cannot reach the backend at ${triedUrls.join(' or ')}. ` +
-        'Check that it is running and listening on that port. ' +
+        (EXPECTED_API_PORT
+          ? `The repository .env sets PORT=${EXPECTED_API_PORT}, so NEXT_PUBLIC_API_URL is pointing at ` +
+            'the wrong port - set both to the same value, or remove NEXT_PUBLIC_API_URL to derive it. '
+          : 'Check that it is running and listening on that port. ') +
         `(${cause.message})`
     );
     this.name = 'ApiUnreachableError';

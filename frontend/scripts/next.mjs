@@ -131,6 +131,56 @@ for (const [key, value] of Object.entries(parseEnvFile(join(repoRoot, '.env'))))
   process.env[key] = value;
 }
 
+/**
+ * Keeps the frontend's idea of the API port and the backend's `PORT` together.
+ *
+ * They are two variables that MUST agree - `PORT` is where the backend listens,
+ * and the port inside `NEXT_PUBLIC_API_URL` is where the browser looks - and
+ * nothing used to check. `.env.example` ships both spelled out, so changing one
+ * and not the other is a single-keystroke mistake, and the result is a frontend
+ * that builds and runs perfectly while every request fails: the browser cannot
+ * tell a wrong port from a stopped server, so the page just says it cannot
+ * reach the backend.
+ *
+ * Two things happen here. If NEXT_PUBLIC_API_URL is not set at all, it is
+ * derived from PORT rather than falling back to the hard-coded 3001 in
+ * lib/api.ts - so changing PORT alone is now sufficient and correct. If it IS
+ * set and points at this machine on a DIFFERENT port, that is a contradiction
+ * no deployment wants, and it is called out here and passed to the page so the
+ * error the user actually reads can name it.
+ *
+ * The local-hostname test matters: pointing the frontend at another host is a
+ * legitimate split deployment, and the port there has nothing to do with this
+ * machine's PORT. Only same-machine disagreement is a mistake.
+ */
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const backendPort = (process.env.PORT || '3001').trim();
+
+if (!process.env.NEXT_PUBLIC_API_URL) {
+  process.env.NEXT_PUBLIC_API_URL = `http://localhost:${backendPort}/api`;
+} else {
+  let configured = null;
+  try {
+    configured = new URL(process.env.NEXT_PUBLIC_API_URL);
+  } catch {
+    console.error(
+      `[env] NEXT_PUBLIC_API_URL is not a valid URL: ${process.env.NEXT_PUBLIC_API_URL}`
+    );
+  }
+
+  if (configured && LOCAL_HOSTNAMES.has(configured.hostname) && configured.port !== backendPort) {
+    console.warn(
+      `\n[env] NEXT_PUBLIC_API_URL points at port ${configured.port || '(default)'} on this machine, ` +
+        `but PORT=${backendPort} is where the backend listens.\n` +
+        `      Every API call will fail. Set them to the same port in the repository .env, ` +
+        `or delete NEXT_PUBLIC_API_URL to derive it from PORT.\n`
+    );
+    // Read back by lib/api.ts so the message in the UI can say this too. The
+    // build-time warning above is easy to scroll past; the page is not.
+    process.env.NEXT_PUBLIC_EXPECTED_API_PORT = backendPort;
+  }
+}
+
 const MODES = {
   dev: ['dev'],
   'dev-webpack': ['dev', '--webpack'],
