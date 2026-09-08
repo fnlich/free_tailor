@@ -19,6 +19,7 @@ import bidAssistantRoutes from './routes/bidAssistant';
 import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
+import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -176,6 +177,12 @@ getDb();
 const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);
   console.log(`Server listening on ${listServerUrls().join(', ')}`);
+  // Said here because this is the process that can see both values, and the
+  // browser cannot tell a wrong port from a stopped server.
+  const mismatch = findApiPortMismatch(process.env.NEXT_PUBLIC_API_URL, PORT);
+  if (mismatch) {
+    console.warn(describeApiPortMismatch(mismatch));
+  }
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
