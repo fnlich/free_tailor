@@ -117,16 +117,55 @@ function candidatePaths(binary: string, deps: ResolveDeps): string[] {
   return out;
 }
 
+const SCRIPT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs']);
+const EXECUTABLE_EXTENSIONS = new Set(['.exe', '.com']);
+
+type ShimTarget = { path: string; kind: 'windows-exe' | 'node-script' };
+
 /**
- * The Node script an npm shim wraps.
+ * What an npm shim actually runs.
  *
- * npm's `.cmd` template ends with the interpreter and the script path relative
- * to the shim: `"%_prog%"  "%dp0%\node_modules\pkg\cli.js" %*`. The `.ps1` and
- * POSIX shims carry the same path against `$basedir`. Reading it back is far
- * more reliable than guessing the package layout, and if it is not there we
- * simply do not use this path.
+ * npm generates the `.cmd` from one of two templates, and the difference is the
+ * whole problem this function exists to solve. When the package's `bin` is a
+ * JS file, the shim names an interpreter AND a script:
+ *
+ *   IF EXIST "%dp0%\node.exe" (SET "_prog=%dp0%\node.exe") ELSE (SET "_prog=node")
+ *   ... "%_prog%"  "%dp0%\node_modules\pkg\cli.js" %*
+ *
+ * When the `bin` is a NATIVE EXECUTABLE there is no interpreter and no script
+ * at all - cmd-shim puts the target itself where the program goes:
+ *
+ *   "%dp0%\node_modules\pkg\bin\tool.exe"   %*
+ *
+ * `@anthropic-ai/claude-code` is the second kind: its bin is `bin/claude.exe`.
+ * An earlier version of this function looked only for a path ending in `.js`,
+ * found nothing in that template, and reported the CLI as unrunnable on a
+ * machine where it was installed and working - which is the bug this replaces.
+ *
+ * So: collect every base-relative path the shim names, whatever its extension,
+ * and decide from the file itself. The `.ps1` and POSIX shims carry the same
+ * paths against `$basedir`, so they parse with the same expression.
  */
-function scriptBehindShim(shimPath: string, deps: ResolveDeps): string | null {
+function targetBehindShim(shimPath: string, deps: ResolveDeps): ShimTarget | null {
+  const p = pathFor(deps);
+  const extension = p.extname(shimPath);
+  const withoutExtension = extension ? shimPath.slice(0, -extension.length) : shimPath;
+
+  // The three shims npm writes side by side say the same thing in three
+  // syntaxes, so any one of them answers the question. Trying the others costs
+  // two reads and covers a .cmd that is missing or unreadable.
+  const shims = [shimPath, `${withoutExtension}.ps1`, `${withoutExtension}.cmd`, withoutExtension];
+
+  for (const shim of shims) {
+    const found = readShimTarget(shim, deps);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function readShimTarget(shimPath: string, deps: ResolveDeps): ShimTarget | null {
   const text = deps.readFile(shimPath);
   if (!text) {
     return null;
@@ -134,15 +173,35 @@ function scriptBehindShim(shimPath: string, deps: ResolveDeps): string | null {
 
   const p = pathFor(deps);
   const shimDir = p.dirname(shimPath);
+  const candidates: string[] = [];
   const seen = new Set<string>();
 
-  for (const match of text.matchAll(/(?:%dp0%|\$basedir|%~dp0)[\\/]?([^"'\s]+?\.[cm]?js)/g)) {
+  for (const match of text.matchAll(/(?:%dp0%|%~dp0|\$basedir)[\\/]?([^"'\s]+)/g)) {
     const relative = match[1].split(/[\\/]/).join(p.sep);
     const candidate = p.resolve(shimDir, relative);
     if (seen.has(candidate)) continue;
     seen.add(candidate);
-    if (deps.exists(candidate)) {
-      return candidate;
+    candidates.push(candidate);
+  }
+
+  const extensionOf = (candidate: string): string => p.extname(candidate).toLowerCase();
+  const stemOf = (candidate: string): string => p.basename(candidate, p.extname(candidate)).toLowerCase();
+
+  // Scripts win. In the JS template the shim names BOTH `%dp0%\node.exe` and
+  // the script; the script is the target and node is merely how it is run, so
+  // preferring the script keeps that case correct no matter what order the
+  // paths appear in or whether a node.exe happens to sit beside the shim.
+  for (const candidate of candidates) {
+    if (SCRIPT_EXTENSIONS.has(extensionOf(candidate)) && deps.exists(candidate)) {
+      return { path: candidate, kind: 'node-script' };
+    }
+  }
+
+  for (const candidate of candidates) {
+    // `node` here is always the interpreter, never the thing being invoked.
+    if (stemOf(candidate) === 'node') continue;
+    if (EXECUTABLE_EXTENSIONS.has(extensionOf(candidate)) && deps.exists(candidate)) {
+      return { path: candidate, kind: 'windows-exe' };
     }
   }
 
@@ -192,7 +251,16 @@ export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultRe
   const key = cacheKey(binary, deps);
   const cached = planCache.get(key);
   if (cached) {
-    if (deps.exists(cached.resolvedFrom)) {
+    // Both halves are checked, and the second one matters more than it looks:
+    // `resolvedFrom` is the shim found on PATH, but what actually gets spawned
+    // is the target behind it. A package that switches its `bin` from a JS file
+    // to a native binary - which @anthropic-ai/claude-code did - leaves the
+    // shim in place while the old cli.js disappears, so validating the shim
+    // alone would keep handing out a plan that can no longer run.
+    // Deduped, so a plan that resolved straight to an executable costs the one
+    // stat it did before; only a shim, where the two differ, costs two.
+    const mustExist = new Set([cached.resolvedFrom, planTargetPath(cached)]);
+    if ([...mustExist].every((candidate) => deps.exists(candidate))) {
       return cached;
     }
     planCache.delete(key);
@@ -221,9 +289,18 @@ export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultRe
   }
 
   // A .cmd/.bat/.ps1 shim: run what it wraps, so no shell is involved.
-  const script = scriptBehindShim(found, deps);
-  if (script) {
-    return remember(key, { command: deps.execPath, prefixArgs: [script], kind: 'node-script', resolvedFrom: found });
+  const target = targetBehindShim(found, deps);
+  if (target?.kind === 'node-script') {
+    return remember(key, {
+      command: deps.execPath,
+      prefixArgs: [target.path],
+      kind: 'node-script',
+      resolvedFrom: found,
+    });
+  }
+  if (target?.kind === 'windows-exe') {
+    // The package ships a native binary, so there is nothing to interpret.
+    return remember(key, { command: target.path, prefixArgs: [], kind: 'windows-exe', resolvedFrom: found });
   }
 
   // Deliberately NOT falling back to cmd.exe. Doing so would put an
@@ -231,9 +308,16 @@ export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultRe
   // actionable error is better than a quiet injection surface.
   throw new CliBinaryUnresolvableError(
     binary,
-    `Found "${found}", but it is a shim this server cannot run safely and the script it wraps could not be located. ` +
-      'Set AI_CLI_BIN to the claude executable (claude.exe) or to the CLI\'s cli.js.'
+    `Found "${found}", but could not work out what it runs. It is a shim, and this server will not ` +
+      'execute one through a shell - an admin-editable system prompt goes on that command line. ' +
+      `Set AI_CLI_BIN to the real program instead: for an npm install that is usually ` +
+      `"${pathFor(deps).join(pathFor(deps).dirname(found), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')}".`
   );
+}
+
+/** The file a plan will actually execute, as opposed to the shim it came from. */
+function planTargetPath(plan: CliExecPlan): string {
+  return plan.prefixArgs.length > 0 ? plan.prefixArgs[0] : plan.command;
 }
 
 function remember(key: string, plan: CliExecPlan): CliExecPlan {
