@@ -1,4 +1,4 @@
-import puppeteer from 'puppeteer';
+import { launchBrowser } from '../config/browser';
 import fs from 'fs/promises';
 import path from 'path';
 /// <reference path="../types/html-to-docx.d.ts" />
@@ -83,10 +83,7 @@ export async function saveCoverLetter(
 
   const html = buildCoverLetterHTML(content.trim(), profile.name);
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+  const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();

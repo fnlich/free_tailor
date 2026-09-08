@@ -7,6 +7,8 @@
     "dev": "ts-node-dev --respawn --watch src --ignore-watch static --ignore-watch dist --ignore-watch generated --ignore-watch ../generated --ignore-watch .git src/index.ts",
     "dev:poll": "ts-node-dev --poll --interval 1000 --respawn --transpile-only --watch src --ignore-watch static --ignore-watch dist --ignore-watch generated --ignore-watch ../generated --ignore-watch .git src/index.ts",
     "build": "tsc",
+    "postinstall": "node scripts/installBrowser.js --if-missing",
+    "setup:browser": "node scripts/installBrowser.js",
     "start": "node dist/index.js",
     "migrate:legacy": "npm run build && node dist/scripts/migrateLegacyData.js",
     "test": "npm run build && node --test \"test/*.test.js\"",

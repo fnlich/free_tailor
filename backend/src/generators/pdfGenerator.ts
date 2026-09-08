@@ -1,8 +1,7 @@
-import puppeteer from 'puppeteer';
 import type { Browser } from 'puppeteer';
+import { browserProfileDir, launchBrowser } from '../config/browser';
 import Handlebars from 'handlebars';
 import fs from 'fs/promises';
-import os from 'os';
 import path from 'path';
 import { Profile } from '../types/profile';
 import { TailoredContent, Template } from '../types/template';
@@ -407,7 +406,7 @@ function timePdfStageSync<T>(label: string, action: () => T): T {
 
 let sharedPdfBrowser: Browser | null = null;
 let sharedPdfBrowserLaunch: Promise<Browser> | null = null;
-const PDF_BROWSER_USER_DATA_DIR = path.join(os.tmpdir(), `free-tailor-pdf-chrome-${process.pid}`);
+const PDF_BROWSER_USER_DATA_DIR = browserProfileDir('pdf-chrome');
 
 async function getSharedPdfBrowser(): Promise<Browser> {
   if (sharedPdfBrowser?.connected) {
@@ -417,14 +416,9 @@ async function getSharedPdfBrowser(): Promise<Browser> {
     return sharedPdfBrowserLaunch;
   }
 
-  sharedPdfBrowserLaunch = puppeteer.launch({
-    headless: true,
+  sharedPdfBrowserLaunch = launchBrowser({
     userDataDir: PDF_BROWSER_USER_DATA_DIR,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-features=FirstPartySets',
-    ]
+    args: ['--disable-features=FirstPartySets'],
   }).then((browser) => {
     sharedPdfBrowser = browser;
     sharedPdfBrowserLaunch = null;

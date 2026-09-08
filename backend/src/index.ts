@@ -20,6 +20,7 @@ import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
+import { describeBrowser, describeMissingBrowser, getResolvedBrowser } from './config/browser';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -140,7 +141,22 @@ app.use('/api/admin/ai', aiHealthRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  const browser = getResolvedBrowser();
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    // PDF generation is the one feature with an external dependency that can
+    // go missing without any config change, so it is reported here.
+    browser: browser
+      ? {
+          ok: browser.exists,
+          label: browser.label,
+          source: browser.source,
+          executablePath: browser.executablePath,
+          ...(browser.exists ? {} : { detail: `No file at ${browser.executablePath}` }),
+        }
+      : { ok: false, detail: describeMissingBrowser(process) },
+  });
 });
 
 // AI transport failures answer with a status and a message a person can act
@@ -186,6 +202,16 @@ const server = app.listen(PORT, HOST, () => {
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
+  // Same idea for the browser every PDF is printed with: a missing Chrome
+  // used to surface only when someone clicked Generate.
+  const browser = getResolvedBrowser();
+  if (browser?.exists) {
+    console.log(`[pdf] Rendering with ${describeBrowser()}`);
+  } else if (browser) {
+    console.warn(`[pdf] ${describeBrowser()}. PDF generation will fail until that path is right.`);
+  } else {
+    console.warn(`[pdf] ${describeMissingBrowser(process)}`);
+  }
 });
 
 // Node's `requestTimeout` bounds RECEIVING a request, and `headersTimeout` its
