@@ -450,6 +450,8 @@ test('every built-in template is present and described', async () => {
   const ids = templates.map((entry) => entry.id).sort();
 
   assert.deepEqual(ids, [
+    'amber-gradient',
+    'burgundy-rule',
     'charcoal-sidebar',
     'classic-serif',
     'contrast-cards',
@@ -458,6 +460,8 @@ test('every built-in template is present and described', async () => {
     'editorial-italic',
     'forest-chips',
     'indigo-band',
+    'navy-gold',
+    'navy-rule',
     'slate-italic',
     'structured-slate',
     'timeline-bars',
@@ -469,7 +473,7 @@ test('a template of each layout shape renders the sample resume end to end', asy
   // about two minutes of skill-categorisation per template for no extra
   // coverage - the shapes are what differ, not the count.
   const templates = await Promise.all(
-    ['developer-mono', 'contrast-cards', 'charcoal-sidebar'].map((id) => getTemplateById(id))
+    ['developer-mono', 'contrast-cards', 'charcoal-sidebar', 'burgundy-rule'].map((id) => getTemplateById(id))
   );
 
   for (const template of templates) {
