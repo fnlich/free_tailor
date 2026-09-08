@@ -842,6 +842,79 @@ test('a Windows npm .cmd shim resolves to the script it wraps, with no shell', (
   assert.equal(plan.command.toLowerCase().includes('cmd.exe'), false);
 });
 
+// The OTHER template cmd-shim emits. When a package's `bin` is a native
+// executable there is no interpreter and no script: cmd-shim puts the target
+// itself where the program goes (lib/index.js, the `if (!prog)` branch), so
+// nothing in the file ends in .js. @anthropic-ai/claude-code is exactly this
+// shape - `npm view @anthropic-ai/claude-code bin` is {claude: 'bin/claude.exe'}
+// - and a resolver that looks only for a script finds nothing and reports the
+// CLI as missing on a machine where it is installed and working.
+const NPM_CMD_SHIM_NATIVE = [
+  '@ECHO off',
+  'GOTO start',
+  ':find_dp0',
+  'SET dp0=%~dp0',
+  'EXIT /b',
+  ':start',
+  'SETLOCAL',
+  'CALL :find_dp0',
+  '"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*',
+].join('\r\n');
+
+test('a Windows shim wrapping a native binary resolves to the binary', () => {
+  clearCliExecPlanCache();
+  // The exact failure reported from Windows: "Found claude.cmd, but it is a
+  // shim this server cannot run safely and the script it wraps could not be
+  // located" - on an install that was perfectly good.
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
+  const exe =
+    'C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
+  const plan = resolveCliExecPlan('claude', windowsDeps({ [shim]: NPM_CMD_SHIM_NATIVE, [exe]: '' }));
+
+  assert.equal(plan.kind, 'windows-exe');
+  assert.equal(plan.command, exe);
+  assert.deepEqual(plan.prefixArgs, []);
+  // Still no shell: --system-prompt carries admin-editable text.
+  assert.equal(plan.command.toLowerCase().includes('cmd.exe'), false);
+});
+
+test('the interpreter in a JS shim is never mistaken for the target', () => {
+  clearCliExecPlanCache();
+  // The JS template names BOTH "%dp0%\\node.exe" and the script. Picking the
+  // first path that happens to exist would run node with the CLI's own argv.
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
+  const bundledNode = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\node.exe';
+  const cli = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
+  const plan = resolveCliExecPlan(
+    'claude',
+    windowsDeps({ [shim]: NPM_CMD_SHIM, [bundledNode]: '', [cli]: '' })
+  );
+
+  assert.equal(plan.kind, 'node-script');
+  assert.deepEqual(plan.prefixArgs, [cli]);
+});
+
+test('a sibling .ps1 answers when the .cmd itself says nothing useful', () => {
+  clearCliExecPlanCache();
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
+  const ps1 = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.ps1';
+  const exe =
+    'C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
+  const ps1Body = [
+    '#!/usr/bin/env pwsh',
+    '$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent',
+    '& "$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe"   $args',
+  ].join('\n');
+
+  const plan = resolveCliExecPlan(
+    'claude',
+    windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here', [ps1]: ps1Body, [exe]: '' })
+  );
+
+  assert.equal(plan.kind, 'windows-exe');
+  assert.equal(plan.command, exe);
+});
+
 test('a native Windows executable is spawned directly', () => {
   const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
   const plan = resolveCliExecPlan('claude', windowsDeps({ [exe]: '' }));
