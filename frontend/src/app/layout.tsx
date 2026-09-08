@@ -64,7 +64,19 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="light dark" />
-        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        {/*
+          suppressHydrationWarning is load-bearing, not decorative. React
+          hydrates <head> children by position, and a browser extension's
+          content script runs before hydration and inserts its own
+          <script src="chrome-extension://..."> at the top of <head>. Every
+          later child shifts by one, and React then compares this element
+          against the extension's script and reports a mismatch. The other
+          tags here are hoistable, so React matches them by content and only
+          this inline script is affected. Verified both ways in a headless
+          Chromium: without the extension there is no warning at all; with one
+          injected there is, and this attribute removes it.
+        */}
+        <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}

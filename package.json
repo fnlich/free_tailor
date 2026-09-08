@@ -2,9 +2,9 @@
   "name": "free_tailor",
   "private": true,
   "scripts": {
-    "dev": "concurrently --kill-others --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
-    "dev:poll": "concurrently --kill-others --names backend,frontend --prefix-colors cyan,magenta \"npm run dev:poll --prefix backend\" \"npm run dev --prefix frontend\"",
-    "dev:live": "concurrently --kill-others --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
+    "dev": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
+    "dev:poll": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev:poll --prefix backend\" \"npm run dev --prefix frontend\"",
+    "dev:live": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
     "dev:backend": "npm run dev --prefix backend",
     "dev:backend:poll": "npm run dev:poll --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",

@@ -52,30 +52,68 @@ function isOriginAllowed(origin: string | undefined, requestHost: string | undef
   const serverHost = getHostname(requestHost);
   if (!originHost || !serverHost) return false;
 
-  const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
+  // WHATWG URL parsing keeps the brackets on an IPv6 literal, so `::1` alone
+  // would never match what getHostname returns for http://[::1]:3000.
+  const localHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
   return originHost === serverHost || (localHosts.has(originHost) && localHosts.has(serverHost));
+}
+
+const reportedCorsRejections = new Set<string>();
+
+/**
+ * Says out loud that an origin was refused.
+ *
+ * A CORS rejection is invisible to the page by construction: the browser drops
+ * the response because it has no Access-Control-Allow-Origin, so the fetch
+ * rejects with a bare TypeError and the frontend can only report "cannot reach
+ * the backend" - while the backend is running and answering perfectly well.
+ * The one place the reason can be seen is here, so it is logged, once per
+ * origin, with the variable that fixes it.
+ */
+function reportCorsRejection(origin: string, requestHost: string | undefined): void {
+  if (reportedCorsRejections.has(origin)) {
+    return;
+  }
+  reportedCorsRejections.add(origin);
+  console.warn(
+    `[cors] Refused origin ${origin} for a request to ${requestHost ?? 'this server'}. ` +
+      'The browser reports this to the page as an unreachable server, not as a policy error. ' +
+      `Add it to FRONTEND_URL in the repository .env to allow it (FRONTEND_URL=${origin}).`
+  );
 }
 
 // Middleware
 app.use((req, res, next) => {
-  cors({
-    origin(origin, callback) {
-      if (isOriginAllowed(origin, req.headers.host)) {
-        callback(null, true);
-        return;
-      }
-      callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
-  })(req, res, next);
+  const origin = req.headers.origin;
+
+  if (!isOriginAllowed(origin, req.headers.host)) {
+    reportCorsRejection(origin ?? '(none)', req.headers.host);
+    // 403 and stop. The previous code threw from the cors callback, which
+    // reached the error handler and answered 500 - the wrong status for a
+    // policy decision. Refusing by returning `false` to cors would be worse
+    // still: the request would run and only the RESPONSE would be unreadable,
+    // so a cross-site POST would take effect unseen. Neither the status nor
+    // the body is visible to the page either way, which is what CORS is for;
+    // the log line above is where the reason actually lands.
+    res.status(403).json({
+      error: `Origin ${origin ?? '(none)'} is not allowed by this server's CORS policy.`,
+    });
+    return;
+  }
+
+  cors({ origin: true, credentials: true })(req, res, next);
 });
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.get('/api/generated/:filename(*)', async (req, res) => {
   try {
+    // Express 4 exposes `:filename(*)` as `params.filename`; the bracketed key
+    // is Express 5's shape. Reading the wrong one made this route answer 404
+    // for every path. `/api/resume/download/:filename(*)` in routes/resume.ts
+    // reads the correct key, which is why downloads themselves still worked.
     const params = req.params as Record<string, string | undefined>;
-    const filename = typeof params['filename(*)'] === 'string' ? params['filename(*)'] : '';
+    const filename = params.filename ?? '';
     const filepath = await getGeneratedFilePath(filename);
     if (!filepath) {
       res.status(404).json({ error: 'File not found' });
