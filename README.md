@@ -249,7 +249,7 @@ File and folder names are templated per profile.
 |---------|---------|
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering |
 | **Groups** | Group profiles for batch generation |
-| **Templates** | Built-in, manual, and uploaded resume templates |
+| **Templates** | Six built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic and Contrast Cards - plus manual and uploaded ones. **View** renders any of them with a full sample resume at the exact page size the PDF prints, so the preview and the output agree |
 | **Prompts** | Edit default prompts or add custom variants per feature |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | AI providers, models, API keys, output location, and live Claude subscription status (sign-in, usage window, in-flight calls) |

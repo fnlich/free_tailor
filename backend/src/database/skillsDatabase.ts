@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { getStaticSkillsFile } from '../config/staticPaths';
-import { getDb } from './sqlite';
+import { getDatabasePath, getDb } from './sqlite';
 
 export type SkillType = 'hard' | 'soft';
 export type HardSkillCategory =
@@ -444,6 +444,7 @@ function countSkillRows(): number {
 }
 
 function writeStore(store: SkillsStore): void {
+  invalidateStoreCache();
   const normalized = normalizeStore(store);
   const db = getDb();
   const insert = db.prepare(
@@ -477,14 +478,58 @@ function ensureSeeded(): void {
   }
 }
 
+/**
+ * The normalised skill library, built once per change rather than once per call.
+ *
+ * WHY THIS EXISTS. `readStore` selects every row and hands all of them to
+ * `normalizeStore`, which runs each of the ~1,500 hard skills through
+ * `categorizeHardSkill` - twenty pattern lists of twenty patterns each - and
+ * then sorts with `localeCompare`. That is roughly 600,000 substring tests per
+ * call. Six exported readers call it, and a single resume render calls several
+ * of them, so one render was doing tens of millions of them.
+ *
+ * Measured with a three-skill profile: `prepareResumeRenderData` took 22
+ * seconds before this cache. Every generated resume paid it, and so did every
+ * template preview - the templates page renders six.
+ *
+ * Keyed on the database file, because the path is resolved per call and the
+ * tests point DB_DIR at a temp directory; dropped on every write.
+ */
+let storeCache: { databasePath: string; store: SkillsStore } | null = null;
+
+function invalidateStoreCache(): void {
+  storeCache = null;
+}
+
+/**
+ * `addSkill`, `updateSkill` and `deleteSkill` mutate what `readStore` returns
+ * and then write it back, so a caller must never receive the cached object
+ * itself. Copying ~2,700 small records costs well under a millisecond, against
+ * the 22 seconds rebuilding them costs.
+ */
+function cloneStore(store: SkillsStore): SkillsStore {
+  return {
+    hard: store.hard.map((record) => ({ ...record })),
+    soft: [...store.soft],
+  };
+}
+
 function readStore(): SkillsStore {
   ensureSeeded();
 
+  const databasePath = getDatabasePath();
+  if (storeCache && storeCache.databasePath === databasePath) {
+    return cloneStore(storeCache.store);
+  }
+
   const rows = getDb().prepare('SELECT type, skill, priority, category FROM skills').all() as SkillRow[];
-  return normalizeStore({
+  const store = normalizeStore({
     hard: rows.filter((row) => row.type === 'hard'),
     soft: rows.filter((row) => row.type === 'soft').map((row) => row.skill),
   });
+
+  storeCache = { databasePath, store };
+  return cloneStore(store);
 }
 
 function findSoftSkillIndex(skills: string[], skill: string): number {

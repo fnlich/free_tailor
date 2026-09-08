@@ -1,7 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { generatePreviewHTML, prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
+const {
+  generatePreviewHTML,
+  generateTemplatePreviewHTML,
+  prepareResumeRenderData,
+  RESUME_PAGE_GEOMETRY,
+} = require('../dist/generators/pdfGenerator');
+const { getAllTemplates, getTemplateById } = require('../dist/extractors/templateExtractor');
 
 test('prepareResumeRenderData normalizes LinkedIn href and display text', () => {
   const renderData = prepareResumeRenderData({
@@ -370,3 +376,105 @@ test('prepareResumeRenderData caps language skills at the prompt maximum', () =>
   assert.deepEqual(new Set(languages), new Set(['Go', 'Python', 'JavaScript', 'PHP', 'Java']));
 });
 
+// -- Template preview == printed page ---------------------------------------- //
+// The preview exists to show what the PDF will look like, and it only does that
+// if it renders the same document at the same width. It used to do neither: the
+// template document was nested inside a second wrapper document, and laid out at
+// whatever width the iframe happened to be. Column counts, line wraps and page
+// breaks all move with width, so the two were only loosely related.
+
+test('the page geometry is one definition, not two', () => {
+  assert.equal(RESUME_PAGE_GEOMETRY.format, 'A4');
+  assert.deepEqual(RESUME_PAGE_GEOMETRY.margin, {
+    top: '0.4in',
+    right: '0.5in',
+    bottom: '0.3in',
+    left: '0.5in',
+  });
+  // A4 is 8.27in wide; minus 0.5in of margin either side, at 96 DPI.
+  assert.equal(RESUME_PAGE_GEOMETRY.contentWidthPx, 698);
+});
+
+test('a template preview carries the printed page box, not an arbitrary width', async () => {
+  const template = await getTemplateById('developer-mono');
+  assert.ok(template, 'developer-mono should be a built-in template');
+
+  const preview = generateTemplatePreviewHTML(template);
+  const { margin, contentWidthPx, contentHeightPx } = RESUME_PAGE_GEOMETRY;
+
+  // The width every width-dependent CSS decision resolves against.
+  assert.match(preview, new RegExp(`width:\\s*${contentWidthPx}px`));
+  assert.match(preview, new RegExp(`min-height:\\s*${contentHeightPx}px`));
+  // All four PDF margins, in PDF order, drawn as the page's white border.
+  assert.match(
+    preview,
+    new RegExp(`border-width:\\s*${margin.top}\\s+${margin.right}\\s+${margin.bottom}\\s+${margin.left}`)
+  );
+  // page.pdf runs with printBackground: true, so the preview must not let the
+  // browser drop backgrounds the way a screen render would.
+  assert.match(preview, /print-color-adjust:\s*exact/);
+});
+
+test('the preview is the PDF document plus chrome, never a different document', async () => {
+  const template = await getTemplateById('classic-serif');
+  const preview = generateTemplatePreviewHTML(template);
+
+  // Strip the one appended block and what is left must be a standalone
+  // document - the same string the PDF renderer is handed.
+  const chrome = /<style id="resume-preview-page">[\s\S]*?<\/style>$/;
+  assert.match(preview, chrome, 'the chrome must be appended last so it wins ties');
+
+  const document = preview.replace(chrome, '');
+  assert.match(document, /^<!DOCTYPE html>/i);
+  assert.equal(document.includes('resume-preview-page'), false);
+  // And it must be a rendered resume, not an unfilled template.
+  assert.equal(document.includes('{{'), false, 'no unrendered Handlebars should survive');
+  assert.ok(document.includes('Jordan Avery Chen'));
+});
+
+test('every built-in template is present and described', async () => {
+  const templates = await getAllTemplates();
+  const ids = templates.map((entry) => entry.id).sort();
+
+  assert.deepEqual(ids, [
+    'classic-serif',
+    'contrast-cards',
+    'default',
+    'developer-mono',
+    'editorial-italic',
+    'structured-slate',
+  ]);
+});
+
+test('a template of each layout shape renders the sample resume end to end', async () => {
+  // One flow-layout template and one CSS-grid one. Rendering all six costs
+  // about two minutes of skill-categorisation per template for no extra
+  // coverage - the shapes are what differ, not the count.
+  const templates = await Promise.all(
+    ['developer-mono', 'contrast-cards'].map((id) => getTemplateById(id))
+  );
+
+  for (const template of templates) {
+    assert.ok(template, 'built-in template should load');
+    const preview = generateTemplatePreviewHTML(template);
+    // The sample profile is deliberately a full resume, so a template that
+    // silently drops a section shows up here rather than in someone's PDF.
+    assert.ok(preview.includes('Jordan Avery Chen'), `${template.id}: name missing`);
+    assert.ok(preview.includes('Northwind Payments'), `${template.id}: experience missing`);
+    assert.ok(preview.includes('University of Washington'), `${template.id}: education missing`);
+    assert.ok(preview.includes('Languages'), `${template.id}: skill categories missing`);
+    assert.equal(preview.includes('{{'), false, `${template.id}: unrendered Handlebars`);
+  }
+});
+
+test('no built-in template is still named after the person who wrote it', async () => {
+  const templates = await getAllTemplates();
+  for (const template of templates) {
+    assert.doesNotMatch(
+      template.name,
+      /rista_|jacky_/i,
+      `${template.id} kept an authoring name: ${template.name}`
+    );
+    assert.ok(template.description && template.description.length > 20, `${template.id} needs a description`);
+  }
+});

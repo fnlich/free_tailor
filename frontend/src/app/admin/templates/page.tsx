@@ -4,6 +4,91 @@ import { useState, useEffect, useRef } from 'react';
 import { templatesApi, Template, getApiOrigin } from '@/lib/api';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
 
+/**
+ * The preview document's own size, in CSS pixels.
+ *
+ * The backend renders every preview into the exact page box `page.pdf()` prints
+ * into - A4 with 0.4in/0.5in/0.3in/0.5in margins - so these are the dimensions
+ * of that page at 96 DPI, not an arbitrary iframe size. Get them wrong and the
+ * iframe reflows the content at some other width, which is the whole reason the
+ * old preview did not resemble the PDF it was previewing.
+ */
+const PREVIEW_DOCUMENT_WIDTH_PX = 794; // 698px content + 0.5in margins either side
+const PREVIEW_DOCUMENT_HEIGHT_PX = 1123; // A4 height at 96 DPI
+const PREVIEW_THUMBNAIL_SCALE = 0.44;
+
+/** Full-size preview: the resume at the size it will actually print. */
+function TemplateViewModal({
+  template,
+  onClose,
+}: {
+  template: Template;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    // The page behind must not scroll while the sheet is open.
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose]);
+
+  const previewUrl = `${getApiOrigin()}/api/templates/${encodeURIComponent(template.id)}/preview`;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 z-50 flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${template.name} preview`}
+      onClick={onClose}
+    >
+      <div className="flex items-center justify-between gap-4 px-5 py-3 bg-white shadow">
+        <div className="min-w-0">
+          <div className="font-semibold text-gray-900 truncate">{template.name}</div>
+          <div className="text-xs text-gray-500 truncate">
+            {template.description || 'Rendered with sample data at printed page size'}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <a
+            href={previewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded"
+          >
+            Open in new tab
+          </a>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto p-4" onClick={onClose}>
+        <iframe
+          src={previewUrl}
+          title={`${template.name} full preview`}
+          onClick={(event) => event.stopPropagation()}
+          className="mx-auto border-0 bg-white shadow-2xl"
+          style={{ width: PREVIEW_DOCUMENT_WIDTH_PX, height: '100%', minHeight: PREVIEW_DOCUMENT_HEIGHT_PX }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function TemplateBasicEditModal({
   template,
   onSave,
@@ -76,6 +161,7 @@ export default function TemplatesPage() {
   const [showManualModal, setShowManualModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
   const [editingBasicTemplate, setEditingBasicTemplate] = useState<Template | null>(null);
+  const [viewingTemplate, setViewingTemplate] = useState<Template | null>(null);
   const [templateName, setTemplateName] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedJsonFile, setSelectedJsonFile] = useState<File | null>(null);
@@ -582,19 +668,36 @@ export default function TemplatesPage() {
                 </p>
               </div>
 
-              <div className="relative bg-gray-100 overflow-auto" style={{ height: 320 }}>
+              <button
+                type="button"
+                onClick={() => setViewingTemplate(template)}
+                title={`View ${template.name} at full size`}
+                className="relative block w-full bg-gray-100 overflow-hidden cursor-zoom-in group"
+                style={{ height: 320 }}
+              >
                 <iframe
                   src={`${getApiOrigin()}/api/templates/${encodeURIComponent(template.id)}/preview`}
                   title={`Preview of ${template.name}`}
-                  className="absolute top-0 left-0 border-0 pointer-events-none"
+                  scrolling="no"
+                  className="absolute top-0 border-0 pointer-events-none"
                   style={{
-                    transform: 'scale(0.28)',
+                    transform: `scale(${PREVIEW_THUMBNAIL_SCALE})`,
                     transformOrigin: 'top left',
-                    width: 794,
-                    height: 1123,
+                    width: PREVIEW_DOCUMENT_WIDTH_PX,
+                    height: PREVIEW_DOCUMENT_HEIGHT_PX,
+                    // Scaling from the top-left leaves the page hugging the
+                    // left edge of the card. The rendered width is known, so
+                    // half of it is exactly the offset that centres it.
+                    left: '50%',
+                    marginLeft: -(PREVIEW_DOCUMENT_WIDTH_PX * PREVIEW_THUMBNAIL_SCALE) / 2,
                   }}
                 />
-              </div>
+                <span className="absolute inset-0 flex items-end justify-center pb-3 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition">
+                  <span className="rounded-full bg-white/95 px-3 py-1 text-xs font-medium text-gray-900 shadow">
+                    View full size
+                  </span>
+                </span>
+              </button>
 
               <div className="p-4">
                 <div className="text-xs text-gray-400 mb-4">
@@ -602,6 +705,12 @@ export default function TemplatesPage() {
                 </div>
 
                 <div className="flex justify-end gap-2 pt-4 border-t">
+                  <button
+                    onClick={() => setViewingTemplate(template)}
+                    className="px-3 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded"
+                  >
+                    View
+                  </button>
                   <button
                     onClick={() =>
                       template.id.startsWith('m-')
@@ -631,6 +740,13 @@ export default function TemplatesPage() {
             </div>
           ))}
         </div>
+      )}
+
+      {viewingTemplate && (
+        <TemplateViewModal
+          template={viewingTemplate}
+          onClose={() => setViewingTemplate(null)}
+        />
       )}
     </div>
   );
