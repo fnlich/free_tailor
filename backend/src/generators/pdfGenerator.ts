@@ -18,6 +18,23 @@ import {
 const MAX_ROLE_BRIEF_LENGTH = 1200;
 const A4_PRINTABLE_WIDTH_PX = 698; // A4 width (8.27in) minus 0.5in margins on both sides at 96 DPI
 const A4_PRINTABLE_HEIGHT_PX = 1026; // A4 height (11.69in) minus 0.5in margins top/bottom at 96 DPI
+
+/**
+ * The page box every resume is printed into.
+ *
+ * ONE definition, used by `page.pdf()` and by the on-screen preview alike. They
+ * used to be unrelated: the PDF printed A4 with these margins at a 698px
+ * viewport, while the preview rendered at whatever width the iframe happened to
+ * be, inside a second wrapper document. Column counts, line wraps and page
+ * breaks all differ with width, so "preview" and "what you get" were only ever
+ * loosely related. Anything that changes here changes both.
+ */
+export const RESUME_PAGE_GEOMETRY = {
+  format: 'A4',
+  margin: { top: '0.4in', right: '0.5in', bottom: '0.3in', left: '0.5in' },
+  contentWidthPx: A4_PRINTABLE_WIDTH_PX,
+  contentHeightPx: A4_PRINTABLE_HEIGHT_PX,
+} as const;
 const LANGUAGE_SKILLS = new Set([
   'python',
   'javascript',
@@ -1164,17 +1181,10 @@ export async function generateResumePDF(
   );
 
   // Compile and render template
-  const html = timePdfStageSync('template render', () => {
-    const compiledTemplate = compileTemplate(template);
-    return enforceSkillCategoryLineBreaks(rewriteLinkedInAnchorDisplay(compiledTemplate(renderData)));
-  });
+  const html = timePdfStageSync('template render', () => renderTemplateBody(template, renderData));
 
   // Add CSS if separate
-  const fullHtml = timePdfStageSync('HTML assembly', () =>
-    template.cssContent
-      ? `<style>${template.cssContent}</style>${html}`
-      : html
-  );
+  const fullHtml = timePdfStageSync('HTML assembly', () => assembleResumeDocument(template, html));
 
   // Generate PDF with Puppeteer
   const browser = await timePdfStage('browser ready', () => getSharedPdfBrowser());
@@ -1185,8 +1195,8 @@ export async function generateResumePDF(
     page = activePage;
     await timePdfStage('page setup', async () => {
       await activePage.setViewport({
-        width: A4_PRINTABLE_WIDTH_PX,
-        height: A4_PRINTABLE_HEIGHT_PX,
+        width: RESUME_PAGE_GEOMETRY.contentWidthPx,
+        height: RESUME_PAGE_GEOMETRY.contentHeightPx,
         deviceScaleFactor: 1,
       });
       await activePage.emulateMediaType('print');
@@ -1198,13 +1208,8 @@ export async function generateResumePDF(
     const filepath = path.join(pathInfo.absoluteDir, pdfFilename);
     const finalPdf = await timePdfStage('export', async () =>
       Buffer.from(await activePage.pdf({
-        format: 'A4',
-        margin: {
-          top: '0.4in',
-          right: '0.5in',
-          bottom: '0.3in',
-          left: '0.5in'
-        },
+        format: RESUME_PAGE_GEOMETRY.format,
+        margin: { ...RESUME_PAGE_GEOMETRY.margin },
         printBackground: true
       }))
     );
@@ -1241,51 +1246,121 @@ export async function generatePreviewHTML(
 }
 
 /** Sample profile for template preview */
+/**
+ * The resume every template preview is rendered with.
+ *
+ * Deliberately a FULL one - four roles with real achievement bullets, a skill
+ * list broad enough to fill every category the skills pipeline builds, two
+ * degrees - because a preview's whole job is to show how a template handles a
+ * real resume. The previous sample had two roles and five skills, which made
+ * every template look roomy and told you nothing about how the one you picked
+ * would cope with a second page, a long company line, or a four-column skills
+ * block.
+ *
+ * The names and companies are invented. Nothing here is anyone's real resume.
+ */
 const SAMPLE_PROFILE: Profile = {
   id: 'preview',
-  name: 'Jane Smith',
+  name: 'Jordan Avery Chen',
   title: 'Senior Software Engineer',
-  totalYearsExperience: 5,
+  totalYearsExperience: 9,
   contact: {
     phone: '+1 (555) 123-4567',
-    email: 'jane.smith@email.com',
-    linkedin: 'linkedin.com/in/janesmith',
+    email: 'jordan.chen@example.com',
+    linkedin: 'linkedin.com/in/jordanchen',
     location: 'San Francisco, CA',
   },
-  summary: 'Experienced software engineer with 5+ years building scalable web applications. Strong focus on clean code and team collaboration.',
+  summary:
+    'Senior engineer with nine years building and operating payment and data platforms at scale. ' +
+    'Leads backend architecture for services handling 40M requests a day, and has taken three ' +
+    'greenfield systems from design through to production ownership. Works closely with product ' +
+    'and SRE, and has mentored eight engineers through promotion.',
   experience: [
     {
       title: 'Senior Software Engineer',
-      company: 'Tech Corp',
-      startDate: '01/2021',
+      company: 'Northwind Payments',
+      startDate: '03/2022',
       endDate: 'Present',
       location: 'San Francisco, CA',
-      description: 'Lead development of customer-facing platforms.',
-      achievements: ['Reduced load time by 40%', 'Mentored 3 junior engineers'],
+      description:
+        'Own the ledger and settlement services behind a payments platform processing $2.4B annually. ' +
+        'Lead a team of five across backend and infrastructure.',
+      achievements: [
+        'Rebuilt the settlement pipeline on an event-sourced ledger, cutting end-of-day reconciliation from 6 hours to 18 minutes',
+        'Cut p99 authorisation latency from 840ms to 120ms by replacing synchronous fraud lookups with a cached risk service',
+        'Introduced contract testing across 14 services, taking integration failures in staging from roughly 30 a week to under 3',
+        'Mentored three engineers to senior; two now lead their own teams',
+      ],
+      skills: [],
+    },
+    {
+      title: 'Software Engineer II',
+      company: 'Cobalt Analytics',
+      startDate: '07/2019',
+      endDate: '02/2022',
+      location: 'Seattle, WA',
+      description:
+        'Built the ingestion and query layer for a customer-facing analytics product used by 1,200 organisations.',
+      achievements: [
+        'Designed a columnar ingestion path handling 8TB a day, reducing storage cost per event by 62%',
+        'Shipped an incremental materialised-view engine that brought dashboard loads under 2 seconds at the 95th percentile',
+        'Led the migration from a single Postgres instance to a sharded cluster with no customer-visible downtime',
+      ],
       skills: [],
     },
     {
       title: 'Software Engineer',
-      company: 'Startup Inc',
-      startDate: '06/2019',
-      endDate: '12/2020',
+      company: 'Harbourline Systems',
+      startDate: '08/2017',
+      endDate: '06/2019',
       location: 'Remote',
-      description: 'Full-stack development for SaaS product.',
-      achievements: ['Built REST APIs', 'Implemented CI/CD pipeline'],
+      description:
+        'Full-stack work on a logistics scheduling product, from the React planning board to the routing service behind it.',
+      achievements: [
+        'Replaced a nightly batch scheduler with an incremental solver, improving on-time dispatch from 81% to 96%',
+        'Built the CI pipeline the whole engineering group still uses, taking a release from a half-day to 20 minutes',
+      ],
+      skills: [],
+    },
+    {
+      title: 'Junior Software Engineer',
+      company: 'Fairhaven Digital',
+      startDate: '06/2016',
+      endDate: '07/2017',
+      location: 'Boston, MA',
+      description: 'Maintained client web applications and internal tooling for a digital agency.',
+      achievements: [
+        'Automated the deployment process for 20 client sites, removing a recurring source of release errors',
+      ],
       skills: [],
     },
   ],
   strengths: [
-    { title: 'Problem Solving', description: 'Analytical approach to complex challenges.' },
-    { title: 'Communication', description: 'Clear technical documentation and presentations.' },
+    { title: 'Systems Design', description: 'Designs for failure modes and operational cost, not just the happy path.' },
+    { title: 'Mentorship', description: 'Eight engineers coached through promotion in four years.' },
+    { title: 'Incident Ownership', description: 'Drives root-cause analysis through to the fix that prevents recurrence.' },
+    { title: 'Communication', description: 'Writes the design document people actually read before the meeting.' },
   ],
-  skills: ['JavaScript', 'TypeScript', 'React', 'Node.js', 'Python'],
+  skills: [
+    'TypeScript', 'JavaScript', 'Python', 'Go', 'SQL', 'Java',
+    'React', 'Next.js', 'Node.js', 'Express', 'Django', 'GraphQL',
+    'PostgreSQL', 'MySQL', 'Redis', 'MongoDB', 'DynamoDB', 'Kafka',
+    'AWS', 'GCP', 'Docker', 'Kubernetes', 'Terraform', 'GitHub Actions',
+    'Jenkins', 'Prometheus', 'Grafana', 'Datadog', 'Jest', 'Playwright',
+  ],
   education: [
     {
-      degree: 'B.S. Computer Science',
-      institution: 'State University',
-      startDate: '2015',
-      endDate: '2019',
+      degree: 'M.S. Computer Science',
+      institution: 'University of Washington',
+      startDate: '2014',
+      endDate: '2016',
+      location: 'Seattle, WA',
+    },
+    {
+      degree: 'B.S. Computer Engineering',
+      institution: 'Boston University',
+      startDate: '2010',
+      endDate: '2014',
       location: 'Boston, MA',
     },
   ],
@@ -1293,14 +1368,60 @@ const SAMPLE_PROFILE: Profile = {
   updatedAt: '',
 };
 
+/** Compiles a template against render data. Shared so preview and PDF agree. */
+function renderTemplateBody(template: Template, renderData: unknown): string {
+  const compiledTemplate = compileTemplate(template);
+  return enforceSkillCategoryLineBreaks(
+    rewriteLinkedInAnchorDisplay(compiledTemplate(renderData))
+  );
+}
+
+/** Prepends a template's separate stylesheet, if it has one. */
+function assembleResumeDocument(template: Template, body: string): string {
+  return template.cssContent ? `<style>${template.cssContent}</style>${body}` : body;
+}
+
+/**
+ * Turns the printed page into something a browser can show, WITHOUT changing
+ * the document the PDF renderer sees.
+ *
+ * The body is given the exact content box `page.pdf()` prints into, so every
+ * width-dependent decision the template makes - `column-count`, flex wrapping,
+ * where a line breaks - resolves the same way it will in the PDF. The four
+ * margins are drawn as white borders rather than padding so the content box
+ * keeps its exact width, and `background-clip: content-box` keeps a template's
+ * own body background off them, which is what the printer does: margins are
+ * paper, not page.
+ *
+ * Appended last so it wins ties against the template's own `body` rules, and
+ * scoped to `body`/`html` so it cannot touch anything the template styles.
+ */
+function previewPageChrome(): string {
+  const { margin, contentWidthPx, contentHeightPx } = RESUME_PAGE_GEOMETRY;
+  return `<style id="resume-preview-page">
+    html { background: #f3f4f6; }
+    body {
+      box-sizing: content-box !important;
+      width: ${contentWidthPx}px !important;
+      min-height: ${contentHeightPx}px !important;
+      margin: 24px auto !important;
+      border-style: solid !important;
+      border-color: #ffffff !important;
+      border-width: ${margin.top} ${margin.right} ${margin.bottom} ${margin.left} !important;
+      background-clip: content-box !important;
+      box-shadow: 0 2px 12px rgba(15, 23, 42, 0.18);
+      /* page.pdf runs with printBackground: true, so colours must not be
+         dropped the way a screen render would drop them. */
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  </style>`;
+}
+
 export function generateTemplatePreviewHTML(template: Template): string {
   const renderData = prepareResumeRenderData(SAMPLE_PROFILE);
-  const compiledTemplate = compileTemplate(template);
-  const html = enforceSkillCategoryLineBreaks(rewriteLinkedInAnchorDisplay(compiledTemplate(renderData)));
-  const fullHtml = template.cssContent
-    ? `<style>${template.cssContent}</style>${html}`
-    : html;
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:8px;background:#f3f4f6;">${fullHtml}</body></html>`;
+  const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
+  return `${document}${previewPageChrome()}`;
 }
 
 export async function getGeneratedPDFPath(filename: string): Promise<string | null> {
