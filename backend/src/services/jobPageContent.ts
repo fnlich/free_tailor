@@ -1,5 +1,5 @@
 import pdf from 'pdf-parse';
-import puppeteer from 'puppeteer';
+import { launchBrowser } from '../config/browser';
 
 const MAX_HTML_BYTES = 2_000_000;
 const FETCH_TIMEOUT_MS = 20_000;
@@ -84,10 +84,7 @@ async function extractHtmlViaFetch(url: string): Promise<string> {
 }
 
 async function extractHtmlViaPuppeteer(url: string): Promise<string> {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+  const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();

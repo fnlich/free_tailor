@@ -114,6 +114,13 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   the CLI found an API key and every request will be billed per token; the
   backend says so loudly at startup and on the admin Settings page.
 
+- **A Chrome to print with.** Resumes and cover letters are rendered by
+  headless Chrome, and `npm install --prefix backend` downloads one
+  automatically. Nothing further is needed unless that download is blocked -
+  see `Could not find Chrome` under Troubleshooting. The backend prints which
+  browser it resolved at startup, on a `[pdf]` line, and reports it from
+  `GET /api/health`.
+
 - Optionally an **OpenAI**, **Anthropic** or **DeepSeek** API key, if you want
   those providers available as alternatives
 
@@ -249,7 +256,7 @@ File and folder names are templated per profile.
 |---------|---------|
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering |
 | **Groups** | Group profiles for batch generation |
-| **Templates** | Six built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic and Contrast Cards - plus manual and uploaded ones. **View** renders any of them with a full sample resume at the exact page size the PDF prints, so the preview and the output agree |
+| **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | AI providers, models, API keys, output location, and live Claude subscription status (sign-in, usage window, in-flight calls) |
@@ -291,6 +298,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
+| `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
+| `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |
 | `The Claude CLI is not installed or is not on the server PATH` | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows npm installs the CLI as `claude.cmd`, a shim wrapping `node_modules\@anthropic-ai\claude-code\bin\claude.exe`; the server follows the shim to that binary on its own, so `AI_CLI_BIN` is only needed if that fails, and then it should name the `.exe`, not the `.cmd`. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
 | Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |

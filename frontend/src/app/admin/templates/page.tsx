@@ -5,15 +5,19 @@ import { templatesApi, Template, getApiOrigin } from '@/lib/api';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
 
 /**
- * The preview document's own size, in CSS pixels.
+ * The preview document's own size, in CSS pixels: A4 at 96 DPI, the page
+ * `page.pdf()` is always asked for.
  *
- * The backend renders every preview into the exact page box `page.pdf()` prints
- * into - A4 with 0.4in/0.5in/0.3in/0.5in margins - so these are the dimensions
- * of that page at 96 DPI, not an arbitrary iframe size. Get them wrong and the
- * iframe reflows the content at some other width, which is the whole reason the
- * old preview did not resemble the PDF it was previewing.
+ * The backend builds each preview at the page box that template will really be
+ * printed into - it reads the template's own `@page` rule, because Chrome obeys
+ * that and ignores the margin passed to `page.pdf()` - and scales anything that
+ * asks for a different paper size to fit this one, exactly as printing does. So
+ * the frame is A4-shaped whatever the template declares. Get these wrong and the
+ * frame reflows the content at some other width, which is the whole reason the
+ * old preview did not resemble the PDF it was previewing. The height is fixed
+ * rather than stretched for the same reason: it is what `vh` resolves against.
  */
-const PREVIEW_DOCUMENT_WIDTH_PX = 794; // 698px content + 0.5in margins either side
+const PREVIEW_DOCUMENT_WIDTH_PX = 794; // A4 width at 96 DPI
 const PREVIEW_DOCUMENT_HEIGHT_PX = 1123; // A4 height at 96 DPI
 const PREVIEW_THUMBNAIL_SCALE = 0.44;
 
@@ -82,7 +86,7 @@ function TemplateViewModal({
           title={`${template.name} full preview`}
           onClick={(event) => event.stopPropagation()}
           className="mx-auto border-0 bg-white shadow-2xl"
-          style={{ width: PREVIEW_DOCUMENT_WIDTH_PX, height: '100%', minHeight: PREVIEW_DOCUMENT_HEIGHT_PX }}
+          style={{ width: PREVIEW_DOCUMENT_WIDTH_PX, height: PREVIEW_DOCUMENT_HEIGHT_PX }}
         />
       </div>
     </div>
@@ -679,6 +683,10 @@ export default function TemplatesPage() {
                   src={`${getApiOrigin()}/api/templates/${encodeURIComponent(template.id)}/preview`}
                   title={`Preview of ${template.name}`}
                   scrolling="no"
+                  // Every card holds a real render of the resume, so without
+                  // this the whole grid fetches at once and the last cards are
+                  // still blank seconds after the page settles.
+                  loading="lazy"
                   className="absolute top-0 border-0 pointer-events-none"
                   style={{
                     transform: `scale(${PREVIEW_THUMBNAIL_SCALE})`,
