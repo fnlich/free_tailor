@@ -30,31 +30,6 @@ export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';
 export type DefaultResumeSelection = 'single' | 'all' | 'group';
 
-type ApiKeyEntry = {
-  id: string;
-  name: string;
-  value: string;
-  createdAt: string;
-};
-
-type ProviderKeyStore = {
-  activeKeyId: string;
-  entries: ApiKeyEntry[];
-};
-
-type ProviderKeyStores = Record<AIProvider, ProviderKeyStore>;
-
-type ApiKeyUpdate = {
-  activeKeyId?: string;
-  add?: Array<{
-    clientId?: string;
-    name?: string;
-    value: string;
-  }>;
-  removeIds?: string[];
-  useEnvironmentFallback?: boolean;
-};
-
 type GoogleSheetSource = {
   id: string;
   name: string;
@@ -96,7 +71,6 @@ type AppSettings = {
   outputPathTemplate: string;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
-  apiKeys: ProviderKeyStores;
 };
 
 export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
@@ -141,24 +115,6 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
-  apiKeys: {
-    [K in AIProvider]: {
-      /** false for a provider that authenticates without a key at all. */
-      requiresApiKey: boolean;
-      configured: boolean;
-      activeSource: 'stored' | 'environment' | 'subscription' | 'none';
-      activeKeyId: string | null;
-      activePreview: string | null;
-      environmentPreview: string | null;
-      entries: Array<{
-        id: string;
-        name: string;
-        preview: string | null;
-        isActive: boolean;
-        createdAt: string;
-      }>;
-    };
-  };
 };
 
 export type AppSettingsUpdate = Partial<PublicAppSettings> & {
@@ -166,7 +122,6 @@ export type AppSettingsUpdate = Partial<PublicAppSettings> & {
   openrouterEnabled?: boolean;
   outputBaseDir?: string;
   outputPathTemplate?: string;
-  apiKeys?: Partial<Record<AIProvider, ApiKeyUpdate | string>>;
 };
 
 export const APP_SETTINGS_KEY = 'app-settings';
@@ -282,13 +237,6 @@ function allProvidersEnabled(value = true): ProvidersEnabled {
   }, {} as ProvidersEnabled);
 }
 
-function emptyProviderKeyStores(): ProviderKeyStores {
-  return AI_PROVIDER_IDS.reduce((acc, id) => {
-    acc[id] = { activeKeyId: '', entries: [] };
-    return acc;
-  }, {} as ProviderKeyStores);
-}
-
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
   defaultMode: 'preview',
@@ -303,7 +251,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
   aiModels: createDefaultModelRecords(),
   googleSheetsSources: [],
-  apiKeys: emptyProviderKeyStores(),
 };
 
 function cloneDefaultSettings(): AppSettings {
@@ -312,13 +259,6 @@ function cloneDefaultSettings(): AppSettings {
     providersEnabled: { ...DEFAULT_SETTINGS.providersEnabled },
     aiModels: DEFAULT_SETTINGS.aiModels.map((model) => ({ ...model })),
     googleSheetsSources: [...DEFAULT_SETTINGS.googleSheetsSources],
-    apiKeys: AI_PROVIDER_IDS.reduce((acc, id) => {
-      acc[id] = {
-        activeKeyId: DEFAULT_SETTINGS.apiKeys[id].activeKeyId,
-        entries: [...DEFAULT_SETTINGS.apiKeys[id].entries],
-      };
-      return acc;
-    }, {} as ProviderKeyStores),
   };
 }
 
@@ -347,119 +287,6 @@ function getEnvironmentApiKey(provider: AIProvider): string {
     return '';
   }
   return process.env[envVar]?.trim() || '';
-}
-
-function normalizeApiKeyName(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
-}
-
-function createApiKeyEntry(value: string, name: string, createdAt?: string): ApiKeyEntry {
-  return {
-    id: randomUUID(),
-    name,
-    value,
-    createdAt: createdAt || new Date().toISOString(),
-  };
-}
-
-function normalizeProviderKeyStore(
-  input: unknown,
-  fallback: ProviderKeyStore,
-  _provider: AIProvider,
-  strict = false
-): ProviderKeyStore {
-  if (typeof input === 'string') {
-    const value = input.trim();
-    if (!value) {
-      if (strict) {
-        throw new Error('Stored API key values cannot be empty');
-      }
-      return { activeKeyId: '', entries: [] };
-    }
-    const entry = createApiKeyEntry(value, 'Primary key');
-    return {
-      activeKeyId: entry.id,
-      entries: [entry],
-    };
-  }
-
-  const source = typeof input === 'object' && input !== null ? input as Partial<ProviderKeyStore> & {
-    entries?: unknown;
-    activeKeyId?: unknown;
-  } : {};
-
-  if (strict && hasOwnProperty(source, 'entries') && !Array.isArray(source.entries)) {
-    throw new Error('Stored API key entries must be an array');
-  }
-
-  const rawEntries: unknown[] = Array.isArray(source.entries) ? source.entries : fallback.entries;
-  const entries = rawEntries
-    .map((entry, index) => {
-      if (typeof entry === 'string') {
-        const value = entry.trim();
-        if (!value) {
-          if (strict) {
-            throw new Error(`Stored API key entry ${index + 1} cannot be empty`);
-          }
-          return null;
-        }
-        return createApiKeyEntry(value, `Key ${index + 1}`);
-      }
-      if (typeof entry !== 'object' || entry === null) {
-        if (strict) {
-          throw new Error(`Stored API key entry ${index + 1} is invalid`);
-        }
-        return null;
-      }
-      const raw = entry as Partial<ApiKeyEntry>;
-      const value = typeof raw.value === 'string' ? raw.value.trim() : '';
-      if (!value) {
-        if (strict) {
-          throw new Error(`Stored API key entry ${index + 1} is missing a value`);
-        }
-        return null;
-      }
-      return {
-        id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : randomUUID(),
-        name: normalizeApiKeyName(raw.name, `Key ${index + 1}`),
-        value,
-        createdAt: typeof raw.createdAt === 'string' && raw.createdAt.trim()
-          ? raw.createdAt.trim()
-          : new Date().toISOString(),
-      } satisfies ApiKeyEntry;
-    })
-    .filter((entry): entry is ApiKeyEntry => Boolean(entry));
-
-  if (strict && hasOwnProperty(source, 'activeKeyId') && typeof source.activeKeyId !== 'string') {
-    throw new Error('Stored active API key id must be a string');
-  }
-
-  const activeKeyId = typeof source.activeKeyId === 'string' ? source.activeKeyId.trim() : fallback.activeKeyId;
-  const hasActiveEntry = entries.some((entry) => entry.id === activeKeyId);
-
-  if (strict && activeKeyId && !hasActiveEntry) {
-    throw new Error('Stored active API key id does not match any saved key');
-  }
-
-  return {
-    activeKeyId: entries.length === 0 ? '' : hasActiveEntry ? activeKeyId : entries[0].id,
-    entries,
-  };
-}
-
-function normalizeProviderKeyStores(input: unknown, fallback: ProviderKeyStores, strict = false): ProviderKeyStores {
-  if (strict && typeof input !== 'undefined' && (typeof input !== 'object' || input === null)) {
-    throw new Error('Stored API keys must be an object');
-  }
-
-  const source = typeof input === 'object' && input !== null
-    ? input as Partial<Record<AIProvider, unknown>>
-    : {};
-
-  return AI_PROVIDER_IDS.reduce((acc, id) => {
-    acc[id] = normalizeProviderKeyStore(source[id], fallback[id], id, strict);
-    return acc;
-  }, {} as ProviderKeyStores);
 }
 
 function normalizeGoogleSheetSourceName(value: unknown, fallback: string): string {
@@ -771,7 +598,6 @@ function normalizeSettings(
             : validateOutputPathTemplate(normalizeOutputPathTemplate(fallback.outputPathTemplate)),
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
-    apiKeys: normalizeProviderKeyStores(source.apiKeys, fallback.apiKeys, strict),
   };
 }
 
@@ -825,20 +651,6 @@ function toPublicSettingsWithDerived(settings: AppSettings): PublicAppSettingsWi
   };
 }
 
-function maskApiKey(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (trimmed.length <= 8) {
-    return `${trimmed.slice(0, 2)}...${trimmed.slice(-2)}`;
-  }
-  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
-}
-
-function getStoredActiveApiKey(store: ProviderKeyStore): ApiKeyEntry | null {
-  if (!store.entries.length) return null;
-  return store.entries.find((entry) => entry.id === store.activeKeyId) ?? store.entries[0] ?? null;
-}
-
 function toAdminSettings(settings: AppSettings): AdminAppSettings {
   return {
     ...toPublicSettingsWithDerived(settings),
@@ -846,83 +658,17 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
     outputPathPreview: buildOutputPathPreview(settings.outputPathTemplate),
-    apiKeys: AI_PROVIDER_IDS.reduce((acc, id) => {
-      acc[id] = toAdminProviderKeyState(id, settings.apiKeys[id]);
-      return acc;
-    }, {} as AdminAppSettings['apiKeys']),
-  };
-}
-
-function toAdminProviderKeyState(provider: AIProvider, store: ProviderKeyStore): AdminAppSettings['apiKeys'][AIProvider] {
-  // A subscription-seat provider has no key to configure. Reporting it as
-  // "configured" via a credential it does not use is what stops the admin UI
-  // rendering a password field and an inert "Add key" button for it.
-  if (!providerRequiresApiKey(provider)) {
-    return {
-      requiresApiKey: false,
-      configured: true,
-      activeSource: 'subscription',
-      activeKeyId: null,
-      activePreview: null,
-      environmentPreview: null,
-      entries: [],
-    };
-  }
-
-  const activeStoredEntry = getStoredActiveApiKey(store);
-  const environmentValue = getEnvironmentApiKey(provider);
-  const environmentPreview = maskApiKey(environmentValue);
-
-  if (activeStoredEntry) {
-    return {
-      requiresApiKey: true,
-      configured: true,
-      activeSource: 'stored',
-      activeKeyId: activeStoredEntry.id,
-      activePreview: maskApiKey(activeStoredEntry.value),
-      environmentPreview,
-      entries: store.entries.map((entry) => ({
-        id: entry.id,
-        name: entry.name,
-        preview: maskApiKey(entry.value),
-        isActive: entry.id === activeStoredEntry.id,
-        createdAt: entry.createdAt,
-      })),
-    };
-  }
-
-  if (environmentValue) {
-    return {
-      requiresApiKey: true,
-      configured: true,
-      activeSource: 'environment',
-      activeKeyId: null,
-      activePreview: environmentPreview,
-      environmentPreview,
-      entries: [],
-    };
-  }
-
-  return {
-    requiresApiKey: true,
-    configured: false,
-    activeSource: 'none',
-    activeKeyId: null,
-    activePreview: null,
-    environmentPreview: null,
-    entries: [],
   };
 }
 
 /**
- * A short-lived cache of the parsed settings row.
+ * Settings are read on the hot path, so they are cached briefly.
  *
  * `readSettings` does a SQLite read, a JSON.parse and a full strict normalize
- * of the model list and every provider key store - and `getProviderApiKey`
- * called it on EVERY model request. A few seconds of cache takes that off the
- * hot path without letting an admin's change go unnoticed; every write path
- * invalidates it explicitly, so the TTL only covers changes made by another
- * process against the same database.
+ * of the model list. A few seconds of cache takes that off the hot path
+ * without letting an admin's change go unnoticed; every write path invalidates
+ * it explicitly, so the TTL only covers changes made by another process
+ * against the same database.
  */
 const SETTINGS_CACHE_TTL_MS = 5_000;
 
@@ -933,12 +679,31 @@ const SETTINGS_CACHE_TTL_MS = 5_000;
  * process can legitimately address more than one database - which the test
  * suite does, giving each case a fresh temp directory. An unkeyed cache would
  * then serve one database's settings for another: reads that silently return
- * the wrong providers, models and keys.
+ * the wrong providers and models.
  */
 let settingsCache: { path: string; value: AppSettings; at: number } | null = null;
 
 export function invalidateSettingsCache(): void {
   settingsCache = null;
+}
+
+/**
+ * Whether a stored settings row still carries the removed key store.
+ *
+ * Keys used to live in the app's own database, managed from a panel on the
+ * Settings page. Both are gone - the environment is the only source now - so
+ * an upgraded install has secrets sitting in a row nothing reads. Detected
+ * here so `readSettings` can rewrite the row without them, once.
+ */
+function purgeStoredApiKeys(stored: unknown): boolean {
+  if (!stored || typeof stored !== 'object') return false;
+  if (!hasOwnProperty(stored as object, 'apiKeys')) return false;
+  console.warn(
+    '[settings] Removing API keys stored in the database. Keys now come from the environment ' +
+      'only - set OPENAI_API_KEY, ANTHROPIC_API_KEY or DEEPSEEK_API_KEY in .env if you use a ' +
+      'metered provider.'
+  );
+  return true;
 }
 
 async function readSettings(): Promise<AppSettings> {
@@ -956,6 +721,13 @@ async function readSettings(): Promise<AppSettings> {
   }
 
   const settings = normalizeSettings(stored, cloneDefaultSettings(), true);
+  // A database written before keys moved to the environment still holds them.
+  // Normalizing drops them from what this process uses, but the row on disk
+  // would keep the secrets indefinitely with nothing left that can manage
+  // them, so they are written out rather than merely ignored.
+  if (purgeStoredApiKeys(stored)) {
+    setSetting(APP_SETTINGS_KEY, settings);
+  }
   assertAtLeastOneProviderEnabled(settings);
   assertAtLeastOneRunnableModel(settings);
   settingsCache = { path, value: settings, at: Date.now() };
@@ -969,53 +741,6 @@ async function writeSettings(settings: AppSettings): Promise<AppSettings> {
   setSetting(APP_SETTINGS_KEY, normalized);
   settingsCache = { path: getDatabasePath(), value: normalized, at: Date.now() };
   return normalized;
-}
-
-function applyApiKeyUpdate(current: ProviderKeyStore, update: ApiKeyUpdate | string | undefined): ProviderKeyStore {
-  if (typeof update === 'undefined') {
-    return current;
-  }
-
-  if (typeof update === 'string') {
-    const value = update.trim();
-    if (!value) {
-      return { activeKeyId: '', entries: [] };
-    }
-    const entry = createApiKeyEntry(value, 'Primary key');
-    return {
-      activeKeyId: entry.id,
-      entries: [entry],
-    };
-  }
-
-  const removeIds = new Set((update.removeIds ?? []).filter((id): id is string => typeof id === 'string' && id.trim().length > 0));
-  const retainedEntries = current.entries.filter((entry) => !removeIds.has(entry.id));
-  const addedEntries = (update.add ?? [])
-    .map((entry, index) => {
-      const value = typeof entry?.value === 'string' ? entry.value.trim() : '';
-      if (!value) return null;
-      return {
-        clientId: typeof entry?.clientId === 'string' ? entry.clientId.trim() : '',
-        stored: createApiKeyEntry(value, normalizeApiKeyName(entry?.name, `Key ${retainedEntries.length + index + 1}`)),
-      };
-    })
-    .filter((entry): entry is { clientId: string; stored: ApiKeyEntry } => Boolean(entry));
-
-  const entries = [...retainedEntries, ...addedEntries.map((entry) => entry.stored)];
-  if (entries.length === 0 || update.useEnvironmentFallback) {
-    return { activeKeyId: '', entries };
-  }
-
-  const requestedActiveKeyId = typeof update.activeKeyId === 'string' ? update.activeKeyId.trim() : current.activeKeyId;
-  const matchingNewEntry = addedEntries.find((entry) => entry.clientId && entry.clientId === requestedActiveKeyId);
-  const activeKeyId = entries.some((entry) => entry.id === requestedActiveKeyId)
-    ? requestedActiveKeyId
-    : matchingNewEntry?.stored.id || entries[0].id;
-
-  return {
-    activeKeyId,
-    entries,
-  };
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
@@ -1050,23 +775,14 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
         return acc;
       }, {} as ProvidersEnabled);
 
-  const nextBase = normalizeSettings(
+  const next = normalizeSettings(
     {
       ...current,
       ...input,
       providersEnabled,
-      apiKeys: current.apiKeys,
     },
     current
   );
-
-  const next: AppSettings = {
-    ...nextBase,
-    apiKeys: AI_PROVIDER_IDS.reduce((acc, id) => {
-      acc[id] = applyApiKeyUpdate(current.apiKeys[id], input.apiKeys?.[id]);
-      return acc;
-    }, {} as ProviderKeyStores),
-  };
 
   assertAtLeastOneProviderEnabled(next);
   assertAtLeastOneRunnableModel(next);
@@ -1293,18 +1009,21 @@ export async function updateAIModelSettings(input: Partial<AIModelSettings>): Pr
   return { providersEnabled: { ...updated.providersEnabled } };
 }
 
+/**
+ * The API key for a metered provider, from the environment.
+ *
+ * The app used to keep keys in its own database as well, managed from a panel
+ * on the Settings page. Both are gone: a credential stored in the app's
+ * database is one more copy of a secret to leak, back up and forget about, and
+ * the environment already had to be supported anyway. `.env` is now the only
+ * place a key comes from, which also means the value shown by `printenv` is
+ * the value that will be used.
+ */
 export async function getProviderApiKey(provider: AIProvider): Promise<string> {
-  // A subscription-seat provider has no key, so it never reaches the database.
+  // A subscription-seat provider has no key at all.
   if (!providerRequiresApiKey(provider)) {
     return '';
   }
-
-  const settings = await readSettings();
-  const activeStoredKey = getStoredActiveApiKey(settings.apiKeys[provider]);
-  if (activeStoredKey?.value.trim()) {
-    return activeStoredKey.value.trim();
-  }
-
   return getEnvironmentApiKey(provider);
 }
 

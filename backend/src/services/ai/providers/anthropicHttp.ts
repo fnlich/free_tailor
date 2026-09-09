@@ -98,7 +98,7 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
             ok: false,
             detail: 'No API key is configured.',
             checkedAt,
-            warning: 'Add one under Admin -> Settings, or set ANTHROPIC_API_KEY.',
+            warning: 'Set ANTHROPIC_API_KEY in .env - keys are read from the environment only.',
           };
     },
 

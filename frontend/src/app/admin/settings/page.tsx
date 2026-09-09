@@ -14,25 +14,10 @@ import {
   groupsApi,
   Profile,
   profilesApi,
-  providerRequiresApiKey,
   ProviderHealthReport,
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
-
-type PendingApiKey = {
-  clientId: string;
-  name: string;
-  value: string;
-};
-
-type ApiKeyProviderFormState = {
-  activeKeyId: string;
-  pendingName: string;
-  pendingValue: string;
-  pendingAdds: PendingApiKey[];
-  removeIds: string[];
-};
 
 type SettingsFormState = {
   providersEnabled: Record<AIProvider, boolean>;
@@ -46,26 +31,9 @@ type SettingsFormState = {
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
   outputPathTemplate: string;
-  apiKeys: Record<AIProvider, ApiKeyProviderFormState>;
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'keys';
-
-function createClientId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `new:${crypto.randomUUID()}`;
-  }
-  return `new:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-}
-
-function maskValue(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return 'Not set';
-  if (trimmed.length <= 8) {
-    return `${trimmed.slice(0, 2)}...${trimmed.slice(-2)}`;
-  }
-  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
-}
+type SaveSection = 'output' | 'providers' | 'defaults';
 
 function buildPathPreview(template: string): string {
   const normalized = (template || '').trim() || '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
@@ -184,22 +152,6 @@ function SubscriptionCard({
   );
 }
 
-function toApiKeyFormState(settings: AdminAppSettings['apiKeys']): Record<AIProvider, ApiKeyProviderFormState> {
-  const next = {} as Record<AIProvider, ApiKeyProviderFormState>;
-
-  for (const provider of AI_PROVIDERS) {
-    next[provider] = {
-      activeKeyId: settings[provider].activeSource === 'stored' ? (settings[provider].activeKeyId ?? '') : '',
-      pendingName: '',
-      pendingValue: '',
-      pendingAdds: [],
-      removeIds: [],
-    };
-  }
-
-  return next;
-}
-
 function toFormState(settings: AdminAppSettings): SettingsFormState {
   return {
     providersEnabled: { ...settings.providersEnabled },
@@ -213,7 +165,6 @@ function toFormState(settings: AdminAppSettings): SettingsFormState {
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
-    apiKeys: toApiKeyFormState(settings.apiKeys),
   };
 }
 
@@ -253,7 +204,6 @@ function mergeSavedSection(
 
   return {
     ...current,
-    apiKeys: toApiKeyFormState(updated.apiKeys),
   };
 }
 
@@ -308,23 +258,6 @@ export default function AdminSettingsPage() {
 
   const setField = <K extends keyof SettingsFormState>(field: K, value: SettingsFormState[K]) => {
     setForm((current) => (current ? { ...current, [field]: value } : current));
-  };
-
-  const setApiKeysForProvider = (
-    provider: AIProvider,
-    updater: (current: ApiKeyProviderFormState) => ApiKeyProviderFormState
-  ) => {
-    setForm((current) =>
-      current
-        ? {
-            ...current,
-            apiKeys: {
-              ...current.apiKeys,
-              [provider]: updater(current.apiKeys[provider]),
-            },
-          }
-        : current
-    );
   };
 
   const applySavedThemeDefault = (theme: ThemeMode) => {
@@ -423,107 +356,6 @@ export default function AdminSettingsPage() {
     );
   };
 
-  const queuePendingApiKey = (provider: AIProvider) => {
-    if (!form) return;
-
-    const providerState = form.apiKeys[provider];
-    const value = providerState.pendingValue.trim();
-    if (!value) {
-      setError('Enter an API key before adding it.');
-      return;
-    }
-
-    setError('');
-    setApiKeysForProvider(provider, (current) => {
-      const nextEntry: PendingApiKey = {
-        clientId: createClientId(),
-        name: current.pendingName.trim(),
-        value,
-      };
-      return {
-        ...current,
-        pendingName: '',
-        pendingValue: '',
-        pendingAdds: [...current.pendingAdds, nextEntry],
-        activeKeyId: current.activeKeyId || nextEntry.clientId,
-      };
-    });
-  };
-
-  const removeApiKeyOption = (provider: AIProvider, id: string, isPending: boolean) => {
-    if (!form || !settings) return;
-
-    setApiKeysForProvider(provider, (current) => {
-      const nextPendingAdds = isPending
-        ? current.pendingAdds.filter((entry) => entry.clientId !== id)
-        : current.pendingAdds;
-      const nextRemoveIds = isPending
-        ? current.removeIds
-        : current.removeIds.includes(id)
-          ? current.removeIds
-          : [...current.removeIds, id];
-
-      const remainingStoredIds = settings.apiKeys[provider].entries
-        .filter((entry) => !nextRemoveIds.includes(entry.id))
-        .map((entry) => entry.id);
-      const remainingPendingIds = nextPendingAdds.map((entry) => entry.clientId);
-      const nextActiveId = (() => {
-        const options = [...remainingStoredIds, ...remainingPendingIds];
-        if (options.includes(current.activeKeyId)) return current.activeKeyId;
-        if (settings.apiKeys[provider].environmentPreview) return '';
-        return options[0] ?? '';
-      })();
-
-      return {
-        ...current,
-        pendingAdds: nextPendingAdds,
-        removeIds: nextRemoveIds,
-        activeKeyId: nextActiveId,
-      };
-    });
-  };
-
-  const handleSaveApiKeys = async () => {
-    if (!form) return;
-
-    const providerPayload: NonNullable<AdminAppSettingsUpdate['apiKeys']> = {};
-
-    // Keyless providers are skipped entirely. Sending them the usual
-    // "no stored key, fall back to the environment" payload would be an
-    // instruction to look for an environment key that must never exist.
-    for (const provider of AI_PROVIDERS.filter(providerRequiresApiKey)) {
-      const providerState = form.apiKeys[provider];
-      const draftValue = providerState.pendingValue.trim();
-      const pendingAdds = draftValue
-        ? [
-            ...providerState.pendingAdds,
-            {
-              clientId: createClientId(),
-              name: providerState.pendingName.trim(),
-              value: draftValue,
-            },
-          ]
-        : providerState.pendingAdds;
-
-      providerPayload[provider] = {
-        activeKeyId: providerState.activeKeyId,
-        add: pendingAdds.map((entry) => ({
-          clientId: entry.clientId,
-          name: entry.name.trim(),
-          value: entry.value,
-        })),
-        removeIds: providerState.removeIds,
-        useEnvironmentFallback: providerState.activeKeyId === '',
-      };
-    }
-
-    await saveSection(
-      'keys',
-      { apiKeys: providerPayload },
-      'API keys saved.'
-    );
-  };
-
   if (isLoading || !form || !settings) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -543,7 +375,7 @@ export default function AdminSettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="mt-2 text-sm text-gray-600">
-          Configure builder defaults, enabled providers, output storage, and API keys.
+          Configure builder defaults, enabled providers, and output storage.
         </p>
       </div>
 
@@ -632,7 +464,12 @@ export default function AdminSettingsPage() {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">AI Providers</h2>
             <p className="text-sm text-gray-600">
-              Disabled providers are hidden in Resume Builder and rejected by the backend.
+              Disabled providers are hidden in Resume Builder and rejected by the backend. Claude
+              Code runs on your subscription; the metered providers are keyed from{' '}
+              <code className="rounded bg-gray-100 px-1">.env</code> (<code className="rounded bg-gray-100 px-1">ANTHROPIC_API_KEY</code>,{' '}
+              <code className="rounded bg-gray-100 px-1">OPENAI_API_KEY</code>,{' '}
+              <code className="rounded bg-gray-100 px-1">DEEPSEEK_API_KEY</code>) and this app does
+              not store keys of its own. Each row below shows what the provider reports right now.
             </p>
           </div>
 
@@ -641,11 +478,7 @@ export default function AdminSettingsPage() {
               <div>
                 <div className="font-medium text-gray-900">{getAIProviderLabel(provider)}</div>
                 <div className="text-sm text-gray-500">
-                  {!settings.apiKeys[provider].requiresApiKey
-                    ? describeProviderHealth(health, provider, healthError)
-                    : settings.apiKeys[provider].configured
-                      ? `Active key: ${settings.apiKeys[provider].activePreview}`
-                      : 'No API key configured'}
+                  {describeProviderHealth(health, provider, healthError)}
                 </div>
               </div>
               <input
@@ -867,146 +700,6 @@ export default function AdminSettingsPage() {
               className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-blue-400"
             >
               {savingSection === 'defaults' ? 'Saving...' : 'Save Builder Defaults'}
-            </button>
-          </div>
-        </section>
-
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">API Keys</h2>
-            <p className="text-sm text-gray-600">
-              Save multiple keys per provider and choose which stored key is active.
-            </p>
-          </div>
-
-          {AI_PROVIDERS.filter(providerRequiresApiKey).map((provider) => {
-            const providerSettings = settings.apiKeys[provider];
-            const providerForm = form.apiKeys[provider];
-            const visibleStoredKeys = providerSettings.entries.filter((entry) => !providerForm.removeIds.includes(entry.id));
-
-            return (
-              <div key={provider} className="border rounded-md p-4 space-y-4">
-                <div>
-                  <div className="font-medium text-gray-900">{getAIProviderLabel(provider)}</div>
-                  <div className="text-sm text-gray-500">
-                    {providerSettings.activeSource === 'stored' && providerSettings.activePreview
-                      ? `Stored active key: ${providerSettings.activePreview}`
-                      : providerSettings.activeSource === 'environment' && providerSettings.environmentPreview
-                        ? `Using environment fallback: ${providerSettings.environmentPreview}`
-                        : 'No active key configured'}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  {providerSettings.environmentPreview && (
-                    <label className="flex items-center justify-between rounded-md border border-gray-200 px-3 py-2">
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">Environment fallback</div>
-                        <div className="text-xs text-gray-500">{providerSettings.environmentPreview}</div>
-                      </div>
-                      <input
-                        type="radio"
-                        name={`${provider}-active-key`}
-                        checked={providerForm.activeKeyId === ''}
-                        onChange={() => setApiKeysForProvider(provider, (current) => ({ ...current, activeKeyId: '' }))}
-                        disabled={savingSection === 'keys'}
-                      />
-                    </label>
-                  )}
-
-                  {visibleStoredKeys.map((entry) => (
-                    <div key={entry.id} className="flex items-center justify-between gap-3 rounded-md border border-gray-200 px-3 py-2">
-                      <label className="flex items-center gap-3 min-w-0">
-                        <input
-                          type="radio"
-                          name={`${provider}-active-key`}
-                          checked={providerForm.activeKeyId === entry.id}
-                          onChange={() => setApiKeysForProvider(provider, (current) => ({ ...current, activeKeyId: entry.id }))}
-                          disabled={savingSection === 'keys'}
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-900 truncate">{entry.name}</div>
-                          <div className="text-xs text-gray-500">{entry.preview}</div>
-                        </div>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => removeApiKeyOption(provider, entry.id, false)}
-                        disabled={savingSection === 'keys'}
-                        className="px-3 py-2 text-sm border border-red-200 text-red-700 rounded-md hover:bg-red-50 disabled:opacity-50"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-
-                  {providerForm.pendingAdds.map((entry) => (
-                    <div key={entry.clientId} className="flex items-center justify-between gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
-                      <label className="flex items-center gap-3 min-w-0">
-                        <input
-                          type="radio"
-                          name={`${provider}-active-key`}
-                          checked={providerForm.activeKeyId === entry.clientId}
-                          onChange={() => setApiKeysForProvider(provider, (current) => ({ ...current, activeKeyId: entry.clientId }))}
-                          disabled={savingSection === 'keys'}
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium text-gray-900 truncate">
-                            {entry.name.trim() || 'New key'}
-                          </div>
-                          <div className="text-xs text-gray-500">{maskValue(entry.value)} (pending save)</div>
-                        </div>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => removeApiKeyOption(provider, entry.clientId, true)}
-                        disabled={savingSection === 'keys'}
-                        className="px-3 py-2 text-sm border border-red-200 text-red-700 rounded-md hover:bg-red-50 disabled:opacity-50"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
-                  <input
-                    type="text"
-                    value={providerForm.pendingName}
-                    onChange={(e) => setApiKeysForProvider(provider, (current) => ({ ...current, pendingName: e.target.value }))}
-                    disabled={savingSection === 'keys'}
-                    placeholder="Label (optional)"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="password"
-                    value={providerForm.pendingValue}
-                    onChange={(e) => setApiKeysForProvider(provider, (current) => ({ ...current, pendingValue: e.target.value }))}
-                    disabled={savingSection === 'keys'}
-                    placeholder={`Paste ${getAIProviderLabel(provider)} API key`}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => queuePendingApiKey(provider)}
-                    disabled={savingSection === 'keys'}
-                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    Add Key
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleSaveApiKeys}
-              disabled={savingSection !== null && savingSection !== 'keys'}
-              className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-blue-400"
-            >
-              {savingSection === 'keys' ? 'Saving...' : 'Save API Keys'}
             </button>
           </div>
         </section>

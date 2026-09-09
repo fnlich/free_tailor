@@ -88,7 +88,7 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
               ok: false,
               detail: 'No API key is configured.',
               checkedAt,
-              warning: `Add one under Admin -> Settings, or set ${descriptor.envKeyVar}.`,
+              warning: `Set ${descriptor.envKeyVar} in .env - keys are read from the environment only.`,
             };
       } catch (error) {
         return {

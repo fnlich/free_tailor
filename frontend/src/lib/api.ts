@@ -527,30 +527,10 @@ export interface PublicAppSettings {
 
 export type AIModelSettings = PublicAppSettings;
 
-export interface AdminApiKeyEntry {
-  id: string;
-  name: string;
-  preview: string | null;
-  isActive: boolean;
-  createdAt: string;
-}
-
-export interface AdminApiKeyProviderSettings {
-  /** false for a provider that authenticates without a key at all. */
-  requiresApiKey: boolean;
-  configured: boolean;
-  activeSource: 'stored' | 'environment' | 'subscription' | 'none';
-  activeKeyId: string | null;
-  activePreview: string | null;
-  environmentPreview: string | null;
-  entries: AdminApiKeyEntry[];
-}
-
 export interface AdminAppSettings extends PublicAppSettings {
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
-  apiKeys: Record<AIProvider, AdminApiKeyProviderSettings>;
 }
 
 function normalizeGoogleSheetSources(value: unknown): GoogleSheetSource[] {
@@ -699,61 +679,20 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
   };
 }
 
-function emptyApiKeyState(provider: AIProvider): AdminApiKeyProviderSettings {
-  const keyless = !providerRequiresApiKey(provider);
-  return {
-    requiresApiKey: !keyless,
-    configured: keyless,
-    activeSource: keyless ? 'subscription' : 'none',
-    activeKeyId: null,
-    activePreview: null,
-    environmentPreview: null,
-    entries: [],
-  };
-}
-
 function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
   const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<AdminAppSettings>;
-  const rawKeys =
-    typeof source.apiKeys === 'object' && source.apiKeys !== null
-      ? (source.apiKeys as Partial<Record<AIProvider, Partial<AdminApiKeyProviderSettings>>>)
-      : {};
-
-  // Every provider gets an entry, present in the payload or not. The settings
-  // page indexes this map unguarded in several places, so a provider the
-  // backend does not send back - which is exactly what a deploy-order skew
-  // produces - used to blank the whole admin page with a TypeError.
-  const apiKeys = AI_PROVIDERS.reduce((acc, provider) => {
-    const fallback = emptyApiKeyState(provider);
-    const incoming = rawKeys[provider];
-    acc[provider] = incoming ? { ...fallback, ...incoming } : fallback;
-    return acc;
-  }, {} as Record<AIProvider, AdminApiKeyProviderSettings>);
 
   return {
     ...normalizePublicAppSettings(source),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
-    apiKeys,
   };
-}
-
-export interface ApiKeyProviderUpdate {
-  activeKeyId?: string;
-  add?: Array<{
-    clientId?: string;
-    name?: string;
-    value: string;
-  }>;
-  removeIds?: string[];
-  useEnvironmentFallback?: boolean;
 }
 
 export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   outputBaseDir?: string;
   outputPathTemplate?: string;
-  apiKeys?: Partial<Record<AIProvider, ApiKeyProviderUpdate | string>>;
 }
 
 export interface BrowseOutputDirectoryResponse {

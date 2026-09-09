@@ -44,12 +44,6 @@ test('app settings persist in the SQLite settings table', async () => {
       createdAt: '2026-04-18T00:00:00.000Z',
       updatedAt: '2026-04-18T00:00:00.000Z',
     }],
-    apiKeys: {
-      claude: {
-        add: [{ clientId: 'new-claude', name: 'Claude Test', value: 'claude-secret' }],
-        activeKeyId: 'new-claude',
-      },
-    },
   });
 
   assert.equal(updated.providersEnabled.openai, false);
@@ -62,22 +56,17 @@ test('app settings persist in the SQLite settings table', async () => {
   assert.equal(updated.claudeEnabled, true);
   assert.equal(updated.claudeCliEnabled, true);
   assert.equal(updated.deepseekEnabled, true);
-  // A subscription-seat provider has no key to store and must never be
-  // rendered with one.
-  assert.equal(updated.apiKeys['claude-cli'].requiresApiKey, false);
-  assert.equal(updated.apiKeys['claude-cli'].activeSource, 'subscription');
+  // A subscription-seat provider has no key at all.
   assert.equal(await config.getProviderApiKey('claude-cli'), '');
   assert.equal(updated.defaultMode, 'generate');
   assert.equal(updated.defaultTheme, 'dark');
   assert.equal(updated.outputBaseDir, outputDir);
   assert.equal(updated.googleSheetsSources.length, 1);
-  assert.equal(updated.apiKeys.claude.entries.length, 1);
-  assert.equal(updated.apiKeys.claude.activeSource, 'stored');
-  assert.equal(updated.apiKeys.claude.activePreview, 'clau...cret');
-  assert.equal(await config.getProviderApiKey('claude'), 'claude-secret');
+  // Settings no longer carry keys in either direction.
+  assert.equal('apiKeys' in updated, false);
 
   const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
-  assert.equal(stored.apiKeys.claude.entries[0].value, 'claude-secret');
+  assert.equal('apiKeys' in stored, false, 'no credential may be written to the database');
   assert.equal(stored.googleSheetsSources[0].sheetId, 'abc123');
 });
 
@@ -99,13 +88,7 @@ test('reading settings does not rewrite an existing settings record', async () =
   "defaultCoverLetterDocxEnabled": true,
   "outputBaseDir": "${path.join(rootDir, 'generated-output').replace(/\\/g, '\\\\')}",
   "outputPathTemplate": "/{{date}}/{{profile name}}/{{company name}}",
-  "googleSheetsSources": [],
-  "apiKeys": {
-    "claude-cli": { "activeKeyId": "", "entries": [] },
-    "openai": { "activeKeyId": "", "entries": [] },
-    "claude": { "activeKeyId": "", "entries": [] },
-    "deepseek": { "activeKeyId": "", "entries": [] }
-  }
+  "googleSheetsSources": []
 }`;
 
   writeSettingRaw(dbDir, APP_SETTINGS_KEY, originalJson);
@@ -119,6 +102,46 @@ test('reading settings does not rewrite an existing settings record', async () =
   const loaded = await config.getAdminAppSettings();
   assert.equal(loaded.outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), originalJson);
+});
+
+// The one exception to the rule above, and the reason it is an exception:
+// leaving the row alone would leave secrets in the database that nothing can
+// read, manage or remove now that the app keys metered providers from .env.
+test('a settings row holding API keys is rewritten once, without them', async () => {
+  const { rootDir, dbDir } = useTempStorage('settings-key-purge');
+  writeSettingRaw(
+    dbDir,
+    APP_SETTINGS_KEY,
+    JSON.stringify({
+      providersEnabled: { 'claude-cli': true, claude: true, openai: true, deepseek: true },
+      defaultMode: 'preview',
+      defaultTheme: 'light',
+      outputBaseDir: path.join(rootDir, 'generated-output'),
+      outputPathTemplate: '/{{date}}/{{profile name}}/{{company name}}',
+      googleSheetsSources: [],
+      apiKeys: {
+        openai: { activeKeyId: 'k1', entries: [{ id: 'k1', name: 'Primary', value: 'sk-secret' }] },
+      },
+    })
+  );
+
+  process.env.OPENAI_API_KEY = '';
+  process.env.ANTHROPIC_API_KEY = '';
+  process.env.DEEPSEEK_API_KEY = '';
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  await config.getAdminAppSettings();
+
+  const rewritten = readSettingRaw(dbDir, APP_SETTINGS_KEY);
+  assert.equal('apiKeys' in JSON.parse(rewritten), false, 'the key store must be gone');
+  assert.equal(rewritten.includes('sk-secret'), false, 'no key text may survive anywhere in the row');
+  // Everything else survives the rewrite.
+  assert.equal(JSON.parse(rewritten).outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
+
+  // And it is a one-time rewrite, not a write on every read.
+  config.invalidateSettingsCache();
+  await config.getAdminAppSettings();
+  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), rewritten);
 });
 
 test('invalid settings JSON is reported and never overwritten with defaults', async () => {
@@ -141,7 +164,7 @@ test('invalid settings JSON is reported and never overwritten with defaults', as
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), invalidJson);
 });
 
-test('app settings preserve at least one enabled provider and can fall back to environment keys', async () => {
+test('app settings preserve at least one enabled provider, and keys come from the environment', async () => {
   useTempStorage('settings-env');
   process.env.OPENAI_API_KEY = 'openai-env-secret';
   process.env.ANTHROPIC_API_KEY = '';
@@ -161,9 +184,15 @@ test('app settings preserve at least one enabled provider and can fall back to e
     /At least one AI model must remain enabled/
   );
 
+  // The environment is the only source now: there is no stored key that could
+  // shadow this one, and nothing on the admin wire that could carry it.
   assert.equal(await config.getProviderApiKey('openai'), 'openai-env-secret');
+  process.env.OPENAI_API_KEY = 'rotated-in-the-environment';
+  assert.equal(await config.getProviderApiKey('openai'), 'rotated-in-the-environment');
+
   const admin = await config.getAdminAppSettings();
-  assert.equal(admin.apiKeys.openai.activeSource, 'environment');
+  assert.equal('apiKeys' in admin, false, 'the admin payload must not carry keys');
+  assert.equal(JSON.stringify(admin).includes('rotated-in-the-environment'), false);
 });
 
 test('generated path helpers read output settings from the stored settings', async () => {
