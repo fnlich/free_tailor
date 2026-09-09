@@ -83,9 +83,19 @@ const child = spawn(
   [
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${PROFILE}`,
-    // Bound the port to loopback. Anything that can reach this port can drive
-    // the browser and read every session in it.
-    '--remote-allow-origins=*',
+    // Explicit, though it is also the default: the port listens on loopback
+    // only. Anything that can reach it can drive this browser and read every
+    // session signed in to it.
+    '--remote-debugging-address=127.0.0.1',
+    // NOT `--remote-allow-origins=*`. That flag turns off the DevTools origin
+    // check, and the check is the only thing stopping a WEB PAGE from driving
+    // this browser: any site the operator visits could open a socket to
+    // 127.0.0.1 and read every signed-in session here, which for this profile
+    // means their Claude and ChatGPT accounts. Measured against 148.0.7778.97:
+    // with the flag a socket sent from an https://evil.example.com origin is
+    // accepted; without it Chrome answers 403. Nothing here needs it -
+    // puppeteer connects from Node and sends no Origin header, so the check
+    // never applies to it.
     '--no-first-run',
     '--no-default-browser-check',
   ],

@@ -24,11 +24,49 @@ export interface ChatPage {
   insertText(text: string): Promise<void>;
   pressEnter(): Promise<void>;
   readText(selector: string): Promise<string>;
+  /**
+   * The page's own visible text, capped.
+   *
+   * For reading what the site put up INSTEAD of an answer - a usage wall, a
+   * sign-in prompt, a captcha - none of which has a selector worth depending
+   * on. Capped because it is read on a page whose length nothing here controls.
+   */
+  visibleText(maxChars: number): Promise<string>;
   /** Every match's id and rendered text, in document order, in one round trip. */
   messages(selector: string, idAttribute: string | null): Promise<ChatMessage[]>;
 }
 
+/**
+ * The select-all modifier THIS browser uses, asked of the browser itself.
+ *
+ * Control+A is not select-all on macOS - it is "move to start of line" - so a
+ * mac run would leave the previous prompt in the composer and append to it.
+ * The check is the browser's own platform rather than `process.platform`
+ * because the two are not required to agree: the endpoint is configurable, and
+ * `AI_WEB_CDP_URL` pointed at another machine is a supported way to run this.
+ * Resolved once per page and remembered; a browser does not change platform.
+ */
+async function selectAllModifier(page: Page, cache: { value: 'Control' | 'Meta' | null }) {
+  if (cache.value) return cache.value;
+  let mac = false;
+  try {
+    mac = await page.evaluate(() => {
+      const data = (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData;
+      const platform = data?.platform ?? navigator.platform ?? '';
+      return /mac/i.test(platform);
+    });
+  } catch {
+    // A page that will not evaluate is about to fail the turn for a better
+    // reason. Control is right everywhere except macOS, so it is the guess to
+    // make.
+  }
+  cache.value = mac ? 'Meta' : 'Control';
+  return cache.value;
+}
+
 export function wrapPuppeteerPage(page: Page): ChatPage {
+  const modifier: { value: 'Control' | 'Meta' | null } = { value: null };
+
   return {
     currentUrl: () => page.url(),
     /**
@@ -68,9 +106,15 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
       // Select-all then delete, rather than reading the length and pressing
       // Backspace: these composers are contenteditable, so a character count
       // is not a keystroke count once anything is formatted.
-      await page.keyboard.down('Control');
+      //
+      // Keystrokes rather than emptying the node from script, because both
+      // composers are React-controlled: assigning to the value or the innerText
+      // leaves the framework's own state holding the old prompt, which it then
+      // puts back.
+      const key = await selectAllModifier(page, modifier);
+      await page.keyboard.down(key);
       await page.keyboard.press('KeyA');
-      await page.keyboard.up('Control');
+      await page.keyboard.up(key);
       await page.keyboard.press('Backspace');
     },
     insertText: async (text) => {
@@ -89,6 +133,22 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
     readText: (selector) =>
       page
         .$eval(selector, (node) => (node as unknown as { innerText?: string }).innerText ?? '')
+        .catch(() => ''),
+    visibleText: (maxChars) =>
+      page
+        .evaluate((limit) => {
+          // Reached through `globalThis` and typed by hand: this function is
+          // serialised and run in the BROWSER, but it is compiled by the
+          // backend's tsconfig, which has no DOM lib - and adding one would put
+          // `document` in scope for every server file that has no business
+          // touching it.
+          const doc = (globalThis as unknown as { document?: { body?: { innerText?: string } } })
+            .document;
+          return (doc?.body?.innerText ?? '').slice(0, limit as number);
+        }, maxChars)
+        // Swallowed: this is read to EXPLAIN a turn that is already going
+        // wrong, and a page too broken to evaluate must not replace that
+        // explanation with an error of its own.
         .catch(() => ''),
     messages: (selector, idAttribute) =>
       page

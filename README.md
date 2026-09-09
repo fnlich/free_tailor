@@ -140,6 +140,14 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   already running, and because the browser must not be in automation mode -
   sign-in flows reject one that is.
 
+  The debug port listens on loopback only, and the script deliberately does
+  **not** pass `--remote-allow-origins=*`. That flag turns off Chrome's DevTools
+  origin check, which is the only thing stopping an ordinary web page you visit
+  from opening a socket to `127.0.0.1` and driving this browser - including
+  reading the accounts signed in to it. Nothing here needs it: the backend
+  connects from Node, which sends no `Origin` header, so the check never applies
+  to it. If you start the browser by hand, leave that flag off too.
+
   Two things to know before enabling these: the prompt (your resume and the job
   description) is typed into a third-party chat window and lands in that
   account's history, and driving these sites this way may not be permitted by
@@ -324,7 +332,10 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave that window open. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
-| A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). |
+| A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
+| A browser provider says the site `did not answer because ...` | The site refused rather than the driver failing. A usage limit or a rate limit is reported as such and resets on its own; a signed-out tab or a human-verification check needs you at the browser. Either way the backend stops at once instead of polling until the deadline. |
+| A browser provider warns `no usable "still generating" selector` | Every stop-button candidate also matched an idle page, so nothing can report that a reply is in flight. Answers are still read correctly - the driver falls back to waiting until the text has stopped changing for several seconds - but each call is slower. Set `AI_WEB_CLAUDE_BUSY` or `AI_WEB_CHATGPT_BUSY` to something present only while the site is generating. |
+| A browser provider says the tab `was navigated to ...` | Something moved that tab off the chat site mid-answer - usually a link clicked in it. Give the app a tab of its own in the debug browser, or leave that window alone while a run is in flight. |
 | A browser provider returns the prompt instead of an answer | The site's assistant selector is also matching your own message. The backend refuses the answer rather than tailoring a resume to the instructions, and says so. Set `AI_WEB_CLAUDE_ASSISTANT` or `AI_WEB_CHATGPT_ASSISTANT` to something that can only match an assistant turn. |
 | A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
 | An effort or thinking choice appears to do nothing | Look for `[ai] ... has no effort control` in the backend output. Only the Claude CLI provider honours them; the metered OpenAI, Anthropic and DeepSeek transports report them as dropped rather than pretending they applied. Switch the model, on the profile or under Admin → Models, to a Claude CLI one. |

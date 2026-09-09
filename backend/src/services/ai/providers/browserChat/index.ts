@@ -1,5 +1,6 @@
 import { getProviderDescriptor } from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
+import { acquireSlot, getProviderSemaphore } from '../../concurrency';
 import { collectUnsupportedReasoningParams } from '../../reasoningParams';
 import { warnOnce } from '../../telemetry';
 import type {
@@ -39,6 +40,17 @@ import { ChatTurnError } from './tab';
 
 const DEFAULT_MODEL_LABEL = 'chat';
 
+/**
+ * Longest a queued call waits for the one tab.
+ *
+ * Long, because the alternative is worse: a chat window answers at reading
+ * speed, so a second request arriving during a normal turn is ordinary rather
+ * than exceptional, and failing it immediately would make a two-profile batch
+ * unusable. The caller's own deadline still bounds the wait - `acquireSlot`
+ * takes whichever is shorter.
+ */
+const QUEUE_WAIT_MS = 10 * 60_000;
+
 let sharedSession: BrowserChatSession | null = null;
 
 function getSession(): BrowserChatSession {
@@ -50,7 +62,12 @@ function getSession(): BrowserChatSession {
 export function resetBrowserChatSession(): void {
   const session = sharedSession;
   sharedSession = null;
-  void session?.dispose();
+  // Not awaited - the caller wants the handle dropped, not a round trip to a
+  // browser that may already be gone - but the rejection IS caught. An
+  // unhandled one from `disconnect()` on a dead socket takes the process down
+  // under Node's default policy, and this runs from config-change handlers and
+  // from test teardown, where an exit is a mystifying failure somewhere else.
+  void session?.dispose().catch(() => undefined);
 }
 
 export type BrowserChatAdapterOptions = {
@@ -88,6 +105,7 @@ export function createBrowserChatAdapter(
   };
 
   const site = () => readChatSite(id, env);
+  const semaphore = getProviderSemaphore(id, capabilities.maxConcurrency);
 
   function fail(kind: AIErrorKind, detail: string, adminAction?: string): AIProviderError {
     return new AIProviderError({ provider: id, kind, detail, ...(adminAction ? { adminAction } : {}) });
@@ -136,9 +154,23 @@ export function createBrowserChatAdapter(
       const startedAt = Date.now();
       const session = options.session ?? getSession();
 
+      // ONE AT A TIME, enforced rather than declared. `maxConcurrency: 1` above
+      // is only a number the facade reports; the semaphore is the adapter's to
+      // take, exactly as the CLI provider takes its own. Without this two
+      // generate requests type into the SAME composer at once: the second
+      // clears the first mid-answer, and both callers get somebody else's reply
+      // or none. A batch of profiles does this by default.
+      const release = await acquireSlot(
+        semaphore,
+        id,
+        request.deadline,
+        QUEUE_WAIT_MS,
+        request.signal
+      );
+
       try {
         const tab = await session.tabFor(site());
-        const text = await tab.ask(body, request.deadline.remainingMs());
+        const text = await tab.ask(body, request.deadline.remainingMs(), request.signal);
         return {
           text,
           resolvedModel: `${id}/${DEFAULT_MODEL_LABEL}`,
@@ -162,6 +194,20 @@ export function createBrowserChatAdapter(
                 'Claude CLI provider for long prompts.'
             );
           }
+          // The site declining is not this app malfunctioning, and the two get
+          // told apart here so the operator is sent to the right place. A usage
+          // wall is `rateLimited`, which the facade already treats as worth
+          // retrying; a signed-out tab is `auth`, which it does not.
+          if (error.kind === 'refused') {
+            throw fail(
+              error.retryable ? 'rateLimited' : 'auth',
+              error.message,
+              error.retryable
+                ? `${descriptor.label} shares the quota of the chat plan it is signed in to. ` +
+                    'Nothing here can raise it.'
+                : `Open the ${descriptor.label} tab in the debug browser and sign in again.`
+            );
+          }
           throw fail(
             error.kind === 'echo' ? 'malformedOutput' : 'unavailable',
             error.message,
@@ -170,6 +216,8 @@ export function createBrowserChatAdapter(
         }
         const detail = error instanceof Error ? error.message : String(error);
         throw fail('unavailable', `${descriptor.label} failed: ${detail}`);
+      } finally {
+        release();
       }
     },
   };

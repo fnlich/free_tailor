@@ -2,10 +2,15 @@ import {
   composePrompt,
   composerHolds,
   fingerprint,
+  hostOf,
   INITIAL_POLL_STATE,
   isEcho,
+  matchesHost,
   pickReply,
   poll,
+  refusalReason,
+  STABLE_READS_WITH_BUSY_SIGNAL,
+  STABLE_READS_WITHOUT_BUSY_SIGNAL,
   usableBusySelectors,
   type ChatMessage,
   type Fingerprint,
@@ -13,13 +18,25 @@ import {
 import type { ChatPage } from './page';
 import type { ChatSite } from './sites';
 
-export class ChatTurnError extends Error {
-  readonly kind: 'page' | 'timeout' | 'empty' | 'echo';
+/**
+ * `refused` is the site declining rather than the driver failing: a usage wall,
+ * a rate limit, a signed-out tab, a captcha. Kept apart from `page` because the
+ * two want opposite things done - one is waited out or routed to another
+ * provider, the other is a selector to fix - and because only this one is
+ * worth retrying later unchanged.
+ */
+export type ChatTurnErrorKind = 'page' | 'timeout' | 'empty' | 'echo' | 'refused';
 
-  constructor(kind: 'page' | 'timeout' | 'empty' | 'echo', message: string) {
+export class ChatTurnError extends Error {
+  readonly kind: ChatTurnErrorKind;
+  /** Set on a `refused` that waiting alone would clear. */
+  readonly retryable: boolean;
+
+  constructor(kind: ChatTurnErrorKind, message: string, retryable = false) {
     super(message);
     this.name = 'ChatTurnError';
     this.kind = kind;
+    this.retryable = retryable;
   }
 }
 
@@ -48,6 +65,21 @@ const DEFAULT_POLL_MS = 1_500;
  */
 const GUARD_GRACE_MS = 5_000;
 
+/**
+ * How long a turn waits before asking the page why it is silent, and how often.
+ *
+ * The check reads the whole document's text, so it is not something to do every
+ * poll. It also must not fire early: for the first seconds of a normal turn the
+ * page legitimately shows no reply, and a chat transcript that happens to
+ * contain the words "usage limit" would be read as a wall. By the time nothing
+ * has rendered for this long, something IS wrong and it is worth naming.
+ */
+const REFUSAL_CHECK_AFTER_MS = 12_000;
+const REFUSAL_CHECK_EVERY_MS = 10_000;
+
+/** Longest slice of the page read when looking for a refusal. */
+const REFUSAL_TEXT_CHARS = 4_000;
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -75,6 +107,22 @@ export class ChatTab {
   private busySelectors: string[] | null = null;
   private warnedEcho = false;
 
+  /**
+   * The assistant candidate this TURN is reading, fixed once one matches.
+   *
+   * Re-resolving per poll is the bug this exists to prevent: `before.count`
+   * would be a count of one candidate's matches and the polled count another's,
+   * so `messages[before.count]` indexes into a list the fingerprint never
+   * described. A candidate list ordered specific-first makes that concrete -
+   * `div[data-is-streaming]` matches only while a reply streams, so it wins the
+   * lookup mid-answer and loses it once the attribute flips, silently changing
+   * which nodes are being counted in the middle of the turn.
+   *
+   * Reset per turn rather than per tab, so a page redesign between calls is
+   * picked up on the next one.
+   */
+  private assistantSelector: string | null = null;
+
   constructor(page: ChatPage, site: ChatSite, options: ChatTabOptions = {}) {
     this.page = page;
     this.site = site;
@@ -94,6 +142,24 @@ export class ChatTab {
   }
 
   /**
+   * First candidate to APPEAR, within the budget.
+   *
+   * For the roles whose absence is fatal. A single-page app renders its
+   * composer after `domcontentloaded`, so a look taken the instant a navigation
+   * resolves reports a page with no message box on one that simply has not
+   * painted yet.
+   */
+  private async waitForAny(candidates: string[], budgetMs: number): Promise<string | null> {
+    const expiry = this.now() + budgetMs;
+    for (;;) {
+      const found = await this.firstMatch(candidates);
+      if (found) return found;
+      if (this.now() >= expiry) return null;
+      await this.sleep(Math.min(250, this.pollMs));
+    }
+  }
+
+  /**
    * Drops busy candidates that match an idle page.
    *
    * Run once against a page with no answer in flight. One that is always true
@@ -102,6 +168,11 @@ export class ChatTab {
    */
   async screenBusySelectors(): Promise<string[]> {
     const present: string[] = [];
+    // Sampled on a page that is IDLE. Run while an answer is streaming, the
+    // site's real stop button is present and would be discarded as
+    // "always true" - permanently, for the life of the tab - after which
+    // nothing reports busy and every answer is taken at the first pause
+    // between tokens. That is a truncated resume, silently.
     for (const candidate of this.site.busy) {
       if ((await this.page.count(candidate)) > 0) present.push(candidate);
     }
@@ -110,6 +181,18 @@ export class ChatTab {
       this.log(
         `[ai] ${this.site.id}: busy selector "${dropped}" matches an idle page and was ignored; ` +
           'left in, every answer would look unfinished.'
+      );
+    }
+    if (usable.length === 0) {
+      // Worth saying out loud, because the turn still works and the operator
+      // would otherwise never learn the safety net came off. Without a stop
+      // control the only evidence an answer has finished is that it stopped
+      // growing, so turns get slower and a long pause mid-answer becomes a way
+      // to lose the tail of one.
+      this.log(
+        `[ai] ${this.site.id}: no usable "still generating" selector. Answers will be read only ` +
+          'once the text has stopped changing for several seconds, which is slower and less ' +
+          `certain. Set the busy selector override for ${this.site.label}.`
       );
     }
     this.busySelectors = usable;
@@ -124,10 +207,40 @@ export class ChatTab {
     return false;
   }
 
+  /**
+   * The assistant messages on the page, always read through ONE selector.
+   *
+   * The first call of a turn resolves the candidate; every call after it reads
+   * the same one. See `assistantSelector` for why that matters.
+   */
   private async readMessages(): Promise<ChatMessage[]> {
-    const selector = await this.firstMatch(this.site.assistant);
+    const selector = this.assistantSelector ?? (await this.firstMatch(this.site.assistant));
     if (!selector) return [];
+    this.assistantSelector = selector;
     return this.page.messages(selector, this.site.messageIdAttr);
+  }
+
+  /**
+   * Where the tab has gone, if it is no longer on the site.
+   *
+   * A tab the operator clicks a link in mid-turn is not slow, it is gone - but
+   * it looks identical to slow from here, so the turn would poll a page that
+   * can never answer until the deadline and then blame the selectors.
+   *
+   * Taken from the URL actually being loaded rather than `site.host`, so a
+   * malformed URL override degrades to skipping the check instead of failing
+   * every turn: `readChatSite` falls back to the built-in host when it cannot
+   * parse one, and a check that then disagreed with the tab lookup would reject
+   * the very tab that lookup had just chosen. Only meaningful for a site
+   * addressed by host at all - one pointed at a `file:` or `data:` URL has none
+   * to compare, which is also the shape the tests use.
+   */
+  private navigatedAway(): string | null {
+    const siteHost = hostOf(this.site.url);
+    if (!siteHost) return null;
+    const current = this.page.currentUrl();
+    if (matchesHost(hostOf(current), siteHost)) return null;
+    return current || 'about:blank';
   }
 
   /**
@@ -161,7 +274,11 @@ export class ChatTab {
    * question nobody asked.
    */
   private async submit(prompt: string): Promise<void> {
-    const composer = await this.firstMatch(this.site.composer);
+    // Waited for, not sampled. `startFreshConversation` may have just reloaded,
+    // and `domcontentloaded` fires long before either of these single-page apps
+    // has rendered its composer - so an instantaneous look finds nothing and
+    // fails the turn on a page that was about to be perfectly fine.
+    const composer = await this.waitForAny(this.site.composer, this.actionMs);
     if (!composer) {
       throw new ChatTurnError(
         'page',
@@ -202,7 +319,7 @@ export class ChatTab {
    * never partial, and half a tailored resume parses as valid JSON far too
    * often to be caught downstream.
    */
-  async ask(body: string, deadlineMs: number): Promise<string> {
+  async ask(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
     // Raced against the deadline as a whole, not just polled against it. The
     // loop below already stops at the deadline, but a single CDP call can block
     // past it - a frozen background tab never answers one at all - and this
@@ -222,7 +339,7 @@ export class ChatTab {
     });
 
     try {
-      return await Promise.race([this.turn(body, deadlineMs), guard]);
+      return await Promise.race([this.turn(body, deadlineMs, signal), guard]);
     } finally {
       // Cleared either way: left running, the timer keeps the process alive
       // long after a turn that already answered.
@@ -230,7 +347,7 @@ export class ChatTab {
     }
   }
 
-  private async turn(body: string, deadlineMs: number): Promise<string> {
+  private async turn(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
     const prompt = composePrompt(body, this.site.nudge);
     const expiry = this.now() + deadlineMs;
 
@@ -240,20 +357,71 @@ export class ChatTab {
     await this.startFreshConversation();
     if (this.busySelectors === null) await this.screenBusySelectors();
 
+    // Fresh per turn: the page has just been reloaded or reset, and last turn's
+    // choice of candidate is not evidence about this one.
+    this.assistantSelector = null;
+
     const before: Fingerprint = fingerprint(await this.readMessages());
     await this.submit(prompt);
 
     let state = INITIAL_POLL_STATE;
     let latched: string | null = null;
     let everRendered = false;
+    /**
+     * Has the stop control been seen at all this turn?
+     *
+     * The completion rule leans on `!busy`, and `!busy` is only evidence when
+     * something CAN report busy. Until it has actually been observed once, the
+     * absence of it is not a fact about the page - it is a selector that may
+     * simply never match - so the turn falls back to demanding a much longer
+     * run of unchanged reads.
+     */
+    let sawBusy = false;
+    let nextRefusalCheck = this.now() + REFUSAL_CHECK_AFTER_MS;
 
     while (this.now() < expiry) {
       await this.sleep(this.pollMs);
+      // A caller that gave up - a closed browser tab on the builder page, a
+      // cancelled batch - should stop the turn rather than have the operator's
+      // browser driven for the rest of the deadline on its behalf.
+      if (signal?.aborted) {
+        throw new ChatTurnError('timeout', `${this.site.label}: the request was cancelled`);
+      }
+
+      const elsewhere = this.navigatedAway();
+      if (elsewhere) {
+        throw new ChatTurnError(
+          'page',
+          `the ${this.site.label} tab was navigated to ${elsewhere} while it was answering. ` +
+            'Leave the debug browser on the chat page, or give this app a tab of its own.'
+        );
+      }
+
       const busy = await this.isBusy();
+      if (busy) sawBusy = true;
       const messages = await this.readMessages();
       const picked = pickReply(before, messages, latched);
 
-      if (!picked) continue;
+      if (!picked) {
+        // Nothing has rendered and time is passing: ask the page what it is
+        // showing instead. A usage wall or a signed-out prompt is a different
+        // failure from a slow answer and needs a different thing done about it.
+        if (this.now() >= nextRefusalCheck) {
+          nextRefusalCheck = this.now() + REFUSAL_CHECK_EVERY_MS;
+          const refusal = refusalReason(await this.page.visibleText(REFUSAL_TEXT_CHARS));
+          if (refusal) {
+            throw new ChatTurnError(
+              'refused',
+              `${this.site.label} did not answer because ${refusal.reason}. ` +
+                (refusal.retryable
+                  ? 'Wait for it to reset, or use another provider.'
+                  : `Open ${this.site.url} in the debug browser and put it right by hand.`),
+              refusal.retryable
+            );
+          }
+        }
+        continue;
+      }
       everRendered = true;
       latched = picked.id;
 
@@ -269,17 +437,41 @@ export class ChatTab {
         throw new ChatTurnError('echo', `${this.site.label} returned the prompt rather than an answer`);
       }
 
-      const outcome = poll(state, picked.reply.text, busy);
+      const outcome = poll(
+        state,
+        picked.reply.text,
+        busy,
+        sawBusy ? STABLE_READS_WITH_BUSY_SIGNAL : STABLE_READS_WITHOUT_BUSY_SIGNAL
+      );
       state = outcome.state;
       if (outcome.done) return outcome.done;
     }
 
-    throw new ChatTurnError(
-      'timeout',
-      everRendered
-        ? `${this.site.label} was still writing when the deadline passed`
-        : `${this.site.label} showed no reply before the deadline. The tab may not be signed in, ` +
-          'or the assistant selector may no longer match.'
+    throw new ChatTurnError('timeout', this.timeoutReason(everRendered));
+  }
+
+  /**
+   * Why the deadline passed, in the terms the operator has to act on.
+   *
+   * The three cases want three different things done, and the old single
+   * message sent every one of them to check the selectors. "No node ever
+   * matched" is the only one that is actually about selectors; "matched but
+   * nothing new arrived" means the send did not land or the tab is signed out;
+   * "still writing" means the answer is real and the budget was too small.
+   */
+  private timeoutReason(everRendered: boolean): string {
+    if (everRendered) return `${this.site.label} was still writing when the deadline passed`;
+    if (this.assistantSelector) {
+      return (
+        `${this.site.label} rendered no new message before the deadline, though ` +
+        `"${this.assistantSelector}" does match the page. The prompt may not have been sent, or ` +
+        'the tab may be signed out - open it in the debug browser and look.'
+      );
+    }
+    return (
+      `${this.site.label} showed no reply before the deadline, and none of its assistant ` +
+      `selectors ${JSON.stringify(this.site.assistant)} matched anything at all. The tab may not ` +
+      'be signed in, or the page markup has changed - set the assistant selector override.'
     );
   }
 }

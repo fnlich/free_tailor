@@ -301,3 +301,56 @@ test('a turn cannot outlive its deadline even if the page stops answering', asyn
   // DevTools call would otherwise take.
   assert.ok(elapsedMs < 12_000, `the guard must fire, took ${Math.round(elapsedMs)}ms`);
 });
+
+test('with no stop button on the page, a pause mid-answer does not truncate the reply', async () => {
+  // The whole completion rule rests on the site telling us when it is
+  // generating. Here nothing does - `?nostop=1` stands in for a site that
+  // renamed its stop control, which is the case the candidate lists exist to
+  // survive - so `!busy` is permanently true and the only remaining evidence is
+  // that the text stopped changing.
+  //
+  // `?pause=700` then stalls for 700ms before the final chunk, which is what a
+  // model thinking mid-answer looks like from outside. At a 150ms poll that
+  // pause is four identical reads - past the old one-repeat rule, which would
+  // have ended the turn on the second of them and returned the answer without
+  // its tail, and well short of the run this now demands. Because this app's
+  // replies are JSON, the truncated one still parses, so nothing downstream
+  // would have caught it.
+  const query = 'nostop=1&chunks=4&delay=30&pause=700';
+  await withPage(query, async (page) => {
+    const tab = new ChatTab(wrapPuppeteerPage(page), siteAt(query), { pollMs: 150 });
+    const prompt = 'How many words is this prompt?';
+    const answer = await tab.ask(prompt, 30_000);
+
+    assert.match(answer, /ANSWER-START/, 'the answer must start where the fixture says it does');
+    assert.match(
+      answer,
+      /ANSWER-END$/,
+      'the tail after the pause is the part a one-repeat rule loses'
+    );
+    assert.match(answer, new RegExp(`You sent ${expectedWords(prompt)} words`));
+  });
+});
+
+test('a usage wall is reported as a refusal rather than polled until the deadline', async () => {
+  const query = 'wall=1';
+  await withPage(query, async (page) => {
+    const tab = new ChatTab(wrapPuppeteerPage(page), siteAt(query), {
+      pollMs: 50,
+      // The refusal check waits out a settling period before it reads the page,
+      // so the clock is driven rather than waited on. Real browser, real DOM,
+      // scripted time.
+      now: (() => {
+        let value = 0;
+        return () => (value += 400);
+      })(),
+    });
+
+    await assert.rejects(tab.ask('tailor this resume', 600_000), (error) => {
+      assert.equal(error.kind, 'refused');
+      assert.equal(error.retryable, true);
+      assert.match(error.message, /usage limit/);
+      return true;
+    });
+  });
+});

@@ -7,9 +7,16 @@ import type { AIProvider } from '../types/template';
  * `subscription-seat` - a sign-in the operator performed on the server; there
  *               is no secret for this app to store, hold, or leak.
  * `browser-session` - a chat site the operator is signed in to in a Chrome
- *               they started themselves. This app never sees the credential:
- *               it attaches to that browser over the DevTools protocol and
- *               drives the page, so the session cookie stays where it was.
+ *               they started themselves. This app stores no credential and
+ *               never asks for one: it attaches to that browser over the
+ *               DevTools protocol and drives the page, so the session cookie
+ *               is never copied anywhere. Worth being exact about what that
+ *               does and does not mean - a DevTools attachment CAN read the
+ *               cookies of the browser it is attached to. Nothing here does,
+ *               and the code that drives the page is right there to check, but
+ *               the guarantee is "this app does not", not "this app could
+ *               not". Which is why it attaches to a browser the operator
+ *               started, on loopback, with a profile of its own.
  */
 export type CredentialKind = 'api-key' | 'subscription-seat' | 'browser-session';
 

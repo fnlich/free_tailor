@@ -1,5 +1,6 @@
 import puppeteer from 'puppeteer';
 import type { Browser, Page } from 'puppeteer';
+import { hostOf, matchesHost } from './conversation';
 import { wrapPuppeteerPage } from './page';
 import { ChatTab, type ChatTabOptions } from './tab';
 import type { ChatSite, ChatSiteId } from './sites';
@@ -31,6 +32,17 @@ export const DEFAULT_DEBUG_PORT = 9222;
 /** Longest any single DevTools command may take before it is a failure. */
 const PROTOCOL_TIMEOUT_MS = 30_000;
 
+/**
+ * How long a health probe gives the page to render its composer.
+ *
+ * Bounded tightly: this runs on every provider at boot, and a health check that
+ * takes ten seconds per unusable provider delays the whole server starting.
+ * Long enough for an app that is loading, short enough that a signed-out one is
+ * still reported promptly.
+ */
+const PROBE_COMPOSER_MS = 8_000;
+const PROBE_POLL_MS = 250;
+
 export class BrowserSessionError extends Error {
   readonly hint: string;
 
@@ -38,14 +50,6 @@ export class BrowserSessionError extends Error {
     super(message);
     this.name = 'BrowserSessionError';
     this.hint = hint;
-  }
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return '';
   }
 }
 
@@ -57,9 +61,19 @@ export function debugEndpoint(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 function startupHint(endpoint: string): string {
+  // Parsed defensively: this runs inside the catch that exists to EXPLAIN a
+  // bad endpoint, and a malformed AI_WEB_CDP_URL is the likeliest reason to be
+  // here. Throwing from the explanation replaces an actionable message with a
+  // stack trace about URL parsing.
+  let port: string = String(DEFAULT_DEBUG_PORT);
+  try {
+    port = new URL(endpoint).port || String(DEFAULT_DEBUG_PORT);
+  } catch {
+    // Keep the default in the hint.
+  }
   return (
     `Start Chrome with a debug port and sign in first, then retry:\n` +
-    `  chrome --remote-debugging-port=${new URL(endpoint).port || DEFAULT_DEBUG_PORT} ` +
+    `  chrome --remote-debugging-port=${port} ` +
     `--user-data-dir=<a folder just for this>\n` +
     'Use a separate user-data-dir: Chrome will not open a debug port on a profile that is ' +
     'already running. Set AI_WEB_CDP_URL to point somewhere else.'
@@ -74,6 +88,7 @@ function startupHint(endpoint: string): string {
  */
 export class BrowserChatSession {
   private browser: Browser | null = null;
+  private connecting: Promise<Browser> | null = null;
   private readonly pages = new Map<ChatSiteId, Page>();
   private readonly tabs = new Map<ChatSiteId, ChatTab>();
 
@@ -84,6 +99,19 @@ export class BrowserChatSession {
 
   private async connect(): Promise<Browser> {
     if (this.browser?.connected) return this.browser;
+    // Shared, so two callers racing - which is exactly what the startup
+    // preflight does, probing both browser providers at once - open ONE
+    // connection rather than two, the second of which nothing would ever
+    // disconnect and whose 'disconnected' handler would clear the live one's
+    // cached tabs.
+    if (this.connecting) return this.connecting;
+    this.connecting = this.openConnection().finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
+
+  private async openConnection(): Promise<Browser> {
     try {
       this.browser = await puppeteer.connect({
         browserURL: this.endpoint,
@@ -121,14 +149,23 @@ export class BrowserChatSession {
    */
   private async pageFor(site: ChatSite): Promise<Page> {
     const held = this.pages.get(site.id);
-    if (held && !held.isClosed()) return held;
+    // The connection is checked BEFORE the page, because a page cannot report
+    // the failure that matters here. `isClosed()` answers "was this tab
+    // closed", and a tab whose browser went away - the operator quit Chrome,
+    // the debug port died - was never closed; it is simply unreachable, and
+    // handing it back produces a driver that looks healthy and answers
+    // nothing. The 'disconnected' handler clears this map, but it is an event:
+    // between the socket dropping and the handler running, this line is the
+    // only thing standing in the way.
+    if (held && this.browser?.connected && !held.isClosed()) return held;
+    if (held) {
+      this.pages.delete(site.id);
+      this.tabs.delete(site.id);
+    }
 
     const browser = await this.connect();
     const open = await browser.pages();
-    const existing = open.find((page) => {
-      const host = hostOf(page.url());
-      return host.length > 0 && host.endsWith(site.host);
-    });
+    const existing = open.find((page) => matchesHost(hostOf(page.url()), site.host));
 
     const page = existing ?? (await browser.newPage());
     if (!existing) {
@@ -137,6 +174,21 @@ export class BrowserChatSession {
     this.pages.set(site.id, page);
     this.tabs.delete(site.id);
     return page;
+  }
+
+  /** First composer candidate to appear, within `PROBE_COMPOSER_MS`. */
+  private async waitForComposer(
+    chatPage: ReturnType<typeof wrapPuppeteerPage>,
+    site: ChatSite
+  ): Promise<boolean> {
+    const expiry = Date.now() + PROBE_COMPOSER_MS;
+    for (;;) {
+      for (const candidate of site.composer) {
+        if ((await chatPage.count(candidate)) > 0) return true;
+      }
+      if (Date.now() >= expiry) return false;
+      await new Promise((resolve) => setTimeout(resolve, PROBE_POLL_MS));
+    }
   }
 
   async tabFor(site: ChatSite): Promise<ChatTab> {
@@ -153,18 +205,29 @@ export class BrowserChatSession {
     try {
       const page = await this.pageFor(site);
       const chatPage = wrapPuppeteerPage(page);
-      for (const candidate of site.composer) {
-        if ((await chatPage.count(candidate)) > 0) {
-          // The hostname when there is one, the whole URL otherwise: a file://
-          // or opaque URL has an empty hostname, and "Signed in at ." tells an
-          // operator nothing about which tab was found.
-          const where = hostOf(page.url()) || page.url();
-          return { ok: true, detail: `Signed in at ${where}.` };
-        }
+      // Waited for, not sampled. `pageFor` may have just navigated, and
+      // `domcontentloaded` fires on these single-page apps long before React
+      // has rendered a composer - so an instantaneous count reports "no message
+      // box" on a tab that is merely still booting. This runs at STARTUP, on
+      // every provider at once, which is exactly when that race is won: the
+      // boot preflight would report both browser providers unusable on every
+      // cold start and send the operator looking for a login problem that does
+      // not exist.
+      const found = await this.waitForComposer(chatPage, site);
+      if (found) {
+        // The hostname when there is one, the whole URL otherwise: a file://
+        // or opaque URL has an empty hostname, and "Signed in at ." tells an
+        // operator nothing about which tab was found.
+        const where = hostOf(page.url()) || page.url();
+        return { ok: true, detail: `Signed in at ${where}.` };
       }
       return {
+        // Where it is, not what it is showing. A chat URL carries the
+        // conversation id, and this string is rendered in the admin provider
+        // list and written to the log - neither of which is a place to put a
+        // link to whatever the operator happened to be discussing.
+        detail: `Reached ${hostOf(page.url()) || page.url()} but found no message box.`,
         ok: false,
-        detail: `Reached ${page.url()} but found no message box.`,
         hint:
           `Sign in to ${site.url} in the debug browser. If you are signed in, the page's markup ` +
           'has changed - set the composer selector override.',
