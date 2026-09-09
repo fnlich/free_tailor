@@ -99,12 +99,16 @@ test('a settings row written before the provider change migrates and then loads'
   // A default pointing at a model that no longer exists is repointed.
   assert.equal(loaded.defaultModelId, 'claude-cli-sonnet');
 
-  // The keyless provider gets a key-store slot so the admin page cannot index
-  // into a hole, and is reported as needing no key at all.
-  assert.equal(loaded.apiKeys['claude-cli'].requiresApiKey, false);
-  assert.equal(loaded.apiKeys['claude-cli'].activeSource, 'subscription');
+  // Keys are no longer kept in the database at all, so the whole store goes -
+  // including the OpenRouter key the legacy row carried.
+  assert.equal('apiKeys' in loaded, false);
+  const migrated = readSettingRaw(dbDir, APP_SETTINGS_KEY);
+  assert.equal('apiKeys' in JSON.parse(migrated), false);
+  assert.equal(migrated.includes('sk-or-secret'), false, 'no key text may survive the migration');
 
-  // The pre-migration row is preserved verbatim, so a rollback is a copy.
+  // The pre-migration row is preserved verbatim, so a rollback is a copy. It
+  // still holds the key, which is the point of a backup and why the rollback
+  // path is the one place that value can come back.
   assert.equal(readSettingRaw(dbDir, BACKUP_KEY), original);
 });
 

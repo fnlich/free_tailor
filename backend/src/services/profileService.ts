@@ -1,3 +1,4 @@
+import { normalizeAiPreferences } from '../config/aiPreferences';
 import {
   Certification,
   Contact,
@@ -145,6 +146,10 @@ export function normalizeProfileSettings(
       DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE
     ),
     hardSkillOrdering,
+    // Only values this build understands survive, and an omitted one keeps
+    // whatever was stored: a client that predates these fields must not blank
+    // them by saving a profile without them.
+    ai: normalizeAiPreferences(source && 'ai' in source ? source.ai : existing?.ai),
   };
 }
 

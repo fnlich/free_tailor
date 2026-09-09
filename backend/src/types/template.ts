@@ -149,7 +149,12 @@ export interface GenerateResumeRequest {
   jobDescription?: string;
   jobAnalysis?: JobAnalysis;
   tailoredContent?: TailoredContent;
+  /** An AI model record id; overrides the profile's own for this run. */
   model?: string;
+  /** Overrides the profile's effort for this run. */
+  effort?: string;
+  /** Overrides the profile's thinking mode for this run. */
+  thinking?: string;
   companyName: string;
   role: string;
   sourceRowNumber?: number;

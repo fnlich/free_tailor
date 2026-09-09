@@ -1,3 +1,5 @@
+import type { ThinkingMode } from '../../types';
+
 /**
  * The environment a `claude` child process gets.
  *
@@ -18,13 +20,20 @@
  * kept deliberately - it is where the operator's sign-in lives, and dropping it
  * signs the child out.
  *
+ * `MAX_THINKING_TOKENS` - the CLI's thinking budget, and the only way to set
+ * one: there is no `--thinking` flag. It is dropped from the parent and set
+ * from the request instead, so that whatever the operator happens to have
+ * exported cannot silently override a per-profile or per-request choice.
+ * Measured: with the variable unset the same prompt produced a thinking block
+ * on two runs out of three, and with it set to 0 on none out of three.
+ *
  * Everything else is kept on purpose. `PATH`, `HOME`, `ANTHROPIC_BASE_URL` and
  * proxy variables are the operator's configuration and this module has no
  * business editing them.
  */
 export function buildChildEnv(
   parent: NodeJS.ProcessEnv = process.env,
-  options: { allowApiKey?: boolean } = {}
+  options: { allowApiKey?: boolean; thinking?: ThinkingMode } = {}
 ): NodeJS.ProcessEnv {
   const allowApiKey = options.allowApiKey === true;
   const child: NodeJS.ProcessEnv = {};
@@ -42,7 +51,16 @@ export function buildChildEnv(
     if ((name === 'ANTHROPIC_API_KEY' || name === 'ANTHROPIC_AUTH_TOKEN') && !allowApiKey) {
       continue;
     }
+    if (name === 'MAX_THINKING_TOKENS') {
+      continue;
+    }
     child[name] = value;
+  }
+
+  // `default` deliberately sets nothing: the models already think adaptively,
+  // and the useful control is whether to let them, not a number to guess at.
+  if (options.thinking === 'off') {
+    child.MAX_THINKING_TOKENS = '0';
   }
 
   return child;

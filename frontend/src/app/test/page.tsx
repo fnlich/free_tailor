@@ -331,7 +331,7 @@ export default function TestPage() {
     setStatus('');
 
     try {
-      const result = await resumeApi.analyzePromptTest(trimmed, selectedModel, selectedPromptId);
+      const result = await resumeApi.analyzePromptTest(trimmed, { model: selectedModel }, selectedPromptId);
       setAnalysis(result);
       setStatus('Analysis complete.');
     } catch (err) {

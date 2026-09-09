@@ -3,6 +3,7 @@ import { getProviderApiKey } from '../../../config/aiModelConfig';
 import { getProviderDescriptor } from '../../../config/providerCatalog';
 import type { AIProvider } from '../../../types/template';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../errors';
+import { collectUnsupportedReasoningParams } from '../reasoningParams';
 import type {
   AIProviderAdapter,
   CompletionRequest,
@@ -44,6 +45,10 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
     label: descriptor.label,
     temperature: true,
     maxOutputTokens: true,
+    // Neither is wired for this transport yet, so a caller asking for one is
+    // told it was dropped rather than left to assume it applied.
+    effort: false,
+    thinking: false,
     nativeJsonMode: 'response_format',
     systemBlocks: false,
     requiresApiKey: true,
@@ -83,7 +88,7 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
               ok: false,
               detail: 'No API key is configured.',
               checkedAt,
-              warning: `Add one under Admin -> Settings, or set ${descriptor.envKeyVar}.`,
+              warning: `Set ${descriptor.envKeyVar} in .env - keys are read from the environment only.`,
             };
       } catch (error) {
         return {
@@ -152,7 +157,7 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
             cacheReadTokens: completion.usage?.prompt_tokens_details?.cached_tokens ?? 0,
             cacheWriteTokens: 0,
           },
-          droppedParams: [],
+          droppedParams: collectUnsupportedReasoningParams(request, capabilities),
           latencyMs: Date.now() - startedAt,
         };
       } catch (error) {

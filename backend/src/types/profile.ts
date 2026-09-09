@@ -1,3 +1,5 @@
+import type { AiPreferences } from '../config/aiPreferences';
+
 export interface Contact {
   phone: string;
   email: string;
@@ -56,6 +58,14 @@ export interface ProfileSettings {
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
   hardSkillOrdering?: HardSkillOrdering;
+  /**
+   * This profile's default model, effort and thinking mode.
+   *
+   * Every field is optional and an absent one inherits the app default, so a
+   * profile that has never been touched behaves exactly as it did before this
+   * existed. A single generation can override any of them for that run.
+   */
+  ai?: AiPreferences;
 }
 
 export interface Profile {

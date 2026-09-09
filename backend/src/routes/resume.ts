@@ -12,7 +12,13 @@ import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
 import { getGeneratedOutputPath } from '../utils/generatedPath';
 import { getTemplateById } from '../extractors/templateExtractor';
-import { getPublicAppSettings, resolveRequestedAIModel } from '../config/aiModelConfig';
+import { getPublicAppSettings } from '../config/aiModelConfig';
+import {
+  normalizeAiPreferences,
+  resolveAiChoice,
+  type AiChoice,
+  type AiPreferences,
+} from '../config/aiPreferences';
 import { mapWithConcurrency } from '../services/ai';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
@@ -130,9 +136,8 @@ router.post('/analyze', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   console.log('[Resume timing] /resume/analyze started');
   try {
-    const { jobDescription, model, promptId } = req.body as {
+    const { jobDescription, promptId } = req.body as {
       jobDescription?: string;
-      model?: string;
       promptId?: string;
     };
 
@@ -141,11 +146,10 @@ router.post('/analyze', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveRequestedAIModel(model);
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body));
     const analysis = await analyzeJobDescription(
       jobDescription,
-      selectedModel.provider,
-      selectedModel.modelName,
+      selectedModel,
       promptId,
       requestSignal(req, res)
     );
@@ -162,9 +166,8 @@ router.post('/analyze', async (req: Request, res: Response) => {
 
 router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
   try {
-    const { jobDescription, model, promptId } = req.body as {
+    const { jobDescription, promptId } = req.body as {
       jobDescription?: string;
-      model?: string;
       promptId?: string;
     };
 
@@ -173,11 +176,10 @@ router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveRequestedAIModel(model);
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body));
     const result = await analyzeJobDescriptionPromptRaw(
       jobDescription,
-      selectedModel.provider,
-      selectedModel.modelName,
+      selectedModel,
       promptId
     );
     res.json(result);
@@ -208,7 +210,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveRequestedAIModel(model);
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body));
 
     const validJobs: Array<{
       customId: string;
@@ -262,8 +264,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
     const analysisOutcomes = await mapWithConcurrency(validJobs, BATCH_AI_CONCURRENCY, (job) =>
       analyzeJobDescription(
         job.jobDescription,
-        selectedModel.provider,
-        selectedModel.modelName,
+        selectedModel,
         undefined,
         requestSignal(req, res)
       )
@@ -344,6 +345,22 @@ function collectUnconfirmedSkillMaps(
  * deadline, so a wider fan-out buys nothing and risks turning a slow batch
  * into a failed one.
  */
+/**
+ * The model, effort and thinking a single request asks for.
+ *
+ * All three are overrides for THIS run only. Anything absent falls through to
+ * the profile's own setting, and then to the app default, which is why they
+ * are normalized into preferences rather than resolved here.
+ */
+function readAiOverrides(body: unknown): AiPreferences {
+  const record = (body ?? {}) as Record<string, unknown>;
+  return normalizeAiPreferences({
+    modelId: typeof record.model === 'string' ? record.model : undefined,
+    effort: record.effort,
+    thinking: record.thinking,
+  });
+}
+
 const BATCH_AI_CONCURRENCY =
   Number.parseInt(process.env.AI_BATCH_CONCURRENCY || '', 10) ||
   Number.parseInt(process.env.AI_CLI_CONCURRENCY || '', 10) ||
@@ -352,8 +369,8 @@ const BATCH_AI_CONCURRENCY =
 async function tailorResumesForProfiles(
   profiles: Profile[],
   analysis: JobAnalysis,
-  provider: AIProvider,
-  modelName?: string,
+  requestChoice: AiChoice,
+  overrides: AiPreferences,
   signal?: AbortSignal
 ): Promise<{
   tailoredByProfileId: Map<string, TailoredContent>;
@@ -371,8 +388,12 @@ async function tailorResumesForProfiles(
   // five-profile batch was five full model calls end to end, with the user
   // waiting through all of them. Failures are still collected per profile
   // rather than aborting the batch, exactly as the sequential loop did.
-  const outcomes = await mapWithConcurrency(profiles, BATCH_AI_CONCURRENCY, (profile) =>
-    tailorResume(profile, analysis, provider, modelName, signal)
+  // Resolved per profile, not once for the batch: the model, effort and
+  // thinking are a PROFILE setting, so a batch of profiles that disagree must
+  // run each on its own choice rather than on whichever profile came first.
+  // The request's own overrides still win over every one of them.
+  const outcomes = await mapWithConcurrency(profiles, BATCH_AI_CONCURRENCY, async (profile) =>
+    tailorResume(profile, analysis, await resolveAiChoice(overrides, profile), signal)
   );
 
   outcomes.forEach((outcome, index) => {
@@ -413,7 +434,8 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     } = req.body;
 
     const appSettings = await getPublicAppSettings();
-    const selectedModel = await resolveRequestedAIModel(typeof model === 'string' ? model : undefined);
+    const aiOverrides = readAiOverrides(req.body);
+    const selectedModel = await resolveAiChoice(aiOverrides);
 
     if (!companyName?.trim()) {
       res.status(400).json({ error: 'Company name is required' });
@@ -435,8 +457,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     if (trimmedJobDescription && trimmedJobDescription.length > 50) {
       analysis = jobAnalysis || await analyzeJobDescription(
         trimmedJobDescription,
-        selectedModel.provider,
-        selectedModel.modelName,
+        selectedModel,
         getProfileAnalyzeJobPromptId(profiles[0]),
         requestSignal(req, res)
       );
@@ -459,8 +480,8 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       ? await tailorResumesForProfiles(
           profiles,
           analysis,
-          selectedModel.provider,
-          selectedModel.modelName,
+          selectedModel,
+          aiOverrides,
           requestSignal(req, res)
         )
       : null;
@@ -482,7 +503,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
         if (analysis) {
           tailoredContent = bulkTailoring
             ? bulkTailoring.tailoredByProfileId.get(profile.id)
-            : await tailorResume(profile, analysis, selectedModel.provider, selectedModel.modelName);
+            : await tailorResume(profile, analysis, selectedModel);
         }
         collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
 
@@ -494,8 +515,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
             profile,
             normalizedCompanyName,
             resolvedRole,
-            selectedModel.provider,
-            selectedModel.modelName,
+            selectedModel,
             requestSignal(req, res)
           );
         }
@@ -580,7 +600,8 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       includeCoverLetterDocx?: boolean;
     };
 
-    const selectedModel = await resolveRequestedAIModel(model);
+    const aiOverrides = readAiOverrides(req.body);
+    const selectedModel = await resolveAiChoice(aiOverrides);
 
     if (!Array.isArray(jobs) || jobs.length === 0) {
       res.status(400).json({ error: 'At least one job is required' });
@@ -647,8 +668,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
             tailoredContent = await tailorResume(
               profile,
               job.analysis,
-              selectedModel.provider,
-              selectedModel.modelName
+              selectedModel
             );
           }
           collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
@@ -661,8 +681,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
               profile,
               job.companyName,
               job.role,
-              selectedModel.provider,
-              selectedModel.modelName,
+              selectedModel,
             requestSignal(req, res)
             );
           }
@@ -749,7 +768,8 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       profileIds?: string[];
     };
 
-    const selectedModel = await resolveRequestedAIModel(model);
+    const aiOverrides = readAiOverrides(req.body);
+    const selectedModel = await resolveAiChoice(aiOverrides);
 
     const profiles = await loadAllProfiles(profileIds);
     if (profiles.length === 0) {
@@ -763,8 +783,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     if (trimmedJobDescription && trimmedJobDescription.length > 50) {
       analysis = jobAnalysis || await analyzeJobDescription(
         trimmedJobDescription,
-        selectedModel.provider,
-        selectedModel.modelName,
+        selectedModel,
         getProfileAnalyzeJobPromptId(profiles[0]),
         requestSignal(req, res)
       );
@@ -782,8 +801,8 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       ? await tailorResumesForProfiles(
           profiles,
           analysis,
-          selectedModel.provider,
-          selectedModel.modelName,
+          selectedModel,
+          aiOverrides,
           requestSignal(req, res)
         )
       : null;
@@ -808,7 +827,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       const tailoredContent = analysis
         ? bulkTailoring
           ? bulkTailoring.tailoredByProfileId.get(profile.id)
-          : await tailorResume(profile, analysis, selectedModel.provider, selectedModel.modelName)
+          : await tailorResume(profile, analysis, selectedModel)
         : undefined;
       collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
 
@@ -854,7 +873,6 @@ router.post('/generate', async (req: Request, res: Response) => {
       includeCoverLetterDocx,
     }: GenerateResumeRequest = req.body;
     const appSettings = await getPublicAppSettings();
-    const selectedModel = await resolveRequestedAIModel(typeof model === 'string' ? model : undefined);
 
     if (!profileId) {
       res.status(400).json({ error: 'Profile ID is required' });
@@ -877,6 +895,11 @@ router.post('/generate', async (req: Request, res: Response) => {
       return;
     }
 
+    // Resolved here rather than at the top of the handler: the model, effort
+    // and thinking are a per-profile setting, so the profile has to be loaded
+    // before they can be read. The request's own overrides still win.
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile);
+
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
@@ -891,8 +914,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     if (!analysis && jobDescription && jobDescription.trim().length > 50) {
       analysis = jobAnalysis || await analyzeJobDescription(
         jobDescription,
-        selectedModel.provider,
-        selectedModel.modelName,
+        selectedModel,
         getProfileAnalyzeJobPromptId(profile),
         requestSignal(req, res)
       );
@@ -901,7 +923,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(profile, analysis, selectedModel.provider, selectedModel.modelName);
+      tailoredContent = await tailorResume(profile, analysis, selectedModel);
     }
     const resolvedRole = resolveGenerationRole(role, analysis);
     if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
@@ -924,8 +946,7 @@ router.post('/generate', async (req: Request, res: Response) => {
           profile,
           companyName.trim(),
           resolvedRole,
-          selectedModel.provider,
-          selectedModel.modelName
+          selectedModel
         );
     });
 
@@ -1014,8 +1035,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   console.log('[Resume timing] /resume/preview started');
   try {
-    const { profileId, templateId, jobDescription, jobAnalysis, tailoredContent: manualTailoredContent, model }: GenerateResumeRequest = req.body;
-    const selectedModel = await resolveRequestedAIModel(typeof model === 'string' ? model : undefined);
+    const { profileId, templateId, jobDescription, jobAnalysis, tailoredContent: manualTailoredContent }: GenerateResumeRequest = req.body;
 
     if (!profileId) {
       res.status(400).json({ error: 'Profile ID is required' });
@@ -1033,6 +1053,11 @@ router.post('/preview', async (req: Request, res: Response) => {
       return;
     }
 
+    // Resolved here rather than at the top of the handler: the model, effort
+    // and thinking are a per-profile setting, so the profile has to be loaded
+    // before they can be read. The request's own overrides still win.
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile);
+
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
@@ -1047,8 +1072,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     if (!analysis && jobDescription && jobDescription.trim().length > 50) {
       analysis = await analyzeJobDescription(
         jobDescription,
-        selectedModel.provider,
-        selectedModel.modelName,
+        selectedModel,
         getProfileAnalyzeJobPromptId(profile),
         requestSignal(req, res)
       );
@@ -1057,7 +1081,7 @@ router.post('/preview', async (req: Request, res: Response) => {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(profile, analysis, selectedModel.provider, selectedModel.modelName);
+      tailoredContent = await tailorResume(profile, analysis, selectedModel);
     }
 
     // Generate HTML preview

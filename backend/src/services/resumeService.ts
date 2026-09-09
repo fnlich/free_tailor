@@ -1,3 +1,5 @@
+import type { AiChoice } from '../config/aiPreferences';
+import { describeAiChoice } from '../config/aiPreferences';
 import { Profile } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, TailoredContent } from '../types/template';
 import { createPromptCompletion, DEFAULT_PROVIDER } from './ai';
@@ -1914,20 +1916,22 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
 export async function analyzeJobDescription(
   jobDescription: string,
-  provider: AIProvider = DEFAULT_PROVIDER,
-  modelName?: string,
+  choice: AiChoice,
   promptId?: string,
   signal?: AbortSignal
 ): Promise<JobAnalysis> {
+  const { provider, modelName } = choice;
   const resolvedPromptId = promptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
   const promptValues = buildAnalyzeJobDescriptionPromptValues(jobDescription);
   const firstCallStartedAt = process.hrtime.bigint();
-  console.log(`[Resume timing] First LLM call started: analyze job description (${provider}${modelName ? `/${modelName}` : ''})`);
+  console.log(`[Resume timing] First LLM call started: analyze job description (${describeAiChoice(choice)})`);
   const content = await createPromptCompletion({
     promptId: resolvedPromptId,
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
+    effort: choice.effort,
+    thinking: choice.thinking,
     maxTokens: 7000,
     temperature: 0,
     responseFormat: 'json',
@@ -1947,8 +1951,7 @@ export async function analyzeJobDescription(
 
 export async function analyzeJobDescriptionPromptRaw(
   jobDescription: string,
-  provider: AIProvider = DEFAULT_PROVIDER,
-  modelName?: string,
+  choice: AiChoice,
   promptId?: string
 ): Promise<unknown> {
   const resolvedPromptId = promptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
@@ -1956,8 +1959,10 @@ export async function analyzeJobDescriptionPromptRaw(
   const content = await createPromptCompletion({
     promptId: resolvedPromptId,
     promptValues,
-    fallbackProvider: provider,
-    fallbackModelName: modelName,
+    fallbackProvider: choice.provider,
+    fallbackModelName: choice.modelName,
+    effort: choice.effort,
+    thinking: choice.thinking,
     maxTokens: 7000,
     temperature: 0,
     responseFormat: 'json',
@@ -2056,10 +2061,10 @@ function getProfileCoverLetterPromptId(profile: Profile): string {
 export async function tailorResume(
   profile: Profile,
   jobAnalysis: JobAnalysis,
-  provider: AIProvider = DEFAULT_PROVIDER,
-  modelName?: string,
+  choice: AiChoice,
   signal?: AbortSignal
 ): Promise<TailoredContent> {
+  const { provider, modelName } = choice;
   const promptId = getProfileResumePromptId(profile);
   const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
   const secondCallStartedAt = process.hrtime.bigint();
@@ -2067,7 +2072,7 @@ export async function tailorResume(
   if (timing) {
     console.log(`[Resume timing] Time between first LLM finish and second LLM start: ${formatDuration(timing.firstCallEndedAt, secondCallStartedAt)}`);
   }
-  console.log(`[Resume timing] Second LLM call started: tailor resume (${provider}${modelName ? `/${modelName}` : ''})`);
+  console.log(`[Resume timing] Second LLM call started: tailor resume (${describeAiChoice(choice)})`);
   const content = await createPromptCompletion({
     promptId,
     // The prompt record can be a per-profile custom one; the timeout and the
@@ -2076,6 +2081,8 @@ export async function tailorResume(
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
+    effort: choice.effort,
+    thinking: choice.thinking,
     maxTokens: 11000,
     temperature: 0.2,
     responseFormat: 'json',
@@ -2107,8 +2114,7 @@ export async function generateCoverLetter(
   profile: Profile,
   companyName: string,
   role: string,
-  provider: AIProvider = DEFAULT_PROVIDER,
-  modelName?: string,
+  choice: AiChoice,
   signal?: AbortSignal
 ): Promise<string> {
   const promptId = getProfileCoverLetterPromptId(profile);
@@ -2121,8 +2127,10 @@ export async function generateCoverLetter(
     promptId,
     callSite: DEFAULT_COVER_LETTER_PROMPT_ID,
     promptValues,
-    fallbackProvider: provider,
-    fallbackModelName: modelName,
+    fallbackProvider: choice.provider,
+    fallbackModelName: choice.modelName,
+    effort: choice.effort,
+    thinking: choice.thinking,
     maxTokens: 1500,
     // The only caller that wants sampling variety rather than determinism.
     // The CLI provider cannot honour it and says so once; pin this prompt to

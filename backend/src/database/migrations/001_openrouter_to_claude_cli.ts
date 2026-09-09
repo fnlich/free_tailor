@@ -183,19 +183,17 @@ function migrateSettings(db: Database.Database, report: MigrationReport): void {
     settings.defaultModelId = NEW_DEFAULT_MODEL_ID;
   }
 
-  // 4. Key stores. The subscription provider needs an (empty) entry so the
-  //    admin page's Record<AIProvider, ...> index cannot be undefined; the
-  //    OpenRouter keys go, but the backup above still holds them.
+  // 4. Key stores. The app no longer keeps API keys in its database at all -
+  //    a metered provider is keyed from the environment - so the whole store
+  //    goes rather than being carried across to the new provider id. The
+  //    backup taken above still holds whatever was there.
   if (isObject(settings.apiKeys)) {
     const apiKeys = settings.apiKeys as Json;
     const legacyStore = apiKeys[LEGACY_PROVIDER];
     if (isObject(legacyStore) && Array.isArray(legacyStore.entries)) {
       report.discardedApiKeys = legacyStore.entries.length;
     }
-    delete apiKeys[LEGACY_PROVIDER];
-    if (!isObject(apiKeys[NEW_PROVIDER])) {
-      apiKeys[NEW_PROVIDER] = { activeKeyId: '', entries: [] };
-    }
+    delete settings.apiKeys;
   }
 
   db.prepare(
