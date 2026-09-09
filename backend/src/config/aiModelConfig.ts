@@ -163,6 +163,22 @@ function createDefaultModelRecords(): AIModelRecord[] {
       modelName: 'haiku',
       description: 'Fastest model on the subscription seat, for classification and short extractions.',
     },
+    // Browser-driven chat. Ranked after the seat and before the metered APIs:
+    // both cost nothing to run, but a chat window answers at reading speed and
+    // one conversation at a time, so neither should be what an unset default
+    // falls back to.
+    {
+      name: 'Claude (browser)',
+      provider: 'claude-web',
+      modelName: 'chat',
+      description: 'Drives claude.ai in a Chrome you started and signed in to. No API key.',
+    },
+    {
+      name: 'ChatGPT (browser)',
+      provider: 'chatgpt-web',
+      modelName: 'chat',
+      description: 'Drives chatgpt.com in a Chrome you started and signed in to. No API key.',
+    },
     {
       name: DEFAULT_OPENAI_MODEL,
       provider: 'openai',
@@ -479,14 +495,18 @@ function normalizeProvidersEnabled(
       continue;
     }
 
+    // A provider added after the flat flags stopped being written has none, so
+    // there is nothing older that could be asking about it.
     const legacyField = getProviderDescriptor(id).legacyEnabledField;
-    const fromLegacy = source[legacyField];
-    if (typeof fromLegacy === 'boolean') {
-      result[id] = fromLegacy;
-      continue;
-    }
-    if (strict && hasOwnProperty(source, legacyField)) {
-      throw new Error(`${legacyField} must be a boolean`);
+    if (legacyField) {
+      const fromLegacy = source[legacyField];
+      if (typeof fromLegacy === 'boolean') {
+        result[id] = fromLegacy;
+        continue;
+      }
+      if (strict && hasOwnProperty(source, legacyField)) {
+        throw new Error(`${legacyField} must be a boolean`);
+      }
     }
 
     // The one alias that carries meaning: a row written before the CLI
@@ -770,7 +790,7 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
           id === 'claude-cli' && typeof legacyFlags.openrouterEnabled === 'boolean'
             ? 'openrouterEnabled'
             : getProviderDescriptor(id).legacyEnabledField;
-        const flat = legacyFlags[legacyField];
+        const flat = legacyField ? legacyFlags[legacyField] : undefined;
         acc[id] = typeof flat === 'boolean' ? flat : current.providersEnabled[id];
         return acc;
       }, {} as ProvidersEnabled);

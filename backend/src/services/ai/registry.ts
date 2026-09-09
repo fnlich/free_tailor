@@ -8,6 +8,7 @@ import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
 import { createAnthropicHttpAdapter } from './providers/anthropicHttp';
 import { createClaudeCliAdapter, type ClaudeCliAdapter } from './providers/claudeCli';
+import { createBrowserChatAdapter } from './providers/browserChat';
 import { createOpenAICompatibleAdapter } from './providers/openaiCompatible';
 import type { AIProviderAdapter, ProviderCapabilities, ProviderHealth } from './types';
 
@@ -68,6 +69,11 @@ function registerDefaults(): void {
       tokenLimitField: 'max_tokens',
     })
   );
+  // Registered like any other, and costing nothing at import: the adapter does
+  // not touch the browser until a call is made, so a server with no debug
+  // browser running is unaffected by these existing.
+  registerDefault('claude-web', () => createBrowserChatAdapter('claude-web'));
+  registerDefault('chatgpt-web', () => createBrowserChatAdapter('chatgpt-web'));
 }
 
 export function getAdapter(id: AIProvider): AIProviderAdapter {

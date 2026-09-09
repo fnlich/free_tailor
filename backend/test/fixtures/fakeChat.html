@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Fake chat</title>
+</head>
+<body>
+  <!--
+    A chat page with claude.ai's shape, for testing the browser-chat driver.
+
+    The driver cannot be exercised against the real sites in a test: that needs
+    a signed-in account, a network, and markup nobody controls. So this page
+    reproduces the four things the driver actually depends on, and nothing else:
+
+      * a contenteditable composer matching the site's first candidate
+      * a send button
+      * a stop button that exists ONLY while a reply is streaming
+      * assistant messages that arrive a chunk at a time
+
+    The streaming is the point. A reply that appeared all at once would pass a
+    driver that reads too early, which is the bug the two-stable-reads rule
+    exists to prevent.
+
+    Query parameters let one page cover the awkward cases:
+      ?chunks=N      how many chunks the reply arrives in
+      ?delay=MS      gap between chunks
+      ?empty=1       render the reply node, then leave it empty for a while
+      ?echo=1        ALSO render the user's message with the assistant selector,
+                     which is the "an assistant selector matches the user turn"
+                     failure the echo guard exists to catch
+      ?silent=1      never answer at all, for the deadline path
+      ?json=1        answer with JSON, so a real end-to-end API call can run
+      ?linger=MS     keep the stop button up for MS after the text is complete
+  -->
+  <a href="/new" id="new-chat">New chat</a>
+  <div id="transcript"></div>
+  <div>
+    <div contenteditable="true" class="ProseMirror" id="composer"></div>
+    <button aria-label="Send message" id="send">Send</button>
+    <span id="stop-slot"></span>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const number = (name, fallback) => {
+      const value = Number.parseInt(params.get(name) || '', 10);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    const CHUNKS = number('chunks', 4);
+    const DELAY = number('delay', 60);
+    const LINGER = number('linger', 0);
+
+    const transcript = document.getElementById('transcript');
+    const composer = document.getElementById('composer');
+    const stopSlot = document.getElementById('stop-slot');
+
+    // The reply is deterministic and derived from the prompt, so a test can
+    // assert the whole answer came back rather than a prefix of it.
+    function replyFor(prompt) {
+      const words = prompt.split(/\s+/).filter(Boolean).length;
+      // A chat window answers in prose; this app's two main prompts ask for
+      // JSON inside that prose. ?json=1 stands in for that case so the whole
+      // route can be exercised, extraction included.
+      if (params.get('json') === '1') {
+        return JSON.stringify({
+          jobMeta: { title: 'Senior Backend Engineer', company: 'Fixture Co' },
+          keywords: ['ANSWER-START', 'words:' + words, 'ANSWER-END'],
+          hardSkills: ['Go', 'TypeScript', 'PostgreSQL'],
+          softSkills: [],
+        });
+      }
+      return [
+        'ANSWER-START',
+        'You sent ' + words + ' words.',
+        'This reply arrives in ' + CHUNKS + ' pieces to exercise the polling rule.',
+        'ANSWER-END',
+      ].join(' ');
+    }
+
+    function showStop() {
+      stopSlot.innerHTML = '<button aria-label="Stop response" id="stop">Stop</button>';
+    }
+    function hideStop() {
+      stopSlot.innerHTML = '';
+    }
+
+    document.getElementById('new-chat').addEventListener('click', (event) => {
+      event.preventDefault();
+      transcript.innerHTML = '';
+      composer.innerText = '';
+      hideStop();
+    });
+
+    document.getElementById('send').addEventListener('click', () => {
+      const prompt = composer.innerText;
+      if (!prompt.trim()) return;
+      composer.innerText = '';
+
+      // The user's own turn. Deliberately NOT matching the assistant selector,
+      // unless ?echo=1 asks for the broken page the guard is meant to catch.
+      const mine = document.createElement('div');
+      mine.className = 'user-message';
+      if (params.get('echo') === '1') mine.setAttribute('data-is-streaming', 'false');
+      mine.innerText = prompt;
+      transcript.appendChild(mine);
+
+      if (params.get('silent') === '1') return;
+
+      showStop();
+      const reply = document.createElement('div');
+      reply.setAttribute('data-is-streaming', 'true');
+      reply.id = 'reply-' + transcript.children.length;
+      transcript.appendChild(reply);
+
+      const full = replyFor(prompt);
+      const size = Math.ceil(full.length / CHUNKS);
+      let sent = 0;
+
+      // ?empty=1 holds the node visible but empty first: a driver that takes
+      // "a reply node exists" as "the reply is here" reads nothing.
+      const startDelay = params.get('empty') === '1' ? DELAY * 3 : DELAY;
+
+      function step() {
+        if (sent >= full.length) {
+          reply.setAttribute('data-is-streaming', 'false');
+          setTimeout(hideStop, LINGER);
+          return;
+        }
+        sent = Math.min(full.length, sent + size);
+        reply.innerText = full.slice(0, sent);
+        setTimeout(step, DELAY);
+      }
+      setTimeout(step, startDelay);
+    });
+  </script>
+</body>
+</html>

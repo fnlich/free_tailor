@@ -3,11 +3,15 @@ import type { AIProvider } from '../types/template';
 /**
  * How a provider proves who it is.
  *
- * `api-key`   - a secret the admin pastes (or an environment variable).
+ * `api-key`   - a secret read from the environment.
  * `subscription-seat` - a sign-in the operator performed on the server; there
  *               is no secret for this app to store, hold, or leak.
+ * `browser-session` - a chat site the operator is signed in to in a Chrome
+ *               they started themselves. This app never sees the credential:
+ *               it attaches to that browser over the DevTools protocol and
+ *               drives the page, so the session cookie stays where it was.
  */
-export type CredentialKind = 'api-key' | 'subscription-seat';
+export type CredentialKind = 'api-key' | 'subscription-seat' | 'browser-session';
 
 export type ProviderDescriptor = {
   id: AIProvider;
@@ -15,8 +19,19 @@ export type ProviderDescriptor = {
   label: string;
   /** Short line under the label in the admin provider list. */
   summary: string;
-  /** Key on AppSettings.providersEnabled and the legacy flat wire field. */
-  legacyEnabledField: 'claudeCliEnabled' | 'claudeEnabled' | 'openaiEnabled' | 'deepseekEnabled';
+  /**
+   * The flat wire field an already-loaded browser tab reads for this provider.
+   *
+   * Null for a provider added after those flags stopped being written: nothing
+   * older than it can be asking about it, so inventing a flag would only be a
+   * field with no reader.
+   */
+  legacyEnabledField:
+    | 'claudeCliEnabled'
+    | 'claudeEnabled'
+    | 'openaiEnabled'
+    | 'deepseekEnabled'
+    | null;
   /** Environment variable holding this provider's key, or null when keyless. */
   envKeyVar: string | null;
   requiresApiKey: boolean;
@@ -75,6 +90,28 @@ export const PROVIDER_CATALOG = {
     requiresApiKey: true,
     credentialKind: 'api-key',
     order: 3,
+  },
+  'claude-web': {
+    id: 'claude-web',
+    label: 'Claude (browser)',
+    summary:
+      'Drives claude.ai in a Chrome you started and signed in to. No API key and nothing metered; the chat plan you already have is the quota.',
+    legacyEnabledField: null,
+    envKeyVar: null,
+    requiresApiKey: false,
+    credentialKind: 'browser-session',
+    order: 4,
+  },
+  'chatgpt-web': {
+    id: 'chatgpt-web',
+    label: 'ChatGPT (browser)',
+    summary:
+      'Drives chatgpt.com in a Chrome you started and signed in to. No API key and nothing metered; the chat plan you already have is the quota.',
+    legacyEnabledField: null,
+    envKeyVar: null,
+    requiresApiKey: false,
+    credentialKind: 'browser-session',
+    order: 5,
   },
 } as const satisfies Record<AIProvider, ProviderDescriptor>;
 

@@ -191,7 +191,13 @@ async function apiFetch<T>(
  *
  * The former `openrouter` id was replaced by `claude-cli`.
  */
-export type AIProvider = 'claude-cli' | 'claude' | 'openai' | 'deepseek';
+export type AIProvider =
+  | 'claude-cli'
+  | 'claude'
+  | 'openai'
+  | 'deepseek'
+  | 'claude-web'
+  | 'chatgpt-web';
 
 export type ProviderMeta = {
   label: string;
@@ -215,6 +221,16 @@ export const PROVIDER_META = {
   claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
   openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },
   deepseek: { label: 'DeepSeek', requiresApiKey: true, modelNameHint: 'deepseek-v4-flash' },
+  'claude-web': {
+    label: 'Claude (browser)',
+    requiresApiKey: false,
+    modelNameHint: 'chat',
+  },
+  'chatgpt-web': {
+    label: 'ChatGPT (browser)',
+    requiresApiKey: false,
+    modelNameHint: 'chat',
+  },
 } as const satisfies Record<AIProvider, ProviderMeta>;
 
 export const AI_PROVIDERS: AIProvider[] = Object.keys(PROVIDER_META) as AIProvider[];
@@ -559,7 +575,10 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
       ? (source.providersEnabled as Record<string, unknown>)
       : null;
 
-  const legacyField: Record<AIProvider, string> = {
+  // Partial on purpose, mirroring the backend catalog: a provider added after
+  // these flat flags stopped being written has none, and inventing one would
+  // only be a field with no writer.
+  const legacyField: Partial<Record<AIProvider, string>> = {
     'claude-cli': 'claudeCliEnabled',
     claude: 'claudeEnabled',
     openai: 'openaiEnabled',
@@ -573,7 +592,8 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
       result[provider] = fromRecord;
       continue;
     }
-    const flat = source[legacyField[provider]];
+    const field = legacyField[provider];
+    const flat = field ? source[field] : undefined;
     if (typeof flat === 'boolean') {
       result[provider] = flat;
       continue;

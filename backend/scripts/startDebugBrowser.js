@@ -1,0 +1,102 @@
+#!/usr/bin/env node
+/**
+ * Starts the Chrome the browser-chat providers attach to.
+ *
+ * Two rules this script exists to get right, both of which bite when you do it
+ * by hand:
+ *
+ * A SEPARATE PROFILE DIRECTORY. Chrome silently ignores
+ * `--remote-debugging-port` when a normal Chrome is already running with the
+ * same profile - it just opens a tab in the existing window and no port is
+ * ever listening. A dedicated `--user-data-dir` sidesteps that, at the cost of
+ * signing in once inside it.
+ *
+ * A REAL BROWSER, NOT THE AUTOMATION ONE. This deliberately picks the Chrome,
+ * Edge or Brave already installed on the machine rather than the Chrome for
+ * Testing that puppeteer downloads for PDF rendering. Sign-in flows reject a
+ * browser that is in automation mode - Google's answers "This browser or app
+ * may not be secure" - and the whole design here is that a human signs in.
+ *
+ *   node scripts/startDebugBrowser.js [--port 9222] [--profile <dir>]
+ */
+
+const { spawn } = require('child_process');
+const os = require('os');
+const path = require('path');
+
+function arg(name, fallback) {
+  const index = process.argv.indexOf(`--${name}`);
+  if (index !== -1 && process.argv[index + 1]) return process.argv[index + 1];
+  return fallback;
+}
+
+const PORT = arg('port', process.env.AI_WEB_CDP_PORT || '9222');
+const PROFILE = arg('profile', path.join(os.homedir(), '.free-tailor-chrome'));
+
+function findBrowser() {
+  try {
+    // The same resolver the PDF renderer uses, minus its puppeteer download:
+    // that copy is Chrome for Testing, which is exactly what must NOT be used
+    // to sign in.
+    const { findInstalledBrowser } = require('../dist/config/browser');
+    return findInstalledBrowser({
+      platform: process.platform,
+      env: process.env,
+      fileExists: (candidate) => {
+        try {
+          return require('fs').statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
+const found = findBrowser();
+if (!found) {
+  console.error(
+    [
+      '[browser] No installed Chrome, Chromium, Edge or Brave was found.',
+      '[browser] (If this project has not been built yet, run `npm run build` first.)',
+      '[browser] Install one, or start it yourself:',
+      `[browser]   <browser> --remote-debugging-port=${PORT} --user-data-dir="${PROFILE}"`,
+    ].join('\n')
+  );
+  process.exit(1);
+}
+
+console.log(`[browser] Starting ${found.label} with a debug port`);
+console.log(`[browser]   executable: ${found.executablePath}`);
+console.log(`[browser]   debug port: ${PORT}`);
+console.log(`[browser]   profile:    ${PROFILE}`);
+console.log('[browser]');
+console.log('[browser] Sign in to the chat sites you want to use IN THIS WINDOW:');
+console.log('[browser]   https://claude.ai/new     for the "Claude (browser)" provider');
+console.log('[browser]   https://chatgpt.com/      for the "ChatGPT (browser)" provider');
+console.log('[browser] Leave it open. The backend attaches to it; it never launches one.');
+
+const child = spawn(
+  found.executablePath,
+  [
+    `--remote-debugging-port=${PORT}`,
+    `--user-data-dir=${PROFILE}`,
+    // Bound the port to loopback. Anything that can reach this port can drive
+    // the browser and read every session in it.
+    '--remote-allow-origins=*',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ],
+  { detached: true, stdio: 'ignore' }
+);
+
+child.on('error', (error) => {
+  console.error(`[browser] Could not start it: ${error.message}`);
+  process.exit(1);
+});
+
+// Detached, so closing this terminal does not close the browser the operator
+// just signed in to.
+child.unref();

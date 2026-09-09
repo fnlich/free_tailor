@@ -179,6 +179,8 @@ test('app settings preserve at least one enabled provider, and keys come from th
         claude: false,
         openai: false,
         deepseek: false,
+        'claude-web': false,
+        'chatgpt-web': false,
       },
     }),
     /At least one AI model must remain enabled/

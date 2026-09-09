@@ -126,6 +126,26 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   you want those providers available as alternatives. They are the only
   credentials this app reads and it stores none of its own
 
+- Optionally a **debug Chrome** for the two browser-chat providers, which need
+  no key at all:
+
+  ```bash
+  npm run browser:debug     # starts Chrome with a debug port on a separate profile
+  ```
+
+  Sign in to `claude.ai` and/or `chatgpt.com` **in that window** and leave it
+  open. The backend attaches to it and drives the page; it never launches a
+  browser of its own and never closes yours. A separate profile directory is
+  used because Chrome ignores `--remote-debugging-port` when the same profile is
+  already running, and because the browser must not be in automation mode -
+  sign-in flows reject one that is.
+
+  Two things to know before enabling these: the prompt (your resume and the job
+  description) is typed into a third-party chat window and lands in that
+  account's history, and driving these sites this way may not be permitted by
+  their terms of service. They are also slow and strictly one call at a time, so
+  they suit a single tailoring run rather than a batch
+
 ### 1. Clone & Install
 
 ```bash
@@ -258,6 +278,7 @@ File and folder names are templated per profile.
 |---------|---------|
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering |
 | **Groups** | Group profiles for batch generation |
+| **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
 | **AI defaults per profile** | Each profile picks its own model, effort (`low`..`max`) and thinking mode; the builder shows those defaults and can override any of them for a single run. Effort is the CLI's `--effort` flag. Thinking is on by default and adaptive - the models decide per answer - so the choice is whether to allow it, not how much; depth is what effort controls |
 | **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
@@ -302,6 +323,9 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
+| A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave that window open. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
+| A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). |
+| A browser provider returns the prompt instead of an answer | The site's assistant selector is also matching your own message. The backend refuses the answer rather than tailoring a resume to the instructions, and says so. Set `AI_WEB_CLAUDE_ASSISTANT` or `AI_WEB_CHATGPT_ASSISTANT` to something that can only match an assistant turn. |
 | A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
 | An effort or thinking choice appears to do nothing | Look for `[ai] ... has no effort control` in the backend output. Only the Claude CLI provider honours them; the metered OpenAI, Anthropic and DeepSeek transports report them as dropped rather than pretending they applied. Switch the model, on the profile or under Admin → Models, to a Claude CLI one. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
