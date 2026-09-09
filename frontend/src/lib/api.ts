@@ -423,6 +423,89 @@ export interface GoogleSheetJobFilterResponse {
   }>;
 }
 
+/** The `--effort` levels the Claude CLI accepts, lowest first. */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/**
+ * `default` leaves the models' own adaptive thinking alone - which is ON -
+ * and `off` suppresses it. How deeply it thinks when it does is `effort`.
+ */
+export const THINKING_MODES = ['default', 'off'] as const;
+export type ThinkingMode = (typeof THINKING_MODES)[number];
+
+/**
+ * A model, effort and thinking choice.
+ *
+ * Every field is optional and absent means INHERIT: a profile inherits the app
+ * default, and one generation inherits the profile. That is why the same type
+ * describes both layers.
+ */
+export interface AiPreferences {
+  modelId?: string;
+  effort?: EffortLevel;
+  thinking?: ThinkingMode;
+}
+
+export interface AiPreferenceDefaults {
+  effort: EffortLevel;
+  thinking: ThinkingMode;
+  effortLevels: EffortLevel[];
+  thinkingModes: ThinkingMode[];
+}
+
+export const EFFORT_LABELS: Record<EffortLevel, string> = {
+  low: 'Low - fastest',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Very high',
+  max: 'Max - slowest, most thorough',
+};
+
+export const THINKING_LABELS: Record<ThinkingMode, string> = {
+  default: 'Let the model decide',
+  off: 'Off - answer without thinking first',
+};
+
+export function isEffortLevel(value: unknown): value is EffortLevel {
+  return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
+}
+
+export function isThinkingMode(value: unknown): value is ThinkingMode {
+  return typeof value === 'string' && (THINKING_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * The per-run override fields every generate endpoint accepts.
+ *
+ * Named `model` rather than `modelId` because that is the field the API has
+ * always taken; the other two are new and keep their own names.
+ */
+export interface AiRequestOverrides {
+  model?: string;
+  effort?: EffortLevel;
+  thinking?: ThinkingMode;
+}
+
+/** Only fields that were actually chosen are sent, so the rest inherit. */
+export function toAiRequestOverrides(preferences: AiPreferences): AiRequestOverrides {
+  return {
+    ...(preferences.modelId ? { model: preferences.modelId } : {}),
+    ...(preferences.effort ? { effort: preferences.effort } : {}),
+    ...(preferences.thinking ? { thinking: preferences.thinking } : {}),
+  };
+}
+
+export function normalizeAiPreferences(value: unknown): AiPreferences {
+  const source = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  const preferences: AiPreferences = {};
+  const modelId = typeof source.modelId === 'string' ? source.modelId.trim() : '';
+  if (modelId) preferences.modelId = modelId;
+  if (isEffortLevel(source.effort)) preferences.effort = source.effort;
+  if (isThinkingMode(source.thinking)) preferences.thinking = source.thinking;
+  return preferences;
+}
+
 // Admin API
 export interface PublicAppSettings {
   /** Canonical enable flags, keyed by provider id. */
@@ -436,6 +519,8 @@ export interface PublicAppSettings {
   defaultResumeDocxEnabled: boolean;
   defaultCoverLetterDocxEnabled: boolean;
   outputPathUsesJobTitle: boolean;
+  /** What a run uses when nothing overrides it, and the values on offer. */
+  aiPreferenceDefaults: AiPreferenceDefaults;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
 }
@@ -539,9 +624,36 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
   outputPathUsesJobTitle: true,
+  aiPreferenceDefaults: {
+    effort: 'low',
+    thinking: 'default',
+    effortLevels: [...EFFORT_LEVELS],
+    thinkingModes: [...THINKING_MODES],
+  },
   aiModels: [],
   googleSheetsSources: [],
 };
+
+/**
+ * The lists come from the server so that a level added there shows up without
+ * a frontend release; anything unrecognised is dropped rather than rendered as
+ * an option that would be rejected on save.
+ */
+function normalizeAiPreferenceDefaults(value: unknown): AiPreferenceDefaults {
+  const source = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  const effortLevels = Array.isArray(source.effortLevels)
+    ? source.effortLevels.filter(isEffortLevel)
+    : [];
+  const thinkingModes = Array.isArray(source.thinkingModes)
+    ? source.thinkingModes.filter(isThinkingMode)
+    : [];
+  return {
+    effort: isEffortLevel(source.effort) ? source.effort : DEFAULT_PUBLIC_APP_SETTINGS.aiPreferenceDefaults.effort,
+    thinking: isThinkingMode(source.thinking) ? source.thinking : 'default',
+    effortLevels: effortLevels.length ? effortLevels : [...EFFORT_LEVELS],
+    thinkingModes: thinkingModes.length ? thinkingModes : [...THINKING_MODES],
+  };
+}
 
 function normalizePublicAppSettings(value: unknown): PublicAppSettings {
   const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<PublicAppSettings> &
@@ -564,6 +676,7 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
       typeof source.defaultCoverLetterDocxEnabled === 'boolean' ? source.defaultCoverLetterDocxEnabled : true,
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
+    aiPreferenceDefaults: normalizeAiPreferenceDefaults(source.aiPreferenceDefaults),
     aiModels: Array.isArray(source.aiModels)
       ? source.aiModels
           .filter((entry): entry is AIModelRecord => typeof entry === 'object' && entry !== null)
@@ -993,6 +1106,8 @@ export interface ProfileSettings {
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
   hardSkillOrdering?: HardSkillOrdering;
+  /** This profile's default model, effort and thinking mode. */
+  ai?: AiPreferences;
 }
 
 export interface Profile {
@@ -1419,16 +1534,16 @@ export const promptsApi = {
 export const resumeApi = {
   getModels: async () => normalizePublicAppSettings(await apiFetch<PublicAppSettings>('/resume/models')),
 
-  analyze: (jobDescription: string, model?: string, promptId?: string) =>
+  analyze: (jobDescription: string, overrides: AiRequestOverrides = {}, promptId?: string) =>
     apiFetch<JobAnalysis>('/resume/analyze', {
       method: 'POST',
-      body: JSON.stringify({ jobDescription, model, promptId }),
+      body: JSON.stringify({ jobDescription, ...overrides, promptId }),
     }),
 
-  analyzePromptTest: (jobDescription: string, model?: string, promptId?: string) =>
+  analyzePromptTest: (jobDescription: string, overrides: AiRequestOverrides = {}, promptId?: string) =>
     apiFetch<unknown>('/resume/analyze-prompt-test', {
       method: 'POST',
-      body: JSON.stringify({ jobDescription, model, promptId }),
+      body: JSON.stringify({ jobDescription, ...overrides, promptId }),
     }),
 
   analyzeMultiJob: (data: {
@@ -1438,6 +1553,8 @@ export const resumeApi = {
       sourceRowNumber?: number;
     }>;
     model?: string;
+    effort?: EffortLevel;
+    thinking?: ThinkingMode;
   }) =>
     apiFetch<{
       provider: AIProvider;
@@ -1469,6 +1586,8 @@ export const resumeApi = {
     role: string;
     sourceRowNumber?: number;
     model?: string;
+    effort?: EffortLevel;
+    thinking?: ThinkingMode;
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
   }) =>
@@ -1507,6 +1626,8 @@ export const resumeApi = {
     companyName: string;
     role: string;
     model?: string;
+    effort?: EffortLevel;
+    thinking?: ThinkingMode;
     profileIds?: string[];
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
@@ -1547,6 +1668,8 @@ export const resumeApi = {
       sourceRowNumber?: number;
     }>;
     model?: string;
+    effort?: EffortLevel;
+    thinking?: ThinkingMode;
     profileIds?: string[];
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
@@ -1618,6 +1741,8 @@ export const resumeApi = {
     jobAnalysis?: JobAnalysis;
     tailoredContent?: TailoredContent;
     model?: string;
+    effort?: EffortLevel;
+    thinking?: ThinkingMode;
   }) =>
     apiFetch<{ html: string; tailored: boolean; tailoredContent?: TailoredContent }>('/resume/preview', {
       method: 'POST',
@@ -1629,6 +1754,8 @@ export const resumeApi = {
     jobDescription?: string;
     jobAnalysis?: JobAnalysis;
     model?: string;
+    effort?: EffortLevel;
+    thinking?: ThinkingMode;
     profileIds?: string[];
   }) =>
     apiFetch<{

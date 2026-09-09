@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { describeAiPreferenceDefaults, type AiPreferenceDefaults } from './aiPreferences';
 import { getSetting, setSetting } from '../database/settingsRepository';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
@@ -126,6 +127,13 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
 >;
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
   outputPathUsesJobTitle: boolean;
+  /**
+   * The effort and thinking a run uses when nothing overrides them, plus the
+   * values that may be chosen. Sent rather than hard-coded in the client so
+   * that the "use the app default" option can name the value it will really
+   * use, and so a new effort level does not need a matching frontend release.
+   */
+  aiPreferenceDefaults: AiPreferenceDefaults;
 };
 
 export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & {
@@ -813,6 +821,7 @@ function toPublicSettingsWithDerived(settings: AppSettings): PublicAppSettingsWi
   return {
     ...toPublicSettings(settings),
     outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
+    aiPreferenceDefaults: describeAiPreferenceDefaults(),
   };
 }
 

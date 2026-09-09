@@ -7,6 +7,9 @@ import {
   resumeApi,
   DEFAULT_PUBLIC_APP_SETTINGS,
   PublicAppSettings,
+  AiPreferences,
+  normalizeAiPreferences,
+  toAiRequestOverrides,
   Profile,
   Group,
   JobAnalysis,
@@ -15,6 +18,7 @@ import {
 import AppTopNav from '@/components/AppTopNav';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
 import ProfileSelector from '@/components/ProfileSelector';
+import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
 import SheetsImportModal, { ImportedSheetJob } from '@/components/SheetsImportModal';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
@@ -57,6 +61,13 @@ export default function Home() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  /**
+   * Model, effort and thinking for THIS run only.
+   *
+   * Empty means every field falls through to the selected profile's own
+   * setting, and then to the app default - nothing here is persisted.
+   */
+  const [aiOverrides, setAiOverrides] = useState<AiPreferences>({});
   const [generateMode, setGenerateMode] = useState<GenerateMode>('single');
   const [multipleTarget, setMultipleTarget] = useState<'all' | 'group'>('group');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
@@ -117,6 +128,27 @@ export default function Home() {
   useEffect(() => {
     resetGenerationOutputs();
   }, [builderMode, companyName, role, jobDescription, selectedProfileId, generateMode, resetGenerationOutputs]);
+
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const aiRequestOverrides = toAiRequestOverrides(aiOverrides);
+  const hasAiOverrides = Object.keys(aiRequestOverrides).length > 0;
+  /**
+   * What the override selects fall back to.
+   *
+   * In single mode that is the chosen profile's own setting, which is the
+   * layer directly beneath this one; with no profile in scope - multiple mode,
+   * or nothing selected yet - it is the app default.
+   */
+  const profilePreferences = normalizeAiPreferences(selectedProfile?.profileSettings?.ai);
+  const inheritsFromProfile = generateMode === 'single' && Boolean(selectedProfile);
+  const inheritedChoice = {
+    modelLabel:
+      modelSettings.aiModels.find(
+        (model) => model.id === (profilePreferences.modelId || modelSettings.defaultModelId)
+      )?.name || 'the first enabled model',
+    effort: profilePreferences.effort ?? modelSettings.aiPreferenceDefaults.effort,
+    thinking: profilePreferences.thinking ?? modelSettings.aiPreferenceDefaults.thinking,
+  };
 
   const loadInitialData = async () => {
     try {
@@ -341,6 +373,7 @@ export default function Home() {
 
       try {
         const result = await resumeApi.generate({
+          ...aiRequestOverrides,
           profileId: profile.id,
           templateId: profile.preferredTemplate || 'default',
           jobDescription,
@@ -428,7 +461,7 @@ export default function Home() {
         );
 
         try {
-          const analysis = await resumeApi.analyze(trimmedJobDescription);
+          const analysis = await resumeApi.analyze(trimmedJobDescription, aiRequestOverrides);
           if (!hasSetJobAnalysis) {
             setJobAnalysis(analysis);
             hasSetJobAnalysis = true;
@@ -453,6 +486,7 @@ export default function Home() {
 
             try {
               const result = await resumeApi.generate({
+                ...aiRequestOverrides,
                 profileId: profile.id,
                 templateId: profile.preferredTemplate || 'default',
                 jobDescription: trimmedJobDescription,
@@ -575,7 +609,7 @@ export default function Home() {
     try {
       setGenerationStep('Analyzing job description...');
       clearGenerationProgress();
-      const analysis = await resumeApi.analyze(jobDescription, '');
+      const analysis = await resumeApi.analyze(jobDescription, aiRequestOverrides);
       setJobAnalysis(analysis);
 
       if (generateMode === 'single' && !autoGenerate) {
@@ -583,6 +617,7 @@ export default function Home() {
         const profile = profiles.find((p) => p.id === selectedProfileId);
         const templateId = profile?.preferredTemplate || 'default';
         const preview = await resumeApi.preview({
+          ...aiRequestOverrides,
           profileId: selectedProfileId!,
           templateId,
           jobDescription,
@@ -642,6 +677,7 @@ export default function Home() {
         updateGenerationProgress(1, 0, 'Building resume', profile?.name, companyName.trim());
         setGenerationStep(`Generating 1/1: ${profile?.name ?? 'Selected profile'} x ${companyName.trim()}`);
         const result = await resumeApi.generate({
+          ...aiRequestOverrides,
           profileId: selectedProfileId!,
           templateId,
           jobDescription,
@@ -850,6 +886,7 @@ export default function Home() {
           const profile = profiles.find((p) => p.id === selectedProfileId);
           const templateId = profile?.preferredTemplate || 'default';
           const refreshed = await resumeApi.preview({
+            ...aiRequestOverrides,
             profileId: selectedProfileId!,
             templateId,
             jobDescription,
@@ -927,6 +964,7 @@ export default function Home() {
               const profile = profiles.find((p) => p.id === profileId);
               const templateId = profile?.preferredTemplate || 'default';
               const refreshed = await resumeApi.preview({
+                ...aiRequestOverrides,
                 profileId,
                 templateId,
                 jobDescription,
@@ -994,6 +1032,7 @@ export default function Home() {
       const profile = profiles.find((p) => p.id === selectedProfileId);
       const templateId = profile?.preferredTemplate || 'default';
       const preview = await resumeApi.preview({
+        ...aiRequestOverrides,
         profileId: selectedProfileId!,
         templateId,
         jobDescription,
@@ -1029,7 +1068,7 @@ export default function Home() {
     setSuccessMessage('');
 
     try {
-      const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription));
+      const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription, aiRequestOverrides));
       if (!jobAnalysis) {
         setJobAnalysis(analysis);
       }
@@ -1038,6 +1077,7 @@ export default function Home() {
       updateGenerationProgress(1, 0, 'Building resume', profile?.name, companyName.trim());
       setGenerationStep(`Generating 1/1: ${profile?.name ?? 'Selected profile'} x ${companyName.trim()}`);
       const result = await resumeApi.generate({
+        ...aiRequestOverrides,
         profileId: selectedProfileId!,
         templateId,
         jobDescription,
@@ -1107,6 +1147,7 @@ export default function Home() {
       const profile = profiles.find((p) => p.id === profileId);
       const templateId = profile?.preferredTemplate || 'default';
       const updated = await resumeApi.preview({
+        ...aiRequestOverrides,
         profileId,
         templateId,
         jobDescription,
@@ -1160,7 +1201,7 @@ export default function Home() {
     setSuccessMessage('');
 
     try {
-      const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription));
+      const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription, aiRequestOverrides));
       if (!jobAnalysis) {
         setJobAnalysis(analysis);
       }
@@ -1187,6 +1228,7 @@ export default function Home() {
           setGenerationStep(`Generating ${completed + 1}/${total}: ${profile.name} x ${companyName.trim()}`);
           updateGenerationProgress(total, completed, 'Building resumes', profile.name, companyName.trim());
           await resumeApi.generate({
+            ...aiRequestOverrides,
             profileId: profile.id,
             templateId,
             jobDescription,
@@ -1471,6 +1513,47 @@ export default function Home() {
                 isLoading={false}
               />
             )}
+
+            <details className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
+                Model, effort and thinking
+                {hasAiOverrides && (
+                  <span className="ml-2 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                    overridden for this run
+                  </span>
+                )}
+              </summary>
+              <div className="mt-4 space-y-3">
+                <AiPreferenceFields
+                  idPrefix="builder-ai"
+                  value={aiOverrides}
+                  onChange={setAiOverrides}
+                  models={modelSettings.aiModels}
+                  effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
+                  thinkingModes={modelSettings.aiPreferenceDefaults.thinkingModes}
+                  inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
+                  inherited={inheritedChoice}
+                  disabled={isGenerating}
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {inheritsFromProfile
+                      ? `Defaults come from ${selectedProfile?.name}. Anything set here applies to this run only.`
+                      : 'Each profile uses its own default; anything set here applies to this run only.'}
+                  </p>
+                  {hasAiOverrides && (
+                    <button
+                      type="button"
+                      onClick={() => setAiOverrides({})}
+                      disabled={isGenerating}
+                      className="shrink-0 text-xs text-blue-600 hover:underline disabled:text-gray-400"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+            </details>
 
             {generateMode === 'multiple' && (
               <div className="space-y-4 border border-gray-200 rounded-lg p-4">

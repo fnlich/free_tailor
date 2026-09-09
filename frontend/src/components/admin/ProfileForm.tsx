@@ -15,7 +15,12 @@ import {
   PromptSummary,
   ProfileSettings,
   HardSkillOrdering,
+  AiPreferences,
+  PublicAppSettings,
+  DEFAULT_PUBLIC_APP_SETTINGS,
+  normalizeAiPreferences,
 } from '@/lib/api';
+import AiPreferenceFields from '@/components/AiPreferenceFields';
 
 interface ProfileFormProps {
   initialData?: Profile;
@@ -54,6 +59,9 @@ const DEFAULT_PROFILE_SETTINGS: Required<ProfileSettings> = {
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
   companyFolderNameTemplate: '{{row number}}_{{company name}}',
   hardSkillOrdering: 'library',
+  // Empty means every field inherits the app default, which is what a profile
+  // that has never chosen should do.
+  ai: {},
 };
 
 const HARD_SKILL_ORDERING_OPTIONS: Array<{ value: HardSkillOrdering; label: string; description: string }> = [
@@ -102,6 +110,7 @@ function getInitialProfileSettings(profile?: Profile): Required<ProfileSettings>
       profile?.profileSettings?.companyFolderNameTemplate ||
       DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
     hardSkillOrdering: normalizeHardSkillOrdering(profile?.profileSettings?.hardSkillOrdering),
+    ai: normalizeAiPreferences(profile?.profileSettings?.ai),
   };
 }
 
@@ -145,6 +154,7 @@ export default function ProfileForm({
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
   const [hardSkillLibrary, setHardSkillLibrary] = useState<string[]>([]);
+  const [appSettings, setAppSettings] = useState<PublicAppSettings>(DEFAULT_PUBLIC_APP_SETTINGS);
   const [experienceSkillInputs, setExperienceSkillInputs] = useState<Record<number, string>>({});
 
   useEffect(() => {
@@ -163,6 +173,12 @@ export default function ProfileForm({
     resumeApi.listSkills('hard').then((res) => setHardSkillLibrary(res.skills)).catch(() => setHardSkillLibrary([]));
   }, []);
 
+  // The model list and the app's own effort/thinking defaults, so the inherit
+  // option can say what inheriting actually gets you.
+  useEffect(() => {
+    resumeApi.getModels().then(setAppSettings).catch(() => setAppSettings(DEFAULT_PUBLIC_APP_SETTINGS));
+  }, []);
+
   // Template IDs already selected by other profiles (exclude current profile when editing)
   const templatesInUseByOthers = new Set(
     profiles
@@ -179,6 +195,13 @@ export default function ProfileForm({
         ...formData.profileSettings,
         [field]: value,
       },
+    });
+  };
+
+  const updateAiPreferences = (ai: AiPreferences) => {
+    setFormData({
+      ...formData,
+      profileSettings: { ...formData.profileSettings, ai },
     });
   };
 
@@ -219,6 +242,7 @@ export default function ProfileForm({
             formData.profileSettings.companyFolderNameTemplate.trim() ||
             DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
           hardSkillOrdering: normalizeHardSkillOrdering(formData.profileSettings.hardSkillOrdering),
+          ai: normalizeAiPreferences(formData.profileSettings.ai),
         },
         skills: formData.hardSkills,
       });
@@ -492,6 +516,33 @@ export default function ProfileForm({
             </p>
           </div>
         </div>
+      </div>
+
+      {/* AI defaults for this profile */}
+      <div className="space-y-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
+        <div className="border-b border-gray-200 pb-2">
+          <h3 className="text-lg font-medium text-gray-900">AI Defaults</h3>
+          <p className="mt-1 text-xs text-gray-500">
+            Used whenever this profile is generated. Any of them can be overridden for a single
+            run on the builder page.
+          </p>
+        </div>
+        <AiPreferenceFields
+          idPrefix="profile-ai"
+          value={formData.profileSettings.ai}
+          onChange={updateAiPreferences}
+          models={appSettings.aiModels}
+          effortLevels={appSettings.aiPreferenceDefaults.effortLevels}
+          thinkingModes={appSettings.aiPreferenceDefaults.thinkingModes}
+          inheritedFrom="app default"
+          inherited={{
+            modelLabel:
+              appSettings.aiModels.find((model) => model.id === appSettings.defaultModelId)?.name ||
+              'the first enabled model',
+            effort: appSettings.aiPreferenceDefaults.effort,
+            thinking: appSettings.aiPreferenceDefaults.thinking,
+          }}
+        />
       </div>
 
       {/* Profile Settings */}
