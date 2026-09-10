@@ -7,6 +7,7 @@ const {
   TabWaitAbortedError,
   TabWaitTimeoutError,
   getTabPool,
+  isEndpointLeased,
   resetTabPoolsForTests,
 } = require('../dist/services/ai/providers/browserChat/pool');
 
@@ -280,5 +281,29 @@ test('two sites pointed at ONE browser never hold it at the same time', async ()
   const lease = await waiting;
   assert.equal(lease.endpoint, shared);
   lease.release();
+  resetTabPoolsForTests();
+});
+
+test('a browser in use is still reported as leased, so its connection is not torn away', async () => {
+  // The adapter drops the held connection to any browser no longer in the
+  // settings list, and it does that at the START OF EVERY CALL. An operator who
+  // removes a row while a request is running would otherwise have that
+  // request's connection pulled out mid-answer. The pool is already careful
+  // here - a removed-but-busy tab stays busy until its call lets go - and the
+  // session teardown has to be equally careful, which is what this exposes.
+  resetTabPoolsForTests();
+  const pool = getTabPool('claude-web', 'Claude (free)');
+  const X = 'http://127.0.0.1:9501';
+  pool.setEndpoints([X]);
+
+  const lease = await pool.acquire();
+  assert.equal(isEndpointLeased(X), true, 'in use, so it must not be disposed');
+
+  // Removed from the configuration WHILE the call holds it.
+  pool.setEndpoints([]);
+  assert.equal(isEndpointLeased(X), true, 'still in use, so still not disposable');
+
+  lease.release();
+  assert.equal(isEndpointLeased(X), false, 'and only now is it safe to drop');
   resetTabPoolsForTests();
 });

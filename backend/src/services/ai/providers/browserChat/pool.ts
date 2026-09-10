@@ -276,6 +276,15 @@ export class TabPool {
         this.pump();
         // The browser may belong to another site's pool too - see
         // `leasedEndpoints` - and that pool has its own line waiting on it.
+        //
+        // Note what this does NOT promise: FIFO holds within a pool, not across
+        // two that share a browser. This pool's own waiters are served first
+        // whoever has waited longer. That case only arises through
+        // `AI_WEB_CDP_URL`, which points both sites at one browser - the escape
+        // hatch, not the arrangement the Settings page produces, where a port
+        // belongs to exactly one site. Ordering machinery spanning pools would
+        // cost more than the case is worth; what matters there is that the
+        // browser is never held twice, and it is not.
         for (const other of pools.values()) {
           if (other !== this) other.pumpShared(endpoint);
         }
@@ -292,6 +301,11 @@ export function getTabPool(siteId: string, label: string): TabPool {
   const created = new TabPool(label);
   pools.set(siteId, created);
   return created;
+}
+
+/** Whether any pool currently has this browser leased to a call. */
+export function isEndpointLeased(endpoint: string): boolean {
+  return leasedEndpoints.has(endpoint);
 }
 
 export function getTabPoolStats(): Record<

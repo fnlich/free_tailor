@@ -3,6 +3,7 @@ import { getProviderDescriptor } from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
 import {
   getTabPool,
+  isEndpointLeased,
   NoTabsConfiguredError,
   TabWaitAbortedError,
   TabWaitTimeoutError,
@@ -86,10 +87,20 @@ function sessionFor(endpoint: string): BrowserChatSession {
   return created;
 }
 
-/** Lets go of browsers that are no longer configured, without closing them. */
+/**
+ * Lets go of browsers that are no longer configured, without closing them.
+ *
+ * A browser being USED right now is left alone even when it has just been
+ * removed from the list. This runs at the start of every call, so an operator
+ * who removes a row while a request is running would otherwise have that
+ * request's connection torn out from under it mid-answer - and the pool is
+ * already careful about exactly this, keeping a removed-but-busy tab busy until
+ * its call lets go. The session has to be as careful as the pool. It is dropped
+ * on the next call after the lease ends.
+ */
 function forgetUnconfigured(live: Set<string>): void {
   for (const [endpoint, session] of [...sessions]) {
-    if (live.has(endpoint)) continue;
+    if (live.has(endpoint) || isEndpointLeased(endpoint)) continue;
     sessions.delete(endpoint);
     // `dispose`, never `close`: it is the operator's window, and they are
     // probably still signed in to it.
