@@ -336,3 +336,58 @@ test('a retry works its way around dead browsers rather than hammering one', asy
   }
   assert.deepEqual(order, [A, B, C], 'each attempt tries a different browser');
 });
+
+test('removing the last browser tells the line, instead of leaving it to time out', async () => {
+  // Nothing will ever free up for these callers - there is nothing left to
+  // free - and a request that waits ten minutes to be told "timed out" when the
+  // answer was "you removed the last browser" has been given the wrong answer
+  // slowly.
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+  const waiting = pool.acquire({ timeoutMs: 60_000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1);
+
+  pool.setEndpoints([]);
+  await assert.rejects(waiting, (error) => {
+    assert.ok(error instanceof NoTabsConfiguredError);
+    return true;
+  });
+  held.release();
+});
+
+test('a browser coming back wakes the line rather than waiting for a release', async () => {
+  // `pump` is driven by a release or a configuration change. Without a wake, a
+  // browser whose rest ends while the site's healthy tabs are busy sits idle
+  // behind a queue until one of THOSE frees - callers waiting on a browser that
+  // was ready for them.
+  const pool = poolOf(A, B);
+  const onA = await pool.acquire();
+  assert.equal(onA.endpoint, A);
+  pool.markUnreachable(B, 60);
+
+  const waiting = pool.acquire({ timeoutMs: 3_000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1, 'it must queue while B is resting');
+
+  const lease = await waiting;
+  assert.equal(lease.endpoint, B, 'and be woken by B, not by A being released');
+  lease.release();
+  onA.release();
+});
+
+test('a browser reported healthy again wakes the line too', async () => {
+  const pool = poolOf(A, B);
+  const onA = await pool.acquire();
+  pool.markUnreachable(B, 60_000);
+  const waiting = pool.acquire({ timeoutMs: 3_000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1);
+
+  // A turn that succeeds against B says so; the line should not keep waiting.
+  pool.markReachable(B);
+  const lease = await waiting;
+  assert.equal(lease.endpoint, B);
+  lease.release();
+  onA.release();
+});

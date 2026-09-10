@@ -90,6 +90,9 @@ export class TabPool {
    */
   private readonly downUntil = new Map<string, number>();
 
+  /** Timers that wake the line when a browser's rest ends. */
+  private readonly wakeTimers = new Map<string, NodeJS.Timeout>();
+
   constructor(
     private readonly label: string,
     private readonly now: () => number = Date.now
@@ -129,6 +132,22 @@ export class TabPool {
       seen.add(endpoint);
       return true;
     });
+
+    // Removing the LAST browser tells the line so, rather than leaving it to
+    // find out by running out of time. Nothing will ever free up for these
+    // callers - there is nothing left to free - and a request that waits ten
+    // minutes to be told "timed out" when the answer was "you removed the last
+    // browser" has been given the wrong answer slowly.
+    if (this.endpoints.length === 0) {
+      while (this.waiters.length > 0) {
+        const waiter = this.waiters.shift();
+        if (!waiter || waiter.settled) continue;
+        waiter.settled = true;
+        waiter.reject(new NoTabsConfiguredError(this.label));
+      }
+      return;
+    }
+
     this.pump();
   }
 
@@ -141,10 +160,32 @@ export class TabPool {
    */
   markUnreachable(endpoint: string, forMs: number): void {
     this.downUntil.set(endpoint, this.now() + forMs);
+
+    // Woken when the rest ends, not merely allowed to be. Nothing else runs at
+    // that moment: `pump` is driven by a release or a configuration change, so
+    // a browser coming back while its site's healthy tabs are busy would sit
+    // idle behind a queue until one of THOSE freed - callers waiting on a
+    // browser that was ready for them.
+    const existing = this.wakeTimers.get(endpoint);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.wakeTimers.delete(endpoint);
+      this.pump();
+    }, Math.max(0, forMs));
+    // Unref'd: this only ever makes an existing wait shorter, so it must not be
+    // a reason for the process to stay alive.
+    timer.unref?.();
+    this.wakeTimers.set(endpoint, timer);
   }
 
   markReachable(endpoint: string): void {
     this.downUntil.delete(endpoint);
+    const timer = this.wakeTimers.get(endpoint);
+    if (timer) {
+      clearTimeout(timer);
+      this.wakeTimers.delete(endpoint);
+    }
+    this.pump();
   }
 
   private isDown(endpoint: string): boolean {
