@@ -4,6 +4,11 @@ import {
   PROVIDER_SCHEMA_VERSION,
   type MigrationReport,
 } from './001_openrouter_to_claude_cli';
+import {
+  migrate002,
+  BROWSER_CHAT_SCHEMA_VERSION,
+  type BrowserChatMigrationReport,
+} from './002_seed_browser_chat_models';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -30,6 +35,9 @@ function writeVersion(db: Database.Database, version: number): void {
   ).run(VERSION_KEY, String(version), new Date().toISOString());
 }
 
+/** The version a fully migrated database is at. */
+export const CURRENT_SCHEMA_VERSION = BROWSER_CHAT_SCHEMA_VERSION;
+
 function describe(report: MigrationReport): string {
   const parts: string[] = [];
   if (report.settingsRewritten) parts.push('settings rewritten');
@@ -40,6 +48,53 @@ function describe(report: MigrationReport): string {
   return parts.length ? parts.join(', ') : 'nothing to change';
 }
 
+function describeBrowserChat(report: BrowserChatMigrationReport): string {
+  const parts: string[] = [];
+  if (report.seededModels) parts.push(`${report.seededModels} browser-chat model(s) added`);
+  if (report.enabledProviders.length) parts.push(`${report.enabledProviders.join(' and ')} switched on`);
+  if (report.repointedDefaultModel) parts.push('default model repointed off a locked provider');
+  return parts.length ? parts.join(', ') : 'nothing to change';
+}
+
+/** What the runner needs back from a migration, whatever else it reports. */
+type MigrationOutcome = { ran: boolean; notes: string[]; summary: string };
+
+type MigrationStep = {
+  /** The version the database is at once this step has run. */
+  version: number;
+  label: string;
+  apply: (db: Database.Database) => MigrationOutcome;
+};
+
+/**
+ * The migrations, in order.
+ *
+ * A list rather than a single call so that an install already at version 1
+ * runs only what it is missing - and so the version is written after EACH
+ * step: a later migration that throws must not roll the earlier one's version
+ * back and have it re-run against rows it has already rewritten. Each step
+ * narrows its own report here, which is what keeps the runner from having to
+ * know the shape of any of them.
+ */
+const MIGRATIONS: readonly MigrationStep[] = [
+  {
+    version: PROVIDER_SCHEMA_VERSION,
+    label: 'Provider migration',
+    apply: (db) => {
+      const report = migrate001(db);
+      return { ran: report.ran, notes: report.notes, summary: describe(report) };
+    },
+  },
+  {
+    version: BROWSER_CHAT_SCHEMA_VERSION,
+    label: 'Browser-chat model migration',
+    apply: (db) => {
+      const report = migrate002(db);
+      return { ran: report.ran, notes: report.notes, summary: describeBrowserChat(report) };
+    },
+  },
+];
+
 /**
  * Never throws. A migration that cannot run must not stop the server from
  * starting: the admin UI is the only place an operator can fix whatever went
@@ -47,27 +102,38 @@ function describe(report: MigrationReport): string {
  * works.
  */
 export function runDataMigrations(db: Database.Database): void {
+  let current = 0;
   try {
-    if (readVersion(db) >= PROVIDER_SCHEMA_VERSION) {
+    current = readVersion(db);
+  } catch (error) {
+    console.error('[db] Could not read the schema version; skipping data migrations.', error);
+    return;
+  }
+
+  for (const migration of MIGRATIONS) {
+    if (current >= migration.version) {
+      continue;
+    }
+    try {
+      const report = migration.apply(db);
+      if (report.ran) {
+        console.log(`[db] ${migration.label} applied: ${report.summary}.`);
+        for (const note of report.notes) {
+          console.warn(`[db] ${note}`);
+        }
+      }
+      writeVersion(db, migration.version);
+      current = migration.version;
+    } catch (error) {
+      console.error(
+        `[db] ${migration.label} failed. The stored rows are unchanged and the app reads them with the ` +
+          'runtime fallbacks instead; it will be retried on the next start.',
+        error
+      );
       return;
     }
-
-    const report = migrate001(db);
-    if (report.ran) {
-      console.log(`[db] Provider migration applied: ${describe(report)}.`);
-      for (const note of report.notes) {
-        console.warn(`[db] ${note}`);
-      }
-    }
-    writeVersion(db, PROVIDER_SCHEMA_VERSION);
-  } catch (error) {
-    console.error(
-      '[db] Provider migration failed; stored records naming the removed "openrouter" provider will be ' +
-        'read as "claude-cli" at runtime instead.',
-      error
-    );
   }
 }
 
-export { PROVIDER_SCHEMA_VERSION };
-export type { MigrationReport };
+export { PROVIDER_SCHEMA_VERSION, BROWSER_CHAT_SCHEMA_VERSION };
+export type { MigrationReport, BrowserChatMigrationReport };

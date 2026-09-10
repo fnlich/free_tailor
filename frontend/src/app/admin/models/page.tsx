@@ -9,6 +9,8 @@ import {
   AIProvider,
   coerceProvider,
   getAIProviderLabel,
+  isProviderLocked,
+  LOCK_ICON,
   PROVIDER_META,
 } from '@/lib/api';
 
@@ -28,6 +30,10 @@ const EMPTY_DRAFT: ModelDraft = {
   description: '',
   enabled: true,
 };
+
+function lockReason(settings: AdminAppSettings, provider: AIProvider): string {
+  return settings.providerLocks.find((lock) => lock.id === provider)?.reason ?? '';
+}
 
 function toDraft(model: AIModelRecord): ModelDraft {
   return {
@@ -252,8 +258,13 @@ export default function ModelsPage() {
               className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {AI_PROVIDERS.map((provider) => (
+                // Still offered, not removed: a model row for a locked
+                // provider is worth writing down now so it is simply there if
+                // the lock is ever lifted.
                 <option key={provider} value={provider}>
-                  {getAIProviderLabel(provider)}
+                  {isProviderLocked(settings, provider)
+                    ? `${LOCK_ICON} ${getAIProviderLabel(provider)} (locked)`
+                    : getAIProviderLabel(provider)}
                 </option>
               ))}
             </select>
@@ -314,7 +325,8 @@ export default function ModelsPage() {
         <div className="divide-y divide-gray-200">
           {settings.aiModels.map((model) => {
             const isDefault = settings.defaultModelId === model.id;
-            const providerIsEnabled = providerEnabled[model.provider];
+            const providerIsLocked = isProviderLocked(settings, model.provider);
+            const providerIsEnabled = providerEnabled[model.provider] && !providerIsLocked;
 
             return (
               <div key={model.id} className="flex flex-col gap-4 px-6 py-5 lg:flex-row lg:items-start lg:justify-between">
@@ -334,7 +346,15 @@ export default function ModelsPage() {
                         Disabled
                       </span>
                     )}
-                    {model.enabled && !providerIsEnabled && (
+                    {providerIsLocked && (
+                      <span
+                        className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700"
+                        title={lockReason(settings, model.provider)}
+                      >
+                        {LOCK_ICON} Locked
+                      </span>
+                    )}
+                    {model.enabled && !providerIsEnabled && !providerIsLocked && (
                       <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700">
                         Provider off
                       </span>
@@ -344,6 +364,9 @@ export default function ModelsPage() {
                   <div className="text-sm text-gray-600">
                     {model.description || 'No description provided.'}
                   </div>
+                  {providerIsLocked && (
+                    <div className="text-sm text-amber-700">{lockReason(settings, model.provider)}</div>
+                  )}
                   <div className="text-xs text-gray-500">
                     Updated {new Date(model.updatedAt).toLocaleString()}
                   </div>

@@ -11,7 +11,15 @@ const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
  * times the prompt store is hit, which channel each part of the prompt reaches
  * the model through, and whether the tailor-resume skill instruction is still
  * delivered at all.
+ *
+ * Run with the subscription seat unlocked. The stub is registered as the CLI
+ * transport, so these describe an install where that seat is present - and
+ * that keeps them about the facade rather than about the lock, which is what
+ * providerLock.test.js covers. Set before any dist module loads: the lock is
+ * read from the environment on every call, but the settings defaults are
+ * computed at import.
  */
+process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';
 
 function writePrompt(staticDir, id, content, extra = {}) {
   return writeStaticJson(staticDir, `prompts/${id}.json`, {

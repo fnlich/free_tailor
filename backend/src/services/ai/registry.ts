@@ -1,4 +1,4 @@
-import { AI_PROVIDER_IDS } from '../../config/providerCatalog';
+import { AI_PROVIDER_IDS, getProviderLockReason } from '../../config/providerCatalog';
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_DEEPSEEK_MODEL,
@@ -107,6 +107,21 @@ export function listProviderCapabilities(): ProviderCapabilities[] {
 export type ProviderHealthReport = ProviderHealth & { provider: AIProvider };
 
 export async function checkProviderHealth(id: AIProvider): Promise<ProviderHealthReport> {
+  // Answered without touching the adapter. Probing a locked provider costs
+  // something real - the CLI check spawns a binary and waits on it - to learn
+  // a fact that could not change the answer, and it would report "not signed
+  // in" where the truth is "not offered here".
+  const lockReason = getProviderLockReason(id);
+  if (lockReason) {
+    return {
+      provider: id,
+      ok: false,
+      detail: `Locked in this installation. ${lockReason}`,
+      checkedAt: new Date().toISOString(),
+      meta: { locked: true },
+    };
+  }
+
   const health = await getAdapter(id).health();
   return { ...health, provider: id };
 }

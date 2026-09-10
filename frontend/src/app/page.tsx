@@ -141,11 +141,14 @@ export default function Home() {
    */
   const profilePreferences = normalizeAiPreferences(selectedProfile?.profileSettings?.ai);
   const inheritsFromProfile = generateMode === 'single' && Boolean(selectedProfile);
+  // The profile's own model, but only while it is one that can still run: a
+  // profile pointing at a model this installation has since locked falls back
+  // to the app default, and this label has to name what will really be used.
+  const inheritedModel =
+    modelSettings.aiModels.find((model) => model.id === profilePreferences.modelId) ??
+    modelSettings.aiModels.find((model) => model.id === modelSettings.defaultModelId);
   const inheritedChoice = {
-    modelLabel:
-      modelSettings.aiModels.find(
-        (model) => model.id === (profilePreferences.modelId || modelSettings.defaultModelId)
-      )?.name || 'the first enabled model',
+    modelLabel: inheritedModel?.name || 'the first enabled model',
     effort: profilePreferences.effort ?? modelSettings.aiPreferenceDefaults.effort,
     thinking: profilePreferences.thinking ?? modelSettings.aiPreferenceDefaults.thinking,
   };
@@ -1529,6 +1532,7 @@ export default function Home() {
                   value={aiOverrides}
                   onChange={setAiOverrides}
                   models={modelSettings.aiModels}
+                  providerLocks={modelSettings.providerLocks}
                   effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
                   thinkingModes={modelSettings.aiPreferenceDefaults.thinkingModes}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}

@@ -532,6 +532,7 @@ export default function ProfileForm({
           value={formData.profileSettings.ai}
           onChange={updateAiPreferences}
           models={appSettings.aiModels}
+          providerLocks={appSettings.providerLocks}
           effortLevels={appSettings.aiPreferenceDefaults.effortLevels}
           thinkingModes={appSettings.aiPreferenceDefaults.thinkingModes}
           inheritedFrom="app default"

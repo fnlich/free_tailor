@@ -16,6 +16,7 @@ export type AIErrorKind =
   | 'binaryMissing'
   | 'malformedOutput'
   | 'disabled'
+  | 'locked'
   | 'failed';
 
 export const HTTP_STATUS_BY_KIND: Record<AIErrorKind, number> = {
@@ -29,6 +30,7 @@ export const HTTP_STATUS_BY_KIND: Record<AIErrorKind, number> = {
   binaryMissing: 503,
   malformedOutput: 502,
   disabled: 409,
+  locked: 409,
   failed: 502,
 };
 
@@ -55,6 +57,9 @@ export const USER_MESSAGE_BY_KIND: Record<AIErrorKind, string> = {
   binaryMissing: 'The Claude CLI is not installed or is not on the server PATH.',
   malformedOutput: 'The model returned a response that could not be read. Please try again.',
   disabled: 'This AI provider is disabled by an administrator.',
+  // Distinct from `disabled` because the fix is different: an admin can untick
+  // and re-tick a disabled provider, and no amount of clicking unlocks one.
+  locked: 'This AI provider is locked in this installation. Pick one of the unlocked models instead.',
   failed: 'The AI request failed. Please try again.',
 };
 

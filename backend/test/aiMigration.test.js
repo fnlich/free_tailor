@@ -96,8 +96,12 @@ test('a settings row written before the provider change migrates and then loads'
   assert.ok(providers.includes('claude-cli'));
   assert.ok(loaded.aiModels.some((model) => model.id === 'openai-gpt-5-1'), 'other providers are untouched');
 
-  // A default pointing at a model that no longer exists is repointed.
-  assert.equal(loaded.defaultModelId, 'claude-cli-sonnet');
+  // A default pointing at a model that no longer exists is repointed - by 001
+  // onto the subscription seat, and then by 002 off it again, because that
+  // seat is locked in this build. It lands on a free browser-chat model rather
+  // than on the first runnable one, which here would have been a metered
+  // OpenAI model this install never chose to default to.
+  assert.equal(loaded.defaultModelId, 'claude-web-chat');
 
   // Keys are no longer kept in the database at all, so the whole store goes -
   // including the OpenRouter key the legacy row carried.

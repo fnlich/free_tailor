@@ -8,6 +8,9 @@ import {
   coerceProviderId,
   getProviderDescriptor,
   getProviderLabel as getCatalogProviderLabel,
+  getProviderLockReason,
+  isProviderLocked,
+  listLockedProviderIds,
   providerRequiresApiKey,
 } from './providerCatalog';
 import {
@@ -127,6 +130,23 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   | 'googleSheetsSources'
   | 'browserChatEndpoints'
 >;
+/**
+ * One provider this installation cannot run, and the models it would offer.
+ *
+ * Sent so a picker can keep those models on screen behind a padlock. They are
+ * carried HERE rather than left in `aiModels` because that list is the set of
+ * models a request may name, and every consumer of it - the default-model
+ * select, the request resolver - is entitled to keep assuming so. A locked
+ * model is a label, not a choice.
+ */
+export type ProviderLock = {
+  id: AIProvider;
+  label: string;
+  reason: string;
+  /** This install's enabled model records for the provider, in stored order. */
+  models: AIModelRecord[];
+};
+
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
   outputPathUsesJobTitle: boolean;
   /**
@@ -136,6 +156,8 @@ export type PublicAppSettingsWithDerived = PublicAppSettings & {
    * use, and so a new effort level does not need a matching frontend release.
    */
   aiPreferenceDefaults: AiPreferenceDefaults;
+  /** Providers locked in this build, so the UI can say so instead of hiding them. */
+  providerLocks: ProviderLock[];
 };
 
 export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & {
@@ -321,6 +343,26 @@ function defaultBrowserChatEndpoints(): BrowserChatEndpoint[] {
 /** Most browsers one site may have. A guard against a paste, not a policy. */
 export const BROWSER_CHAT_MAX_ENDPOINTS = 16;
 
+const DEFAULT_MODEL_RECORDS = createDefaultModelRecords();
+
+/**
+ * What a fresh install defaults to, skipping anything locked here.
+ *
+ * The seed list is ordered cheapest-and-most-capable first, so "the first
+ * unlocked seed" is the right answer rather than a fallback: on a build with
+ * the subscription seat locked it lands on Claude (free), which costs nothing
+ * and needs no key either.
+ */
+function defaultSeedModelId(): string {
+  const preferred = buildModelId('claude-cli', DEFAULT_CLAUDE_CLI_MODEL);
+  if (DEFAULT_MODEL_RECORDS.some((model) => model.id === preferred && !isProviderLocked(model.provider))) {
+    return preferred;
+  }
+  return (
+    DEFAULT_MODEL_RECORDS.find((model) => !isProviderLocked(model.provider))?.id ?? preferred
+  );
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
   defaultMode: 'preview',
@@ -328,12 +370,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultResumeSelection: 'single',
   defaultGroupId: '',
   defaultProfileId: '',
-  defaultModelId: buildModelId('claude-cli', DEFAULT_CLAUDE_CLI_MODEL),
+  defaultModelId: defaultSeedModelId(),
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
   outputBaseDir: DEFAULT_GENERATED_RESUMES_DIR,
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
-  aiModels: createDefaultModelRecords(),
+  aiModels: DEFAULT_MODEL_RECORDS,
   googleSheetsSources: [],
   browserChatEndpoints: defaultBrowserChatEndpoints(),
 };
@@ -806,6 +848,17 @@ function assertAtLeastOneProviderEnabled(settings: AppSettings): void {
   if (!AI_PROVIDER_IDS.some((id) => settings.providersEnabled[id])) {
     throw new Error('At least one AI model must remain enabled');
   }
+
+  // Ticked-but-locked is not enough. Without this an admin could save a row
+  // whose only enabled provider cannot run here, and every generate would then
+  // fail with "no enabled AI models" - a message that points at the model list
+  // rather than at the box they just ticked.
+  if (!AI_PROVIDER_IDS.some((id) => isProviderEnabled(id, settings))) {
+    const locked = listLockedProviderIds().map((id) => getCatalogProviderLabel(id)).join(', ');
+    throw new Error(
+      `At least one unlocked AI provider must remain enabled. Locked in this installation: ${locked}.`
+    );
+  }
 }
 
 function assertAtLeastOneRunnableModel(settings: AppSettings): void {
@@ -845,11 +898,23 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
   };
 }
 
+function describeProviderLocks(settings: AppSettings): ProviderLock[] {
+  return listLockedProviderIds().map((id) => ({
+    id,
+    label: getCatalogProviderLabel(id),
+    reason: getProviderLockReason(id),
+    models: settings.aiModels
+      .filter((model) => model.provider === id && model.enabled)
+      .map((model) => ({ ...model })),
+  }));
+}
+
 function toPublicSettingsWithDerived(settings: AppSettings): PublicAppSettingsWithDerived {
   return {
     ...toPublicSettings(settings),
     outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
     aiPreferenceDefaults: describeAiPreferenceDefaults(),
+    providerLocks: describeProviderLocks(settings),
   };
 }
 
@@ -1055,6 +1120,58 @@ export async function listAvailableAIModelOptions(): Promise<Array<{
   }));
 }
 
+/**
+ * Refuses a locked provider by name, before the generic "disabled by admin"
+ * branch can claim it - the two have different fixes, and telling someone to
+ * ask an admin to tick a box that will not help is worse than saying nothing.
+ */
+function assertProviderNotLocked(provider: AIProvider): void {
+  const reason = getProviderLockReason(provider);
+  if (reason) {
+    throw new Error(`${getProviderLabel(provider)} is locked in this installation. ${reason}`);
+  }
+}
+
+const warnedLockedPreferences = new Set<string>();
+
+/**
+ * Resolves a model id that was STORED rather than chosen for this run.
+ *
+ * A profile's model is a preference, and a preference for something this
+ * deployment has since locked is stale, not wrong. Failing it would mean an
+ * install that locks a provider breaks every generate for every profile that
+ * had picked it - a change nobody using the app made and none of them can see
+ * from the error. So it falls back to the app default, and says so once.
+ *
+ * An id named in the request keeps going through `resolveRequestedAIModel`,
+ * where a lock IS an error: someone picked that model a moment ago and quietly
+ * running a different one would be worse than refusing.
+ */
+export async function resolveStoredAIModelPreference(
+  storedModelId?: string
+): Promise<AIModelRecord> {
+  const requested = typeof storedModelId === 'string' ? storedModelId.trim() : '';
+  if (!requested) {
+    return resolveRequestedAIModel();
+  }
+
+  const settings = await readSettings();
+  const stored = settings.aiModels.find((model) => model.id === requested);
+  if (stored && isProviderLocked(stored.provider)) {
+    if (!warnedLockedPreferences.has(requested)) {
+      warnedLockedPreferences.add(requested);
+      console.warn(
+        `[ai] A stored preference names "${stored.name}", whose provider is locked in this ` +
+          'installation; those calls run on the default model instead. Pick a new model for it to ' +
+          'silence this.'
+      );
+    }
+    return resolveRequestedAIModel();
+  }
+
+  return resolveRequestedAIModel(requested);
+}
+
 export async function resolveRequestedAIModel(requestedModelId?: string): Promise<AIModelRecord> {
   const settings = await readSettings();
   const runnableModels = getRunnableModels(settings);
@@ -1073,6 +1190,7 @@ export async function resolveRequestedAIModel(requestedModelId?: string): Promis
     if (!requestedModel.enabled) {
       throw new Error(`Selected AI model "${requestedModel.name}" is disabled.`);
     }
+    assertProviderNotLocked(requestedModel.provider);
     if (!isProviderEnabled(requestedModel.provider, settings)) {
       throw new Error(`Selected AI model provider "${requestedModel.provider}" is disabled by admin.`);
     }
@@ -1081,6 +1199,7 @@ export async function resolveRequestedAIModel(requestedModelId?: string): Promis
 
   const requestedProvider = coerceProviderId(requested);
   if (requestedProvider) {
+    assertProviderNotLocked(requestedProvider);
     const providerModels = runnableModels.filter((model) => model.provider === requestedProvider);
     if (providerModels.length === 0) {
       throw new Error(`No enabled models are configured for provider "${getProviderLabel(requestedProvider)}".`);
@@ -1095,6 +1214,7 @@ export async function resolveRequestedAIModel(requestedModelId?: string): Promis
     if (!providerModelMatch.enabled) {
       throw new Error(`Selected AI model "${providerModelMatch.name}" is disabled.`);
     }
+    assertProviderNotLocked(providerModelMatch.provider);
     if (!isProviderEnabled(providerModelMatch.provider, settings)) {
       throw new Error(`Selected AI model provider "${providerModelMatch.provider}" is disabled by admin.`);
     }
@@ -1260,16 +1380,53 @@ export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'out
   };
 }
 
+/**
+ * Whether a call may actually be dispatched to this provider.
+ *
+ * Two conditions, and they are not interchangeable: the admin left it switched
+ * on, AND this deployment can run it at all. Both live here rather than at the
+ * call sites because this is the choke point every one of them already goes
+ * through - runnable models, the public model list, request resolution and the
+ * prompt executor - so a locked provider cannot be reached by forgetting a
+ * check somewhere.
+ */
 export function isProviderEnabled(provider: AIProvider, settings: AIModelSettings): boolean {
+  return settings.providersEnabled[provider] === true && !isProviderLocked(provider);
+}
+
+/**
+ * What the admin chose, ignoring the lock.
+ *
+ * The Settings page needs this: a locked provider's checkbox still shows the
+ * stored preference, so unlocking the deployment later restores exactly what
+ * the operator had picked rather than a box that quietly reset itself.
+ */
+export function isProviderAdminEnabled(provider: AIProvider, settings: AIModelSettings): boolean {
   return settings.providersEnabled[provider] === true;
 }
 
 /**
- * The first enabled provider in catalog order, which puts the keyless
- * subscription seat ahead of every metered one.
+ * What a caller that named no provider should run on.
+ *
+ * Keyless first, then catalog order. Catalog order alone used to say the same
+ * thing - the subscription seat sits at the top of it - but only by accident
+ * of the seat being first, and with that seat locked, plain catalog order
+ * hands the fallback to the metered Anthropic API instead. A call nobody chose
+ * a provider for should not be the one that starts billing tokens, so the
+ * preference is stated rather than inherited from a sort key.
+ *
+ * Locked providers are skipped rather than returned and rejected later: this
+ * is an answer to "what can this run on", and one that cannot run is not an
+ * answer to it.
  */
 export function getDefaultEnabledProvider(settings: AIModelSettings): AIProvider {
-  return AI_PROVIDER_IDS.find((id) => settings.providersEnabled[id]) ?? AI_PROVIDER_IDS[0];
+  const runnable = AI_PROVIDER_IDS.filter((id) => isProviderEnabled(id, settings));
+  return (
+    runnable.find((id) => !providerRequiresApiKey(id)) ??
+    runnable[0] ??
+    AI_PROVIDER_IDS.find((id) => settings.providersEnabled[id]) ??
+    AI_PROVIDER_IDS[0]
+  );
 }
 
 /**
