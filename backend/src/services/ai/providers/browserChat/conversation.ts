@@ -184,10 +184,29 @@ export function poll(
   requiredStableReads: number = STABLE_READS_WITH_BUSY_SIGNAL
 ): PollOutcome {
   const trimmed = text.trim();
-  const stableReads = state.previous !== null && state.previous === trimmed ? state.stableReads + 1 : 0;
+  // A read taken while the site says it is still generating does not reset the
+  // run - it ABANDONS it, baseline and all - and that is the load-bearing part.
+  //
+  // Letting busy reads contribute would bank the run during the answer: a model
+  // pausing mid-sentence with the stop control still up piles up unchanged
+  // reads, and the first read after the control drops finds the quota already
+  // met and ends the turn with no idle read behind it. Since both sites take
+  // the stop button down a beat BEFORE the last chunk paints, that is exactly
+  // when the text is still short - the truncation this rule exists to prevent,
+  // reached from the other side.
+  //
+  // Clearing `previous` as well as the count is what makes it whole. Keeping it
+  // would let the next idle read match a BUSY read's text and count as a
+  // repeat, so a single idle observation would satisfy a rule that means to
+  // demand two. Every read in the run has to have been taken while the page was
+  // idle, the first one included.
+  if (busy) return { state: INITIAL_POLL_STATE, done: null };
+
+  const continues = state.previous !== null && state.previous === trimmed;
+  const stableReads = continues ? state.stableReads + 1 : 0;
   const next: PollState = { previous: trimmed, stableReads };
   const required = Math.max(1, requiredStableReads);
-  const done = !busy && trimmed.length > 0 && stableReads >= required ? trimmed : null;
+  const done = trimmed.length > 0 && stableReads >= required ? trimmed : null;
   return { state: next, done };
 }
 

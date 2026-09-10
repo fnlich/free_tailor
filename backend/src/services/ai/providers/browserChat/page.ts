@@ -25,48 +25,26 @@ export interface ChatPage {
   pressEnter(): Promise<void>;
   readText(selector: string): Promise<string>;
   /**
-   * The page's own visible text, capped.
+   * The END of the page's own visible text, capped.
    *
    * For reading what the site put up INSTEAD of an answer - a usage wall, a
    * sign-in prompt, a captcha - none of which has a selector worth depending
    * on. Capped because it is read on a page whose length nothing here controls.
+   *
+   * The end, not the beginning, and the difference is the whole feature. What
+   * this app types into the composer is a resume and a job description: a real
+   * one measures about 27,000 characters. Taken from the front, the window
+   * closes some 23,000 characters before the prompt even finishes, so the
+   * banner - which the site renders BELOW the prompt - is never once inside it.
+   * Read from the front this returns nothing but the app's own text, which is
+   * then filtered out as already known, and the check can never fire at all.
    */
-  visibleText(maxChars: number): Promise<string>;
+  visibleTailText(maxChars: number): Promise<string>;
   /** Every match's id and rendered text, in document order, in one round trip. */
   messages(selector: string, idAttribute: string | null): Promise<ChatMessage[]>;
 }
 
-/**
- * The select-all modifier THIS browser uses, asked of the browser itself.
- *
- * Control+A is not select-all on macOS - it is "move to start of line" - so a
- * mac run would leave the previous prompt in the composer and append to it.
- * The check is the browser's own platform rather than `process.platform`
- * because the two are not required to agree: the endpoint is configurable, and
- * `AI_WEB_CDP_URL` pointed at another machine is a supported way to run this.
- * Resolved once per page and remembered; a browser does not change platform.
- */
-async function selectAllModifier(page: Page, cache: { value: 'Control' | 'Meta' | null }) {
-  if (cache.value) return cache.value;
-  let mac = false;
-  try {
-    mac = await page.evaluate(() => {
-      const data = (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData;
-      const platform = data?.platform ?? navigator.platform ?? '';
-      return /mac/i.test(platform);
-    });
-  } catch {
-    // A page that will not evaluate is about to fail the turn for a better
-    // reason. Control is right everywhere except macOS, so it is the guess to
-    // make.
-  }
-  cache.value = mac ? 'Meta' : 'Control';
-  return cache.value;
-}
-
 export function wrapPuppeteerPage(page: Page): ChatPage {
-  const modifier: { value: 'Control' | 'Meta' | null } = { value: null };
-
   return {
     currentUrl: () => page.url(),
     /**
@@ -105,16 +83,38 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
     clearFocused: async () => {
       // Select-all then delete, rather than reading the length and pressing
       // Backspace: these composers are contenteditable, so a character count
-      // is not a keystroke count once anything is formatted.
+      // is not a keystroke count once anything is formatted. And a keystroke
+      // rather than emptying the node from script, because both composers are
+      // React-controlled - assigning to the value or the innerText leaves the
+      // framework's own state holding the old prompt, which it then puts back.
       //
-      // Keystrokes rather than emptying the node from script, because both
-      // composers are React-controlled: assigning to the value or the innerText
-      // leaves the framework's own state holding the old prompt, which it then
-      // puts back.
-      const key = await selectAllModifier(page, modifier);
-      await page.keyboard.down(key);
-      await page.keyboard.press('KeyA');
-      await page.keyboard.up(key);
+      // The selection is asked for by NAME, through the protocol's `commands`,
+      // not spelled as a chord. A chord has to be the right chord for the
+      // platform, and the obvious pairing does not survive contact: measured
+      // against Chrome 148, Control+A clears the box and Meta+A does not - it
+      // raises `beforeinput` and then nothing at all, because puppeteer sends
+      // the keystroke with no command attached and a Mac performs the editing
+      // command, not the chord. Naming it sidesteps the question: this works
+      // the same on Windows, macOS and Linux, and nothing here has to know
+      // which one the browser is running on.
+      const cdp = await page.createCDPSession();
+      try {
+        await cdp.send('Input.dispatchKeyEvent', {
+          type: 'rawKeyDown',
+          key: 'a',
+          code: 'KeyA',
+          windowsVirtualKeyCode: 65,
+          commands: ['selectAll'],
+        });
+        await cdp.send('Input.dispatchKeyEvent', {
+          type: 'keyUp',
+          key: 'a',
+          code: 'KeyA',
+          windowsVirtualKeyCode: 65,
+        });
+      } finally {
+        await cdp.detach().catch(() => undefined);
+      }
       await page.keyboard.press('Backspace');
     },
     insertText: async (text) => {
@@ -134,7 +134,7 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
       page
         .$eval(selector, (node) => (node as unknown as { innerText?: string }).innerText ?? '')
         .catch(() => ''),
-    visibleText: (maxChars) =>
+    visibleTailText: (maxChars) =>
       page
         .evaluate((limit) => {
           // Reached through `globalThis` and typed by hand: this function is
@@ -144,7 +144,9 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
           // touching it.
           const doc = (globalThis as unknown as { document?: { body?: { innerText?: string } } })
             .document;
-          return (doc?.body?.innerText ?? '').slice(0, limit as number);
+          const text = doc?.body?.innerText ?? '';
+          // slice(-limit), not slice(0, limit). See `visibleTailText`.
+          return text.length > (limit as number) ? text.slice(-(limit as number)) : text;
         }, maxChars)
         // Swallowed: this is read to EXPLAIN a turn that is already going
         // wrong, and a page too broken to evaluate must not replace that

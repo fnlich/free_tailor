@@ -26,7 +26,7 @@ import type { ChatSite } from './sites';
  * provider, the other is a selector to fix - and because only this one is
  * worth retrying later unchanged.
  */
-export type ChatTurnErrorKind = 'page' | 'timeout' | 'empty' | 'echo' | 'refused';
+export type ChatTurnErrorKind = 'page' | 'timeout' | 'empty' | 'echo' | 'refused' | 'cancelled';
 
 export class ChatTurnError extends Error {
   readonly kind: ChatTurnErrorKind;
@@ -83,8 +83,32 @@ const GUARD_GRACE_MS = 5_000;
 const REFUSAL_CHECK_AFTER_MS = 12_000;
 const REFUSAL_CHECK_EVERY_MS = 10_000;
 
-/** Longest slice of the page read when looking for a refusal. */
-const REFUSAL_TEXT_CHARS = 4_000;
+/**
+ * How much of the END of the page is read when looking for a refusal.
+ *
+ * Enough to hold a banner plus the tail of the prompt it sits below, since the
+ * prompt's tail is what identifies the rest as the site's own words. Not the
+ * whole document: `innerText` of a long transcript is a big string to move
+ * across the wire every ten seconds, for a check that only ever needs the last
+ * screenful.
+ */
+const REFUSAL_TEXT_CHARS = 6_000;
+
+/**
+ * Empty reads before a latched assistant selector is given up on.
+ *
+ * More than one, so a gap between renders does not cost the latch; small enough
+ * that the turn still has most of its deadline left to use the replacement.
+ */
+const LATCH_MISSES_BEFORE_RELEASE = 3;
+
+/**
+ * Longest a new turn waits for an abandoned one to let go of the tab.
+ *
+ * Sized against the connection's protocol timeout, which is what actually
+ * bounds the blocked call the abandoned turn is sitting in.
+ */
+const ABANDONED_WAIT_MS = 35_000;
 
 /**
  * How long, and how closely, the turn watches for the stop control after a send.
@@ -140,6 +164,15 @@ export class ChatTab {
    * picked up on the next one.
    */
   private assistantSelector: string | null = null;
+
+  /** Consecutive polls on which the latched selector has matched nothing. */
+  private assistantMisses = 0;
+
+  /** The host the tab settled on for this turn, after any redirects. */
+  private landedHost = '';
+
+  /** A turn the guard walked away from, still running. See `ask`. */
+  private abandoned: Promise<void> | null = null;
 
   constructor(page: ChatPage, site: ChatSite, options: ChatTabOptions = {}) {
     this.page = page;
@@ -262,6 +295,49 @@ export class ChatTab {
   }
 
   /**
+   * Lets go of a latched selector that has stopped matching anything.
+   *
+   * The latch is what keeps the count and the list coming from one place, but
+   * held unconditionally it becomes its own failure: a candidate that matched
+   * when the turn opened and then disappeared - a container the site swaps out
+   * as the conversation starts - leaves the turn reading a selector that can
+   * never return anything again, and it waits out the whole deadline with the
+   * answer plainly on the page.
+   *
+   * Released only after several consecutive empty reads, and only when some
+   * OTHER candidate is matching, so an ordinary gap between renders does not
+   * cost the latch. The fingerprint is re-taken against the new selector,
+   * because a count from the old one describes nothing in the new list. That
+   * trades one failure for a smaller one: if the reply had already rendered it
+   * is now counted as pre-existing and the turn times out - exactly what it did
+   * before - while in every other case the turn recovers.
+   */
+  private async releaseStaleLatch(): Promise<Fingerprint | null> {
+    if (!this.assistantSelector) return null;
+    if ((await this.page.count(this.assistantSelector)) > 0) {
+      this.assistantMisses = 0;
+      return null;
+    }
+    this.assistantMisses += 1;
+    if (this.assistantMisses < LATCH_MISSES_BEFORE_RELEASE) return null;
+
+    const stale = this.assistantSelector;
+    this.assistantSelector = null;
+    this.assistantMisses = 0;
+    const replacement = await this.firstMatch(this.site.assistant);
+    if (!replacement || replacement === stale) {
+      this.assistantSelector = replacement;
+      return null;
+    }
+    this.log(
+      `[ai] ${this.site.id}: "${stale}" stopped matching mid-answer; reading "${replacement}" ` +
+        'instead for the rest of this turn.'
+    );
+    this.assistantSelector = replacement;
+    return fingerprint(await this.readMessages());
+  }
+
+  /**
    * Where the tab has gone, if it is no longer on the site.
    *
    * A tab the operator clicks a link in mid-turn is not slow, it is gone - but
@@ -276,13 +352,35 @@ export class ChatTab {
    * addressed by host at all - one pointed at a `file:` or `data:` URL has none
    * to compare, which is also the shape the tests use.
    */
-  private navigatedAway(): string | null {
-    const siteHost = hostOf(this.site.url);
-    if (!siteHost) return null;
+  private async navigatedAway(): Promise<string | null> {
+    const anchor = this.landedHost || hostOf(this.site.url);
+    if (!anchor) return null;
     const current = this.page.currentUrl();
-    if (matchesHost(hostOf(current), siteHost)) return null;
-    return current || 'about:blank';
+    const host = hostOf(current);
+    if (matchesHost(host, anchor)) return null;
+
+    // A different host is NOT yet evidence of anything, and treating it as such
+    // is how this check becomes worse than not having it. These sites bounce a
+    // new conversation between names of their own - apex to www, an identity
+    // host and back, a migration to a new domain entirely - and some of that
+    // happens client-side, a beat after the page has loaded, which no snapshot
+    // taken at the start of the turn can anticipate. Judging by name alone, the
+    // day a site changes where it redirects to is the day every call fails.
+    //
+    // So ask the page instead of the address bar. A tab that merely followed
+    // its own redirect still has the composer this app just typed into; a tab
+    // that went somewhere else does not. That is the thing actually being
+    // asked - can this page still answer - rather than a proxy for it.
+    const stillTheSite = await this.firstMatch(this.site.composer);
+    if (stillTheSite) {
+      this.landedHost = host;
+      return null;
+    }
+    // Host only. The full address of a chat page carries the conversation id,
+    // and this string goes into an error that is written to the server log.
+    return host || 'a page with no address of its own';
   }
+
 
   /**
    * A fresh conversation, so nothing earlier can steer this answer.
@@ -379,13 +477,58 @@ export class ChatTab {
       }, deadlineMs + GUARD_GRACE_MS);
     });
 
+    // An abandoned predecessor is waited out before this turn touches anything.
+    //
+    // When the guard below wins, `turn()` is not cancelled - nothing can cancel
+    // a DevTools call already in flight - it is merely walked away from, and it
+    // keeps driving the tab until that call returns. The caller meanwhile
+    // treats the turn as over and releases its slot, so the next request starts
+    // typing into a composer the abandoned turn is still clearing. Both answers
+    // are lost, and neither caller is told.
+    //
+    // It is bounded: the abandoned turn's own deadline has already passed, so
+    // it exits at its next loop check, and the blocked call it is sitting in is
+    // capped by the connection's protocol timeout.
+    await this.awaitAbandoned(deadlineMs);
+
+    const running = this.turn(body, deadlineMs, signal);
+    // Held so the NEXT turn can wait for this one if the guard walks away from
+    // it, and swallowed here so that walking away does not raise an unhandled
+    // rejection when the blocked call finally fails.
+    this.abandoned = running.then(
+      () => undefined,
+      () => undefined
+    );
+
     try {
-      return await Promise.race([this.turn(body, deadlineMs, signal), guard]);
+      return await Promise.race([running, guard]);
     } finally {
       // Cleared either way: left running, the timer keeps the process alive
       // long after a turn that already answered.
       if (timer) clearTimeout(timer);
     }
+  }
+
+  private async awaitAbandoned(deadlineMs: number): Promise<void> {
+    const pending = this.abandoned;
+    if (!pending) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gaveUp = Symbol('gaveUp');
+    const waited = await Promise.race([
+      pending.then(() => undefined),
+      new Promise<typeof gaveUp>((resolve) => {
+        timer = setTimeout(() => resolve(gaveUp), Math.min(deadlineMs, ABANDONED_WAIT_MS));
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (waited === gaveUp) {
+      throw new ChatTurnError(
+        'page',
+        `the previous ${this.site.label} turn is still driving its tab and has not let go. ` +
+          'Check that tab in the debug browser; if it is stuck, closing it lets this recover.'
+      );
+    }
+    this.abandoned = null;
   }
 
   private async turn(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
@@ -395,20 +538,29 @@ export class ChatTab {
     // Before anything is read: a background tab is frozen, and every DOM read
     // against a frozen renderer blocks instead of returning.
     await this.page.activate();
+
+    // Cleared BEFORE anything reads the page, not after. `startFreshConversation`
+    // asks "did the new-chat click actually empty the transcript?", and it asks
+    // through `readMessages` - so a latch left over from the previous turn
+    // decides the answer to that question using a selector chosen against a
+    // conversation that no longer exists.
+    this.assistantSelector = null;
+    this.assistantMisses = 0;
+
     await this.startFreshConversation();
     if (this.busySelectors === null) await this.screenBusySelectors();
 
-    // Fresh per turn: the page has just been reloaded or reset, and last turn's
-    // choice of candidate is not evidence about this one.
-    this.assistantSelector = null;
+    // Where the tab ended up once the site had finished redirecting. Everything
+    // after this point is judged against THIS host.
+    this.landedHost = hostOf(this.page.currentUrl());
 
-    const before: Fingerprint = fingerprint(await this.readMessages());
+    let before: Fingerprint = fingerprint(await this.readMessages());
 
     // What the page said BEFORE this app typed anything into it. Together with
     // the prompt itself, this is everything the refusal check must ignore -
     // see `unfamiliarText`, and note that without it the check reads the
     // operator's own resume and can find a usage wall in it.
-    const pageBefore = await this.page.visibleText(REFUSAL_TEXT_CHARS);
+    const pageBefore = await this.page.visibleTailText(REFUSAL_TEXT_CHARS);
 
     await this.submit(prompt);
 
@@ -445,16 +597,28 @@ export class ChatTab {
       // cancelled batch - should stop the turn rather than have the operator's
       // browser driven for the rest of the deadline on its behalf.
       if (signal?.aborted) {
-        throw new ChatTurnError('timeout', `${this.site.label}: the request was cancelled`);
+        // 'page', not 'timeout'. Nothing ran out of time - the caller went away,
+        // usually because the browser tab that asked for this was closed - and
+        // reporting it as a timeout tells whoever reads the log to raise a
+        // per-call budget that was never the problem.
+        throw new ChatTurnError('cancelled', `${this.site.label}: the request was cancelled`);
       }
 
-      const elsewhere = this.navigatedAway();
+      const elsewhere = await this.navigatedAway();
       if (elsewhere) {
         throw new ChatTurnError(
           'page',
           `the ${this.site.label} tab was navigated to ${elsewhere} while it was answering. ` +
             'Leave the debug browser on the chat page, or give this app a tab of its own.'
         );
+      }
+
+      // Only while nothing has been committed to. Once a reply has been picked,
+      // swapping the selector underneath it is the very thing the latch exists
+      // to prevent.
+      if (!everRendered) {
+        const rebased = await this.releaseStaleLatch();
+        if (rebased) before = rebased;
       }
 
       const busy = await this.isBusy();
@@ -469,7 +633,7 @@ export class ChatTab {
         if (this.now() >= nextRefusalCheck) {
           nextRefusalCheck = this.now() + REFUSAL_CHECK_EVERY_MS;
           const refusal = refusalReason(
-            unfamiliarText(await this.page.visibleText(REFUSAL_TEXT_CHARS), [pageBefore, prompt])
+            unfamiliarText(await this.page.visibleTailText(REFUSAL_TEXT_CHARS), [pageBefore, prompt])
           );
           if (refusal) {
             throw new ChatTurnError(

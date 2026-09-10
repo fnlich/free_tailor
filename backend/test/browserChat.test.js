@@ -494,7 +494,12 @@ function fakePage(script) {
     },
     pressEnter: async () => {},
     readText: async () => state.typed,
-    visibleText: async () => (script.visibleText ? script.visibleText(state) : ''),
+    visibleTailText: async (maxChars) => {
+      const text = script.visibleText ? script.visibleText(state) : '';
+      // The real one reads the END of the page. A fake that returned the start
+      // would let a bug the driver has in production pass here.
+      return text.length > maxChars ? text.slice(-maxChars) : text;
+    },
     messages: async (selector) => {
       tick();
       return script.messages(selector, state);
@@ -583,7 +588,11 @@ test('the assistant selector is fixed for the turn, not re-resolved each poll', 
 
 test('a tab navigated away mid-answer fails at once rather than at the deadline', async () => {
   const page = fakePage({
-    present: (selector) => selector === '#composer' || selector === '#send',
+    // Once the tab is somewhere else, the site's own composer is gone with it -
+    // which is the thing that distinguishes a departure from a redirect.
+    present: (selector, state) =>
+      !state.url.includes('mail.example.com') &&
+      (selector === '#composer' || selector === '#send'),
     // The operator clicks a link in the tab while it is answering.
     onRead: (state) => {
       if (state.reads > 6) state.url = 'https://mail.example.com/inbox';
@@ -593,7 +602,10 @@ test('a tab navigated away mid-answer fails at once rather than at the deadline'
 
   await assert.rejects(tabFor(page).ask('tailor this resume', 600_000), (error) => {
     assert.equal(error.kind, 'page', 'a tab that left is not a slow answer');
-    assert.match(error.message, /navigated to https:\/\/mail\.example\.com/);
+    // The HOST, not the address. A chat page's URL carries the conversation id,
+    // and this string is written to the server log.
+    assert.match(error.message, /navigated to mail\.example\.com/);
+    assert.doesNotMatch(error.message, /\/inbox/, 'the path must not reach the log');
     assert.ok(page.state.now < 60_000, 'it must not sit there for the whole deadline');
     return true;
   });
@@ -679,4 +691,135 @@ test('a deadline with the selector matching blames the send, not the selector', 
     assert.match(error.message, /may not have been sent/);
     return true;
   });
+});
+
+test('a pause with the stop control still up does not bank the run of stable reads', () => {
+  // Both sites take the stop button down a beat BEFORE the final chunk paints.
+  // If reads taken while busy counted toward the run, a model pausing
+  // mid-sentence would fill the quota during the answer, and the very first
+  // read after the control dropped would end the turn - with no idle read
+  // behind it, at exactly the moment the text is still short. That is the
+  // truncation this whole rule exists to prevent, arrived at from the other
+  // side.
+  let state = INITIAL_POLL_STATE;
+  const partial = 'the answer so far';
+
+  // The model pauses mid-answer. The stop control is still up throughout.
+  for (let i = 0; i < 6; i += 1) {
+    const outcome = poll(state, partial, true, STABLE_READS_WITH_BUSY_SIGNAL);
+    state = outcome.state;
+    assert.equal(outcome.done, null, 'a busy page is never finished, however still the text');
+  }
+  assert.equal(state.stableReads, 0, 'reads taken while busy must not accumulate');
+
+  // The site drops the stop control, last chunk not yet painted.
+  const first = poll(state, partial, false, STABLE_READS_WITH_BUSY_SIGNAL);
+  state = first.state;
+  assert.equal(
+    first.done,
+    null,
+    'the first idle read must not finish the turn on a run banked while busy'
+  );
+
+  // The last chunk lands, and only then does it settle.
+  const whole = `${partial}, and the end of it`;
+  state = poll(state, whole, false, STABLE_READS_WITH_BUSY_SIGNAL).state;
+  assert.equal(poll(state, whole, false, STABLE_READS_WITH_BUSY_SIGNAL).done, whole);
+});
+
+test('the refusal window reads the end of the page, where the banner is', () => {
+  // A real tailoring prompt measures about 27,000 characters. Read from the
+  // front, a 6,000-character window closes some 21,000 characters before the
+  // prompt even finishes - so it holds nothing but this app's own text, which
+  // `unfamiliarText` then removes as already known. The check could not fire at
+  // all, on any real prompt, however plain the banner.
+  const prompt = `Tailor this resume.\n${'Delivered payments infrastructure at scale. '.repeat(600)}`;
+  assert.ok(prompt.length > 20_000, 'the point of the test is that a real prompt is long');
+
+  const wall = "You've reached your usage limit. It resets at 3:00 PM.";
+  const page = `Claude\n${prompt}\n${wall}`;
+  const WINDOW = 6_000;
+
+  const fromTheFront = page.slice(0, WINDOW);
+  assert.equal(
+    refusalReason(unfamiliarText(fromTheFront, ['', prompt])),
+    null,
+    'read from the front the banner is not even in the window - this is the bug'
+  );
+
+  const fromTheEnd = page.slice(-WINDOW);
+  const caught = refusalReason(unfamiliarText(fromTheEnd, ['', prompt]));
+  assert.ok(caught, 'read from the end it is found, with the prompt around it filtered out');
+  assert.equal(caught.retryable, true);
+});
+
+test('a redirect at the start of a turn is not "you navigated away"', async () => {
+  // Both sites move a new conversation to a per-conversation URL, and they
+  // move between hosts as they migrate. Judging the tab against the address
+  // that was ASKED for turns every one of those into a turn that fails before
+  // it starts - and it would fail that way on every single call.
+  const page = fakePage({
+    url: 'https://claude.ai/new',
+    present: (selector, state) => {
+      if (selector === '#composer' || selector === '#send') return true;
+      if (selector === '#stop') return state.reads > 4 && state.reads < 10;
+      return state.reads > 4;
+    },
+    // The site redirects the moment the conversation opens - and to a DIFFERENT
+    // host, which is the case that matters. A sibling subdomain would pass
+    // either way; a migration to another name is what turns "judge it against
+    // the configured address" into a turn that fails before it starts, on every
+    // call, from the day the site moves.
+    onRead: (state) => {
+      if (state.reads === 2) state.url = 'https://claude.com/chat/8d2f-not-a-real-id';
+    },
+    messages: (_selector, state) => (state.reads > 6 ? [{ id: null, text: 'the answer' }] : []),
+  });
+
+  assert.equal(await tabFor(page).ask('tailor this', 600_000), 'the answer');
+});
+
+test('a latched selector that stops matching is let go of, and the turn recovers', async () => {
+  // Note what this does NOT claim. Re-basing takes the new selector's CURRENT
+  // count as the baseline, so a reply that had already rendered when the swap
+  // happened is counted as pre-existing and the turn still times out. That is
+  // deliberate: the alternative - committing to the last message - returns a
+  // pre-existing message as the answer whenever the reply has not arrived yet,
+  // and a wrong answer is worse here than a slow failure.
+
+  // The counterweight to latching. A container the site swaps out as the
+  // conversation starts leaves the turn reading a selector that can never
+  // return anything again - and it would wait out the whole deadline with the
+  // answer plainly on the page.
+  const GOING = 'div[data-is-streaming]';
+  const STAYING = 'div.font-claude-message';
+  const logged = [];
+
+  // Three phases, by read count, in the order they happen in life. The fake's
+  // clock ticks on every page read, so a read count IS the timeline.
+  const SWAPS_AT = 12; // the container the turn latched onto is replaced
+  const REPLIES_AT = 60; // and only then does the answer stream in
+
+  const greeting = { id: null, text: 'a greeting' };
+  const reply = { id: null, text: 'the answer' };
+
+  const page = fakePage({
+    present: (selector, state) => {
+      if (selector === '#composer' || selector === '#send') return true;
+      if (selector === '#stop') return false;
+      if (selector === GOING) return state.reads < SWAPS_AT;
+      return state.reads >= SWAPS_AT;
+    },
+    messages: (selector, state) => {
+      if (selector === GOING) return state.reads < SWAPS_AT ? [greeting] : [];
+      return state.reads > REPLIES_AT ? [greeting, reply] : [greeting];
+    },
+  });
+
+  const answer = await tabFor(page, { log: (m) => logged.push(m) }).ask('tailor this', 600_000);
+  assert.equal(answer, 'the answer', 'the reply is on the page and must be read');
+  assert.ok(
+    logged.some((m) => m.includes('stopped matching mid-answer')),
+    'and the operator is told which selector went stale'
+  );
 });

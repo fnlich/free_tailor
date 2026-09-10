@@ -146,7 +146,16 @@ const semaphores = new Map<string, AsyncSemaphore>();
  * limiting themselves to four would still spawn eight processes against one
  * subscription seat.
  */
-export function getProviderSemaphore(provider: AIProvider, limit: number): AsyncSemaphore {
+/**
+ * The semaphore for a lane, created once and then reused.
+ *
+ * The key is a plain string rather than a provider id because a lane is not
+ * always one provider: the two browser-chat providers drive the same Chrome
+ * window and take the foreground from each other, so they share a single lane
+ * keyed on the debug endpoint. What the key has to identify is the RESOURCE
+ * that only one call may hold.
+ */
+export function getProviderSemaphore(provider: string, limit: number): AsyncSemaphore {
   const existing = semaphores.get(provider);
   if (existing && existing.size === limit) {
     return existing;

@@ -205,6 +205,13 @@ export class BrowserChatSession {
     try {
       const page = await this.pageFor(site);
       const chatPage = wrapPuppeteerPage(page);
+      // Brought forward first, for the same reason every turn does it: Chrome
+      // freezes a background tab, and a frozen renderer does not answer a DOM
+      // read - it never returns at all. A health check that skipped this would
+      // not merely be slow, it would sit on its own 8s budget without that
+      // budget being able to end it, because the budget is only checked between
+      // reads. It costs a flash of focus at startup.
+      await chatPage.activate();
       // Waited for, not sampled. `pageFor` may have just navigated, and
       // `domcontentloaded` fires on these single-page apps long before React
       // has rendered a composer - so an instantaneous count reports "no message

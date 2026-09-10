@@ -105,10 +105,33 @@ export function createBrowserChatAdapter(
   };
 
   const site = () => readChatSite(id, env);
-  const semaphore = getProviderSemaphore(id, capabilities.maxConcurrency);
 
-  function fail(kind: AIErrorKind, detail: string, adminAction?: string): AIProviderError {
-    return new AIProviderError({ provider: id, kind, detail, ...(adminAction ? { adminAction } : {}) });
+  // Keyed on the BROWSER, not on the provider.
+  //
+  // Both browser providers attach to the same Chrome, and a turn's first act is
+  // to bring its tab to the front - because a backgrounded tab is frozen and
+  // never answers a DOM read at all. Two providers holding separate slots would
+  // therefore run at once and take the foreground from each other, and the one
+  // that loses it stops being able to read its own page. A single slot per
+  // endpoint is what `maxConcurrency: 1` has to mean here.
+  const semaphore = getProviderSemaphore(
+    `browser-chat:${debugEndpoint(env)}`,
+    capabilities.maxConcurrency
+  );
+
+  function fail(
+    kind: AIErrorKind,
+    detail: string,
+    adminAction?: string,
+    userMessage?: string
+  ): AIProviderError {
+    return new AIProviderError({
+      provider: id,
+      kind,
+      detail,
+      ...(adminAction ? { adminAction } : {}),
+      ...(userMessage ? { userMessage } : {}),
+    });
   }
 
   return {
@@ -186,6 +209,9 @@ export function createBrowserChatAdapter(
           throw fail('unavailable', error.message, error.hint);
         }
         if (error instanceof ChatTurnError) {
+          if (error.kind === 'cancelled') {
+            throw fail('failed', error.message);
+          }
           if (error.kind === 'timeout') {
             throw fail(
               'timeout',
@@ -199,13 +225,24 @@ export function createBrowserChatAdapter(
           // wall is `rateLimited`, which the facade already treats as worth
           // retrying; a signed-out tab is `auth`, which it does not.
           if (error.kind === 'refused') {
+            // The kind is reused for its status code and retry semantics, but
+            // NOT for its sentence. `auth` and `rateLimited` are worded for the
+            // Claude CLI - "an administrator needs to run `claude auth login`",
+            // "the Claude subscription usage limit" - and a user whose
+            // chatgpt.com tab has signed itself out would be sent to fix a
+            // subscription that has nothing to do with it.
             throw fail(
               error.retryable ? 'rateLimited' : 'auth',
               error.message,
               error.retryable
                 ? `${descriptor.label} shares the quota of the chat plan it is signed in to. ` +
                     'Nothing here can raise it.'
-                : `Open the ${descriptor.label} tab in the debug browser and sign in again.`
+                : `Open the ${descriptor.label} tab in the debug browser and sign in again.`,
+              error.retryable
+                ? `${descriptor.label} has reached the usage limit of the chat account it is ` +
+                    'signed in to. It resumes when that limit resets, or pick another model.'
+                : `${descriptor.label} is signed out in the debug browser. Someone needs to sign ` +
+                    'in to that tab, or pick another model.'
             );
           }
           throw fail(

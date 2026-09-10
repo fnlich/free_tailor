@@ -24,6 +24,19 @@ const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 
+// The same .env the backend reads.
+//
+// Without this the two disagree in the one way that is hardest to see: an
+// operator who sets AI_WEB_CDP_PORT in .env gets a browser on 9222 and a
+// backend probing their port, and the only symptom is "Could not reach a debug
+// browser" from a window that is plainly open and plainly signed in.
+try {
+  require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+} catch {
+  // dotenv is a backend dependency; if it is not installed yet the flags below
+  // still work from the command line and the environment.
+}
+
 function arg(name, fallback) {
   const index = process.argv.indexOf(`--${name}`);
   if (index !== -1 && process.argv[index + 1]) return process.argv[index + 1];
