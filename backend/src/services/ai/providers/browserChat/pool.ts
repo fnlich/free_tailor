@@ -180,10 +180,22 @@ export class TabPool {
     const anyReachable = this.endpoints.some((endpoint) => !this.isDown(endpoint));
     if (anyReachable) return null;
 
+    // Whichever was marked down LONGEST ago, so a retry works its way around
+    // the browsers instead of hammering the same one. Returning the first free
+    // endpoint means a call that retries `pool.size` times spends every attempt
+    // on one browser - and the one most recently seen to be dead is the least
+    // likely of them to have come back.
+    let oldest: string | null = null;
+    let oldestAt = Number.POSITIVE_INFINITY;
     for (const endpoint of this.endpoints) {
-      if (this.available(endpoint)) return endpoint;
+      if (!this.available(endpoint)) continue;
+      const markedAt = this.downUntil.get(endpoint) ?? 0;
+      if (markedAt < oldestAt) {
+        oldest = endpoint;
+        oldestAt = markedAt;
+      }
     }
-    return null;
+    return oldest;
   }
 
   /** Wakes this pool's line for a browser another pool has just let go of. */

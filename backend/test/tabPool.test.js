@@ -307,3 +307,32 @@ test('a browser in use is still reported as leased, so its connection is not tor
   assert.equal(isEndpointLeased(X), false, 'and only now is it safe to drop');
   resetTabPoolsForTests();
 });
+
+test('a retry works its way around dead browsers rather than hammering one', async () => {
+  // When every browser is down, one is handed out anyway - trying beats
+  // waiting on a stale note. But handing out the FIRST free one means a call
+  // that retries pool.size times spends every attempt on the same browser, and
+  // the one most recently seen dead is the least likely to have come back.
+  let now = 1_000;
+  const pool = new TabPool('Claude (free)', () => now);
+  const C = 'http://127.0.0.1:9503';
+  pool.setEndpoints([A, B, C]);
+
+  // All down, marked at different times: A longest ago, C most recently.
+  pool.markUnreachable(A, 60_000);
+  now += 10;
+  pool.markUnreachable(B, 60_000);
+  now += 10;
+  pool.markUnreachable(C, 60_000);
+
+  // A retrying call takes them in the order they were given up on.
+  const order = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const lease = await pool.acquire({ timeoutMs: 100 });
+    order.push(lease.endpoint);
+    now += 1;
+    pool.markUnreachable(lease.endpoint, 60_000);
+    lease.release();
+  }
+  assert.deepEqual(order, [A, B, C], 'each attempt tries a different browser');
+});

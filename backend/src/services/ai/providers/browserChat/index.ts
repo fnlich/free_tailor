@@ -98,7 +98,8 @@ function sessionFor(endpoint: string): BrowserChatSession {
  * its call lets go. The session has to be as careful as the pool. It is dropped
  * on the next call after the lease ends.
  */
-function forgetUnconfigured(live: Set<string>): void {
+function forgetUnconfigured(live: Set<string> | null): void {
+  if (!live) return;
   for (const [endpoint, session] of [...sessions]) {
     if (live.has(endpoint) || isEndpointLeased(endpoint)) continue;
     sessions.delete(endpoint);
@@ -132,7 +133,7 @@ function portOf(endpoint: string): string {
 async function endpointsFor(
   id: ChatSiteId,
   env: NodeJS.ProcessEnv
-): Promise<{ mine: string[]; all: Set<string> }> {
+): Promise<{ mine: string[]; all: Set<string> | null }> {
   const explicit = (env.AI_WEB_CDP_URL ?? '').trim();
   if (explicit) return { mine: [explicit], all: new Set([explicit]) };
   try {
@@ -143,9 +144,14 @@ async function endpointsFor(
       .map((entry) => endpointUrl(entry.port));
     return { mine, all };
   } catch {
-    // A settings read that fails must not take the provider down with it.
-    const fallback = debugEndpoint(env);
-    return { mine: [fallback], all: new Set([fallback]) };
+    // A settings read that fails must not take the provider down with it - so
+    // this call falls back to the environment's single browser. `all` is NULL
+    // rather than that one endpoint, and the difference matters: `all` is what
+    // decides which connections to let go of, and a momentary settings failure
+    // saying "one browser is configured" would drop every other browser's
+    // connection in the process. Not knowing is not the same as knowing there
+    // is nothing, and only the second is grounds for forgetting anything.
+    return { mine: [debugEndpoint(env)], all: null };
   }
 }
 
@@ -316,8 +322,19 @@ export function createBrowserChatAdapter(
         };
       }
 
+      // A browser a call is USING is reported, not probed.
+      //
+      // A probe drives the same tab a turn is driving: it reads the DOM, and
+      // `pageFor` will navigate or open a tab if it does not find one. Doing
+      // that to a tab mid-answer can disturb a live request - and the Settings
+      // page asks for health on every load, so this is not a rare collision but
+      // one an operator triggers by watching. A browser that is in use is, by
+      // the only definition that matters here, working.
       const probes = await Promise.all(
         mine.map(async (endpoint) => {
+          if (isEndpointLeased(endpoint)) {
+            return { endpoint, ok: true, detail: 'Busy with a request.', hint: undefined };
+          }
           const session = options.session ?? sessionFor(endpoint);
           return { endpoint, ...(await session.probe(site())) };
         })
