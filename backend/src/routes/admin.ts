@@ -15,6 +15,7 @@ import {
   probeDebugBrowser,
   startDebugBrowser,
 } from '../services/debugBrowser';
+import { getTabPoolStats } from '../services/ai/providers/browserChat/pool';
 import { isChatSiteId, type ChatSiteId } from '../services/ai/providers/browserChat/sites';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
@@ -112,67 +113,61 @@ router.put(['/settings', '/ai-models'], authMiddleware, async (req: Request, res
 });
 
 /**
- * The debug browser the chat providers attach to.
+ * The debug browsers the free chat providers drive.
  *
  * Behind `authMiddleware` like everything else here, and that matters more for
- * these two than for the rest of this file: `start` launches a process on the
+ * these than for the rest of this file: `start` launches a process on the
  * server. What it may launch is not open-ended - the executable is resolved by
- * this app, the URLs are its own two chat sites, and the only value taken from
- * the request is a port that is validated to an integer in range before it
- * reaches an argv array. See `services/debugBrowser.ts`.
+ * this app, the URL is one of its own two chat sites chosen by id, and the only
+ * value taken from the request is a port that is validated to an integer in
+ * range before it reaches an argv array. See `services/debugBrowser.ts`.
  */
-router.get('/browser/debug', authMiddleware, async (req: Request, res: Response) => {
+router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response) => {
   try {
     const settings = await getAdminAppSettings();
-    const requested = req.query.port;
-    const port =
-      typeof requested === 'string' && requested.trim()
-        ? assertUsablePort(requested)
-        : settings.browserChatDebugPort;
-    res.json(await probeDebugBrowser(port));
+    const browsers = await Promise.all(
+      settings.browserChatEndpoints.map(async (entry) => ({
+        siteId: entry.siteId,
+        port: entry.port,
+        status: await probeDebugBrowser(entry.port),
+      }))
+    );
+    res.json({ browsers, queues: getTabPoolStats() });
   } catch (error) {
-    if (error instanceof DebugBrowserError) {
-      res.status(400).json({ error: error.message, hint: error.hint });
-      return;
-    }
     res.status(500).json({
-      error: error instanceof Error ? error.message : 'Could not check the debug browser',
+      error: error instanceof Error ? error.message : 'Could not check the debug browsers',
     });
   }
 });
 
 router.post('/browser/debug/start', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const body = (req.body ?? {}) as { port?: unknown; siteIds?: unknown; save?: unknown };
-    const port = assertUsablePort(
-      typeof body.port === 'undefined'
-        ? (await getAdminAppSettings()).browserChatDebugPort
-        : body.port
-    );
+    const body = (req.body ?? {}) as { port?: unknown; siteId?: unknown; save?: unknown };
+    const port = assertUsablePort(body.port);
+    if (!isChatSiteId(body.siteId)) {
+      res.status(400).json({
+        error: 'Choose which chat site this browser is for.',
+        hint: 'One browser shows one chat tab; a second site in the same window would be a ' +
+          'background tab, and Chrome freezes those.',
+      });
+      return;
+    }
+    const siteId = body.siteId as ChatSiteId;
 
-    // Ids only, and only the two this app knows. The URL is looked up from the
-    // site table rather than accepted, so this endpoint cannot be used to point
-    // a browser at an arbitrary address.
-    const siteIds = Array.isArray(body.siteIds)
-      ? (body.siteIds.filter(isChatSiteId) as ChatSiteId[])
-      : undefined;
+    const result = await startDebugBrowser({ port, siteId });
 
-    const result = await startDebugBrowser({ port, siteIds });
-
-    // Saved by default, because a port you started a browser on and a port the
-    // providers attach to that disagree is the single most confusing state this
+    // Recorded by default, because a browser you started and a browser the
+    // providers know about that disagree is the most confusing state this
     // feature can be left in.
     let settings = await getAdminAppSettings();
-    if (body.save !== false && settings.browserChatDebugPort !== port) {
-      settings = await updateAppSettings({ browserChatDebugPort: port });
-      // Nothing to tear down here on purpose. The adapter keys its held
-      // connection on the endpoint and swaps it when that changes, so the next
-      // call attaches to the browser just started - whereas disposing from here
-      // would cut off a turn that is in flight against the OLD port, which is a
-      // real request somebody is waiting on.
+    if (body.save !== false) {
+      const kept = settings.browserChatEndpoints.filter((entry) => entry.port !== port);
+      settings = await updateAppSettings({
+        browserChatEndpoints: [...kept, { siteId, port }],
+      });
     }
 
-    res.json({ ...result, settings });
+    res.json({ ...result, siteId, settings });
   } catch (error) {
     if (error instanceof DebugBrowserError) {
       res.status(400).json({ error: error.message, hint: error.hint });

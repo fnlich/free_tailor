@@ -1,7 +1,14 @@
-import { getBrowserChatSettings } from '../../../../config/aiModelConfig';
+import { getBrowserChatEndpoints } from '../../../../config/aiModelConfig';
 import { getProviderDescriptor } from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
-import { acquireSlot, getProviderSemaphore, type AsyncSemaphore } from '../../concurrency';
+import {
+  getTabPool,
+  NoTabsConfiguredError,
+  TabWaitAbortedError,
+  TabWaitTimeoutError,
+  type TabLease,
+  type TabPool,
+} from './pool';
 import { collectUnsupportedReasoningParams } from '../../reasoningParams';
 import { warnOnce } from '../../telemetry';
 import type {
@@ -52,61 +59,169 @@ const DEFAULT_MODEL_LABEL = 'chat';
  */
 const QUEUE_WAIT_MS = 10 * 60_000;
 
-let sharedSession: BrowserChatSession | null = null;
-let sharedEndpoint = '';
+/**
+ * How long a browser that could not be reached is set aside.
+ *
+ * Short, because the likeliest reason to be here is that the operator is
+ * starting that browser right now - the defaults name ports nobody has opened
+ * yet. Long enough that a batch does not retry a dead one on every single call.
+ */
+const UNREACHABLE_FOR_MS = 30_000;
 
 /**
- * The connection, rebuilt when the operator points it somewhere else.
+ * One connection per browser, held open between calls.
  *
- * The endpoint is no longer fixed at startup: the debug port is a Settings
- * field now, with a button beside it that starts a browser on that port. So the
- * held session is keyed on the endpoint it was opened against, and a changed
- * port replaces it rather than being ignored until the next restart - which is
- * what "save" has to mean for a field like this.
+ * Keyed on the endpoint because there is now more than one browser: a site's
+ * concurrency IS how many it has. Reconnecting per call would cost a round trip
+ * and, worse, lose the tab - every call would land on whatever tab happened to
+ * be frontmost in that window.
  */
-function getSession(endpoint: string): BrowserChatSession {
-  if (sharedSession && sharedEndpoint === endpoint) return sharedSession;
-  const previous = sharedSession;
-  sharedSession = new BrowserChatSession(endpoint);
-  sharedEndpoint = endpoint;
-  // Let go of the old browser without closing it - it is the operator's window,
-  // and they may well still be signed in to it on the old port.
-  void previous?.dispose().catch(() => undefined);
-  return sharedSession;
+const sessions = new Map<string, BrowserChatSession>();
+
+function sessionFor(endpoint: string): BrowserChatSession {
+  const held = sessions.get(endpoint);
+  if (held) return held;
+  const created = new BrowserChatSession(endpoint);
+  sessions.set(endpoint, created);
+  return created;
+}
+
+/** Lets go of browsers that are no longer configured, without closing them. */
+function forgetUnconfigured(live: Set<string>): void {
+  for (const [endpoint, session] of [...sessions]) {
+    if (live.has(endpoint)) continue;
+    sessions.delete(endpoint);
+    // `dispose`, never `close`: it is the operator's window, and they are
+    // probably still signed in to it.
+    void session.dispose().catch(() => undefined);
+  }
+}
+
+function endpointUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+/** "port 9222", for a message that has to name which browser went wrong. */
+function portOf(endpoint: string): string {
+  try {
+    const port = new URL(endpoint).port;
+    return port ? `port ${port}` : endpoint;
+  } catch {
+    return endpoint;
+  }
 }
 
 /**
- * Where to attach, deciding between the two places it can be configured.
+ * The tabs this site may use, refreshed from settings on every call.
  *
- * An explicit `AI_WEB_CDP_URL` still wins outright: it is the escape hatch for
- * a browser that is not on this machine, and a port field cannot express one.
- * Otherwise the stored port wins over the environment, because the stored value
- * is the one an operator can see and change.
+ * `AI_WEB_CDP_URL` still wins outright when set: it is the escape hatch for a
+ * browser that is not on this machine, and a port list cannot express one. It
+ * gives that site exactly one tab, which is what a single URL can describe.
  */
-async function currentEndpoint(env: NodeJS.ProcessEnv): Promise<string> {
+async function endpointsFor(
+  id: ChatSiteId,
+  env: NodeJS.ProcessEnv
+): Promise<{ mine: string[]; all: Set<string> }> {
   const explicit = (env.AI_WEB_CDP_URL ?? '').trim();
-  if (explicit) return explicit;
+  if (explicit) return { mine: [explicit], all: new Set([explicit]) };
   try {
-    const { debugPort } = await getBrowserChatSettings();
-    return `http://127.0.0.1:${debugPort}`;
+    const configured = await getBrowserChatEndpoints();
+    const all = new Set(configured.map((entry) => endpointUrl(entry.port)));
+    const mine = configured
+      .filter((entry) => entry.siteId === id)
+      .map((entry) => endpointUrl(entry.port));
+    return { mine, all };
   } catch {
-    // A settings read that fails must not take the provider down with it; the
-    // environment default is exactly what it was before this field existed.
-    return debugEndpoint(env);
+    // A settings read that fails must not take the provider down with it.
+    const fallback = debugEndpoint(env);
+    return { mine: [fallback], all: new Set([fallback]) };
   }
+}
+
+/**
+ * This site's pool, pointed at the browsers currently configured for it.
+ *
+ * Each site has its own pool and therefore its own line: Claude free and
+ * ChatGPT free do not wait for one another, and neither waits for the Claude
+ * CLI, which has a semaphore of its own. Three providers, three queues.
+ */
+async function poolFor(id: ChatSiteId, env: NodeJS.ProcessEnv): Promise<TabPool> {
+  const { mine, all } = await endpointsFor(id, env);
+  const pool = getTabPool(id, getProviderDescriptor(id).label);
+  pool.setEndpoints(mine);
+  // Against the WHOLE configured set, not just this site's: a browser removed
+  // from the other site is no less gone, and a held connection to it is a
+  // socket kept open to a window nobody is going to use again.
+  forgetUnconfigured(all);
+  return pool;
 }
 
 /** For tests, and for a config change that should not need a restart. */
 export function resetBrowserChatSession(): void {
-  const session = sharedSession;
-  sharedSession = null;
-  sharedEndpoint = '';
-  // Not awaited - the caller wants the handle dropped, not a round trip to a
-  // browser that may already be gone - but the rejection IS caught. An
-  // unhandled one from `disconnect()` on a dead socket takes the process down
-  // under Node's default policy, and this runs from config-change handlers and
-  // from test teardown, where an exit is a mystifying failure somewhere else.
-  void session?.dispose().catch(() => undefined);
+  const held = [...sessions.values()];
+  sessions.clear();
+  for (const session of held) {
+    // Not awaited - the caller wants the handles dropped, not a round trip to a
+    // browser that may already be gone - but the rejection IS caught. An
+    // unhandled one from `disconnect()` on a dead socket takes the process down
+    // under Node's default policy, and this runs from config-change handlers
+    // and from test teardown, where an exit is a mystifying failure elsewhere.
+    void session.dispose().catch(() => undefined);
+  }
+}
+
+
+/**
+ * A tab, or a failure worded for the thing that actually went wrong.
+ *
+ * Three of them, and they want three different things done. No browser
+ * configured is a setup step nobody has taken. A wait that ran out is a queue
+ * that is genuinely long - the caller's own deadline decided that, not a cap.
+ * A cancelled call is nobody's fault at all.
+ */
+async function acquireTab(
+  pool: TabPool,
+  request: CompletionRequest,
+  id: ChatSiteId,
+  label: string
+): Promise<TabLease> {
+  try {
+    return await pool.acquire({
+      // The caller's own deadline, and nothing else. There is no queue bound
+      // here on purpose: a call is never refused for being late in the line,
+      // only for running out of its own time.
+      timeoutMs: Math.min(request.deadline.remainingMs(), QUEUE_WAIT_MS),
+      signal: request.signal,
+    });
+  } catch (error) {
+    if (error instanceof NoTabsConfiguredError) {
+      throw new AIProviderError({
+        provider: id,
+        kind: 'disabled',
+        detail: error.message,
+        userMessage: `${label} has no browser set up yet.`,
+        adminAction:
+          `Add a browser for ${label} under Admin -> Settings -> Browser Chat, start it, and ` +
+          'sign in to the tab it opens.',
+      });
+    }
+    if (error instanceof TabWaitTimeoutError) {
+      throw new AIProviderError({
+        provider: id,
+        kind: 'timeout',
+        detail: error.message,
+        userMessage:
+          `${label} is busy and this request waited its whole time budget for a free tab.`,
+        adminAction:
+          `Add another browser for ${label} under Admin -> Settings -> Browser Chat: each one ` +
+          'runs one more request at a time.',
+      });
+    }
+    if (error instanceof TabWaitAbortedError) {
+      throw new AIProviderError({ provider: id, kind: 'failed', detail: error.message });
+    }
+    throw error;
+  }
 }
 
 export type BrowserChatAdapterOptions = {
@@ -137,40 +252,17 @@ export function createBrowserChatAdapter(
     systemBlocks: false,
     requiresApiKey: false,
     credentialKind: 'browser-session',
-    // ONE. A tab holds one conversation, and a second prompt typed into a
-    // composer that is mid-answer does not queue - it interleaves, and both
-    // answers are lost. The provider semaphore is what enforces this.
+    // One call PER TAB. A tab holds one conversation, and a second prompt
+    // typed into a composer that is mid-answer does not queue - it interleaves,
+    // and both answers are lost. How many run at once is therefore how many
+    // browsers this site has, which the operator decides on the Settings page;
+    // the pool is what enforces one call per tab. Reported as 1 because that is
+    // what a single tab allows, and it is the number the facade uses to warn a
+    // caller about a provider that cannot be parallelised on its own.
     maxConcurrency: 1,
   };
 
   const site = () => readChatSite(id, env);
-
-  // Keyed on the BROWSER, not on the provider.
-  //
-  // Both browser providers attach to the same Chrome, and a turn's first act is
-  // to bring its tab to the front - because a backgrounded tab is frozen and
-  // never answers a DOM read at all. Two providers holding separate slots would
-  // therefore run at once and take the foreground from each other, and the one
-  // that loses it stops being able to read its own page. A single slot per
-  // endpoint is what `maxConcurrency: 1` has to mean here.
-  //
-  // Resolved per call rather than once, because both the endpoint and the queue
-  // bound are settings an operator can change while the server is running.
-  async function lane(): Promise<AsyncSemaphore> {
-    const endpoint = await currentEndpoint(env);
-    let maxQueue = Number.POSITIVE_INFINITY;
-    try {
-      maxQueue = (await getBrowserChatSettings()).maxQueue;
-    } catch {
-      // Unbounded is what it was before the setting existed; a settings read
-      // that fails should not start rejecting work.
-    }
-    return getProviderSemaphore(
-      `browser-chat:${endpoint}`,
-      capabilities.maxConcurrency,
-      maxQueue
-    );
-  }
 
   function fail(
     kind: AIErrorKind,
@@ -192,13 +284,51 @@ export function createBrowserChatAdapter(
     capabilities,
     defaultModelName: () => DEFAULT_MODEL_LABEL,
 
+    /**
+     * Every browser this site has, not just one.
+     *
+     * A site with three browsers and one signed-out tab is two-thirds working,
+     * and reporting only the first would either hide that or condemn the whole
+     * provider for it. `ok` means at least one tab can be driven, because one
+     * is all a call needs; the detail says how many of them can.
+     */
     async health(): Promise<ProviderHealth> {
-      const session = options.session ?? getSession(await currentEndpoint(env));
-      const probe = await session.probe(site());
+      const { mine } = await endpointsFor(id, env);
+      if (mine.length === 0) {
+        return {
+          ok: false,
+          detail: 'No browser is set up for this provider yet.',
+          warning:
+            `Add one under Admin -> Settings -> Browser Chat, start it, and sign in to the ` +
+            `${descriptor.label} tab it opens.`,
+          checkedAt: new Date().toISOString(),
+        };
+      }
+
+      const probes = await Promise.all(
+        mine.map(async (endpoint) => {
+          const session = options.session ?? sessionFor(endpoint);
+          return { endpoint, ...(await session.probe(site())) };
+        })
+      );
+
+      const ready = probes.filter((probe) => probe.ok);
+      const broken = probes.filter((probe) => !probe.ok);
+      const plural = probes.length === 1 ? 'tab' : 'tabs';
+
       return {
-        ok: probe.ok,
-        detail: probe.detail,
-        ...(probe.hint ? { warning: probe.hint } : {}),
+        ok: ready.length > 0,
+        detail:
+          ready.length === probes.length
+            ? `${ready.length} ${plural} ready.`
+            : `${ready.length} of ${probes.length} ${plural} ready.`,
+        ...(broken.length
+          ? {
+              warning: broken
+                .map((probe) => `${portOf(probe.endpoint)}: ${probe.detail}${probe.hint ? ` ${probe.hint}` : ''}`)
+                .join(' | '),
+            }
+          : {}),
         checkedAt: new Date().toISOString(),
       };
     },
@@ -228,25 +358,59 @@ export function createBrowserChatAdapter(
         .join('\n\n');
 
       const startedAt = Date.now();
-      const session = options.session ?? getSession(await currentEndpoint(env));
 
-      // ONE AT A TIME, enforced rather than declared. `maxConcurrency: 1` above
-      // is only a number the facade reports; the semaphore is the adapter's to
-      // take, exactly as the CLI provider takes its own. Without this two
-      // generate requests type into the SAME composer at once: the second
-      // clears the first mid-answer, and both callers get somebody else's reply
-      // or none. A batch of profiles does this by default.
-      const release = await acquireSlot(
-        await lane(),
-        id,
-        request.deadline,
-        QUEUE_WAIT_MS,
-        request.signal
+      // A TAB, not merely permission to proceed.
+      //
+      // The line for this site is unbounded and first-come-first-served: the
+      // moment any of its browsers frees up, the call at the head takes that
+      // browser. Which one it gets matters and is why this hands back an
+      // endpoint rather than a slot - a caller cannot drive a browser without
+      // knowing which browser it has been given.
+      //
+      // Without it, two generate requests type into the SAME composer at once:
+      // the second clears the first mid-answer, and both callers get somebody
+      // else's reply or none. A batch of profiles does this by default.
+      const pool = await poolFor(id, env);
+
+      // Tried on another browser when THIS one cannot be reached at all.
+      //
+      // A configured browser is not necessarily a running one - the defaults
+      // name ports nobody has started yet, and an operator can close a window
+      // mid-run. Without this, a site with two browsers and one of them dead
+      // fails every second call for a reason that has nothing to do with the
+      // request. Only a connection failure is retried: a page that misbehaved
+      // says nothing about whether the browser is there, and repeating a prompt
+      // that was already typed would ask the same question twice.
+      let lastUnreachable: BrowserSessionError | null = null;
+      const attempts = Math.max(1, pool.size);
+
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const lease = await acquireTab(pool, request, id, descriptor.label);
+        try {
+          const session = options.session ?? sessionFor(lease.endpoint);
+          const tab = await session.tabFor(site());
+          const text = await tab.ask(body, request.deadline.remainingMs(), request.signal);
+          pool.markReachable(lease.endpoint);
+          return finish(text);
+        } catch (error) {
+          if (error instanceof BrowserSessionError && request.deadline.remainingMs() > 0) {
+            pool.markUnreachable(lease.endpoint, UNREACHABLE_FOR_MS);
+            lastUnreachable = error;
+            continue;
+          }
+          throw translate(error);
+        } finally {
+          lease.release();
+        }
+      }
+
+      throw fail(
+        'unavailable',
+        lastUnreachable?.message ?? `No ${descriptor.label} browser could be reached.`,
+        lastUnreachable?.hint
       );
 
-      try {
-        const tab = await session.tabFor(site());
-        const text = await tab.ask(body, request.deadline.remainingMs(), request.signal);
+      function finish(text: string): CompletionResult {
         return {
           text,
           resolvedModel: `${id}/${DEFAULT_MODEL_LABEL}`,
@@ -257,20 +421,22 @@ export function createBrowserChatAdapter(
           droppedParams,
           latencyMs: Date.now() - startedAt,
         };
-      } catch (error) {
+      }
+
+      function translate(error: unknown): AIProviderError {
         if (error instanceof BrowserSessionError) {
-          throw fail('unavailable', error.message, error.hint);
+          return fail('unavailable', error.message, error.hint);
         }
         if (error instanceof ChatTurnError) {
           if (error.kind === 'cancelled') {
-            throw fail('failed', error.message);
+            return fail('failed', error.message);
           }
           if (error.kind === 'timeout') {
-            throw fail(
+            return fail(
               'timeout',
               error.message,
-              'A browser provider answers at reading speed. Raise the per-call timeout, or use the ' +
-                'Claude CLI provider for long prompts.'
+              'A free browser provider answers at reading speed. Raise the per-call timeout, add ' +
+                'another browser for it under Settings, or use the Claude CLI provider.'
             );
           }
           // The site declining is not this app malfunctioning, and the two get
@@ -284,7 +450,7 @@ export function createBrowserChatAdapter(
             // "the Claude subscription usage limit" - and a user whose
             // chatgpt.com tab has signed itself out would be sent to fix a
             // subscription that has nothing to do with it.
-            throw fail(
+            return fail(
               error.retryable ? 'rateLimited' : 'auth',
               error.message,
               error.retryable
@@ -298,16 +464,14 @@ export function createBrowserChatAdapter(
                     'in to that tab, or pick another model.'
             );
           }
-          throw fail(
+          return fail(
             error.kind === 'echo' ? 'malformedOutput' : 'unavailable',
             error.message,
             `Check the tab in the debug browser, then the selector overrides for ${descriptor.label}.`
           );
         }
         const detail = error instanceof Error ? error.message : String(error);
-        throw fail('unavailable', `${descriptor.label} failed: ${detail}`);
-      } finally {
-        release();
+        return fail('unavailable', `${descriptor.label} failed: ${detail}`);
       }
     },
   };

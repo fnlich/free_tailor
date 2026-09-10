@@ -314,54 +314,75 @@ test('a client that still sends the flat provider booleans is heard', async () =
   assert.equal(updated.openaiEnabled, false);
 });
 
-test('the browser-chat port and queue limit round-trip, and take their defaults from .env', async () => {
-  useTempStorage('browser-chat-settings');
+test('the browser list round-trips, and its default comes from .env', async () => {
+  useTempStorage('browser-chat-endpoints');
   process.env.AI_WEB_CDP_PORT = '9411';
-  process.env.DEFAULT_MAX_QUEUE = '7';
   const config = loadFresh('../dist/config/aiModelConfig');
 
-  // The environment decides what a fresh install starts with, so an operator
-  // who already configured AI_WEB_CDP_PORT does not have to set it twice.
+  // A fresh install gets one browser per site, on adjacent ports: a browser
+  // shows ONE chat tab, so two sites cannot share a port.
   const defaults = await config.getAdminAppSettings();
-  assert.equal(defaults.browserChatDebugPort, 9411);
-  assert.equal(defaults.browserChatMaxQueue, 7);
+  assert.deepEqual(defaults.browserChatEndpoints, [
+    { siteId: 'claude-web', port: 9411 },
+    { siteId: 'chatgpt-web', port: 9412 },
+  ]);
 
+  // Several browsers for one site is the whole point: that is how two free
+  // Claude requests run at once.
   const saved = await config.updateAppSettings({
-    browserChatDebugPort: 9333,
-    browserChatMaxQueue: 25,
+    browserChatEndpoints: [
+      { siteId: 'claude-web', port: 9300 },
+      { siteId: 'claude-web', port: 9301 },
+      { siteId: 'chatgpt-web', port: 9302 },
+    ],
   });
-  assert.equal(saved.browserChatDebugPort, 9333);
-  assert.equal(saved.browserChatMaxQueue, 25);
-
-  // And the stored value wins from then on - which is the whole point of
-  // putting the field on the Settings page.
-  assert.deepEqual(await config.getBrowserChatSettings(), { debugPort: 9333, maxQueue: 25 });
+  assert.equal(saved.browserChatEndpoints.length, 3);
+  assert.deepEqual(await config.getBrowserChatEndpoints(), saved.browserChatEndpoints);
 
   delete process.env.AI_WEB_CDP_PORT;
-  delete process.env.DEFAULT_MAX_QUEUE;
 });
 
-test('a port or queue limit out of range is refused rather than stored', async () => {
-  useTempStorage('browser-chat-bounds');
+test('a port cannot be shared by two browsers, and a bad port is refused', async () => {
+  useTempStorage('browser-chat-endpoint-bounds');
   const config = loadFresh('../dist/config/aiModelConfig');
 
-  for (const bad of [80, 0, 65536, -1]) {
+  // Two entries on one port would be two sites in one window, and the second
+  // tab would be a background tab that Chrome freezes.
+  await assert.rejects(
+    config.updateAppSettings({
+      browserChatEndpoints: [
+        { siteId: 'claude-web', port: 9300 },
+        { siteId: 'chatgpt-web', port: 9300 },
+      ],
+    }),
+    /listed twice/
+  );
+
+  for (const bad of [80, 0, 65536, 'nine thousand']) {
     await assert.rejects(
-      config.updateAppSettings({ browserChatDebugPort: bad }),
-      /browserChatDebugPort must be a whole number/,
+      config.updateAppSettings({ browserChatEndpoints: [{ siteId: 'claude-web', port: bad }] }),
+      /must be a whole number/,
       `port ${bad} must be refused`
     );
   }
-  for (const bad of [0, -3, 5000]) {
-    await assert.rejects(
-      config.updateAppSettings({ browserChatMaxQueue: bad }),
-      /browserChatMaxQueue must be a whole number/,
-      `queue limit ${bad} must be refused`
-    );
-  }
 
-  // Nothing was stored on the way past.
-  const settings = await config.getAdminAppSettings();
-  assert.equal(settings.browserChatDebugPort, 9222);
-  assert.equal(settings.browserChatMaxQueue, 10);
+  await assert.rejects(
+    config.updateAppSettings({ browserChatEndpoints: [{ siteId: 'not-a-site', port: 9300 }] }),
+    /is not a chat site this app knows/
+  );
+});
+
+test('an install that saved the old single port keeps working', async () => {
+  // The field this replaced. Silently moving one site to a port with no browser
+  // on it would break a setup that was working, so both sites stay where they
+  // were until the operator splits them.
+  const { dbDir } = useTempStorage('browser-chat-migration');
+  const { writeSettingRaw } = require('./helpers');
+  writeSettingRaw(dbDir, APP_SETTINGS_KEY, JSON.stringify({ browserChatDebugPort: 9350 }));
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  assert.deepEqual(await config.getBrowserChatEndpoints(), [
+    { siteId: 'claude-web', port: 9350 },
+    { siteId: 'chatgpt-web', port: 9350 },
+  ]);
 });

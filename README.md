@@ -140,15 +140,24 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   already running, and because the browser must not be in automation mode -
   sign-in flows reject one that is.
 
-  Or start it from the app: **Admin → Settings → Browser Chat** has a port field
-  and a **Start browser and open chat tabs** button that launches the same
-  browser, opens both chat sites in it, saves the port, and shows which sites
-  have a tab. The port saved there is what the providers attach to - the `.env`
-  value below is only the default a fresh install begins with. That panel also
-  carries the **queue limit**: how many requests may WAIT for the chat tab (one
-  runs at a time whatever it says, because a chat window holds one
-  conversation). Past that many waiting, the next request is refused
-  immediately rather than holding a connection open until it times out.
+  Or start them from the app: **Admin → Settings → Browser Chat (free)** lists
+  the browsers, each with a site and a port, and a **Start** button that
+  launches one, opens its chat tab, and records it.
+
+  **One browser shows one chat tab**, on its own port and its own profile. That
+  is not a preference: a second tab in the same window is a background tab, and
+  Chrome freezes those - a DOM read against a frozen renderer never returns.
+  So parallelism comes from more browsers. Two browsers for claude.ai means two
+  free Claude requests run at once; measured against a fixture answering in
+  about three seconds, four requests took 25.5s on one browser and 12.9s on two.
+
+  Each provider has its **own queue** - Claude (free), ChatGPT (free) and the
+  Claude CLI never wait for one another - and **no queue has a length limit**.
+  Whenever one of that site's tabs frees, the request that has waited longest
+  takes it. A request only ever gives up on its own timeout, never for being
+  late in the line. If a configured browser turns out not to be running, the
+  request is retried on another of that site's browsers and the dead one is set
+  aside for a short while.
 
   The debug port listens on loopback only, and the script deliberately does
   **not** pass `--remote-allow-origins=*`. That flag turns off Chrome's DevTools
@@ -343,7 +352,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave that window open. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
 | A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
-| A browser provider says `Too many requests are already waiting` | More requests are queued for the chat tab than the queue limit allows. One runs at a time by design; this is the length of the line behind it. Raise **Queue limit** under Admin → Settings → Browser Chat (or `DEFAULT_MAX_QUEUE` in `.env` for a fresh install), or send fewer profiles at once. |
+| A free provider says it `has no browser set up yet` | That site has no entry in the browser list. Add one under Admin → Settings → Browser Chat (free), start it, and sign in to the tab it opens. |
+| A free provider says a request `waited its whole time budget for a free tab` | Its browsers were all busy for the whole call. Nothing was refused for queue length - there is no limit - the request simply ran out of its own time. Add another browser for that site: each one runs one more request at a time. |
 | Starting the browser says `nothing is listening on port ...` | Usually another window of that browser is already running with the same profile: Chrome then opens a tab in the existing window and never opens the port. Close every window of it and try again. On a server with no display, Chrome exits at once - set `AI_WEB_BROWSER_ARGS=--headless=new --no-sandbox`, noting that a headless browser cannot be signed in to by hand and so only works against a profile that already is. |
 | Starting the browser says no installed browser was found | The resolver looks in the standard install locations and deliberately ignores `CHROME_PATH`, because that often points at puppeteer's Chrome for Testing and sign-in flows reject a browser in automation mode. Set `AI_WEB_BROWSER_PATH` to the browser you want used. |
 | A browser provider says the site `did not answer because ...` | The site refused rather than the driver failing. A usage limit or a rate limit is reported as such and resets on its own; a signed-out tab or a human-verification check needs you at the browser. Either way the backend stops at once instead of polling until the deadline. |

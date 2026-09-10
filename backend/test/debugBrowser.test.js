@@ -108,7 +108,7 @@ test('a running browser is found, and its open tabs are matched to sites', async
     // Asked to start when one is already listening, it must NOT launch a
     // second: Chrome would either refuse the port or quietly open a tab in the
     // existing window and exit, which looks like success and changes nothing.
-    const result = await startDebugBrowser({ port });
+    const result = await startDebugBrowser({ port, siteId: 'claude-web' });
     assert.equal(result.started, false);
     assert.equal(result.reused, true, 'an already-running browser is reused');
     assert.equal(result.status.running, true);
@@ -127,7 +127,7 @@ test('a running browser is found, and its open tabs are matched to sites', async
 });
 
 test('starting refuses a port it cannot use before it spawns anything', async () => {
-  await assert.rejects(startDebugBrowser({ port: 80 }), (error) => {
+  await assert.rejects(startDebugBrowser({ port: 80, siteId: 'claude-web' }), (error) => {
     assert.ok(error instanceof DebugBrowserError);
     return true;
   });

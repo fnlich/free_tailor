@@ -33,6 +33,11 @@ import { readChatSite, type ChatSiteId } from './ai/providers/browserChat/sites'
 
 export const DEFAULT_DEBUG_PROFILE_DIR = path.join(os.homedir(), '.free-tailor-chrome');
 
+/** One profile directory per port. See `startDebugBrowser`. */
+export function defaultProfileDirFor(port: number): string {
+  return `${DEFAULT_DEBUG_PROFILE_DIR}-${port}`;
+}
+
 /** How long a probe waits for the DevTools endpoint to answer. */
 const PROBE_TIMEOUT_MS = 1_500;
 
@@ -185,8 +190,15 @@ export async function probeDebugBrowser(
 
 export type StartDebugBrowserInput = {
   port: number;
-  /** Which chat sites to open tabs for. Ids only; the URLs are this app's. */
-  siteIds?: ChatSiteId[];
+  /**
+   * Which site this browser is for. ONE, and its URL is this app's own.
+   *
+   * One browser shows one chat tab. A second site in the same window would be a
+   * background tab, and Chrome freezes those - a DOM read against a frozen
+   * renderer never returns at all, which is the failure this whole arrangement
+   * is shaped to avoid. Parallelism comes from more browsers, not more tabs.
+   */
+  siteId: ChatSiteId;
   profileDir?: string;
   env?: NodeJS.ProcessEnv;
 };
@@ -206,10 +218,19 @@ export async function startDebugBrowser(
 ): Promise<StartDebugBrowserResult> {
   const env = input.env ?? process.env;
   const port = assertUsablePort(input.port);
-  const profileDir = input.profileDir?.trim() || DEFAULT_DEBUG_PROFILE_DIR;
-  const siteIds = (input.siteIds?.length ? input.siteIds : SITE_IDS).filter((id) =>
-    SITE_IDS.includes(id)
-  );
+  if (!SITE_IDS.includes(input.siteId)) {
+    throw new DebugBrowserError(
+      `"${String(input.siteId)}" is not a chat site this app knows.`,
+      `Choose one of: ${SITE_IDS.join(', ')}.`
+    );
+  }
+  const siteIds: ChatSiteId[] = [input.siteId];
+  // A profile PER PORT, not one shared by every browser. Chrome refuses to open
+  // a debug port on a profile that is already running, so a second browser
+  // sharing the first one's profile silently opens a tab in the first window
+  // and exits - and the port never comes up. It also keeps the two sign-ins
+  // apart, which is what an operator would expect from two windows.
+  const profileDir = input.profileDir?.trim() || defaultProfileDirFor(port);
 
   // Already up: do NOT start a second one. Chrome would either refuse the port
   // or - worse - quietly open a tab in the existing window and exit, which
@@ -247,6 +268,14 @@ export async function startDebugBrowser(
       '--remote-debugging-address=127.0.0.1',
       '--no-first-run',
       '--no-default-browser-check',
+      // Several of these windows now run at once, and only one of them can be
+      // the focused one. Chrome throttles and eventually freezes a window it
+      // thinks nobody is looking at, and a DOM read against a frozen renderer
+      // does not fail - it never returns. These three keep the ones in the
+      // background answering, which is what makes parallel tabs work at all.
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-background-timer-throttling',
       ...sanitizeBrowserArgs(env),
       ...urls,
     ],

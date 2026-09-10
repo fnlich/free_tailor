@@ -539,10 +539,8 @@ export interface PublicAppSettings {
   aiPreferenceDefaults: AiPreferenceDefaults;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
-  /** DevTools port the browser-chat providers attach to. */
-  browserChatDebugPort: number;
-  /** How many browser-chat calls may wait for the one chat tab. */
-  browserChatMaxQueue: number;
+  /** The debug browsers the free chat providers drive, one tab apiece. */
+  browserChatEndpoints: BrowserChatEndpoint[];
 }
 
 export type AIModelSettings = PublicAppSettings;
@@ -636,8 +634,7 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   },
   aiModels: [],
   googleSheetsSources: [],
-  browserChatDebugPort: 9222,
-  browserChatMaxQueue: 10,
+  browserChatEndpoints: [],
 };
 
 /**
@@ -683,14 +680,17 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
     aiPreferenceDefaults: normalizeAiPreferenceDefaults(source.aiPreferenceDefaults),
-    browserChatDebugPort:
-      typeof source.browserChatDebugPort === 'number' && Number.isFinite(source.browserChatDebugPort)
-        ? source.browserChatDebugPort
-        : 9222,
-    browserChatMaxQueue:
-      typeof source.browserChatMaxQueue === 'number' && Number.isFinite(source.browserChatMaxQueue)
-        ? source.browserChatMaxQueue
-        : 10,
+    browserChatEndpoints: Array.isArray(source.browserChatEndpoints)
+      ? source.browserChatEndpoints
+          .filter(
+            (entry): entry is BrowserChatEndpoint =>
+              typeof entry === 'object' &&
+              entry !== null &&
+              typeof (entry as BrowserChatEndpoint).port === 'number' &&
+              (entry as BrowserChatEndpoint).siteId !== undefined
+          )
+          .map((entry) => ({ siteId: entry.siteId, port: entry.port }))
+      : [],
     aiModels: Array.isArray(source.aiModels)
       ? source.aiModels
           .filter((entry): entry is AIModelRecord => typeof entry === 'object' && entry !== null)
@@ -729,6 +729,12 @@ export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   outputPathTemplate?: string;
 }
 
+/** One debug browser: which chat site it shows, and the port it listens on. */
+export interface BrowserChatEndpoint {
+  siteId: AIProvider;
+  port: number;
+}
+
 /** One chat site, and whether the debug browser has a tab on it. */
 export interface DebugBrowserSite {
   id: AIProvider;
@@ -751,8 +757,29 @@ export interface StartDebugBrowserResponse {
   executable: string;
   browserLabel: string;
   profileDir: string;
+  siteId: AIProvider;
   status: DebugBrowserStatus;
   settings: AdminAppSettings;
+}
+
+/** One configured browser, with what the server can see of it right now. */
+export interface DebugBrowserEntry {
+  siteId: AIProvider;
+  port: number;
+  status: DebugBrowserStatus;
+}
+
+/** What each provider's queue is doing: tabs, in use, and how many are waiting. */
+export interface TabQueueStats {
+  tabs: number;
+  inUse: number;
+  queued: number;
+  endpoints: string[];
+}
+
+export interface DebugBrowserReport {
+  browsers: DebugBrowserEntry[];
+  queues: Record<string, TabQueueStats>;
 }
 
 export interface BrowseOutputDirectoryResponse {
@@ -914,12 +941,9 @@ export const adminApi = {
   getSettings: async () =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/settings')),
 
-  getDebugBrowser: (port?: number) =>
-    apiFetch<DebugBrowserStatus>(
-      typeof port === 'number' ? `/admin/browser/debug?port=${port}` : '/admin/browser/debug'
-    ),
+  getDebugBrowsers: () => apiFetch<DebugBrowserReport>('/admin/browser/debug'),
 
-  startDebugBrowser: (data: { port: number; siteIds?: AIProvider[]; save?: boolean }) =>
+  startDebugBrowser: (data: { port: number; siteId: AIProvider; save?: boolean }) =>
     apiFetch<StartDebugBrowserResponse>('/admin/browser/debug/start', {
       method: 'POST',
       body: JSON.stringify(data),

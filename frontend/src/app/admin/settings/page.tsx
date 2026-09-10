@@ -6,7 +6,8 @@ import {
   adminApi,
   AdminAppSettings,
   AdminAppSettingsUpdate,
-  DebugBrowserStatus,
+  BrowserChatEndpoint,
+  DebugBrowserReport,
   AIProvider,
   DefaultMode,
   DefaultResumeSelection,
@@ -34,8 +35,7 @@ type SettingsFormState = {
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
   outputPathTemplate: string;
-  browserChatDebugPort: string;
-  browserChatMaxQueue: string;
+  browserChatEndpoints: BrowserChatEndpoint[];
 };
 
 type SaveSection = 'output' | 'providers' | 'defaults' | 'browserChat';
@@ -170,11 +170,7 @@ function toFormState(settings: AdminAppSettings): SettingsFormState {
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
-    // Held as strings so the inputs can be cleared while being retyped. A
-    // number-typed field turns an empty box into NaN and then into 0, which
-    // saves a port of zero the moment the operator selects-all and types.
-    browserChatDebugPort: String(settings.browserChatDebugPort),
-    browserChatMaxQueue: String(settings.browserChatMaxQueue),
+    browserChatEndpoints: settings.browserChatEndpoints.map((entry) => ({ ...entry })),
   };
 }
 
@@ -201,8 +197,7 @@ function mergeSavedSection(
   if (section === 'browserChat') {
     return {
       ...current,
-      browserChatDebugPort: String(updated.browserChatDebugPort),
-      browserChatMaxQueue: String(updated.browserChatMaxQueue),
+      browserChatEndpoints: updated.browserChatEndpoints.map((entry) => ({ ...entry })),
     };
   }
 
@@ -232,9 +227,11 @@ export default function AdminSettingsPage() {
   const [form, setForm] = useState<SettingsFormState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [savingSection, setSavingSection] = useState<SaveSection | null>(null);
-  const [debugStatus, setDebugStatus] = useState<DebugBrowserStatus | null>(null);
+  const [debugReport, setDebugReport] = useState<DebugBrowserReport | null>(null);
   const [debugError, setDebugError] = useState('');
-  const [isStartingBrowser, setIsStartingBrowser] = useState(false);
+  const [startingPort, setStartingPort] = useState<number | null>(null);
+  const [newBrowserSite, setNewBrowserSite] = useState<AIProvider>('claude-web');
+  const [newBrowserPort, setNewBrowserPort] = useState('');
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -260,16 +257,16 @@ export default function AdminSettingsPage() {
     // simply not answer, and the form must render either way. No port is passed
     // so the server uses the stored one - the form may not have loaded yet.
     adminApi
-      .getDebugBrowser()
-      .then((status) => {
-        setDebugStatus(status);
+      .getDebugBrowsers()
+      .then((report) => {
+        setDebugReport(report);
         setDebugError('');
       })
       .catch(() => {
         // Silent on load. Nothing listening is the ordinary state before the
         // operator presses the button, and an error banner on arrival would
         // read as something being broken.
-        setDebugStatus(null);
+        setDebugReport(null);
       });
   }, []);
 
@@ -362,62 +359,76 @@ export default function AdminSettingsPage() {
 
   const handleSaveBrowserChat = async () => {
     if (!form) return;
-    const port = Number.parseInt(form.browserChatDebugPort.trim(), 10);
-    const maxQueue = Number.parseInt(form.browserChatMaxQueue.trim(), 10);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      setError('The debug port must be a whole number between 1024 and 65535.');
-      return;
-    }
-    if (!Number.isInteger(maxQueue) || maxQueue < 1 || maxQueue > 500) {
-      setError('The queue limit must be a whole number between 1 and 500.');
-      return;
-    }
     await saveSection(
       'browserChat',
-      { browserChatDebugPort: port, browserChatMaxQueue: maxQueue },
-      'Browser chat settings saved.'
+      { browserChatEndpoints: form.browserChatEndpoints },
+      'Browser list saved.'
     );
   };
 
-  const refreshDebugBrowser = async (port?: number) => {
+  const refreshDebugBrowsers = async () => {
     try {
-      setDebugStatus(await adminApi.getDebugBrowser(port));
+      setDebugReport(await adminApi.getDebugBrowsers());
       setDebugError('');
     } catch (err) {
-      setDebugStatus(null);
-      setDebugError(err instanceof Error ? err.message : 'Could not check the debug browser');
+      setDebugReport(null);
+      setDebugError(err instanceof Error ? err.message : 'Could not check the debug browsers');
     }
   };
 
-  const handleStartDebugBrowser = async () => {
+  const addBrowser = () => {
     if (!form) return;
-    const port = Number.parseInt(form.browserChatDebugPort.trim(), 10);
+    const port = Number.parseInt(newBrowserPort.trim(), 10);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
       setDebugError('The debug port must be a whole number between 1024 and 65535.');
       return;
     }
+    if (form.browserChatEndpoints.some((entry) => entry.port === port)) {
+      setDebugError(
+        `Port ${port} is already in the list. One browser shows one chat tab, so each port ` +
+          'belongs to exactly one site.'
+      );
+      return;
+    }
+    setDebugError('');
+    setField('browserChatEndpoints', [
+      ...form.browserChatEndpoints,
+      { siteId: newBrowserSite, port },
+    ]);
+    setNewBrowserPort('');
+  };
+
+  const removeBrowser = (port: number) => {
+    if (!form) return;
+    setField(
+      'browserChatEndpoints',
+      form.browserChatEndpoints.filter((entry) => entry.port !== port)
+    );
+  };
+
+  const startBrowser = async (entry: BrowserChatEndpoint) => {
     try {
-      setIsStartingBrowser(true);
+      setStartingPort(entry.port);
       setDebugError('');
       setError('');
       setSuccessMessage('');
-      // The port is saved as part of starting, so the browser that was just
-      // opened and the port the providers attach to cannot disagree.
-      const result = await adminApi.startDebugBrowser({ port, siteIds: BROWSER_CHAT_PROVIDERS });
+      const result = await adminApi.startDebugBrowser({ port: entry.port, siteId: entry.siteId });
       setSettings(result.settings);
       setForm((current) =>
-        current ? mergeSavedSection(current, result.settings, 'browserChat') : toFormState(result.settings)
+        current
+          ? mergeSavedSection(current, result.settings, 'browserChat')
+          : toFormState(result.settings)
       );
-      setDebugStatus(result.status);
       setSuccessMessage(
         result.reused
-          ? `A browser was already listening on port ${port}; opened the chat tabs in it.`
-          : `Started ${result.browserLabel} on port ${port}. Sign in to the tabs it opened.`
+          ? `A browser was already listening on port ${entry.port}; opened the chat tab in it.`
+          : `Started ${result.browserLabel} on port ${entry.port}. Sign in to the tab it opened.`
       );
+      await refreshDebugBrowsers();
     } catch (err) {
       setDebugError(err instanceof Error ? err.message : 'Could not start the debug browser');
     } finally {
-      setIsStartingBrowser(false);
+      setStartingPort(null);
     }
   };
 
@@ -560,107 +571,144 @@ export default function AdminSettingsPage() {
 
         <section className="space-y-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Browser Chat</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Browser Chat (free)</h2>
             <p className="text-sm text-gray-600">
-              The &quot;Claude (browser)&quot; and &quot;ChatGPT (browser)&quot; providers drive a
-              Chrome you start here and sign in to yourself. Nothing is metered and no API key is
+              <strong>Claude (free)</strong> and <strong>ChatGPT (free)</strong> drive chat tabs in
+              browsers you start here and sign in to yourself. Nothing is metered and no API key is
               stored - the chat plan you already have is the quota.
+            </p>
+            <p className="mt-2 text-sm text-gray-600">
+              One browser shows <strong>one</strong> chat tab, on its own port. That is not a
+              preference: a second tab in the same window is a background tab, and Chrome freezes
+              those. So <strong>two browsers for a site means two of its requests run at once</strong>.
+              Each site has its own queue - Claude free, ChatGPT free and the Claude CLI never wait
+              for one another - and no queue has a length limit: whenever a tab frees, the request
+              that has waited longest takes it.
             </p>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="rounded-md border border-gray-200">
+            {form.browserChatEndpoints.length === 0 ? (
+              <p className="p-4 text-sm text-gray-600">
+                No browsers yet. Add one below, then start it and sign in.
+              </p>
+            ) : (
+              <ul className="divide-y divide-gray-200">
+                {form.browserChatEndpoints.map((entry) => {
+                  const live = debugReport?.browsers.find((row) => row.port === entry.port);
+                  const site = live?.status.sites.find((row) => row.id === entry.siteId);
+                  return (
+                    <li key={entry.port} className="flex flex-wrap items-center gap-3 p-3">
+                      <span className="min-w-[9rem] text-sm font-medium text-gray-900">
+                        {getAIProviderLabel(entry.siteId)}
+                      </span>
+                      <span className="text-sm text-gray-600">port {entry.port}</span>
+                      <span className="text-sm">
+                        {!live || !live.status.running ? (
+                          <span className="text-gray-500">not running</span>
+                        ) : site?.open ? (
+                          <span className="text-green-700">running, tab open</span>
+                        ) : (
+                          <span className="text-amber-700">running, no tab yet</span>
+                        )}
+                      </span>
+                      <span className="ml-auto flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startBrowser(entry)}
+                          disabled={startingPort !== null || savingSection !== null}
+                          className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                        >
+                          {startingPort === entry.port ? 'Starting...' : 'Start'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeBrowser(entry.port)}
+                          disabled={startingPort !== null || savingSection !== null}
+                          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700" htmlFor="browserChatDebugPort">
-                Debug port
+              <label className="block text-sm font-medium text-gray-700" htmlFor="newBrowserSite">
+                Add a browser for
+              </label>
+              <select
+                id="newBrowserSite"
+                value={newBrowserSite}
+                onChange={(event) => setNewBrowserSite(event.target.value as AIProvider)}
+                className="mt-1 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900"
+              >
+                {BROWSER_CHAT_PROVIDERS.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {getAIProviderLabel(provider)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700" htmlFor="newBrowserPort">
+                on port
               </label>
               <input
-                id="browserChatDebugPort"
+                id="newBrowserPort"
                 type="number"
                 min={1024}
                 max={65535}
-                value={form.browserChatDebugPort}
-                onChange={(event) => setField('browserChatDebugPort', event.target.value)}
-                disabled={savingSection === 'browserChat' || isStartingBrowser}
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 disabled:bg-gray-100"
+                value={newBrowserPort}
+                placeholder="9222"
+                onChange={(event) => setNewBrowserPort(event.target.value)}
+                className="mt-1 w-32 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900"
               />
-              <p className="mt-1 text-xs text-gray-500">
-                The browser listens for this app on this port, on this machine only. Anything that
-                can reach it can drive that browser, so leave it on a port nothing else uses.
-              </p>
             </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700" htmlFor="browserChatMaxQueue">
-                Queue limit
-              </label>
-              <input
-                id="browserChatMaxQueue"
-                type="number"
-                min={1}
-                max={500}
-                value={form.browserChatMaxQueue}
-                onChange={(event) => setField('browserChatMaxQueue', event.target.value)}
-                disabled={savingSection === 'browserChat'}
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 disabled:bg-gray-100"
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                How many requests may WAIT for the chat tab. One runs at a time whatever this says -
-                a chat window holds one conversation. Past this many waiting, the next request is
-                refused straight away instead of holding a connection open until it times out.
-              </p>
-            </div>
+            <button
+              type="button"
+              onClick={addBrowser}
+              disabled={savingSection !== null}
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={refreshDebugBrowsers}
+              disabled={startingPort !== null}
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              Check status
+            </button>
           </div>
 
-          <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={handleStartDebugBrowser}
-                disabled={isStartingBrowser || savingSection !== null}
-                className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-              >
-                {isStartingBrowser ? 'Starting browser...' : 'Start browser and open chat tabs'}
-              </button>
-              <button
-                type="button"
-                onClick={() => refreshDebugBrowser(Number.parseInt(form.browserChatDebugPort, 10) || undefined)}
-                disabled={isStartingBrowser}
-                className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-white disabled:opacity-50"
-              >
-                Check status
-              </button>
-              {debugStatus ? (
-                <span className={debugStatus.running ? 'text-sm text-green-700' : 'text-sm text-gray-600'}>
-                  {debugStatus.running
-                    ? `${debugStatus.browser ?? 'A browser'} is listening on port ${debugStatus.port}.`
-                    : `Nothing is listening on port ${debugStatus.port}.`}
-                </span>
-              ) : null}
-            </div>
-
-            {debugStatus?.running ? (
-              <ul className="mt-3 space-y-1">
-                {debugStatus.sites.map((site) => (
-                  <li key={site.id} className="text-sm text-gray-700">
-                    <span className={site.open ? 'text-green-700' : 'text-amber-700'}>
-                      {site.open ? 'tab open' : 'no tab'}
-                    </span>
-                    {' - '}
-                    {site.label}{' '}
-                    <span className="text-gray-500">({site.url})</span>
+          {debugReport && Object.keys(debugReport.queues).length > 0 ? (
+            <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Queues</p>
+              <ul className="mt-2 space-y-1">
+                {Object.entries(debugReport.queues).map(([siteId, stats]) => (
+                  <li key={siteId} className="text-sm text-gray-700">
+                    {getAIProviderLabel(siteId as AIProvider)}: {stats.tabs} tab
+                    {stats.tabs === 1 ? '' : 's'}, {stats.inUse} in use, {stats.queued} waiting
                   </li>
                 ))}
               </ul>
-            ) : null}
+            </div>
+          ) : null}
 
-            <p className="mt-3 text-xs text-gray-500">
-              A browser started here uses a profile of its own, because Chrome ignores the debug
-              port on a profile that is already running. Sign in to each site once inside that
-              window and leave it open - this app attaches to it and never launches one of its own.
-            </p>
+          <p className="text-xs text-gray-500">
+            Each browser gets a profile directory of its own, because Chrome ignores the debug port
+            on a profile that is already running. Sign in to the tab once inside each window and
+            leave it open - this app attaches to them and never launches one of its own during a run.
+          </p>
 
-            {debugError ? <p className="mt-2 text-sm text-red-600">{debugError}</p> : null}
-          </div>
+          {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
 
           <div className="flex justify-end">
             <button
@@ -669,7 +717,7 @@ export default function AdminSettingsPage() {
               disabled={savingSection !== null && savingSection !== 'browserChat'}
               className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {savingSection === 'browserChat' ? 'Saving...' : 'Save Browser Chat'}
+              {savingSection === 'browserChat' ? 'Saving...' : 'Save Browser List'}
             </button>
           </div>
         </section>
