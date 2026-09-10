@@ -1,4 +1,7 @@
 import type { AIProvider } from '../../types/template';
+// Type-only, so nothing is imported at runtime and the no-side-effects
+// rule this module's docstring states still holds.
+import type { CredentialKind } from '../../config/providerCatalog';
 
 /**
  * Contracts for the AI transport layer.
@@ -145,7 +148,7 @@ export type ProviderCapabilities = {
   /** false => the facade folds system text into the head of the user body. */
   readonly systemBlocks: boolean;
   readonly requiresApiKey: boolean;
-  readonly credentialKind: 'api-key' | 'subscription-seat';
+  readonly credentialKind: CredentialKind;
   /** Simultaneous in-flight calls this provider tolerates. */
   readonly maxConcurrency: number;
 };

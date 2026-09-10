@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Fake chat</title>
+</head>
+<body>
+  <!--
+    A chat page with claude.ai's shape, for testing the browser-chat driver.
+
+    The driver cannot be exercised against the real sites in a test: that needs
+    a signed-in account, a network, and markup nobody controls. So this page
+    reproduces the four things the driver actually depends on, and nothing else:
+
+      * a contenteditable composer matching the site's first candidate
+      * a send button
+      * a stop button that exists ONLY while a reply is streaming
+      * assistant messages that arrive a chunk at a time
+
+    The streaming is the point. A reply that appeared all at once would pass a
+    driver that reads too early, which is the bug the two-stable-reads rule
+    exists to prevent.
+
+    Query parameters let one page cover the awkward cases:
+      ?chunks=N      how many chunks the reply arrives in
+      ?delay=MS      gap between chunks
+      ?empty=1       render the reply node, then leave it empty for a while
+      ?echo=1        ALSO render the user's message with the assistant selector,
+                     which is the "an assistant selector matches the user turn"
+                     failure the echo guard exists to catch
+      ?silent=1      never answer at all, for the deadline path
+      ?json=1        answer with JSON, so a real end-to-end API call can run
+      ?linger=MS     keep the stop button up for MS after the text is complete
+      ?nostop=1      never show the stop button AND never set the streaming
+                     attribute to "true", so NOTHING on the page ever reports
+                     busy - the case where the site renamed its stop control and
+                     the driver has only "the text stopped changing" to go on.
+                     (The attribute itself stays, since the assistant selector
+                     is what finds the reply at all; only its value changes.)
+      ?pause=MS      stall for MS before the LAST chunk, which is what a model
+                     thinking mid-answer looks like from outside
+      ?wall=1        render a usage-limit wall instead of answering
+      ?leave=MS      navigate the tab away MS after the prompt is sent
+  -->
+  <a href="/new" id="new-chat">New chat</a>
+  <div id="transcript"></div>
+  <div>
+    <div contenteditable="true" class="ProseMirror" id="composer"></div>
+    <button aria-label="Send message" id="send">Send</button>
+    <span id="stop-slot"></span>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const number = (name, fallback) => {
+      const value = Number.parseInt(params.get(name) || '', 10);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    const CHUNKS = number('chunks', 4);
+    const DELAY = number('delay', 60);
+    const LINGER = number('linger', 0);
+    const PAUSE = number('pause', 0);
+    const NOSTOP = params.get('nostop') === '1';
+
+    const transcript = document.getElementById('transcript');
+    const composer = document.getElementById('composer');
+    const stopSlot = document.getElementById('stop-slot');
+
+    // The reply is deterministic and derived from the prompt, so a test can
+    // assert the whole answer came back rather than a prefix of it.
+    function replyFor(prompt) {
+      const words = prompt.split(/\s+/).filter(Boolean).length;
+      // A chat window answers in prose; this app's two main prompts ask for
+      // JSON inside that prose. ?json=1 stands in for that case so the whole
+      // route can be exercised, extraction included.
+      if (params.get('json') === '1') {
+        var payload = JSON.stringify({
+          jobMeta: { title: 'Senior Backend Engineer', company: 'Fixture Co' },
+          keywords: ['ANSWER-START', 'words:' + words, 'ANSWER-END'],
+          hardSkills: ['Go', 'TypeScript', 'PostgreSQL'],
+          softSkills: [],
+        });
+        // Wrapped the way a real chat window answers, not the way an API does:
+        // a sentence of preamble, the markers the prompt asked for, and an
+        // offer to help further afterwards. A fixture that returned bare JSON
+        // would pass an extractor that cannot cope with any of that, which is
+        // exactly the extractor this app must not have.
+        return [
+          "Here's the analysis you asked for:",
+          '',
+          '@@BEGIN_JSON@@',
+          payload,
+          '@@END_JSON@@',
+          '',
+          'Would you like me to weight any of these differently?',
+        ].join('\n');
+      }
+      return [
+        'ANSWER-START',
+        'You sent ' + words + ' words.',
+        'This reply arrives in ' + CHUNKS + ' pieces to exercise the polling rule.',
+        'ANSWER-END',
+      ].join(' ');
+    }
+
+    function showStop() {
+      // ?nostop=1 stands in for a site that renamed its stop control: the reply
+      // streams exactly as before, but nothing on the page ever says so.
+      if (NOSTOP) return;
+      stopSlot.innerHTML = '<button aria-label="Stop response" id="stop">Stop</button>';
+    }
+    function hideStop() {
+      stopSlot.innerHTML = '';
+    }
+
+    document.getElementById('new-chat').addEventListener('click', (event) => {
+      event.preventDefault();
+      transcript.innerHTML = '';
+      composer.innerText = '';
+      hideStop();
+    });
+
+    document.getElementById('send').addEventListener('click', () => {
+      const prompt = composer.innerText;
+      if (!prompt.trim()) return;
+      composer.innerText = '';
+
+      // The user's own turn. Deliberately NOT matching the assistant selector,
+      // unless ?echo=1 asks for the broken page the guard is meant to catch.
+      const mine = document.createElement('div');
+      mine.className = 'user-message';
+      if (params.get('echo') === '1') mine.setAttribute('data-is-streaming', 'false');
+      mine.innerText = prompt;
+      transcript.appendChild(mine);
+
+      if (params.get('silent') === '1') return;
+
+      // The site refusing rather than answering. Rendered as ordinary page
+      // text, with no message node, exactly as both sites do it.
+      if (params.get('wall') === '1') {
+        const wall = document.createElement('div');
+        wall.innerText = "You've reached your usage limit. It resets at 3:00 PM.";
+        transcript.appendChild(wall);
+        return;
+      }
+
+      // The operator clicking a link in the tab mid-answer.
+      const leave = number('leave', 0);
+      if (leave > 0) {
+        setTimeout(() => { location.href = 'about:blank'; }, leave);
+        return;
+      }
+
+      showStop();
+      const reply = document.createElement('div');
+      // "true" is itself one of the busy candidates, so ?nostop=1 has to
+      // suppress it too - otherwise the driver still has a way to tell that a
+      // reply is in flight and the no-busy-signal case is not being tested.
+      reply.setAttribute('data-is-streaming', NOSTOP ? 'false' : 'true');
+      reply.id = 'reply-' + transcript.children.length;
+      transcript.appendChild(reply);
+
+      const full = replyFor(prompt);
+      const size = Math.ceil(full.length / CHUNKS);
+      let sent = 0;
+
+      // ?empty=1 holds the node visible but empty first: a driver that takes
+      // "a reply node exists" as "the reply is here" reads nothing.
+      const startDelay = params.get('empty') === '1' ? DELAY * 3 : DELAY;
+
+      function step() {
+        if (sent >= full.length) {
+          reply.setAttribute('data-is-streaming', 'false');
+          setTimeout(hideStop, LINGER);
+          return;
+        }
+        sent = Math.min(full.length, sent + size);
+        reply.innerText = full.slice(0, sent);
+        // ?pause=MS stalls before the final chunk. With no stop button that is
+        // indistinguishable from a finished answer except by waiting, which is
+        // the whole point of the test that uses it.
+        const last = sent >= full.length - size;
+        setTimeout(step, last && PAUSE ? PAUSE : DELAY);
+      }
+      setTimeout(step, startDelay);
+    });
+  </script>
+</body>
+</html>

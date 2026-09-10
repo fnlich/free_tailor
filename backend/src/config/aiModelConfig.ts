@@ -71,6 +71,25 @@ type AppSettings = {
   outputPathTemplate: string;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
+  /**
+   * The DevTools port the browser-chat providers attach to.
+   *
+   * Stored rather than read only from the environment because it is now
+   * something an operator sets on the Settings page, alongside the button that
+   * starts a browser on it. Env stays the default so an existing `.env` still
+   * decides what a fresh install starts with.
+   */
+  browserChatDebugPort: number;
+  /**
+   * How many browser-chat calls may WAIT for the one tab.
+   *
+   * Distinct from how many may run - that is one, and always will be, because
+   * a chat window holds one conversation. This is the length of the line behind
+   * it. Unbounded, a 40-profile batch queues 40 calls that each hold an HTTP
+   * request open for as long as their deadline allows; bounded, the ones that
+   * cannot be served are told so immediately.
+   */
+  browserChatMaxQueue: number;
 };
 
 export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
@@ -98,6 +117,8 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   | 'defaultCoverLetterDocxEnabled'
   | 'aiModels'
   | 'googleSheetsSources'
+  | 'browserChatDebugPort'
+  | 'browserChatMaxQueue'
 >;
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
   outputPathUsesJobTitle: boolean;
@@ -162,6 +183,22 @@ function createDefaultModelRecords(): AIModelRecord[] {
       provider: 'claude-cli',
       modelName: 'haiku',
       description: 'Fastest model on the subscription seat, for classification and short extractions.',
+    },
+    // Browser-driven chat. Ranked after the seat and before the metered APIs:
+    // both cost nothing to run, but a chat window answers at reading speed and
+    // one conversation at a time, so neither should be what an unset default
+    // falls back to.
+    {
+      name: 'Claude (browser)',
+      provider: 'claude-web',
+      modelName: 'chat',
+      description: 'Drives claude.ai in a Chrome you started and signed in to. No API key.',
+    },
+    {
+      name: 'ChatGPT (browser)',
+      provider: 'chatgpt-web',
+      modelName: 'chat',
+      description: 'Drives chatgpt.com in a Chrome you started and signed in to. No API key.',
     },
     {
       name: DEFAULT_OPENAI_MODEL,
@@ -237,6 +274,46 @@ function allProvidersEnabled(value = true): ProvidersEnabled {
   }, {} as ProvidersEnabled);
 }
 
+/**
+ * The debug port a fresh install starts with.
+ *
+ * Read from the environment so an operator who already configured
+ * `AI_WEB_CDP_PORT` does not have to set it again in two places, and so a
+ * deployment can ship a default. Once saved on the Settings page the stored
+ * value wins - which is the whole point of putting it there.
+ */
+export const BROWSER_CHAT_PORT_MIN = 1024;
+export const BROWSER_CHAT_PORT_MAX = 65535;
+
+function envPort(): number {
+  const raw = Number.parseInt((process.env.AI_WEB_CDP_PORT ?? '').trim(), 10);
+  return Number.isInteger(raw) && raw >= BROWSER_CHAT_PORT_MIN && raw <= BROWSER_CHAT_PORT_MAX
+    ? raw
+    : 9222;
+}
+
+/**
+ * How long the line for the one chat tab may get, before anything is saved.
+ *
+ * `DEFAULT_MAX_QUEUE` in `.env`. Ten is a batch of ten profiles: enough that
+ * the ordinary case never sees a rejection, small enough that the last caller
+ * in the line has a believable wait rather than an hour of one.
+ */
+export const BROWSER_CHAT_MAX_QUEUE_MIN = 1;
+export const BROWSER_CHAT_MAX_QUEUE_MAX = 500;
+
+function envMaxQueue(): number {
+  const raw = Number.parseInt((process.env.DEFAULT_MAX_QUEUE ?? '').trim(), 10);
+  return Number.isInteger(raw) &&
+    raw >= BROWSER_CHAT_MAX_QUEUE_MIN &&
+    raw <= BROWSER_CHAT_MAX_QUEUE_MAX
+    ? raw
+    : 10;
+}
+
+const DEFAULT_BROWSER_CHAT_PORT = envPort();
+const DEFAULT_BROWSER_CHAT_MAX_QUEUE = envMaxQueue();
+
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
   defaultMode: 'preview',
@@ -251,6 +328,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
   aiModels: createDefaultModelRecords(),
   googleSheetsSources: [],
+  browserChatDebugPort: DEFAULT_BROWSER_CHAT_PORT,
+  browserChatMaxQueue: DEFAULT_BROWSER_CHAT_MAX_QUEUE,
 };
 
 function cloneDefaultSettings(): AppSettings {
@@ -479,14 +558,18 @@ function normalizeProvidersEnabled(
       continue;
     }
 
+    // A provider added after the flat flags stopped being written has none, so
+    // there is nothing older that could be asking about it.
     const legacyField = getProviderDescriptor(id).legacyEnabledField;
-    const fromLegacy = source[legacyField];
-    if (typeof fromLegacy === 'boolean') {
-      result[id] = fromLegacy;
-      continue;
-    }
-    if (strict && hasOwnProperty(source, legacyField)) {
-      throw new Error(`${legacyField} must be a boolean`);
+    if (legacyField) {
+      const fromLegacy = source[legacyField];
+      if (typeof fromLegacy === 'boolean') {
+        result[id] = fromLegacy;
+        continue;
+      }
+      if (strict && hasOwnProperty(source, legacyField)) {
+        throw new Error(`${legacyField} must be a boolean`);
+      }
     }
 
     // The one alias that carries meaning: a row written before the CLI
@@ -500,6 +583,33 @@ function normalizeProvidersEnabled(
     result[id] = fallback[id] ?? true;
   }
   return result;
+}
+
+/**
+ * A whole number inside a range, or the fallback.
+ *
+ * Clamped rather than rejected outside strict mode, because these two arrive
+ * from a number input in a browser and the useful behaviour for "70000" is the
+ * highest port there is, not a settings file that will not load. Strict mode -
+ * which is how the stored file is read - still refuses, so a hand-edited value
+ * out of range is reported instead of silently becoming something else.
+ */
+function normalizeBoundedInteger(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+  field: string,
+  strict: boolean
+): number {
+  if (typeof value === 'undefined') return fallback;
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value).trim(), 10);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    if (strict) throw new Error(`${field} must be a whole number between ${min} and ${max}`);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(parsed)));
+  }
+  return parsed;
 }
 
 function normalizeSettings(
@@ -528,6 +638,22 @@ function normalizeSettings(
   );
 
   return {
+    browserChatDebugPort: normalizeBoundedInteger(
+      source.browserChatDebugPort,
+      fallback.browserChatDebugPort,
+      BROWSER_CHAT_PORT_MIN,
+      BROWSER_CHAT_PORT_MAX,
+      'browserChatDebugPort',
+      strict
+    ),
+    browserChatMaxQueue: normalizeBoundedInteger(
+      source.browserChatMaxQueue,
+      fallback.browserChatMaxQueue,
+      BROWSER_CHAT_MAX_QUEUE_MIN,
+      BROWSER_CHAT_MAX_QUEUE_MAX,
+      'browserChatMaxQueue',
+      strict
+    ),
     providersEnabled,
     defaultMode:
       typeof source.defaultMode === 'undefined'
@@ -640,6 +766,8 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     aiModels: runnableModels.map((model) => ({ ...model })),
     googleSheetsSources: settings.googleSheetsSources,
+    browserChatDebugPort: settings.browserChatDebugPort,
+    browserChatMaxQueue: settings.browserChatMaxQueue,
   };
 }
 
@@ -755,7 +883,43 @@ export async function getAdminAppSettings(): Promise<AdminAppSettings> {
   return toAdminSettings(await readSettings());
 }
 
+/**
+ * A field an operator typed, checked rather than corrected.
+ *
+ * `normalizeSettings` clamps out-of-range numbers, which is right when reading
+ * a stored file - a settings row that will not load takes the whole app down.
+ * It is wrong here. Somebody typed 80 into a port box; silently saving 1024 and
+ * starting a browser on it is the same class of bug as parsing "9222; rm -rf /"
+ * as 9222, and it is worse for being invisible. Say what was wrong instead.
+ */
+function assertInRange(
+  value: unknown,
+  min: number,
+  max: number,
+  field: string
+): void {
+  if (typeof value === 'undefined') return;
+  const raw = typeof value === 'number' ? String(value) : String(value ?? '').trim();
+  const parsed = /^-?\d+$/.test(raw) ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${field} must be a whole number between ${min} and ${max}`);
+  }
+}
+
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
+  assertInRange(
+    input.browserChatDebugPort,
+    BROWSER_CHAT_PORT_MIN,
+    BROWSER_CHAT_PORT_MAX,
+    'browserChatDebugPort'
+  );
+  assertInRange(
+    input.browserChatMaxQueue,
+    BROWSER_CHAT_MAX_QUEUE_MIN,
+    BROWSER_CHAT_MAX_QUEUE_MAX,
+    'browserChatMaxQueue'
+  );
+
   const current = await readSettings();
 
   // A client that still sends the flat per-provider booleans has to be heard.
@@ -770,7 +934,7 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
           id === 'claude-cli' && typeof legacyFlags.openrouterEnabled === 'boolean'
             ? 'openrouterEnabled'
             : getProviderDescriptor(id).legacyEnabledField;
-        const flat = legacyFlags[legacyField];
+        const flat = legacyField ? legacyFlags[legacyField] : undefined;
         acc[id] = typeof flat === 'boolean' ? flat : current.providersEnabled[id];
         return acc;
       }, {} as ProvidersEnabled);
@@ -1045,4 +1209,28 @@ export function isProviderEnabled(provider: AIProvider, settings: AIModelSetting
  */
 export function getDefaultEnabledProvider(settings: AIModelSettings): AIProvider {
   return AI_PROVIDER_IDS.find((id) => settings.providersEnabled[id]) ?? AI_PROVIDER_IDS[0];
+}
+
+/**
+ * The browser-chat settings, for the code paths that cannot wait on a read.
+ *
+ * `readSettings` is async and cached; the browser-chat adapter needs the port
+ * and the queue bound at call time. Exposed as one accessor so there is a
+ * single place that decides what wins - the stored value, then the
+ * environment, then the built-in default.
+ */
+export async function getBrowserChatSettings(): Promise<{
+  debugPort: number;
+  maxQueue: number;
+}> {
+  const settings = await readSettings();
+  return {
+    debugPort: settings.browserChatDebugPort,
+    maxQueue: settings.browserChatMaxQueue,
+  };
+}
+
+/** What a fresh install would use, before anything is saved. */
+export function getBrowserChatEnvDefaults(): { debugPort: number; maxQueue: number } {
+  return { debugPort: DEFAULT_BROWSER_CHAT_PORT, maxQueue: DEFAULT_BROWSER_CHAT_MAX_QUEUE };
 }

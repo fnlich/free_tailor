@@ -191,7 +191,13 @@ async function apiFetch<T>(
  *
  * The former `openrouter` id was replaced by `claude-cli`.
  */
-export type AIProvider = 'claude-cli' | 'claude' | 'openai' | 'deepseek';
+export type AIProvider =
+  | 'claude-cli'
+  | 'claude'
+  | 'openai'
+  | 'deepseek'
+  | 'claude-web'
+  | 'chatgpt-web';
 
 export type ProviderMeta = {
   label: string;
@@ -215,6 +221,16 @@ export const PROVIDER_META = {
   claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
   openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },
   deepseek: { label: 'DeepSeek', requiresApiKey: true, modelNameHint: 'deepseek-v4-flash' },
+  'claude-web': {
+    label: 'Claude (browser)',
+    requiresApiKey: false,
+    modelNameHint: 'chat',
+  },
+  'chatgpt-web': {
+    label: 'ChatGPT (browser)',
+    requiresApiKey: false,
+    modelNameHint: 'chat',
+  },
 } as const satisfies Record<AIProvider, ProviderMeta>;
 
 export const AI_PROVIDERS: AIProvider[] = Object.keys(PROVIDER_META) as AIProvider[];
@@ -523,6 +539,10 @@ export interface PublicAppSettings {
   aiPreferenceDefaults: AiPreferenceDefaults;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
+  /** DevTools port the browser-chat providers attach to. */
+  browserChatDebugPort: number;
+  /** How many browser-chat calls may wait for the one chat tab. */
+  browserChatMaxQueue: number;
 }
 
 export type AIModelSettings = PublicAppSettings;
@@ -559,7 +579,10 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
       ? (source.providersEnabled as Record<string, unknown>)
       : null;
 
-  const legacyField: Record<AIProvider, string> = {
+  // Partial on purpose, mirroring the backend catalog: a provider added after
+  // these flat flags stopped being written has none, and inventing one would
+  // only be a field with no writer.
+  const legacyField: Partial<Record<AIProvider, string>> = {
     'claude-cli': 'claudeCliEnabled',
     claude: 'claudeEnabled',
     openai: 'openaiEnabled',
@@ -573,7 +596,8 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
       result[provider] = fromRecord;
       continue;
     }
-    const flat = source[legacyField[provider]];
+    const field = legacyField[provider];
+    const flat = field ? source[field] : undefined;
     if (typeof flat === 'boolean') {
       result[provider] = flat;
       continue;
@@ -612,6 +636,8 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   },
   aiModels: [],
   googleSheetsSources: [],
+  browserChatDebugPort: 9222,
+  browserChatMaxQueue: 10,
 };
 
 /**
@@ -657,6 +683,14 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
     aiPreferenceDefaults: normalizeAiPreferenceDefaults(source.aiPreferenceDefaults),
+    browserChatDebugPort:
+      typeof source.browserChatDebugPort === 'number' && Number.isFinite(source.browserChatDebugPort)
+        ? source.browserChatDebugPort
+        : 9222,
+    browserChatMaxQueue:
+      typeof source.browserChatMaxQueue === 'number' && Number.isFinite(source.browserChatMaxQueue)
+        ? source.browserChatMaxQueue
+        : 10,
     aiModels: Array.isArray(source.aiModels)
       ? source.aiModels
           .filter((entry): entry is AIModelRecord => typeof entry === 'object' && entry !== null)
@@ -693,6 +727,32 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
 export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   outputBaseDir?: string;
   outputPathTemplate?: string;
+}
+
+/** One chat site, and whether the debug browser has a tab on it. */
+export interface DebugBrowserSite {
+  id: AIProvider;
+  label: string;
+  url: string;
+  open: boolean;
+}
+
+export interface DebugBrowserStatus {
+  port: number;
+  running: boolean;
+  browser: string | null;
+  sites: DebugBrowserSite[];
+}
+
+export interface StartDebugBrowserResponse {
+  started: boolean;
+  /** True when a browser was already listening and nothing was launched. */
+  reused: boolean;
+  executable: string;
+  browserLabel: string;
+  profileDir: string;
+  status: DebugBrowserStatus;
+  settings: AdminAppSettings;
 }
 
 export interface BrowseOutputDirectoryResponse {
@@ -853,6 +913,17 @@ export const adminApi = {
 
   getSettings: async () =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/settings')),
+
+  getDebugBrowser: (port?: number) =>
+    apiFetch<DebugBrowserStatus>(
+      typeof port === 'number' ? `/admin/browser/debug?port=${port}` : '/admin/browser/debug'
+    ),
+
+  startDebugBrowser: (data: { port: number; siteIds?: AIProvider[]; save?: boolean }) =>
+    apiFetch<StartDebugBrowserResponse>('/admin/browser/debug/start', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   browseOutputDirectory: (currentPath?: string) =>
     apiFetch<BrowseOutputDirectoryResponse>('/admin/browse-output-directory', {

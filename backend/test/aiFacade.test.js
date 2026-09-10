@@ -266,7 +266,14 @@ test('an explicitly registered adapter wins, and the other providers still exist
 
   const capabilities = ai.listProviderCapabilities();
   const ids = capabilities.map((entry) => entry.id).sort();
-  assert.deepEqual(ids, ['claude', 'claude-cli', 'deepseek', 'openai']);
+  assert.deepEqual(ids, [
+    'chatgpt-web',
+    'claude',
+    'claude-cli',
+    'claude-web',
+    'deepseek',
+    'openai',
+  ]);
   assert.equal(
     capabilities.find((entry) => entry.id === 'claude-cli').label,
     'stub',

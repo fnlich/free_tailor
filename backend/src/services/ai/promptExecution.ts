@@ -3,7 +3,8 @@ import { coerceProviderId, getProviderLabel } from '../../config/providerCatalog
 import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
 import { resolvePromptByExactId, resolvePromptByRuntimeId } from '../promptService';
-import { assemblePrompt, assembleRawPrompt, JSON_ONLY_SYSTEM_PROMPT, type AssembledPrompt, type PromptRef } from './promptAssembly';
+import { assemblePrompt, assembleRawPrompt, JSON_ONLY_SYSTEM_PROMPT,
+  JSON_SENTINEL_SYSTEM_PROMPT, type AssembledPrompt, type PromptRef } from './promptAssembly';
 import { getAdapter } from './registry';
 import { recordCompletion, recordFailure, warnOnce } from './telemetry';
 import {
@@ -174,7 +175,19 @@ async function runAssembled(
   // dropped the JSON-only instruction entirely, which is why the one caller
   // that used it had no JSON enforcement at all.
   const foldSystem = !adapter.capabilities.systemBlocks;
-  const volatileSystem = input.responseFormat === 'json' ? JSON_ONLY_SYSTEM_PROMPT : '';
+  // Which JSON instruction, decided by what the TRANSPORT can enforce.
+  //
+  // A provider with a native JSON mode is already constrained and needs only to
+  // be told not to narrate; asking it for sentinels would put them inside the
+  // JSON it is obliged to emit and break the one output that was guaranteed to
+  // parse. A chat window enforces nothing, so it gets the long instruction and
+  // the sentinels the extractor keys on.
+  const volatileSystem =
+    input.responseFormat === 'json'
+      ? adapter.capabilities.nativeJsonMode === 'none'
+        ? JSON_SENTINEL_SYSTEM_PROMPT
+        : JSON_ONLY_SYSTEM_PROMPT
+      : '';
 
   const request: CompletionRequest = {
     modelName,
