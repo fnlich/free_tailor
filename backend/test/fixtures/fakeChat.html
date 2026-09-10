@@ -74,12 +74,26 @@
       // JSON inside that prose. ?json=1 stands in for that case so the whole
       // route can be exercised, extraction included.
       if (params.get('json') === '1') {
-        return JSON.stringify({
+        var payload = JSON.stringify({
           jobMeta: { title: 'Senior Backend Engineer', company: 'Fixture Co' },
           keywords: ['ANSWER-START', 'words:' + words, 'ANSWER-END'],
           hardSkills: ['Go', 'TypeScript', 'PostgreSQL'],
           softSkills: [],
         });
+        // Wrapped the way a real chat window answers, not the way an API does:
+        // a sentence of preamble, the markers the prompt asked for, and an
+        // offer to help further afterwards. A fixture that returned bare JSON
+        // would pass an extractor that cannot cope with any of that, which is
+        // exactly the extractor this app must not have.
+        return [
+          "Here's the analysis you asked for:",
+          '',
+          '@@BEGIN_JSON@@',
+          payload,
+          '@@END_JSON@@',
+          '',
+          'Would you like me to weight any of these differently?',
+        ].join('\n');
       }
       return [
         'ANSWER-START',

@@ -140,6 +140,16 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   already running, and because the browser must not be in automation mode -
   sign-in flows reject one that is.
 
+  Or start it from the app: **Admin → Settings → Browser Chat** has a port field
+  and a **Start browser and open chat tabs** button that launches the same
+  browser, opens both chat sites in it, saves the port, and shows which sites
+  have a tab. The port saved there is what the providers attach to - the `.env`
+  value below is only the default a fresh install begins with. That panel also
+  carries the **queue limit**: how many requests may WAIT for the chat tab (one
+  runs at a time whatever it says, because a chat window holds one
+  conversation). Past that many waiting, the next request is refused
+  immediately rather than holding a connection open until it times out.
+
   The debug port listens on loopback only, and the script deliberately does
   **not** pass `--remote-allow-origins=*`. That flag turns off Chrome's DevTools
   origin check, which is the only thing stopping an ordinary web page you visit
@@ -333,6 +343,9 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave that window open. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
 | A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
+| A browser provider says `Too many requests are already waiting` | More requests are queued for the chat tab than the queue limit allows. One runs at a time by design; this is the length of the line behind it. Raise **Queue limit** under Admin → Settings → Browser Chat (or `DEFAULT_MAX_QUEUE` in `.env` for a fresh install), or send fewer profiles at once. |
+| Starting the browser says `nothing is listening on port ...` | Usually another window of that browser is already running with the same profile: Chrome then opens a tab in the existing window and never opens the port. Close every window of it and try again. On a server with no display, Chrome exits at once - set `AI_WEB_BROWSER_ARGS=--headless=new --no-sandbox`, noting that a headless browser cannot be signed in to by hand and so only works against a profile that already is. |
+| Starting the browser says no installed browser was found | The resolver looks in the standard install locations and deliberately ignores `CHROME_PATH`, because that often points at puppeteer's Chrome for Testing and sign-in flows reject a browser in automation mode. Set `AI_WEB_BROWSER_PATH` to the browser you want used. |
 | A browser provider says the site `did not answer because ...` | The site refused rather than the driver failing. A usage limit or a rate limit is reported as such and resets on its own; a signed-out tab or a human-verification check needs you at the browser. Either way the backend stops at once instead of polling until the deadline. |
 | A browser provider warns `produced N assistant messages, and the first is being read as the reply` | The send produced more than one assistant message. The driver takes the first one that was not there before, which is right when a site streams two candidate answers side by side and wrong if one of those nodes is a reasoning trace or a preamble. If answers come back looking like reasoning, narrow `AI_WEB_CLAUDE_ASSISTANT` / `AI_WEB_CHATGPT_ASSISTANT` so it matches only the finished reply. |
 | A browser provider warns `no usable "still generating" selector` | Every stop-button candidate also matched an idle page, so nothing can report that a reply is in flight. Answers are still read correctly - the driver falls back to waiting until the text has stopped changing for several seconds - but each call is slower. Set `AI_WEB_CLAUDE_BUSY` or `AI_WEB_CHATGPT_BUSY` to something present only while the site is generating. |

@@ -7,8 +7,67 @@ import {
   type RenderedPromptSegment,
 } from '../promptService';
 
+/**
+ * The sentinels a chat window is asked to wrap its JSON in.
+ *
+ * Deliberately not markdown. A fence is the obvious choice and it is the wrong
+ * one here: the reply reaches this app as the page's rendered `innerText`, and
+ * a site that renders a fence as a code block hands back the code WITHOUT the
+ * backticks, so the marker that was supposed to delimit the answer is the one
+ * thing guaranteed to be missing. These survive rendering because they are
+ * ordinary text - no character in them means anything to a markdown parser -
+ * and they are ugly enough that no model emits them by accident.
+ */
+export const JSON_BEGIN_SENTINEL = '@@BEGIN_JSON@@';
+export const JSON_END_SENTINEL = '@@END_JSON@@';
+
+/**
+ * What to say to a provider that ENFORCES JSON.
+ *
+ * Short on purpose. The transport is already constraining the output, so the
+ * only job left is to stop the model narrating - and asking such a provider for
+ * sentinels would put them inside the JSON it is obliged to produce, turning a
+ * guaranteed-valid response into a guaranteed-invalid one.
+ */
 export const JSON_ONLY_SYSTEM_PROMPT =
   'You are a strict JSON generator. Return valid JSON only, with no markdown fences or extra text.';
+
+/**
+ * What to say to a chat window, which enforces nothing.
+ *
+ * Every clause here is a failure that actually happens when you type a prompt
+ * into claude.ai or chatgpt.com and read the answer back off the page:
+ *
+ *   - It opens with a sentence of preamble ("Here's the tailored resume:") and
+ *     closes with an offer to help further. Both parse as prose, not JSON.
+ *   - It wraps the answer in a fence, which `innerText` then strips, so a
+ *     reader keyed on fences finds nothing.
+ *   - It "helpfully" adds `// comments`, trailing commas, or `...` where a long
+ *     list bored it. Each is valid-looking and none is valid JSON.
+ *   - It curls the quotes, because it is writing prose in a rich text surface.
+ *
+ * The sentinels are what make this recoverable rather than merely likely to
+ * work: whatever else the model says, the extractor takes what lies between
+ * them. Everything else in this instruction is there to make what lies between
+ * them parse on the first attempt.
+ */
+export const JSON_SENTINEL_SYSTEM_PROMPT = [
+  'You are a strict JSON generator. Your entire reply must be exactly this, and nothing else:',
+  '',
+  JSON_BEGIN_SENTINEL,
+  '<the JSON value>',
+  JSON_END_SENTINEL,
+  '',
+  'Rules, all of which matter:',
+  `1. Emit ${JSON_BEGIN_SENTINEL} on its own line, then the JSON, then ${JSON_END_SENTINEL} on its own line.`,
+  '2. No preamble before it and no commentary after it. Do not explain what you did.',
+  '3. No markdown code fences, and no markdown of any kind outside string values.',
+  '4. Use double quotes for every key and every string. Never use single or curly quotes.',
+  '5. No comments, no trailing commas, no ellipses, and no placeholders such as "..." or "TODO".',
+  '6. Write every element out in full, however long the list. Never abbreviate or summarise it.',
+  '7. Escape any double quote, backslash or newline that appears inside a string value.',
+  '8. If you have no value for a field, use null, an empty string or an empty array - never omit the field.',
+].join('\n');
 
 /**
  * How a prompt id is looked up.

@@ -19,6 +19,10 @@ const {
 } = require('../dist/services/ai/providers/browserChat/conversation');
 const { ChatTab } = require('../dist/services/ai/providers/browserChat/tab');
 const { readChatSite, isChatSiteId } = require('../dist/services/ai/providers/browserChat/sites');
+const {
+  JSON_BEGIN_SENTINEL,
+  JSON_END_SENTINEL,
+} = require('../dist/services/ai/promptAssembly');
 const { debugEndpoint } = require('../dist/services/ai/providers/browserChat/session');
 
 // These rules are the ones that cannot be checked by looking at the page: each
@@ -1048,4 +1052,43 @@ test('a second assistant node alongside the reply is called out, not silently ig
     logged.some((m) => m.includes('assistant messages, and the first is being read as the reply')),
     'but the operator must be told the page produced more than one'
   );
+});
+
+test('a chat window is asked for sentinels; a provider that enforces JSON is not', async () => {
+  // The instruction has to be chosen by what the TRANSPORT can enforce. A chat
+  // window enforces nothing and needs the long instruction plus the markers the
+  // extractor keys on. A provider with a native JSON mode is already
+  // constrained, and asking IT for sentinels would put them inside the JSON it
+  // is obliged to emit - turning the one output guaranteed to parse into one
+  // guaranteed not to.
+  const { staticDir } = useTempStorage('json-instruction');
+  writeStaticJson(staticDir, 'prompts/analyze-job-description.json', {
+    id: 'analyze-job-description',
+    content: 'Extract what matters.\n[[jobDescription]]',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  });
+
+  const ai = loadFresh('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+  const { createBrowserChatAdapter } = loadFresh('../dist/services/ai/providers/browserChat');
+  const recorder = recordingSession(`${JSON_BEGIN_SENTINEL}\n{"ok":true}\n${JSON_END_SENTINEL}`);
+  ai.registerAdapter('claude-web', () =>
+    createBrowserChatAdapter('claude-web', { session: recorder.session })
+  );
+
+  await ai.createPromptCompletion({
+    promptId: 'analyze-job-description',
+    callSite: 'analyze-job-description',
+    promptValues: { jobDescription: 'a job description' },
+    fallbackProvider: 'claude-web',
+    responseFormat: 'json',
+    useExactPromptId: true,
+  });
+
+  const sent = recorder.prompts.join('\n');
+  assert.ok(sent.includes(JSON_BEGIN_SENTINEL), 'the chat window must be told which markers to emit');
+  assert.ok(sent.includes(JSON_END_SENTINEL));
+  assert.match(sent, /No preamble/i, 'and told not to narrate, which is what it does by default');
+  assert.match(sent, /trailing commas/i);
 });

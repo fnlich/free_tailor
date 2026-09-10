@@ -313,3 +313,55 @@ test('a client that still sends the flat provider booleans is heard', async () =
   assert.equal(updated.providersEnabled['claude-cli'], true, 'untouched providers keep their setting');
   assert.equal(updated.openaiEnabled, false);
 });
+
+test('the browser-chat port and queue limit round-trip, and take their defaults from .env', async () => {
+  useTempStorage('browser-chat-settings');
+  process.env.AI_WEB_CDP_PORT = '9411';
+  process.env.DEFAULT_MAX_QUEUE = '7';
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  // The environment decides what a fresh install starts with, so an operator
+  // who already configured AI_WEB_CDP_PORT does not have to set it twice.
+  const defaults = await config.getAdminAppSettings();
+  assert.equal(defaults.browserChatDebugPort, 9411);
+  assert.equal(defaults.browserChatMaxQueue, 7);
+
+  const saved = await config.updateAppSettings({
+    browserChatDebugPort: 9333,
+    browserChatMaxQueue: 25,
+  });
+  assert.equal(saved.browserChatDebugPort, 9333);
+  assert.equal(saved.browserChatMaxQueue, 25);
+
+  // And the stored value wins from then on - which is the whole point of
+  // putting the field on the Settings page.
+  assert.deepEqual(await config.getBrowserChatSettings(), { debugPort: 9333, maxQueue: 25 });
+
+  delete process.env.AI_WEB_CDP_PORT;
+  delete process.env.DEFAULT_MAX_QUEUE;
+});
+
+test('a port or queue limit out of range is refused rather than stored', async () => {
+  useTempStorage('browser-chat-bounds');
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  for (const bad of [80, 0, 65536, -1]) {
+    await assert.rejects(
+      config.updateAppSettings({ browserChatDebugPort: bad }),
+      /browserChatDebugPort must be a whole number/,
+      `port ${bad} must be refused`
+    );
+  }
+  for (const bad of [0, -3, 5000]) {
+    await assert.rejects(
+      config.updateAppSettings({ browserChatMaxQueue: bad }),
+      /browserChatMaxQueue must be a whole number/,
+      `queue limit ${bad} must be refused`
+    );
+  }
+
+  // Nothing was stored on the way past.
+  const settings = await config.getAdminAppSettings();
+  assert.equal(settings.browserChatDebugPort, 9222);
+  assert.equal(settings.browserChatMaxQueue, 10);
+});

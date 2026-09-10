@@ -1,6 +1,7 @@
+import { getBrowserChatSettings } from '../../../../config/aiModelConfig';
 import { getProviderDescriptor } from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
-import { acquireSlot, getProviderSemaphore } from '../../concurrency';
+import { acquireSlot, getProviderSemaphore, type AsyncSemaphore } from '../../concurrency';
 import { collectUnsupportedReasoningParams } from '../../reasoningParams';
 import { warnOnce } from '../../telemetry';
 import type {
@@ -52,16 +53,54 @@ const DEFAULT_MODEL_LABEL = 'chat';
 const QUEUE_WAIT_MS = 10 * 60_000;
 
 let sharedSession: BrowserChatSession | null = null;
+let sharedEndpoint = '';
 
-function getSession(): BrowserChatSession {
-  if (!sharedSession) sharedSession = new BrowserChatSession(debugEndpoint());
+/**
+ * The connection, rebuilt when the operator points it somewhere else.
+ *
+ * The endpoint is no longer fixed at startup: the debug port is a Settings
+ * field now, with a button beside it that starts a browser on that port. So the
+ * held session is keyed on the endpoint it was opened against, and a changed
+ * port replaces it rather than being ignored until the next restart - which is
+ * what "save" has to mean for a field like this.
+ */
+function getSession(endpoint: string): BrowserChatSession {
+  if (sharedSession && sharedEndpoint === endpoint) return sharedSession;
+  const previous = sharedSession;
+  sharedSession = new BrowserChatSession(endpoint);
+  sharedEndpoint = endpoint;
+  // Let go of the old browser without closing it - it is the operator's window,
+  // and they may well still be signed in to it on the old port.
+  void previous?.dispose().catch(() => undefined);
   return sharedSession;
+}
+
+/**
+ * Where to attach, deciding between the two places it can be configured.
+ *
+ * An explicit `AI_WEB_CDP_URL` still wins outright: it is the escape hatch for
+ * a browser that is not on this machine, and a port field cannot express one.
+ * Otherwise the stored port wins over the environment, because the stored value
+ * is the one an operator can see and change.
+ */
+async function currentEndpoint(env: NodeJS.ProcessEnv): Promise<string> {
+  const explicit = (env.AI_WEB_CDP_URL ?? '').trim();
+  if (explicit) return explicit;
+  try {
+    const { debugPort } = await getBrowserChatSettings();
+    return `http://127.0.0.1:${debugPort}`;
+  } catch {
+    // A settings read that fails must not take the provider down with it; the
+    // environment default is exactly what it was before this field existed.
+    return debugEndpoint(env);
+  }
 }
 
 /** For tests, and for a config change that should not need a restart. */
 export function resetBrowserChatSession(): void {
   const session = sharedSession;
   sharedSession = null;
+  sharedEndpoint = '';
   // Not awaited - the caller wants the handle dropped, not a round trip to a
   // browser that may already be gone - but the rejection IS caught. An
   // unhandled one from `disconnect()` on a dead socket takes the process down
@@ -114,10 +153,24 @@ export function createBrowserChatAdapter(
   // therefore run at once and take the foreground from each other, and the one
   // that loses it stops being able to read its own page. A single slot per
   // endpoint is what `maxConcurrency: 1` has to mean here.
-  const semaphore = getProviderSemaphore(
-    `browser-chat:${debugEndpoint(env)}`,
-    capabilities.maxConcurrency
-  );
+  //
+  // Resolved per call rather than once, because both the endpoint and the queue
+  // bound are settings an operator can change while the server is running.
+  async function lane(): Promise<AsyncSemaphore> {
+    const endpoint = await currentEndpoint(env);
+    let maxQueue = Number.POSITIVE_INFINITY;
+    try {
+      maxQueue = (await getBrowserChatSettings()).maxQueue;
+    } catch {
+      // Unbounded is what it was before the setting existed; a settings read
+      // that fails should not start rejecting work.
+    }
+    return getProviderSemaphore(
+      `browser-chat:${endpoint}`,
+      capabilities.maxConcurrency,
+      maxQueue
+    );
+  }
 
   function fail(
     kind: AIErrorKind,
@@ -140,7 +193,7 @@ export function createBrowserChatAdapter(
     defaultModelName: () => DEFAULT_MODEL_LABEL,
 
     async health(): Promise<ProviderHealth> {
-      const session = options.session ?? getSession();
+      const session = options.session ?? getSession(await currentEndpoint(env));
       const probe = await session.probe(site());
       return {
         ok: probe.ok,
@@ -175,7 +228,7 @@ export function createBrowserChatAdapter(
         .join('\n\n');
 
       const startedAt = Date.now();
-      const session = options.session ?? getSession();
+      const session = options.session ?? getSession(await currentEndpoint(env));
 
       // ONE AT A TIME, enforced rather than declared. `maxConcurrency: 1` above
       // is only a number the facade reports; the semaphore is the adapter's to
@@ -184,7 +237,7 @@ export function createBrowserChatAdapter(
       // clears the first mid-answer, and both callers get somebody else's reply
       // or none. A batch of profiles does this by default.
       const release = await acquireSlot(
-        semaphore,
+        await lane(),
         id,
         request.deadline,
         QUEUE_WAIT_MS,
