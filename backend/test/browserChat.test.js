@@ -1017,3 +1017,35 @@ test('a reply that lands inside one poll interval does not pay the blind-mode ta
       `and flying blind would have cost at least ${blindWouldCost}ms`
   );
 });
+
+test('a second assistant node alongside the reply is called out, not silently ignored', async () => {
+  // The turn commits to the FIRST message that was not there before, because a
+  // site streaming two candidate answers reorders them while both grow and "the
+  // last message" never settles. That is right while the extra nodes are
+  // alternative answers - and wrong the day a site renders a reasoning trace as
+  // its own node, because then the first new message is the trace and it comes
+  // back as the reply. Nothing downstream can catch that.
+  //
+  // The choice is not changed here; guessing differently reintroduces the
+  // flipping. What is asserted is that the operator is told, so a page whose
+  // shape no longer matches the assumption shows up in the log rather than only
+  // in somebody's resume.
+  const logged = [];
+  const page = fakePage({
+    present: () => true,
+    messages: (_selector, state) =>
+      state.sentAt === null
+        ? []
+        : [
+            { id: null, text: 'thinking about the role...' },
+            { id: null, text: 'the actual answer' },
+          ],
+  });
+
+  const answer = await tabFor(page, { log: (m) => logged.push(m) }).ask('tailor this', 600_000);
+  assert.equal(answer, 'thinking about the role...', 'the first new message is still the reply');
+  assert.ok(
+    logged.some((m) => m.includes('assistant messages, and the first is being read as the reply')),
+    'but the operator must be told the page produced more than one'
+  );
+});

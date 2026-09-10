@@ -160,6 +160,7 @@ export class ChatTab {
   /** Busy candidates, once the always-true ones have been screened out. */
   private busySelectors: string[] | null = null;
   private warnedEcho = false;
+  private warnedMultiple = false;
 
   /**
    * The assistant candidate this TURN is reading, fixed once one matches.
@@ -718,6 +719,29 @@ export class ChatTab {
           );
         }
         throw new ChatTurnError('echo', `${this.site.label} returned the prompt rather than an answer`);
+      }
+
+      // A second new message alongside the one committed to.
+      //
+      // The turn deliberately takes the FIRST message that was not there
+      // before, because when a site streams two candidate answers side by side
+      // their order flips while both are growing and "the last message" never
+      // settles. But that choice is only right while the extra nodes ARE
+      // alternative answers. If a site starts rendering a reasoning trace as a
+      // separate node before the answer, the first new message is the trace and
+      // this returns it as the reply - a wrong answer, of exactly the shape
+      // nothing downstream can catch.
+      //
+      // Not guessed at, because guessing reintroduces the flipping. Said out
+      // loud instead, once, so that a page whose shape no longer matches the
+      // assumption is visible in the log rather than only in the output.
+      if (!this.warnedMultiple && messages.length > before.count + 1) {
+        this.warnedMultiple = true;
+        this.log(
+          `[ai] ${this.site.id}: this send produced ${messages.length - before.count} assistant ` +
+            'messages, and the first is being read as the reply. If answers come back looking ' +
+            `like reasoning or a preamble, narrow the assistant selector for ${this.site.label}.`
+        );
       }
 
       const outcome = poll(
