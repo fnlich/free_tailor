@@ -823,3 +823,50 @@ test('a latched selector that stops matching is let go of, and the turn recovers
     'and the operator is told which selector went stale'
   );
 });
+
+test('a read that fails is not read as an empty transcript', async () => {
+  // The wrong-answer path this closes: `messages()` used to swallow a failed
+  // read into an empty list, and the opening fingerprint recorded that as a
+  // count of zero. Zero is what decides which message is this turn's reply, so
+  // the FIRST message already on screen - last turn's answer, a greeting -
+  // became the answer this app returned. No error, nothing downstream to catch
+  // it, and a resume tailored to whatever that message happened to say.
+  const page = fakePage({
+    present: () => true,
+    messages: (_selector, state) =>
+      // The opening read fails; everything after it works.
+      state.reads < 12 ? null : [{ id: null, text: 'last turn, still on screen' }],
+  });
+
+  await assert.rejects(tabFor(page).ask('tailor this', 600_000), (error) => {
+    assert.equal(error.kind, 'page');
+    assert.match(error.message, /could not read .* transcript before sending/);
+    return true;
+  });
+});
+
+test('a wall already on the page is caught before the resume is typed into it', async () => {
+  // Two things at once. The prompt is tens of thousands of characters of
+  // somebody's resume, and a page that has already refused was never going to
+  // answer it - so it should not be put into that account's history at all.
+  // And once the wall is in the before-snapshot, the prompt filter treats it as
+  // known and would never report it, so this is the only moment it can be seen.
+  const typed = [];
+  const page = fakePage({
+    present: () => true,
+    messages: () => [],
+    visibleText: () => "You've reached your usage limit. It resets at 3:00 PM.",
+  });
+  const original = page.insertText;
+  page.insertText = async (text) => {
+    typed.push(text);
+    return original(text);
+  };
+
+  await assert.rejects(tabFor(page).ask('a resume and a job description', 600_000), (error) => {
+    assert.equal(error.kind, 'refused');
+    assert.equal(error.retryable, true);
+    return true;
+  });
+  assert.deepEqual(typed, [], 'nothing may be typed into a page that has already refused');
+});

@@ -250,6 +250,14 @@ export class BrowserChatSession {
 
   /** Lets go of the operator's browser without closing it. */
   async dispose(): Promise<void> {
+    // A connection still being opened is waited for, not ignored. Dropping the
+    // handle while `connect()` is in flight leaves a browser this session is
+    // still attached to and nothing left holding a reference to disconnect it -
+    // and the connection that lands afterwards quietly re-populates `browser`,
+    // so the session un-disposes itself.
+    const pending = this.connecting;
+    if (pending) await pending.catch(() => undefined);
+
     const browser = this.browser;
     this.browser = null;
     this.pages.clear();

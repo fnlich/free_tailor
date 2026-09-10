@@ -15,6 +15,7 @@ import {
   usableBusySelectors,
   type ChatMessage,
   type Fingerprint,
+  type Refusal,
 } from './conversation';
 import type { ChatPage } from './page';
 import type { ChatSite } from './sites';
@@ -121,6 +122,17 @@ const ABANDONED_WAIT_MS = 35_000;
  */
 const BUSY_WATCH_MS = 1_500;
 const BUSY_WATCH_STEP_MS = 100;
+
+function refusalError(site: ChatSite, refusal: Refusal): ChatTurnError {
+  return new ChatTurnError(
+    'refused',
+    `${site.label} did not answer because ${refusal.reason}. ` +
+      (refusal.retryable
+        ? 'Wait for it to reset, or use another provider.'
+        : `Open ${site.url} in the debug browser and put it right by hand.`),
+    refusal.retryable
+  );
+}
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -287,7 +299,7 @@ export class ChatTab {
    * The first call of a turn resolves the candidate; every call after it reads
    * the same one. See `assistantSelector` for why that matters.
    */
-  private async readMessages(): Promise<ChatMessage[]> {
+  private async readMessages(): Promise<ChatMessage[] | null> {
     const selector = this.assistantSelector ?? (await this.firstMatch(this.site.assistant));
     if (!selector) return [];
     this.assistantSelector = selector;
@@ -334,7 +346,10 @@ export class ChatTab {
         'instead for the rest of this turn.'
     );
     this.assistantSelector = replacement;
-    return fingerprint(await this.readMessages());
+    const rebased = await this.readMessages();
+    // A failed read is not a baseline. Keep the old one and try again next poll
+    // rather than recording a count that describes nothing.
+    return rebased ? fingerprint(rebased) : null;
   }
 
   /**
@@ -395,7 +410,9 @@ export class ChatTab {
       try {
         await this.page.click(control, this.actionMs);
         await this.sleep(this.pollMs);
-        if ((await this.readMessages()).length === 0) return;
+        // A read that failed is not an empty transcript. Fall through to the
+        // reload, which is the path that always works.
+        if ((await this.readMessages())?.length === 0) return;
       } catch {
         // Fall through to the reload, which is the path that always works.
       }
@@ -554,13 +571,47 @@ export class ChatTab {
     // after this point is judged against THIS host.
     this.landedHost = hostOf(this.page.currentUrl());
 
-    let before: Fingerprint = fingerprint(await this.readMessages());
+    const opening = await this.readMessages();
+    if (!opening) {
+      // Refused rather than guessed. This count decides which message is this
+      // turn's reply; recorded wrongly as zero, the first message already on
+      // screen becomes the answer this app hands back - a wrong answer, with
+      // nothing anywhere to notice it.
+      throw new ChatTurnError(
+        'page',
+        `could not read the ${this.site.label} transcript before sending. The tab may be busy ` +
+          'or closing; try again.'
+      );
+    }
+    let before: Fingerprint = fingerprint(opening);
 
     // What the page said BEFORE this app typed anything into it. Together with
     // the prompt itself, this is everything the refusal check must ignore -
     // see `unfamiliarText`, and note that without it the check reads the
     // operator's own resume and can find a usage wall in it.
     const pageBefore = await this.page.visibleTailText(REFUSAL_TEXT_CHARS);
+
+    // A wall that is ALREADY up is caught here, before anything is typed.
+    //
+    // Two reasons to look now rather than only later. It is the one moment the
+    // page can be read without the prompt on it, so nothing has to be filtered
+    // out - and once the wall is in `pageBefore`, the filter would treat it as
+    // known and never report it at all. And it is the difference between
+    // failing a call and typing somebody's resume and salary history into a
+    // page that was never going to answer.
+    const standing = refusalReason(pageBefore);
+    if (standing) throw refusalError(this.site, standing);
+
+    if (this.now() >= expiry) {
+      // Nothing is sent on a budget that is already gone. The prompt is tens of
+      // thousands of characters of somebody's resume, and putting it into a
+      // conversation whose answer will be thrown away leaves it in that
+      // account's history for nothing.
+      throw new ChatTurnError(
+        'timeout',
+        `no time left to ask ${this.site.label}: the budget was spent before the prompt was sent`
+      );
+    }
 
     await this.submit(prompt);
 
@@ -624,30 +675,29 @@ export class ChatTab {
       const busy = await this.isBusy();
       if (busy) sawBusy = true;
       const messages = await this.readMessages();
+      // A read that failed says nothing about the page. Skipping the poll costs
+      // one interval; treating it as an empty transcript would restart the
+      // stability run and, worse, feed a bogus count into `pickReply`.
+      if (!messages) continue;
       const picked = pickReply(before, messages, latched);
 
-      if (!picked) {
-        // Nothing has rendered and time is passing: ask the page what it is
-        // showing instead. A usage wall or a signed-out prompt is a different
-        // failure from a slow answer and needs a different thing done about it.
-        if (this.now() >= nextRefusalCheck) {
-          nextRefusalCheck = this.now() + REFUSAL_CHECK_EVERY_MS;
-          const refusal = refusalReason(
-            unfamiliarText(await this.page.visibleTailText(REFUSAL_TEXT_CHARS), [pageBefore, prompt])
-          );
-          if (refusal) {
-            throw new ChatTurnError(
-              'refused',
-              `${this.site.label} did not answer because ${refusal.reason}. ` +
-                (refusal.retryable
-                  ? 'Wait for it to reset, or use another provider.'
-                  : `Open ${this.site.url} in the debug browser and put it right by hand.`),
-              refusal.retryable
-            );
-          }
-        }
-        continue;
+      // Gated on there being no ANSWER yet, not on there being no node.
+      //
+      // A container that renders before its text is the ordinary case on both
+      // sites, and gating on the node alone switches this check off at that
+      // moment - for the rest of the turn. A wall that appears a second later
+      // then reads as an answer that never finishes, and the turn spends its
+      // whole budget before reporting that the site was "still writing".
+      const nothingYet = !picked || picked.reply.text.trim().length === 0;
+      if (nothingYet && this.now() >= nextRefusalCheck) {
+        nextRefusalCheck = this.now() + REFUSAL_CHECK_EVERY_MS;
+        const refusal = refusalReason(
+          unfamiliarText(await this.page.visibleTailText(REFUSAL_TEXT_CHARS), [pageBefore, prompt])
+        );
+        if (refusal) throw refusalError(this.site, refusal);
       }
+
+      if (!picked) continue;
       everRendered = true;
       latched = picked.id;
 

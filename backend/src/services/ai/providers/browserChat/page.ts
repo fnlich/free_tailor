@@ -40,8 +40,18 @@ export interface ChatPage {
    * then filtered out as already known, and the check can never fire at all.
    */
   visibleTailText(maxChars: number): Promise<string>;
-  /** Every match's id and rendered text, in document order, in one round trip. */
-  messages(selector: string, idAttribute: string | null): Promise<ChatMessage[]>;
+  /**
+   * Every match's id and rendered text, in document order, in one round trip.
+   *
+   * Null means the READ FAILED, and it is a separate answer from the empty
+   * list on purpose. The two mean opposite things to the caller that takes the
+   * opening fingerprint: "no messages yet" is the normal state of a fresh
+   * conversation, while "could not tell" must not be recorded as a count of
+   * zero - that count is what decides which message is this turn's reply, and
+   * a zero recorded by mistake makes the FIRST message already on screen the
+   * answer this app returns.
+   */
+  messages(selector: string, idAttribute: string | null): Promise<ChatMessage[] | null>;
 }
 
 export function wrapPuppeteerPage(page: Page): ChatPage {
@@ -172,6 +182,7 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
             }),
           idAttribute
         )
-        .catch(() => [] as ChatMessage[]),
+        // Null, not an empty list. See `messages` on the interface.
+        .catch(() => null),
   };
 }
