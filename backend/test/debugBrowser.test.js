@@ -180,3 +180,24 @@ test('a site with no hostname is matched by its address, not reported missing', 
   const claude = status.sites.find((site) => site.id === 'claude-web');
   assert.equal(claude.url, fixture, 'the override must reach the status the panel renders');
 });
+
+test('a slow browser is given long enough to bind before it is called a failure', () => {
+  // Reporting a failure for a browser that IS starting is the worse mistake: it
+  // leaves a window running that the operator was told did not open, and the
+  // endpoint unsaved. Measured in this container, a cold profile took past 12s -
+  // a first run on Windows with antivirus in the way can take longer still.
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'services', 'debugBrowser.ts'),
+    'utf8'
+  );
+  const wait = source.match(/const STARTUP_WAIT_MS = ([\d_]+);/);
+  assert.ok(wait, 'the startup wait must be declared');
+  assert.ok(
+    Number(wait[1].replace(/_/g, '')) >= 30_000,
+    `a cold browser needs more than ${wait[1]}ms to bind its debug port`
+  );
+
+  // And the message has to tell the operator that pressing Start again picks up
+  // a window that turned out to be slow, rather than opening a second one.
+  assert.match(source, /pressing Start again picks up the window that is now running/);
+});

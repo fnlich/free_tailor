@@ -943,7 +943,19 @@ export const adminApi = {
 
   getDebugBrowsers: () => apiFetch<DebugBrowserReport>('/admin/browser/debug'),
 
-  startDebugBrowser: (data: { port: number; siteId: AIProvider; save?: boolean }) =>
+  startDebugBrowser: (data: {
+    port: number;
+    siteId: AIProvider;
+    /**
+     * The list as it stands on screen, saved along with the start.
+     *
+     * Sent so that pressing Start does not discard rows added but not yet
+     * saved: the server stores this list rather than merging into its own, and
+     * the page then renders what was stored.
+     */
+    endpoints?: BrowserChatEndpoint[];
+    save?: boolean;
+  }) =>
     apiFetch<StartDebugBrowserResponse>('/admin/browser/debug/start', {
       method: 'POST',
       body: JSON.stringify(data),

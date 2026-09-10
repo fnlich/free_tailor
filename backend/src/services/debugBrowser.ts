@@ -41,8 +41,15 @@ export function defaultProfileDirFor(port: number): string {
 /** How long a probe waits for the DevTools endpoint to answer. */
 const PROBE_TIMEOUT_MS = 1_500;
 
-/** How long `start` waits for the port to come up before reporting back. */
-const STARTUP_WAIT_MS = 12_000;
+/**
+ * How long `start` waits for the port to come up before reporting back.
+ *
+ * Generous, because reporting a failure for a browser that IS starting is the
+ * worse mistake: it leaves a window running that the operator was told did not
+ * open, and the endpoint unsaved. Measured here, a cold profile took past 12s -
+ * a first run on Windows with antivirus in the way can take longer still.
+ */
+const STARTUP_WAIT_MS = 45_000;
 const STARTUP_POLL_MS = 300;
 
 export class DebugBrowserError extends Error {
@@ -313,7 +320,9 @@ export async function startDebugBrowser(
       `${found.label} was started but nothing is listening on port ${port}.`,
       'The commonest cause is another copy of that browser already running with the same ' +
         'profile directory: Chrome then opens a tab in the existing window and never opens the ' +
-        'port. Close every window of that browser and try again, or choose a different profile.'
+        'port. Close every window of that browser and try again. If it was simply slow to ' +
+        'start, pressing Start again picks up the window that is now running rather than ' +
+        'opening a second one.'
     );
   }
 

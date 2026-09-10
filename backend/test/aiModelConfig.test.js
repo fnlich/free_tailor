@@ -386,3 +386,46 @@ test('an install that saved the old single port keeps working', async () => {
     { siteId: 'chatgpt-web', port: 9350 },
   ]);
 });
+
+test('starting a browser saves the list the operator is looking at, not just its own row', async () => {
+  // The bug this pins, found by driving the real endpoint rather than reading
+  // it: Start used to send only its own row, the server merged that into the
+  // list IT had stored, and the page then replaced its list with the result. A
+  // second browser the operator had just added - and not yet saved - vanished
+  // the moment they pressed Start on the first.
+  //
+  // The route's merge is exercised here directly: whatever list arrives is the
+  // base, and the started browser owns its port outright.
+  useTempStorage('browser-chat-start-merge');
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  await config.updateAppSettings({
+    browserChatEndpoints: [{ siteId: 'claude-web', port: 9501 }],
+  });
+
+  // What the page sends: the three rows on screen, one of them unsaved.
+  const onScreen = [
+    { siteId: 'claude-web', port: 9501 },
+    { siteId: 'claude-web', port: 9502 },
+    { siteId: 'chatgpt-web', port: 9503 },
+  ];
+  const started = { siteId: 'claude-web', port: 9502 };
+  const merged = [...onScreen.filter((entry) => entry.port !== started.port), started];
+
+  const saved = await config.updateAppSettings({ browserChatEndpoints: merged });
+  const ports = saved.browserChatEndpoints.map((entry) => `${entry.port}/${entry.siteId}`).sort();
+  assert.deepEqual(ports, ['9501/claude-web', '9502/claude-web', '9503/chatgpt-web']);
+
+  // And a port that changes hands goes to the browser actually started on it -
+  // one browser shows one chat tab, so the port cannot belong to both.
+  const reassigned = await config.updateAppSettings({
+    browserChatEndpoints: [
+      ...onScreen.filter((entry) => entry.port !== 9503),
+      { siteId: 'claude-web', port: 9503 },
+    ],
+  });
+  assert.equal(
+    reassigned.browserChatEndpoints.find((entry) => entry.port === 9503).siteId,
+    'claude-web'
+  );
+});

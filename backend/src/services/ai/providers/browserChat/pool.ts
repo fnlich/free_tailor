@@ -53,6 +53,24 @@ type Waiter = {
   settled: boolean;
 };
 
+/**
+ * Every browser currently leased, across ALL pools.
+ *
+ * A pool on its own guarantees one call per tab within one site. That is not
+ * quite the guarantee that matters, because the thing being protected is the
+ * BROWSER, and two sites can be pointed at the same one: `AI_WEB_CDP_URL` gives
+ * both of them that single endpoint, and then Claude free and ChatGPT free hold
+ * it at the same time. Two turns then drive two tabs in one window, each
+ * bringing its own tab to the front, and whichever loses is a background tab -
+ * frozen, answering no DOM read at all, which is the failure this whole
+ * arrangement exists to avoid.
+ *
+ * So exclusivity is process-wide and keyed on the endpoint rather than on the
+ * pool. The saved endpoint list already forbids one port serving two sites;
+ * this covers the configuration that can still express it, and any future one.
+ */
+const leasedEndpoints = new Set<string>();
+
 export class TabPool {
   private endpoints: string[] = [];
   private readonly busy = new Set<string>();
@@ -139,9 +157,13 @@ export class TabPool {
     return true;
   }
 
+  private available(endpoint: string): boolean {
+    return !this.busy.has(endpoint) && !leasedEndpoints.has(endpoint);
+  }
+
   private freeEndpoint(): string | null {
     for (const endpoint of this.endpoints) {
-      if (!this.busy.has(endpoint) && !this.isDown(endpoint)) return endpoint;
+      if (this.available(endpoint) && !this.isDown(endpoint)) return endpoint;
     }
 
     // Nothing reachable is free. Whether to hand out a browser known to be down
@@ -159,9 +181,15 @@ export class TabPool {
     if (anyReachable) return null;
 
     for (const endpoint of this.endpoints) {
-      if (!this.busy.has(endpoint)) return endpoint;
+      if (this.available(endpoint)) return endpoint;
     }
     return null;
+  }
+
+  /** Wakes this pool's line for a browser another pool has just let go of. */
+  pumpShared(endpoint: string): void {
+    if (!this.endpoints.includes(endpoint)) return;
+    this.pump();
   }
 
   /** Hands free tabs to the head of the line, in order, until one runs out. */
@@ -173,6 +201,7 @@ export class TabPool {
       if (!waiter || waiter.settled) continue;
       waiter.settled = true;
       this.busy.add(endpoint);
+      leasedEndpoints.add(endpoint);
       waiter.resolve(endpoint);
     }
   }
@@ -184,6 +213,7 @@ export class TabPool {
     const ready = this.waiters.length === 0 ? this.freeEndpoint() : null;
     if (ready) {
       this.busy.add(ready);
+      leasedEndpoints.add(ready);
       return this.lease(ready);
     }
 
@@ -242,7 +272,13 @@ export class TabPool {
         if (released) return;
         released = true;
         this.busy.delete(endpoint);
+        leasedEndpoints.delete(endpoint);
         this.pump();
+        // The browser may belong to another site's pool too - see
+        // `leasedEndpoints` - and that pool has its own line waiting on it.
+        for (const other of pools.values()) {
+          if (other !== this) other.pumpShared(endpoint);
+        }
       },
     };
   }
@@ -277,4 +313,5 @@ export function getTabPoolStats(): Record<
 
 export function resetTabPoolsForTests(): void {
   pools.clear();
+  leasedEndpoints.clear();
 }

@@ -251,3 +251,34 @@ test('a browser marked down is tried again once its rest is over', async () => {
   held.release();
   second.release();
 });
+
+test('two sites pointed at ONE browser never hold it at the same time', async () => {
+  // A pool guarantees one call per tab within a site. That is not quite the
+  // guarantee that matters: the thing being protected is the BROWSER, and two
+  // sites can be pointed at the same one - AI_WEB_CDP_URL gives both of them
+  // that single endpoint. Two turns would then drive two tabs in one window,
+  // each bringing its own tab to the front, and whichever loses is a background
+  // tab: frozen, answering no DOM read at all.
+  resetTabPoolsForTests();
+  const claude = getTabPool('claude-web', 'Claude (free)');
+  const chatgpt = getTabPool('chatgpt-web', 'ChatGPT (free)');
+  const shared = 'http://127.0.0.1:9222';
+  claude.setEndpoints([shared]);
+  chatgpt.setEndpoints([shared]);
+
+  const held = await claude.acquire();
+  await assert.rejects(
+    chatgpt.acquire({ timeoutMs: 30 }),
+    (error) => error instanceof TabWaitTimeoutError,
+    'the other site must wait for the browser, not take it as well'
+  );
+
+  // And it must be woken when the first site lets go - a waiter in another
+  // pool cannot be left hanging just because the release happened elsewhere.
+  const waiting = chatgpt.acquire({ timeoutMs: 2_000 });
+  held.release();
+  const lease = await waiting;
+  assert.equal(lease.endpoint, shared);
+  lease.release();
+  resetTabPoolsForTests();
+});

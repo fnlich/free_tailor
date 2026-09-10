@@ -407,12 +407,19 @@ export default function AdminSettingsPage() {
   };
 
   const startBrowser = async (entry: BrowserChatEndpoint) => {
+    if (!form) return;
     try {
       setStartingPort(entry.port);
       setDebugError('');
       setError('');
       setSuccessMessage('');
-      const result = await adminApi.startDebugBrowser({ port: entry.port, siteId: entry.siteId });
+      // The whole list as it stands on screen, so a row added but not yet saved
+      // is not thrown away by pressing Start on a different one.
+      const result = await adminApi.startDebugBrowser({
+        port: entry.port,
+        siteId: entry.siteId,
+        endpoints: form.browserChatEndpoints,
+      });
       setSettings(result.settings);
       setForm((current) =>
         current

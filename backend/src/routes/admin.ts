@@ -142,7 +142,12 @@ router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response
 
 router.post('/browser/debug/start', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const body = (req.body ?? {}) as { port?: unknown; siteId?: unknown; save?: unknown };
+    const body = (req.body ?? {}) as {
+      port?: unknown;
+      siteId?: unknown;
+      save?: unknown;
+      endpoints?: unknown;
+    };
     const port = assertUsablePort(body.port);
     if (!isChatSiteId(body.siteId)) {
       res.status(400).json({
@@ -159,11 +164,24 @@ router.post('/browser/debug/start', authMiddleware, async (req: Request, res: Re
     // Recorded by default, because a browser you started and a browser the
     // providers know about that disagree is the most confusing state this
     // feature can be left in.
+    //
+    // The list the CALLER is looking at is what gets saved, when it sends one.
+    // Merging into the stored list instead loses every row the operator added
+    // and had not saved yet: the page replaces its list with what comes back,
+    // so a second browser they had just added silently disappears the moment
+    // they press Start on the first. What you see is what is stored.
     let settings = await getAdminAppSettings();
     if (body.save !== false) {
-      const kept = settings.browserChatEndpoints.filter((entry) => entry.port !== port);
+      const base = Array.isArray(body.endpoints)
+        ? (body.endpoints as Array<{ siteId?: unknown; port?: unknown }>).filter(
+            (entry) => entry && typeof entry === 'object'
+          )
+        : settings.browserChatEndpoints;
+      // The browser just started is in the list whatever the caller sent, and
+      // owns its port outright - a port shows one site.
+      const kept = base.filter((entry) => Number(entry.port) !== port);
       settings = await updateAppSettings({
-        browserChatEndpoints: [...kept, { siteId, port }],
+        browserChatEndpoints: [...kept, { siteId, port }] as typeof settings.browserChatEndpoints,
       });
     }
 
