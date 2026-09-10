@@ -215,26 +215,85 @@ export type Refusal = {
   retryable: boolean;
 };
 
+/**
+ * The page's text minus anything this app already knew was there.
+ *
+ * Without this the refusal check is actively harmful. It reads the whole
+ * document, and the whole document CONTAINS THE PROMPT THIS APP JUST TYPED - a
+ * real resume and a real job description. Run against an infrastructure
+ * engineer's resume, "the payment service hit the rate limit and shed load"
+ * reads as a usage wall, and the turn is abandoned with an explanation that is
+ * not merely wrong but unfalsifiable from the operator's side: nothing is
+ * limited, and it happens on every single run for that one candidate.
+ *
+ * So only text the app did not put there is considered. Comparison is against
+ * the whitespace-COLLAPSED prompt rather than line by line, which is what makes
+ * it survive the transcript re-wrapping long paragraphs: however the site
+ * breaks the prompt up, each resulting line is still a run of characters from
+ * inside that one blob.
+ */
+export function unfamiliarText(pageText: string, known: string[]): string {
+  const blobs = known
+    .map((entry) => collapse(canonicalPunctuation(entry)).toLowerCase())
+    .filter(Boolean);
+  const kept: string[] = [];
+  for (const raw of pageText.split('\n')) {
+    const line = collapse(canonicalPunctuation(raw));
+    if (!line) continue;
+    const probe = line.toLowerCase();
+    if (blobs.some((blob) => blob.includes(probe))) continue;
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
+
+/**
+ * The wordings, deliberately narrow.
+ *
+ * Every one of these demands something a chat UI says and prose does not: the
+ * reader addressed in the second person, or a control-panel noun phrase, or an
+ * instruction about what to do next. The looser spellings that suggested
+ * themselves first - a bare "hit the rate limit", a bare "too many requests" -
+ * are ordinary English in this app's own input and are not used. That
+ * narrowness is deliberate belt-and-braces: `unfamiliarText` should already
+ * have removed the prompt before any of these is tried, and a missed wall costs
+ * one confusing timeout while a false one costs every run.
+ */
 const REFUSALS: Array<{ pattern: RegExp; refusal: Refusal }> = [
   {
-    // `'` covers the curly apostrophe too: `canonicalPunctuation` folds it
-    // before any of these are tried.
+    // "You've reached your usage limit", "You're out of free messages",
+    // "You have reached our limit of messages per hour".
     pattern:
-      /(reached|hit) (your|the) [a-z ]{0,12}(usage|message|rate) limit|(usage|message) limit reached|out of free messages|you've reached the limit|limit reached[^.]{0,40}(resets|try again)|upgrade to (continue|keep)/i,
+      /\b(you'?(ve|re)|you (have|are))\b[^.!?]{0,40}\b(reached|hit|used up|out of)\b[^.!?]{0,40}\b(limit|free messages|free responses)\b/i,
     refusal: { reason: 'the account has hit its chat usage limit', retryable: true },
   },
   {
+    // A control-panel noun phrase rather than a sentence.
+    pattern: /\b(usage|message|conversation|daily|weekly) limit reached\b/i,
+    refusal: { reason: 'the account has hit its chat usage limit', retryable: true },
+  },
+  {
+    pattern: /\byour\b[^.!?]{0,24}\b(usage|message|plan|daily|weekly) limit\b/i,
+    refusal: { reason: 'the account has hit its chat usage limit', retryable: true },
+  },
+  {
+    pattern: /\bupgrade\b[^.!?]{0,24}\bto (continue|keep|send|get more)\b/i,
+    refusal: { reason: 'the account has hit its chat usage limit', retryable: true },
+  },
+  {
+    // Second person or an instruction, never a bare "too many requests" - that
+    // phrase belongs to half the backend resumes this app is given.
     pattern:
-      /you're sending messages too (quickly|fast)|slow down[^.]{0,20}too many|too many requests/i,
+      /\byou'?re sending (messages )?too (quickly|fast)\b|\bslow down\b[^.!?]{0,24}too many|\btoo many requests\b[^.!?]{0,30}\b(try again|please wait|slow down)\b/i,
     refusal: { reason: 'the site is rate limiting this account', retryable: true },
   },
   {
-    pattern: /(log|sign) ?in to continue|please (log|sign) ?in\b|create an account to continue/i,
+    pattern: /\b(log|sign) ?in to continue\b|\bplease (log|sign) ?in\b|\bcreate an account to continue\b/i,
     refusal: { reason: 'the tab is signed out', retryable: false },
   },
   {
     pattern:
-      /verify you are (a )?human|confirm you are (a )?human|complete the (captcha|security check)|unusual activity from your (device|computer)/i,
+      /\bverify you are (a )?human\b|\bconfirm you are (a )?human\b|\bcomplete the (captcha|security check)\b|\bunusual activity from your (device|computer)\b/i,
     refusal: { reason: 'the site is asking for a human verification check', retryable: false },
   },
 ];

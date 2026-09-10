@@ -11,6 +11,7 @@ import {
   refusalReason,
   STABLE_READS_WITH_BUSY_SIGNAL,
   STABLE_READS_WITHOUT_BUSY_SIGNAL,
+  unfamiliarText,
   usableBusySelectors,
   type ChatMessage,
   type Fingerprint,
@@ -70,9 +71,14 @@ const GUARD_GRACE_MS = 5_000;
  *
  * The check reads the whole document's text, so it is not something to do every
  * poll. It also must not fire early: for the first seconds of a normal turn the
- * page legitimately shows no reply, and a chat transcript that happens to
- * contain the words "usage limit" would be read as a wall. By the time nothing
- * has rendered for this long, something IS wrong and it is worth naming.
+ * page legitimately shows no reply, and calling that a refusal would turn every
+ * slow answer into a wrong diagnosis. By the time nothing has rendered for this
+ * long, something IS wrong and it is worth naming.
+ *
+ * What it reads is filtered first - see `unfamiliarText`. The document contains
+ * the prompt this app just typed, which is somebody's real resume, and matching
+ * a usage wall against that is how a check meant to explain a failure becomes
+ * one.
  */
 const REFUSAL_CHECK_AFTER_MS = 12_000;
 const REFUSAL_CHECK_EVERY_MS = 10_000;
@@ -362,6 +368,13 @@ export class ChatTab {
     this.assistantSelector = null;
 
     const before: Fingerprint = fingerprint(await this.readMessages());
+
+    // What the page said BEFORE this app typed anything into it. Together with
+    // the prompt itself, this is everything the refusal check must ignore -
+    // see `unfamiliarText`, and note that without it the check reads the
+    // operator's own resume and can find a usage wall in it.
+    const pageBefore = await this.page.visibleText(REFUSAL_TEXT_CHARS);
+
     await this.submit(prompt);
 
     let state = INITIAL_POLL_STATE;
@@ -408,7 +421,9 @@ export class ChatTab {
         // failure from a slow answer and needs a different thing done about it.
         if (this.now() >= nextRefusalCheck) {
           nextRefusalCheck = this.now() + REFUSAL_CHECK_EVERY_MS;
-          const refusal = refusalReason(await this.page.visibleText(REFUSAL_TEXT_CHARS));
+          const refusal = refusalReason(
+            unfamiliarText(await this.page.visibleText(REFUSAL_TEXT_CHARS), [pageBefore, prompt])
+          );
           if (refusal) {
             throw new ChatTurnError(
               'refused',

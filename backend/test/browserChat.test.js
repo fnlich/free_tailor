@@ -14,6 +14,7 @@ const {
   pickReply,
   poll,
   refusalReason,
+  unfamiliarText,
   usableBusySelectors,
 } = require('../dist/services/ai/providers/browserChat/conversation');
 const { ChatTab } = require('../dist/services/ai/providers/browserChat/tab');
@@ -358,6 +359,52 @@ test('an echo is recognised after the editor has curled its punctuation', () => 
   assert.equal(isEcho(sent, 'Here is the tailored resume you asked for.'), false);
 });
 
+test('the refusal check never reads the resume this app typed into the page', () => {
+  // The check reads document.body.innerText, and by the time it runs the
+  // document CONTAINS THE PROMPT - a real resume and a real job description.
+  // Every line below is ordinary engineering prose, and every one of them
+  // matched a usage wall before the prompt was filtered out. The result was not
+  // a near miss: for that one candidate the tailoring run failed every single
+  // time, blaming a limit that was not there.
+  const prompt = [
+    'Tailor this resume to the job description below.',
+    'Diagnosed an incident where the payment service hit the rate limit and shed load.',
+    'Built backpressure so a burst of too many requests degrades rather than fails.',
+    'Reduced p99 latency 40% after we reached the rate limit on the upstream vendor API.',
+    // And the case narrow wordings cannot help with: a job description from an
+    // AI company, quoting the exact banner this check hunts for. Job
+    // descriptions are written in the second person, so every cue the wordings
+    // rely on is present and legitimate.
+    "You will own quota and billing: users see \"You've reached your usage limit\" with no",
+    'reset time, and you will redesign that flow.',
+  ].join('\n');
+
+  // How it actually looks on the page: the site's own chrome around the prompt,
+  // and the transcript re-wrapping it into different lines from the ones sent.
+  const onThePage = [
+    'Claude',
+    'Tailor this resume to the job description below. Diagnosed an incident where the',
+    'payment service hit the rate limit and shed load. Built backpressure so a burst of',
+    'too many requests degrades rather than fails.',
+    'Reduced p99 latency 40% after we reached the rate limit on the upstream vendor API.',
+    "You will own quota and billing: users see \"You've reached your usage limit\" with no reset",
+    'time, and you will redesign that flow.',
+    'Retry  Copy',
+  ].join('\n');
+
+  assert.equal(
+    refusalReason(unfamiliarText(onThePage, ['', prompt])),
+    null,
+    'the prompt is not evidence about the site, however the transcript re-wraps it'
+  );
+
+  // And the wall must still be caught with all of that on the page.
+  const walled = `${onThePage}\nYou've reached your usage limit. It resets at 3:00 PM.`;
+  const caught = refusalReason(unfamiliarText(walled, ['', prompt]));
+  assert.ok(caught, 'a real wall must still be found in the text around the prompt');
+  assert.equal(caught.retryable, true);
+});
+
 test('a usage wall is told apart from a slow answer, and from a signed-out tab', () => {
   const wall = refusalReason("You've reached your usage limit. It resets at 3:00 PM.");
   assert.ok(wall, 'a usage wall must be recognised');
@@ -371,12 +418,29 @@ test('a usage wall is told apart from a slow answer, and from a signed-out tab',
   assert.ok(captcha);
   assert.equal(captcha.retryable, false);
 
-  // And it must not fire on an answer that happens to discuss the subject,
-  // which is exactly what a resume-tailoring prompt might.
-  assert.equal(
-    refusalReason('The candidate raised the rate limit on the payments API by 40%.'),
-    null
-  );
+  // The wordings are deliberately narrow as a second line of defence: each
+  // needs the reader addressed, or a control-panel noun phrase, or an
+  // instruction. Bare limit-talk is ordinary English in this app's own input.
+  for (const prose of [
+    'The candidate raised the rate limit on the payments API by 40%.',
+    'The service hit the rate limit and shed load.',
+    'Handles too many requests without falling over.',
+    'We reached the rate limit on the vendor API.',
+  ]) {
+    assert.equal(refusalReason(prose), null, `must not read as a refusal: ${prose}`);
+  }
+
+  // The real wordings, from both sites.
+  for (const wall of [
+    "You've reached your usage limit. It resets at 3:00 PM.",
+    'Message limit reached',
+    'You are out of free messages until 3 PM.',
+    "You've reached our limit of messages per hour. Please try again later.",
+    'Upgrade to Pro to continue this conversation.',
+    "You're sending messages too quickly. Please slow down.",
+  ]) {
+    assert.ok(refusalReason(wall), `must be caught: ${wall}`);
+  }
 });
 
 test('a lookalike host is not adopted as the site tab', () => {
@@ -532,13 +596,48 @@ test('a usage wall is reported as a refusal, not as a broken selector', async ()
   const page = fakePage({
     present: (selector) => selector === '#composer' || selector === '#send',
     messages: () => [],
-    visibleText: () => "You've reached your usage limit. It resets at 3:00 PM.",
+    // As the page really reads once the prompt has gone in: the site's chrome,
+    // this app's own prompt sitting in the transcript, and the wall that came
+    // up instead of an answer. The prompt has to be there - a check that only
+    // ever sees the wall would not prove the filter lets a real one through.
+    visibleText: (state) =>
+      state.typed
+        ? `Claude\n${state.typed}\nYou've reached your usage limit. It resets at 3:00 PM.`
+        : 'Claude',
   });
 
   await assert.rejects(tabFor(page).ask('tailor this resume', 600_000), (error) => {
     assert.equal(error.kind, 'refused');
     assert.equal(error.retryable, true, 'a limit resets on its own; the call is worth retrying');
     assert.match(error.message, /usage limit/);
+    return true;
+  });
+});
+
+test('a turn does not call the operator\'s own resume a usage wall', async () => {
+  // The companion to the pure filter test: that one proves `unfamiliarText`
+  // works, this one proves the TURN actually runs the page text through it.
+  // Reverting the call site alone leaves the pure test green, which is exactly
+  // the kind of gap that lets a fix quietly come undone.
+  const page = fakePage({
+    present: (selector) => selector === '#composer' || selector === '#send',
+    messages: () => [],
+    // Nothing but the site's chrome and this app's own prompt - no wall.
+    visibleText: (state) => (state.typed ? `Claude\n${state.typed}\nRetry  Copy` : 'Claude'),
+  });
+
+  // A job description from exactly the kind of company this app's users apply
+  // to, quoting the very string the refusal check looks for. Narrow wordings
+  // are no defence here - the JD is second-person because job descriptions are.
+  // Only knowing that this app put the text there tells the two apart.
+  const resume =
+    'Tailor this resume to the role below. You will own the quota and billing surface: ' +
+    "today users see \"You've reached your usage limit\" with no reset time, and you will " +
+    'redesign that flow end to end.';
+
+  await assert.rejects(tabFor(page).ask(resume, 90_000), (error) => {
+    assert.notEqual(error.kind, 'refused', 'the resume is not the site refusing');
+    assert.equal(error.kind, 'timeout', 'with no reply and no wall, this is a plain timeout');
     return true;
   });
 });
