@@ -66,7 +66,7 @@ const NUDGE =
 
 const CLAUDE_WEB: ChatSite = {
   id: 'claude-web',
-  label: 'Claude (browser)',
+  label: 'Claude (free)',
   url: 'https://claude.ai/new',
   host: 'claude.ai',
   composer: [
@@ -95,7 +95,7 @@ const CLAUDE_WEB: ChatSite = {
 
 const CHATGPT_WEB: ChatSite = {
   id: 'chatgpt-web',
-  label: 'ChatGPT (browser)',
+  label: 'ChatGPT (free)',
   url: 'https://chatgpt.com/',
   host: 'chatgpt.com',
   composer: ['#prompt-textarea', 'div[contenteditable="true"]'],

@@ -515,7 +515,7 @@ function fakePage(script) {
 
 const FAKE_SITE = {
   id: 'claude-web',
-  label: 'Claude (browser)',
+  label: 'Claude (free)',
   url: 'https://claude.ai/new',
   host: 'claude.ai',
   composer: ['#composer'],
@@ -962,7 +962,7 @@ test('a refusal reaches the user in the browser provider\'s voice, not the CLI\'
   const limited = createBrowserChatAdapter('chatgpt-web', { session: refusing(true) });
   await assert.rejects(limited.complete({ ...request }), (error) => {
     assert.equal(error.kind, 'rateLimited', 'a usage wall is worth retrying, and 429 says so');
-    assert.match(error.userMessage, /ChatGPT \(browser\)/, 'it must name the provider that refused');
+    assert.match(error.userMessage, /ChatGPT \(free\)/, 'it must name the provider that refused');
     assert.doesNotMatch(error.userMessage, /claude auth login|subscription/i);
     return true;
   });

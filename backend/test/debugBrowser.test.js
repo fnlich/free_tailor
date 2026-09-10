@@ -108,7 +108,7 @@ test('a running browser is found, and its open tabs are matched to sites', async
     // Asked to start when one is already listening, it must NOT launch a
     // second: Chrome would either refuse the port or quietly open a tab in the
     // existing window and exit, which looks like success and changes nothing.
-    const result = await startDebugBrowser({ port });
+    const result = await startDebugBrowser({ port, siteId: 'claude-web' });
     assert.equal(result.started, false);
     assert.equal(result.reused, true, 'an already-running browser is reused');
     assert.equal(result.status.running, true);
@@ -127,7 +127,7 @@ test('a running browser is found, and its open tabs are matched to sites', async
 });
 
 test('starting refuses a port it cannot use before it spawns anything', async () => {
-  await assert.rejects(startDebugBrowser({ port: 80 }), (error) => {
+  await assert.rejects(startDebugBrowser({ port: 80, siteId: 'claude-web' }), (error) => {
     assert.ok(error instanceof DebugBrowserError);
     return true;
   });
@@ -179,4 +179,25 @@ test('a site with no hostname is matched by its address, not reported missing', 
   const status = await probeDebugBrowser(1077, { AI_WEB_CLAUDE_URL: fixture });
   const claude = status.sites.find((site) => site.id === 'claude-web');
   assert.equal(claude.url, fixture, 'the override must reach the status the panel renders');
+});
+
+test('a slow browser is given long enough to bind before it is called a failure', () => {
+  // Reporting a failure for a browser that IS starting is the worse mistake: it
+  // leaves a window running that the operator was told did not open, and the
+  // endpoint unsaved. Measured in this container, a cold profile took past 12s -
+  // a first run on Windows with antivirus in the way can take longer still.
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'services', 'debugBrowser.ts'),
+    'utf8'
+  );
+  const wait = source.match(/const STARTUP_WAIT_MS = ([\d_]+);/);
+  assert.ok(wait, 'the startup wait must be declared');
+  assert.ok(
+    Number(wait[1].replace(/_/g, '')) >= 30_000,
+    `a cold browser needs more than ${wait[1]}ms to bind its debug port`
+  );
+
+  // And the message has to tell the operator that pressing Start again picks up
+  // a window that turned out to be slow, rather than opening a second one.
+  assert.match(source, /pressing Start again picks up the window that is now running/);
 });

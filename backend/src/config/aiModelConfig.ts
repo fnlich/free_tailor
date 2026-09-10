@@ -72,25 +72,33 @@ type AppSettings = {
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /**
-   * The DevTools port the browser-chat providers attach to.
+   * The debug browsers the free chat providers drive, one tab apiece.
    *
-   * Stored rather than read only from the environment because it is now
-   * something an operator sets on the Settings page, alongside the button that
-   * starts a browser on it. Env stays the default so an existing `.env` still
-   * decides what a fresh install starts with.
-   */
-  browserChatDebugPort: number;
-  /**
-   * How many browser-chat calls may WAIT for the one tab.
+   * A list, not a port, and that is the whole design. A chat tab holds ONE
+   * conversation, so the only way to run two free calls at once is to have two
+   * tabs - which means two browsers, because a second tab in the same window is
+   * a background tab and Chrome freezes those. Each entry is therefore one
+   * browser, on its own debug port, showing one site.
    *
-   * Distinct from how many may run - that is one, and always will be, because
-   * a chat window holds one conversation. This is the length of the line behind
-   * it. Unbounded, a 40-profile batch queues 40 calls that each hold an HTTP
-   * request open for as long as their deadline allows; bounded, the ones that
-   * cannot be served are told so immediately.
+   * How many entries a site has IS its concurrency; the queue behind them is
+   * unbounded and first-come-first-served.
    */
-  browserChatMaxQueue: number;
+  browserChatEndpoints: BrowserChatEndpoint[];
 };
+
+/** One debug browser: which chat site it shows, and the port it listens on. */
+export type BrowserChatEndpoint = {
+  siteId: BrowserChatSiteId;
+  port: number;
+};
+
+export type BrowserChatSiteId = Extract<AIProvider, 'claude-web' | 'chatgpt-web'>;
+
+export const BROWSER_CHAT_SITE_IDS: readonly BrowserChatSiteId[] = ['claude-web', 'chatgpt-web'];
+
+export function isBrowserChatSiteId(value: unknown): value is BrowserChatSiteId {
+  return value === 'claude-web' || value === 'chatgpt-web';
+}
 
 export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
 
@@ -117,8 +125,7 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   | 'defaultCoverLetterDocxEnabled'
   | 'aiModels'
   | 'googleSheetsSources'
-  | 'browserChatDebugPort'
-  | 'browserChatMaxQueue'
+  | 'browserChatEndpoints'
 >;
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
   outputPathUsesJobTitle: boolean;
@@ -189,16 +196,18 @@ function createDefaultModelRecords(): AIModelRecord[] {
     // one conversation at a time, so neither should be what an unset default
     // falls back to.
     {
-      name: 'Claude (browser)',
+      name: 'Claude (free)',
       provider: 'claude-web',
       modelName: 'chat',
-      description: 'Drives claude.ai in a Chrome you started and signed in to. No API key.',
+      description:
+        'Free. Drives claude.ai in a Chrome you started and signed in to - no API key, nothing metered.',
     },
     {
-      name: 'ChatGPT (browser)',
+      name: 'ChatGPT (free)',
       provider: 'chatgpt-web',
       modelName: 'chat',
-      description: 'Drives chatgpt.com in a Chrome you started and signed in to. No API key.',
+      description:
+        'Free. Drives chatgpt.com in a Chrome you started and signed in to - no API key, nothing metered.',
     },
     {
       name: DEFAULT_OPENAI_MODEL,
@@ -293,26 +302,24 @@ function envPort(): number {
 }
 
 /**
- * How long the line for the one chat tab may get, before anything is saved.
+ * The browsers a fresh install expects, before anything is saved.
  *
- * `DEFAULT_MAX_QUEUE` in `.env`. Ten is a batch of ten profiles: enough that
- * the ordinary case never sees a rejection, small enough that the last caller
- * in the line has a believable wait rather than an hour of one.
+ * One per site, on adjacent ports, because a browser here shows ONE chat tab -
+ * two sites on one port would put one of them in a background tab, and Chrome
+ * freezes those. `AI_WEB_CDP_PORT` names the first; the second follows it.
+ * Either can be changed, and more added, on the Settings page.
  */
-export const BROWSER_CHAT_MAX_QUEUE_MIN = 1;
-export const BROWSER_CHAT_MAX_QUEUE_MAX = 500;
-
-function envMaxQueue(): number {
-  const raw = Number.parseInt((process.env.DEFAULT_MAX_QUEUE ?? '').trim(), 10);
-  return Number.isInteger(raw) &&
-    raw >= BROWSER_CHAT_MAX_QUEUE_MIN &&
-    raw <= BROWSER_CHAT_MAX_QUEUE_MAX
-    ? raw
-    : 10;
+function defaultBrowserChatEndpoints(): BrowserChatEndpoint[] {
+  const first = envPort();
+  const second = first < BROWSER_CHAT_PORT_MAX ? first + 1 : first - 1;
+  return [
+    { siteId: 'claude-web', port: first },
+    { siteId: 'chatgpt-web', port: second },
+  ];
 }
 
-const DEFAULT_BROWSER_CHAT_PORT = envPort();
-const DEFAULT_BROWSER_CHAT_MAX_QUEUE = envMaxQueue();
+/** Most browsers one site may have. A guard against a paste, not a policy. */
+export const BROWSER_CHAT_MAX_ENDPOINTS = 16;
 
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
@@ -328,8 +335,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
   aiModels: createDefaultModelRecords(),
   googleSheetsSources: [],
-  browserChatDebugPort: DEFAULT_BROWSER_CHAT_PORT,
-  browserChatMaxQueue: DEFAULT_BROWSER_CHAT_MAX_QUEUE,
+  browserChatEndpoints: defaultBrowserChatEndpoints(),
 };
 
 function cloneDefaultSettings(): AppSettings {
@@ -612,6 +618,90 @@ function normalizeBoundedInteger(
   return parsed;
 }
 
+
+/**
+ * The endpoint list, and the one-port-one-browser rule it has to keep.
+ *
+ * Two entries on the same port would be two sites in one browser, which is the
+ * shape this list exists to replace: the second tab is a background tab, Chrome
+ * freezes it, and a DOM read against a frozen renderer never returns at all. So
+ * a port appears at most once, and the first claim on it wins.
+ *
+ * Also migrates the field this replaced. An install that saved a single
+ * `browserChatDebugPort` gets both sites on that port - not because it is a
+ * good arrangement but because it is the arrangement they already have, and
+ * silently moving one site to a port with no browser on it would break a setup
+ * that was working.
+ */
+function normalizeBrowserChatEndpoints(
+  source: Partial<AppSettings> & Record<string, unknown>,
+  fallback: AppSettings,
+  strict: boolean
+): BrowserChatEndpoint[] {
+  const raw = source.browserChatEndpoints;
+
+  if (typeof raw === 'undefined') {
+    const legacy = source.browserChatDebugPort;
+    if (typeof legacy !== 'undefined') {
+      const port = normalizeBoundedInteger(
+        legacy,
+        fallback.browserChatEndpoints[0]?.port ?? envPort(),
+        BROWSER_CHAT_PORT_MIN,
+        BROWSER_CHAT_PORT_MAX,
+        'browserChatDebugPort',
+        strict
+      );
+      return [
+        { siteId: 'claude-web', port },
+        { siteId: 'chatgpt-web', port },
+      ];
+    }
+    return fallback.browserChatEndpoints.map((entry) => ({ ...entry }));
+  }
+
+  if (!Array.isArray(raw)) {
+    if (strict) throw new Error('browserChatEndpoints must be an array');
+    return fallback.browserChatEndpoints.map((entry) => ({ ...entry }));
+  }
+
+  if (raw.length > BROWSER_CHAT_MAX_ENDPOINTS) {
+    throw new Error(`browserChatEndpoints may hold at most ${BROWSER_CHAT_MAX_ENDPOINTS} browsers`);
+  }
+
+  const seen = new Set<number>();
+  const out: BrowserChatEndpoint[] = [];
+  for (const entry of raw) {
+    const record = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    // Refused, never quietly dropped - like the port beside it and the
+    // duplicate check below. A list that saves with an entry silently missing
+    // is a browser the operator believes they configured and the providers
+    // have never heard of.
+    if (!isBrowserChatSiteId(record.siteId)) {
+      throw new Error(
+        `"${String(record.siteId)}" is not a chat site this app knows; expected one of ` +
+          `${BROWSER_CHAT_SITE_IDS.join(', ')}`
+      );
+    }
+    const port = normalizeBoundedInteger(
+      record.port,
+      Number.NaN,
+      BROWSER_CHAT_PORT_MIN,
+      BROWSER_CHAT_PORT_MAX,
+      'browserChatEndpoints[].port',
+      true
+    );
+    if (seen.has(port)) {
+      throw new Error(
+        `port ${port} is listed twice: one browser shows one chat tab, so each port belongs to ` +
+          'exactly one site'
+      );
+    }
+    seen.add(port);
+    out.push({ siteId: record.siteId, port });
+  }
+  return out;
+}
+
 function normalizeSettings(
   input: unknown,
   fallback: AppSettings = DEFAULT_SETTINGS,
@@ -638,22 +728,7 @@ function normalizeSettings(
   );
 
   return {
-    browserChatDebugPort: normalizeBoundedInteger(
-      source.browserChatDebugPort,
-      fallback.browserChatDebugPort,
-      BROWSER_CHAT_PORT_MIN,
-      BROWSER_CHAT_PORT_MAX,
-      'browserChatDebugPort',
-      strict
-    ),
-    browserChatMaxQueue: normalizeBoundedInteger(
-      source.browserChatMaxQueue,
-      fallback.browserChatMaxQueue,
-      BROWSER_CHAT_MAX_QUEUE_MIN,
-      BROWSER_CHAT_MAX_QUEUE_MAX,
-      'browserChatMaxQueue',
-      strict
-    ),
+    browserChatEndpoints: normalizeBrowserChatEndpoints(source, fallback, strict),
     providersEnabled,
     defaultMode:
       typeof source.defaultMode === 'undefined'
@@ -766,8 +841,7 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     aiModels: runnableModels.map((model) => ({ ...model })),
     googleSheetsSources: settings.googleSheetsSources,
-    browserChatDebugPort: settings.browserChatDebugPort,
-    browserChatMaxQueue: settings.browserChatMaxQueue,
+    browserChatEndpoints: settings.browserChatEndpoints.map((entry) => ({ ...entry })),
   };
 }
 
@@ -907,19 +981,6 @@ function assertInRange(
 }
 
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
-  assertInRange(
-    input.browserChatDebugPort,
-    BROWSER_CHAT_PORT_MIN,
-    BROWSER_CHAT_PORT_MAX,
-    'browserChatDebugPort'
-  );
-  assertInRange(
-    input.browserChatMaxQueue,
-    BROWSER_CHAT_MAX_QUEUE_MIN,
-    BROWSER_CHAT_MAX_QUEUE_MAX,
-    'browserChatMaxQueue'
-  );
-
   const current = await readSettings();
 
   // A client that still sends the flat per-provider booleans has to be heard.
@@ -1219,18 +1280,20 @@ export function getDefaultEnabledProvider(settings: AIModelSettings): AIProvider
  * single place that decides what wins - the stored value, then the
  * environment, then the built-in default.
  */
-export async function getBrowserChatSettings(): Promise<{
-  debugPort: number;
-  maxQueue: number;
-}> {
+/**
+ * The browsers the free chat providers may use, for the call path that needs
+ * them at call time rather than at startup.
+ *
+ * One accessor so there is a single place that decides what wins: the stored
+ * list, and nothing else - the environment only supplies the default a fresh
+ * install begins with.
+ */
+export async function getBrowserChatEndpoints(): Promise<BrowserChatEndpoint[]> {
   const settings = await readSettings();
-  return {
-    debugPort: settings.browserChatDebugPort,
-    maxQueue: settings.browserChatMaxQueue,
-  };
+  return settings.browserChatEndpoints.map((entry) => ({ ...entry }));
 }
 
 /** What a fresh install would use, before anything is saved. */
-export function getBrowserChatEnvDefaults(): { debugPort: number; maxQueue: number } {
-  return { debugPort: DEFAULT_BROWSER_CHAT_PORT, maxQueue: DEFAULT_BROWSER_CHAT_MAX_QUEUE };
+export function getBrowserChatEnvDefaults(): BrowserChatEndpoint[] {
+  return defaultBrowserChatEndpoints();
 }

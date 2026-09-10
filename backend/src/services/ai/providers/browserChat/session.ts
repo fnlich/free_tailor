@@ -42,6 +42,8 @@ const PROTOCOL_TIMEOUT_MS = 30_000;
  */
 const PROBE_COMPOSER_MS = 8_000;
 const PROBE_POLL_MS = 250;
+/** How far past its budget the whole probe is allowed to run before it is cut off. */
+const PROBE_GRACE_MS = 2_000;
 
 export class BrowserSessionError extends Error {
   readonly hint: string;
@@ -205,13 +207,22 @@ export class BrowserChatSession {
     try {
       const page = await this.pageFor(site);
       const chatPage = wrapPuppeteerPage(page);
-      // Brought forward first, for the same reason every turn does it: Chrome
-      // freezes a background tab, and a frozen renderer does not answer a DOM
-      // read - it never returns at all. A health check that skipped this would
-      // not merely be slow, it would sit on its own 8s budget without that
-      // budget being able to end it, because the budget is only checked between
-      // reads. It costs a flash of focus at startup.
-      await chatPage.activate();
+      // NOT brought to the front, unlike a turn - and the difference is worth
+      // stating because the turn's reason used to apply here too.
+      //
+      // A turn activates because Chrome freezes a BACKGROUND TAB and a frozen
+      // renderer never answers a DOM read. That was decisive when both sites
+      // shared one window. Now each browser shows one tab, so a site's tab is
+      // never behind another; a window that is merely occluded is covered by
+      // the --disable-backgrounding-occluded-windows and --disable-renderer-
+      // backgrounding flags the launcher passes.
+      //
+      // Against that, this runs on every health check - the boot preflight and
+      // every load of the Settings page - and activating would raise EVERY
+      // browser the operator has, several windows at a time, for a status
+      // reading. The residual risk is a hand-started browser without those
+      // flags being slow to answer, which the bound below turns into a
+      // "not ready" rather than a hang.
       // Waited for, not sampled. `pageFor` may have just navigated, and
       // `domcontentloaded` fires on these single-page apps long before React
       // has rendered a composer - so an instantaneous count reports "no message
@@ -220,7 +231,16 @@ export class BrowserChatSession {
       // boot preflight would report both browser providers unusable on every
       // cold start and send the operator looking for a login problem that does
       // not exist.
-      const found = await this.waitForComposer(chatPage, site);
+      // Bounded as a whole, not merely polled against a budget. `waitForComposer`
+      // checks its clock BETWEEN reads, so a single read that never returns -
+      // exactly what a frozen renderer does - would sit past the budget
+      // indefinitely and hold up the admin page that asked for a status.
+      const found = await Promise.race([
+        this.waitForComposer(chatPage, site),
+        new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(false), PROBE_COMPOSER_MS + PROBE_GRACE_MS)
+        ),
+      ]);
       if (found) {
         // The hostname when there is one, the whole URL otherwise: a file://
         // or opaque URL has an empty hostname, and "Signed in at ." tells an

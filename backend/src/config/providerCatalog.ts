@@ -100,9 +100,9 @@ export const PROVIDER_CATALOG = {
   },
   'claude-web': {
     id: 'claude-web',
-    label: 'Claude (browser)',
+    label: 'Claude (free)',
     summary:
-      'Drives claude.ai in a Chrome you started and signed in to. No API key and nothing metered; the chat plan you already have is the quota.',
+      'Drives claude.ai in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -111,9 +111,9 @@ export const PROVIDER_CATALOG = {
   },
   'chatgpt-web': {
     id: 'chatgpt-web',
-    label: 'ChatGPT (browser)',
+    label: 'ChatGPT (free)',
     summary:
-      'Drives chatgpt.com in a Chrome you started and signed in to. No API key and nothing metered; the chat plan you already have is the quota.',
+      'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,

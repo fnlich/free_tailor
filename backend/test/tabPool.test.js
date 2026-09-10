@@ -1,0 +1,393 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const {
+  TabPool,
+  NoTabsConfiguredError,
+  TabWaitAbortedError,
+  TabWaitTimeoutError,
+  getTabPool,
+  isEndpointLeased,
+  resetTabPoolsForTests,
+} = require('../dist/services/ai/providers/browserChat/pool');
+
+/**
+ * The line for a free provider's chat tabs.
+ *
+ * Three things have to hold, and each of them is a way the free providers would
+ * otherwise be wrong: one call per tab, because two prompts in one composer
+ * interleave and both answers are lost; strictly first-come-first-served, so a
+ * batch cannot starve a single request behind it; and no length limit at all -
+ * a call is refused for running out of its own time, never for being late in
+ * the queue.
+ */
+
+const A = 'http://127.0.0.1:9222';
+const B = 'http://127.0.0.1:9223';
+
+function poolOf(...endpoints) {
+  const pool = new TabPool('Claude (free)');
+  pool.setEndpoints(endpoints);
+  return pool;
+}
+
+test('a tab is handed to one call at a time', async () => {
+  const pool = poolOf(A);
+  const first = await pool.acquire();
+  assert.equal(first.endpoint, A);
+  assert.equal(pool.inUse, 1);
+
+  let secondGotIt = false;
+  const second = pool.acquire().then((lease) => {
+    secondGotIt = true;
+    return lease;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(secondGotIt, false, 'the second call must wait, not share the tab');
+  assert.equal(pool.queued, 1);
+
+  first.release();
+  const lease = await second;
+  assert.equal(lease.endpoint, A, 'and it gets the tab that freed');
+  lease.release();
+});
+
+test('two browsers run two calls at once - that is what a second one buys', async () => {
+  const pool = poolOf(A, B);
+  const first = await pool.acquire();
+  const second = await pool.acquire();
+  assert.notEqual(first.endpoint, second.endpoint, 'each call gets a tab of its own');
+  assert.equal(pool.inUse, 2);
+  assert.equal(pool.queued, 0);
+  first.release();
+  second.release();
+});
+
+test('the queue is first-come-first-served, and the freed tab goes to its head', async () => {
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+
+  const order = [];
+  const waiters = ['first', 'second', 'third'].map((name) =>
+    pool.acquire().then((lease) => {
+      order.push(name);
+      return lease;
+    })
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 3);
+
+  // Release one at a time so each hand-off is observed rather than raced.
+  let current = held;
+  for (let i = 0; i < waiters.length; i += 1) {
+    current.release();
+    current = await waiters[i];
+  }
+  current.release();
+
+  assert.deepEqual(order, ['first', 'second', 'third'], 'the longest wait is served first');
+});
+
+test('the queue has no length limit', async () => {
+  // The point of the design: a 200-profile batch queues 200 calls and every one
+  // of them is served in turn. Nothing is refused for being late in the line.
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+  const waiting = Array.from({ length: 200 }, () => pool.acquire());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 200);
+
+  held.release();
+  let served = 0;
+  for (const pending of waiting) {
+    const lease = await pending;
+    served += 1;
+    lease.release();
+  }
+  assert.equal(served, 200);
+});
+
+test('a call gives up on its own clock, not on the queue length', async () => {
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+  await assert.rejects(pool.acquire({ timeoutMs: 20 }), (error) => {
+    assert.ok(error instanceof TabWaitTimeoutError);
+    assert.match(error.message, /No Claude \(free\) tab became free/);
+    return true;
+  });
+  assert.equal(pool.queued, 0, 'and it leaves the line when it goes');
+  held.release();
+});
+
+test('a cancelled call leaves the line without disturbing it', async () => {
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+  const controller = new AbortController();
+  const cancelled = pool.acquire({ signal: controller.signal });
+  const after = pool.acquire();
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 2);
+  controller.abort();
+  await assert.rejects(cancelled, (error) => error instanceof TabWaitAbortedError);
+  assert.equal(pool.queued, 1, 'the call behind it keeps its place');
+
+  held.release();
+  (await after).release();
+});
+
+test('a provider with no browser says so rather than waiting for one', async () => {
+  const pool = new TabPool('ChatGPT (free)');
+  pool.setEndpoints([]);
+  await assert.rejects(pool.acquire({ timeoutMs: 5_000 }), (error) => {
+    assert.ok(error instanceof NoTabsConfiguredError);
+    assert.match(error.message, /No browser is configured for ChatGPT \(free\)/);
+    return true;
+  });
+});
+
+test('a browser added while calls are waiting starts serving them at once', async () => {
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+  const waiting = pool.acquire();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1);
+
+  // The whole reason to add one is that the calls already in the line get
+  // served sooner - it must not take a release to notice.
+  pool.setEndpoints([A, B]);
+  const lease = await waiting;
+  assert.equal(lease.endpoint, B);
+  lease.release();
+  held.release();
+});
+
+test('a browser removed while in use is not handed out again', async () => {
+  const pool = poolOf(A, B);
+  const onB = await pool.acquire();
+  const onA = await pool.acquire();
+  const inUse = onB.endpoint === B ? onB : onA;
+  const other = inUse === onB ? onA : onB;
+
+  // Dropping it from the configuration must not hand it to somebody else while
+  // the call still holds it - that is the one thing this pool exists to prevent.
+  pool.setEndpoints([A].filter((endpoint) => endpoint !== inUse.endpoint));
+  const next = pool.acquire();
+  inUse.release();
+  other.release();
+
+  const lease = await next;
+  assert.notEqual(lease.endpoint, inUse.endpoint, 'a removed browser is never handed out');
+  lease.release();
+});
+
+test('each site has its own pool, so they never wait for one another', () => {
+  resetTabPoolsForTests();
+  const claude = getTabPool('claude-web', 'Claude (free)');
+  const chatgpt = getTabPool('chatgpt-web', 'ChatGPT (free)');
+  assert.notEqual(claude, chatgpt);
+  assert.equal(getTabPool('claude-web', 'Claude (free)'), claude, 'and the pool persists');
+  resetTabPoolsForTests();
+});
+
+test('a browser known to be down is not handed out while a healthy one is merely busy', async () => {
+  // The bug this pins, found by running it rather than by reading it: the
+  // fallback "if no reachable browser is FREE, hand out a down one anyway"
+  // fires when the healthy browsers are simply in use. A caller retrying past
+  // a dead browser is then handed the same dead browser again, every time, and
+  // the retry cannot work. Four of six requests failed that way.
+  const pool = poolOf(A, B);
+  pool.markUnreachable(B, 60_000);
+
+  // A is healthy and taken; B is down. The next call must WAIT for A, not be
+  // given B.
+  const onA = await pool.acquire();
+  assert.equal(onA.endpoint, A);
+
+  let handed = null;
+  const next = pool.acquire().then((lease) => {
+    handed = lease.endpoint;
+    return lease;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(handed, null, 'it must queue rather than take the browser known to be down');
+  assert.equal(pool.queued, 1);
+
+  onA.release();
+  const lease = await next;
+  assert.equal(lease.endpoint, A, 'and it gets the healthy one when it frees');
+  lease.release();
+});
+
+test('when every browser is down, one is tried anyway rather than waiting forever', async () => {
+  // The other half of the same decision. "Down" is an observation from a moment
+  // ago; if there is nothing else to try, trying it and reporting what went
+  // wrong beats hanging on a stale note.
+  const pool = poolOf(A, B);
+  pool.markUnreachable(A, 60_000);
+  pool.markUnreachable(B, 60_000);
+
+  const lease = await pool.acquire({ timeoutMs: 200 });
+  assert.ok([A, B].includes(lease.endpoint));
+  lease.release();
+});
+
+test('a browser marked down is tried again once its rest is over', async () => {
+  let now = 1_000;
+  const pool = new TabPool('Claude (free)', () => now);
+  pool.setEndpoints([A, B]);
+  pool.markUnreachable(B, 30_000);
+
+  const first = await pool.acquire();
+  assert.equal(first.endpoint, A, 'the healthy one while B is resting');
+  first.release();
+
+  now += 30_001;
+  const held = await pool.acquire();
+  assert.equal(held.endpoint, A);
+  const second = await pool.acquire();
+  assert.equal(second.endpoint, B, 'B is back in rotation once its rest has passed');
+  held.release();
+  second.release();
+});
+
+test('two sites pointed at ONE browser never hold it at the same time', async () => {
+  // A pool guarantees one call per tab within a site. That is not quite the
+  // guarantee that matters: the thing being protected is the BROWSER, and two
+  // sites can be pointed at the same one - AI_WEB_CDP_URL gives both of them
+  // that single endpoint. Two turns would then drive two tabs in one window,
+  // each bringing its own tab to the front, and whichever loses is a background
+  // tab: frozen, answering no DOM read at all.
+  resetTabPoolsForTests();
+  const claude = getTabPool('claude-web', 'Claude (free)');
+  const chatgpt = getTabPool('chatgpt-web', 'ChatGPT (free)');
+  const shared = 'http://127.0.0.1:9222';
+  claude.setEndpoints([shared]);
+  chatgpt.setEndpoints([shared]);
+
+  const held = await claude.acquire();
+  await assert.rejects(
+    chatgpt.acquire({ timeoutMs: 30 }),
+    (error) => error instanceof TabWaitTimeoutError,
+    'the other site must wait for the browser, not take it as well'
+  );
+
+  // And it must be woken when the first site lets go - a waiter in another
+  // pool cannot be left hanging just because the release happened elsewhere.
+  const waiting = chatgpt.acquire({ timeoutMs: 2_000 });
+  held.release();
+  const lease = await waiting;
+  assert.equal(lease.endpoint, shared);
+  lease.release();
+  resetTabPoolsForTests();
+});
+
+test('a browser in use is still reported as leased, so its connection is not torn away', async () => {
+  // The adapter drops the held connection to any browser no longer in the
+  // settings list, and it does that at the START OF EVERY CALL. An operator who
+  // removes a row while a request is running would otherwise have that
+  // request's connection pulled out mid-answer. The pool is already careful
+  // here - a removed-but-busy tab stays busy until its call lets go - and the
+  // session teardown has to be equally careful, which is what this exposes.
+  resetTabPoolsForTests();
+  const pool = getTabPool('claude-web', 'Claude (free)');
+  const X = 'http://127.0.0.1:9501';
+  pool.setEndpoints([X]);
+
+  const lease = await pool.acquire();
+  assert.equal(isEndpointLeased(X), true, 'in use, so it must not be disposed');
+
+  // Removed from the configuration WHILE the call holds it.
+  pool.setEndpoints([]);
+  assert.equal(isEndpointLeased(X), true, 'still in use, so still not disposable');
+
+  lease.release();
+  assert.equal(isEndpointLeased(X), false, 'and only now is it safe to drop');
+  resetTabPoolsForTests();
+});
+
+test('a retry works its way around dead browsers rather than hammering one', async () => {
+  // When every browser is down, one is handed out anyway - trying beats
+  // waiting on a stale note. But handing out the FIRST free one means a call
+  // that retries pool.size times spends every attempt on the same browser, and
+  // the one most recently seen dead is the least likely to have come back.
+  let now = 1_000;
+  const pool = new TabPool('Claude (free)', () => now);
+  const C = 'http://127.0.0.1:9503';
+  pool.setEndpoints([A, B, C]);
+
+  // All down, marked at different times: A longest ago, C most recently.
+  pool.markUnreachable(A, 60_000);
+  now += 10;
+  pool.markUnreachable(B, 60_000);
+  now += 10;
+  pool.markUnreachable(C, 60_000);
+
+  // A retrying call takes them in the order they were given up on.
+  const order = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const lease = await pool.acquire({ timeoutMs: 100 });
+    order.push(lease.endpoint);
+    now += 1;
+    pool.markUnreachable(lease.endpoint, 60_000);
+    lease.release();
+  }
+  assert.deepEqual(order, [A, B, C], 'each attempt tries a different browser');
+});
+
+test('removing the last browser tells the line, instead of leaving it to time out', async () => {
+  // Nothing will ever free up for these callers - there is nothing left to
+  // free - and a request that waits ten minutes to be told "timed out" when the
+  // answer was "you removed the last browser" has been given the wrong answer
+  // slowly.
+  const pool = poolOf(A);
+  const held = await pool.acquire();
+  const waiting = pool.acquire({ timeoutMs: 60_000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1);
+
+  pool.setEndpoints([]);
+  await assert.rejects(waiting, (error) => {
+    assert.ok(error instanceof NoTabsConfiguredError);
+    return true;
+  });
+  held.release();
+});
+
+test('a browser coming back wakes the line rather than waiting for a release', async () => {
+  // `pump` is driven by a release or a configuration change. Without a wake, a
+  // browser whose rest ends while the site's healthy tabs are busy sits idle
+  // behind a queue until one of THOSE frees - callers waiting on a browser that
+  // was ready for them.
+  const pool = poolOf(A, B);
+  const onA = await pool.acquire();
+  assert.equal(onA.endpoint, A);
+  pool.markUnreachable(B, 60);
+
+  const waiting = pool.acquire({ timeoutMs: 3_000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1, 'it must queue while B is resting');
+
+  const lease = await waiting;
+  assert.equal(lease.endpoint, B, 'and be woken by B, not by A being released');
+  lease.release();
+  onA.release();
+});
+
+test('a browser reported healthy again wakes the line too', async () => {
+  const pool = poolOf(A, B);
+  const onA = await pool.acquire();
+  pool.markUnreachable(B, 60_000);
+  const waiting = pool.acquire({ timeoutMs: 3_000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1);
+
+  // A turn that succeeds against B says so; the line should not keep waiting.
+  pool.markReachable(B);
+  const lease = await waiting;
+  assert.equal(lease.endpoint, B);
+  lease.release();
+  onA.release();
+});
