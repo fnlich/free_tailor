@@ -657,6 +657,13 @@ export class ChatTab {
 
       const elsewhere = await this.navigatedAway();
       if (elsewhere) {
+        // Asked WHY before it is reported as merely where. The commonest reason
+        // a chat tab leaves mid-answer is not somebody clicking a link - it is
+        // the session expiring and the site bouncing the tab to a sign-in page.
+        // "Navigated to accounts.example.com, leave the browser alone" is true
+        // and useless; "the tab is signed out" is what has to be done about it.
+        const bounced = refusalReason(await this.page.visibleTailText(REFUSAL_TEXT_CHARS));
+        if (bounced) throw refusalError(this.site, bounced);
         throw new ChatTurnError(
           'page',
           `the ${this.site.label} tab was navigated to ${elsewhere} while it was answering. ` +

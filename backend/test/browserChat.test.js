@@ -870,3 +870,28 @@ test('a wall already on the page is caught before the resume is typed into it', 
   });
   assert.deepEqual(typed, [], 'nothing may be typed into a page that has already refused');
 });
+
+test('a session that expires mid-answer is reported as signed out, not as a detour', async () => {
+  // The commonest reason a chat tab leaves mid-answer is not somebody clicking
+  // a link - it is the session expiring and the site bouncing the tab to a
+  // sign-in page. Naming the destination is true and useless; naming the cause
+  // is what the operator can act on, and it is the difference between "leave
+  // the browser alone" and "sign that tab back in".
+  const page = fakePage({
+    present: (selector, state) =>
+      !state.url.includes('accounts.') && (selector === '#composer' || selector === '#send'),
+    onRead: (state) => {
+      if (state.reads > 6) state.url = 'https://accounts.example.com/signin?next=%2Fchat';
+    },
+    messages: () => [],
+    visibleText: (state) =>
+      state.url.includes('accounts.') ? 'Sign in to continue' : 'Claude',
+  });
+
+  await assert.rejects(tabFor(page).ask('tailor this', 600_000), (error) => {
+    assert.equal(error.kind, 'refused', 'a bounce to sign-in is an auth failure, not a detour');
+    assert.equal(error.retryable, false, 'and waiting will not fix it - a person must sign in');
+    assert.match(error.message, /signed out/);
+    return true;
+  });
+});
