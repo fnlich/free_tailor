@@ -365,3 +365,33 @@ test('a usage wall is reported as a refusal rather than polled until the deadlin
     });
   });
 });
+
+test('the page text is read from the END, where a banner sits below the prompt', async () => {
+  // This one has to run against a real browser, because the thing being tested
+  // lives in the puppeteer wrapper: every fake ChatPage does its own slicing,
+  // so a fake can never catch the wrapper reading from the wrong end.
+  //
+  // And reading from the wrong end is not a near miss. A real tailoring prompt
+  // measures about 27,000 characters of resume and job description, so a window
+  // taken from the front closes some 21,000 characters before the prompt even
+  // ends - it holds nothing but this app's own text, which is then filtered out
+  // as already known. The refusal check could not fire at all.
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const prompt = 'Tailor this resume. ' + 'Delivered payments infrastructure at scale. '.repeat(600);
+    const banner = "You've reached your usage limit. It resets at 3:00 PM.";
+    await page.setContent(`<body><div>${prompt}</div><div>${banner}</div></body>`);
+
+    const chat = wrapPuppeteerPage(page);
+    const WINDOW = 6_000;
+    const tail = await chat.visibleTailText(WINDOW);
+
+    assert.ok(prompt.length > 20_000, 'the point of the test is that a real prompt is long');
+    assert.ok(tail.length <= WINDOW, 'the window must still be capped');
+    assert.match(tail.trim(), /usage limit\. It resets at 3:00 PM\.$/, 'the banner must be in it');
+    assert.doesNotMatch(tail.slice(0, 40), /^Tailor this resume/, 'and not the head of the page');
+  } finally {
+    await browser.close();
+  }
+});

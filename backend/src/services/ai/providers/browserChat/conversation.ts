@@ -296,7 +296,11 @@ const REFUSALS: Array<{ pattern: RegExp; refusal: Refusal }> = [
     refusal: { reason: 'the account has hit its chat usage limit', retryable: true },
   },
   {
-    pattern: /\bupgrade\b[^.!?]{0,24}\bto (continue|keep|send|get more)\b/i,
+    // The PLAN has to be named. "upgrade ... to continue" alone is a sentence
+    // an infrastructure resume writes without thinking - "led the upgrade to
+    // Kubernetes to keep deploys under five minutes" trips it - and a resume is
+    // what this app puts on the page.
+    pattern: /\bupgrade (to ((chatgpt|claude|a) )?(pro\b|plus\b|premium\b|team\b|paid plan)|your plan\b)/i,
     refusal: { reason: 'the account has hit its chat usage limit', retryable: true },
   },
   {

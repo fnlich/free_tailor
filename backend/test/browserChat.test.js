@@ -466,6 +466,7 @@ function fakePage(script) {
     typed: '',
     reads: 0,
     now: 0,
+    sentAt: null,
   };
   const tick = () => {
     state.reads += 1;
@@ -491,6 +492,7 @@ function fakePage(script) {
     },
     insertText: async (text) => {
       state.typed += text;
+      state.sentAt = state.now;
     },
     pressEnter: async () => {},
     readText: async () => state.typed,
@@ -629,6 +631,14 @@ test('a usage wall is reported as a refusal, not as a broken selector', async ()
     assert.equal(error.kind, 'refused');
     assert.equal(error.retryable, true, 'a limit resets on its own; the call is worth retrying');
     assert.match(error.message, /usage limit/);
+    // And it has to arrive EARLY. The whole value of the check is not the word
+    // in the error - it is not spending ten minutes of the caller's budget
+    // polling a page that already said no. Asserting only the kind would pass
+    // just as happily on a refusal raised at the deadline.
+    assert.ok(
+      page.state.now < 60_000,
+      `the refusal must not wait out the budget - took ${page.state.now}ms of a 600s one`
+    );
     return true;
   });
 });
@@ -894,4 +904,116 @@ test('a session that expires mid-answer is reported as signed out, not as a deto
     assert.match(error.message, /signed out/);
     return true;
   });
+});
+
+test('a deadline reached while the answer was still growing says exactly that', () => {
+  // The third of the three separated timeout messages, and the one with no
+  // test: an answer that is real and simply did not finish. It is the only one
+  // of the three that should NOT send the operator to look at selectors or at
+  // the sign-in state - the budget was the problem.
+  //
+  // Reached through the same code path the turn uses, rather than by
+  // constructing the string, so a change to the branch is what fails here.
+  const tab = new ChatTab(fakePage({ present: () => true, messages: () => [] }), FAKE_SITE, {
+    log: () => {},
+  });
+  const reason = tab.timeoutReason(true);
+  assert.match(reason, /still writing when the deadline passed/);
+  assert.doesNotMatch(reason, /selector/, 'the selectors are fine; saying so sends them hunting');
+  assert.doesNotMatch(reason, /signed out|signed in/);
+});
+
+test('a refusal reaches the user in the browser provider\'s voice, not the CLI\'s', async () => {
+  // The kinds are reused for their status codes and retry semantics, but their
+  // default sentences are written for the Claude CLI: `auth` says "an
+  // administrator needs to run `claude auth login`" and `rateLimited` says "the
+  // Claude subscription usage limit". A user whose chatgpt.com tab has signed
+  // itself out would be sent to fix a subscription that has nothing to do with
+  // it - and this whole path exists precisely so that there is no subscription.
+  const { ChatTurnError } = require('../dist/services/ai/providers/browserChat/tab');
+  const { createBrowserChatAdapter } = require('../dist/services/ai/providers/browserChat');
+
+  function refusing(retryable) {
+    return {
+      tabFor: async () => ({
+        ask: async () => {
+          throw new ChatTurnError('refused', 'the site said no', retryable);
+        },
+      }),
+      probe: async () => ({ ok: true, detail: 'stub' }),
+      dispose: async () => {},
+    };
+  }
+
+  const request = {
+    callSite: 'tailor-resume',
+    sampling: {},
+    reasoning: {},
+    volatileSystem: '',
+    stableSystem: '',
+    userBody: 'a resume and a job description',
+    deadline: { remainingMs: () => 60_000, expired: () => false },
+  };
+
+  const limited = createBrowserChatAdapter('chatgpt-web', { session: refusing(true) });
+  await assert.rejects(limited.complete({ ...request }), (error) => {
+    assert.equal(error.kind, 'rateLimited', 'a usage wall is worth retrying, and 429 says so');
+    assert.match(error.userMessage, /ChatGPT \(browser\)/, 'it must name the provider that refused');
+    assert.doesNotMatch(error.userMessage, /claude auth login|subscription/i);
+    return true;
+  });
+
+  const signedOut = createBrowserChatAdapter('chatgpt-web', { session: refusing(false) });
+  await assert.rejects(signedOut.complete({ ...request }), (error) => {
+    assert.equal(error.kind, 'auth', 'a signed-out tab needs a person, and 503 says so');
+    assert.match(error.userMessage, /signed out/);
+    assert.doesNotMatch(
+      error.userMessage,
+      /claude auth login/,
+      'nobody signs in to chatgpt.com by running the Claude CLI'
+    );
+    return true;
+  });
+});
+
+test('a reply that lands inside one poll interval does not pay the blind-mode tail', async () => {
+  // The completion rule demands a long run of unchanged reads when nothing has
+  // reported busy - because with no stop control, "it stopped changing" is the
+  // only evidence there is. But the stop control goes up a moment after the
+  // send and comes down the moment the answer lands, so a reply that finishes
+  // between two polls is never SEEN to be busy on a site whose stop control
+  // works perfectly. Without a close watch right after the send, such a turn
+  // waits out the whole blind run for nothing: measured end to end through the
+  // HTTP route, 15.5s against 4.8s.
+  //
+  // The poll interval here is deliberately coarse, so the ordinary loop cannot
+  // stumble on the stop control by luck - only the fine-grained watch can see
+  // a window that opens and shuts between two polls.
+  const POLL_MS = 5_000;
+  const STOP_VISIBLE_FOR = 1_200;
+
+  const page = fakePage({
+    present: (selector, state) => {
+      if (selector === '#composer' || selector === '#send') return true;
+      if (selector === '#stop') {
+        return state.sentAt !== null && state.now - state.sentAt < STOP_VISIBLE_FOR;
+      }
+      return true;
+    },
+    // The answer is complete by the first poll and never changes again.
+    messages: (_selector, state) =>
+      state.sentAt === null ? [] : [{ id: null, text: 'the whole answer' }],
+  });
+
+  const answer = await tabFor(page, { pollMs: POLL_MS }).ask('tailor this', 900_000);
+  assert.equal(answer, 'the whole answer');
+
+  // With the stop control observed, one repeat is enough. Without observing it,
+  // the turn would demand STABLE_READS_WITHOUT_BUSY_SIGNAL of them at 5s each.
+  const blindWouldCost = STABLE_READS_WITHOUT_BUSY_SIGNAL * POLL_MS;
+  assert.ok(
+    page.state.now < blindWouldCost,
+    `a working stop control must not cost the blind tail: took ${page.state.now}ms, ` +
+      `and flying blind would have cost at least ${blindWouldCost}ms`
+  );
 });
