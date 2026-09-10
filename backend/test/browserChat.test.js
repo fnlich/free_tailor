@@ -522,7 +522,14 @@ function tabFor(page, options = {}) {
   return new ChatTab(page, FAKE_SITE, {
     pollMs: 1,
     actionMs: 50,
-    sleep: () => Promise.resolve(),
+    // A sleep costs no real time but DOES move the clock, which is what makes
+    // the harness safe for any loop the driver grows later: one that waits
+    // without reading the page would otherwise never advance and would hang the
+    // suite rather than fail it.
+    sleep: (ms) => {
+      page.state.now += ms;
+      return Promise.resolve();
+    },
     now: page.now,
     log: () => {},
     ...options,

@@ -86,6 +86,18 @@ const REFUSAL_CHECK_EVERY_MS = 10_000;
 /** Longest slice of the page read when looking for a refusal. */
 const REFUSAL_TEXT_CHARS = 4_000;
 
+/**
+ * How long, and how closely, the turn watches for the stop control after a send.
+ *
+ * Long enough for a site that raises the control a few hundred milliseconds
+ * after the request goes out; close enough to catch one that goes up and comes
+ * down again inside a single ordinary poll. Both ends matter, and they pull in
+ * opposite directions, which is why this is a short fine-grained watch rather
+ * than one look at a fixed moment.
+ */
+const BUSY_WATCH_MS = 1_500;
+const BUSY_WATCH_STEP_MS = 100;
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -203,6 +215,29 @@ export class ChatTab {
     }
     this.busySelectors = usable;
     return usable;
+  }
+
+  /**
+   * Whether the stop control shows at all in the moments after a send.
+   *
+   * Returns as soon as it does. Its only job is to establish that the busy
+   * selector WORKS, so that its later absence can be read as evidence the
+   * answer is finished rather than as a selector that never matches anything.
+   */
+  private async watchForBusy(budgetMs: number): Promise<boolean> {
+    // Nothing to watch for. Screening has already established that not one of
+    // this site's busy candidates means anything on this page, so the answer is
+    // known and waiting 1.5s to hear it again only delays the turn - and, since
+    // an empty candidate list makes `isBusy` read nothing at all, a caller
+    // whose clock advances on page reads would never leave this loop.
+    if ((this.busySelectors ?? this.site.busy).length === 0) return false;
+
+    const expiry = this.now() + budgetMs;
+    for (;;) {
+      if (await this.isBusy()) return true;
+      if (this.now() >= expiry) return false;
+      await this.sleep(Math.min(BUSY_WATCH_STEP_MS, this.pollMs));
+    }
   }
 
   private async isBusy(): Promise<boolean> {
@@ -390,6 +425,18 @@ export class ChatTab {
      * run of unchanged reads.
      */
     let sawBusy = false;
+
+    // Watched for closely, right after the send, rather than waited for.
+    //
+    // The stop control goes up a moment after the request leaves and comes
+    // down the moment the answer lands, so a reply that finishes inside one
+    // poll interval is never once seen to be busy - and the turn then treats a
+    // perfectly good busy selector as though the site had renamed it, sitting
+    // out the whole blind stability run for nothing. One look at a fixed moment
+    // does not solve it either: too early and the control is not up yet, too
+    // late and it is already gone.
+    sawBusy = await this.watchForBusy(BUSY_WATCH_MS);
+
     let nextRefusalCheck = this.now() + REFUSAL_CHECK_AFTER_MS;
 
     while (this.now() < expiry) {

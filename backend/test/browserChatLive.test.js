@@ -309,16 +309,27 @@ test('with no stop button on the page, a pause mid-answer does not truncate the 
   // survive - so `!busy` is permanently true and the only remaining evidence is
   // that the text stopped changing.
   //
-  // `?pause=700` then stalls for 700ms before the final chunk, which is what a
-  // model thinking mid-answer looks like from outside. At a 150ms poll that
-  // pause is four identical reads - past the old one-repeat rule, which would
-  // have ended the turn on the second of them and returned the answer without
-  // its tail, and well short of the run this now demands. Because this app's
-  // replies are JSON, the truncated one still parses, so nothing downstream
-  // would have caught it.
-  const query = 'nostop=1&chunks=4&delay=30&pause=700';
+  // `?pause` then stalls before the final chunk, which is what a model thinking
+  // mid-answer looks like from outside. Because this app's replies are JSON,
+  // an answer taken during that pause still parses, so nothing downstream would
+  // have caught it.
+  //
+  // The pause has to land in a window, and the arithmetic is worth writing down
+  // because a change to any of these constants silently stops the test testing
+  // anything. With no busy signal the turn first spends BUSY_WATCH_MS (1500ms)
+  // looking for one, so polling starts at ~1500ms and the pause must still be
+  // running then. After that, at a 200ms poll:
+  //
+  //   the OLD one-repeat rule would finish at ~1500 + 2*200 = 1900ms
+  //   the rule under test finishes at    ~1500 + 9*200 = 3300ms
+  //
+  // The last chunk must therefore arrive between those: after 1900ms so the old
+  // rule truncates, before 3300ms so this one does not. The three 30ms chunks
+  // put the pause's start at ~90ms, so a 2500ms pause lands the tail at
+  // ~2590ms - about 700ms clear of each bound.
+  const query = 'nostop=1&chunks=4&delay=30&pause=2500';
   await withPage(query, async (page) => {
-    const tab = new ChatTab(wrapPuppeteerPage(page), siteAt(query), { pollMs: 150 });
+    const tab = new ChatTab(wrapPuppeteerPage(page), siteAt(query), { pollMs: 200 });
     const prompt = 'How many words is this prompt?';
     const answer = await tab.ask(prompt, 30_000);
 
