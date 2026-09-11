@@ -309,8 +309,8 @@ export default function AdminSettingsPage() {
     section: SaveSection,
     payload: AdminAppSettingsUpdate,
     nextMessage: string
-  ) => {
-    if (!form) return;
+  ): Promise<boolean> => {
+    if (!form) return false;
 
     try {
       setSavingSection(section);
@@ -323,8 +323,10 @@ export default function AdminSettingsPage() {
         applySavedThemeDefault(updated.defaultTheme);
       }
       setSuccessMessage(nextMessage);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update settings');
+      return false;
     } finally {
       setSavingSection(null);
     }
@@ -378,15 +380,23 @@ export default function AdminSettingsPage() {
     try {
       const [report, healthReport] = await Promise.all([
         adminApi.getDebugBrowsers(),
-        adminApi.getAiHealth().catch(() => null),
+        adminApi.getAiHealth().catch((err: unknown) => (err instanceof Error ? err : new Error('failed'))),
       ]);
       setDebugReport(report);
-      if (healthReport) {
+      const healthOk = !(healthReport instanceof Error);
+      if (healthOk) {
         setHealth(healthReport);
         setHealthError('');
+      } else {
+        // Said out loud rather than swallowed. Active/Not active comes from
+        // this half, so a silent failure would leave the last reading on
+        // screen under a timestamp claiming it was just checked.
+        setHealthError(healthReport.message || 'Could not read provider status');
       }
       setDebugError('');
-      setDebugCheckedAt(new Date().toLocaleTimeString());
+      setDebugCheckedAt(
+        `${new Date().toLocaleTimeString()}${healthOk ? '' : ' (ports only - sign-in check failed)'}`
+      );
     } catch (err) {
       setDebugReport(null);
       setDebugError(err instanceof Error ? err.message : 'Could not check the debug browsers');
@@ -421,11 +431,17 @@ export default function AdminSettingsPage() {
     }
     setDebugError('');
     const next = [...form.browserChatEndpoints, { siteId: newBrowserSite, port }];
-    await saveSection(
+    const saved = await saveSection(
       'browserChat',
       { browserChatEndpoints: next },
       `Registered ${getAIProviderLabel(newBrowserSite)} on port ${port}. Run npm run browser:debug to start it.`
     );
+    if (!saved) {
+      // Keep what they typed. Clearing it on failure means retyping the port to
+      // retry, and the reason is a banner three sections up the page.
+      setDebugError(`Port ${port} was not registered - see the error above.`);
+      return;
+    }
     setNewBrowserPort('');
     // Re-read, because the row list and the Active panel come from different
     // places: the rows render the form, which has just changed, and the panel
@@ -747,7 +763,14 @@ export default function AdminSettingsPage() {
                         }`}
                         aria-hidden
                       />
-                      <span className="text-sm font-medium text-gray-900">{platform.label}</span>
+                      {/* The frontend's label, not the one the server sent.
+                          The rows above render getAIProviderLabel, and the two
+                          vocabularies differ - "Claude (browser)" here against
+                          "Claude (free)" on the wire - so using the server's
+                          put one provider under two names in a single panel. */}
+                      <span className="text-sm font-medium text-gray-900">
+                        {getAIProviderLabel(platform.id)}
+                      </span>
                       <span
                         className={`ml-auto text-xs font-medium ${
                           state === 'active' ? 'text-green-700' : 'text-gray-600'

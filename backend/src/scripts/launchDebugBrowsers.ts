@@ -30,10 +30,14 @@ import { isChatSiteId, readChatSite, type ChatSiteId } from '../services/ai/prov
  *
  * THE SERVER DOES NOT DO THIS ANY MORE, and that is the point of this file
  * existing. Launching used to be an HTTP endpoint behind a Start button, which
- * meant the backend spawned a desktop process on request; now the operator runs
- * this and the backend only ever attaches to what it finds. The server's remaining
+ * meant the backend spawned a browser on request; now the operator runs this and
+ * the backend only ever attaches to what it finds. The server's remaining
  * interest in these browsers is read-only - `probeDebugBrowser` and the health
- * check - so nothing reachable over HTTP can start a process again.
+ * check - so nothing reachable over HTTP can start a browser again.
+ *
+ * A BROWSER, precisely: `POST /admin/browse-output-directory` still execFiles a
+ * native directory dialog, and the Claude CLI provider spawns `claude`. The
+ * claim being made is the narrow one the guard test can actually check.
  *
  * What that costs is a command to run. What it buys, beyond the obvious, is that
  * the browser is no longer a child of a service: it belongs to the person who
@@ -135,6 +139,27 @@ export function assertUsablePort(value: unknown): number {
  * reopen the hole the rest of this file is built to keep shut is not an escape
  * hatch, it is the hole with extra steps.
  */
+/**
+ * The switch name in a Chrome flag, however it is spelled.
+ *
+ * ONE DASH OR TWO. Chrome's own parser accepts both - `-remote-allow-origins=*`
+ * is exactly as effective as `--remote-allow-origins=*` - and matching only the
+ * two-dash spelling meant the filter below could be walked straight past.
+ * Measured against Chrome 148.0.7778.97, with a WebSocket upgrade carrying
+ * `Origin: https://evil.example.com` against the debug port:
+ *
+ *   no flag                    -> HTTP 403, refused
+ *   --remote-allow-origins=*   -> HTTP 101, accepted
+ *   -remote-allow-origins=*    -> HTTP 101, accepted
+ *
+ * So the single-dash form opened the hole with no warning printed, which is
+ * worse than not filtering at all: the filter is the reason the surrounding
+ * code trusts AI_WEB_BROWSER_ARGS.
+ */
+function switchName(flag: string): string {
+  return flag.replace(/^-{1,2}/, '').split('=')[0].trim().toLowerCase();
+}
+
 export function sanitizeBrowserArgs(env: NodeJS.ProcessEnv): string[] {
   const raw = (env.AI_WEB_BROWSER_ARGS ?? '').trim();
   if (!raw) return [];
@@ -142,7 +167,8 @@ export function sanitizeBrowserArgs(env: NodeJS.ProcessEnv): string[] {
     .split(/\s+/)
     .filter(Boolean)
     .filter((flag) => {
-      if (/^--remote-allow-origins\b/i.test(flag)) {
+      const name = switchName(flag);
+      if (name === 'remote-allow-origins') {
         console.warn(
           '[browser] ignoring --remote-allow-origins from AI_WEB_BROWSER_ARGS: it would let any ' +
             'web page drive this browser and read the accounts signed in to it.'
@@ -151,7 +177,11 @@ export function sanitizeBrowserArgs(env: NodeJS.ProcessEnv): string[] {
       }
       // The port and the profile are decided here, not there; a second copy of
       // either would be ambiguous at best.
-      return !/^--remote-debugging-(port|address)\b/i.test(flag) && !/^--user-data-dir\b/i.test(flag);
+      return (
+        name !== 'remote-debugging-port' &&
+        name !== 'remote-debugging-address' &&
+        name !== 'user-data-dir'
+      );
     });
 }
 
@@ -610,6 +640,20 @@ async function registerEndpoint(target: BrowserChatEndpoint): Promise<boolean> {
   if (current.some((entry) => entry.siteId === target.siteId && entry.port === target.port)) {
     return false;
   }
+
+  // Said out loud when it displaces something. A port owns its site outright,
+  // so registering 9222 for ChatGPT removes the Claude row that had it - and an
+  // operator who is not told has quietly lost a browser from the list that
+  // decides where requests go.
+  const displaced = current.find((entry) => entry.port === target.port);
+  if (displaced) {
+    console.warn(
+      `[browser]     note: port ${target.port} was registered to ${getProviderLabel(
+        displaced.siteId
+      )}; it now belongs to ${getProviderLabel(target.siteId)}.`
+    );
+  }
+
   await updateAppSettings({
     browserChatEndpoints: [...current.filter((entry) => entry.port !== target.port), target],
   });
@@ -694,8 +738,24 @@ async function main(): Promise<number> {
           `${site?.open ? ', tab open' : ', tab not open yet'}`
       );
       console.log(`[browser]     profile: ${outcome.profileDir}`);
-      if (register && (await registerEndpoint(target))) {
-        console.log(`[browser]     registered, so the providers will use it`);
+
+      // Its own try. The browser is up by this point, and a settings write that
+      // fails does not un-start it - counting that as a launch failure would
+      // report a running browser as not running and exit 1 on a run that
+      // worked. Say what could not be recorded instead.
+      if (register) {
+        try {
+          if (await registerEndpoint(target)) {
+            console.log('[browser]     registered, so the providers will use it');
+          }
+        } catch (error) {
+          console.warn(
+            `[browser]     started, but could not register it: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+          console.warn('[browser]     add it under Admin -> Settings -> Browser Chat (free).');
+        }
       }
     } catch (error) {
       failures += 1;
@@ -711,6 +771,17 @@ async function main(): Promise<number> {
   }
 
   console.log('[browser]');
+  // AI_WEB_CDP_URL beats the registered list outright in the provider, so with
+  // it set the windows below are not the ones requests go to. Saying "the
+  // backend attaches to these" without this would simply be false.
+  const override = (process.env.AI_WEB_CDP_URL ?? '').trim();
+  if (override) {
+    console.warn(`[browser] NOTE: AI_WEB_CDP_URL is set to ${override}.`);
+    console.warn('[browser] The providers use that browser and ignore the registered list,');
+    console.warn('[browser] so the windows above are not the ones requests go to. Unset it');
+    console.warn('[browser] in .env to use the browsers registered under Admin -> Settings.');
+    console.log('[browser]');
+  }
   console.log('[browser] Sign in to each chat tab IN THE WINDOW IT OPENED, and leave it open.');
   console.log('[browser] The backend attaches to these; it never starts one of its own.');
   console.log('[browser] Admin -> Settings -> Browser Chat (free) shows which are active.');

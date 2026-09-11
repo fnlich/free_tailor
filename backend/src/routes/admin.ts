@@ -112,9 +112,14 @@ router.put(['/settings', '/ai-models'], authMiddleware, async (req: Request, res
  * The state of the browsers the free chat providers drive.
  *
  * READ-ONLY. There used to be a `POST /browser/debug/start` beside this that
- * spawned Chrome on the server; it is gone, and with it the only path by which
- * an HTTP request could start a desktop process here. Operators run
- * `npm run browser:debug` instead.
+ * spawned Chrome on the server; it is gone, and with it every path by which an
+ * HTTP request could start a BROWSER. Operators run `npm run browser:debug`
+ * instead.
+ *
+ * Not "start a process" - that would be false, and the distinction is worth
+ * keeping honest: `POST /browse-output-directory` in this same router still
+ * execFiles a native directory dialog. What is gone is the ability to launch
+ * the thing that holds the operator's signed-in accounts.
  *
  * CHEAP ON PURPOSE: every reading here is a loopback DevTools HTTP probe, which
  * opens no page and drives nothing. The deeper question - is that tab actually

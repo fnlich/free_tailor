@@ -96,14 +96,25 @@ test('the extra-args escape hatch cannot re-open the DevTools origin hole', () =
     '--no-sandbox',
   ]);
 
+  // ONE DASH OR TWO. Chrome's parser accepts both, so matching only the
+  // two-dash spelling let `-remote-allow-origins=*` walk straight past this
+  // filter with no warning - worse than no filter, because the filter is why
+  // the rest of the code trusts AI_WEB_BROWSER_ARGS. Measured against Chrome
+  // 148.0.7778.97, a WebSocket upgrade carrying Origin: https://evil.example.com
+  // against the debug port: no flag -> 403; --remote-allow-origins=* -> 101;
+  // -remote-allow-origins=* -> 101.
   for (const attempt of [
     '--remote-allow-origins=*',
+    '-remote-allow-origins=*',
     '--remote-allow-origins=https://evil.example.com',
+    '-remote-allow-origins=https://evil.example.com',
+    '-REMOTE-ALLOW-ORIGINS=*',
     '--headless=new --remote-allow-origins=* --no-sandbox',
+    '--headless=new -remote-allow-origins=* --no-sandbox',
   ]) {
     const out = sanitizeBrowserArgs({ AI_WEB_BROWSER_ARGS: attempt });
     assert.ok(
-      !out.some((flag) => flag.toLowerCase().startsWith('--remote-allow-origins')),
+      !out.some((flag) => /^-{1,2}remote-allow-origins/i.test(flag)),
       `must strip it from: ${attempt}`
     );
     // And through the real argv builder, which is what actually reaches Chrome.
@@ -113,14 +124,20 @@ test('the extra-args escape hatch cannot re-open the DevTools origin hole', () =
       url: 'https://claude.ai/new',
       env: { AI_WEB_BROWSER_ARGS: attempt },
     });
-    assert.ok(!argv.some((flag) => flag.toLowerCase().startsWith('--remote-allow-origins')));
+    assert.ok(!argv.some((flag) => /^-{1,2}remote-allow-origins/i.test(flag)));
   }
 
   // The port and the profile are decided by this script; a second copy of
-  // either is ambiguous at best and silently wrong at worst.
+  // either is ambiguous at best and silently wrong at worst. Either spelling.
   assert.deepEqual(
     sanitizeBrowserArgs({
       AI_WEB_BROWSER_ARGS: '--remote-debugging-port=1 --user-data-dir=/tmp/x --lang=en',
+    }),
+    ['--lang=en']
+  );
+  assert.deepEqual(
+    sanitizeBrowserArgs({
+      AI_WEB_BROWSER_ARGS: '-remote-debugging-port=1 -user-data-dir=/tmp/x --lang=en',
     }),
     ['--lang=en']
   );
@@ -187,7 +204,11 @@ test('the launcher is the only thing in the backend that can start a browser', (
         .join('\n');
       const spawns = /\bspawn\s*\(/.test(code);
       const resolvesABrowser = /findInstalledBrowser|AI_WEB_BROWSER_PATH|buildBrowserArgv/.test(code);
-      if (spawns && resolvesABrowser) offenders.push(relative);
+      // The second door, and the one the spawn check cannot see: a route that
+      // IMPORTS the launcher starts a browser without containing spawn( at all.
+      // Nothing does today; this is here so nothing can start.
+      const importsTheLauncher = /scripts\/launchDebugBrowsers|\blaunchOne\b/.test(code);
+      if ((spawns && resolvesABrowser) || importsTheLauncher) offenders.push(relative);
     }
   };
   walk(root);

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 
+const http = require('node:http');
 const { probeDebugBrowser } = require('../dist/services/debugBrowser');
 const { findInstalledBrowser } = require('../dist/config/browser');
 const puppeteer = require('puppeteer');
@@ -102,10 +103,41 @@ test('a site with no hostname is matched by its address, not reported missing', 
   // The override that points a site at a `file:` or `data:` URL has no host to
   // match on. Reported missing, its tab is opened again on every start - two
   // tabs after two presses, and the driver then attaches to whichever it finds.
-  const { probeDebugBrowser } = require('../dist/services/debugBrowser');
+  const http = require('node:http');
+const { probeDebugBrowser } = require('../dist/services/debugBrowser');
   const fixture = `file://${path.join(__dirname, 'fixtures', 'fakeChat.html')}?json=1`;
   const status = await probeDebugBrowser(1077, { AI_WEB_CLAUDE_URL: fixture });
   const claude = status.sites.find((site) => site.id === 'claude-web');
   assert.equal(claude.url, fixture, 'the override must reach the status the panel renders');
 });
 
+
+
+test('a loopback service that stalls mid-answer is given up on, not waited on forever', async () => {
+  // Not hypothetical: a registered port need not have a browser behind it, and
+  // the failure is the worst shape there is. `timeout` on the request is a
+  // socket-inactivity timeout and does not cover a response that has already
+  // begun - headers sent, one byte of body, then silence - so this promise
+  // used to never settle at all. That hangs GET /admin/browser/debug for as
+  // long as the Settings page is open, and inside the launcher it defeats
+  // STARTUP_WAIT_MS, because the wait loop never gets a reading back to check
+  // its clock against.
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '9999' });
+    res.write('{');
+  });
+  await new Promise((resolve) => server.listen(9489, '127.0.0.1', resolve));
+
+  try {
+    const started = Date.now();
+    const status = await Promise.race([
+      probeDebugBrowser(9489),
+      new Promise((resolve) => setTimeout(() => resolve('HUNG'), 10_000)),
+    ]);
+    assert.notEqual(status, 'HUNG', 'the probe must give up rather than hang');
+    assert.equal(status.running, false, 'and report the port as not running');
+    assert.ok(Date.now() - started < 8_000, 'within its own timeout, not the test deadline');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
