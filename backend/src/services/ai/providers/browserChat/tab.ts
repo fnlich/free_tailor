@@ -691,12 +691,31 @@ export class ChatTab {
     this.abandoned = null;
   }
 
+  /**
+   * Give up the turn if the caller has.
+   *
+   * 'cancelled', not 'timeout'. Nothing ran out of time - the caller went away,
+   * usually because the browser tab that asked for this was closed or reloaded -
+   * and reporting it as a timeout tells whoever reads the log to raise a
+   * per-call budget that was never the problem.
+   */
+  private stopIfCancelled(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new ChatTurnError('cancelled', `${this.site.label}: the request was cancelled`);
+    }
+  }
+
   private async turn(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
     const prompt = composePrompt(body, this.site.nudge);
     const expiry = this.now() + deadlineMs;
 
     // Before anything is read: a background tab is frozen, and every DOM read
     // against a frozen renderer blocks instead of returning.
+    // Asked before the operator's window is taken over. `activate()` brings the
+    // chat tab to the front, and doing that for a caller who has already gone
+    // is a visible interruption in exchange for an answer nobody will read.
+    this.stopIfCancelled(signal);
+
     await this.page.activate();
 
     // Cleared BEFORE anything reads the page, not after. `startFreshConversation`
@@ -756,6 +775,16 @@ export class ChatTab {
       );
     }
 
+    // The same judgement as the budget check above, for the same reason. The
+    // work between activating the tab and this line is a navigation and several
+    // reads, so a caller who left while it ran - a builder page reloaded
+    // mid-generation is the ordinary way - can easily be gone by now. Sending
+    // anyway would type somebody's resume and salary history into that account's
+    // history to produce an answer already destined for the bin, and would hold
+    // the tab for the rest of the deadline while the next request queued behind
+    // it.
+    this.stopIfCancelled(signal);
+
     await this.submit(prompt);
 
     let state = INITIAL_POLL_STATE;
@@ -790,13 +819,7 @@ export class ChatTab {
       // A caller that gave up - a closed browser tab on the builder page, a
       // cancelled batch - should stop the turn rather than have the operator's
       // browser driven for the rest of the deadline on its behalf.
-      if (signal?.aborted) {
-        // 'page', not 'timeout'. Nothing ran out of time - the caller went away,
-        // usually because the browser tab that asked for this was closed - and
-        // reporting it as a timeout tells whoever reads the log to raise a
-        // per-call budget that was never the problem.
-        throw new ChatTurnError('cancelled', `${this.site.label}: the request was cancelled`);
-      }
+      this.stopIfCancelled(signal);
 
       const elsewhere = await this.navigatedAway();
       if (elsewhere) {
