@@ -19,7 +19,7 @@ import {
   type AiChoice,
   type AiPreferences,
 } from '../config/aiPreferences';
-import { mapWithConcurrency } from '../services/ai';
+import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
@@ -261,7 +261,10 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       analysis: JobAnalysis;
     }> = [];
 
-    const analysisOutcomes = await mapWithConcurrency(validJobs, BATCH_AI_CONCURRENCY, (job) =>
+    // The analyses go out at the chosen provider's width too. They are the
+    // short calls, but there is one per job and a sheet import brings dozens.
+    const analysisCapacity = await resolveBatchCapacity(selectedModel);
+    const analysisOutcomes = await mapWithConcurrency(validJobs, analysisCapacity.limit, (job) =>
       analyzeJobDescription(
         job.jobDescription,
         selectedModel,
@@ -361,11 +364,6 @@ function readAiOverrides(body: unknown): AiPreferences {
   });
 }
 
-const BATCH_AI_CONCURRENCY =
-  Number.parseInt(process.env.AI_BATCH_CONCURRENCY || '', 10) ||
-  Number.parseInt(process.env.AI_CLI_CONCURRENCY || '', 10) ||
-  4;
-
 async function tailorResumesForProfiles(
   profiles: Profile[],
   analysis: JobAnalysis,
@@ -392,7 +390,13 @@ async function tailorResumesForProfiles(
   // thinking are a PROFILE setting, so a batch of profiles that disagree must
   // run each on its own choice rather than on whichever profile came first.
   // The request's own overrides still win over every one of them.
-  const outcomes = await mapWithConcurrency(profiles, BATCH_AI_CONCURRENCY, async (profile) =>
+  // Width from the provider the REQUEST resolved to. Each profile may still
+  // resolve its own model below - that is a per-profile setting - but the
+  // capacity question is about the resource in front of the batch, and asking
+  // it once per profile would read the settings row once per profile to get the
+  // same answer.
+  const capacity = await resolveBatchCapacity(requestChoice);
+  const outcomes = await mapWithConcurrency(profiles, capacity.limit, async (profile) =>
     tailorResume(profile, analysis, await resolveAiChoice(overrides, profile), signal)
   );
 
@@ -486,76 +490,102 @@ router.post('/generate-all', async (req: Request, res: Response) => {
         )
       : null;
 
-    for (const profile of profiles) {
-      if (!profile) continue;
-      try {
-        const template = await resolveTemplateForProfile(profile, templateId);
-        if (!template) {
-          throw new Error('Default template not available');
-        }
+    // The tailoring above already ran every profile at once; this is what came
+    // after it, and it was still one profile at a time. That is not a small
+    // remainder: a profile with no cover letter in its tailored content needs a
+    // second model call, so a batch of ten with no job description was ten full
+    // calls end to end with every browser but one idle.
+    const capacity = await resolveBatchCapacity(selectedModel);
+    const buildable = profiles.filter((profile): profile is Profile => Boolean(profile));
+    console.log(
+      `[Resume timing] generate-all: ${buildable.length} resume${buildable.length === 1 ? '' : 's'}, ` +
+        `${capacity.limit} at a time (${capacity.reason})`
+    );
 
-        const tailoringFailure = bulkTailoring?.failures.find((item) => item.profileId === profile.id);
-        if (tailoringFailure) {
-          throw new Error(tailoringFailure.error);
-        }
-
-        let tailoredContent: TailoredContent | undefined;
-        if (analysis) {
-          tailoredContent = bulkTailoring
-            ? bulkTailoring.tailoredByProfileId.get(profile.id)
-            : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
-        }
-        collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
-
-        let coverLetterBody: string;
-        if (tailoredContent?.coverLetter?.trim()) {
-          coverLetterBody = tailoredContent.coverLetter.trim();
-        } else {
-          coverLetterBody = await generateCoverLetter(
-            profile,
-            normalizedCompanyName,
-            resolvedRole,
-            selectedModel,
-            requestSignal(req, res)
-          );
-        }
-        const pathInfo = await getGeneratedOutputPath(profile, normalizedCompanyName, resolvedRole);
-        const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
-        const coverLetterDocxPath = generateCoverLetterDocx
-          ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
-          : undefined;
-
-        const entry: (typeof results)[0] = {
-          profileId: profile.id,
-          profileName: profile.name,
-          coverLetterPdf: coverLetterPdfPath,
-          coverLetterDocx: coverLetterDocxPath,
-        };
-        if (formatNorm === 'both') {
-          const [pdfFilename, docxFilename] = await Promise.all([
-            generateResumePDF(profile, template, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole),
-            generateResumeDOCX(profile, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole)
-          ]);
-          entry.pdf = pdfFilename;
-          entry.docx = docxFilename;
-        } else {
-          const filename = formatNorm === 'docx'
-            ? await generateResumeDOCX(profile, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole)
-            : await generateResumePDF(profile, template, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole);
-          entry[formatNorm] = filename;
-        }
-        results.push(entry);
-      } catch (profileError) {
-        const message = profileError instanceof Error ? profileError.message : 'Failed to generate resume';
-        console.error(`Error generating resume for profile ${profile.id} (${profile.name}) at ${normalizedCompanyName}:`, profileError);
-        failures.push({
-          profileId: profile.id,
-          profileName: profile.name,
-          companyName: normalizedCompanyName,
-          error: message,
-        });
+    const outcomes = await mapWithConcurrency(buildable, capacity.limit, async (profile) => {
+      const template = await resolveTemplateForProfile(profile, templateId);
+      if (!template) {
+        throw new Error('Default template not available');
       }
-    }
+
+      const tailoringFailure = bulkTailoring?.failures.find((item) => item.profileId === profile.id);
+      if (tailoringFailure) {
+        throw new Error(tailoringFailure.error);
+      }
+
+      let tailoredContent: TailoredContent | undefined;
+      if (analysis) {
+        tailoredContent = bulkTailoring
+          ? bulkTailoring.tailoredByProfileId.get(profile.id)
+          : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
+      }
+
+      let coverLetterBody: string;
+      if (tailoredContent?.coverLetter?.trim()) {
+        coverLetterBody = tailoredContent.coverLetter.trim();
+      } else {
+        coverLetterBody = await generateCoverLetter(
+          profile,
+          normalizedCompanyName,
+          resolvedRole,
+          selectedModel,
+          requestSignal(req, res)
+        );
+      }
+      const pathInfo = await getGeneratedOutputPath(profile, normalizedCompanyName, resolvedRole);
+      const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
+      const coverLetterDocxPath = generateCoverLetterDocx
+        ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
+        : undefined;
+
+      const entry: (typeof results)[0] = {
+        profileId: profile.id,
+        profileName: profile.name,
+        coverLetterPdf: coverLetterPdfPath,
+        coverLetterDocx: coverLetterDocxPath,
+      };
+      if (formatNorm === 'both') {
+        const [pdfFilename, docxFilename] = await Promise.all([
+          generateResumePDF(profile, template, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole),
+          generateResumeDOCX(profile, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole)
+        ]);
+        entry.pdf = pdfFilename;
+        entry.docx = docxFilename;
+      } else {
+        const filename = formatNorm === 'docx'
+          ? await generateResumeDOCX(profile, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole)
+          : await generateResumePDF(profile, template, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole);
+        entry[formatNorm] = filename;
+      }
+      return { entry, tailoredContent };
+    });
+
+    // Input order, not completion order: the page lists what comes back, and a
+    // list that reshuffled itself by how fast each call happened to be would
+    // read as a different batch every run.
+    outcomes.forEach((outcome, index) => {
+      const profile = buildable[index];
+      if (outcome.ok) {
+        collectUnconfirmedSkillMaps(
+          outcome.value.tailoredContent,
+          unconfirmedHardMap,
+          unconfirmedSoftMap
+        );
+        results.push(outcome.value.entry);
+        return;
+      }
+      const message = describeFailure(outcome.error, 'Failed to generate resume');
+      console.error(
+        `Error generating resume for profile ${profile.id} (${profile.name}) at ${normalizedCompanyName}:`,
+        outcome.error
+      );
+      failures.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        companyName: normalizedCompanyName,
+        error: message,
+      });
+    });
 
     res.json({
       generated: results.length,
@@ -655,84 +685,118 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
     const unconfirmedHardMap = new Map<string, string>();
     const unconfirmedSoftMap = new Map<string, string>();
 
-    for (const job of normalizedJobs) {
-      for (const profile of profiles) {
-        try {
-          const template = await resolveTemplateForProfile(profile, templateId);
-          if (!template) {
-            throw new Error('Default template not available');
-          }
+    /**
+     * One unit of work: this profile, for this job.
+     *
+     * Flattened before anything runs, rather than left as nested loops, so the
+     * whole grid is a single queue. Nested, a slow job at the head held every
+     * profile behind it even when other browsers sat idle - the outer loop
+     * could not move on until the inner one finished, and the inner one was one
+     * at a time as well.
+     */
+    const units = normalizedJobs.flatMap((job) => profiles.map((profile) => ({ job, profile })));
 
-          let tailoredContent: TailoredContent | undefined;
-          if (job.analysis) {
-            tailoredContent = await tailorResume(
-              profile,
-              job.analysis,
-              selectedModel,
-              requestSignal(req, res)
-            );
-          }
-          collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
+    // How wide to run, taken from the CHOSEN PROVIDER's real capacity: the
+    // browsers registered for that site, both sites' added together under a
+    // hybrid route, or the seat's process slots. See `resolveBatchCapacity`.
+    // The queues themselves are already there - the tab pool hands a free
+    // browser to the head of its line as each is released - so this only has to
+    // offer them enough work to stay busy.
+    const capacity = await resolveBatchCapacity(selectedModel);
+    console.log(
+      `[Resume timing] multi-job batch: ${units.length} resume${units.length === 1 ? '' : 's'}, ` +
+        `${capacity.limit} at a time (${capacity.reason})`
+    );
 
-          let coverLetterBody: string;
-          if (tailoredContent?.coverLetter?.trim()) {
-            coverLetterBody = tailoredContent.coverLetter.trim();
-          } else {
-            coverLetterBody = await generateCoverLetter(
-              profile,
-              job.companyName,
-              job.role,
-              selectedModel,
-              requestSignal(req, res)
-            );
-          }
-
-          const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, job.sourceRowNumber);
-          const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
-          const coverLetterDocxPath = generateCoverLetterDocx
-            ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
-            : undefined;
-
-          const entry: (typeof results)[0] = {
-            profileId: profile.id,
-            profileName: profile.name,
-            companyName: job.companyName,
-            role: job.role,
-            coverLetterPdf: coverLetterPdfPath,
-            coverLetterDocx: coverLetterDocxPath,
-          };
-
-          if (formatNorm === 'both') {
-            const [pdfFilename, docxFilename] = await Promise.all([
-              generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
-              generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role),
-            ]);
-            entry.pdf = pdfFilename;
-            entry.docx = docxFilename;
-          } else {
-            const filename = formatNorm === 'docx'
-              ? await generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role)
-              : await generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role);
-            entry[formatNorm] = filename;
-          }
-
-          results.push(entry);
-        } catch (error) {
-          const message = describeFailure(error, 'Failed to generate resume');
-          console.error(
-            `Error generating resume for profile ${profile.id} (${profile.name}) at ${job.companyName}:`,
-            error
-          );
-          failures.push({
-            profileId: profile.id,
-            profileName: profile.name,
-            companyName: job.companyName,
-            error: message,
-          });
-          failedCompanies.add(job.companyName);
-        }
+    const outcomes = await mapWithConcurrency(units, capacity.limit, async ({ job, profile }) => {
+      const template = await resolveTemplateForProfile(profile, templateId);
+      if (!template) {
+        throw new Error('Default template not available');
       }
-    }
+
+      let tailoredContent: TailoredContent | undefined;
+      if (job.analysis) {
+        tailoredContent = await tailorResume(
+          profile,
+          job.analysis,
+          selectedModel,
+          requestSignal(req, res)
+        );
+      }
+
+      let coverLetterBody: string;
+      if (tailoredContent?.coverLetter?.trim()) {
+        coverLetterBody = tailoredContent.coverLetter.trim();
+      } else {
+        coverLetterBody = await generateCoverLetter(
+          profile,
+          job.companyName,
+          job.role,
+          selectedModel,
+          requestSignal(req, res)
+        );
+      }
+
+      const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, job.sourceRowNumber);
+      const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
+      const coverLetterDocxPath = generateCoverLetterDocx
+        ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
+        : undefined;
+
+      const entry: (typeof results)[0] = {
+        profileId: profile.id,
+        profileName: profile.name,
+        companyName: job.companyName,
+        role: job.role,
+        coverLetterPdf: coverLetterPdfPath,
+        coverLetterDocx: coverLetterDocxPath,
+      };
+
+      if (formatNorm === 'both') {
+        const [pdfFilename, docxFilename] = await Promise.all([
+          generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
+          generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role),
+        ]);
+        entry.pdf = pdfFilename;
+        entry.docx = docxFilename;
+      } else {
+        const filename = formatNorm === 'docx'
+          ? await generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role)
+          : await generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role);
+        entry[formatNorm] = filename;
+      }
+
+      return { entry, tailoredContent };
+    });
+
+    // Collected in INPUT order, not completion order. `mapWithConcurrency`
+    // preserves the index, and the page lists what comes back - so results that
+    // reordered themselves by how fast each model call happened to be would
+    // read as a different batch every run.
+    outcomes.forEach((outcome, index) => {
+      const { job, profile } = units[index];
+      if (outcome.ok) {
+        collectUnconfirmedSkillMaps(
+          outcome.value.tailoredContent,
+          unconfirmedHardMap,
+          unconfirmedSoftMap
+        );
+        results.push(outcome.value.entry);
+        return;
+      }
+      const message = describeFailure(outcome.error, 'Failed to generate resume');
+      console.error(
+        `Error generating resume for profile ${profile.id} (${profile.name}) at ${job.companyName}:`,
+        outcome.error
+      );
+      failures.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        companyName: job.companyName,
+        error: message,
+      });
+      failedCompanies.add(job.companyName);
+    });
 
     res.json({
       generated: results.length,
@@ -817,12 +881,12 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       );
     }
 
-    for (const profile of profiles) {
-      if (!profile) continue;
+    const capacity = await resolveBatchCapacity(selectedModel);
+    const previewable = profiles.filter((profile): profile is Profile => Boolean(profile));
+    const outcomes = await mapWithConcurrency(previewable, capacity.limit, async (profile) => {
       const template = await resolveTemplateForProfile(profile, templateId);
       if (!template) {
-        res.status(500).json({ error: 'Default template not available' });
-        return;
+        throw new Error('Default template not available');
       }
 
       const tailoredContent = analysis
@@ -830,15 +894,32 @@ router.post('/preview-all', async (req: Request, res: Response) => {
           ? bulkTailoring.tailoredByProfileId.get(profile.id)
           : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res))
         : undefined;
-      collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
 
-      const html = await generatePreviewHTML(profile, template, tailoredContent);
-      previews.push({
-        profileId: profile.id,
-        profileName: profile.name,
-        html,
+      return {
         tailoredContent,
-      });
+        preview: {
+          profileId: profile.id,
+          profileName: profile.name,
+          html: await generatePreviewHTML(profile, template, tailoredContent),
+          tailoredContent,
+        },
+      };
+    });
+
+    // A missing template fails THIS profile, not the whole preview.
+    //
+    // The loop this replaced answered 500 and returned the moment one profile
+    // had no template, discarding every preview already built - including the
+    // model calls that produced them. A batch that throws away finished work
+    // over one bad row is the thing every other batch path here avoids.
+    for (const [index, outcome] of outcomes.entries()) {
+      const profile = previewable[index];
+      if (!outcome.ok) {
+        console.error(`Error previewing resume for profile ${profile.id} (${profile.name}):`, outcome.error);
+        continue;
+      }
+      collectUnconfirmedSkillMaps(outcome.value.tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
+      previews.push(outcome.value.preview);
     }
 
     res.json({
