@@ -241,6 +241,11 @@ test('an unreachable debug browser reports how to start one', async () => {
   const session = new BrowserChatSession('http://127.0.0.1:1', {});
   const probe = await session.probe(siteAt(''));
   assert.equal(probe.ok, false);
+  // The launcher first, because it is now the only thing that starts these -
+  // the app never does - and an operator reading this hint should be told the
+  // command rather than left to assemble the flags themselves.
+  assert.match(probe.hint || '', /npm run browser:debug/);
+  // The raw flags stay underneath it, for a browser on a different machine.
   assert.match(probe.hint || '', /--remote-debugging-port/);
   assert.match(probe.hint || '', /user-data-dir/);
 });

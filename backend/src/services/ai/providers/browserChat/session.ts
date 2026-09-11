@@ -73,9 +73,13 @@ function startupHint(endpoint: string): string {
   } catch {
     // Keep the default in the hint.
   }
+  // Names the launcher, because that is now the only thing that starts these -
+  // the app never does. The raw chrome line stays underneath it for anyone
+  // running the browser on a different machine from the backend.
   return (
-    `Start Chrome with a debug port and sign in first, then retry:\n` +
-    `  chrome --remote-debugging-port=${port} ` +
+    `Start the browsers and sign in first, then retry:\n` +
+    `  npm run browser:debug\n` +
+    `Or by hand:  chrome --remote-debugging-port=${port} ` +
     `--user-data-dir=<a folder just for this>\n` +
     'Use a separate user-data-dir: Chrome will not open a debug port on a profile that is ' +
     'already running. Set AI_WEB_CDP_URL to point somewhere else.'

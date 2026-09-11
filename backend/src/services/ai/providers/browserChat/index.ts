@@ -316,8 +316,8 @@ export function createBrowserChatAdapter(
           ok: false,
           detail: 'No browser is set up for this provider yet.',
           warning:
-            `Add one under Admin -> Settings -> Browser Chat, start it, and sign in to the ` +
-            `${descriptor.label} tab it opens.`,
+            'Register a debug port under Admin -> Settings -> Browser Chat, start it with ' +
+            `\`npm run browser:debug\`, and sign in to the ${descriptor.label} tab it opens.`,
           checkedAt: new Date().toISOString(),
         };
       }

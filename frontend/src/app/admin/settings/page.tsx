@@ -14,6 +14,7 @@ import {
   getAIProviderLabel,
   Group,
   groupsApi,
+  isPlatformActive,
   isProviderLocked,
   LOCK_ICON,
   Profile,
@@ -231,7 +232,8 @@ export default function AdminSettingsPage() {
   const [savingSection, setSavingSection] = useState<SaveSection | null>(null);
   const [debugReport, setDebugReport] = useState<DebugBrowserReport | null>(null);
   const [debugError, setDebugError] = useState('');
-  const [startingPort, setStartingPort] = useState<number | null>(null);
+  const [debugCheckedAt, setDebugCheckedAt] = useState('');
+  const [isChecking, setIsChecking] = useState(false);
   const [newBrowserSite, setNewBrowserSite] = useState<AIProvider>('claude-web');
   const [newBrowserPort, setNewBrowserPort] = useState('');
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
@@ -307,8 +309,8 @@ export default function AdminSettingsPage() {
     section: SaveSection,
     payload: AdminAppSettingsUpdate,
     nextMessage: string
-  ) => {
-    if (!form) return;
+  ): Promise<boolean> => {
+    if (!form) return false;
 
     try {
       setSavingSection(section);
@@ -321,8 +323,10 @@ export default function AdminSettingsPage() {
         applySavedThemeDefault(updated.defaultTheme);
       }
       setSuccessMessage(nextMessage);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update settings');
+      return false;
     } finally {
       setSavingSection(null);
     }
@@ -359,26 +363,59 @@ export default function AdminSettingsPage() {
     );
   };
 
-  const handleSaveBrowserChat = async () => {
-    if (!form) return;
-    await saveSection(
-      'browserChat',
-      { browserChatEndpoints: form.browserChatEndpoints },
-      'Browser list saved.'
-    );
-  };
-
+  /**
+   * Re-reads the browser state, and the sign-in state alongside it.
+   *
+   * Both, because "active" is the two together: a port probe says a window is
+   * up, and only the provider health check knows whether its tab is signed in.
+   * Refreshing one without the other leaves the panel disagreeing with itself.
+   *
+   * It also stamps when it ran. Nothing re-probes on its own any more - the app
+   * no longer starts these browsers, so there is no success moment to hang a
+   * refresh on - and a panel that says "not running" with no indication of how
+   * old that reading is looks broken right after a successful script run.
+   */
   const refreshDebugBrowsers = async () => {
+    setIsChecking(true);
     try {
-      setDebugReport(await adminApi.getDebugBrowsers());
+      const [report, healthReport] = await Promise.all([
+        adminApi.getDebugBrowsers(),
+        adminApi.getAiHealth().catch((err: unknown) => (err instanceof Error ? err : new Error('failed'))),
+      ]);
+      setDebugReport(report);
+      const healthOk = !(healthReport instanceof Error);
+      if (healthOk) {
+        setHealth(healthReport);
+        setHealthError('');
+      } else {
+        // Said out loud rather than swallowed. Active/Not active comes from
+        // this half, so a silent failure would leave the last reading on
+        // screen under a timestamp claiming it was just checked.
+        setHealthError(healthReport.message || 'Could not read provider status');
+      }
       setDebugError('');
+      setDebugCheckedAt(
+        `${new Date().toLocaleTimeString()}${healthOk ? '' : ' (ports only - sign-in check failed)'}`
+      );
     } catch (err) {
       setDebugReport(null);
       setDebugError(err instanceof Error ? err.message : 'Could not check the debug browsers');
+    } finally {
+      setIsChecking(false);
     }
   };
 
-  const addBrowser = () => {
+  /**
+   * Registering a port WRITES, rather than staging an edit to be saved later.
+   *
+   * This list is not a preference - it is the address book the providers send
+   * requests to, and now also the list the launcher script reads. While a Start
+   * button existed it saved the list as a side effect of starting a browser, so
+   * the two could not drift far. Without it, a staged edit means an operator
+   * adds a port, switches to a terminal, runs the script, and the script starts
+   * the OLD list with nothing anywhere saying why.
+   */
+  const registerBrowser = async () => {
     if (!form) return;
     const port = Number.parseInt(newBrowserPort.trim(), 10);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -387,58 +424,42 @@ export default function AdminSettingsPage() {
     }
     if (form.browserChatEndpoints.some((entry) => entry.port === port)) {
       setDebugError(
-        `Port ${port} is already in the list. One browser shows one chat tab, so each port ` +
+        `Port ${port} is already registered. One browser shows one chat tab, so each port ` +
           'belongs to exactly one site.'
       );
       return;
     }
     setDebugError('');
-    setField('browserChatEndpoints', [
-      ...form.browserChatEndpoints,
-      { siteId: newBrowserSite, port },
-    ]);
-    setNewBrowserPort('');
-  };
-
-  const removeBrowser = (port: number) => {
-    if (!form) return;
-    setField(
-      'browserChatEndpoints',
-      form.browserChatEndpoints.filter((entry) => entry.port !== port)
+    const next = [...form.browserChatEndpoints, { siteId: newBrowserSite, port }];
+    const saved = await saveSection(
+      'browserChat',
+      { browserChatEndpoints: next },
+      `Registered ${getAIProviderLabel(newBrowserSite)} on port ${port}. Run npm run browser:debug to start it.`
     );
+    if (!saved) {
+      // Keep what they typed. Clearing it on failure means retyping the port to
+      // retry, and the reason is a banner three sections up the page.
+      setDebugError(`Port ${port} was not registered - see the error above.`);
+      return;
+    }
+    setNewBrowserPort('');
+    // Re-read, because the row list and the Active panel come from different
+    // places: the rows render the form, which has just changed, and the panel
+    // renders the server's report, which has not. Without this the panel keeps
+    // saying "no debug port registered" directly under the row that was just
+    // registered. Not awaited - the panel says "Checking..." while it settles.
+    void refreshDebugBrowsers();
   };
 
-  const startBrowser = async (entry: BrowserChatEndpoint) => {
+  const unregisterBrowser = async (port: number) => {
     if (!form) return;
-    try {
-      setStartingPort(entry.port);
-      setDebugError('');
-      setError('');
-      setSuccessMessage('');
-      // The whole list as it stands on screen, so a row added but not yet saved
-      // is not thrown away by pressing Start on a different one.
-      const result = await adminApi.startDebugBrowser({
-        port: entry.port,
-        siteId: entry.siteId,
-        endpoints: form.browserChatEndpoints,
-      });
-      setSettings(result.settings);
-      setForm((current) =>
-        current
-          ? mergeSavedSection(current, result.settings, 'browserChat')
-          : toFormState(result.settings)
-      );
-      setSuccessMessage(
-        result.reused
-          ? `A browser was already listening on port ${entry.port}; opened the chat tab in it.`
-          : `Started ${result.browserLabel} on port ${entry.port}. Sign in to the tab it opened.`
-      );
-      await refreshDebugBrowsers();
-    } catch (err) {
-      setDebugError(err instanceof Error ? err.message : 'Could not start the debug browser');
-    } finally {
-      setStartingPort(null);
-    }
+    setDebugError('');
+    await saveSection(
+      'browserChat',
+      { browserChatEndpoints: form.browserChatEndpoints.filter((entry) => entry.port !== port) },
+      `Unregistered port ${port}. A browser already running on it is not closed.`
+    );
+    void refreshDebugBrowsers();
   };
 
   const handleSaveProviders = async () => {
@@ -605,7 +626,8 @@ export default function AdminSettingsPage() {
           <div className="rounded-md border border-gray-200">
             {form.browserChatEndpoints.length === 0 ? (
               <p className="p-4 text-sm text-gray-600">
-                No browsers yet. Add one below, then start it and sign in.
+                No debug ports registered yet. Register one below, then start it with{' '}
+                <code className="rounded bg-gray-100 px-1">npm run browser:debug</code> and sign in.
               </p>
             ) : (
               <ul className="divide-y divide-gray-200">
@@ -630,19 +652,11 @@ export default function AdminSettingsPage() {
                       <span className="ml-auto flex gap-2">
                         <button
                           type="button"
-                          onClick={() => startBrowser(entry)}
-                          disabled={startingPort !== null || savingSection !== null}
-                          className="rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-                        >
-                          {startingPort === entry.port ? 'Starting...' : 'Start'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeBrowser(entry.port)}
-                          disabled={startingPort !== null || savingSection !== null}
+                          onClick={() => void unregisterBrowser(entry.port)}
+                          disabled={savingSection !== null}
                           className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                         >
-                          Remove
+                          Unregister
                         </button>
                       </span>
                     </li>
@@ -655,7 +669,7 @@ export default function AdminSettingsPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label className="block text-sm font-medium text-gray-700" htmlFor="newBrowserSite">
-                Add a browser for
+                Register a browser for
               </label>
               <select
                 id="newBrowserSite"
@@ -687,21 +701,106 @@ export default function AdminSettingsPage() {
             </div>
             <button
               type="button"
-              onClick={addBrowser}
+              onClick={() => void registerBrowser()}
               disabled={savingSection !== null}
               className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
             >
-              Add
+              {savingSection === 'browserChat' ? 'Registering...' : 'Register'}
             </button>
             <button
               type="button"
-              onClick={refreshDebugBrowsers}
-              disabled={startingPort !== null}
+              onClick={() => void refreshDebugBrowsers()}
+              disabled={isChecking || savingSection !== null}
               className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
             >
-              Check status
+              {isChecking ? 'Checking...' : 'Check status'}
             </button>
+            {debugCheckedAt ? (
+              <span className="self-center text-xs text-gray-500">
+                Last checked {debugCheckedAt}
+              </span>
+            ) : null}
           </div>
+
+          {/* The answer to "is this thing working", above the per-port detail.
+              A registered port with a running browser and an open tab can still
+              be SIGNED OUT, so `active` comes from the provider's own probe
+              rather than from the port. */}
+          {debugReport ? (
+            <ul className="grid gap-2 sm:grid-cols-2">
+              {debugReport.platforms.map((platform) => {
+                // Three states, not two. The port probe answers in milliseconds
+                // and the health check shells out and drives a tab, so for the
+                // seconds between them `health` is null - and rendering that as
+                // "Not active" tells an operator whose browsers are all fine
+                // that they are not, before flipping. "Checking" is the honest
+                // reading of "the answer has not arrived".
+                const healthKnown = health !== null || Boolean(healthError);
+                const active = isPlatformActive(health, platform);
+                const state =
+                  platform.registeredPorts.length === 0
+                    ? 'unregistered'
+                    : !healthKnown
+                      ? 'checking'
+                      : active
+                        ? 'active'
+                        : 'inactive';
+                return (
+                  <li
+                    key={platform.id}
+                    className={`rounded-md border p-3 ${
+                      state === 'active' ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`inline-block h-2.5 w-2.5 rounded-full ${
+                          state === 'active'
+                            ? 'bg-green-500'
+                            : state === 'checking'
+                              ? 'animate-pulse bg-gray-300'
+                              : 'bg-gray-400'
+                        }`}
+                        aria-hidden
+                      />
+                      {/* The frontend's label, not the one the server sent.
+                          The rows above render getAIProviderLabel, and the two
+                          vocabularies differ - "Claude (browser)" here against
+                          "Claude (free)" on the wire - so using the server's
+                          put one provider under two names in a single panel. */}
+                      <span className="text-sm font-medium text-gray-900">
+                        {getAIProviderLabel(platform.id)}
+                      </span>
+                      <span
+                        className={`ml-auto text-xs font-medium ${
+                          state === 'active' ? 'text-green-700' : 'text-gray-600'
+                        }`}
+                      >
+                        {state === 'active'
+                          ? 'Active'
+                          : state === 'checking'
+                            ? 'Checking...'
+                            : 'Not active'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-600">
+                      {state === 'unregistered'
+                        ? 'No debug port registered for this platform yet. Register one below.'
+                        : describeProviderHealth(health, platform.id, healthError)}
+                    </p>
+                    {platform.registeredPorts.length > 0 && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        {`Port${platform.registeredPorts.length === 1 ? '' : 's'} ` +
+                          `${platform.registeredPorts.join(', ')} registered · ` +
+                          `${platform.runningPorts.length} reachable · ` +
+                          `${platform.tabPorts.length} showing the site`}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
 
           {debugReport && Object.keys(debugReport.queues).length > 0 ? (
             <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
@@ -717,24 +816,25 @@ export default function AdminSettingsPage() {
             </div>
           ) : null}
 
-          <p className="text-xs text-gray-500">
-            Each browser gets a profile directory of its own, because Chrome ignores the debug port
-            on a profile that is already running. Sign in to the tab once inside each window and
-            leave it open - this app attaches to them and never launches one of its own during a run.
-          </p>
+          <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+            <p className="font-medium text-gray-900">Starting these browsers</p>
+            <p className="mt-1">
+              This app never starts one. Register the port here, then run the launcher yourself on
+              the machine the backend is on:
+            </p>
+            <pre className="mt-2 overflow-x-auto rounded bg-gray-900 px-3 py-2 text-xs text-gray-100">
+npm run browser:debug
+            </pre>
+            <p className="mt-2">
+              It starts every browser registered above, skipping any already running, and opens each
+              one on its own chat site. Sign in inside each window once and leave it open. Each gets
+              a profile directory of its own, because Chrome ignores the debug port on a profile
+              that is already running.
+            </p>
+          </div>
 
           {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
 
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleSaveBrowserChat}
-              disabled={savingSection !== null && savingSection !== 'browserChat'}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              {savingSection === 'browserChat' ? 'Saving...' : 'Save Browser List'}
-            </button>
-          </div>
         </section>
 
         <section className="space-y-4">

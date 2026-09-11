@@ -161,22 +161,40 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   credentials this app reads and it stores none of its own
 
 - A **debug Chrome** for the two browser-chat providers, one of which is the
-  default. They need no key at all:
+  default. They need no key at all.
+
+  **Register** each browser first, under **Admin → Settings → Browser Chat
+  (free)**: pick a site and a port, press **Register**, and it is saved
+  immediately. That list is the address book the providers send requests to, so
+  a browser that is not on it is a browser nothing will use.
+
+  Then **start** them yourself:
 
   ```bash
-  npm run browser:debug     # starts Chrome with a debug port on a separate profile
+  npm run browser:debug                                   # every registered browser
+  npm run browser:debug -- --list                         # what is registered, and what is up
+  npm run browser:debug -- --port 9333 --site claude-web  # one, and register it
   ```
 
-  Sign in to `claude.ai` and/or `chatgpt.com` **in that window** and leave it
-  open. The backend attaches to it and drives the page; it never launches a
-  browser of its own and never closes yours. A separate profile directory is
-  used because Chrome ignores `--remote-debugging-port` when the same profile is
-  already running, and because the browser must not be in automation mode -
-  sign-in flows reject one that is.
+  `--port=9333` works too, and an unrecognised flag is an error rather than a
+  quiet fallback to starting everything.
 
-  Or start them from the app: **Admin → Settings → Browser Chat (free)** lists
-  the browsers, each with a site and a port, and a **Start** button that
-  launches one, opens its chat tab, and records it.
+
+  **The backend never starts a browser.** There used to be a Start button that
+  made it spawn Chrome on an HTTP request; that is gone, along with the endpoint
+  behind it. The server only ever attaches to what it finds, which means these
+  windows belong to you, outlive a backend restart, and cannot be started by
+  anyone who can reach the admin API.
+
+  Sign in to `claude.ai` and/or `chatgpt.com` **in the window each one opens**
+  and leave it open. Each gets a profile directory of its own
+  (`~/.free-tailor-chrome-<port>`) because Chrome ignores
+  `--remote-debugging-port` when the same profile is already running, and the
+  launcher picks an installed Chrome/Edge/Brave rather than puppeteer's Chrome
+  for Testing - sign-in flows reject a browser in automation mode.
+
+  Running it again is safe: a port that already has a browser on it is left
+  alone rather than started twice.
 
   **One browser shows one chat tab**, on its own port and its own profile. That
   is not a preference: a second tab in the same window is a background tab, and
@@ -193,7 +211,14 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   request is retried on another of that site's browsers and the dead one is set
   aside for a short while.
 
-  The debug port listens on loopback only, and the script deliberately does
+  Back on **Admin → Settings → Browser Chat (free)**, each platform shows
+  **Active** or **Not active**. Active means the provider's own check found a
+  signed-in chat tab - not merely that a window is running, which a port probe
+  alone cannot tell apart from a window that is signed out. Under it are the
+  ports registered, how many are reachable, and how many are showing the site.
+  Press **Check status** to re-read it after a launcher run.
+
+  The debug port listens on loopback only, and the launcher deliberately does
   **not** pass `--remote-allow-origins=*`. That flag turns off Chrome's DevTools
   origin check, which is the only thing stopping an ordinary web page you visit
   from opening a socket to `127.0.0.1` and driving this browser - including
@@ -345,6 +370,7 @@ File and folder names are templated per profile.
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
+| **Browser Chat (free)** | Register a debug port per browser here; registering saves immediately, because this list is what the providers and the launcher both read. It shows each platform as **Active** or **Not active** (active = the provider found a signed-in chat tab, which a port probe alone cannot tell from a signed-out one) and the ports registered, reachable, and showing the site. It does **not** start browsers - `npm run browser:debug` does. Unregistering forgets a browser here; it does not close a window |
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
 | **AI defaults per profile** | Each profile picks its own model, effort (`low`..`max`) and thinking mode; the builder shows those defaults and can override any of them for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag. Thinking is on by default and adaptive - the models decide per answer - so the choice is whether to allow it, not how much; depth is what effort controls |
 | **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
@@ -389,14 +415,17 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
-| A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave that window open. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
+| A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave the windows it opens open. The app never starts one for you. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
 | A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
 | A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. `claude-cli` needs a Claude subscription seat signed in to the CLI on this machine; sign it in and add `AI_UNLOCKED_PROVIDERS=claude-cli` to `.env`, then restart. Use `Claude (free)` or `ChatGPT (free)` otherwise. |
 | The free Claude and ChatGPT models are missing from the model menus | An install that saved settings before those providers existed stores its own model list, which the newer seed list cannot reach. The migration on the next boot adds them; if it did not run, the backend log says why on a `[db]` line. Adding them by hand under Admin → Models works too: provider `Claude (browser)` or `ChatGPT (browser)`, model name `chat`. |
-| A free provider says it `has no browser set up yet` | That site has no entry in the browser list. Add one under Admin → Settings → Browser Chat (free), start it, and sign in to the tab it opens. |
+| A free provider says it `has no browser set up yet` | No debug port is registered for that site. Register one under Admin → Settings → Browser Chat (free), start it with `npm run browser:debug`, and sign in to the tab it opens. |
+| A platform shows **Not active** though its window is plainly open | Active means the provider found a signed-in chat tab, not merely a running browser. Open that window, check the tab is signed in and showing the chat site, then press **Check status**. The line under each platform says how many registered ports are reachable and how many are showing the site, which separates "not started" from "started but signed out". |
+| `npm run browser:debug` starts every browser when you asked for one | Flags have to reach through two npm hops. From the repo root the form is `npm run browser:debug -- --port 9333 --site claude-web`; without the `--`, npm eats `--port` as its own option and the script never sees it. The script itself accepts either `--port 9333` or `--port=9333`, and refuses any flag it does not recognise rather than quietly falling back to starting everything - so if it *did* start the whole list, the flags did not reach it. |
+| `npm run browser:debug` says `No database at ...` | It could not find the settings database, so nothing is registered from its point of view and it used the `.env` defaults. Usually `DB_DIR` differs between your shell and the backend - or the backend runs in a container and its database is in there. Name the browser you want instead: `npm run browser:debug -- --port 9222 --site claude-web`. |
 | A free provider says a request `waited its whole time budget for a free tab` | Its browsers were all busy for the whole call. Nothing was refused for queue length - there is no limit - the request simply ran out of its own time. Add another browser for that site: each one runs one more request at a time. |
-| Starting the browser says `nothing is listening on port ...` | Usually another window of that browser is already running with the same profile: Chrome then opens a tab in the existing window and never opens the port. Close every window of it and try again. On a server with no display, Chrome exits at once - set `AI_WEB_BROWSER_ARGS=--headless=new --no-sandbox`, noting that a headless browser cannot be signed in to by hand and so only works against a profile that already is. |
-| Starting the browser says no installed browser was found | The resolver looks in the standard install locations and deliberately ignores `CHROME_PATH`, because that often points at puppeteer's Chrome for Testing and sign-in flows reject a browser in automation mode. Set `AI_WEB_BROWSER_PATH` to the browser you want used. |
+| `npm run browser:debug` says `nothing is listening on port ...` | Usually another window of that browser is already running with the same profile: Chrome then opens a tab in the existing window and never opens the port. Close every window of it and run it again - a port that already has a browser on it is reused, not started twice. On a server with no display, Chrome exits at once - set `AI_WEB_BROWSER_ARGS=--headless=new --no-sandbox`, noting that a headless browser cannot be signed in to by hand and so only works against a profile that already is. |
+| `npm run browser:debug` says no installed browser was found | The resolver looks in the standard install locations and deliberately ignores `CHROME_PATH`, because that often points at puppeteer's Chrome for Testing and sign-in flows reject a browser in automation mode. Set `AI_WEB_BROWSER_PATH` to the browser you want used. |
 | A browser provider says the site `did not answer because ...` | The site refused rather than the driver failing. A usage limit or a rate limit is reported as such and resets on its own; a signed-out tab or a human-verification check needs you at the browser. Either way the backend stops at once instead of polling until the deadline. |
 | A browser provider warns `produced N assistant messages, and the first is being read as the reply` | The send produced more than one assistant message. The driver takes the first one that was not there before, which is right when a site streams two candidate answers side by side and wrong if one of those nodes is a reasoning trace or a preamble. If answers come back looking like reasoning, narrow `AI_WEB_CLAUDE_ASSISTANT` / `AI_WEB_CHATGPT_ASSISTANT` so it matches only the finished reply. |
 | A browser provider warns `no usable "still generating" selector` | Every stop-button candidate also matched an idle page, so nothing can report that a reply is in flight. Answers are still read correctly - the driver falls back to waiting until the text has stopped changing for several seconds - but each call is slower. Set `AI_WEB_CLAUDE_BUSY` or `AI_WEB_CHATGPT_BUSY` to something present only while the site is generating. |
