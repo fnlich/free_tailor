@@ -74,7 +74,14 @@ export function isEcho(sent: string, seen: string): boolean {
   // function exists to catch.
   const head = collapse(canonicalPunctuation(sent)).slice(0, 80);
   if (!head) return false;
-  return collapse(canonicalPunctuation(seen)).startsWith(head);
+  // CONTAINS, not starts-with. Both sites group a turn with its reply and put
+  // something above the user's text inside that group - an author label, a
+  // timestamp, an Edit control - and a prefix test is defeated by any one of
+  // them. Measured against this function: the bare echo matched, and the same
+  // echo behind a single "You\n" label did not. What that costs is not a
+  // missed warning: it is the guard passing, and the PROMPT being returned as
+  // the answer. A resume tailored to the instructions, with no error anywhere.
+  return collapse(canonicalPunctuation(seen)).includes(head);
 }
 
 function collapse(value: string): string {
@@ -364,6 +371,26 @@ export function hostOf(url: string): string {
 export function matchesHost(host: string, siteHost: string): boolean {
   if (!host || !siteHost) return false;
   return host === siteHost || host.endsWith(`.${siteHost}`);
+}
+
+/**
+ * Is this tab showing the site?
+ *
+ * By host normally, and that is the important case - any conversation URL on
+ * claude.ai is the Claude tab, not just the /new the table names.
+ *
+ * A site with NO host is the other case: `AI_WEB_CLAUDE_URL` pointed at a
+ * `file:` or `data:` page, which is how this driver is exercised without a
+ * signed-in account. Matching on host alone can never find that tab, so the
+ * override silently opens a second one on every call and attaches to whichever
+ * it finds. Compared without the fragment, since the site owns that.
+ */
+export function matchesSite(pageUrl: string, site: { host: string; url: string }): boolean {
+  const host = hostOf(pageUrl);
+  if (site.host) return matchesHost(host, site.host);
+  if (host || !site.url) return false;
+  const strip = (value: string) => value.split('#')[0];
+  return strip(pageUrl) === strip(site.url);
 }
 
 /** The prompt as it goes into the composer. */

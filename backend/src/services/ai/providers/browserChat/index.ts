@@ -464,7 +464,15 @@ export function createBrowserChatAdapter(
               'timeout',
               error.message,
               'A free browser provider answers at reading speed. Raise the per-call timeout, add ' +
-                'another browser for it under Settings, or use the Claude CLI provider.'
+                'another browser for it under Settings, or use the Claude CLI provider.',
+              // The DRIVER's sentence, not the generic one for this kind.
+              //
+              // `detail` never reaches a browser - the middleware withholds it
+              // on purpose - so without this every browser-chat failure arrived
+              // as "The request took too long. Try a shorter job description",
+              // whatever had actually gone wrong. The driver knows which step
+              // failed and says so; that is the sentence worth showing.
+              `${descriptor.label}: ${error.message}`
             );
           }
           // The site declining is not this app malfunctioning, and the two get
@@ -495,7 +503,12 @@ export function createBrowserChatAdapter(
           return fail(
             error.kind === 'echo' ? 'malformedOutput' : 'unavailable',
             error.message,
-            `Check the tab in the debug browser, then the selector overrides for ${descriptor.label}.`
+            `Run \`npm run browser:doctor -- --send\` against the ${descriptor.label} tab: it ` +
+              'reports which selector role matched what, and names the override that fixes it.',
+            // Same reasoning as the timeout branch: the driver names the step
+            // that failed, and a generic "the provider is unavailable" sends
+            // the operator nowhere.
+            `${descriptor.label}: ${error.message}`
           );
         }
         const detail = error instanceof Error ? error.message : String(error);

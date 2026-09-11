@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Realistic chat</title></head>
+<body>
+<!--
+  A chat page with the behaviours the REAL sites have and fakeChat.html does not.
+
+  fakeChat.html is a plain contenteditable with an always-enabled button, so the
+  driver passes against it while failing against claude.ai and chatgpt.com. The
+  three differences that matter, each switchable so one page covers them:
+
+    ?disabled=1   the send button starts disabled and is only enabled from an
+                  `input` listener on the composer, one animation frame later -
+                  which is when React re-renders. Both real sites do this.
+    ?rich=1       the composer keeps its own model like ProseMirror: it renders
+                  each line as its own <p>, and it IGNORES text that arrives
+                  any way other than a beforeinput/input event.
+    ?enterguard=1 Enter alone does nothing (the site requires a click, or
+                  Ctrl/Cmd+Enter), so the pressEnter fallback cannot rescue a
+                  failed click.
+-->
+<a href="/new" id="new-chat">New chat</a>
+<div id="transcript"></div>
+<div>
+  <div contenteditable="true" class="ProseMirror" id="composer"></div>
+  <button aria-label="Send message" id="send">Send</button>
+  <span id="stop-slot"></span>
+</div>
+<script>
+const params = new URLSearchParams(location.search);
+const DISABLED = params.get('disabled') === '1';
+const RICH = params.get('rich') === '1';
+const ENTERGUARD = params.get('enterguard') === '1';
+const CHUNKS = Number.parseInt(params.get('chunks') || '3', 10);
+const DELAY = Number.parseInt(params.get('delay') || '40', 10);
+
+if (params.get('frozen') === '1') {
+  // Accepts focus, refuses every edit. What a read-only or broken editor looks
+  // like from the driver's side: the text simply never arrives.
+  document.getElementById('composer').addEventListener('beforeinput', (e) => e.preventDefault());
+}
+if (params.get('nobutton') === '1') {
+  document.getElementById('send').remove();
+}
+const transcript = document.getElementById('transcript');
+const composer = document.getElementById('composer');
+const send = document.getElementById('send') || Object.assign(document.createElement('button'), { disabled: false });
+const stopSlot = document.getElementById('stop-slot');
+
+// Instrumentation the test reads back, so a failure says WHICH step never happened.
+window.__trace = { inputs: 0, sends: 0, enters: 0, clicksWhileDisabled: 0 };
+
+const ENABLE_MS = Number.parseInt(params.get('enablems') || '', 10);
+if (DISABLED) {
+  send.disabled = true;
+  composer.addEventListener('input', () => {
+    // A React re-render. `?enablems=N` makes it slow, which is what a heavy
+    // page under load actually looks like; the default is one frame.
+    const apply = () => { send.disabled = composer.innerText.trim().length === 0; };
+    if (Number.isFinite(ENABLE_MS)) setTimeout(apply, ENABLE_MS);
+    else requestAnimationFrame(apply);
+  });
+}
+
+composer.addEventListener('input', () => { window.__trace.inputs += 1; });
+
+if (RICH) {
+  // A ProseMirror-ish model: the editor owns its content and re-renders it as
+  // paragraphs. Anything written straight into the DOM is discarded on the next
+  // input, exactly as a real editor's reconciliation would.
+  let model = '';
+  composer.addEventListener('beforeinput', (event) => {
+    // The editor owns its content: the browser's own insertion is suppressed
+    // and the model is rendered instead, which is what makes this a stand-in
+    // for ProseMirror rather than a plain contenteditable.
+    event.preventDefault();
+    if (event.inputType === 'insertText' && event.data != null) {
+      model += event.data;
+    } else if (event.inputType === 'insertFromPaste' || event.inputType === 'insertReplacementText') {
+      model += (event.data || '');
+    } else if (event.inputType && event.inputType.startsWith('delete')) {
+      model = '';
+    }
+    render();
+  });
+  function render() {
+    composer.innerHTML = '';
+    for (const line of model.split('\n')) {
+      const p = document.createElement('p');
+      p.textContent = line;
+      composer.appendChild(p);
+    }
+    // Put the caret back at the end. ProseMirror restores the selection after
+    // it reconciles, and without doing the same this fixture is unfaithful in
+    // the one way that matters: re-rendering destroys the node the caret was
+    // in, so the NEXT insert has no editable target and silently goes nowhere.
+    const selection = window.getSelection();
+    if (selection && composer.lastChild) {
+      const range = document.createRange();
+      range.selectNodeContents(composer.lastChild);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  composer.__model = () => model;
+}
+
+// Like the real sites and like fakeChat.html: the new-chat control resets the
+// page in place rather than navigating. Without this the driver's first action
+// walks the tab off the fixture entirely.
+document.getElementById('new-chat').addEventListener('click', (event) => {
+  event.preventDefault();
+  transcript.innerHTML = '';
+  composer.innerHTML = '';
+  stopSlot.innerHTML = '';
+});
+
+send.addEventListener('click', () => {
+  if (send.disabled) { window.__trace.clicksWhileDisabled += 1; return; }
+  window.__trace.sends += 1;
+  submit();
+});
+
+composer.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  window.__trace.enters += 1;
+  event.preventDefault();
+  if (ENTERGUARD) return;      // the site needs a click; Enter is inert
+  // ?enteralways=1: Enter submits even while the button is disabled, which is
+  // how the fallback rescues a turn whose send control is the broken part.
+  if (send.disabled && params.get('enteralways') !== '1') return;
+  window.__trace.sends += 1;
+  submit();
+});
+
+function textOf() {
+  return RICH ? composer.__model() : composer.innerText;
+}
+
+function submit() {
+  const prompt = textOf();
+  composer.innerHTML = '';
+  if (RICH) { /* model reset via delete path below */ }
+
+  const user = document.createElement('div');
+  user.className = 'user-message';
+  user.textContent = prompt;
+  transcript.appendChild(user);
+
+  const words = prompt.split(/\s+/).filter(Boolean).length;
+  const full = 'ANSWER-START You sent ' + words + ' words. ANSWER-END';
+
+  const reply = document.createElement('div');
+  reply.setAttribute('data-is-streaming', 'true');
+  transcript.appendChild(reply);
+
+  const stop = document.createElement('button');
+  stop.setAttribute('aria-label', 'Stop response');
+  stopSlot.appendChild(stop);
+
+  const pieces = [];
+  const size = Math.ceil(full.length / CHUNKS);
+  for (let i = 0; i < full.length; i += size) pieces.push(full.slice(i, i + size));
+
+  let at = 0;
+  const tick = setInterval(() => {
+    reply.textContent = (reply.textContent || '') + pieces[at];
+    at += 1;
+    if (at >= pieces.length) {
+      clearInterval(tick);
+      reply.setAttribute('data-is-streaming', 'false');
+      stopSlot.innerHTML = '';
+    }
+  }, DELAY);
+}
+</script>
+</body>
+</html>
