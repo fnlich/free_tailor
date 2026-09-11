@@ -1,6 +1,6 @@
 import { EFFORT_LEVELS, isEffortLevel, type EffortLevel } from '../services/ai/types';
 import { DEFAULT_CLI_EFFORT } from '../services/ai/providers/claudeCli/options';
-import { resolveRequestedAIModel } from './aiModelConfig';
+import { resolveRequestedAIModel, resolveStoredAIModelPreference } from './aiModelConfig';
 import type { AIProvider } from '../types/template';
 
 /**
@@ -141,11 +141,17 @@ export async function resolveAiChoice(
   overrides: AiPreferences | undefined,
   profile?: { profileSettings?: { ai?: AiPreferences } } | null
 ): Promise<AiChoice> {
-  const preferences = mergeAiPreferences(
-    normalizeAiPreferences(profile?.profileSettings?.ai),
-    normalizeAiPreferences(overrides)
-  );
-  const model = await resolveRequestedAIModel(preferences.modelId);
+  const profilePreferences = normalizeAiPreferences(profile?.profileSettings?.ai);
+  const overridePreferences = normalizeAiPreferences(overrides);
+  const preferences = mergeAiPreferences(profilePreferences, overridePreferences);
+
+  // The two ids are resolved differently on purpose. One was chosen for this
+  // run and must be honoured or refused; the other was stored on a profile
+  // some time ago, and a provider locked since then makes it stale rather than
+  // wrong - see resolveStoredAIModelPreference.
+  const model = overridePreferences.modelId
+    ? await resolveRequestedAIModel(overridePreferences.modelId)
+    : await resolveStoredAIModelPreference(profilePreferences.modelId);
   return {
     provider: model.provider,
     modelName: model.modelName,

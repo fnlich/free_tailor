@@ -43,6 +43,26 @@ export type ProviderDescriptor = {
   envKeyVar: string | null;
   requiresApiKey: boolean;
   credentialKind: CredentialKind;
+  /**
+   * True when this build does not offer the provider to run on.
+   *
+   * A LOCK IS NOT THE ADMIN'S DISABLE SWITCH. `providersEnabled` records what
+   * the operator chose and is theirs to change from the Settings page; a lock
+   * is a property of the deployment - the thing the provider needs is not
+   * present here - and no amount of ticking a box makes it runnable. Which is
+   * why the UI keeps a locked provider's models on screen with a padlock
+   * rather than hiding them: "you cannot pick this, and here is why" is
+   * information, and a model that silently vanishes is a bug report.
+   *
+   * Escapable at the deployment level, never from the UI: see
+   * `AI_UNLOCKED_PROVIDERS` below.
+   */
+  locked: boolean;
+  /**
+   * Why it is locked, and what would unlock it. Shown verbatim next to the
+   * padlock, so it is written for the person reading the screen.
+   */
+  lockReason: string;
   /** Sort order in menus; also the order getDefaultEnabledProvider walks. */
   order: number;
 };
@@ -66,6 +86,11 @@ export const PROVIDER_CATALOG = {
     envKeyVar: null,
     requiresApiKey: false,
     credentialKind: 'subscription-seat',
+    locked: true,
+    lockReason:
+      'Needs a Claude subscription seat signed in to the `claude` CLI on the machine running this ' +
+      'server. Use Claude (free) or ChatGPT (free) instead, or unlock this once the seat is signed ' +
+      'in by adding claude-cli to AI_UNLOCKED_PROVIDERS in .env.',
     order: 0,
   },
   claude: {
@@ -76,6 +101,8 @@ export const PROVIDER_CATALOG = {
     envKeyVar: 'ANTHROPIC_API_KEY',
     requiresApiKey: true,
     credentialKind: 'api-key',
+    locked: false,
+    lockReason: '',
     order: 1,
   },
   openai: {
@@ -86,6 +113,8 @@ export const PROVIDER_CATALOG = {
     envKeyVar: 'OPENAI_API_KEY',
     requiresApiKey: true,
     credentialKind: 'api-key',
+    locked: false,
+    lockReason: '',
     order: 2,
   },
   deepseek: {
@@ -96,6 +125,8 @@ export const PROVIDER_CATALOG = {
     envKeyVar: 'DEEPSEEK_API_KEY',
     requiresApiKey: true,
     credentialKind: 'api-key',
+    locked: false,
+    lockReason: '',
     order: 3,
   },
   'claude-web': {
@@ -107,6 +138,8 @@ export const PROVIDER_CATALOG = {
     envKeyVar: null,
     requiresApiKey: false,
     credentialKind: 'browser-session',
+    locked: false,
+    lockReason: '',
     order: 4,
   },
   'chatgpt-web': {
@@ -118,6 +151,8 @@ export const PROVIDER_CATALOG = {
     envKeyVar: null,
     requiresApiKey: false,
     credentialKind: 'browser-session',
+    locked: false,
+    lockReason: '',
     order: 5,
   },
 } as const satisfies Record<AIProvider, ProviderDescriptor>;
@@ -140,6 +175,58 @@ export function getProviderLabel(id: AIProvider): string {
 
 export function providerRequiresApiKey(id: AIProvider): boolean {
   return PROVIDER_CATALOG[id]?.requiresApiKey ?? true;
+}
+
+/**
+ * The env var that lifts a lock, as a comma or space separated list of
+ * provider ids: `AI_UNLOCKED_PROVIDERS=claude-cli`.
+ *
+ * A deployment-level escape hatch on purpose. The lock says "the thing this
+ * provider needs is not here", and the only person who can know that has
+ * changed is whoever installed the CLI or signed the seat in - not a user
+ * clicking around the admin pages, which is why there is no button for it.
+ * Read on every call rather than captured at import, so a test can set it and
+ * so a restart is the only thing needed to apply it.
+ */
+export const UNLOCKED_PROVIDERS_ENV_VAR = 'AI_UNLOCKED_PROVIDERS';
+
+function envUnlockedProviders(): Set<string> {
+  const raw = process.env[UNLOCKED_PROVIDERS_ENV_VAR];
+  if (!raw) {
+    return new Set();
+  }
+  return new Set(
+    raw
+      .split(/[,\s]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+/**
+ * True when this deployment cannot run the provider.
+ *
+ * Deliberately NOT a function of the settings row: a lock and the admin's
+ * enable flag answer different questions, and merging them would make
+ * "unticked because I do not want it" indistinguishable from "cannot run
+ * here". `isProviderEnabled` in aiModelConfig is where the two meet.
+ */
+export function isProviderLocked(id: AIProvider): boolean {
+  const descriptor = PROVIDER_CATALOG[id] as ProviderDescriptor | undefined;
+  if (!descriptor?.locked) {
+    return false;
+  }
+  return !envUnlockedProviders().has(id);
+}
+
+/** Why `id` is locked, or '' when it is not locked right now. */
+export function getProviderLockReason(id: AIProvider): string {
+  return isProviderLocked(id) ? PROVIDER_CATALOG[id]?.lockReason ?? '' : '';
+}
+
+/** Every provider locked right now, in menu order. */
+export function listLockedProviderIds(): AIProvider[] {
+  return AI_PROVIDER_IDS.filter((id) => isProviderLocked(id));
 }
 
 /**

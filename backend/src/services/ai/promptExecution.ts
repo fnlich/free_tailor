@@ -1,5 +1,10 @@
 import { getAIModelSettings, getDefaultEnabledProvider, isProviderEnabled } from '../../config/aiModelConfig';
-import { coerceProviderId, getProviderLabel } from '../../config/providerCatalog';
+import {
+  coerceProviderId,
+  getProviderLabel,
+  getProviderLockReason,
+  isProviderLocked,
+} from '../../config/providerCatalog';
 import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
 import { resolvePromptByExactId, resolvePromptByRuntimeId } from '../promptService';
@@ -72,6 +77,23 @@ function configFromRecord(
   if (!provider || !record?.modelName) {
     return { provider: fallbackProvider, modelName: fallbackModelName, explicit: explicitFallback };
   }
+
+  // An override naming a provider this installation cannot run is read as no
+  // override at all. It is a value STORED on the prompt record, possibly years
+  // ago and possibly by the provider migration itself, which repointed every
+  // custom prompt at the subscription seat - so honouring it here would mean a
+  // build that locks that seat cannot run any of those prompts, and the person
+  // hitting it has no way to see why from the prompt they are using.
+  if (isProviderLocked(provider)) {
+    warnOnce(
+      `lockedPromptOverride:${provider}`,
+      `A prompt record names the locked provider "${getProviderLabel(provider)}"; that override is ` +
+        'being ignored and those prompts run on the model chosen in the UI instead. Clear it under ' +
+        'Admin -> Prompts to silence this.'
+    );
+    return { provider: fallbackProvider, modelName: fallbackModelName, explicit: explicitFallback };
+  }
+
   return { provider, modelName: record.modelName, explicit: true };
 }
 
@@ -137,6 +159,17 @@ async function runAssembled(
   let provider = config.provider;
 
   if (!isProviderEnabled(provider, settings)) {
+    const lockReason = getProviderLockReason(provider);
+    if (lockReason && config.explicit !== false) {
+      // Reported as its own kind so the message names the real obstacle. A
+      // locked provider is not something an administrator can switch back on.
+      throw new AIProviderError({
+        provider,
+        kind: 'locked',
+        detail: `Provider "${getProviderLabel(provider)}" is locked in this installation`,
+        adminAction: lockReason,
+      });
+    }
     if (config.explicit !== false) {
       throw new AIProviderError({
         provider,

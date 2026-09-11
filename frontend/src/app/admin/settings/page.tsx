@@ -14,6 +14,8 @@ import {
   getAIProviderLabel,
   Group,
   groupsApi,
+  isProviderLocked,
+  LOCK_ICON,
   Profile,
   profilesApi,
   ProviderHealthReport,
@@ -440,9 +442,15 @@ export default function AdminSettingsPage() {
   };
 
   const handleSaveProviders = async () => {
-    if (!form) return;
-    if (!Object.values(form.providersEnabled).some(Boolean)) {
-      setError('At least one AI model must remain enabled.');
+    if (!form || !settings) return;
+    const runnable = AI_PROVIDERS.filter(
+      (provider) => form.providersEnabled[provider] && !isProviderLocked(settings, provider)
+    );
+    if (runnable.length === 0) {
+      setError(
+        'At least one unlocked AI provider must remain enabled. Locked providers cannot run here ' +
+          'however they are ticked.'
+      );
       return;
     }
 
@@ -482,7 +490,7 @@ export default function AdminSettingsPage() {
 
   const providerEnabled = form.providersEnabled;
   const availableDefaultModels = settings.aiModels.filter(
-    (model) => model.enabled && providerEnabled[model.provider]
+    (model) => model.enabled && providerEnabled[model.provider] && !isProviderLocked(settings, model.provider)
   );
   const outputPathPreview = buildPathPreview(form.outputPathTemplate);
 
@@ -733,8 +741,10 @@ export default function AdminSettingsPage() {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">AI Providers</h2>
             <p className="text-sm text-gray-600">
-              Disabled providers are hidden in Resume Builder and rejected by the backend. Claude
-              Code runs on your subscription; the metered providers are keyed from{' '}
+              Disabled providers are hidden in Resume Builder and rejected by the backend. A{' '}
+              {LOCK_ICON} provider is one this installation cannot run at all, and its switch is
+              fixed until that changes on the server. The free browser-chat providers drive a chat
+              tab you signed in to; the metered providers are keyed from{' '}
               <code className="rounded bg-gray-100 px-1">.env</code> (<code className="rounded bg-gray-100 px-1">ANTHROPIC_API_KEY</code>,{' '}
               <code className="rounded bg-gray-100 px-1">OPENAI_API_KEY</code>,{' '}
               <code className="rounded bg-gray-100 px-1">DEEPSEEK_API_KEY</code>) and this app does
@@ -742,24 +752,46 @@ export default function AdminSettingsPage() {
             </p>
           </div>
 
-          {AI_PROVIDERS.map((provider) => (
-            <label key={provider} className="flex items-center justify-between border rounded-md p-4">
-              <div>
-                <div className="font-medium text-gray-900">{getAIProviderLabel(provider)}</div>
-                <div className="text-sm text-gray-500">
-                  {describeProviderHealth(health, provider, healthError)}
+          {AI_PROVIDERS.map((provider) => {
+            const lock = settings.providerLocks.find((entry) => entry.id === provider);
+            return (
+              <label
+                key={provider}
+                className={`flex items-center justify-between border rounded-md p-4 ${
+                  lock ? 'bg-gray-50' : ''
+                }`}
+              >
+                <div>
+                  <div className="font-medium text-gray-900">
+                    {lock && <span aria-hidden>{LOCK_ICON} </span>}
+                    {getAIProviderLabel(provider)}
+                    {lock && <span className="ml-2 text-xs font-normal text-amber-700">Locked</span>}
+                  </div>
+                  {/* One line, not two: the health probe for a locked provider
+                      already answers "locked, and here is why", so rendering
+                      the reason underneath it would just say it twice. */}
+                  {lock ? (
+                    <div className="text-sm text-amber-700">{lock.reason}</div>
+                  ) : (
+                    <div className="text-sm text-gray-500">
+                      {describeProviderHealth(health, provider, healthError)}
+                    </div>
+                  )}
                 </div>
-              </div>
-              <input
-                type="checkbox"
-                checked={providerEnabled[provider]}
-                disabled={savingSection === 'providers'}
-                onChange={(e) =>
-                  setField('providersEnabled', { ...form.providersEnabled, [provider]: e.target.checked })
-                }
-              />
-            </label>
-          ))}
+                {/* The stored preference still shows through, and is still what
+                    comes back if the lock is ever lifted - it is just not
+                    something to change while ticking it would change nothing. */}
+                <input
+                  type="checkbox"
+                  checked={providerEnabled[provider]}
+                  disabled={savingSection === 'providers' || Boolean(lock)}
+                  onChange={(e) =>
+                    setField('providersEnabled', { ...form.providersEnabled, [provider]: e.target.checked })
+                  }
+                />
+              </label>
+            );
+          })}
 
           <div className="flex justify-end">
             <button

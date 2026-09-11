@@ -522,6 +522,22 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
   return preferences;
 }
 
+/**
+ * One provider this installation cannot run, and the models it would offer.
+ *
+ * Sent so a picker can keep those models on screen behind a padlock instead of
+ * dropping them: a model that silently disappears reads as a bug, and "you
+ * cannot pick this, and here is why" is the thing the user actually needs.
+ * They are carried separately from `aiModels` because that list is the set of
+ * models a request may name.
+ */
+export interface ProviderLock {
+  id: AIProvider;
+  label: string;
+  reason: string;
+  models: AIModelRecord[];
+}
+
 // Admin API
 export interface PublicAppSettings {
   /** Canonical enable flags, keyed by provider id. */
@@ -541,6 +557,8 @@ export interface PublicAppSettings {
   googleSheetsSources: GoogleSheetSource[];
   /** The debug browsers the free chat providers drive, one tab apiece. */
   browserChatEndpoints: BrowserChatEndpoint[];
+  /** Providers locked in this build. Empty on a build that locks nothing. */
+  providerLocks: ProviderLock[];
 }
 
 export type AIModelSettings = PublicAppSettings;
@@ -635,6 +653,7 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   aiModels: [],
   googleSheetsSources: [],
   browserChatEndpoints: [],
+  providerLocks: [],
 };
 
 /**
@@ -656,6 +675,63 @@ function normalizeAiPreferenceDefaults(value: unknown): AiPreferenceDefaults {
     effortLevels: effortLevels.length ? effortLevels : [...EFFORT_LEVELS],
     thinkingModes: thinkingModes.length ? thinkingModes : [...THINKING_MODES],
   };
+}
+
+function normalizeModelRecords(value: unknown): AIModelRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is AIModelRecord => typeof entry === 'object' && entry !== null)
+    .map((entry) => ({
+      id: typeof entry.id === 'string' ? entry.id : '',
+      name: typeof entry.name === 'string' ? entry.name : '',
+      // Coerced, not whitelisted: this used to rewrite anything it did
+      // not recognise to 'openai', so a model row for a newer provider
+      // displayed, filtered and default-gated as OpenAI.
+      provider: coerceProvider(entry.provider) ?? 'claude-cli',
+      modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
+      description: typeof entry.description === 'string' ? entry.description : '',
+      enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
+      createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
+      updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
+    }) satisfies AIModelRecord)
+    .filter((entry) => entry.id && entry.modelName);
+}
+
+/**
+ * A lock with no provider id is dropped, and one with no reason is kept: the
+ * padlock is the part that has to be right, and a build that locks something
+ * without explaining itself should still say the model cannot be picked.
+ */
+function normalizeProviderLocks(value: unknown): ProviderLock[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .map((entry) => {
+      const id = coerceProvider(entry.id);
+      if (!id) return null;
+      return {
+        id,
+        label: typeof entry.label === 'string' && entry.label ? entry.label : getAIProviderLabel(id),
+        reason: typeof entry.reason === 'string' ? entry.reason : '',
+        models: normalizeModelRecords(entry.models),
+      } satisfies ProviderLock;
+    })
+    .filter((entry): entry is ProviderLock => entry !== null);
+}
+
+/**
+ * The padlock, as one constant: the glyph has to mean the same thing on the
+ * builder, the profile form, the provider list and the model table, and four
+ * hand-typed emoji is how that stops being true.
+ */
+export const LOCK_ICON = '\u{1F512}';
+
+/** Whether this installation can run the provider at all. */
+export function isProviderLocked(
+  settings: Pick<PublicAppSettings, 'providerLocks'>,
+  provider: AIProvider
+): boolean {
+  return settings.providerLocks.some((lock) => lock.id === provider);
 }
 
 function normalizePublicAppSettings(value: unknown): PublicAppSettings {
@@ -691,24 +767,8 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
           )
           .map((entry) => ({ siteId: entry.siteId, port: entry.port }))
       : [],
-    aiModels: Array.isArray(source.aiModels)
-      ? source.aiModels
-          .filter((entry): entry is AIModelRecord => typeof entry === 'object' && entry !== null)
-          .map((entry) => ({
-            id: typeof entry.id === 'string' ? entry.id : '',
-            name: typeof entry.name === 'string' ? entry.name : '',
-            // Coerced, not whitelisted: this used to rewrite anything it did
-            // not recognise to 'openai', so a model row for a newer provider
-            // displayed, filtered and default-gated as OpenAI.
-            provider: coerceProvider(entry.provider) ?? 'claude-cli',
-            modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
-            description: typeof entry.description === 'string' ? entry.description : '',
-            enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
-            createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
-            updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
-          }) satisfies AIModelRecord)
-          .filter((entry) => entry.id && entry.modelName)
-      : [],
+    aiModels: normalizeModelRecords(source.aiModels),
+    providerLocks: normalizeProviderLocks(source.providerLocks),
     googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
   };
 }
