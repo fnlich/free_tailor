@@ -397,16 +397,107 @@ export async function launchOne(input: {
 /* CLI                                                                 */
 /* ------------------------------------------------------------------ */
 
-function flag(name: string): string | undefined {
-  const index = process.argv.indexOf(`--${name}`);
-  if (index !== -1 && process.argv[index + 1] && !process.argv[index + 1].startsWith('--')) {
-    return process.argv[index + 1];
+/** Flags that take a value, and flags that do not. Nothing else is accepted. */
+const VALUE_FLAGS = ['port', 'site', 'profile'] as const;
+const BARE_FLAGS = ['list', 'help', 'h', 'no-register'] as const;
+
+/** argv without node and the script path. */
+function argv(): string[] {
+  return process.argv.slice(2);
+}
+
+/**
+ * The parsed command line.
+ *
+ * Exported and taking its args rather than reading process.argv, because the
+ * bug this shape exists to stop was invisible to every test in the suite: the
+ * launcher's tests covered argv construction and port validation, and nothing
+ * covered the parser, so `--port=9333` silently meaning "start everything"
+ * survived a full green run and an end-to-end exercise.
+ */
+export type ParsedArgs = {
+  port?: string;
+  site?: string;
+  profile?: string;
+  list: boolean;
+  help: boolean;
+  register: boolean;
+};
+
+export function parseArgs(args: string[]): ParsedArgs {
+  assertKnownFlags(args);
+  return {
+    port: readValue(args, 'port'),
+    site: readValue(args, 'site'),
+    profile: readValue(args, 'profile'),
+    list: readBare(args, 'list'),
+    help: readBare(args, 'help') || readBare(args, 'h'),
+    register: !readBare(args, 'no-register'),
+  };
+}
+
+/**
+ * Reads `--name value` and `--name=value`, because both are conventions people
+ * actually type - `--name=value` is npm's own - and the launcher used to accept
+ * only the first. Silently, which was the problem: an unrecognised `--port=9333`
+ * left both flags unset, `resolveTargets` took its "no flags given" branch, and
+ * the script started EVERY registered browser instead of the one asked for.
+ */
+function readValue(args: string[], name: string): string | undefined {
+  const equals = args.find((token) => token.startsWith(`--${name}=`));
+  if (equals) {
+    const value = equals.slice(name.length + 3);
+    return value || undefined;
+  }
+
+  const index = args.indexOf(`--${name}`);
+  if (index !== -1 && args[index + 1] && !args[index + 1].startsWith('--')) {
+    return args[index + 1];
   }
   return undefined;
 }
 
-function hasFlag(name: string): boolean {
-  return process.argv.includes(`--${name}`);
+function readBare(args: string[], name: string): boolean {
+  return args.some((token) => token === `--${name}` || token.startsWith(`--${name}=`));
+}
+
+/**
+ * Refuses a flag this script does not know, rather than ignoring it.
+ *
+ * The backstop for the whole class of bug above: a typo, a flag from an older
+ * release, a shape the parser does not handle. Without it every one of them
+ * ends the same way - as an unset flag, which reads as "start everything" and
+ * is the single most surprising thing this script can do. Better to stop and
+ * say the word nobody recognised.
+ */
+function assertKnownFlags(args: string[]): void {
+  const known = new Set<string>([...VALUE_FLAGS, ...BARE_FLAGS]);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (!token.startsWith('--')) {
+      // A bare value is only ever the argument of the value flag before it.
+      const previous = args[index - 1];
+      const previousName = previous?.startsWith('--') ? previous.slice(2) : '';
+      if ((VALUE_FLAGS as readonly string[]).includes(previousName)) {
+        continue;
+      }
+      throw new DebugBrowserError(
+        `"${token}" is not something this script takes on its own.`,
+        'Values go with a flag: npm run browser:debug -- --port 9333 --site claude-web'
+      );
+    }
+
+    const name = token.slice(2).split('=')[0];
+    if (!known.has(name)) {
+      throw new DebugBrowserError(
+        `"--${name}" is not a flag this script knows.`,
+        `Try: ${[...VALUE_FLAGS].map((entry) => `--${entry}`).join(', ')}, ${[...BARE_FLAGS]
+          .map((entry) => `--${entry}`)
+          .join(', ')}. Run with --help for the usage.`
+      );
+    }
+  }
 }
 
 function describe(endpoint: BrowserChatEndpoint): string {
@@ -466,11 +557,20 @@ async function readRegisteredEndpoints(quiet = false): Promise<BrowserChatEndpoi
  * a browser running on a port the app has never heard of is a browser nothing
  * will use.
  */
-async function resolveTargets(): Promise<{ targets: BrowserChatEndpoint[]; register: boolean }> {
-  const portFlag = flag('port');
-  const siteFlag = flag('site');
+async function resolveTargets(
+  parsed: ParsedArgs
+): Promise<{ targets: BrowserChatEndpoint[]; register: boolean; profileDir?: string }> {
+  const portFlag = parsed.port;
+  const siteFlag = parsed.site;
 
   if (!portFlag && !siteFlag) {
+    if (parsed.profile) {
+      throw new DebugBrowserError(
+        '--profile only means something for one browser.',
+        'Every registered browser has a profile directory of its own, keyed by port. Name the ' +
+          'one you mean: npm run browser:debug -- --port 9333 --site claude-web --profile <dir>'
+      );
+    }
     return { targets: await readRegisteredEndpoints(), register: false };
   }
 
@@ -491,7 +591,7 @@ async function resolveTargets(): Promise<{ targets: BrowserChatEndpoint[]; regis
   }
 
   const target: BrowserChatEndpoint = { siteId: siteFlag, port };
-  return { targets: [target], register: !hasFlag('no-register') };
+  return { targets: [target], register: parsed.register, profileDir: parsed.profile };
 }
 
 /**
@@ -517,7 +617,9 @@ async function registerEndpoint(target: BrowserChatEndpoint): Promise<boolean> {
 }
 
 async function main(): Promise<number> {
-  if (hasFlag('help') || hasFlag('h')) {
+  const parsed = parseArgs(argv());
+
+  if (parsed.help) {
     console.log(
       [
         'Start the Chrome windows the browser-chat providers attach to.',
@@ -527,14 +629,14 @@ async function main(): Promise<number> {
         '  npm run browser:debug -- --port 9333 --site claude-web --no-register',
         '  npm run browser:debug -- --list                         show what is registered',
         '',
-        'Sites: claude-web, chatgpt-web.',
+        'Sites: claude-web, chatgpt-web. --port=9333 also works.',
         'Register browsers under Admin -> Settings -> Browser Chat (free).',
       ].join('\n')
     );
     return 0;
   }
 
-  if (hasFlag('list')) {
+  if (parsed.list) {
     const endpoints = await readRegisteredEndpoints();
     if (endpoints.length === 0) {
       console.log('[browser] No browsers are registered.');
@@ -553,7 +655,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const { targets, register } = await resolveTargets();
+  const { targets, register, profileDir } = await resolveTargets(parsed);
 
   if (targets.length === 0) {
     console.error(
@@ -578,6 +680,7 @@ async function main(): Promise<number> {
     try {
       const outcome = await launchOne({
         ...target,
+        profileDir,
         onWaiting: (seconds) =>
           console.log(
             `[browser]     still waiting for port ${target.port} (${seconds}s of ${

@@ -176,6 +176,10 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   npm run browser:debug -- --port 9333 --site claude-web  # one, and register it
   ```
 
+  `--port=9333` works too, and an unrecognised flag is an error rather than a
+  quiet fallback to starting everything.
+
+
   **The backend never starts a browser.** There used to be a Start button that
   made it spawn Chrome on an HTTP request; that is gone, along with the endpoint
   behind it. The server only ever attaches to what it finds, which means these
@@ -417,7 +421,7 @@ See `.env.example` for the full `AI_CLI_*` list.
 | The free Claude and ChatGPT models are missing from the model menus | An install that saved settings before those providers existed stores its own model list, which the newer seed list cannot reach. The migration on the next boot adds them; if it did not run, the backend log says why on a `[db]` line. Adding them by hand under Admin → Models works too: provider `Claude (browser)` or `ChatGPT (browser)`, model name `chat`. |
 | A free provider says it `has no browser set up yet` | No debug port is registered for that site. Register one under Admin → Settings → Browser Chat (free), start it with `npm run browser:debug`, and sign in to the tab it opens. |
 | A platform shows **Not active** though its window is plainly open | Active means the provider found a signed-in chat tab, not merely a running browser. Open that window, check the tab is signed in and showing the chat site, then press **Check status**. The line under each platform says how many registered ports are reachable and how many are showing the site, which separates "not started" from "started but signed out". |
-| `npm run browser:debug` starts every browser when you asked for one | Flags have to reach through two npm hops. From the repo root the form is `npm run browser:debug -- --port 9333 --site claude-web`; without the `--`, npm eats `--port` as its own option and the script falls back to starting the whole registered list. |
+| `npm run browser:debug` starts every browser when you asked for one | Flags have to reach through two npm hops. From the repo root the form is `npm run browser:debug -- --port 9333 --site claude-web`; without the `--`, npm eats `--port` as its own option and the script never sees it. The script itself accepts either `--port 9333` or `--port=9333`, and refuses any flag it does not recognise rather than quietly falling back to starting everything - so if it *did* start the whole list, the flags did not reach it. |
 | `npm run browser:debug` says `No database at ...` | It could not find the settings database, so nothing is registered from its point of view and it used the `.env` defaults. Usually `DB_DIR` differs between your shell and the backend - or the backend runs in a container and its database is in there. Name the browser you want instead: `npm run browser:debug -- --port 9222 --site claude-web`. |
 | A free provider says a request `waited its whole time budget for a free tab` | Its browsers were all busy for the whole call. Nothing was refused for queue length - there is no limit - the request simply ran out of its own time. Add another browser for that site: each one runs one more request at a time. |
 | `npm run browser:debug` says `nothing is listening on port ...` | Usually another window of that browser is already running with the same profile: Chrome then opens a tab in the existing window and never opens the port. Close every window of it and run it again - a port that already has a browser on it is reused, not started twice. On a server with no display, Chrome exits at once - set `AI_WEB_BROWSER_ARGS=--headless=new --no-sandbox`, noting that a headless browser cannot be signed in to by hand and so only works against a profile that already is. |

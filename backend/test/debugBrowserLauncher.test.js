@@ -24,6 +24,7 @@ const {
   assertUsablePort,
   buildBrowserArgv,
   defaultProfileDirFor,
+  parseArgs,
   sanitizeBrowserArgs,
   STARTUP_WAIT_MS,
 } = require('../dist/scripts/launchDebugBrowsers');
@@ -215,4 +216,68 @@ test('a profile directory is per port on every platform', () => {
   const dir = defaultProfileDirFor(9222);
   assert.ok(path.isAbsolute(dir), 'an absolute path, so it does not depend on the cwd');
   assert.ok(dir.startsWith(os.homedir()), 'and under the home directory');
+});
+
+
+/**
+ * The command line.
+ *
+ * These exist because their absence cost a real bug. The launcher's parser read
+ * only `--port 9333`, so `--port=9333` matched nothing, both flags came back
+ * unset, and the script took its "no flags given" branch and started EVERY
+ * registered browser instead of the one asked for - silently, and past a full
+ * green suite, a typecheck and an end-to-end run against a real Chrome, because
+ * every one of those used the space form. Nothing covered the parser at all.
+ */
+
+test('both flag shapes mean the same thing', () => {
+  const spaced = parseArgs(['--port', '9333', '--site', 'claude-web']);
+  const equals = parseArgs(['--port=9333', '--site=claude-web']);
+
+  assert.deepEqual(spaced, equals, '--port=9333 and --port 9333 must not diverge');
+  assert.equal(equals.port, '9333');
+  assert.equal(equals.site, 'claude-web');
+});
+
+test('an unrecognised flag stops the run instead of starting everything', () => {
+  // The failure mode this guards is specific and nasty: ANY flag the parser
+  // does not understand leaves port and site unset, which reads as "no flags
+  // given", which means "start every registered browser". A typo should not
+  // open three windows.
+  for (const args of [['--prot', '9333'], ['--port', '9333', '--stie', 'claude-web'], ['--porrt=9333']]) {
+    assert.throws(
+      () => parseArgs(args),
+      (error) => {
+        assert.ok(error instanceof DebugBrowserError);
+        assert.match(error.message, /is not a flag this script knows/);
+        return true;
+      },
+      `must refuse ${args.join(' ')}`
+    );
+  }
+
+  // And a bare value with no flag in front of it.
+  assert.throws(() => parseArgs(['9333']), /not something this script takes on its own/);
+});
+
+test('the bare flags read the same either way', () => {
+  assert.equal(parseArgs(['--list']).list, true);
+  assert.equal(parseArgs(['--help']).help, true);
+  assert.equal(parseArgs(['-h'.replace('-h', '--h')]).help, true);
+  assert.equal(parseArgs([]).list, false);
+
+  // Registration is on unless it is turned off, so the common case needs no flag.
+  assert.equal(parseArgs(['--port', '9333', '--site', 'claude-web']).register, true);
+  assert.equal(parseArgs(['--port', '9333', '--site', 'claude-web', '--no-register']).register, false);
+});
+
+test('a value flag with nothing after it does not swallow the next flag', () => {
+  // `--port --site claude-web` must not read "--site" as the port.
+  const parsed = parseArgs(['--port', '--site', 'claude-web']);
+  assert.equal(parsed.port, undefined);
+  assert.equal(parsed.site, 'claude-web');
+});
+
+test('an empty value is absent rather than an empty string', () => {
+  assert.equal(parseArgs(['--port=']).port, undefined);
 });

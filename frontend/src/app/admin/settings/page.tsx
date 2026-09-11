@@ -427,6 +427,12 @@ export default function AdminSettingsPage() {
       `Registered ${getAIProviderLabel(newBrowserSite)} on port ${port}. Run npm run browser:debug to start it.`
     );
     setNewBrowserPort('');
+    // Re-read, because the row list and the Active panel come from different
+    // places: the rows render the form, which has just changed, and the panel
+    // renders the server's report, which has not. Without this the panel keeps
+    // saying "no debug port registered" directly under the row that was just
+    // registered. Not awaited - the panel says "Checking..." while it settles.
+    void refreshDebugBrowsers();
   };
 
   const unregisterBrowser = async (port: number) => {
@@ -437,6 +443,7 @@ export default function AdminSettingsPage() {
       { browserChatEndpoints: form.browserChatEndpoints.filter((entry) => entry.port !== port) },
       `Unregistered port ${port}. A browser already running on it is not closed.`
     );
+    void refreshDebugBrowsers();
   };
 
   const handleSaveProviders = async () => {
