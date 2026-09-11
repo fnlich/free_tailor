@@ -2,6 +2,66 @@ import type { Page } from 'puppeteer';
 import type { ChatMessage } from './conversation';
 
 /**
+ * How long a single `Input.insertText` may take, given how much it carries.
+ *
+ * It needs its own number because the connection is opened with a
+ * `protocolTimeout` of 30s (see `session.ts`), and that cap is per COMMAND for
+ * every command alike - sized for a DOM read, which is milliseconds. Inserting
+ * a prompt is not a DOM read. The command returns only once the page has
+ * finished reacting to it, and both chat sites react a great deal: a
+ * `beforeinput` handler, a rich-text model rebuilt from the new value, a React
+ * render of the result, and a token estimate over the whole composer.
+ *
+ * That is why the FIRST call of a session worked and the second did not, which
+ * is exactly what this looked like from outside. The job analysis prompt is
+ * just the job description. The tailoring prompt is the profile, the analysis
+ * and the keyword lists together - some 27,000 characters - and the site's
+ * per-input work on it crosses 30s, so puppeteer cancelled a command the page
+ * was still busy completing.
+ *
+ * Measured: `Input.insertText` of 64KB into a plain textarea takes 32ms, so the
+ * size itself is never the cost - the page's handlers are. The budget is
+ * therefore mostly a floor, with a per-character term so a genuinely enormous
+ * prompt is not cut off just under the line.
+ */
+const INSERT_FLOOR_MS = 90_000;
+const INSERT_PER_CHAR_MS = 2;
+const INSERT_CEILING_MS = 240_000;
+
+export function insertBudgetMs(textLength: number): number {
+  return Math.min(INSERT_CEILING_MS, INSERT_FLOOR_MS + textLength * INSERT_PER_CHAR_MS);
+}
+
+/**
+ * Same reasoning as the insert budget, for emptying the composer.
+ *
+ * Select-all-and-delete over a composer that already holds a prompt this size
+ * is the same rich-text rebuild running backwards, and it is on the same path:
+ * the driver clears before it types, so a clear that hits the 30s cap fails the
+ * turn just as surely as the insert would have.
+ */
+const CLEAR_BUDGET_MS = 90_000;
+
+/**
+ * Restate a protocol timeout in terms of the page, not of puppeteer.
+ *
+ * Puppeteer's own message ends "Increase the 'protocolTimeout' setting in
+ * launch/connect calls", which is advice for whoever wrote this file and is
+ * useless to the operator reading a failed generation. By the time this budget
+ * is exhausted the page genuinely is not keeping up, and what they can do about
+ * it is on the page.
+ */
+function asPageTimeout(error: unknown, what: string, budgetMs: number): unknown {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (!/timed out/i.test(detail)) return error;
+  return new Error(
+    `The chat page did not finish ${what} within ${Math.round(budgetMs / 1000)}s. ` +
+      'The tab is loaded but too busy to accept the prompt - close its other conversations, ' +
+      'reload it, and make sure the debug browser window is not minimised.'
+  );
+}
+
+/**
  * The narrow slice of a browser page this driver needs.
  *
  * Named as an interface rather than taking a puppeteer `Page` directly so the
@@ -184,19 +244,30 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
       // which one the browser is running on.
       const cdp = await page.createCDPSession();
       try {
-        await cdp.send('Input.dispatchKeyEvent', {
-          type: 'rawKeyDown',
-          key: 'a',
-          code: 'KeyA',
-          windowsVirtualKeyCode: 65,
-          commands: ['selectAll'],
-        });
-        await cdp.send('Input.dispatchKeyEvent', {
-          type: 'keyUp',
-          key: 'a',
-          code: 'KeyA',
-          windowsVirtualKeyCode: 65,
-        });
+        // Each send carries its own budget. See CLEAR_BUDGET_MS.
+        await cdp.send(
+          'Input.dispatchKeyEvent',
+          {
+            type: 'rawKeyDown',
+            key: 'a',
+            code: 'KeyA',
+            windowsVirtualKeyCode: 65,
+            commands: ['selectAll'],
+          },
+          { timeout: CLEAR_BUDGET_MS }
+        );
+        await cdp.send(
+          'Input.dispatchKeyEvent',
+          {
+            type: 'keyUp',
+            key: 'a',
+            code: 'KeyA',
+            windowsVirtualKeyCode: 65,
+          },
+          { timeout: CLEAR_BUDGET_MS }
+        );
+      } catch (error) {
+        throw asPageTimeout(error, 'clearing the composer', CLEAR_BUDGET_MS);
       } finally {
         await cdp.detach().catch(() => undefined);
       }
@@ -207,9 +278,15 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
       // submits the half-written prompt on both sites, and a prompt this app
       // sends is many lines long. Puppeteer's Keyboard has no insert, so the
       // protocol command is used directly.
+      const budgetMs = insertBudgetMs(text.length);
       const cdp = await page.createCDPSession();
       try {
-        await cdp.send('Input.insertText', { text });
+        // The third argument is the point of this call. Without it the command
+        // inherits the connection-wide 30s cap, which a real prompt exceeds.
+        // See INSERT_FLOOR_MS.
+        await cdp.send('Input.insertText', { text }, { timeout: budgetMs });
+      } catch (error) {
+        throw asPageTimeout(error, 'accepting the prompt', budgetMs);
       } finally {
         await cdp.detach().catch(() => undefined);
       }

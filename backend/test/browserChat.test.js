@@ -1110,3 +1110,57 @@ test('a chat window is asked for sentinels; a provider that enforces JSON is not
   assert.match(sent, /No preamble/i, 'and told not to narrate, which is what it does by default');
   assert.match(sent, /trailing commas/i);
 });
+
+test('a caller who reloaded before the prompt was sent gets nothing typed on their behalf', async () => {
+  // What a reload of the builder page looks like from here: the response closes,
+  // `requestSignal` aborts, and the turn is already past `activate()`.
+  //
+  // The prompt is tens of thousands of characters of somebody's resume, salary
+  // history included. Sending it now would put it in that account's chat history
+  // permanently to produce an answer nobody can receive - and, worse, would hold
+  // the tab for the rest of the deadline, so the request the operator makes after
+  // the reload queues behind a turn that was abandoned before it started.
+  const controller = new AbortController();
+  const page = fakePage({
+    present: () => true,
+    messages: () => [],
+    // Aborted by the time the opening transcript read is done, which is where a
+    // reload during the site's own load lands.
+    onRead: (state) => {
+      if (state.reads >= 2) controller.abort();
+    },
+  });
+
+  await assert.rejects(
+    tabFor(page).ask('tailor this resume', 600_000, controller.signal),
+    (error) => {
+      assert.equal(error.kind, 'cancelled', 'not a timeout: no budget was exceeded');
+      return true;
+    }
+  );
+
+  assert.equal(page.state.typed, '', 'nothing may be left sitting in their composer');
+  assert.equal(page.state.sent, '', 'and nothing may reach their chat history');
+});
+
+test('a caller who goes away mid-answer stops the turn instead of driving the tab to its deadline', async () => {
+  const controller = new AbortController();
+  const page = fakePage({
+    present: () => true,
+    // Answers forever, so only the cancellation can end this turn.
+    messages: (_selector, state) => {
+      if (state.sentAt !== null) controller.abort();
+      return [];
+    },
+  });
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    tabFor(page).ask('tailor this resume', 600_000, controller.signal),
+    (error) => error.kind === 'cancelled'
+  );
+  assert.ok(
+    Date.now() - startedAt < 5_000,
+    'it must not sit out the deadline on behalf of a caller who has gone'
+  );
+});

@@ -503,7 +503,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
         if (analysis) {
           tailoredContent = bulkTailoring
             ? bulkTailoring.tailoredByProfileId.get(profile.id)
-            : await tailorResume(profile, analysis, selectedModel);
+            : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
         }
         collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
 
@@ -668,7 +668,8 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
             tailoredContent = await tailorResume(
               profile,
               job.analysis,
-              selectedModel
+              selectedModel,
+              requestSignal(req, res)
             );
           }
           collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
@@ -682,7 +683,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
               job.companyName,
               job.role,
               selectedModel,
-            requestSignal(req, res)
+              requestSignal(req, res)
             );
           }
 
@@ -827,7 +828,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       const tailoredContent = analysis
         ? bulkTailoring
           ? bulkTailoring.tailoredByProfileId.get(profile.id)
-          : await tailorResume(profile, analysis, selectedModel)
+          : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res))
         : undefined;
       collectUnconfirmedSkillMaps(tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
 
@@ -923,7 +924,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(profile, analysis, selectedModel);
+      tailoredContent = await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
     }
     const resolvedRole = resolveGenerationRole(role, analysis);
     if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
@@ -943,11 +944,12 @@ router.post('/generate', async (req: Request, res: Response) => {
         return tailoredContent.coverLetter.trim();
       }
       return generateCoverLetter(
-          profile,
-          companyName.trim(),
-          resolvedRole,
-          selectedModel
-        );
+        profile,
+        companyName.trim(),
+        resolvedRole,
+        selectedModel,
+        requestSignal(req, res)
+      );
     });
 
     const pathInfo = await getGeneratedOutputPath(
@@ -1081,7 +1083,7 @@ router.post('/preview', async (req: Request, res: Response) => {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(profile, analysis, selectedModel);
+      tailoredContent = await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
     }
 
     // Generate HTML preview
