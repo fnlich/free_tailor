@@ -366,6 +366,26 @@ export function matchesHost(host: string, siteHost: string): boolean {
   return host === siteHost || host.endsWith(`.${siteHost}`);
 }
 
+/**
+ * Is this tab showing the site?
+ *
+ * By host normally, and that is the important case - any conversation URL on
+ * claude.ai is the Claude tab, not just the /new the table names.
+ *
+ * A site with NO host is the other case: `AI_WEB_CLAUDE_URL` pointed at a
+ * `file:` or `data:` page, which is how this driver is exercised without a
+ * signed-in account. Matching on host alone can never find that tab, so the
+ * override silently opens a second one on every call and attaches to whichever
+ * it finds. Compared without the fragment, since the site owns that.
+ */
+export function matchesSite(pageUrl: string, site: { host: string; url: string }): boolean {
+  const host = hostOf(pageUrl);
+  if (site.host) return matchesHost(host, site.host);
+  if (host || !site.url) return false;
+  const strip = (value: string) => value.split('#')[0];
+  return strip(pageUrl) === strip(site.url);
+}
+
 /** The prompt as it goes into the composer. */
 export function composePrompt(body: string, nudge: string): string {
   const trimmed = body.trim();

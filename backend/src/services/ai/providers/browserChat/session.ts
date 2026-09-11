@@ -1,6 +1,6 @@
 import puppeteer from 'puppeteer';
 import type { Browser, Page } from 'puppeteer';
-import { hostOf, matchesHost } from './conversation';
+import { hostOf, matchesHost, matchesSite } from './conversation';
 import { wrapPuppeteerPage } from './page';
 import { ChatTab, type ChatTabOptions } from './tab';
 import type { ChatSite, ChatSiteId } from './sites';
@@ -171,7 +171,7 @@ export class BrowserChatSession {
 
     const browser = await this.connect();
     const open = await browser.pages();
-    const existing = open.find((page) => matchesHost(hostOf(page.url()), site.host));
+    const existing = open.find((page) => matchesSite(page.url(), site));
 
     const page = existing ?? (await browser.newPage());
     if (!existing) {

@@ -120,6 +120,35 @@ const ABANDONED_WAIT_MS = 35_000;
  * opposite directions, which is why this is a short fine-grained watch rather
  * than one look at a fixed moment.
  */
+/**
+ * How long to wait for the send control to become clickable.
+ *
+ * It is disabled until the site's own framework notices the composer has
+ * content, which is a re-render away - fast on an idle page, and not fast on a
+ * loaded one. Generous because the cost of waiting is a second on a turn that
+ * takes tens of them, while the cost of giving up early is the whole turn.
+ */
+/**
+ * How long to let the composer reconcile before deciding it did not hold.
+ *
+ * A rich editor renders on a later tick than the insert. Short, because this is
+ * a settle window and not a wait for anything slow.
+ */
+const COMPOSER_SETTLE_MS = 2_000;
+const COMPOSER_SETTLE_STEP_MS = 100;
+
+const SEND_ENABLE_WAIT_MS = 10_000;
+const SEND_ENABLE_STEP_MS = 100;
+
+/**
+ * How long to wait for evidence the prompt left the composer.
+ *
+ * Long enough for a site that clears the box only once the request is away,
+ * short enough that the Enter fallback still has room inside the turn budget.
+ */
+const SEND_CONFIRM_MS = 4_000;
+const SEND_CONFIRM_STEP_MS = 150;
+
 const BUSY_WATCH_MS = 1_500;
 const BUSY_WATCH_STEP_MS = 100;
 
@@ -444,28 +473,141 @@ export class ChatTab {
       );
     }
 
+    let lastSeen = '';
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await this.page.focus(composer, this.actionMs);
       await this.page.clearFocused();
       // insertText, never typing: a typed newline submits the half-written
       // prompt on both sites.
       await this.page.insertText(prompt);
-      const seen = await this.page.readText(composer);
-      if (composerHolds(prompt, seen)) break;
+      lastSeen = await this.readBackComposer(composer, prompt);
+      if (composerHolds(prompt, lastSeen)) break;
       if (attempt === 2) {
-        throw new ChatTurnError('page', 'the composer does not hold the prompt as typed, twice over');
+        // Says what it saw. "Does not hold the prompt" alone leaves the
+        // operator with nowhere to go; the first characters of what the box
+        // actually contains usually name the problem outright - a stale
+        // prompt, an empty box, or the text mangled by the editor.
+        const seen = lastSeen.trim();
+        throw new ChatTurnError(
+          'page',
+          `the ${this.site.label} composer did not hold the prompt as typed, twice over. ` +
+            (seen
+              ? `It contains ${JSON.stringify(seen.slice(0, 120))}${seen.length > 120 ? '...' : ''}.`
+              : 'It is empty, so the text never reached the editor at all.') +
+            ' Run `npm run browser:doctor -- --send` against the signed-in tab.'
+        );
       }
       this.log(`[ai] ${this.site.id}: the composer did not hold the prompt; typing it again, once`);
     }
 
-    const send = await this.firstMatch(this.site.send);
-    if (!send) {
-      // Both composers also submit on Enter. Safe here ONLY because the whole
-      // prompt, newlines included, is already in the box.
-      await this.page.pressEnter();
-      return;
+    await this.dispatch(composer, prompt);
+  }
+
+  /**
+   * Reads the composer back, giving a rich editor time to reconcile first.
+   *
+   * ProseMirror - which is what both composers are - does not put the inserted
+   * text in the DOM synchronously: it takes the `beforeinput`, updates its own
+   * document model, and re-renders on a later tick. A single read taken the
+   * instant `Input.insertText` returns therefore sees the box mid-update, which
+   * fails `composerHolds` and costs a full clear-and-retype on EVERY turn
+   * against a real editor. Measured against a ProseMirror-shaped fixture: one
+   * retry per turn without this, none with it.
+   *
+   * Polled rather than slept, so an editor that was already done costs nothing.
+   */
+  private async readBackComposer(composer: string, prompt: string): Promise<string> {
+    const expiry = this.now() + COMPOSER_SETTLE_MS;
+    let seen = '';
+    for (;;) {
+      seen = await this.page.readText(composer);
+      if (composerHolds(prompt, seen)) return seen;
+      if (this.now() >= expiry) return seen;
+      await this.sleep(Math.min(COMPOSER_SETTLE_STEP_MS, this.pollMs));
     }
-    await this.page.click(send, this.actionMs);
+  }
+
+  /**
+   * Presses send, and makes sure something actually happened.
+   *
+   * The failure this exists for is silent and total. Both sites keep the send
+   * button DISABLED until the composer has content and re-enable it on a React
+   * re-render, and a click on a disabled button is not an error: Chrome
+   * dispatches no event at all and puppeteer returns happily. So the driver
+   * would type the prompt, "click" nothing, and then poll for a reply that
+   * could never come - ending on the deadline with "showed no reply, and none
+   * of its assistant selectors matched", which sends the operator to fix
+   * selectors that were never the problem. Measured against a fixture whose
+   * button enables 1.2s after the input event, which is ordinary for a page
+   * under load: prompt inserted, zero sends, 15s to a misleading error.
+   *
+   * So: wait for the control to become usable, press it, and then CONFIRM. If
+   * nothing landed, fall back to Enter - it costs nothing when the site ignores
+   * it, and rescues the turn when the button is the broken part.
+   */
+  private async dispatch(composer: string, prompt: string): Promise<void> {
+    const before = (await this.readMessages())?.length ?? null;
+
+    const send = await this.waitForActionable(this.site.send, SEND_ENABLE_WAIT_MS);
+    if (send) {
+      await this.page.click(send, this.actionMs);
+      if (await this.sendLanded(composer, before)) return;
+      this.log(
+        `[ai] ${this.site.id}: the send control did not submit the prompt; trying Enter`
+      );
+    }
+
+    // Both composers also submit on Enter. Safe here ONLY because the whole
+    // prompt, newlines included, is already in the box - and safe to try after
+    // a click because a composer the click DID empty has nothing left to send.
+    await this.page.focus(composer, this.actionMs);
+    await this.page.pressEnter();
+    if (await this.sendLanded(composer, before)) return;
+
+    const present = await this.firstMatch(this.site.send);
+    throw new ChatTurnError(
+      'page',
+      `the prompt reached the ${this.site.label} composer but nothing sent it. ` +
+        (present
+          ? `Its send control (${present}) never became clickable - it may still be disabled, ` +
+            'hidden, or renamed - and Enter did not submit either. '
+          : `No send control matched ${JSON.stringify(this.site.send)}, and Enter did not submit. `) +
+        `Run \`npm run browser:doctor\` against the signed-in tab to see what the page offers, ` +
+        `then set ${this.site.id === 'claude-web' ? 'AI_WEB_CLAUDE_SEND' : 'AI_WEB_CHATGPT_SEND'} in .env.`
+    );
+  }
+
+  /** The first candidate that a click would actually reach, within the budget. */
+  private async waitForActionable(candidates: string[], budgetMs: number): Promise<string | null> {
+    const expiry = this.now() + budgetMs;
+    for (;;) {
+      for (const candidate of candidates) {
+        if (await this.page.isActionable(candidate)) return candidate;
+      }
+      if (this.now() >= expiry) return null;
+      await this.sleep(Math.min(SEND_ENABLE_STEP_MS, this.pollMs));
+    }
+  }
+
+  /**
+   * Did the prompt actually leave the composer?
+   *
+   * Two independent signals, because neither alone covers both sites: the
+   * composer empties on send, and the transcript grows by the user's turn.
+   * Whichever arrives first is proof enough, and requiring both would report a
+   * good send as failed on a site that does only one of them.
+   */
+  private async sendLanded(composer: string, beforeCount: number | null): Promise<boolean> {
+    const expiry = this.now() + SEND_CONFIRM_MS;
+    for (;;) {
+      if ((await this.page.readText(composer)).trim().length === 0) return true;
+      if (beforeCount !== null) {
+        const now = (await this.readMessages())?.length ?? null;
+        if (now !== null && now > beforeCount) return true;
+      }
+      if (this.now() >= expiry) return false;
+      await this.sleep(Math.min(SEND_CONFIRM_STEP_MS, this.pollMs));
+    }
   }
 
   /**

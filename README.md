@@ -196,6 +196,18 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   Running it again is safe: a port that already has a browser on it is left
   alone rather than started twice.
 
+  **If a turn fails, ask the page what it offers** rather than guessing:
+
+  ```bash
+  npm run browser:doctor            # per role: which selector matched, and how many nodes
+  npm run browser:doctor -- --send  # also drive one real round trip, step by step
+  ```
+
+  Neither site publishes a markup contract and both rename these attributes, so
+  this is the fastest way to find which of the five roles went stale. Overrides
+  go in `.env` (`AI_WEB_CLAUDE_*`, `AI_WEB_CHATGPT_*`, candidates separated by
+  `|`) and take effect on a backend restart - no rebuild.
+
   **One browser shows one chat tab**, on its own port and its own profile. That
   is not a preference: a second tab in the same window is a background tab, and
   Chrome freezes those - a DOM read against a frozen renderer never returns.
@@ -416,6 +428,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave the windows it opens open. The app never starts one for you. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
+| A browser provider types the prompt but nothing is ever sent | The site's send button is disabled until its own framework notices the composer has content, and a click on a disabled button dispatches no event at all - so this used to look like "no reply". The driver now waits for the control to become clickable and falls back to Enter, and says `nothing sent it` when neither works. Run `npm run browser:doctor -- --send` to see which control it found. |
+| Not sure whether the selectors still match the live site | `npm run browser:doctor` attaches to your signed-in tab and reports, per role, which candidate matched and how many nodes it found; `--send` drives one real round trip and says which step failed. It reads the page and sends nothing unless you pass `--send`. Every BROKEN line names the `AI_WEB_*` override that fixes it. |
 | A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
 | A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. `claude-cli` needs a Claude subscription seat signed in to the CLI on this machine; sign it in and add `AI_UNLOCKED_PROVIDERS=claude-cli` to `.env`, then restart. Use `Claude (free)` or `ChatGPT (free)` otherwise. |
 | The free Claude and ChatGPT models are missing from the model menus | An install that saved settings before those providers existed stores its own model list, which the newer seed list cannot reach. The migration on the next boot adds them; if it did not run, the backend log says why on a `[db]` line. Adding them by hand under Admin → Models works too: provider `Claude (browser)` or `ChatGPT (browser)`, model name `chat`. |

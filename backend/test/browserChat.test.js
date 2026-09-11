@@ -468,6 +468,7 @@ function fakePage(script) {
   const state = {
     url: script.url ?? 'https://claude.ai/new',
     typed: '',
+    sent: '',
     reads: 0,
     now: 0,
     sentAt: null,
@@ -489,7 +490,23 @@ function fakePage(script) {
       tick();
       return script.present(selector, state) ? 1 : 0;
     },
-    click: async () => {},
+    click: async () => {
+      // The click is what submits, so the fake has to model that: the composer
+      // empties, which is the signal `sendLanded` looks for. A fake that left
+      // the box full would make every turn here report a send that never took.
+      if (script.sendWorks === false) return;
+      // What the real sites do: the box empties and the prompt moves into the
+      // transcript. `sent` is what stays on the PAGE, which is what the refusal
+      // filter has to reckon with; `typed` is what is still in the composer,
+      // which is how the driver knows the send took.
+      state.sent = state.typed;
+      state.typed = '';
+    },
+    // Present and clickable unless a script says otherwise. `isActionable` is
+    // how the driver avoids clicking a disabled send button, which on the real
+    // sites dispatches no event at all and silently sends nothing.
+    isActionable: async (selector) =>
+      script.actionable ? script.actionable(selector, state) : script.present(selector, state),
     focus: async () => {},
     clearFocused: async () => {
       state.typed = '';
@@ -626,8 +643,8 @@ test('a usage wall is reported as a refusal, not as a broken selector', async ()
     // up instead of an answer. The prompt has to be there - a check that only
     // ever sees the wall would not prove the filter lets a real one through.
     visibleText: (state) =>
-      state.typed
-        ? `Claude\n${state.typed}\nYou've reached your usage limit. It resets at 3:00 PM.`
+      state.sent || state.typed
+        ? `Claude\n${state.sent || state.typed}\nYou've reached your usage limit. It resets at 3:00 PM.`
         : 'Claude',
   });
 
@@ -656,7 +673,8 @@ test('a turn does not call the operator\'s own resume a usage wall', async () =>
     present: (selector) => selector === '#composer' || selector === '#send',
     messages: () => [],
     // Nothing but the site's chrome and this app's own prompt - no wall.
-    visibleText: (state) => (state.typed ? `Claude\n${state.typed}\nRetry  Copy` : 'Claude'),
+    visibleText: (state) =>
+      state.sent || state.typed ? `Claude\n${state.sent || state.typed}\nRetry  Copy` : 'Claude',
   });
 
   // A job description from exactly the kind of company this app's users apply

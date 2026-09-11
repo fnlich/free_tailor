@@ -17,6 +17,17 @@ export interface ChatPage {
   /** How many nodes this selector matches right now. */
   count(selector: string): Promise<number>;
   click(selector: string, timeoutMs: number): Promise<void>;
+  /**
+   * Is the first match something a click would actually reach?
+   *
+   * Disabled, aria-disabled, or laid out with no box. The distinction matters
+   * because a click on a disabled button is not an error: Chrome dispatches no
+   * event at all and puppeteer returns happily, so the driver believes it sent
+   * a prompt that is still sitting in the composer. Both chat sites keep their
+   * send button disabled until the composer has content and re-enable it on a
+   * React re-render, which is a race this app loses on a page under load.
+   */
+  isActionable(selector: string): Promise<boolean>;
   focus(selector: string, timeoutMs: number): Promise<void>;
   /** Empties the focused composer, whatever kind of editor it is. */
   clearFocused(): Promise<void>;
@@ -78,6 +89,23 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     },
     count: (selector) => page.$$(selector).then((nodes) => nodes.length),
+    isActionable: (selector) =>
+      page
+        .$eval(selector, (node) => {
+          const element = node as unknown as {
+            hasAttribute(name: string): boolean;
+            getAttribute(name: string): string | null;
+            getClientRects(): { length: number };
+          };
+          if (element.hasAttribute('disabled')) return false;
+          if (element.getAttribute('aria-disabled') === 'true') return false;
+          // No box means nothing to click: display:none, or a node the site
+          // keeps in the tree for a state it is not currently in.
+          return element.getClientRects().length > 0;
+        })
+        // A selector that matches nothing is not actionable either, and that is
+        // the caller's cue to try the next candidate rather than to fail.
+        .catch(() => false),
     click: async (selector, timeoutMs) => {
       // Wait for it, then click the FIRST match. Clicking the handle rather
       // than the selector is what keeps a broad fallback candidate that

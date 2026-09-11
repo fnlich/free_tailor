@@ -126,11 +126,20 @@ export function isChatSiteId(value: unknown): value is ChatSiteId {
   return value === 'claude-web' || value === 'chatgpt-web';
 }
 
-function hostOf(url: string): string {
+/**
+ * A URL's hostname, or null when the URL will not parse at all.
+ *
+ * The empty string and null are different answers and the difference matters:
+ * `file:///page.html` parses fine and HAS no hostname, while `not a url` has
+ * none because it is not one. Collapsing the two makes a hostless override
+ * inherit the real site's host, and the tab lookup then searches claude.ai for
+ * a tab that is a local file - see `readChatSite`.
+ */
+function hostOf(url: string): string | null {
   try {
     return new URL(url).hostname;
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -163,7 +172,14 @@ export function readChatSite(id: ChatSiteId, env: NodeJS.ProcessEnv = process.en
     // Derived from the URL rather than fixed, so overriding the URL also moves
     // the tab lookup. Fixed, an override would send every call to a NEW tab on
     // the new host and never reuse the one the operator signed in to.
-    host: hostOf(url) || base.host,
+    //
+    // A URL with no hostname gets no hostname. `?? base.host` rather than
+    // `|| base.host`, because the empty string is the right answer for a
+    // `file:` or `data:` override and falling back there leaves the lookup
+    // hunting claude.ai for a tab showing a local file - which it never finds,
+    // so every call opens a new tab and the override cannot be used at all.
+    // Only an unparseable URL keeps the built-in host.
+    host: hostOf(url) ?? base.host,
     composer: list('COMPOSER', base.composer),
     send: list('SEND', base.send),
     busy: list('BUSY', base.busy),
