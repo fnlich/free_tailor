@@ -1,5 +1,9 @@
 import { getBrowserChatEndpoints } from '../../../../config/aiModelConfig';
-import { getProviderDescriptor } from '../../../../config/providerCatalog';
+import {
+  getProviderDescriptor,
+  providerSupportsEffort,
+  providerSupportsThinking,
+} from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
 import {
   getTabPool,
@@ -261,8 +265,8 @@ export function createBrowserChatAdapter(
     // report the loss once per call site rather than dropping it silently.
     temperature: false,
     maxOutputTokens: false,
-    effort: false,
-    thinking: false,
+    effort: providerSupportsEffort(id),
+    thinking: providerSupportsThinking(id),
     nativeJsonMode: 'none',
     // No system channel. The facade folds the system text into the head of the
     // user turn, which is the only place a chat UI has to put it.

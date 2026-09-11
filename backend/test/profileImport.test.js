@@ -204,3 +204,43 @@ test('an import lands in the database whole, or not at all', () => {
   assert.equal(repository.listProfiles({ includeDisabled: true }).length, 2, 'the failed batch wrote nothing');
   assert.equal(repository.hasProfile('profile-cy'), false, 'the row before the failure was rolled back');
 });
+
+test('an uploaded profile may group its skills, or not, or both', () => {
+  // The point of the upload is to save hand-editing a file. Accepting only one
+  // of these shapes would mean rewriting the other three by hand first.
+  const opts = { idExists: () => false, newId: () => 'gen' };
+  const only = (document) => buildImportedProfiles(document, opts)[0].profile;
+
+  const flat = only({ name: 'A', skills: ['C#', 'Python'] });
+  assert.deepEqual(flat.skills, ['C#', 'Python']);
+  assert.equal(flat.skillCategories, undefined);
+
+  const map = only({ name: 'A', skills: { Languages: ['C#'], Cloud: ['Vault'] } });
+  assert.deepEqual(map.skills, ['C#', 'Vault']);
+  assert.deepEqual(map.skillCategories, [
+    { category: 'Languages', skills: ['C#'] },
+    { category: 'Cloud', skills: ['Vault'] },
+  ]);
+
+  const grouped = only({ name: 'A', skills: [{ category: 'Languages', skills: ['C#'] }] });
+  assert.deepEqual(grouped.skillCategories, [{ category: 'Languages', skills: ['C#'] }]);
+
+  // A file whose ONLY skills field is the grouped one still has to read as a
+  // profile - the probe list decides that, and it had never heard of this field.
+  const separate = only({ name: 'A', skillCategories: [{ category: 'Languages', skills: ['C#'] }] });
+  assert.deepEqual(separate.skills, ['C#']);
+  assert.deepEqual(separate.skillCategories, [{ category: 'Languages', skills: ['C#'] }]);
+});
+
+test('a profile file still has to be a profile', () => {
+  // Adding a field to the probe list must not turn the gate off: a package.json
+  // has a name and nothing else, and became an empty profile called "my-app".
+  assert.throws(
+    () =>
+      buildImportedProfiles(
+        { name: 'my-app', version: '1.0.0', dependencies: {} },
+        { idExists: () => false, newId: () => 'gen' }
+      ),
+    /none of the fields a profile is made of/
+  );
+});

@@ -33,6 +33,10 @@ const PROFILE_FIELDS = [
   'experience',
   'strengths',
   'skills',
+  // A file that groups its skills carries this instead of, or as well as, a
+  // flat `skills` - so a profile whose only skills field is the grouped one
+  // must still read as a profile.
+  'skillCategories',
   'education',
   'certifications',
   'profileSettings',

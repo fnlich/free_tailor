@@ -38,6 +38,16 @@ export {
 } from './concurrency';
 export type { ConcurrentMapResult } from './concurrency';
 
+export {
+  describeFreeChatRouting,
+  FREE_CHAT_ROUTES,
+  HYBRID_MODEL_ID,
+  isFreeChatRoute,
+  planRoute,
+  resetFreeChatRoutingForTests,
+} from './freeChatRouting';
+export type { FreeChatRoute, FreeChatSiteStatus } from './freeChatRouting';
+
 export { getUsageSnapshot, warnOnce } from './telemetry';
 export type { UsageSnapshot } from './telemetry';
 

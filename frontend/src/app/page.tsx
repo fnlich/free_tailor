@@ -1533,6 +1533,7 @@ export default function Home() {
                   onChange={setAiOverrides}
                   models={modelSettings.aiModels}
                   providerLocks={modelSettings.providerLocks}
+                  providerTuning={modelSettings.providerTuning}
                   effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
                   thinkingModes={modelSettings.aiPreferenceDefaults.thinkingModes}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}

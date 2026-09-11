@@ -1,4 +1,10 @@
-import { getAIModelSettings, getDefaultEnabledProvider, isProviderEnabled } from '../../config/aiModelConfig';
+import {
+  getAIModelSettings,
+  getDefaultEnabledProvider,
+  isBrowserChatSiteId,
+  isProviderEnabled,
+  type BrowserChatSiteId,
+} from '../../config/aiModelConfig';
 import {
   coerceProviderId,
   getProviderLabel,
@@ -6,7 +12,16 @@ import {
   isProviderLocked,
 } from '../../config/providerCatalog';
 import type { AIProvider } from '../../types/template';
-import { AIProviderError } from './errors';
+import { AIProviderError, isAIProviderError } from './errors';
+import {
+  isFailoverKind,
+  noteFreeChatAttempt,
+  noteFreeChatFailure,
+  noteFreeChatSuccess,
+  planRoute,
+  freeChatSiteLabel,
+  type FreeChatRoute,
+} from './freeChatRouting';
 import { resolvePromptByExactId, resolvePromptByRuntimeId } from '../promptService';
 import { assemblePrompt, assembleRawPrompt, JSON_ONLY_SYSTEM_PROMPT,
   JSON_SENTINEL_SYSTEM_PROMPT, type AssembledPrompt, type PromptRef } from './promptAssembly';
@@ -48,6 +63,16 @@ export type PromptExecutionConfig = {
    * back.
    */
   explicit?: boolean;
+  /**
+   * True when `provider` is only the caller's fallback and may therefore be
+   * swapped for the other free chat account under a hybrid route.
+   *
+   * False when a PROMPT RECORD named the provider. That is a choice somebody
+   * made about this prompt specifically, and a route is a default about the
+   * profile - the narrower statement wins, or an admin who pinned one prompt to
+   * one account would find it silently running somewhere else.
+   */
+  routable?: boolean;
 };
 
 /**
@@ -75,7 +100,12 @@ function configFromRecord(
 ): PromptExecutionConfig {
   const provider = coerceProviderId(record?.modelProvider);
   if (!provider || !record?.modelName) {
-    return { provider: fallbackProvider, modelName: fallbackModelName, explicit: explicitFallback };
+    return {
+      provider: fallbackProvider,
+      modelName: fallbackModelName,
+      explicit: explicitFallback,
+      routable: true,
+    };
   }
 
   // An override naming a provider this installation cannot run is read as no
@@ -91,10 +121,15 @@ function configFromRecord(
         'being ignored and those prompts run on the model chosen in the UI instead. Clear it under ' +
         'Admin -> Prompts to silence this.'
     );
-    return { provider: fallbackProvider, modelName: fallbackModelName, explicit: explicitFallback };
+    return {
+      provider: fallbackProvider,
+      modelName: fallbackModelName,
+      explicit: explicitFallback,
+      routable: true,
+    };
   }
 
-  return { provider, modelName: record.modelName, explicit: true };
+  return { provider, modelName: record.modelName, explicit: true, routable: false };
 }
 
 export type CreatePromptCompletionInput = {
@@ -137,6 +172,8 @@ export type CreatePromptCompletionInput = {
   thinking?: ThinkingMode;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** The profile's free-chat route, so a hybrid call can use both accounts. */
+  route?: FreeChatRoute;
 };
 
 async function runAssembled(
@@ -153,6 +190,7 @@ async function runAssembled(
     timeoutMs?: number;
     signal?: AbortSignal;
     appendToUserBody?: string;
+    route?: FreeChatRoute;
   }
 ): Promise<CompletionResult> {
   const settings = await getAIModelSettings();
@@ -196,64 +234,152 @@ async function runAssembled(
     provider = alternative;
   }
 
-  const adapter = getAdapter(provider);
-  const modelName = config.explicit && config.modelName ? config.modelName : adapter.defaultModelName();
-
   const userBody = input.appendToUserBody
     ? `${assembled.userBody}\n\n${input.appendToUserBody}`
     : assembled.userBody;
 
-  // A provider with no system channel gets everything in one turn, so no
-  // instruction is silently dropped for it. The previous flat Anthropic path
-  // dropped the JSON-only instruction entirely, which is why the one caller
-  // that used it had no JSON enforcement at all.
-  const foldSystem = !adapter.capabilities.systemBlocks;
-  // Which JSON instruction, decided by what the TRANSPORT can enforce.
+  // ONE deadline for the whole call, shared by every attempt.
   //
-  // A provider with a native JSON mode is already constrained and needs only to
-  // be told not to narrate; asking it for sentinels would put them inside the
-  // JSON it is obliged to emit and break the one output that was guaranteed to
-  // parse. A chat window enforces nothing, so it gets the long instruction and
-  // the sentinels the extractor keys on.
-  const volatileSystem =
-    input.responseFormat === 'json'
-      ? adapter.capabilities.nativeJsonMode === 'none'
-        ? JSON_SENTINEL_SYSTEM_PROMPT
-        : JSON_ONLY_SYSTEM_PROMPT
-      : '';
+  // Not one per attempt, which is the obvious reading of "try the other
+  // account" and is wrong: two attempts at a five-minute budget is a ten-minute
+  // call, and the caller that set the budget - and the operator watching a page
+  // that has not come back - has no idea it could take twice as long. Failing
+  // over buys a second chance with the time that is left, not more time.
+  const deadline = createDeadline(input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-  const request: CompletionRequest = {
-    modelName,
-    stableSystem: foldSystem ? '' : assembled.stableSystem,
-    volatileSystem: foldSystem ? '' : volatileSystem,
-    userBody: foldSystem
-      ? [volatileSystem, assembled.stableSystem, userBody].filter(Boolean).join('\n\n')
-      : userBody,
-    responseFormat: input.responseFormat,
-    // A schema only reaches a provider that can enforce one natively.
-    jsonSchema: adapter.capabilities.nativeJsonMode === 'json-schema' ? input.jsonSchema : undefined,
-    // Sampling hints are passed through UNFILTERED and on purpose. The adapter
-    // owns the decision, because only it can report what it had to drop;
-    // stripping them here would make the loss invisible again.
-    sampling: {
-      maxOutputTokens: input.maxTokens,
-      temperature: input.temperature,
-    },
-    effort: isEffortLevel(input.effort) ? input.effort : undefined,
-    thinking: isThinkingMode(input.thinking) ? input.thinking : undefined,
-    deadline: createDeadline(input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-    signal: input.signal,
-    callSite: input.callSite,
+  const buildRequest = (attemptProvider: AIProvider): { request: CompletionRequest; modelName: string } => {
+    const adapter = getAdapter(attemptProvider);
+    // The model name comes from THIS provider, never carried over. A failover
+    // is to a different account with a different adapter, and the name the
+    // first one wanted means nothing to the second.
+    const modelName =
+      config.explicit && config.modelName && attemptProvider === config.provider
+        ? config.modelName
+        : adapter.defaultModelName();
+
+    // A provider with no system channel gets everything in one turn, so no
+    // instruction is silently dropped for it. The previous flat Anthropic path
+    // dropped the JSON-only instruction entirely, which is why the one caller
+    // that used it had no JSON enforcement at all.
+    const foldSystem = !adapter.capabilities.systemBlocks;
+    // Which JSON instruction, decided by what the TRANSPORT can enforce.
+    //
+    // A provider with a native JSON mode is already constrained and needs only
+    // to be told not to narrate; asking it for sentinels would put them inside
+    // the JSON it is obliged to emit and break the one output that was
+    // guaranteed to parse. A chat window enforces nothing, so it gets the long
+    // instruction and the sentinels the extractor keys on.
+    const volatileSystem =
+      input.responseFormat === 'json'
+        ? adapter.capabilities.nativeJsonMode === 'none'
+          ? JSON_SENTINEL_SYSTEM_PROMPT
+          : JSON_ONLY_SYSTEM_PROMPT
+        : '';
+
+    return {
+      modelName,
+      request: {
+        modelName,
+        stableSystem: foldSystem ? '' : assembled.stableSystem,
+        volatileSystem: foldSystem ? '' : volatileSystem,
+        userBody: foldSystem
+          ? [volatileSystem, assembled.stableSystem, userBody].filter(Boolean).join('\n\n')
+          : userBody,
+        responseFormat: input.responseFormat,
+        // A schema only reaches a provider that can enforce one natively.
+        jsonSchema:
+          adapter.capabilities.nativeJsonMode === 'json-schema' ? input.jsonSchema : undefined,
+        // Sampling hints are passed through UNFILTERED and on purpose. The
+        // adapter owns the decision, because only it can report what it had to
+        // drop; stripping them here would make the loss invisible again.
+        sampling: {
+          maxOutputTokens: input.maxTokens,
+          temperature: input.temperature,
+        },
+        effort: isEffortLevel(input.effort) ? input.effort : undefined,
+        thinking: isThinkingMode(input.thinking) ? input.thinking : undefined,
+        deadline,
+        signal: input.signal,
+        callSite: input.callSite,
+      },
+    };
   };
 
-  try {
-    const result = await adapter.complete(request);
-    recordCompletion(input.callSite, modelName, result);
-    return result;
-  } catch (error) {
-    recordFailure(input.callSite, provider, modelName);
-    throw error;
+  const attempts = planAttempts(provider, config, input.route);
+
+  let lastError: unknown;
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attemptProvider = attempts[index];
+    const { request, modelName } = buildRequest(attemptProvider);
+    if (isBrowserChatSiteId(attemptProvider)) noteFreeChatAttempt(attemptProvider);
+
+    try {
+      const result = await getAdapter(attemptProvider).complete(request);
+      recordCompletion(input.callSite, modelName, result);
+      if (isBrowserChatSiteId(attemptProvider)) noteFreeChatSuccess(attemptProvider);
+      return result;
+    } catch (error) {
+      recordFailure(input.callSite, attemptProvider, modelName);
+      lastError = error;
+
+      const providerError = isAIProviderError(error) ? error : null;
+      const kind = providerError?.kind ?? null;
+      if (isBrowserChatSiteId(attemptProvider) && providerError && kind) {
+        noteFreeChatFailure(attemptProvider, kind, providerError.detail || providerError.message);
+      }
+
+      const next = attempts[index + 1];
+      if (!next) break;
+      // Only a failure OF THE ACCOUNT moves to the other one. A prompt that
+      // came back unparseable, a caller that cancelled, or a budget that ran
+      // out would fail the same way twice - and the second attempt would have
+      // spent whatever time the first one left.
+      if (!kind || !isFailoverKind(kind)) break;
+      if (deadline.remainingMs() <= 0) break;
+
+      warnOnce(
+        `freeChatFailover:${attemptProvider}->${next}:${kind}`,
+        `${freeChatSiteLabel(attemptProvider as BrowserChatSiteId)} could not take this call ` +
+          `(${kind}); the hybrid route is sending it to ${freeChatSiteLabel(next as BrowserChatSiteId)} ` +
+          'instead. Both accounts are used in turn, so this is not an error on its own.'
+      );
+    }
   }
+
+  throw lastError;
+}
+
+/**
+ * Which accounts this call may try, in order.
+ *
+ * One, except for a hybrid route on a call whose provider was not pinned by a
+ * prompt record - and even then only the free chat accounts are candidates:
+ * failing a metered API call over to a chat window, or the reverse, would
+ * change what the caller is paying and what it is talking to.
+ *
+ * The order is asked for HERE, at send time, and not taken from the provider
+ * the choice resolved to. The two are usually the same and the difference is
+ * the point: one `AiChoice` is resolved per generation and then used for three
+ * calls, so leading with its provider would send all three to the same account
+ * - and, worse, keep sending them there after the first one came back walled.
+ * Measured against the cooldown that call recorded: two calls, two failures,
+ * one for each time the executor re-asked an account that had already said no.
+ *
+ * The resolved provider is kept in the list rather than replaced, because on an
+ * install where the OTHER site has no model configured it is the only account
+ * that can answer at all.
+ */
+function planAttempts(
+  provider: AIProvider,
+  config: PromptExecutionConfig,
+  route?: FreeChatRoute
+): AIProvider[] {
+  if (route !== 'hybrid') return [provider];
+  if (config.routable === false) return [provider];
+  if (!isBrowserChatSiteId(provider)) return [provider];
+
+  const planned = planRoute('hybrid');
+  return [...planned, ...(planned.includes(provider) ? [] : [provider])];
 }
 
 /**
@@ -287,6 +413,7 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
     timeoutMs: input.timeoutMs,
     signal: input.signal,
     appendToUserBody: input.appendToUserBody,
+    route: input.route,
   });
 
   return result.text;
@@ -306,6 +433,7 @@ export type CreateRawCompletionInput = {
   thinking?: ThinkingMode;
   timeoutMs?: number;
   signal?: AbortSignal;
+  route?: FreeChatRoute;
 };
 
 /**
@@ -322,6 +450,7 @@ export async function createRawCompletion(input: CreateRawCompletionInput): Prom
       // The bid assistant has no provider setting of its own, so an unnamed
       // provider here is the default rather than a choice.
       explicit: Boolean(input.provider),
+      routable: true,
     },
     {
       callSite: input.callSite,
@@ -333,6 +462,7 @@ export async function createRawCompletion(input: CreateRawCompletionInput): Prom
       thinking: input.thinking,
       timeoutMs: input.timeoutMs,
       signal: input.signal,
+      route: input.route,
     }
   );
   return result.text;

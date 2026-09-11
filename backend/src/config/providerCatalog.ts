@@ -39,6 +39,21 @@ export type ProviderDescriptor = {
     | 'openaiEnabled'
     | 'deepseekEnabled'
     | null;
+  /**
+   * Whether the effort and thinking knobs reach the model at all.
+   *
+   * Here, with the provider's other facts, rather than only on the adapter,
+   * because the UI needs it and the adapter is not reachable from the settings
+   * layer. Each adapter reads its own capabilities from this, so the answer a
+   * picker greys a select with is the same one the transport acts on.
+   *
+   * The chat providers are the reason this exists. A chat window has no effort
+   * flag and no thinking budget: there is nowhere to put either. Offering the
+   * two selects anyway meant a profile could be saved asking for `effort=max`
+   * on ChatGPT, where it changed nothing and said nothing.
+   */
+  supportsEffort: boolean;
+  supportsThinking: boolean;
   /** Environment variable holding this provider's key, or null when keyless. */
   envKeyVar: string | null;
   requiresApiKey: boolean;
@@ -82,6 +97,8 @@ export const PROVIDER_CATALOG = {
     id: 'claude-cli',
     label: 'Claude (subscription)',
     summary: 'Runs the local `claude` CLI on the signed-in subscription seat. No API key, no metered tokens.',
+    supportsEffort: true,
+    supportsThinking: true,
     legacyEnabledField: 'claudeCliEnabled',
     envKeyVar: null,
     requiresApiKey: false,
@@ -97,6 +114,8 @@ export const PROVIDER_CATALOG = {
     id: 'claude',
     label: 'Anthropic API',
     summary: 'Anthropic Messages API with an API key. Billed per token.',
+    supportsEffort: false,
+    supportsThinking: false,
     legacyEnabledField: 'claudeEnabled',
     envKeyVar: 'ANTHROPIC_API_KEY',
     requiresApiKey: true,
@@ -109,6 +128,8 @@ export const PROVIDER_CATALOG = {
     id: 'openai',
     label: 'OpenAI',
     summary: 'OpenAI chat completions with an API key. Billed per token.',
+    supportsEffort: false,
+    supportsThinking: false,
     legacyEnabledField: 'openaiEnabled',
     envKeyVar: 'OPENAI_API_KEY',
     requiresApiKey: true,
@@ -121,6 +142,8 @@ export const PROVIDER_CATALOG = {
     id: 'deepseek',
     label: 'DeepSeek',
     summary: 'DeepSeek chat completions with an API key. Billed per token.',
+    supportsEffort: false,
+    supportsThinking: false,
     legacyEnabledField: 'deepseekEnabled',
     envKeyVar: 'DEEPSEEK_API_KEY',
     requiresApiKey: true,
@@ -134,6 +157,8 @@ export const PROVIDER_CATALOG = {
     label: 'Claude (free)',
     summary:
       'Drives claude.ai in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
+    supportsEffort: false,
+    supportsThinking: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -147,6 +172,8 @@ export const PROVIDER_CATALOG = {
     label: 'ChatGPT (free)',
     summary:
       'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
+    supportsEffort: false,
+    supportsThinking: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -289,4 +316,54 @@ export function coerceProviderId(value: unknown): AIProvider | null {
 /** Test seam: lets a test assert the alias warning fires exactly once. */
 export function resetProviderAliasWarningsForTests(): void {
   warnedAliases.clear();
+}
+
+/**
+ * The two chat sites this app drives in a browser.
+ *
+ * Here rather than with the app settings that store them, because the routing
+ * layer needs the list and the settings layer needs the routing - and with the
+ * list in the settings module those two imported each other.
+ */
+export type BrowserChatSiteId = Extract<AIProvider, 'claude-web' | 'chatgpt-web'>;
+
+export const BROWSER_CHAT_SITE_IDS: readonly BrowserChatSiteId[] = ['claude-web', 'chatgpt-web'];
+
+export function isBrowserChatSiteId(value: unknown): value is BrowserChatSiteId {
+  return value === 'claude-web' || value === 'chatgpt-web';
+}
+
+/**
+ * The reserved model id that means "use both free chat accounts".
+ *
+ * It lives here, with the provider catalog, rather than with the routing logic
+ * that acts on it, because the two things that need it sit on opposite sides of
+ * that logic: the model list has to OFFER it, and the choice resolver has to
+ * RECOGNISE it. Putting it in the routing module made those two import each
+ * other through it.
+ *
+ * It is deliberately not a row in `aiModels`. There is no provider to call and
+ * no model name to send, and an admin editing or deleting such a row would
+ * leave every profile that picked it pointing at nothing.
+ */
+export const HYBRID_MODEL_ID = 'free-hybrid';
+
+export const HYBRID_MODEL_LABEL = 'Hybrid (free) \u2014 Claude and ChatGPT';
+
+export const HYBRID_MODEL_DESCRIPTION =
+  'Spreads calls across both free chat accounts and moves to the other one when ' +
+  'either is out of messages, signed out, or has no browser running.';
+
+export function isHybridModelId(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() === HYBRID_MODEL_ID;
+}
+
+/** Does this provider honour the effort knob? Used by pickers and adapters alike. */
+export function providerSupportsEffort(id: AIProvider): boolean {
+  return getProviderDescriptor(id).supportsEffort;
+}
+
+/** Does this provider honour the thinking knob? */
+export function providerSupportsThinking(id: AIProvider): boolean {
+  return getProviderDescriptor(id).supportsThinking;
 }

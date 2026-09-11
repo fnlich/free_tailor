@@ -34,13 +34,26 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
   const accentColor = '#2B5C8A';
   const sectionStyle = `margin: 5pt 0 6pt 0; font-size: 11pt; font-weight: bold; color: ${accentColor}; border-bottom: 1px solid ${accentColor}; padding-bottom: 2pt;`;
   const skillCategories = data.skillCategories ?? [];
+  const skillParagraph = (body: string, gap: string) =>
+    `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 ${gap} 0; line-height: 1.35;">${body}</p>`;
   const technicalSkillsHtml = skillCategories.length > 0
     ? skillCategories
-      .map((group) => `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 4pt 0; line-height: 1.35;"><strong>${esc(group.category)}</strong><br>${esc(group.skills.join(', '))}</p>`)
+      .map((group) => {
+        // The flat layout arrives as one group whose heading is empty. Emitting
+        // the <strong> and the <br> anyway would open the skills with a blank
+        // bold line - and in Word, unlike a browser, that line takes up a whole
+        // row of the page.
+        const heading = esc(group.category ?? '');
+        return skillParagraph(
+          heading ? `<strong>${heading}</strong><br>${esc(group.skills.join(', '))}` : esc(group.skills.join(', ')),
+          heading ? '4pt' : '14pt'
+        );
+      })
       .join('\n  ')
-    : `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 14pt 0; line-height: 1.35;">${esc(
-      [...(data.hardSkills ?? data.skills ?? []), ...(data.softSkills ?? [])].filter(Boolean).join(', ')
-    )}</p>`;
+    : skillParagraph(
+      esc([...(data.hardSkills ?? data.skills ?? []), ...(data.softSkills ?? [])].filter(Boolean).join(', ')),
+      '14pt'
+    );
 
   let html = `
 <!DOCTYPE html>

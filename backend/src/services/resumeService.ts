@@ -1932,6 +1932,7 @@ export async function analyzeJobDescription(
     fallbackModelName: modelName,
     effort: choice.effort,
     thinking: choice.thinking,
+    route: choice.route,
     maxTokens: 7000,
     temperature: 0,
     responseFormat: 'json',
@@ -2083,6 +2084,7 @@ export async function tailorResume(
     fallbackModelName: modelName,
     effort: choice.effort,
     thinking: choice.thinking,
+    route: choice.route,
     maxTokens: 11000,
     temperature: 0.2,
     responseFormat: 'json',
@@ -2131,6 +2133,7 @@ export async function generateCoverLetter(
     fallbackModelName: choice.modelName,
     effort: choice.effort,
     thinking: choice.thinking,
+    route: choice.route,
     maxTokens: 1500,
     // The only caller that wants sampling variety rather than determinism.
     // The CLI provider cannot honour it and says so once; pin this prompt to

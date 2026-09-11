@@ -7,10 +7,13 @@ import {
   EffortLevel,
   LOCK_ICON,
   ProviderLock,
+  ProviderTuningSupport,
   THINKING_LABELS,
   ThinkingMode,
   isEffortLevel,
   isThinkingMode,
+  providerHonours,
+  HYBRID_MODEL_ID,
 } from '@/lib/api';
 
 /**
@@ -36,6 +39,14 @@ type Props = {
    * told why they cannot.
    */
   providerLocks?: ProviderLock[];
+  /**
+   * Which providers honour effort and thinking.
+   *
+   * Empty means "not known yet", and everything stays enabled - see
+   * `providerHonours`. Greying a control on a guess is worse than offering one
+   * that turns out to be a no-op.
+   */
+  providerTuning?: ProviderTuningSupport[];
   effortLevels: EffortLevel[];
   thinkingModes: ThinkingMode[];
   inherited: InheritedAiChoice;
@@ -51,8 +62,21 @@ const SELECT_CLASS =
   'dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100';
 
 const LABEL_CLASS = 'block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1';
+const DISABLED_LABEL_CLASS =
+  'block text-sm font-medium text-gray-400 dark:text-gray-500 mb-1';
 const HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
-const LOCK_HINT_CLASS = 'mt-1 text-xs text-amber-700 dark:text-amber-400';
+/**
+ * The locked-provider note, as plain running text.
+ *
+ * It used to be an amber panel with a border and a padlock, which made four
+ * lines of explanation read as an alarm - and this is not an alarm. Nothing is
+ * broken and nothing needs doing: a provider this build does not offer is a
+ * fact about the installation, and the sentence is there so the greyed row in
+ * the menu above is not a mystery. Quiet grey text under the field it explains
+ * says that; a coloured box shouting at somebody who has done nothing wrong
+ * does not.
+ */
+const LOCK_HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
 
 /**
  * The model, effort and thinking selects.
@@ -67,6 +91,7 @@ export default function AiPreferenceFields({
   onChange,
   models,
   providerLocks = [],
+  providerTuning = [],
   effortLevels,
   thinkingModes,
   inherited,
@@ -86,6 +111,44 @@ export default function AiPreferenceFields({
     lockedModels.some((entry) => entry.lock.id === lock.id)
   );
 
+  /**
+   * Which provider this profile's calls will reach, for the two knobs below.
+   *
+   * Hybrid names no single provider, and both of the free accounts it routes
+   * between answer the same way - neither has an effort flag or a thinking
+   * budget - so it is read as a chat window rather than as "unknown".
+   *
+   * A blank model means INHERIT, and what it inherits is not known here: the
+   * app default is a server-side setting this component is not given. So it
+   * stays permissive, on the same reasoning as `providerHonours` - a control
+   * greyed on a guess stops somebody choosing something that would have worked.
+   */
+  const chosenModel = models.find((model) => model.id === value.modelId);
+  const chosenProvider =
+    value.modelId === HYBRID_MODEL_ID ? 'claude-web' : chosenModel?.provider;
+  const honoursEffort = providerHonours(providerTuning, chosenProvider, 'effort');
+  const honoursThinking = providerHonours(providerTuning, chosenProvider, 'thinking');
+  const notTunable = chosenModel
+    ? `${chosenModel.name} is a chat window, which has no such setting.`
+    : 'The chosen model is a chat window, which has no such setting.';
+
+  /**
+   * Changing the model drops a knob the new one cannot honour.
+   *
+   * Not merely cosmetic. The select below shows "Use the app default" while it
+   * is inactive, so leaving a stored `effort=max` behind would have the form
+   * SAY one thing and SEND another - and the stale value would come back the
+   * moment somebody switched to a model that does honour it, as a setting they
+   * do not remember making.
+   */
+  const chooseModel = (modelId: string) => {
+    const next: AiPreferences = { ...value, modelId: modelId || undefined };
+    const provider = modelId === HYBRID_MODEL_ID ? 'claude-web' : models.find((model) => model.id === modelId)?.provider;
+    if (!providerHonours(providerTuning, provider, 'effort')) delete next.effort;
+    if (!providerHonours(providerTuning, provider, 'thinking')) delete next.thinking;
+    onChange(next);
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       <div>
@@ -96,9 +159,7 @@ export default function AiPreferenceFields({
           id={`${idPrefix}-model`}
           value={value.modelId ?? ''}
           disabled={disabled}
-          onChange={(event) =>
-            onChange({ ...value, modelId: event.target.value || undefined })
-          }
+          onChange={(event) => chooseModel(event.target.value)}
           className={SELECT_CLASS}
         >
           <option value="">{inheritOption(inherited.modelLabel)}</option>
@@ -118,20 +179,25 @@ export default function AiPreferenceFields({
         <p className={HINT_CLASS}>Models are configured under Admin &rarr; Models.</p>
         {shownLocks.map((lock) => (
           <p key={lock.id} className={LOCK_HINT_CLASS}>
-            <span aria-hidden>{LOCK_ICON}</span> <strong>{lock.label}</strong> is locked in this
-            installation. {lock.reason}
+            {lock.label} is not available in this installation. {lock.reason}
           </p>
         ))}
       </div>
 
       <div>
-        <label className={LABEL_CLASS} htmlFor={`${idPrefix}-effort`}>
+        <label
+          className={honoursEffort ? LABEL_CLASS : DISABLED_LABEL_CLASS}
+          htmlFor={`${idPrefix}-effort`}
+        >
           Effort
         </label>
         <select
           id={`${idPrefix}-effort`}
           value={value.effort ?? ''}
-          disabled={disabled}
+          // Inactive rather than hidden. A control that vanishes when you change
+          // the model above it reads as a bug; one that is greyed with a reason
+          // reads as an answer.
+          disabled={disabled || !honoursEffort}
           onChange={(event) =>
             onChange({
               ...value,
@@ -147,17 +213,22 @@ export default function AiPreferenceFields({
             </option>
           ))}
         </select>
-        <p className={HINT_CLASS}>How much reasoning the model spends before answering.</p>
+        <p className={HINT_CLASS}>
+          {honoursEffort ? 'How much reasoning the model spends before answering.' : notTunable}
+        </p>
       </div>
 
       <div>
-        <label className={LABEL_CLASS} htmlFor={`${idPrefix}-thinking`}>
+        <label
+          className={honoursThinking ? LABEL_CLASS : DISABLED_LABEL_CLASS}
+          htmlFor={`${idPrefix}-thinking`}
+        >
           Thinking
         </label>
         <select
           id={`${idPrefix}-thinking`}
           value={value.thinking ?? ''}
-          disabled={disabled}
+          disabled={disabled || !honoursThinking}
           onChange={(event) =>
             onChange({
               ...value,
@@ -177,7 +248,9 @@ export default function AiPreferenceFields({
             the useful choice is whether to allow it, not how much - depth is
             what effort controls. */}
         <p className={HINT_CLASS}>
-          Thinking is on by default and the model decides per answer. Turning it off is faster.
+          {honoursThinking
+            ? 'Thinking is on by default and the model decides per answer. Turning it off is faster.'
+            : notTunable}
         </p>
       </div>
     </div>

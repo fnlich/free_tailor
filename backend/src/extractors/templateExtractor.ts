@@ -6,6 +6,11 @@ import { Template } from '../types/template';
 import { v4 as uuidv4 } from 'uuid';
 import { getStaticTemplatesDir } from '../config/staticPaths';
 import {
+  buildImportedTemplates,
+  TemplateImportError,
+  type ImportedTemplate,
+} from '../services/templateImport';
+import {
   deleteStoredTemplate,
   getStoredTemplate,
   getTemplateOverride,
@@ -210,59 +215,45 @@ export async function updateTemplate(id: string, updates: Partial<Pick<Template,
   return updated;
 }
 
-export async function uploadJsonTemplate(
+/**
+ * Imports one file's worth of templates.
+ *
+ * Returns a list because a file may hold more than one - which is what an
+ * export of a whole set looks like, and what this refused outright until the
+ * importer below was split out.
+ *
+ * All or nothing: every entry is validated before any is saved, so a bad
+ * template halfway down a file leaves the admin list exactly as it was rather
+ * than half updated.
+ */
+export async function uploadJsonTemplates(
   jsonBuffer: Buffer,
   options?: { overrideId?: string }
-): Promise<Template> {
+): Promise<ImportedTemplate[]> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonBuffer.toString('utf-8'));
   } catch (e) {
-    throw new Error('Invalid JSON: ' + (e instanceof Error ? e.message : 'Parse error'));
+    throw new TemplateImportError(
+      `That file is not valid JSON: ${e instanceof Error ? e.message : 'it could not be parsed'}`
+    );
   }
 
-  const obj = parsed as Record<string, unknown>;
-  if (!obj || typeof obj !== 'object') {
-    throw new Error('Template must be a JSON object');
+  // Read up front, because `idExists` below is called once per entry and the
+  // built-in check is a directory read. Asking it per entry would re-read the
+  // templates directory once per template in the file.
+  const builtInIds = new Set((await listStaticTemplates()).map((template) => template.id));
+
+  const imported = buildImportedTemplates(parsed, {
+    idExists: (id) => builtInIds.has(id) || hasStoredTemplate(id),
+    newId: () => `u-${uuidv4().slice(0, 8)}`,
+    overrideId: options?.overrideId,
+  });
+
+  for (const entry of imported) {
+    saveStoredTemplate(entry.template);
   }
-
-  const name = typeof obj.name === 'string' ? obj.name.trim() : '';
-  const htmlContent = typeof obj.htmlContent === 'string' ? obj.htmlContent : '';
-  const sections = Array.isArray(obj.sections) ? obj.sections.filter((s): s is string => typeof s === 'string') : [];
-
-  if (!name) throw new Error('Template must have a "name" field');
-  if (!htmlContent || htmlContent.length < 100) {
-    throw new Error('Template must have "htmlContent" with valid HTML');
-  }
-  if (sections.length === 0) {
-    throw new Error('Template must have a "sections" array');
-  }
-
-  let id = typeof obj.id === 'string' ? normalizeTemplateId(obj.id).trim() : '';
-  if (options?.overrideId) id = normalizeTemplateId(options.overrideId).trim();
-  id = id.replace(/[^a-zA-Z0-9\-_]/g, '-');
-  if (!id || (await isBuiltInTemplate(id)) || hasStoredTemplate(id)) {
-    id = `u-${uuidv4().slice(0, 8)}`;
-  }
-
-  const now = new Date().toISOString();
-  const template: Template = {
-    id,
-    name,
-    description: typeof obj.description === 'string' ? obj.description.trim() : '',
-    disabled: typeof obj.disabled === 'boolean' ? obj.disabled : false,
-    htmlContent,
-    cssContent: typeof obj.cssContent === 'string' ? obj.cssContent : '',
-    sections,
-    createdAt: typeof obj.createdAt === 'string' ? obj.createdAt : now,
-    updatedAt: now,
-    ...(obj.manualConfig && typeof obj.manualConfig === 'object'
-      ? { manualConfig: obj.manualConfig as Template['manualConfig'] }
-      : {}),
-  };
-
-  saveStoredTemplate(template);
-  return template;
+  return imported;
 }
 
 export async function deleteTemplate(id: string): Promise<boolean> {

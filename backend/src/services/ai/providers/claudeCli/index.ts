@@ -1,4 +1,8 @@
-import { getProviderDescriptor } from '../../../../config/providerCatalog';
+import {
+  getProviderDescriptor,
+  providerSupportsEffort,
+  providerSupportsThinking,
+} from '../../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../../errors';
 import { acquireSlot, getProviderSemaphore } from '../../concurrency';
 import { warnOnce } from '../../telemetry';
@@ -72,8 +76,8 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     maxOutputTokens: false,
     // The two it does have: --effort is a documented flag, and the thinking
     // budget is set through the child's environment.
-    effort: true,
-    thinking: true,
+    effort: providerSupportsEffort(PROVIDER_ID),
+    thinking: providerSupportsThinking(PROVIDER_ID),
     nativeJsonMode: 'json-schema',
     systemBlocks: true,
     requiresApiKey: false,

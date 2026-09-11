@@ -871,7 +871,11 @@ npm run browser:debug
                       already answers "locked, and here is why", so rendering
                       the reason underneath it would just say it twice. */}
                   {lock ? (
-                    <div className="text-sm text-amber-700">{lock.reason}</div>
+                    // Plain, not amber. The badge beside the name already
+                    // carries the status; colouring the explanation as well
+                    // turns four lines of ordinary prose into an alarm about a
+                    // situation nobody can or need do anything about here.
+                    <div className="text-sm text-gray-500">{lock.reason}</div>
                   ) : (
                     <div className="text-sm text-gray-500">
                       {describeProviderHealth(health, provider, healthError)}
