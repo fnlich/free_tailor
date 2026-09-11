@@ -24,6 +24,7 @@ By default it runs on **a chat tab you are already signed in to** rather than me
 | Feature | Description |
 |---------|-------------|
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
+| **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
@@ -340,7 +341,8 @@ File and folder names are templated per profile.
 
 | Section | Purpose |
 |---------|---------|
-| **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering |
+| **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **Add Manually**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
+| **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |

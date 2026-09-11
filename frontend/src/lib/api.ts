@@ -1449,7 +1449,52 @@ export const profilesApi = {
       body: formData,
     });
   },
+
+  /**
+   * Creates profiles from an already-parsed JSON document.
+   *
+   * The file is read and parsed by `readProfileImportFile` before it gets
+   * here, so a file that is not JSON is reported without a round trip - and
+   * the server, which cannot trust any of this anyway, is the one that decides
+   * whether the parsed document is actually a profile.
+   */
+  importJson: (document: unknown) =>
+    apiFetch<ProfileImportResult>('/profiles/import', {
+      method: 'POST',
+      body: JSON.stringify(document),
+    }),
 };
+
+/** What `POST /profiles/import` reports back. */
+export interface ProfileImportResult {
+  profiles: Profile[];
+  imported: number;
+  /** How many kept the id from the file; the rest were given a new one. */
+  keptIds: number;
+}
+
+/**
+ * Reads a picked file as JSON.
+ *
+ * Its own function so that "this file is not JSON" reads as a sentence about
+ * the file rather than as whatever `JSON.parse` decided to say about position
+ * 4213 - which is the error a person actually gets when they pick a PDF from
+ * the wrong row of their downloads folder.
+ */
+export async function readProfileImportFile(file: File): Promise<unknown> {
+  let text: string;
+  try {
+    text = await file.text();
+  } catch {
+    throw new Error(`Could not read ${file.name}.`);
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`${file.name} is not valid JSON. Export a profile from this app, or check the file.`);
+  }
+}
 
 // Groups API
 export const groupsApi = {
