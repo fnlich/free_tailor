@@ -8,7 +8,15 @@ import { CreateProfileDTO } from '../types/profile';
 import { authMiddleware } from '../middleware/auth';
 import { extractProfileFromResume } from '../services/resumeService';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
-import { deleteProfile, getProfile, listProfiles, saveProfile } from '../database/profileRepository';
+import { buildImportedProfiles, ProfileImportError } from '../services/profileImport';
+import {
+  deleteProfile,
+  getProfile,
+  hasProfile,
+  listProfiles,
+  saveProfile,
+  saveProfiles,
+} from '../database/profileRepository';
 
 const router = Router();
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
@@ -97,6 +105,42 @@ router.delete('/:id', authMiddleware, (req: Request<{ id: string }>, res: Respon
     return;
   }
   res.json({ message: 'Profile deleted successfully' });
+});
+
+/**
+ * Import profiles from an uploaded JSON file (protected).
+ *
+ * The file is read and parsed in the browser and arrives here as the request
+ * body, so there is no upload to write to disk and clean up afterwards - and a
+ * file that is not JSON at all is reported before it crosses the network. The
+ * body is still treated as entirely untrusted: `buildImportedProfiles` is what
+ * decides whether any of it is a profile.
+ *
+ * Unlike /upload this costs no AI call. It is the path for moving a profile
+ * between installs, restoring one from a backup, or writing one by hand.
+ */
+router.post('/import', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const imported = buildImportedProfiles(req.body, { idExists: hasProfile, newId: uuidv4 });
+    const profiles = saveProfiles(imported.map((entry) => entry.profile));
+
+    res.status(201).json({
+      profiles,
+      imported: profiles.length,
+      keptIds: imported.filter((entry) => entry.keptId).length,
+    });
+  } catch (error) {
+    if (error instanceof ProfileImportError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    console.error('Error importing profiles:', error);
+    const message = error instanceof Error ? error.message : 'Failed to import profiles';
+    // The template validators throw for a stored file-name template the admin
+    // form would also have refused; that is the file's fault, not the server's.
+    const status = /output (token|file name|folder name)/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
 });
 
 // Upload resume PDF and extract profile (protected)

@@ -23,6 +23,11 @@ export function saveProfile(profile: Profile): Profile {
   return profiles.save(profile);
 }
 
+/** Saves a batch as one unit, so an import either lands whole or not at all. */
+export function saveProfiles(batch: Profile[]): Profile[] {
+  return profiles.saveAll(batch);
+}
+
 export function deleteProfile(id: string): boolean {
   return profiles.delete(id);
 }

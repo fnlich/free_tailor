@@ -1,7 +1,12 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { profilesApi, Profile, CreateProfileDTO } from '@/lib/api';
+import {
+  profilesApi,
+  readProfileImportFile,
+  Profile,
+  CreateProfileDTO,
+} from '@/lib/api';
 import ProfileForm from '@/components/admin/ProfileForm';
 
 export default function ProfilesPage() {
@@ -12,7 +17,9 @@ export default function ProfilesPage() {
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
+  const [notice, setNotice] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jsonInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadProfiles();
@@ -97,6 +104,7 @@ export default function ProfilesPage() {
     setIsUploading(true);
     setUploadProgress('Uploading PDF...');
     setError('');
+    setNotice('');
 
     try {
       setUploadProgress('Extracting profile information with AI...');
@@ -119,6 +127,56 @@ export default function ProfilesPage() {
 
   const triggerFileUpload = () => {
     fileInputRef.current?.click();
+  };
+
+  /**
+   * Imports profiles from a JSON file.
+   *
+   * No AI call and nothing to extract - the file already IS a profile, so this
+   * is the path for moving one between installs, restoring a backup, or
+   * writing one by hand. The server decides whether the file is really a
+   * profile and says which entry is wrong if it is not.
+   */
+  const handleJsonImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setUploadProgress(`Reading ${file.name}...`);
+    setError('');
+    setNotice('');
+
+    try {
+      // Not named `document`: that shadows the global one inside this handler,
+      // which is a trap for whatever gets added here next.
+      const parsed = await readProfileImportFile(file);
+      const result = await profilesApi.importJson(parsed);
+      await loadProfiles();
+
+      if (result.imported === 1) {
+        // Straight into the form, like the PDF path: one imported profile is
+        // something you are about to look over anyway.
+        setEditingProfile(result.profiles[0]);
+        setShowForm(true);
+      }
+
+      const reused = result.keptIds > 0 ? ` ${result.keptIds} kept the id from the file.` : '';
+      setNotice(
+        `Imported ${result.imported} profile${result.imported === 1 ? '' : 's'} from ${file.name}.${reused}`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import profiles');
+    } finally {
+      setIsUploading(false);
+      setUploadProgress('');
+      if (jsonInputRef.current) {
+        jsonInputRef.current.value = '';
+      }
+    }
+  };
+
+  const triggerJsonImport = () => {
+    jsonInputRef.current?.click();
   };
 
   if (isLoading) {
@@ -163,6 +221,24 @@ export default function ProfilesPage() {
               </>
             )}
           </button>
+          <input
+            ref={jsonInputRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={handleJsonImport}
+            className="hidden"
+          />
+          <button
+            onClick={triggerJsonImport}
+            disabled={isUploading}
+            title="Create profiles from a profile JSON file"
+            className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Import JSON
+          </button>
           <button
             onClick={openCreateForm}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
@@ -179,6 +255,12 @@ export default function ProfilesPage() {
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
           {uploadProgress}
+        </div>
+      )}
+
+      {notice && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-md mb-4">
+          {notice}
         </div>
       )}
 

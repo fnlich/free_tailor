@@ -66,6 +66,26 @@ export class DocumentTable<T extends StoredDocument> {
     return document;
   }
 
+  /**
+   * Saves several documents as one unit.
+   *
+   * An import is all-or-nothing, and a loop of `save` is not: a failure on the
+   * fourth of six leaves three rows behind with nothing to say which. The
+   * statements inside are the same ones `save` runs, so there is no second
+   * write path to keep in step.
+   */
+  saveAll(documents: T[]): T[] {
+    if (documents.length === 0) {
+      return [];
+    }
+    getDb().transaction(() => {
+      for (const document of documents) {
+        this.save(document);
+      }
+    })();
+    return documents;
+  }
+
   delete(id: string): boolean {
     const result = getDb().prepare(`DELETE FROM ${this.table} WHERE id = ?`).run(id);
     return result.changes > 0;
