@@ -153,3 +153,117 @@ test('a composer that never takes the prompt reports what it actually contains',
     );
   });
 });
+
+/**
+ * The five defects an adversarial diagnosis found after the send fix landed.
+ *
+ * Two of them return a WRONG ANSWER rather than failing, which is the worst
+ * shape a bug in this driver can take: nothing downstream can tell a tailored
+ * resume from a resume tailored to the instructions.
+ */
+
+const { isEcho, pickReply } = require('../dist/services/ai/providers/browserChat/conversation');
+
+test('a hidden duplicate of the send control does not make the real one look dead', async () => {
+  // Both sites ship a mobile and a desktop copy of the composer controls, one
+  // hidden. Judging only the FIRST match called the candidate unusable and the
+  // driver then waited out its whole 10s enable budget on a button that was
+  // ready from the start - or failed naming the send role, which was fine.
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(
+      '<button aria-label="Send message" style="display:none"></button>' +
+        '<button aria-label="Send message">Send</button>'
+    );
+    const chat = wrapPuppeteerPage(page);
+    assert.equal(await chat.count('button[aria-label="Send message"]'), 2);
+    assert.equal(
+      await chat.isActionable('button[aria-label="Send message"]'),
+      true,
+      'a clickable match behind a hidden one still makes the candidate usable'
+    );
+
+    // And the click has to land on the one that was judged, not on the first.
+    await page.evaluate(() => {
+      window.hits = 0;
+      document.querySelectorAll('button')[1].addEventListener('click', () => (window.hits += 1));
+    });
+    await chat.click('button[aria-label="Send message"]', 5_000);
+    assert.equal(await page.evaluate(() => window.hits), 1, 'the visible button was clicked');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('the echo guard survives a label above the prompt', () => {
+  // A prefix test is defeated by anything the site puts above the user's text
+  // inside a turn group - an author label, a timestamp, an Edit control - and
+  // both sites put something there. What that costs is not a missed warning:
+  // the guard passes and the PROMPT is returned as the answer.
+  const prompt = 'Tailor this resume for a Senior Backend Engineer role at Fixture Co.';
+  for (const chrome of ['', 'You\n', '2:14 PM\n', 'You\nEdit\n']) {
+    assert.equal(isEcho(prompt, `${chrome}${prompt} ...and then an answer`), true, `chrome: ${JSON.stringify(chrome)}`);
+  }
+  // And a real answer is still not an echo.
+  assert.equal(isEcho(prompt, 'Here is the tailored resume you asked for.'), false);
+});
+
+test('the reply latch holds when the site inserts a node above the answer', async () => {
+  // claude.ai publishes no per-message id, so every id came back null and the
+  // latch was dead code for it: pickReply re-picked BY POSITION every poll, and
+  // a reasoning panel appearing above the answer became the completion. The
+  // driver now tags the nodes itself.
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<div id=t><div class=m>the prompt</div><div class=m>ANSWER one</div></div>');
+    const chat = wrapPuppeteerPage(page);
+
+    const first = await chat.messages('.m', null);
+    assert.ok(first.every((message) => message.id), 'a site with no id attribute still gets identity');
+    const picked = pickReply({ count: 1, lastId: null }, first, null);
+    assert.equal(picked.reply.text, 'ANSWER one');
+
+    await page.evaluate(() => {
+      const panel = document.createElement('div');
+      panel.className = 'm';
+      panel.textContent = 'Thought for 4 seconds';
+      const list = document.getElementById('t');
+      list.insertBefore(panel, list.children[1]);
+    });
+
+    const second = await chat.messages('.m', null);
+    const again = pickReply({ count: 1, lastId: null }, second, picked.id);
+    assert.equal(again.reply.text, 'ANSWER one', 'the latch, not the position, decides');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('a click in a tab the browser is not showing is bounded, not left hanging', async () => {
+  // handle.click() takes no timeout of its own, so it was capped only by the
+  // connection-wide protocol timeout - and in a tab that is not visible it does
+  // not return at all. Measured: every read came back in milliseconds and the
+  // click threw after 30s. startFreshConversation clicks first thing in a turn,
+  // so unbounded it eats the whole budget before anything else is tried.
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<button id="go">Go</button>');
+    const hidden = await browser.newPage();
+    await hidden.bringToFront();
+
+    const chat = wrapPuppeteerPage(page);
+    const started = Date.now();
+    try {
+      await chat.click('#go', 2_000);
+    } catch {
+      // Either outcome is acceptable; what matters is that it RETURNED.
+    }
+    const took = Date.now() - started;
+    assert.ok(took < 10_000, `a click must not outlive its budget - took ${took}ms`);
+  } finally {
+    await browser.close();
+  }
+});

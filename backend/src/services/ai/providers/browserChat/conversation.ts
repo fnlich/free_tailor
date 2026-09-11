@@ -74,7 +74,14 @@ export function isEcho(sent: string, seen: string): boolean {
   // function exists to catch.
   const head = collapse(canonicalPunctuation(sent)).slice(0, 80);
   if (!head) return false;
-  return collapse(canonicalPunctuation(seen)).startsWith(head);
+  // CONTAINS, not starts-with. Both sites group a turn with its reply and put
+  // something above the user's text inside that group - an author label, a
+  // timestamp, an Edit control - and a prefix test is defeated by any one of
+  // them. Measured against this function: the bare echo matched, and the same
+  // echo behind a single "You\n" label did not. What that costs is not a
+  // missed warning: it is the guard passing, and the PROMPT being returned as
+  // the answer. A resume tailored to the instructions, with no error anywhere.
+  return collapse(canonicalPunctuation(seen)).includes(head);
 }
 
 function collapse(value: string): string {
