@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { generateToken, validatePassword, invalidateToken, authMiddleware } from '../middleware/auth';
 import {
+  BROWSER_CHAT_SITE_IDS,
   createAIModel,
   deleteAIModel,
   getAdminAppSettings,
@@ -8,15 +9,10 @@ import {
   updateAIModel,
   updateAppSettings,
 } from '../config/aiModelConfig';
+import { getProviderLabel } from '../config/providerCatalog';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError, updateGoogleSheetsRange } from '../integrations/googleSheets';
-import {
-  DebugBrowserError,
-  assertUsablePort,
-  probeDebugBrowser,
-  startDebugBrowser,
-} from '../services/debugBrowser';
+import { probeDebugBrowser } from '../services/debugBrowser';
 import { getTabPoolStats } from '../services/ai/providers/browserChat/pool';
-import { isChatSiteId, type ChatSiteId } from '../services/ai/providers/browserChat/sites';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
@@ -113,14 +109,21 @@ router.put(['/settings', '/ai-models'], authMiddleware, async (req: Request, res
 });
 
 /**
- * The debug browsers the free chat providers drive.
+ * The state of the browsers the free chat providers drive.
  *
- * Behind `authMiddleware` like everything else here, and that matters more for
- * these than for the rest of this file: `start` launches a process on the
- * server. What it may launch is not open-ended - the executable is resolved by
- * this app, the URL is one of its own two chat sites chosen by id, and the only
- * value taken from the request is a port that is validated to an integer in
- * range before it reaches an argv array. See `services/debugBrowser.ts`.
+ * READ-ONLY. There used to be a `POST /browser/debug/start` beside this that
+ * spawned Chrome on the server; it is gone, and with it the only path by which
+ * an HTTP request could start a desktop process here. Operators run
+ * `npm run browser:debug` instead.
+ *
+ * CHEAP ON PURPOSE: every reading here is a loopback DevTools HTTP probe, which
+ * opens no page and drives nothing. The deeper question - is that tab actually
+ * SIGNED IN - is the provider health check's to answer, and the admin UI
+ * already asks `GET /ai/health` for it on the same page load. Calling it again
+ * from here would run the page-driving probe twice per load and make this
+ * endpoint as slow as that one; measured, it took this from milliseconds to
+ * over two minutes. So this reports what is REGISTERED and what is REACHABLE,
+ * and the caller pairs it with the health it already has.
  */
 router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response) => {
   try {
@@ -132,67 +135,26 @@ router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response
         status: await probeDebugBrowser(entry.port),
       }))
     );
-    res.json({ browsers, queues: getTabPoolStats() });
+
+    const platforms = BROWSER_CHAT_SITE_IDS.map((siteId) => {
+      const registered = browsers.filter((row) => row.siteId === siteId);
+      const running = registered.filter((row) => row.status.running);
+      const withTab = running.filter(
+        (row) => row.status.sites.find((site) => site.id === siteId)?.open
+      );
+      return {
+        id: siteId,
+        label: getProviderLabel(siteId),
+        registeredPorts: registered.map((row) => row.port),
+        runningPorts: running.map((row) => row.port),
+        tabPorts: withTab.map((row) => row.port),
+      };
+    });
+
+    res.json({ browsers, platforms, queues: getTabPoolStats() });
   } catch (error) {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Could not check the debug browsers',
-    });
-  }
-});
-
-router.post('/browser/debug/start', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    const body = (req.body ?? {}) as {
-      port?: unknown;
-      siteId?: unknown;
-      save?: unknown;
-      endpoints?: unknown;
-    };
-    const port = assertUsablePort(body.port);
-    if (!isChatSiteId(body.siteId)) {
-      res.status(400).json({
-        error: 'Choose which chat site this browser is for.',
-        hint: 'One browser shows one chat tab; a second site in the same window would be a ' +
-          'background tab, and Chrome freezes those.',
-      });
-      return;
-    }
-    const siteId = body.siteId as ChatSiteId;
-
-    const result = await startDebugBrowser({ port, siteId });
-
-    // Recorded by default, because a browser you started and a browser the
-    // providers know about that disagree is the most confusing state this
-    // feature can be left in.
-    //
-    // The list the CALLER is looking at is what gets saved, when it sends one.
-    // Merging into the stored list instead loses every row the operator added
-    // and had not saved yet: the page replaces its list with what comes back,
-    // so a second browser they had just added silently disappears the moment
-    // they press Start on the first. What you see is what is stored.
-    let settings = await getAdminAppSettings();
-    if (body.save !== false) {
-      const base = Array.isArray(body.endpoints)
-        ? (body.endpoints as Array<{ siteId?: unknown; port?: unknown }>).filter(
-            (entry) => entry && typeof entry === 'object'
-          )
-        : settings.browserChatEndpoints;
-      // The browser just started is in the list whatever the caller sent, and
-      // owns its port outright - a port shows one site.
-      const kept = base.filter((entry) => Number(entry.port) !== port);
-      settings = await updateAppSettings({
-        browserChatEndpoints: [...kept, { siteId, port }] as typeof settings.browserChatEndpoints,
-      });
-    }
-
-    res.json({ ...result, siteId, settings });
-  } catch (error) {
-    if (error instanceof DebugBrowserError) {
-      res.status(400).json({ error: error.message, hint: error.hint });
-      return;
-    }
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Could not start the debug browser',
     });
   }
 });

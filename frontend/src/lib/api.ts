@@ -810,16 +810,39 @@ export interface DebugBrowserStatus {
   sites: DebugBrowserSite[];
 }
 
-export interface StartDebugBrowserResponse {
-  started: boolean;
-  /** True when a browser was already listening and nothing was launched. */
-  reused: boolean;
-  executable: string;
-  browserLabel: string;
-  profileDir: string;
-  siteId: AIProvider;
-  status: DebugBrowserStatus;
-  settings: AdminAppSettings;
+/**
+ * What is registered for one chat platform, and how much of it is reachable.
+ *
+ * These are cheap port probes and stop short of the question that matters most:
+ * a browser can be running with the site's tab open and still be SIGNED OUT,
+ * and no port probe can tell. That answer comes from the provider health report
+ * the same page already fetches - see `isPlatformActive`.
+ */
+export interface DebugPlatformStatus {
+  id: AIProvider;
+  label: string;
+  /** Debug ports registered for this platform. */
+  registeredPorts: number[];
+  /** Of those, the ones with a browser answering. */
+  runningPorts: number[];
+  /** Of those, the ones showing this platform's site. */
+  tabPorts: number[];
+}
+
+/**
+ * Whether a registered platform is usable right now.
+ *
+ * The provider's own health answer, which drives the tab and looks for the
+ * composer - so it separates "signed in and ready" from "a window is open on
+ * the right site but signed out", which is the distinction an operator staring
+ * at a running browser most needs made for them.
+ */
+export function isPlatformActive(
+  health: ProviderHealthReport | null,
+  platform: Pick<DebugPlatformStatus, 'id' | 'registeredPorts'>
+): boolean {
+  if (platform.registeredPorts.length === 0) return false;
+  return Boolean(health?.providers.find((entry) => entry.id === platform.id)?.ok);
 }
 
 /** One configured browser, with what the server can see of it right now. */
@@ -839,6 +862,7 @@ export interface TabQueueStats {
 
 export interface DebugBrowserReport {
   browsers: DebugBrowserEntry[];
+  platforms: DebugPlatformStatus[];
   queues: Record<string, TabQueueStats>;
 }
 
@@ -1002,24 +1026,6 @@ export const adminApi = {
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/settings')),
 
   getDebugBrowsers: () => apiFetch<DebugBrowserReport>('/admin/browser/debug'),
-
-  startDebugBrowser: (data: {
-    port: number;
-    siteId: AIProvider;
-    /**
-     * The list as it stands on screen, saved along with the start.
-     *
-     * Sent so that pressing Start does not discard rows added but not yet
-     * saved: the server stores this list rather than merging into its own, and
-     * the page then renders what was stored.
-     */
-    endpoints?: BrowserChatEndpoint[];
-    save?: boolean;
-  }) =>
-    apiFetch<StartDebugBrowserResponse>('/admin/browser/debug/start', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
 
   browseOutputDirectory: (currentPath?: string) =>
     apiFetch<BrowseOutputDirectoryResponse>('/admin/browse-output-directory', {

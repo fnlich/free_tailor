@@ -5,38 +5,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 
-const {
-  DebugBrowserError,
-  assertUsablePort,
-  probeDebugBrowser,
-  startDebugBrowser,
-} = require('../dist/services/debugBrowser');
+const { probeDebugBrowser } = require('../dist/services/debugBrowser');
 const { findInstalledBrowser } = require('../dist/config/browser');
 const puppeteer = require('puppeteer');
 
 /**
- * Starting the browser the chat providers attach to.
+ * Reading the state of the browsers the chat providers attach to.
  *
- * This spawns a process on the server from an HTTP request, so the tests that
- * matter most are the ones about what it will and will not spawn.
+ * The probe only. The backend no longer starts a browser - that moved to
+ * `src/scripts/launchDebugBrowsers.ts` and is covered by
+ * debugBrowserLauncher.test.js - so what is left here is the read-only half
+ * the Settings page and the launcher's skip-if-running check both rely on.
  */
-
-test('the port is the only thing taken from the caller, and it is validated', () => {
-  assert.equal(assertUsablePort(9222), 9222);
-  assert.equal(assertUsablePort(' 9333 '), 9333, 'a string from a form field is fine');
-
-  for (const bad of [0, 80, 1023, 65536, -1, 1.5, 'nine thousand', '', null, undefined, '9222; rm -rf /']) {
-    assert.throws(
-      () => assertUsablePort(bad),
-      (error) => {
-        assert.ok(error instanceof DebugBrowserError);
-        assert.match(error.hint, /between 1024 and 65535/);
-        return true;
-      },
-      `must refuse ${JSON.stringify(bad)}`
-    );
-  }
-});
 
 test('a port nothing is listening on reports not running, and names the sites', async () => {
   // 1 is reserved and nothing will be on it.
@@ -104,14 +84,6 @@ test('a running browser is found, and its open tabs are matched to sites', async
     const chatgpt = status.sites.find((site) => site.id === 'chatgpt-web');
     assert.equal(claude.open, true, 'a tab on the site host counts as open');
     assert.equal(chatgpt.open, false, 'and a site with no tab does not');
-
-    // Asked to start when one is already listening, it must NOT launch a
-    // second: Chrome would either refuse the port or quietly open a tab in the
-    // existing window and exit, which looks like success and changes nothing.
-    const result = await startDebugBrowser({ port, siteId: 'claude-web' });
-    assert.equal(result.started, false);
-    assert.equal(result.reused, true, 'an already-running browser is reused');
-    assert.equal(result.status.running, true);
   } finally {
     try {
       process.kill(-child.pid, 'SIGKILL');
@@ -126,50 +98,6 @@ test('a running browser is found, and its open tabs are matched to sites', async
   }
 });
 
-test('starting refuses a port it cannot use before it spawns anything', async () => {
-  await assert.rejects(startDebugBrowser({ port: 80, siteId: 'claude-web' }), (error) => {
-    assert.ok(error instanceof DebugBrowserError);
-    return true;
-  });
-});
-
-test('the extra-args escape hatch cannot re-open the DevTools origin hole', () => {
-  const { sanitizeBrowserArgs } = require('../dist/services/debugBrowser');
-
-  // The hatch is real: a backend in a container has no display and no sandbox,
-  // and Chrome there needs these or it exits immediately.
-  assert.deepEqual(sanitizeBrowserArgs({ AI_WEB_BROWSER_ARGS: '--headless=new --no-sandbox' }), [
-    '--headless=new',
-    '--no-sandbox',
-  ]);
-
-  // But it must not be a way to put back the flag the rest of this feature is
-  // built to keep out. With it, any web page the operator visits can drive this
-  // browser and read the accounts signed in to it.
-  for (const attempt of [
-    '--remote-allow-origins=*',
-    '--remote-allow-origins=https://evil.example.com',
-    '--headless=new --remote-allow-origins=* --no-sandbox',
-  ]) {
-    const out = sanitizeBrowserArgs({ AI_WEB_BROWSER_ARGS: attempt });
-    assert.ok(
-      !out.some((flag) => flag.toLowerCase().startsWith('--remote-allow-origins')),
-      `must strip it from: ${attempt}`
-    );
-  }
-
-  // The port and the profile are decided by this app; a second copy of either
-  // is ambiguous at best and silently wrong at worst.
-  assert.deepEqual(
-    sanitizeBrowserArgs({
-      AI_WEB_BROWSER_ARGS: '--remote-debugging-port=1 --user-data-dir=/tmp/x --lang=en',
-    }),
-    ['--lang=en']
-  );
-
-  assert.deepEqual(sanitizeBrowserArgs({}), []);
-});
-
 test('a site with no hostname is matched by its address, not reported missing', async () => {
   // The override that points a site at a `file:` or `data:` URL has no host to
   // match on. Reported missing, its tab is opened again on every start - two
@@ -181,23 +109,3 @@ test('a site with no hostname is matched by its address, not reported missing', 
   assert.equal(claude.url, fixture, 'the override must reach the status the panel renders');
 });
 
-test('a slow browser is given long enough to bind before it is called a failure', () => {
-  // Reporting a failure for a browser that IS starting is the worse mistake: it
-  // leaves a window running that the operator was told did not open, and the
-  // endpoint unsaved. Measured in this container, a cold profile took past 12s -
-  // a first run on Windows with antivirus in the way can take longer still.
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'services', 'debugBrowser.ts'),
-    'utf8'
-  );
-  const wait = source.match(/const STARTUP_WAIT_MS = ([\d_]+);/);
-  assert.ok(wait, 'the startup wait must be declared');
-  assert.ok(
-    Number(wait[1].replace(/_/g, '')) >= 30_000,
-    `a cold browser needs more than ${wait[1]}ms to bind its debug port`
-  );
-
-  // And the message has to tell the operator that pressing Start again picks up
-  // a window that turned out to be slow, rather than opening a second one.
-  assert.match(source, /pressing Start again picks up the window that is now running/);
-});
