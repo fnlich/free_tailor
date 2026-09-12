@@ -44,11 +44,24 @@ export function getApiOrigin(): string {
   return getCurrentApiBase().replace(/\/api$/, '');
 }
 
-// Auth helpers
+/**
+ * The session token.
+ *
+ * Kept ALONGSIDE the httpOnly cookie the server sets, not instead of it. The
+ * cookie is what makes a reload stay signed in without JavaScript; the copy
+ * here is what goes in the Authorization header, which is the only way the
+ * streaming endpoints and any cross-origin call reach the same session without
+ * every call site getting `credentials` right.
+ *
+ * The key still reads `adminToken` so a session opened by the previous build is
+ * not silently dropped on upgrade; it stopped meaning "an admin" in v2.
+ */
+const SESSION_TOKEN_KEY = 'adminToken';
+
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return localStorage.getItem('adminToken');
+    return localStorage.getItem(SESSION_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -56,18 +69,33 @@ export function getToken(): string | null {
 
 export function setToken(token: string): void {
   try {
-    localStorage.setItem('adminToken', token);
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
   } catch {
-    // Ignore storage errors (private mode / blocked storage)
+    // Ignore storage errors (private mode / blocked storage). The cookie still
+    // carries the session; only the header copy is lost.
   }
 }
 
 export function removeToken(): void {
   try {
-    localStorage.removeItem('adminToken');
+    localStorage.removeItem(SESSION_TOKEN_KEY);
   } catch {
     // Ignore storage errors
   }
+}
+
+/**
+ * Called when the server says a request was not signed in.
+ *
+ * A hook rather than a redirect from here: this module knows nothing about
+ * routing, and a hard `location.assign` would throw away an unsaved form on
+ * what is often a recoverable blip. The auth provider installs the real
+ * handler, which clears its state and shows the login page.
+ */
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
 }
 
 function getAuthHeaders(): HeadersInit {
@@ -153,7 +181,11 @@ export async function apiStream(
     tried.push(apiBase);
     let response: Response;
     try {
-      response = await fetch(`${apiBase}${endpoint}`, { headers: getAuthHeaders(), signal });
+      response = await fetch(`${apiBase}${endpoint}`, {
+        headers: getAuthHeaders(),
+        credentials: 'include',
+        signal,
+      });
     } catch (error) {
       if (signal?.aborted) return;
       lastConnectionError = error instanceof Error ? error : new Error(String(error));
@@ -163,6 +195,10 @@ export async function apiStream(
     resolvedApiBase = apiBase;
     if (!response.ok || !response.body) {
       const body = (await response.json().catch(() => ({}))) as { error?: string };
+      if (response.status === 401) {
+        removeToken();
+        onUnauthorized?.();
+      }
       throw new ApiResponseError(
         body.error || `Request failed with HTTP ${response.status}`,
         response.status,
@@ -226,7 +262,10 @@ export async function apiFetch<T>(
 
     let response: Response;
     try {
-      response = await fetch(url, { ...options, headers });
+      // `credentials: 'include'` so the session cookie travels even when the
+      // API is on another origin, which it is whenever the page is opened by
+      // IP or hostname rather than localhost.
+      response = await fetch(url, { ...options, headers, credentials: 'include' });
     } catch (error) {
       // `fetch` rejects only when the request never completed: no server, DNS
       // failure, a refused CORS preflight, or a dropped connection. That, and
@@ -241,6 +280,12 @@ export async function apiFetch<T>(
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}) as { error?: string });
+      if (response.status === 401) {
+        // The session is gone - expired, revoked, or the account disabled.
+        // Clearing the stale copy here means the next call does not send it.
+        removeToken();
+        onUnauthorized?.();
+      }
       throw new ApiResponseError(
         body.error || `Request failed with HTTP ${response.status}`,
         response.status,
@@ -264,6 +309,19 @@ export async function apiFetch<T>(
  *
  * The former `openrouter` id was replaced by `claude-cli`.
  */
+/**
+ * Which kind of prompt this is. Sent by the server with every prompt, derived
+ * from the feature it is attached to rather than stored on it.
+ */
+export type PromptCategoryId = 'extracting' | 'building' | 'other';
+
+export type PromptCategory = {
+  id: PromptCategoryId;
+  label: string;
+  description: string;
+  order: number;
+};
+
 export type AIProvider =
   | 'claude-cli'
   | 'claude'
@@ -1558,6 +1616,9 @@ export interface PromptSummary {
   description: string;
   featureKey?: PromptFeatureKey;
   featureLabel?: string;
+  /** Building, Extracting, or unattached. Derived by the server, never stored. */
+  category: PromptCategoryId;
+  categoryLabel: string;
   responseFormat: PromptResponseFormat;
   modelProvider?: AIProvider;
   modelName?: string;

@@ -5,6 +5,8 @@ import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import AccountMenu from '@/components/auth/AccountMenu';
+import { useAuth } from '@/contexts/AuthContext';
 
 type Props = {
   onLogout?: () => void;
@@ -22,6 +24,7 @@ const NAV_ITEMS = [
   { href: '/admin/groups', label: 'Groups' },
 ];
 
+/** Shown to everybody. The admin-only entry is appended below. */
 const SETTINGS_ITEMS = [
   { href: '/admin/settings', label: 'General' },
   { href: '/admin/google-sheets', label: 'Google Sheets' },
@@ -39,6 +42,13 @@ function isActivePath(pathname: string, href: string): boolean {
 
 export default function AppTopNav({ onLogout }: Props) {
   const pathname = usePathname();
+  const { isAdmin } = useAuth();
+  // Appended rather than always present: a user who clicked it would only get
+  // the "administrators only" explanation, which is a worse answer than not
+  // offering it.
+  const settingsItems = isAdmin
+    ? [...SETTINGS_ITEMS, { href: '/admin/accounts', label: 'Accounts' }]
+    : SETTINGS_ITEMS;
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
@@ -60,7 +70,7 @@ export default function AppTopNav({ onLogout }: Props) {
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, []);
 
-  const isSettingsActive = SETTINGS_ITEMS.some((item) => isActivePath(pathname, item.href));
+  const isSettingsActive = settingsItems.some((item) => isActivePath(pathname, item.href));
   const mobileMenuPanel =
     isMobileMenuOpen && typeof document !== 'undefined'
       ? createPortal(
@@ -88,7 +98,7 @@ export default function AppTopNav({ onLogout }: Props) {
             })}
 
             <div className="mt-2 border-t border-gray-200 pt-2 dark:border-slate-800">
-              {SETTINGS_ITEMS.map((item) => {
+              {settingsItems.map((item) => {
                 const isActive = isActivePath(pathname, item.href);
                 return (
                   <Link
@@ -166,7 +176,7 @@ export default function AppTopNav({ onLogout }: Props) {
 
               {isSettingsOpen && (
                 <div className="app-top-nav-menu absolute left-0 top-full z-[var(--layer-app-nav-menu)] mt-2 w-56 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
-                  {SETTINGS_ITEMS.map((item) => {
+                  {settingsItems.map((item) => {
                     const isActive = isActivePath(pathname, item.href);
                     return (
                       <Link
@@ -207,7 +217,13 @@ export default function AppTopNav({ onLogout }: Props) {
 
           </div>
 
-          {onLogout ? (
+          {/*
+            The account menu replaces the old Admin link. That link went to a
+            page anybody could open, which is no longer true - and "Admin" as a
+            destination made less sense than the account it belongs to, which
+            is also where logging out lives.
+          */}
+          {onLogout && (
             <button
               type="button"
               onClick={onLogout}
@@ -215,14 +231,8 @@ export default function AppTopNav({ onLogout }: Props) {
             >
               Logout
             </button>
-          ) : (
-            <Link
-              href="/admin"
-              className="rounded-md px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
-            >
-              Admin
-            </Link>
           )}
+          <AccountMenu />
           </div>
         </div>
       </header>

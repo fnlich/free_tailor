@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { categoryForFeature, getPromptCategory } from '../config/promptCategories';
 import { getStaticPromptsDir } from '../config/staticPaths';
 import {
   deleteStoredPrompt,
@@ -709,6 +710,8 @@ function toPromptSummary(record: PromptRecord): PromptSummary {
     description: record.description,
     featureKey: record.featureKey,
     featureLabel: record.featureLabel,
+    category: record.category,
+    categoryLabel: record.categoryLabel,
     responseFormat: record.responseFormat,
     modelProvider: record.modelProvider,
     modelName: record.modelName,
@@ -741,6 +744,8 @@ async function readBuiltInPromptRecord(definition: PromptFeatureDefinition): Pro
     description: definition.description,
     featureKey: definition.key,
     featureLabel: definition.label,
+    category: categoryForFeature(definition.key),
+    categoryLabel: getPromptCategory(categoryForFeature(definition.key)).label,
     responseFormat: definition.responseFormat,
     modelProvider: modelSelection?.provider,
     modelName: modelSelection?.modelName,
@@ -800,6 +805,8 @@ function readCustomPromptRecord(id: string): PromptRecord | null {
     description: prompt.description,
     featureKey: prompt.featureKey,
     featureLabel: prompt.featureKey ? getPromptFeatureDefinition(prompt.featureKey).label : undefined,
+    category: categoryForFeature(prompt.featureKey),
+    categoryLabel: getPromptCategory(categoryForFeature(prompt.featureKey)).label,
     responseFormat: prompt.responseFormat,
     modelProvider: prompt.modelProvider,
     modelName: prompt.modelName,

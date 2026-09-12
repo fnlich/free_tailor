@@ -23,13 +23,16 @@ By default it runs on **a chat tab you are already signed in to** rather than me
 
 | Feature | Description |
 |---------|-------------|
+| **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
+| **Plans** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets the plan; credits are tracked and spend on nothing yet |
+| **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
 | **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skill ordering |
-| **Admin Panel** | Manage profiles, groups, templates, prompts, skills, and AI model settings |
+| **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and AI model settings |
 | **PDF & DOCX** | Export resumes in both formats |
 
 ---
@@ -113,6 +116,7 @@ locked seat at a free model rather than at a metered one.
 | Data | Storage |
 |------|---------|
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
+| Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
@@ -267,8 +271,23 @@ HOST=0.0.0.0             # backend listens on every interface
 PORT=3001
 #DB_DIR=                 # SQLite database directory; see the note below
 NEXT_PUBLIC_API_URL=http://localhost:3001/api
-ADMIN_PASSWORD=change-me
+
+# One of these two, or nobody can sign in:
+GOOGLE_CLIENT_ID=        # OAuth 2.0 Web application client id
+SMTP_HOST=               # ...or SMTP, for emailed six-digit codes
+SMTP_USER=
+SMTP_PASS=
 ```
+
+**Somebody has to be able to sign in.** Set up Google sign-in or SMTP - the
+login page names what is missing if neither is configured. The **first account
+to sign in becomes the administrator**, because account management is
+admin-only and an install whose first user was an ordinary one would have no
+way to appoint one. Set `ADMIN_EMAILS` to decide in advance instead.
+
+Upgrading an install that has profiles already? They have no owner, so they are
+invisible to ordinary accounts and visible to administrators until the first
+administrator signs in, at which point they are adopted automatically.
 
 `DB_DIR` is commented out in `.env.example` on purpose, so a fresh checkout
 picks the writable default for the platform it is on. Set it when you want the
@@ -381,6 +400,7 @@ File and folder names are templated per profile.
 
 | Section | Purpose |
 |---------|---------|
+| **Accounts** | Every account on the installation, with its role, plan, credits and profile use. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's plan before they arrive; it is not a way in, since they still prove the address through Google or a code |
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **Add Manually**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
@@ -389,7 +409,7 @@ File and folder names are templated per profile.
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
 | **AI defaults per profile** | Each profile picks its own model, effort (`low`..`max`) and thinking mode; the builder shows those defaults and can override any of them for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag. Thinking is on by default and adaptive - the models decide per answer - so the choice is whether to allow it, not how much; depth is what effort controls |
 | **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
-| **Prompts** | Edit default prompts or add custom variants per feature |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | AI providers, models, output location, and live Claude subscription status (sign-in, usage window, in-flight calls). Each provider row shows what it reports right now; a metered provider's key comes from `.env`. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose |
 
@@ -407,7 +427,9 @@ File and folder names are templated per profile.
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
 | | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
-| `ADMIN_PASSWORD` | Admin login password |
+| `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave empty and the first account to sign in does |
+| `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
 | `AI_CLI_MODEL` / `AI_CLI_EFFORT` | Default model alias (`sonnet`) and reasoning effort (`low`) |
 | `AI_CLI_CONCURRENCY` | Simultaneous `claude` processes, process-wide (default `4`) |

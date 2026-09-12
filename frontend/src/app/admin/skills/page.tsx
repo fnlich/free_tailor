@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { AdminOnly } from '@/components/auth/AuthGate';
 import { HARD_SKILL_CATEGORIES, resumeApi, type HardSkillCategory } from '@/lib/api';
 
 type SkillType = 'hard' | 'soft';
@@ -16,7 +17,7 @@ const normalize = (value: string) => value.trim().toLowerCase();
 const PAGE_SIZE_OPTIONS = [10, 25, 50];
 const PRIORITY_OPTIONS = [1, 2, 3, 4, 5];
 
-export default function SkillsPage() {
+function SkillsPageBody() {
   const [techSkills, setTechSkills] = useState<string[]>([]);
   const [softSkills, setSoftSkills] = useState<string[]>([]);
   const [newTech, setNewTech] = useState('');
@@ -469,5 +470,22 @@ export default function SkillsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Administrator-only.
+ *
+ * This page changes things shared by everybody on the installation - the AI
+ * providers, the prompts every account's resumes are built from, the shared
+ * skill library - so it is not a per-user setting despite living behind a
+ * "Settings" menu. `AdminOnly` explains that rather than rendering nothing: a
+ * blank page reads as broken.
+ */
+export default function SkillsPage() {
+  return (
+    <AdminOnly>
+      <SkillsPageBody />
+    </AdminOnly>
   );
 }

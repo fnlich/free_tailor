@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import ThemeToggle from "@/components/ThemeToggle";
+import AuthGate from "@/components/auth/AuthGate";
+import { AuthProvider } from "@/contexts/AuthContext";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -81,7 +83,15 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        {/*
+          Wrapped here rather than in each layout, so a page added later is
+          behind the gate by default. The theme toggle stays outside it: it
+          reads no account data, and the sign-in page should honour the theme
+          too.
+        */}
+        <AuthProvider>
+          <AuthGate>{children}</AuthGate>
+        </AuthProvider>
         <ThemeToggle />
       </body>
     </html>

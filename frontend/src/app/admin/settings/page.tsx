@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   AI_PROVIDERS,
   adminApi,
@@ -223,7 +224,7 @@ function mergeSavedSection(
   };
 }
 
-export default function AdminSettingsPage() {
+function AdminSettingsPageBody() {
   const [settings, setSettings] = useState<AdminAppSettings | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -1112,5 +1113,22 @@ npm run browser:debug
 
       </div>
     </div>
+  );
+}
+
+/**
+ * Administrator-only.
+ *
+ * This page changes things shared by everybody on the installation - the AI
+ * providers, the prompts every account's resumes are built from, the shared
+ * skill library - so it is not a per-user setting despite living behind a
+ * "Settings" menu. `AdminOnly` explains that rather than rendering nothing: a
+ * blank page reads as broken.
+ */
+export default function AdminSettingsPage() {
+  return (
+    <AdminOnly>
+      <AdminSettingsPageBody />
+    </AdminOnly>
   );
 }

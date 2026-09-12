@@ -1,6 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { requireAdmin, requireUser } from '../middleware/auth';
 import { listAvailableAIModelOptions } from '../config/aiModelConfig';
+import { listPromptCategories } from '../config/promptCategories';
 import {
   activatePrompt,
   createPrompt,
@@ -24,6 +25,15 @@ const router = Router();
  * run will use.
  */
 router.use(requireUser);
+
+/**
+ * The categories, so the page's headings are not a second copy of the list.
+ *
+ * Above `/:id`, or "categories" would be read as a prompt id.
+ */
+router.get('/categories', (_req: Request, res: Response) => {
+  res.json({ categories: listPromptCategories() });
+});
 
 router.get('/', async (_req: Request, res: Response) => {
   try {
@@ -82,7 +92,7 @@ router.get('/:id', async (req: Request<{ id: string }>, res: Response) => {
   }
 });
 
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', requireAdmin, async (req: Request, res: Response) => {
   try {
     const prompt = await createPrompt(req.body as PromptCreateInput);
     res.status(201).json(prompt);
@@ -94,7 +104,7 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:id', async (req: Request<{ id: string }>, res: Response) => {
+router.put('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     const prompt = await updatePrompt(req.params.id, req.body as PromptUpdateInput);
     if (!prompt) {
@@ -110,7 +120,7 @@ router.put('/:id', async (req: Request<{ id: string }>, res: Response) => {
   }
 });
 
-router.post('/:id/activate', async (req: Request<{ id: string }>, res: Response) => {
+router.post('/:id/activate', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     res.json(await activatePrompt(req.params.id));
   } catch (error) {
@@ -121,7 +131,7 @@ router.post('/:id/activate', async (req: Request<{ id: string }>, res: Response)
   }
 });
 
-router.delete('/:id', async (req: Request<{ id: string }>, res: Response) => {
+router.delete('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     const deleted = await deletePrompt(req.params.id);
     if (!deleted) {
