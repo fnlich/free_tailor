@@ -74,6 +74,100 @@ const QUEUE_WAIT_MS = 10 * 60_000;
 const UNREACHABLE_FOR_MS = 30_000;
 
 /**
+ * How long a browser that REFUSED is set aside.
+ *
+ * Much longer than an unreachable one, because the reasons are different in
+ * kind. A browser that did not answer the debug port is probably being started
+ * right now. A browser whose account is out of messages will still be out of
+ * messages in thirty seconds, and asking it again every call spends a tab
+ * lease and a page load to rediscover what the last call already found out.
+ *
+ * Not longer still, because the two things that end a wall - the account's own
+ * clock, and an operator signing back in - both happen without telling this
+ * app, and a browser held down for an hour after it recovered is capacity the
+ * operator paid for and is not getting.
+ */
+const REFUSED_FOR_MS = 10 * 60_000;
+
+/**
+ * How long a browser that could not take the prompt is set aside.
+ *
+ * The middle case: a wedged tab, a composer that would not hold the text, a
+ * previous turn that never let go. Usually transient and usually fixed by the
+ * next turn's fresh conversation, so this only has to stop a batch from
+ * queueing every one of its calls onto the same bad browser in turn.
+ */
+const UNUSABLE_FOR_MS = 2 * 60_000;
+
+/**
+ * Why a browser was passed over, and for how long - or null when the failure
+ * was the REQUEST'S and no other browser would do better.
+ *
+ * This is the whole judgement, in one place. The rule is not about the kind of
+ * failure but about whether the prompt was asked: a turn that never got the
+ * question in front of the site has cost that account nothing, so asking a
+ * different browser is free. A turn that did ask cannot be repeated elsewhere
+ * without putting the same question into two accounts - except when the site
+ * answered by refusing, where no answer is coming and a duplicate entry in one
+ * chat history is a far smaller price than failing the whole generation.
+ *
+ * `timeout` and `cancelled` are never another browser's problem. The first
+ * means the budget is gone, so a second attempt has nothing to spend; the
+ * second means the caller left, and the whole point of noticing was to stop.
+ */
+function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
+}
+
+/**
+ * The same failure, with the browsers that were tried named in its detail.
+ *
+ * `detail` and not `userMessage`: the list is for whoever reads the log, and
+ * the sentence shown in the app is already the right one for the kind. A new
+ * error rather than a mutation, because `AIProviderError` is built once and
+ * read in several places.
+ */
+function withTriedBrowsers(error: AIProviderError, tried: string): AIProviderError {
+  return new AIProviderError({
+    provider: error.provider,
+    kind: error.kind,
+    detail: `${error.detail} ${tried}`,
+    ...(error.adminAction ? { adminAction: error.adminAction } : {}),
+    ...(error.userMessage ? { userMessage: error.userMessage } : {}),
+    ...(typeof error.retryAfterSeconds === 'number'
+      ? { retryAfterSeconds: error.retryAfterSeconds }
+      : {}),
+  });
+}
+
+function describeBrowserFault(
+  error: unknown
+): { reason: string; coolForMs: number } | null {
+  if (error instanceof BrowserSessionError) {
+    return { reason: error.message, coolForMs: UNREACHABLE_FOR_MS };
+  }
+  if (!(error instanceof ChatTurnError)) return null;
+  if (error.kind === 'timeout' || error.kind === 'cancelled') return null;
+
+  if (error.kind === 'refused') {
+    // Both before and after sending. The site has said it will not answer, so
+    // waiting on this browser cannot help and another one might.
+    return { reason: error.message, coolForMs: REFUSED_FOR_MS };
+  }
+
+  // Everything else only when the prompt never landed.
+  //
+  // The residual risk is named rather than hidden: a send that DID reach the
+  // site but could not be confirmed within the confirm window reads as unsent,
+  // and this will ask a second browser. That is a duplicate question in one
+  // account, against a status quo where the caller got nothing at all - and it
+  // takes both the click confirmation and the Enter fallback failing to get
+  // there.
+  return error.sent ? null : { reason: error.message, coolForMs: UNUSABLE_FOR_MS };
+}
+
+/**
  * One connection per browser, held open between calls.
  *
  * Keyed on the endpoint because there is now more than one browser: a site's
@@ -246,7 +340,17 @@ async function acquireTab(
 }
 
 export type BrowserChatAdapterOptions = {
+  /** One session for every browser. Kept for callers that need no per-browser behaviour. */
   session?: BrowserChatSession;
+  /**
+   * A session PER BROWSER, when the two have to differ.
+   *
+   * The skip-and-move-on behaviour is entirely about browsers behaving
+   * differently from one another - this one is out of messages, that one is
+   * fine - and a seam that hands the same session to every endpoint cannot
+   * express the situation it is meant to exercise, let alone check it.
+   */
+  sessionFor?: (endpoint: string) => BrowserChatSession;
   env?: NodeJS.ProcessEnv;
 };
 
@@ -339,7 +443,7 @@ export function createBrowserChatAdapter(
           if (isEndpointLeased(endpoint)) {
             return { endpoint, ok: true, detail: 'Busy with a request.', hint: undefined };
           }
-          const session = options.session ?? sessionFor(endpoint);
+          const session = options.sessionFor?.(endpoint) ?? options.session ?? sessionFor(endpoint);
           return { endpoint, ...(await session.probe(site())) };
         })
       );
@@ -404,43 +508,87 @@ export function createBrowserChatAdapter(
       // else's reply or none. A batch of profiles does this by default.
       const pool = await poolFor(id, env);
 
-      // Tried on another browser when THIS one cannot be reached at all.
+      // Tried on ANOTHER browser when this one cannot do the job.
       //
-      // A configured browser is not necessarily a running one - the defaults
-      // name ports nobody has started yet, and an operator can close a window
-      // mid-run. Without this, a site with two browsers and one of them dead
-      // fails every second call for a reason that has nothing to do with the
-      // request. Only a connection failure is retried: a page that misbehaved
-      // says nothing about whether the browser is there, and repeating a prompt
-      // that was already typed would ask the same question twice.
-      let lastUnreachable: BrowserSessionError | null = null;
+      // A configured browser is not necessarily a usable one. It may not be
+      // running - the defaults name ports nobody has opened - or it may be
+      // running and signed out, or wedged, or its account out of messages for
+      // the next three hours. Those are all facts about that browser and none
+      // of them is a fact about the request, which is why having a second
+      // browser should mean the request still succeeds.
+      //
+      // It is the reason to run more than one in the first place: a site's
+      // browsers are separate windows with separate sessions, so an operator
+      // can sign a different account into each. A wall on one is then not a
+      // wall on the site, and failing the call on the strength of it wastes
+      // capacity that is sitting right there.
+      //
+      // Each browser is tried at most once - the lease is released and the
+      // endpoint marked down before moving on, so `acquire` cannot hand back
+      // the same one - and the last failure of each is kept, because when they
+      // all refuse, "which browsers, and why each" is the only thing an
+      // operator can act on.
+      const skipped: Array<{ endpoint: string; reason: string }> = [];
+      // The raw error of the last browser to refuse, kept so the failure that
+      // comes back is still that browser's own. See the throw below.
+      let lastFault: unknown;
       const attempts = Math.max(1, pool.size);
 
       for (let attempt = 0; attempt < attempts; attempt += 1) {
         const lease = await acquireTab(pool, request, id, descriptor.label);
         try {
-          const session = options.session ?? sessionFor(lease.endpoint);
+          const session = options.sessionFor?.(lease.endpoint) ?? options.session ?? sessionFor(lease.endpoint);
           const tab = await session.tabFor(site());
           const text = await tab.ask(body, request.deadline.remainingMs(), request.signal);
           pool.markReachable(lease.endpoint);
           return finish(text);
         } catch (error) {
-          if (error instanceof BrowserSessionError && request.deadline.remainingMs() > 0) {
-            pool.markUnreachable(lease.endpoint, UNREACHABLE_FOR_MS);
-            lastUnreachable = error;
-            continue;
+          const fault = describeBrowserFault(error);
+          // Out of time is out of time, whoever's fault it was. Another browser
+          // needs a whole turn and there is nothing left to give it.
+          if (!fault || request.deadline.remainingMs() <= 0) {
+            throw translate(error);
           }
-          throw translate(error);
+          pool.markUnreachable(lease.endpoint, fault.coolForMs);
+          skipped.push({ endpoint: lease.endpoint, reason: fault.reason });
+          lastFault = error;
+          warnOnce(
+            `${id}-skip:${lease.endpoint}:${fault.reason.slice(0, 60)}`,
+            `${descriptor.label}: the browser on ${lease.endpoint} could not take this prompt ` +
+              `(${fault.reason}). Trying another one, and leaving that browser out for ` +
+              `${Math.round(fault.coolForMs / 60_000)} minute(s).`
+          );
+          continue;
         } finally {
           lease.release();
         }
       }
 
-      throw fail(
-        'unavailable',
-        lastUnreachable?.message ?? `No ${descriptor.label} browser could be reached.`,
-        lastUnreachable?.hint
-      );
+      // Every browser this site has was tried and none could take it.
+      //
+      // Reported as the LAST browser's own failure, not as a generic
+      // "unavailable". The kind carries real meaning downstream - a usage wall
+      // is a 429 that is worth retrying later, a signed-out tab is a 503 that
+      // needs a person, and the hybrid router reads the kind to decide whether
+      // the other account is worth asking - and flattening every one of them
+      // into one kind threw all of that away along with the sentence written
+      // for this provider's voice.
+      //
+      // What IS added is which browsers were tried, because after this change
+      // that is the new question: "out of messages" reads as a fact about the
+      // site until you know that three separate windows each said it.
+      if (skipped.length > 0) {
+        const tried =
+          skipped.length === 1
+            ? `The one ${descriptor.label} browser (${skipped[0].endpoint}) could not take it.`
+            : `All ${skipped.length} ${descriptor.label} browsers were tried: ` +
+              // Each reason clipped: a turn error is a paragraph of advice, and
+              // four run together is a wall nobody reads.
+              skipped.map((entry) => `${entry.endpoint} (${clip(entry.reason, 120)})`).join('; ');
+        throw withTriedBrowsers(translate(lastFault), tried);
+      }
+
+      throw fail('unavailable', `No ${descriptor.label} browser could be reached.`);
 
       function finish(text: string): CompletionResult {
         return {

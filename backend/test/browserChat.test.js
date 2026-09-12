@@ -977,6 +977,11 @@ test('a refusal reaches the user in the browser provider\'s voice, not the CLI\'
     deadline: { remainingMs: () => 60_000, expired: () => false },
   };
 
+  // Every browser refuses, so this also pins what comes back once they have all
+  // been tried: the LAST browser's own failure, not a generic "unavailable".
+  // The kind carries meaning downstream - 429 versus 503, and the hybrid router
+  // reads it to decide whether the other account is worth asking - and
+  // flattening them all into one kind would throw that away.
   const limited = createBrowserChatAdapter('chatgpt-web', { session: refusing(true) });
   await assert.rejects(limited.complete({ ...request }), (error) => {
     assert.equal(error.kind, 'rateLimited', 'a usage wall is worth retrying, and 429 says so');
@@ -994,6 +999,9 @@ test('a refusal reaches the user in the browser provider\'s voice, not the CLI\'
       /claude auth login/,
       'nobody signs in to chatgpt.com by running the Claude CLI'
     );
+    // And the detail says which browsers were tried, because "out of messages"
+    // reads as a fact about the SITE until you know that each window said it.
+    assert.match(error.detail, /browser/i);
     return true;
   });
 });
@@ -1163,4 +1171,64 @@ test('a caller who goes away mid-answer stops the turn instead of driving the ta
     Date.now() - startedAt < 5_000,
     'it must not sit out the deadline on behalf of a caller who has gone'
   );
+});
+
+test('a turn records whether the prompt actually reached the site', async () => {
+  // The fact the provider's skip-and-move-on rule turns on, and it cannot be
+  // inferred from the kind: a usage wall found BEFORE typing and one that
+  // appears in answer to the prompt are both `refused`, and they want opposite
+  // things done. Tracked in the turn, which is the only place that knows.
+  const standingWall = fakePage({
+    present: () => true,
+    messages: () => [],
+    visibleText: () => 'Message limit reached',
+  });
+  await assert.rejects(tabFor(standingWall).ask('tailor this', 600_000), (error) => {
+    assert.equal(error.kind, 'refused');
+    assert.equal(error.sent, false, 'nothing was typed, so another browser costs nothing');
+    return true;
+  });
+  assert.equal(standingWall.state.sent, '', 'and the prompt really did not go anywhere');
+});
+
+test('a signed-out tab records that nothing was sent', async () => {
+  // No composer on the page is what a signed-out tab looks like.
+  const signedOut = fakePage({
+    present: (selector) => selector !== '#composer',
+    messages: () => [],
+  });
+  await assert.rejects(tabFor(signedOut).ask('tailor this', 600_000), (error) => {
+    assert.equal(error.kind, 'page');
+    assert.equal(error.sent, false);
+    return true;
+  });
+});
+
+test('a failure after the prompt landed records that it was sent', async () => {
+  // The other half, and the one that protects somebody's resume from being
+  // typed into two accounts to answer one question.
+  const echoing = fakePage({
+    present: () => true,
+    messages: (_selector, state) =>
+      state.sentAt === null ? [] : [{ id: null, text: state.sent }],
+  });
+  await assert.rejects(tabFor(echoing).ask('tailor this resume', 600_000), (error) => {
+    assert.equal(error.kind, 'echo');
+    assert.equal(error.sent, true, 'the site has the prompt; asking elsewhere would ask twice');
+    return true;
+  });
+});
+
+test('a wall that appears in ANSWER to the prompt records that it was sent', async () => {
+  const wallsMidTurn = fakePage({
+    present: () => true,
+    messages: () => [],
+    visibleText: (state) =>
+      state.sentAt === null ? '' : `${state.sent}\nYou are out of free messages until 3 PM.`,
+  });
+  await assert.rejects(tabFor(wallsMidTurn).ask('tailor this resume', 600_000), (error) => {
+    assert.equal(error.kind, 'refused');
+    assert.equal(error.sent, true);
+    return true;
+  });
 });

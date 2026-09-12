@@ -33,6 +33,21 @@ export class ChatTurnError extends Error {
   readonly kind: ChatTurnErrorKind;
   /** Set on a `refused` that waiting alone would clear. */
   readonly retryable: boolean;
+  /**
+   * Whether the prompt actually reached the site before this went wrong.
+   *
+   * The fact the caller needs in order to decide whether ANOTHER browser is
+   * worth trying, and it cannot be inferred from `kind`. A usage wall found
+   * before typing and a usage wall that appears in answer to the prompt are
+   * both `refused`, and they want opposite things: the first browser never
+   * asked anything, so asking a different one costs nothing, while re-asking
+   * after a prompt has landed puts the same question into two accounts.
+   *
+   * Defaults to true - the conservative answer. `ask` stamps the truth on every
+   * error it lets out, so a throw site added later is safe by default rather
+   * than silently opting into a retry it was never considered for.
+   */
+  sent = true;
 
   constructor(kind: ChatTurnErrorKind, message: string, retryable = false) {
     super(message);
@@ -619,6 +634,18 @@ export class ChatTab {
    * often to be caught downstream.
    */
   async ask(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
+    /**
+     * Whether this turn has put the prompt in front of the site yet.
+     *
+     * Tracked in one place rather than at each throw site, because there are
+     * fourteen of those and the caller's decision - is another browser worth
+     * trying? - turns entirely on this. `turn` flips it at the one moment it
+     * becomes true, and every error out of here is stamped with it below,
+     * including the guard's, which fires from outside `turn` and has no other
+     * way of knowing how far the turn had got.
+     */
+    const progress = { sent: false };
+
     // Raced against the deadline as a whole, not just polled against it. The
     // loop below already stops at the deadline, but a single CDP call can block
     // past it - a frozen background tab never answers one at all - and this
@@ -651,7 +678,7 @@ export class ChatTab {
     // capped by the connection's protocol timeout.
     await this.awaitAbandoned(deadlineMs);
 
-    const running = this.turn(body, deadlineMs, signal);
+    const running = this.turn(body, deadlineMs, signal, progress);
     // Held so the NEXT turn can wait for this one if the guard walks away from
     // it, and swallowed here so that walking away does not raise an unhandled
     // rejection when the blocked call finally fails.
@@ -662,6 +689,11 @@ export class ChatTab {
 
     try {
       return await Promise.race([running, guard]);
+    } catch (error) {
+      // Stamped here, on the way out, so it is true of whichever of the two
+      // raced promises rejected.
+      if (error instanceof ChatTurnError) error.sent = progress.sent;
+      throw error;
     } finally {
       // Cleared either way: left running, the timer keeps the process alive
       // long after a turn that already answered.
@@ -705,7 +737,12 @@ export class ChatTab {
     }
   }
 
-  private async turn(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
+  private async turn(
+    body: string,
+    deadlineMs: number,
+    signal?: AbortSignal,
+    progress: { sent: boolean } = { sent: false }
+  ): Promise<string> {
     const prompt = composePrompt(body, this.site.nudge);
     const expiry = this.now() + deadlineMs;
 
@@ -786,6 +823,9 @@ export class ChatTab {
     this.stopIfCancelled(signal);
 
     await this.submit(prompt);
+    // Everything from here on has asked the question. A failure after this
+    // line cannot be retried on another browser without asking it twice.
+    progress.sent = true;
 
     let state = INITIAL_POLL_STATE;
     let latched: string | null = null;
