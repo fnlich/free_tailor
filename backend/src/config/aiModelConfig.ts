@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
+
 import { describeAiPreferenceDefaults, type AiPreferenceDefaults } from './aiPreferences';
 import { getSetting, setSetting } from '../database/settingsRepository';
+import { planRoute } from '../services/ai/freeChatRouting';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
 import {
@@ -8,10 +10,19 @@ import {
   coerceProviderId,
   getProviderDescriptor,
   getProviderLabel as getCatalogProviderLabel,
+  BROWSER_CHAT_SITE_IDS,
   getProviderLockReason,
+  isBrowserChatSiteId,
+  type BrowserChatSiteId,
+  HYBRID_MODEL_DESCRIPTION,
+  HYBRID_MODEL_ID,
+  HYBRID_MODEL_LABEL,
+  isHybridModelId,
   isProviderLocked,
   listLockedProviderIds,
   providerRequiresApiKey,
+  providerSupportsEffort,
+  providerSupportsThinking,
 } from './providerCatalog';
 import {
   DEFAULT_CLAUDE_CLI_MODEL,
@@ -95,13 +106,10 @@ export type BrowserChatEndpoint = {
   port: number;
 };
 
-export type BrowserChatSiteId = Extract<AIProvider, 'claude-web' | 'chatgpt-web'>;
-
-export const BROWSER_CHAT_SITE_IDS: readonly BrowserChatSiteId[] = ['claude-web', 'chatgpt-web'];
-
-export function isBrowserChatSiteId(value: unknown): value is BrowserChatSiteId {
-  return value === 'claude-web' || value === 'chatgpt-web';
-}
+// Defined in the provider catalog, re-exported here because this is where
+// every existing caller imports them from.
+export { BROWSER_CHAT_SITE_IDS, isBrowserChatSiteId } from './providerCatalog';
+export type { BrowserChatSiteId } from './providerCatalog';
 
 export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
 
@@ -115,6 +123,27 @@ export type LegacyProviderFlags = {
   openaiEnabled: boolean;
   deepseekEnabled: boolean;
 };
+
+/**
+ * Which tuning knobs actually reach a given provider's model.
+ *
+ * Sent with the settings rather than fetched from `/ai/health`, because the
+ * pickers need it on every render and that endpoint probes every provider -
+ * seconds of work to answer a question whose answer is fixed at build time.
+ */
+export type ProviderTuningSupport = {
+  provider: AIProvider;
+  effort: boolean;
+  thinking: boolean;
+};
+
+export function listProviderTuningSupport(): ProviderTuningSupport[] {
+  return AI_PROVIDER_IDS.map((provider) => ({
+    provider,
+    effort: providerSupportsEffort(provider),
+    thinking: providerSupportsThinking(provider),
+  }));
+}
 
 export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   AppSettings,
@@ -148,6 +177,8 @@ export type ProviderLock = {
 };
 
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
+  /** Which providers honour effort and thinking at all. */
+  providerTuning: ProviderTuningSupport[];
   outputPathUsesJobTitle: boolean;
   /**
    * The effort and thinking a run uses when nothing overrides them, plus the
@@ -561,6 +592,16 @@ function resolveDefaultModelId(
   const availableModels = runnableModels.length > 0 ? runnableModels : aiModels.filter((model) => model.enabled);
   const preferredId = typeof requestedDefaultModelId === 'string' ? requestedDefaultModelId.trim() : '';
 
+  // Hybrid is pickable but is not a row, so the membership test below would
+  // reject it and quietly rewrite the admin's choice to a real model - a
+  // setting that does not stick, with nothing to say it did not.
+  if (isHybridModelId(preferredId)) {
+    const freeSites = BROWSER_CHAT_SITE_IDS.filter((site) =>
+      availableModels.some((model) => model.provider === site)
+    );
+    if (freeSites.length >= 2) return preferredId;
+  }
+
   if (preferredId && availableModels.some((model) => model.id === preferredId)) {
     return preferredId;
   }
@@ -576,6 +617,46 @@ function getRunnableModels(settings: AppSettings): AIModelRecord[] {
   return settings.aiModels.filter(
     (model) => model.enabled && isProviderEnabled(model.provider, settings)
   );
+}
+
+/**
+ * The hybrid pseudo-model, offered only when there is something to be hybrid
+ * BETWEEN.
+ *
+ * On an install with one free provider enabled it would be a choice that
+ * behaves identically to the model already above it in the menu, which is worse
+ * than not offering it: someone picks it expecting two accounts and gets one,
+ * with nothing anywhere to say why.
+ *
+ * `provider` and `modelName` are the Claude site only so the record type is
+ * satisfied. Nothing reads them - the choice resolver recognises the id first
+ * and asks the router which account this call should go to.
+ */
+function synthesizeHybridModel(settings: AppSettings): AIModelRecord[] {
+  const runnable = getRunnableModels(settings);
+  const sites = BROWSER_CHAT_SITE_IDS.filter((site) =>
+    runnable.some((model) => model.provider === site)
+  );
+  if (sites.length < 2) return [];
+
+  const now = new Date(0).toISOString();
+  return [
+    {
+      id: HYBRID_MODEL_ID,
+      name: HYBRID_MODEL_LABEL,
+      provider: 'claude-web',
+      modelName: 'chat',
+      description: HYBRID_MODEL_DESCRIPTION,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
+/** The models a profile or a request may pick, hybrid included. */
+export function getPickableModels(settings: AppSettings): AIModelRecord[] {
+  return [...getRunnableModels(settings), ...synthesizeHybridModel(settings)];
 }
 
 /**
@@ -887,12 +968,12 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
     defaultResumeSelection: settings.defaultResumeSelection,
     defaultGroupId: settings.defaultGroupId,
     defaultProfileId: settings.defaultProfileId,
-    defaultModelId: runnableModels.some((model) => model.id === settings.defaultModelId)
+    defaultModelId: getPickableModels(settings).some((model) => model.id === settings.defaultModelId)
       ? settings.defaultModelId
       : runnableModels[0]?.id ?? '',
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
-    aiModels: runnableModels.map((model) => ({ ...model })),
+    aiModels: getPickableModels(settings).map((model) => ({ ...model })),
     googleSheetsSources: settings.googleSheetsSources,
     browserChatEndpoints: settings.browserChatEndpoints.map((entry) => ({ ...entry })),
   };
@@ -915,6 +996,7 @@ function toPublicSettingsWithDerived(settings: AppSettings): PublicAppSettingsWi
     outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
     aiPreferenceDefaults: describeAiPreferenceDefaults(),
     providerLocks: describeProviderLocks(settings),
+    providerTuning: listProviderTuningSupport(),
   };
 }
 
@@ -1100,7 +1182,7 @@ export async function listAdminAIModels(): Promise<AIModelRecord[]> {
 
 export async function listAvailableAIModels(): Promise<AIModelRecord[]> {
   const settings = await readSettings();
-  return getRunnableModels(settings).map((model) => ({ ...model }));
+  return getPickableModels(settings).map((model) => ({ ...model }));
 }
 
 export async function listAvailableAIModelOptions(): Promise<Array<{
@@ -1172,6 +1254,31 @@ export async function resolveStoredAIModelPreference(
   return resolveRequestedAIModel(requested);
 }
 
+/**
+ * Which free account a hybrid call goes to THIS time.
+ *
+ * The router decides; this only turns its answer back into a model record, so
+ * everything downstream - the log line, the prompt config, the adapter lookup -
+ * sees an ordinary model and needs to know nothing about routing.
+ *
+ * A hybrid preference on an install that has since lost one of the two free
+ * providers resolves to whichever is left rather than failing. Hybrid stops
+ * being offered in that state, but a profile that picked it while both were
+ * there still has to generate.
+ */
+export function resolveHybridModel(settings: AppSettings): AIModelRecord {
+  const runnable = getRunnableModels(settings);
+  for (const site of planRoute('hybrid')) {
+    const model = runnable.find((candidate) => candidate.provider === site);
+    if (model) return model;
+  }
+  throw new Error(
+    'The Hybrid (free) option needs at least one of the free chat providers enabled, and none is. ' +
+      'Pick a different model for this profile, or enable Claude (browser) or ChatGPT (browser) ' +
+      'under Admin -> Models.'
+  );
+}
+
 export async function resolveRequestedAIModel(requestedModelId?: string): Promise<AIModelRecord> {
   const settings = await readSettings();
   const runnableModels = getRunnableModels(settings);
@@ -1182,7 +1289,16 @@ export async function resolveRequestedAIModel(requestedModelId?: string): Promis
 
   const requested = typeof requestedModelId === 'string' ? requestedModelId.trim() : '';
   if (!requested) {
+    // The app default can itself be hybrid, so this has to go through the same
+    // door rather than assume a row exists with that id.
+    if (isHybridModelId(settings.defaultModelId)) {
+      return resolveHybridModel(settings);
+    }
     return runnableModels.find((model) => model.id === settings.defaultModelId) ?? runnableModels[0];
+  }
+
+  if (isHybridModelId(requested)) {
+    return resolveHybridModel(settings);
   }
 
   const requestedModel = settings.aiModels.find((model) => model.id === requested);

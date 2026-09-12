@@ -3,7 +3,12 @@ import { browserProfileDir, launchBrowser } from '../config/browser';
 import Handlebars from 'handlebars';
 import fs from 'fs/promises';
 import path from 'path';
-import { Profile } from '../types/profile';
+import {
+  Profile,
+  type SkillCategoryGroup as ProfileSkillCategoryGroup,
+  type TechnicalSkillsLayout,
+} from '../types/profile';
+import { getProfileTechnicalSkillsLayout } from '../services/profileService';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getGeneratedFilePath, getResumeOutputFilename } from '../utils/generatedPath';
@@ -368,8 +373,15 @@ const OTHER_TECH_SKILLS = new Set([
 
 type SkillCategory = HardSkillCategory;
 
+/**
+ * One rendered heading and the skills under it.
+ *
+ * `category` is a plain string, not the library's closed set: a profile may
+ * carry headings its author invented, and the flat layout carries the empty
+ * string - which is not a missing heading but the statement that there is none.
+ */
 type SkillCategoryGroup = {
-  category: SkillCategory;
+  category: string;
   skills: string[];
 };
 
@@ -1089,7 +1101,97 @@ type SkillsData = {
   softSkills?: string[];
   skills?: string[];
   skillInventory?: string[];
+  /** The author's own grouping, when the profile carries one. */
+  skillCategories?: ProfileSkillCategoryGroup[];
+  profileSettings?: Profile['profileSettings'];
 };
+
+/**
+ * The flat layout, as one group with no heading.
+ *
+ * One group rather than none, so every renderer keeps the single loop it
+ * already has. A template written against `skillCategories` renders the flat
+ * layout correctly without knowing the option exists, provided it guards its
+ * heading with `{{#if category}}` - which `normalizeTemplateSkillsSections`
+ * arranges for every template, uploaded ones included.
+ */
+function flattenSkillCategories(skills: string[]): SkillCategoryGroup[] {
+  return skills.length > 0 ? [{ category: '', skills }] : [];
+}
+
+/**
+ * Groups the SELECTED skills using the author's own categories.
+ *
+ * The author's grouping covers their whole profile; what reaches here is the
+ * subset this job called for. So the profile is read as a MAP from skill to
+ * heading rather than as the finished block - grouping the whole profile would
+ * put back every skill the tailoring step deliberately left out.
+ *
+ * A selected skill the author never placed still has to appear, so it falls
+ * back to the library's inference for its heading. That heading joins the
+ * author's order at the end if it is new, and merges into theirs if they
+ * already have one by that name.
+ */
+function buildAuthoredSkillCategories(
+  selected: string[],
+  authored: ProfileSkillCategoryGroup[]
+): SkillCategoryGroup[] {
+  const headingBySkill = new Map<string, string>();
+  for (const group of authored) {
+    const category = group.category?.trim();
+    if (!category) continue;
+    for (const skill of group.skills ?? []) {
+      const key = normalizeHardSkillAlias(skill);
+      if (key && !headingBySkill.has(key)) headingBySkill.set(key, category);
+    }
+  }
+
+  const order: string[] = [];
+  const grouped = new Map<string, string[]>();
+  const place = (heading: string, skill: string) => {
+    const key = heading.toLowerCase();
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+      order.push(heading);
+    }
+    grouped.get(key)!.push(skill);
+  };
+
+  // The author's headings lead, in their order, whether or not this job's
+  // selection reached them - an empty one is dropped below.
+  for (const group of authored) {
+    const category = group.category?.trim();
+    if (category && !grouped.has(category.toLowerCase())) {
+      grouped.set(category.toLowerCase(), []);
+      order.push(category);
+    }
+  }
+
+  const seen = new Set<string>();
+  for (const skill of selected) {
+    const key = normalizeHardSkillAlias(skill);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    place(headingBySkill.get(key) ?? getSkillCategory(skill), skill);
+  }
+
+  return order
+    .map((category) => ({ category, skills: grouped.get(category.toLowerCase()) ?? [] }))
+    .filter((group) => group.skills.length > 0);
+}
+
+/**
+ * The Technical Skills block's lines, for templates that render a flat list.
+ *
+ * Categorized, each line is "Heading: a, b, c" - which is how every template
+ * that predates `skillCategories` has always shown them. Flat, each line is one
+ * skill, so a template rendering a chip per entry produces a chip per skill
+ * rather than one enormous chip holding the whole list behind a stray colon.
+ */
+function renderSkillLines(groups: SkillCategoryGroup[]): string[] {
+  if (groups.length === 1 && !groups[0].category) return [...groups[0].skills];
+  return groups.map((group) => `${group.category}: ${group.skills.join(', ')}`);
+}
 
 type SkillsLimitedData<T> = T & {
   hardSkills: string[];
@@ -1099,41 +1201,69 @@ type SkillsLimitedData<T> = T & {
 };
 
 function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
-  const hasTailoredHardSkills = Array.isArray(data.hardSkills) && data.hardSkills.length > 0;
-  if (hasTailoredHardSkills) {
-    const selectedHardSkills = normalizeSkills(data.hardSkills ?? []);
-    const skillCategories = enforcePromptSkillCategoryCounts(
-      selectedHardSkills,
-      data.skillInventory
-    );
+  const layout: TechnicalSkillsLayout = getProfileTechnicalSkillsLayout({
+    profileSettings: data.profileSettings,
+  });
+  const authored = (data.skillCategories ?? []).filter(
+    (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
+  );
 
+  const finish = (skillCategories: SkillCategoryGroup[]): SkillsLimitedData<T> => {
+    const lines = renderSkillLines(skillCategories);
     return {
       ...data,
-      hardSkills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
+      hardSkills: lines,
       softSkills: [],
-      skills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
+      // The same lines under both names, because templates disagree about
+      // which one they read and neither is more correct than the other.
+      skills: lines,
       strengths: [],
       skillCategories,
     } as SkillsLimitedData<T>;
+  };
+
+  const hasTailoredHardSkills = Array.isArray(data.hardSkills) && data.hardSkills.length > 0;
+  const selected = hasTailoredHardSkills
+    ? normalizeSkills(data.hardSkills ?? [])
+    : sortHardSkillsByPriority(data.skills ?? []);
+
+  // Flat is decided before any of the category machinery runs, and that is the
+  // point of it: the padding rules below exist to make a CATEGORIZED block look
+  // right - five per heading, at least five headings - and a list with no
+  // headings has no such shape to fill. Running them anyway would pad the list
+  // with skills the profile never claimed, to satisfy a layout it is not using.
+  if (layout === 'flat') {
+    return finish(
+      flattenSkillCategories(
+        hasTailoredHardSkills
+          ? selected.filter(passesPromptHardSkillGate)
+          : normalizeLibraryHardSkills(selected)
+      )
+    );
   }
 
-  const skillInventoryRaw = data.hardSkills && data.hardSkills.length > 0
-    ? data.hardSkills
-    : data.skills ?? [];
-  const baseSkills = sortHardSkillsByPriority(skillInventoryRaw);
-  const skillCategories = buildSkillCategories(baseSkills, data.skillInventory, {
-    forceAllCategories: true,
-    relateFrameworksToLanguages: true,
-  });
+  // The author's grouping replaces the inference, not the selection. It has no
+  // counts to enforce either: the headings are theirs, and padding them to five
+  // apiece would put skills under headings they did not choose for them.
+  if (authored.length > 0) {
+    return finish(
+      buildAuthoredSkillCategories(
+        hasTailoredHardSkills ? selected.filter(passesPromptHardSkillGate) : selected,
+        authored
+      )
+    );
+  }
 
-  return {
-    ...data,
-    hardSkills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
-    softSkills: [],
-    skills: skillCategories.map((group) => `${group.category}: ${group.skills.join(', ')}`),
-    strengths: [],
-    skillCategories,
-  } as SkillsLimitedData<T>;
+  if (hasTailoredHardSkills) {
+    return finish(enforcePromptSkillCategoryCounts(selected, data.skillInventory));
+  }
+
+  return finish(
+    buildSkillCategories(selected, data.skillInventory, {
+      forceAllCategories: true,
+      relateFrameworksToLanguages: true,
+    })
+  );
 }
 
 function getResumeTitle(profile: Profile): string {
@@ -1293,7 +1423,43 @@ function normalizeTemplateSkillsSections(html: string): string {
       '{{#each skillCategories}}<li><strong>{{category}}</strong><br>{{join skills ", "}}</li>{{/each}}'
     );
 
-  return output;
+  return guardEmptyCategoryHeadings(output);
+}
+
+/**
+ * Makes a category heading disappear when there is no category.
+ *
+ * The flat layout is delivered as ONE group whose heading is the empty string,
+ * so that every template keeps the single `{{#each skillCategories}}` loop it
+ * already has instead of growing a second branch. The cost of that choice is
+ * this: an unguarded heading element renders as an empty box, which in the
+ * built-in templates is a visible blank line and a border above the skills.
+ *
+ * Applied to the markup rather than asked of template authors, and applied
+ * after the rewrites above so it also covers the markup this file generates.
+ * A template somebody uploads has never heard of the flat layout, and the
+ * option would otherwise be one a profile can only safely use on the handful of
+ * templates that happened to be written for it.
+ *
+ * Idempotent: the negative lookbehind leaves a heading somebody already guarded
+ * alone, rather than nesting a second identical `{{#if}}` around it.
+ */
+function guardEmptyCategoryHeadings(html: string): string {
+  return (
+    html
+      // First, because its <br> belongs to the heading rather than to the
+      // skills. Let the general rule below claim the <strong> and the break is
+      // left outside the guard, so the flat layout opens its list with a blank
+      // line - which is exactly what it did until this ordering was measured.
+      .replace(
+        /(?<!\{\{#if category\}\})<strong>\s*\{\{category\}\}\s*<\/strong>\s*<br\s*\/?>/g,
+        '{{#if category}}<strong>{{category}}</strong><br>{{/if}}'
+      )
+      .replace(
+        /(?<!\{\{#if category\}\})(<(\w+)\b[^>]*>)\s*\{\{category\}\}\s*(<\/\2>)/g,
+        '{{#if category}}$1{{category}}$3{{/if}}'
+      )
+  );
 }
 
 export function prepareResumeRenderData(

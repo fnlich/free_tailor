@@ -1,6 +1,10 @@
 import OpenAI from 'openai';
 import { getProviderApiKey } from '../../../config/aiModelConfig';
-import { getProviderDescriptor } from '../../../config/providerCatalog';
+import {
+  getProviderDescriptor,
+  providerSupportsEffort,
+  providerSupportsThinking,
+} from '../../../config/providerCatalog';
 import type { AIProvider } from '../../../types/template';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../errors';
 import { collectUnsupportedReasoningParams } from '../reasoningParams';
@@ -47,8 +51,8 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
     maxOutputTokens: true,
     // Neither is wired for this transport yet, so a caller asking for one is
     // told it was dropped rather than left to assume it applied.
-    effort: false,
-    thinking: false,
+    effort: providerSupportsEffort(options.id),
+    thinking: providerSupportsThinking(options.id),
     nativeJsonMode: 'response_format',
     systemBlocks: false,
     requiresApiKey: true,

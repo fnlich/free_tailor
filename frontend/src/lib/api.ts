@@ -531,6 +531,29 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
  * They are carried separately from `aiModels` because that list is the set of
  * models a request may name.
  */
+/**
+ * Which tuning knobs actually reach a given provider's model.
+ *
+ * A chat window has no effort flag and no thinking budget - there is nowhere to
+ * put either - so the two selects have to go inactive rather than accept a
+ * setting that changes nothing and says nothing.
+ */
+/**
+ * The reserved model id that means "use both free chat accounts".
+ *
+ * Not a row in the model table: there is no provider to call and no model name
+ * to send. The server synthesises it into the pickable list and resolves it per
+ * call, so the pickers treat it like any other option and only this id has to
+ * be recognised by name.
+ */
+export const HYBRID_MODEL_ID = 'free-hybrid';
+
+export interface ProviderTuningSupport {
+  provider: AIProvider;
+  effort: boolean;
+  thinking: boolean;
+}
+
 export interface ProviderLock {
   id: AIProvider;
   label: string;
@@ -559,6 +582,8 @@ export interface PublicAppSettings {
   browserChatEndpoints: BrowserChatEndpoint[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
+  /** Which providers honour effort and thinking at all. */
+  providerTuning: ProviderTuningSupport[];
 }
 
 export type AIModelSettings = PublicAppSettings;
@@ -654,6 +679,9 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   googleSheetsSources: [],
   browserChatEndpoints: [],
   providerLocks: [],
+  // Permissive until the server answers: a select greyed out on a guess would
+  // stop somebody choosing an effort the provider does in fact honour.
+  providerTuning: [],
 };
 
 /**
@@ -702,6 +730,43 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
  * padlock is the part that has to be right, and a build that locks something
  * without explaining itself should still say the model cannot be picked.
  */
+function normalizeProviderTuning(value: unknown): ProviderTuningSupport[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .map((entry) => {
+      const provider = coerceProvider(entry.provider);
+      if (!provider) return null;
+      return {
+        provider,
+        // Read strictly: a server that predates this field sends nothing, and
+        // the empty list above is what makes that case permissive. A row that
+        // IS sent is believed exactly as sent.
+        effort: entry.effort === true,
+        thinking: entry.thinking === true,
+      } satisfies ProviderTuningSupport;
+    })
+    .filter((entry): entry is ProviderTuningSupport => entry !== null);
+}
+
+/**
+ * Whether a model's provider honours a knob.
+ *
+ * Unknown is treated as yes. The alternative - greying a control because the
+ * answer has not arrived - would stop somebody choosing an effort the provider
+ * does honour, and on a page that loads settings asynchronously that is a race
+ * they would hit as a flicker and then a locked select.
+ */
+export function providerHonours(
+  tuning: ProviderTuningSupport[],
+  provider: AIProvider | undefined,
+  knob: 'effort' | 'thinking'
+): boolean {
+  if (!provider) return true;
+  const row = tuning.find((entry) => entry.provider === provider);
+  return row ? row[knob] : true;
+}
+
 function normalizeProviderLocks(value: unknown): ProviderLock[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -769,6 +834,7 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
       : [],
     aiModels: normalizeModelRecords(source.aiModels),
     providerLocks: normalizeProviderLocks(source.providerLocks),
+    providerTuning: normalizeProviderTuning(source.providerTuning),
     googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
   };
 }
@@ -1210,6 +1276,69 @@ export interface Education {
 
 export type HardSkillOrdering = 'library' | 'job-priority';
 
+/**
+ * One heading in the Technical Skills block, and the skills under it.
+ *
+ * An empty `category` is the flat layout - not a missing heading, but the
+ * statement that there is none.
+ */
+export interface SkillCategoryGroup {
+  category: string;
+  skills: string[];
+}
+
+/**
+ * How the Technical Skills block is laid out: a heading per group, or one list
+ * of names with no headings over it.
+ */
+export type TechnicalSkillsLayout = 'categorized' | 'flat';
+
+/**
+ * The headings the shared skill library sorts skills into.
+ *
+ * Here rather than on the one page that used to hold it, because a second page
+ * now offers the same list and two copies would drift - and the drift would
+ * show up as a heading that files correctly on one screen and not the other.
+ */
+export type HardSkillCategory =
+  | 'Languages'
+  | 'Frameworks and Libraries'
+  | 'Software Architecture & Design'
+  | 'Security'
+  | 'Cloud and Infrastructure'
+  | 'Databases and Storage'
+  | 'DevOps and CI/CD'
+  | 'Observability and Monitoring'
+  | 'Testing and Quality'
+  | 'APIs and Integration'
+  | 'Engineering Practices & Methodology'
+  | 'Data Engineering & Streaming'
+  | 'AI/ML & Data Science'
+  | 'Version Control & Collaboration'
+  | 'Operating Systems & Platforms'
+  | 'Frontend & UI/UX Development'
+  | 'Mobile Development';
+
+export const HARD_SKILL_CATEGORIES: HardSkillCategory[] = [
+  'Languages',
+  'Frameworks and Libraries',
+  'Software Architecture & Design',
+  'Security',
+  'Cloud and Infrastructure',
+  'Databases and Storage',
+  'DevOps and CI/CD',
+  'Observability and Monitoring',
+  'Testing and Quality',
+  'APIs and Integration',
+  'Engineering Practices & Methodology',
+  'Data Engineering & Streaming',
+  'AI/ML & Data Science',
+  'Version Control & Collaboration',
+  'Operating Systems & Platforms',
+  'Frontend & UI/UX Development',
+  'Mobile Development',
+];
+
 export interface ProfileSettings {
   resumePromptId?: string;
   analyzeJobPromptId?: string;
@@ -1218,6 +1347,8 @@ export interface ProfileSettings {
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
   hardSkillOrdering?: HardSkillOrdering;
+  /** Categorized or flat Technical Skills. Absent means categorized. */
+  technicalSkillsLayout?: TechnicalSkillsLayout;
   /** This profile's default model, effort and thinking mode. */
   ai?: AiPreferences;
 }
@@ -1235,6 +1366,13 @@ export interface Profile {
   experience: Experience[];
   strengths: Strength[];
   skills?: string[];
+  /**
+   * The author's own grouping of `skills`, when they have one.
+   *
+   * Absent means the renderer works the headings out from the shared skill
+   * library. Every skill in here is also in `skills`.
+   */
+  skillCategories?: SkillCategoryGroup[];
   hardSkills?: string[];
   softSkills?: string[];
   education: Education[];
@@ -1264,6 +1402,15 @@ export interface CreateProfileDTO {
   experience?: Partial<Experience>[];
   strengths?: Partial<Strength>[];
   skills?: string[];
+  /**
+   * The author's grouping of `skills`.
+   *
+   * Sent whether or not the profile renders grouped: the grouping is storage
+   * and the layout is rendering, so switching to the plain list and back must
+   * not lose the headings somebody assigned. Omitting the field entirely leaves
+   * whatever is stored alone; sending an empty list clears it.
+   */
+  skillCategories?: SkillCategoryGroup[];
   hardSkills?: string[];
   softSkills?: string[];
   education?: Partial<Education>[];
@@ -1472,6 +1619,13 @@ export const profilesApi = {
 };
 
 /** What `POST /profiles/import` reports back. */
+export interface TemplateImportResult {
+  templates: Template[];
+  imported: number;
+  /** How many kept the id from the file; the rest were given a new one. */
+  keptIds: number;
+}
+
 export interface ProfileImportResult {
   profiles: Profile[];
   imported: number;
@@ -1550,14 +1704,29 @@ export const templatesApi = {
     });
   },
 
-  uploadJson: async (file: File): Promise<Template> => {
+  /**
+   * Imports one file's worth of templates.
+   *
+   * A file may hold one template, a list of them, or `{ "templates": [ ... ] }`
+   * - the three shapes an export produces. The server saves all of them or
+   * none, so a partial result is not something this has to represent.
+   */
+  uploadJson: async (file: File): Promise<TemplateImportResult> => {
     const formData = new FormData();
     formData.append('template', file);
 
-    return apiFetch<Template>('/templates/upload-json', {
-      method: 'POST',
-      body: formData,
-    });
+    const result = await apiFetch<Template & Partial<TemplateImportResult>>(
+      '/templates/upload-json',
+      { method: 'POST', body: formData }
+    );
+    // A server that predates multi-template files answers with the template
+    // itself and nothing else. Read as one import rather than as zero.
+    const templates = result.templates ?? [result as Template];
+    return {
+      templates,
+      imported: result.imported ?? templates.length,
+      keptIds: result.keptIds ?? 0,
+    };
   },
 
   delete: (id: string) =>

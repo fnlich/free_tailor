@@ -171,6 +171,7 @@ export default function TemplatesPage() {
   const [selectedJsonFile, setSelectedJsonFile] = useState<File | null>(null);
   const [jsonUploadError, setJsonUploadError] = useState('');
   const [isJsonUploading, setIsJsonUploading] = useState(false);
+  const [jsonUploadNotice, setJsonUploadNotice] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jsonFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -296,11 +297,22 @@ export default function TemplatesPage() {
     }
     setIsJsonUploading(true);
     setJsonUploadError('');
+    setJsonUploadNotice('');
     try {
-      await templatesApi.uploadJson(selectedJsonFile);
+      const result = await templatesApi.uploadJson(selectedJsonFile);
       await loadTemplates();
       setShowJsonUploadModal(false);
       setSelectedJsonFile(null);
+      // Said out loud, because a file may hold several and the list is sorted
+      // by date rather than grouped - so "did all six arrive?" is not a
+      // question the page itself answers.
+      const renamed = result.imported - result.keptIds;
+      setJsonUploadNotice(
+        `Imported ${result.imported} template${result.imported === 1 ? '' : 's'}` +
+          (renamed > 0
+            ? `. ${renamed} had an id already in use here and ${renamed === 1 ? 'was' : 'were'} given a new one.`
+            : '.')
+      );
       if (jsonFileInputRef.current) jsonFileInputRef.current.value = '';
     } catch (err) {
       setJsonUploadError(err instanceof Error ? err.message : 'Failed to upload template');
@@ -349,6 +361,19 @@ export default function TemplatesPage() {
           </button>
         </div>
       </div>
+
+      {jsonUploadNotice && (
+        <div className="mb-6 flex items-start justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+          <span>{jsonUploadNotice}</span>
+          <button
+            onClick={() => setJsonUploadNotice('')}
+            className="text-gray-500 hover:text-gray-700"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
 
       {(showManualModal || editingTemplate) && (
         <ManualTemplateEditor
@@ -399,7 +424,14 @@ export default function TemplatesPage() {
             </div>
 
             <p className="text-sm text-gray-600 mb-4">
-              Upload a template JSON file with <code className="text-xs bg-gray-100 px-1 rounded">name</code>, <code className="text-xs bg-gray-100 px-1 rounded">htmlContent</code>, <code className="text-xs bg-gray-100 px-1 rounded">sections</code>, and optional <code className="text-xs bg-gray-100 px-1 rounded">description</code>, <code className="text-xs bg-gray-100 px-1 rounded">cssContent</code>.
+              A template needs <code className="text-xs bg-gray-100 px-1 rounded">name</code> and{' '}
+              <code className="text-xs bg-gray-100 px-1 rounded">htmlContent</code>;{' '}
+              <code className="text-xs bg-gray-100 px-1 rounded">sections</code>,{' '}
+              <code className="text-xs bg-gray-100 px-1 rounded">description</code> and{' '}
+              <code className="text-xs bg-gray-100 px-1 rounded">cssContent</code> are optional.
+              The file may hold one template, a list of them, or{' '}
+              <code className="text-xs bg-gray-100 px-1 rounded">{'{ "templates": [ ... ] }'}</code> —
+              so an exported set goes straight back in.
             </p>
 
             {jsonUploadError && (

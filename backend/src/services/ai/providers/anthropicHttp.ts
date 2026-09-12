@@ -1,5 +1,9 @@
 import { getProviderApiKey } from '../../../config/aiModelConfig';
-import { getProviderDescriptor } from '../../../config/providerCatalog';
+import {
+  getProviderDescriptor,
+  providerSupportsEffort,
+  providerSupportsThinking,
+} from '../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../errors';
 import { collectUnsupportedReasoningParams } from '../reasoningParams';
 import type {
@@ -75,8 +79,8 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
     maxOutputTokens: true,
     // Neither is wired for this transport yet, so a caller asking for one is
     // told it was dropped rather than left to assume it applied.
-    effort: false,
-    thinking: false,
+    effort: providerSupportsEffort(PROVIDER_ID),
+    thinking: providerSupportsThinking(PROVIDER_ID),
     nativeJsonMode: 'none',
     systemBlocks: true,
     requiresApiKey: true,

@@ -1,6 +1,8 @@
 import { EFFORT_LEVELS, isEffortLevel, type EffortLevel } from '../services/ai/types';
 import { DEFAULT_CLI_EFFORT } from '../services/ai/providers/claudeCli/options';
 import { resolveRequestedAIModel, resolveStoredAIModelPreference } from './aiModelConfig';
+import { isHybridModelId } from './providerCatalog';
+import type { FreeChatRoute } from '../services/ai/freeChatRouting';
 import type { AIProvider } from '../types/template';
 
 /**
@@ -127,6 +129,15 @@ export type AiChoice = {
   modelLabel: string;
   effort?: EffortLevel;
   thinking?: ThinkingMode;
+  /**
+   * Set only when the choice was Hybrid.
+   *
+   * `provider` above already names the account this call is going to, chosen by
+   * the router. This says the choice was "either account", which is what lets
+   * the executor move to the other one when this one is out of messages - a
+   * single-account choice must fail instead, because somebody picked it.
+   */
+  route?: FreeChatRoute;
 };
 
 /**
@@ -152,19 +163,28 @@ export async function resolveAiChoice(
   const model = overridePreferences.modelId
     ? await resolveRequestedAIModel(overridePreferences.modelId)
     : await resolveStoredAIModelPreference(profilePreferences.modelId);
+
+  // Read from the id that was ASKED FOR, not from the record that came back.
+  // Hybrid resolves to one of the two free accounts, so by the time the record
+  // exists it is indistinguishable from having picked that account outright -
+  // and that difference is the whole of what hybrid means.
+  const hybrid = isHybridModelId(preferences.modelId);
+
   return {
     provider: model.provider,
     modelName: model.modelName,
     modelId: model.id,
-    modelLabel: model.name,
+    modelLabel: hybrid ? `${model.name} (hybrid)` : model.name,
     effort: preferences.effort,
     thinking: preferences.thinking,
+    ...(hybrid ? { route: 'hybrid' as const } : {}),
   };
 }
 
 /** One line for the generation logs, so a run says what it ran with. */
 export function describeAiChoice(choice: AiChoice): string {
   const parts = [`${choice.provider}/${choice.modelName}`];
+  if (choice.route) parts.push(`route=${choice.route}`);
   if (choice.effort) parts.push(`effort=${choice.effort}`);
   if (choice.thinking) parts.push(`thinking=${choice.thinking}`);
   return parts.join(' ');

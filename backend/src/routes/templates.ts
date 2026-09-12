@@ -10,9 +10,10 @@ import {
   isBuiltInTemplate,
   createManualTemplate,
   updateManualTemplate,
-  uploadJsonTemplate,
+  uploadJsonTemplates,
   type ManualTemplateConfig,
 } from '../extractors/templateExtractor';
+import { TemplateImportError } from '../services/templateImport';
 import { generateTemplatePreviewHTML } from '../generators/pdfGenerator';
 
 const router = Router();
@@ -122,16 +123,37 @@ router.post('/create-manual', authMiddleware, async (req: Request, res: Response
   }
 });
 
-// Upload JSON template (protected)
+/**
+ * Import templates from an uploaded JSON file (protected).
+ *
+ * Takes one template, a list of them, or `{ "templates": [ ... ] }` - the three
+ * shapes an export actually produces - and saves all of them or none.
+ *
+ * The response carries BOTH shapes on purpose. `templates` and the counts are
+ * what a client that knows about multi-template files reads; the first
+ * template's fields are spread alongside them so a client written against the
+ * old single-template response keeps working across a deploy, which for a
+ * browser tab that has not been reloaded is not a hypothetical.
+ */
 router.post('/upload-json', authMiddleware, uploadJson.single('template'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No JSON file uploaded' });
       return;
     }
-    const template = await uploadJsonTemplate(req.file.buffer);
-    res.status(201).json(template);
+    const imported = await uploadJsonTemplates(req.file.buffer);
+    const templates = imported.map((entry) => entry.template);
+    res.status(201).json({
+      ...templates[0],
+      templates,
+      imported: templates.length,
+      keptIds: imported.filter((entry) => entry.keptId).length,
+    });
   } catch (error) {
+    if (error instanceof TemplateImportError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     console.error('Error uploading JSON template:', error);
     res.status(400).json({
       error: error instanceof Error ? error.message : 'Failed to upload template',

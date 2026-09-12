@@ -263,7 +263,11 @@ test('buildTailorResumePromptValues sends extracted skillsJSON and folds soft sk
   assert.equal('softSkillsJSON' in values, false);
   assert.equal('hardSkillsJSON' in values, false);
   assert.deepEqual(hardSkills, skills);
-  assert.equal(promptProfile.experience[0].description, '');
+  // Absent now, not blanked. The prompt profile is built by naming what goes
+  // in, so the raw description is not carried as an empty string alongside the
+  // `companyContext` that replaced it.
+  assert.equal('description' in promptProfile.experience[0], false);
+  assert.ok(typeof promptProfile.experience[0].companyContext === 'string');
   assert.equal(values.profileJson.includes('Stripe builds programmable financial services'), false);
   assert.equal(Array.isArray(skills), true);
   assert.equal(skills.every((skill) => typeof skill === 'string'), true);

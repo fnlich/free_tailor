@@ -15,6 +15,10 @@ import {
   PromptSummary,
   ProfileSettings,
   HardSkillOrdering,
+  HardSkillCategory,
+  HARD_SKILL_CATEGORIES,
+  SkillCategoryGroup,
+  TechnicalSkillsLayout,
   AiPreferences,
   PublicAppSettings,
   DEFAULT_PUBLIC_APP_SETTINGS,
@@ -59,10 +63,88 @@ const DEFAULT_PROFILE_SETTINGS: Required<ProfileSettings> = {
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
   companyFolderNameTemplate: '{{row number}}_{{company name}}',
   hardSkillOrdering: 'library',
+  technicalSkillsLayout: 'categorized',
   // Empty means every field inherits the app default, which is what a profile
   // that has never chosen should do.
   ai: {},
 };
+
+const TECHNICAL_SKILLS_LAYOUT_OPTIONS: Array<{
+  value: TechnicalSkillsLayout;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'categorized',
+    label: 'Grouped under headings',
+    description:
+      'Technical Skills is split into headings - Languages, Cloud and Infrastructure, and so on.',
+  },
+  {
+    value: 'flat',
+    label: 'One plain list',
+    description: 'Technical Skills is a single list of skill names, with no headings over it.',
+  },
+];
+
+function normalizeTechnicalSkillsLayout(value?: string): TechnicalSkillsLayout {
+  return value === 'flat' ? 'flat' : DEFAULT_PROFILE_SETTINGS.technicalSkillsLayout;
+}
+
+/**
+ * The profile's grouping, as a lookup from skill to heading.
+ *
+ * The form edits one heading per skill rather than a list of groups, because
+ * that is the question being answered - "where does this skill go?" - and it
+ * makes the two impossible states unrepresentable: a skill in two groups, and a
+ * group holding a skill the profile no longer claims.
+ */
+function readSkillCategoryMap(groups?: SkillCategoryGroup[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const group of groups ?? []) {
+    const category = group.category?.trim();
+    if (!category) continue;
+    for (const skill of group.skills ?? []) {
+      if (skill && !map[skill]) map[skill] = category;
+    }
+  }
+  return map;
+}
+
+/**
+ * Turns the per-skill headings back into groups, in the library's own order.
+ *
+ * A heading the profile no longer has any skill under is dropped rather than
+ * stored empty, and a skill with no heading is simply absent - the renderer
+ * infers one for it. Both of those keep the stored shape the same as what an
+ * imported file would produce, so a profile edited here and a profile uploaded
+ * as JSON are indistinguishable afterwards.
+ */
+function buildSkillCategories(
+  skills: string[],
+  categoryBySkill: Record<string, string>
+): SkillCategoryGroup[] {
+  const order: string[] = [];
+  const grouped = new Map<string, string[]>();
+  for (const skill of skills) {
+    const category = categoryBySkill[skill]?.trim();
+    if (!category) continue;
+    if (!grouped.has(category)) {
+      grouped.set(category, []);
+      order.push(category);
+    }
+    grouped.get(category)!.push(skill);
+  }
+
+  // The library's order first, so a profile reads down the page the way the
+  // rendered resume does; anything the person typed themselves follows.
+  const known = HARD_SKILL_CATEGORIES.filter((category) => grouped.has(category));
+  const extra = order.filter((category) => !known.includes(category as HardSkillCategory));
+  return [...known, ...extra].map((category) => ({
+    category,
+    skills: grouped.get(category) ?? [],
+  }));
+}
 
 const HARD_SKILL_ORDERING_OPTIONS: Array<{ value: HardSkillOrdering; label: string; description: string }> = [
   {
@@ -110,6 +192,9 @@ function getInitialProfileSettings(profile?: Profile): Required<ProfileSettings>
       profile?.profileSettings?.companyFolderNameTemplate ||
       DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
     hardSkillOrdering: normalizeHardSkillOrdering(profile?.profileSettings?.hardSkillOrdering),
+    technicalSkillsLayout: normalizeTechnicalSkillsLayout(
+      profile?.profileSettings?.technicalSkillsLayout
+    ),
     ai: normalizeAiPreferences(profile?.profileSettings?.ai),
   };
 }
@@ -123,6 +208,14 @@ export default function ProfileForm({
   const [error, setError] = useState('');
 
   const initialHardSkills = initialData?.hardSkills || initialData?.skills || [];
+  const [skillCategoryBySkill, setSkillCategoryBySkill] = useState<Record<string, string>>(() =>
+    readSkillCategoryMap(initialData?.skillCategories)
+  );
+  // Open straight away for a profile that already has headings - otherwise
+  // editing one means finding a toggle to discover that the work is there.
+  const [showSkillCategories, setShowSkillCategories] = useState(
+    () => (initialData?.skillCategories?.length ?? 0) > 0
+  );
 
   const [formData, setFormData] = useState<ManualProfileFormData>({
     name: initialData?.name || '',
@@ -242,9 +335,16 @@ export default function ProfileForm({
             formData.profileSettings.companyFolderNameTemplate.trim() ||
             DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
           hardSkillOrdering: normalizeHardSkillOrdering(formData.profileSettings.hardSkillOrdering),
+          technicalSkillsLayout: normalizeTechnicalSkillsLayout(
+            formData.profileSettings.technicalSkillsLayout
+          ),
           ai: normalizeAiPreferences(formData.profileSettings.ai),
         },
         skills: formData.hardSkills,
+        // Sent whether or not the layout is grouped. The grouping is storage
+        // and the layout is rendering, so switching to the plain list and back
+        // must not lose the headings somebody took the trouble to assign.
+        skillCategories: buildSkillCategories(formData.hardSkills, skillCategoryBySkill),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save profile');
@@ -380,6 +480,19 @@ export default function ProfileForm({
       education: formData.education.filter((_, i) => i !== index),
     });
   };
+
+  // The library's headings, plus any this profile already uses. A profile
+  // imported from a file may carry headings this build has never heard of, and
+  // dropping them from the menu would silently reassign them on the next save.
+  const headingOptions = [
+    ...HARD_SKILL_CATEGORIES,
+    ...Object.values(skillCategoryBySkill)
+      .map((category) => category.trim())
+      .filter(
+        (category) =>
+          category && !HARD_SKILL_CATEGORIES.includes(category as HardSkillCategory)
+      ),
+  ].filter((category, index, all) => all.indexOf(category) === index);
 
   const addHardSkill = async () => {
     const value = hardSkillInput.trim();
@@ -533,6 +646,7 @@ export default function ProfileForm({
           onChange={updateAiPreferences}
           models={appSettings.aiModels}
           providerLocks={appSettings.providerLocks}
+          providerTuning={appSettings.providerTuning}
           effortLevels={appSettings.aiPreferenceDefaults.effortLevels}
           thinkingModes={appSettings.aiPreferenceDefaults.thinkingModes}
           inheritedFrom="app default"
@@ -645,6 +759,29 @@ export default function ProfileForm({
             </select>
             <p className="mt-1 text-xs text-gray-500">
               {HARD_SKILL_ORDERING_OPTIONS.find((option) => option.value === formData.profileSettings.hardSkillOrdering)?.description}
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Technical Skills Layout
+            </label>
+            <select
+              value={formData.profileSettings.technicalSkillsLayout}
+              onChange={(e) => updateProfileSetting('technicalSkillsLayout', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {TECHNICAL_SKILLS_LAYOUT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              {
+                TECHNICAL_SKILLS_LAYOUT_OPTIONS.find(
+                  (option) => option.value === formData.profileSettings.technicalSkillsLayout
+                )?.description
+              }
             </p>
           </div>
           <div>
@@ -900,7 +1037,31 @@ export default function ProfileForm({
 
       {/* Hard Skills */}
       <div className="space-y-4">
-        <h3 className="text-lg font-medium text-gray-900 border-b pb-2">Hard Skills</h3>
+        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b pb-2">
+          <h3 className="text-lg font-medium text-gray-900">Hard Skills</h3>
+          <button
+            type="button"
+            onClick={() => setShowSkillCategories((shown) => !shown)}
+            className="text-sm text-blue-600 hover:text-blue-800"
+          >
+            {showSkillCategories ? 'Hide headings' : 'Assign headings'}
+          </button>
+        </div>
+        {showSkillCategories && (
+          <p className="text-sm text-gray-600">
+            A skill left on <span className="font-medium">Work it out</span> is filed by the shared
+            skill library. Set one here when the library would put it somewhere else — it has no way
+            to know that your Vault is infrastructure rather than a library.
+            {formData.profileSettings.technicalSkillsLayout === 'flat' && (
+              <>
+                {' '}
+                This profile currently renders Technical Skills as one plain list, so these headings
+                are stored but not shown. They come back if you switch the layout under Profile
+                Settings.
+              </>
+            )}
+          </p>
+        )}
         <div className="flex gap-2">
           <input
             type="text"
@@ -931,6 +1092,23 @@ export default function ProfileForm({
               className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full flex items-center gap-2"
             >
               {skill}
+              {showSkillCategories && (
+                <select
+                  value={skillCategoryBySkill[skill] ?? ''}
+                  onChange={(e) =>
+                    setSkillCategoryBySkill((current) => ({ ...current, [skill]: e.target.value }))
+                  }
+                  aria-label={`Heading for ${skill}`}
+                  className="max-w-[12rem] rounded border border-blue-200 bg-white px-1 py-0.5 text-xs text-gray-700"
+                >
+                  <option value="">Work it out</option>
+                  {headingOptions.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 type="button"
                 onClick={() => removeHardSkill(skill)}

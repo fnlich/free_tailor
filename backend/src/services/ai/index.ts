@@ -30,6 +30,13 @@ export {
 } from './registry';
 export type { ProviderHealthReport } from './registry';
 
+export { resolveBatchCapacity, cliConcurrency } from './batchCapacity';
+export {
+  analysisCacheStats,
+  resetAnalysisCacheForTests,
+} from './analysisCache';
+export type { BatchCapacity } from './batchCapacity';
+
 export {
   AsyncSemaphore,
   getProviderSemaphore,
@@ -37,6 +44,16 @@ export {
   mapWithConcurrency,
 } from './concurrency';
 export type { ConcurrentMapResult } from './concurrency';
+
+export {
+  describeFreeChatRouting,
+  FREE_CHAT_ROUTES,
+  HYBRID_MODEL_ID,
+  isFreeChatRoute,
+  planRoute,
+  resetFreeChatRoutingForTests,
+} from './freeChatRouting';
+export type { FreeChatRoute, FreeChatSiteStatus } from './freeChatRouting';
 
 export { getUsageSnapshot, warnOnce } from './telemetry';
 export type { UsageSnapshot } from './telemetry';

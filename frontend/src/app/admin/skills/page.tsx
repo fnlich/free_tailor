@@ -1,28 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { resumeApi } from '@/lib/api';
+import { HARD_SKILL_CATEGORIES, resumeApi, type HardSkillCategory } from '@/lib/api';
 
 type SkillType = 'hard' | 'soft';
 type SortOption = 'az' | 'za';
-type HardSkillCategory =
-  | 'Languages'
-  | 'Frameworks and Libraries'
-  | 'Software Architecture & Design'
-  | 'Security'
-  | 'Cloud and Infrastructure'
-  | 'Databases and Storage'
-  | 'DevOps and CI/CD'
-  | 'Observability and Monitoring'
-  | 'Testing and Quality'
-  | 'APIs and Integration'
-  | 'Engineering Practices & Methodology'
-  | 'Data Engineering & Streaming'
-  | 'AI/ML & Data Science'
-  | 'Version Control & Collaboration'
-  | 'Operating Systems & Platforms'
-  | 'Frontend & UI/UX Development'
-  | 'Mobile Development';
 
 type EditingState = {
   type: SkillType;
@@ -32,25 +14,6 @@ type EditingState = {
 
 const normalize = (value: string) => value.trim().toLowerCase();
 const PAGE_SIZE_OPTIONS = [10, 25, 50];
-const HARD_SKILL_CATEGORIES: HardSkillCategory[] = [
-  'Languages',
-  'Frameworks and Libraries',
-  'Software Architecture & Design',
-  'Security',
-  'Cloud and Infrastructure',
-  'Databases and Storage',
-  'DevOps and CI/CD',
-  'Observability and Monitoring',
-  'Testing and Quality',
-  'APIs and Integration',
-  'Engineering Practices & Methodology',
-  'Data Engineering & Streaming',
-  'AI/ML & Data Science',
-  'Version Control & Collaboration',
-  'Operating Systems & Platforms',
-  'Frontend & UI/UX Development',
-  'Mobile Development',
-];
 const PRIORITY_OPTIONS = [1, 2, 3, 4, 5];
 
 export default function SkillsPage() {

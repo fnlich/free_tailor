@@ -365,7 +365,9 @@ export default function ModelsPage() {
                     {model.description || 'No description provided.'}
                   </div>
                   {providerIsLocked && (
-                    <div className="text-sm text-amber-700">{lockReason(settings, model.provider)}</div>
+                    // Plain: the Locked badge above is the status, and this is
+                    // the explanation under it. See the same note on Settings.
+                    <div className="text-sm text-gray-600">{lockReason(settings, model.provider)}</div>
                   )}
                   <div className="text-xs text-gray-500">
                     Updated {new Date(model.updatedAt).toLocaleString()}
