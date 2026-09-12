@@ -17,7 +17,7 @@
 
 Tailored Resume Builder is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
 
-By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **Claude subscription seat** through the local `claude` CLI is also supported, but locked until you sign that seat in - see Locked providers below. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
+By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **Claude subscription seat** through the local `claude` CLI is also offered, and needs only that the `claude` binary is installed and signed in on the machine running the server. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
 
 ### ✨ Features
 
@@ -67,27 +67,31 @@ is a compile error rather than a silent fall-through.
 |---|---|---|
 | `claude-web` (default) | A claude.ai tab you signed in to yourself | Free. Slow, and one conversation per browser. |
 | `chatgpt-web` | A chatgpt.com tab you signed in to yourself | Free, same terms. |
-| `claude-cli` | The `claude` CLI's own sign-in — no key | **Locked** by default; see below. Free at the margin, one subprocess per call. |
+| `claude-cli` | The `claude` CLI's own sign-in — no key | Offered. Needs `claude` installed and signed in on the server's machine. Free at the margin, one subprocess per call. |
 | `claude` | `ANTHROPIC_API_KEY` | Metered. The only provider that can still honour `temperature`. |
 | `openai` | `OPENAI_API_KEY` | Metered. |
 | `deepseek` | `DEEPSEEK_API_KEY` | Metered. |
 
 **Locked providers.** A lock means this installation cannot run a provider —
 distinct from the admin's enable switch, which records what an operator wants.
-`claude-cli` is locked out of the box, because it needs a Claude subscription
-seat signed in to the CLI on the machine running the server and most do not
-have one. Its models stay in every picker, greyed out behind a 🔒 with the
-reason next to them, rather than vanishing: a model that disappears reads as a
-bug. Nothing dispatches to a locked provider — naming one by model id, by
-provider id or as `provider:modelName` is refused with a sentence saying so.
+**Nothing is locked out of the box.** A locked provider's models stay in every
+picker, greyed out behind a 🔒 with the reason next to them, rather than
+vanishing: a model that disappears reads as a bug. Nothing dispatches to a
+locked provider — naming one by model id, by provider id or as
+`provider:modelName` is refused with a sentence saying so.
 
-Unlock it once the seat is signed in by listing it in `.env`:
+Lock one from `.env` when the machine cannot run it — a box with no `claude`
+binary signed in, or a shared install whose operator does not want the
+subscription seat spent:
 
 ```env
-AI_UNLOCKED_PROVIDERS=claude-cli
+AI_LOCKED_PROVIDERS=claude-cli
 ```
 
-There is deliberately no button for that in the admin UI. A lock is a fact
+`AI_UNLOCKED_PROVIDERS` is the mirror, and wins when a provider is in both, so
+it stays an escape hatch.
+
+There is deliberately no button for either in the admin UI. A lock is a fact
 about the machine, and only whoever set the machine up can know it has changed.
 
 The `openrouter` provider was **replaced** by `claude-cli`. An existing database
@@ -96,7 +100,7 @@ is migrated on the next boot (its settings row is backed up first, and
 read as `claude-cli` whether or not that migration has run.
 
 A second migration gives an install upgrading from before the browser-chat
-providers their `Claude (free)` and `ChatGPT (free)` model records. Model
+providers their `claude-web` and `chatgpt-web` model records. Model
 records are stored per install, so the seed list a new install starts from
 could never reach one that had already saved settings - which is why those two
 providers were enabled and configurable while no model in any picker named
@@ -129,9 +133,8 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 - A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
   Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
   backend prints the resolved path at startup.
-- **Claude Code**, only if you want to run on a subscription seat. That
-  provider is locked until you install it, sign it in, and name it in
-  `AI_UNLOCKED_PROVIDERS`; the free browser-chat providers need none of this.
+- **Claude Code**, only if you want to run on a subscription seat. Install it
+  and sign it in; the free browser-chat route needs none of this.
 
   ```bash
   npm i -g @anthropic-ai/claude-code
@@ -215,10 +218,10 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   free Claude requests run at once; measured against a fixture answering in
   about three seconds, four requests took 25.5s on one browser and 12.9s on two.
 
-  Each provider has its **own queue** - Claude (free), ChatGPT (free) and the
-  Claude CLI never wait for one another - and **no queue has a length limit**.
-  Whenever one of that site's tabs frees, the request that has waited longest
-  takes it. A request only ever gives up on its own timeout, never for being
+  There are **two queues** - one shared by every browser whichever site it
+  shows, and one for the Claude CLI seat, so a slow seat never stalls the
+  browsers - and **neither has a length limit**. Whenever a browser frees, the
+  task that has waited longest takes it. A request only ever gives up on its own timeout, never for being
   late in the line. If a configured browser turns out not to be running, the
   request is retried on another of that site's browsers and the dead one is set
   aside for a short while.
@@ -275,8 +278,8 @@ and is resolved from the directory the backend was started in.
 Nothing else is required for AI generation: the default provider drives a
 claude.ai tab in the debug Chrome described above, which costs nothing and
 needs no key. The `AI_CLI_*` variables in `.env.example` tune the model,
-effort, concurrency and timeouts of the subscription-seat provider, which is
-locked until `AI_UNLOCKED_PROVIDERS` names it.
+effort, concurrency and timeouts of the subscription-seat provider, which
+needs the `claude` CLI installed and signed in on this machine.
 
 The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the page was loaded from, and the backend accepts requests from any origin on the same host as the API. That means you can open the app through `localhost`, a LAN IP, or a hostname without changing configuration.
 
@@ -437,18 +440,18 @@ See `.env.example` for the full `AI_CLI_*` list.
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Browsers take tasks off the head of the queue as they come free, so with three browsers three resumes are built at once and the moment one finishes the next task starts on that browser. A second request appends behind the first. There are two queues, because there are two resources: one shared by every debug browser, one for the Claude CLI seat, so a stalled seat cannot hold up the browsers. |
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of browser time. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was in a browser at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones in a browser are aborted. |
-| A profile's platform choice inside a batch | Still honoured. A profile set to `Claude (free)` waits for a Claude browser even if a ChatGPT one is idle; a profile on `Hybrid (free)` goes to whichever frees up first. A pinned task at the head does not block a browser it cannot use - the browser reaches past it for the next task it can run. A task no registered browser can serve fails with that reason rather than waiting for ever. |
+| A profile's platform choice inside a batch | Still honoured. A profile that had picked `claude-web` before the pickers were folded into one entry still waits for a Claude browser even if a ChatGPT one is idle; a profile on `Default (browser)` goes to whichever frees up first. A pinned task at the head does not block a browser it cannot use - the browser reaches past it for the next task it can run. A task no registered browser can serve fails with that reason rather than waiting for ever. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: the browsers registered for that site, both sites' added together under Hybrid, or `AI_CLI_CONCURRENCY` slots for the subscription seat. The queues were already there - a free browser is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. |
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
 | One browser is out of messages and the whole request fails | Fixed. A browser that is reachable but cannot take the prompt - out of messages, signed out, wedged, or a previous turn that never let go - is passed over for the next browser of that site, and left out for a few minutes so later calls skip it too. That is the reason to run more than one: each window is a separate session, so an account's wall is not the site's. The retry only happens when the prompt never reached the site; once it has landed, another browser would be asking the same question twice. When every browser refuses, the error is still that browser's own (a usage wall is a 429, a signed-out tab a 503) with each browser and its reason named in the log. |
-| A free account runs out of messages halfway through a batch | Set the profile's model to **Hybrid (free)**. It spreads calls across both free accounts - a tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry - and moves to the other one when either is out of messages, signed out, or has no browser running. Hybrid only appears when both free providers are enabled, since with one there is nothing to be hybrid between. |
+| A free account runs out of messages halfway through a batch | Nothing to set - **Default (browser)** already spreads calls across both free accounts. A tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry, so it moves to the other whenever one is out of messages, signed out, or has no browser running. It appears whenever at least one free provider is enabled, and covers whichever of the two are. |
 | Effort and Thinking are greyed out | The chosen model is a chat window, and a chat window has no effort flag and no thinking budget - there is nowhere to put either. The two selects go inactive rather than accept a setting that would change nothing. Pick the Claude CLI seat to get them back. |
 | Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
-| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. `claude-cli` needs a Claude subscription seat signed in to the CLI on this machine; sign it in and add `AI_UNLOCKED_PROVIDERS=claude-cli` to `.env`, then restart. Use `Claude (free)` or `ChatGPT (free)` otherwise. |
+| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. Nothing is locked by default, so this means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart, or use `Default (browser)`. |
 | The free Claude and ChatGPT models are missing from the model menus | An install that saved settings before those providers existed stores its own model list, which the newer seed list cannot reach. The migration on the next boot adds them; if it did not run, the backend log says why on a `[db]` line. Adding them by hand under Admin → Models works too: provider `Claude (browser)` or `ChatGPT (browser)`, model name `chat`. |
 | A free provider says it `has no browser set up yet` | No debug port is registered for that site. Register one under Admin → Settings → Browser Chat (free), start it with `npm run browser:debug`, and sign in to the tab it opens. |
 | A platform shows **Not active** though its window is plainly open | Active means the provider found a signed-in chat tab, not merely a running browser. Open that window, check the tab is signed in and showing the chat site, then press **Check status**. The line under each platform says how many registered ports are reachable and how many are showing the site, which separates "not started" from "started but signed out". |
@@ -491,7 +494,7 @@ and spawns no subprocess.
 |-------|--------------|
 | **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
 | **Backend** | Express, TypeScript, better-sqlite3 |
-| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI (subscription seat, locked by default), OpenAI, Anthropic API, DeepSeek |
+| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI (subscription seat), OpenAI, Anthropic API, DeepSeek |
 | **PDF** | Puppeteer |
 | **DOCX** | html-to-docx |
 | **Templates** | Handlebars |

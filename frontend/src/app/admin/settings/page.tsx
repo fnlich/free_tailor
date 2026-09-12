@@ -609,17 +609,19 @@ export default function AdminSettingsPage() {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Browser Chat (free)</h2>
             <p className="text-sm text-gray-600">
-              <strong>Claude (free)</strong> and <strong>ChatGPT (free)</strong> drive chat tabs in
-              browsers you start here and sign in to yourself. Nothing is metered and no API key is
-              stored - the chat plan you already have is the quota.
+              <strong>Default (browser)</strong> drives chat tabs in browsers you start here and
+              sign in to yourself. Nothing is metered and no API key is stored - the chat plan you
+              already have is the quota. Claude and ChatGPT are both used; which one a given resume
+              lands on is whichever browser is free, so there is one choice to make rather than
+              three.
             </p>
             <p className="mt-2 text-sm text-gray-600">
               One browser shows <strong>one</strong> chat tab, on its own port. That is not a
               preference: a second tab in the same window is a background tab, and Chrome freezes
-              those. So <strong>two browsers for a site means two of its requests run at once</strong>.
-              Each site has its own queue - Claude free, ChatGPT free and the Claude CLI never wait
-              for one another - and no queue has a length limit: whenever a tab frees, the request
-              that has waited longest takes it.
+              those. So <strong>every browser you add runs one more resume at a time</strong>.
+              There are two queues - one shared by every browser, one for the Claude CLI seat - and
+              neither has a length limit: whenever a browser frees, it takes the task that has
+              waited longest.
             </p>
           </div>
 
@@ -765,9 +767,8 @@ export default function AdminSettingsPage() {
                       />
                       {/* The frontend's label, not the one the server sent.
                           The rows above render getAIProviderLabel, and the two
-                          vocabularies differ - "Claude (browser)" here against
-                          "Claude (free)" on the wire - so using the server's
-                          put one provider under two names in a single panel. */}
+                          vocabularies differ, so using the server's would put
+                          one provider under two names in a single panel. */}
                       <span className="text-sm font-medium text-gray-900">
                         {getAIProviderLabel(platform.id)}
                       </span>

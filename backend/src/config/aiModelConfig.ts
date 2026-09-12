@@ -599,7 +599,7 @@ function resolveDefaultModelId(
     const freeSites = BROWSER_CHAT_SITE_IDS.filter((site) =>
       availableModels.some((model) => model.provider === site)
     );
-    if (freeSites.length >= 2) return preferredId;
+    if (freeSites.length > 0) return preferredId;
   }
 
   if (preferredId && availableModels.some((model) => model.id === preferredId)) {
@@ -637,7 +637,11 @@ function synthesizeHybridModel(settings: AppSettings): AIModelRecord[] {
   const sites = BROWSER_CHAT_SITE_IDS.filter((site) =>
     runnable.some((model) => model.provider === site)
   );
-  if (sites.length < 2) return [];
+  // ONE is enough, where it used to take two. This is no longer an extra option
+  // beside the per-site ones - it is the only way to pick browser mode at all,
+  // so requiring both would leave an install that runs a single platform with no
+  // browser option in the menu.
+  if (sites.length === 0) return [];
 
   const now = new Date(0).toISOString();
   return [
@@ -654,9 +658,24 @@ function synthesizeHybridModel(settings: AppSettings): AIModelRecord[] {
   ];
 }
 
-/** The models a profile or a request may pick, hybrid included. */
+/**
+ * The models a profile or a request may pick.
+ *
+ * The per-site free models are NOT among them. "Claude (free)" and "ChatGPT
+ * (free)" were a choice with no good answer: the queue hands a task to whichever
+ * browser comes free, so pinning one to a platform only meant waiting longer for
+ * the same resume. They are replaced by the single "Default (browser)" entry,
+ * which means "any of them".
+ *
+ * They stay in `aiModels` rather than being deleted, so Admin -> Models can
+ * still manage them and - the part that matters - a profile that picked one
+ * before this change keeps resolving to exactly what it picked.
+ */
 export function getPickableModels(settings: AppSettings): AIModelRecord[] {
-  return [...getRunnableModels(settings), ...synthesizeHybridModel(settings)];
+  const offered = getRunnableModels(settings).filter(
+    (model) => !isBrowserChatSiteId(model.provider)
+  );
+  return [...synthesizeHybridModel(settings), ...offered];
 }
 
 /**
@@ -959,7 +978,11 @@ function toLegacyProviderFlags(settings: AppSettings): LegacyProviderFlags {
 }
 
 function toPublicSettings(settings: AppSettings): PublicAppSettings {
-  const runnableModels = getRunnableModels(settings);
+  // The pickable list, not the runnable one, is what the fallback below must
+  // come from. They differ now that the per-site free models are folded into
+  // one browser entry: falling back to a runnable id would name a model the
+  // picker does not show, and the page would render an empty selection.
+  const pickable = getPickableModels(settings);
   return {
     providersEnabled: { ...settings.providersEnabled },
     ...toLegacyProviderFlags(settings),
@@ -968,12 +991,12 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
     defaultResumeSelection: settings.defaultResumeSelection,
     defaultGroupId: settings.defaultGroupId,
     defaultProfileId: settings.defaultProfileId,
-    defaultModelId: getPickableModels(settings).some((model) => model.id === settings.defaultModelId)
+    defaultModelId: pickable.some((model) => model.id === settings.defaultModelId)
       ? settings.defaultModelId
-      : runnableModels[0]?.id ?? '',
+      : pickable[0]?.id ?? '',
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
-    aiModels: getPickableModels(settings).map((model) => ({ ...model })),
+    aiModels: pickable.map((model) => ({ ...model })),
     googleSheetsSources: settings.googleSheetsSources,
     browserChatEndpoints: settings.browserChatEndpoints.map((entry) => ({ ...entry })),
   };
