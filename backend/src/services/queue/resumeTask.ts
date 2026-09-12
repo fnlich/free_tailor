@@ -34,9 +34,19 @@ export type ResumeJob = {
   sourceRowNumber?: number;
 };
 
-export type ResumeTaskInput = {
-  profile: Profile;
-  job: ResumeJob;
+/**
+ * Everything one resume needs, and nothing that cannot be written to a database.
+ *
+ * A PROFILE ID rather than the profile, and a JOB INDEX rather than the job.
+ * Both are the same saving twice over: the profile is reloaded when the task
+ * runs, and the jobs live once on the batch instead of once per task - thirty
+ * tasks on one posting would otherwise carry thirty copies of it, on disk and in
+ * memory alike.
+ */
+export type ResumeTaskPayload = {
+  batchId: string;
+  profileId: string;
+  jobIndex: number;
   templateId?: string;
   format: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx: boolean;
@@ -44,6 +54,19 @@ export type ResumeTaskInput = {
   /** Tailored content a preview already produced, so the model is not re-asked. */
   tailoredContent?: import('../../types/template').TailoredContent;
 };
+
+export type ResumeTaskInput = {
+  profile: Profile;
+  job: ResumeJob;
+  templateId?: string;
+  format: 'pdf' | 'docx' | 'both';
+  includeCoverLetterDocx: boolean;
+  choice: AiChoice;
+  tailoredContent?: import('../../types/template').TailoredContent;
+};
+
+/** The kind a resume task is registered under. */
+export const RESUME_TASK_KIND = 'resume';
 
 export type ResumeTaskResult = {
   profileId: string;
@@ -239,4 +262,47 @@ export async function runResumeTask(
   }
 
   return result;
+}
+
+/**
+ * Turns a stored payload back into a running resume.
+ *
+ * The indirection a restart costs: a task on disk names its profile and its job
+ * rather than holding them, so this is where they are looked up again. A profile
+ * deleted while its task was queued fails that task by name instead of throwing
+ * something about `undefined`.
+ */
+export function makeResumeRunner(
+  readJobs: (batchId: string) => ResumeJob[] | undefined,
+  readProfile: (profileId: string) => Profile | null
+) {
+  return async (payload: unknown, assignment: Assignment): Promise<ResumeTaskResult> => {
+    const input = payload as ResumeTaskPayload;
+
+    const profile = readProfile(input.profileId);
+    if (!profile) {
+      throw new Error(
+        `Profile ${input.profileId} no longer exists, so this resume cannot be generated.`
+      );
+    }
+
+    const jobs = readJobs(input.batchId);
+    const job = jobs?.[input.jobIndex];
+    if (!job) {
+      throw new Error('The job this resume was queued for is no longer on the batch.');
+    }
+
+    return runResumeTask(
+      {
+        profile,
+        job,
+        templateId: input.templateId,
+        format: input.format,
+        includeCoverLetterDocx: input.includeCoverLetterDocx,
+        choice: input.choice,
+        ...(input.tailoredContent ? { tailoredContent: input.tailoredContent } : {}),
+      },
+      assignment
+    );
+  };
 }

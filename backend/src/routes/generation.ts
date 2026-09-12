@@ -6,9 +6,12 @@ import { listProfiles } from '../database/profileRepository';
 import { describeFailure } from '../middleware/aiErrors';
 import {
   getGenerationQueue,
-  runResumeTask,
+  persistNewBatch,
+  RESUME_TASK_KIND,
+  type Batch,
   type BatchSnapshot,
   type ResumeJob,
+  type ResumeTaskPayload,
   type ResumeTaskResult,
   type TaskDescriptor,
 } from '../services/queue';
@@ -166,7 +169,7 @@ export async function buildTasks(
   const descriptors: Array<TaskDescriptor<ResumeTaskResult>> = [];
   // Jobs outer, profiles inner, so the queue order reads down the sheet the way
   // the person who imported it expects.
-  for (const job of jobs) {
+  for (const [jobIndex, job] of jobs.entries()) {
     for (const profile of profiles) {
       const choice = choices.get(profile.id)!;
       const routing = routeFor(choice);
@@ -182,21 +185,25 @@ export async function buildTasks(
             ? { sourceRowNumber: job.sourceRowNumber }
             : {}),
         },
-        run: (assignment) =>
-          runResumeTask(
-            {
-              profile,
-              job,
-              templateId: body.templateId,
-              format,
-              includeCoverLetterDocx,
-              choice,
-              ...(tailoredByProfile[profile.id]
-                ? { tailoredContent: tailoredByProfile[profile.id] }
-                : {}),
-            },
-            assignment
-          ),
+        kind: RESUME_TASK_KIND,
+        // The PROFILE ID and the JOB INDEX, not the profile and the job. Both
+        // are looked up when the task runs, so a task can be written to a
+        // database and read back after a restart - and so thirty tasks on one
+        // posting do not carry thirty copies of it.
+        payload: {
+          // Rewritten to the real batch id once the batch exists; `submit` is
+          // what mints that, and the payload has to be built before it.
+          batchId: '',
+          profileId: profile.id,
+          jobIndex,
+          templateId: body.templateId,
+          format,
+          includeCoverLetterDocx,
+          choice,
+          ...(tailoredByProfile[profile.id]
+            ? { tailoredContent: tailoredByProfile[profile.id] }
+            : {}),
+        } satisfies ResumeTaskPayload,
       });
     }
   }
@@ -275,7 +282,20 @@ router.post('/batches', async (req: Request, res: Response) => {
     const batch = queue.submit(descriptors, {
       label: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Generation',
       jobCount: jobs.length,
+      // The jobs live on the BATCH, once. Each task refers to its own by index,
+      // so thirty tasks on one posting do not carry thirty copies of it.
+      shared: { jobs },
     });
+
+    // The batch id only exists once `submit` has minted it, and every payload
+    // needs it to find its job again after a restart.
+    for (const task of batch.tasks) {
+      (task.payload as ResumeTaskPayload).batchId = batch.id;
+    }
+    // Written as one transaction rather than row by row: a batch that half
+    // landed because the process died mid-loop would come back with tasks whose
+    // batch does not exist.
+    persistNewBatch(batch as Batch);
 
     console.log(
       `[queue] batch ${batch.id}: ${descriptors.length} resume(s) queued ` +

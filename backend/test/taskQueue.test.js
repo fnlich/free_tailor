@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { TaskQueue } = require('../dist/services/queue/taskQueue');
+const { TaskQueue, registerTaskRunner } = require('../dist/services/queue/taskQueue');
 
 /**
  * The dispatcher: two queues, slots, and FIFO.
@@ -25,25 +25,39 @@ function cliSlots(count) {
   return Array.from({ length: count }, (_, index) => ({ id: `cli${index}`, queue: 'cli' }));
 }
 
-/** A queue whose capacity is fixed, and a recorder for what ran where. */
+/**
+ * A queue whose capacity is fixed, and a recorder for what ran where.
+ *
+ * Tasks name a registered RUNNER rather than carrying a closure, because a
+ * closure cannot be written to a database and the queue is now persisted. The
+ * harness registers one runner per harness instance, keyed on a unique kind, so
+ * two tests in one process cannot resolve to each other's runner.
+ */
+let harnessSeq = 0;
+
 function harness(capacity) {
   const started = [];
   const pending = new Map();
+  const kind = `test-${(harnessSeq += 1)}`;
   const queue = new TaskQueue(async () => capacity);
+
+  registerTaskRunner(kind, (payload, assignment) => {
+    const label = payload.label;
+    started.push({ label, on: assignment.site ?? 'claude-cli' });
+    return new Promise((resolve, reject) => {
+      pending.set(label, { resolve, reject });
+      assignment.signal.addEventListener('abort', () => reject(new Error('aborted')), {
+        once: true,
+      });
+    });
+  });
 
   const task = (label, options = {}) => ({
     queue: options.queue ?? 'browser',
     sites: options.sites,
     label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
-    run: (assignment) => {
-      started.push({ label, on: assignment.site ?? 'claude-cli' });
-      return new Promise((resolve, reject) => {
-        pending.set(label, { resolve, reject });
-        assignment.signal.addEventListener('abort', () => reject(new Error('aborted')), {
-          once: true,
-        });
-      });
-    },
+    kind,
+    payload: { label },
   });
 
   return {
@@ -211,12 +225,10 @@ test('the browser queue and the CLI queue drain independently', async () => {
 
 test('one failing task does not stop the batch', async () => {
   const harnessed = harness({ browser: browsers('claude-web'), cli: [] });
-  const failing = {
-    ...harnessed.task('bad'),
-    run: async () => {
-      throw new Error('the browser refused');
-    },
-  };
+  registerTaskRunner('always-fails', async () => {
+    throw new Error('the browser refused');
+  });
+  const failing = { ...harnessed.task('bad'), kind: 'always-fails' };
   const batch = harnessed.queue.submit([failing, harnessed.task('good')]);
   await harnessed.queue.refreshCapacity();
   await settle();
@@ -238,9 +250,10 @@ test('a rejecting task raises no unhandled rejection', async () => {
   process.on('unhandledRejection', onUnhandled);
   try {
     const harnessed = harness({ browser: browsers('claude-web'), cli: [] });
-    harnessed.queue.submit([
-      { ...harnessed.task('boom'), run: async () => { throw new Error('boom'); } },
-    ]);
+    registerTaskRunner('boom', async () => {
+      throw new Error('boom');
+    });
+    harnessed.queue.submit([{ ...harnessed.task('boom'), kind: 'boom' }]);
     await harnessed.queue.refreshCapacity();
     await settle();
     await settle();
@@ -317,15 +330,18 @@ test('a slot is never handed to two tasks at once', async () => {
   const inFlight = new Set();
   const queue = new TaskQueue(async () => capacity);
   const pending = [];
+  registerTaskRunner('exclusive', async (payload) => {
+    const label = payload.label;
+    assert.equal(inFlight.size, 0, `${label} started while another task held the browser`);
+    inFlight.add(label);
+    await new Promise((resolve) => pending.push(resolve));
+    inFlight.delete(label);
+  });
   const make = (label) => ({
     queue: 'browser',
     label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
-    run: async () => {
-      assert.equal(inFlight.size, 0, `${label} started while another task held the browser`);
-      inFlight.add(label);
-      await new Promise((resolve) => pending.push(resolve));
-      inFlight.delete(label);
-    },
+    kind: 'exclusive',
+    payload: { label },
   });
 
   queue.submit([make('a'), make('b'), make('c')]);

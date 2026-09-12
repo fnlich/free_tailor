@@ -64,6 +64,22 @@ export type TaskLabel = {
   sourceRowNumber?: number;
 };
 
+/**
+ * How a task is run, once it has come back off disk.
+ *
+ * A closure cannot be written to a database, so a task stores WHAT to do - a
+ * kind and a plain payload - and the runner for that kind is looked up when the
+ * task starts. The registry is the price of surviving a restart, and it is a
+ * small one: there is one kind today.
+ */
+export type TaskRunner = (payload: unknown, assignment: Assignment) => Promise<unknown>;
+
+const runners = new Map<string, TaskRunner>();
+
+export function registerTaskRunner(kind: string, runner: TaskRunner): void {
+  runners.set(kind, runner);
+}
+
 export type TaskDescriptor<T> = {
   queue: QueueName;
   /**
@@ -76,7 +92,10 @@ export type TaskDescriptor<T> = {
    */
   sites?: BrowserChatSiteId[];
   label: TaskLabel;
-  run: (assignment: Assignment) => Promise<T>;
+  /** Which registered runner performs it. */
+  kind: string;
+  /** Everything that runner needs, and nothing that cannot be serialized. */
+  payload: unknown;
 };
 
 export type Task<T = unknown> = TaskDescriptor<T> & {
@@ -96,6 +115,13 @@ export type Batch<T = unknown> = {
   id: string;
   label: string;
   jobCount: number;
+  /**
+   * Anything the batch's tasks share, held once.
+   *
+   * The job descriptions live here. Thirty tasks on one posting would otherwise
+   * hold thirty copies of it, on disk and in memory alike.
+   */
+  shared: Record<string, unknown>;
   createdAt: number;
   finishedAt?: number;
   state: BatchState;
@@ -148,6 +174,20 @@ const KEEP_FINISHED_COUNT = 20;
 /** How stale the capacity reading may get before it is re-read. */
 const CAPACITY_TTL_MS = 15_000;
 
+/**
+ * Where the queue is written down, so a run survives a restart.
+ *
+ * An interface rather than a direct import, because the dispatcher is the one
+ * piece here worth testing without a database - and because a queue that could
+ * not run at all when the disk was unavailable would be worse than one that
+ * merely forgets on a restart.
+ */
+export type QueueStore = {
+  saveBatch(batch: Batch): void;
+  saveTask(task: Task): void;
+  deleteBatch(batchId: string): void;
+};
+
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -188,7 +228,36 @@ export class TaskQueue {
   private dispatching = false;
   private dispatchAgain = false;
 
-  constructor(private readonly readCapacity: () => Promise<Capacity>) {}
+  constructor(
+    private readonly readCapacity: () => Promise<Capacity>,
+    private readonly store?: QueueStore
+  ) {}
+
+  /**
+   * Writes through to the store, and never lets it fail the queue.
+   *
+   * A disk that will not take the row is a reason to lose a restart, not a
+   * reason to stop building somebody's resumes. It is said out loud once rather
+   * than swallowed silently, because a queue that is quietly not persisting is
+   * exactly the thing this was added to stop.
+   */
+  private persist(action: (store: QueueStore) => void): void {
+    if (!this.store) return;
+    try {
+      action(this.store);
+    } catch (error) {
+      if (!this.warnedAboutStore) {
+        this.warnedAboutStore = true;
+        console.warn(
+          '[queue] Could not write the queue to the database, so a restart will lose it. ' +
+            'Generation itself is unaffected. ' +
+            (error instanceof Error ? error.message : String(error))
+        );
+      }
+    }
+  }
+
+  private warnedAboutStore = false;
 
   /**
    * Re-reads how many browsers there are, then dispatches.
@@ -221,7 +290,7 @@ export class TaskQueue {
    */
   submit<T>(
     descriptors: Array<TaskDescriptor<T>>,
-    meta: { label?: string; jobCount?: number } = {}
+    meta: { label?: string; jobCount?: number; shared?: Record<string, unknown> } = {}
   ): Batch<T> {
     const batchId = `bat_${randomUUID()}`;
     const tasks: Task<T>[] = descriptors.map((descriptor, seq) => ({
@@ -236,6 +305,7 @@ export class TaskQueue {
       id: batchId,
       label: meta.label ?? 'Generation',
       jobCount: meta.jobCount ?? tasks.length,
+      shared: meta.shared ?? {},
       createdAt: Date.now(),
       state: 'running',
       tasks,
@@ -248,10 +318,69 @@ export class TaskQueue {
       this.queues[task.queue].push(task as Task);
     }
 
+    this.persist((store) => {
+      store.saveBatch(batch as Batch);
+      for (const task of tasks) store.saveTask(task as Task);
+    });
+
     this.evictFinished();
     // Refreshed rather than dispatched directly: a first submit on a cold server
     // has no capacity reading yet, and dispatching against an empty one would
     // leave every task queued until something else happened to wake it.
+    void this.refreshCapacity();
+    return batch;
+  }
+
+  /**
+   * Puts a batch back exactly as it was, after a restart.
+   *
+   * Not `submit`, because `submit` queues everything and that would lose the
+   * work already done: a batch of thirty with eight built would come back as a
+   * batch of twenty-two, its eight finished resumes gone from the list and its
+   * total quietly wrong. Finished tasks are restored FINISHED, with their
+   * results, and only the unfinished ones go back in the queue.
+   *
+   * A task that was RUNNING when the process died is requeued rather than
+   * failed. Nothing completed it, so its resume does not exist; leaving it
+   * failed would mean a restart silently dropped whatever happened to be in a
+   * browser at the time.
+   */
+  restore<T>(
+    meta: { id: string; label: string; jobCount: number; shared: Record<string, unknown>; createdAt: number },
+    entries: Array<TaskDescriptor<T> & { id: string; seq: number; state: TaskState; value?: T; error?: string }>
+  ): Batch<T> {
+    const tasks: Task<T>[] = entries.map((entry) => ({
+      ...entry,
+      batchId: meta.id,
+      // Both unfinished states come back as queued: the clock of a task that
+      // was running died with the process that was running it.
+      state: entry.state === 'running' ? 'queued' : entry.state,
+    }));
+
+    const batch: Batch<T> = {
+      id: meta.id,
+      label: meta.label,
+      jobCount: meta.jobCount,
+      shared: meta.shared,
+      createdAt: meta.createdAt,
+      state: 'running',
+      tasks,
+      controller: new AbortController(),
+      scratch: new Map(),
+    };
+    this.batches.set(meta.id, batch as Batch);
+
+    for (const task of tasks) {
+      if (task.state === 'queued') this.queues[task.queue].push(task as Task);
+    }
+
+    // A batch whose every task had finished before the restart is finished, and
+    // saying otherwise would leave it listed as active for ever.
+    if (!tasks.some((task) => task.state === 'queued')) {
+      batch.state = 'done';
+      batch.finishedAt = Date.now();
+    }
+
     void this.refreshCapacity();
     return batch;
   }
@@ -298,6 +427,10 @@ export class TaskQueue {
     batch.finishedAt = Date.now();
     batch.scratch.clear();
     batch.controller.abort();
+    this.persist((store) => {
+      store.saveBatch(batch);
+      for (const task of batch.tasks) store.saveTask(task);
+    });
     this.emit({ type: 'done', batchId, snapshot: this.describe(batch) });
     this.dispatch();
     return { cancelled, aborted };
@@ -453,6 +586,7 @@ export class TaskQueue {
     task.state = 'running';
     task.runningOn = slot.site ?? 'claude-cli';
     this.busy.set(slot.id, task);
+    this.persist((store) => store.saveTask(task));
     this.emitTask(task);
 
     const release = () => {
@@ -466,7 +600,14 @@ export class TaskQueue {
     // take the process down - so a single failed resume would stop the server.
     void (async () => {
       try {
-        task.value = await task.run({
+        const runner = runners.get(task.kind);
+        if (!runner) {
+          // A kind nothing registered. Only reachable for a task restored from
+          // a build that knew a kind this one does not, and failing it by name
+          // beats it sitting queued for ever.
+          throw new Error(`No runner is registered for "${task.kind}" tasks`);
+        }
+        task.value = await runner(task.payload, {
           queue: slot.queue,
           site: slot.site,
           signal: batch.controller.signal,
@@ -493,6 +634,7 @@ export class TaskQueue {
     task.state = state;
     task.runningOn = undefined;
     if (error) task.error = error;
+    this.persist((store) => store.saveTask(task));
     this.emitTask(task);
 
     const batch = this.batches.get(task.batchId);
@@ -504,6 +646,7 @@ export class TaskQueue {
     // A job description is tens of kilobytes and a thirty-job batch holds thirty
     // of them. The finished batch is kept for an hour; its working set is not.
     batch.scratch.clear();
+    this.persist((store) => store.saveBatch(batch));
     this.emit({ type: 'done', batchId: batch.id, snapshot: this.describe(batch) });
   }
 
@@ -566,6 +709,7 @@ export class TaskQueue {
       if (index >= KEEP_FINISHED_COUNT || stale) {
         this.batches.delete(batch.id);
         this.listeners.delete(batch.id);
+        this.persist((store) => store.deleteBatch(batch.id));
       }
     });
   }
