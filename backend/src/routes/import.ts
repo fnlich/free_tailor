@@ -1,7 +1,17 @@
 import { Router, Request, Response } from 'express';
+import { requireUser } from '../middleware/auth';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError } from '../integrations/googleSheets';
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
 
 router.post('/', async (req: Request, res: Response) => {
   try {

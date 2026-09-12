@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { generateToken, validatePassword, invalidateToken, authMiddleware } from '../middleware/auth';
+import { requireAdmin } from '../middleware/auth';
 import {
   BROWSER_CHAT_SITE_IDS,
   createAIModel,
@@ -17,41 +17,31 @@ import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
 
-// Login
-router.post('/login', (req: Request, res: Response) => {
-  const { password } = req.body;
-
-  if (!password) {
-    res.status(400).json({ error: 'Password is required' });
-    return;
-  }
-
-  if (!validatePassword(password)) {
-    res.status(401).json({ error: 'Invalid password' });
-    return;
-  }
-
-  const token = generateToken();
-  res.json({ token, message: 'Login successful' });
+/**
+ * The shared-password login is gone.
+ *
+ * It never checked anything - `validatePassword` returned true for every input,
+ * including an empty one - and there is nothing to keep now that accounts are
+ * real. Answering 410 rather than 404 says which: a client that still posts
+ * here is not asking for a route that never existed, it is using one that was
+ * withdrawn, and the message points at the replacement.
+ */
+router.all(['/login', '/verify'], (_req: Request, res: Response) => {
+  res.status(410).json({
+    error:
+      'This installation now signs in with a Google account or an emailed code. ' +
+      'Use /api/auth/options, /api/auth/google or /api/auth/email/request instead.',
+  });
 });
 
-// Logout
-router.post('/logout', authMiddleware, (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    invalidateToken(token);
-  }
-  res.json({ message: 'Logout successful' });
-});
-
-// Verify token
-router.get('/verify', authMiddleware, (req: Request, res: Response) => {
-  res.json({ valid: true });
+/** Kept as an alias so an older client's logout still ends the session. */
+router.post('/logout', (req: Request, res: Response) => {
+  res.redirect(307, '/api/auth/logout');
+  void req;
 });
 
 // Get admin settings (protected)
-router.get(['/settings', '/ai-models'], authMiddleware, async (_req: Request, res: Response) => {
+router.get(['/settings', '/ai-models'], requireAdmin, async (_req: Request, res: Response) => {
   try {
     const settings = await getAdminAppSettings();
     res.json(settings);
@@ -60,7 +50,7 @@ router.get(['/settings', '/ai-models'], authMiddleware, async (_req: Request, re
   }
 });
 
-router.post('/browse-output-directory', authMiddleware, async (req: Request, res: Response) => {
+router.post('/browse-output-directory', requireAdmin, async (req: Request, res: Response) => {
   try {
     const currentPath = typeof req.body?.currentPath === 'string' ? req.body.currentPath : undefined;
     const result = await openNativeDirectoryPicker(currentPath);
@@ -72,7 +62,7 @@ router.post('/browse-output-directory', authMiddleware, async (req: Request, res
   }
 });
 
-router.post('/google-sheets/range', authMiddleware, async (req: Request, res: Response) => {
+router.post('/google-sheets/range', requireAdmin, async (req: Request, res: Response) => {
   try {
     const result = await fetchGoogleSheetsRange(req.body ?? {});
     res.json(result);
@@ -84,7 +74,7 @@ router.post('/google-sheets/range', authMiddleware, async (req: Request, res: Re
   }
 });
 
-router.put('/google-sheets/range', authMiddleware, async (req: Request, res: Response) => {
+router.put('/google-sheets/range', requireAdmin, async (req: Request, res: Response) => {
   try {
     const result = await updateGoogleSheetsRange(req.body ?? {});
     res.json(result);
@@ -97,7 +87,7 @@ router.put('/google-sheets/range', authMiddleware, async (req: Request, res: Res
 });
 
 // Update admin settings (protected)
-router.put(['/settings', '/ai-models'], authMiddleware, async (req: Request, res: Response) => {
+router.put(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: Response) => {
   try {
     const settings = await updateAppSettings(req.body ?? {});
     res.json(settings);
@@ -130,7 +120,7 @@ router.put(['/settings', '/ai-models'], authMiddleware, async (req: Request, res
  * over two minutes. So this reports what is REGISTERED and what is REACHABLE,
  * and the caller pairs it with the health it already has.
  */
-router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response) => {
+router.get('/browser/debug', requireAdmin, async (_req: Request, res: Response) => {
   try {
     const settings = await getAdminAppSettings();
     const browsers = await Promise.all(
@@ -164,7 +154,7 @@ router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response
   }
 });
 
-router.get('/models', authMiddleware, async (_req: Request, res: Response) => {
+router.get('/models', requireAdmin, async (_req: Request, res: Response) => {
   try {
     res.json({ models: await listAdminAIModels() });
   } catch (error) {
@@ -172,7 +162,7 @@ router.get('/models', authMiddleware, async (_req: Request, res: Response) => {
   }
 });
 
-router.post('/models', authMiddleware, async (req: Request, res: Response) => {
+router.post('/models', requireAdmin, async (req: Request, res: Response) => {
   try {
     const settings = await createAIModel(req.body ?? {});
     res.status(201).json(settings);
@@ -183,7 +173,7 @@ router.post('/models', authMiddleware, async (req: Request, res: Response) => {
   }
 });
 
-router.put('/models/:id', authMiddleware, async (req: Request<{ id: string }>, res: Response) => {
+router.put('/models/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     const settings = await updateAIModel(req.params.id, req.body ?? {});
     res.json(settings);
@@ -195,7 +185,7 @@ router.put('/models/:id', authMiddleware, async (req: Request<{ id: string }>, r
   }
 });
 
-router.delete('/models/:id', authMiddleware, async (req: Request<{ id: string }>, res: Response) => {
+router.delete('/models/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     const settings = await deleteAIModel(req.params.id);
     res.json(settings);

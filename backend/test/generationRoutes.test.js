@@ -18,10 +18,16 @@ async function serve() {
   const { dbDir } = useTempStorage(`generation-routes-${Math.random().toString(36).slice(2)}`);
   const express = require('express');
 
+  // A signed-in owner. Every generation route needs one now, and the profile
+  // has to belong to them or the scoped read finds nothing to build.
+  const users = loadFresh('../dist/database/userRepository');
+  const account = users.createUser({ email: 'batch-runner@example.com' });
+  const token = users.createSession(account.id);
+
   const { saveProfile } = loadFresh('../dist/database/profileRepository');
   const { buildNewProfile } = loadFresh('../dist/services/profileService');
-  saveProfile(
-    buildNewProfile(
+  saveProfile({
+    ...buildNewProfile(
       {
         name: 'Ada',
         title: 'Engineer',
@@ -33,8 +39,9 @@ async function serve() {
         education: [],
       },
       'p1'
-    )
-  );
+    ),
+    ownerId: account.id,
+  });
 
   const config = loadFresh('../dist/config/aiModelConfig');
   await config.updateAppSettings({
@@ -48,22 +55,35 @@ async function serve() {
   queue.resetGenerationQueueForTests();
   const routes = loadFresh('../dist/routes/generation');
 
+  const { attachUser } = loadFresh('../dist/middleware/auth');
+
   const app = express();
   app.use(express.json({ limit: '50mb' }));
+  app.use(attachUser);
   app.use('/api/generation', routes.default);
   const server = app.listen(0);
   const port = server.address().port;
 
+  const auth = { authorization: `Bearer ${token}` };
+
   return {
     dbDir,
     routes,
+    account,
+    token,
     close: () => server.close(),
-    call: (path, init) =>
+    call: (path, init = {}) =>
+      fetch(`http://127.0.0.1:${port}/api/generation${path}`, {
+        ...init,
+        headers: { ...auth, ...(init.headers ?? {}) },
+      }),
+    /** Deliberately unauthenticated, for the test that the gate is really there. */
+    callAnonymously: (path, init = {}) =>
       fetch(`http://127.0.0.1:${port}/api/generation${path}`, init),
     post: (path, body) =>
       fetch(`http://127.0.0.1:${port}/api/generation${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...auth },
         body: JSON.stringify(body),
       }),
   };
@@ -252,4 +272,21 @@ test('a task routes to a queue by the profile model, not by the request', async 
   // a local browser to wait for, and a third queue would do nothing.
   assert.deepEqual(routeFor({ provider: 'claude-cli' }), { queue: 'cli' });
   assert.deepEqual(routeFor({ provider: 'openai' }), { queue: 'cli' });
+});
+
+test('the batch endpoints are closed to a request with no session', async () => {
+  const server = await serve();
+  try {
+    const listed = await server.callAnonymously('/batches?active=1');
+    assert.equal(listed.status, 401, 'listing batches needs an account');
+
+    const submitted = await server.callAnonymously('/batches', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jobs: jobsFor(1), profileIds: ['p1'] }),
+    });
+    assert.equal(submitted.status, 401, 'submitting work needs an account');
+  } finally {
+    server.close();
+  }
 });

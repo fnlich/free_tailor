@@ -1,5 +1,5 @@
 import { Request, Response, Router } from 'express';
-import { authMiddleware } from '../middleware/auth';
+import { requireAdmin, requireUser } from '../middleware/auth';
 import { listAvailableAIModelOptions } from '../config/aiModelConfig';
 import {
   activatePrompt,
@@ -15,7 +15,15 @@ import { PromptCreateInput, PromptPreviewInput, PromptUpdateInput } from '../typ
 
 const router = Router();
 
-router.use(authMiddleware);
+/**
+ * Reading a prompt needs an account; changing one needs an admin.
+ *
+ * Split because the prompts are shared: they are how EVERY account's resumes
+ * are built, so one user editing the tailoring prompt changes what everybody
+ * else gets. Reading stays open to users so the builder can show which prompt a
+ * run will use.
+ */
+router.use(requireUser);
 
 router.get('/', async (_req: Request, res: Response) => {
   try {

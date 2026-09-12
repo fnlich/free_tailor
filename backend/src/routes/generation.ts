@@ -1,8 +1,9 @@
 import { Router, type Request, type Response } from 'express';
+import { requireUser } from '../middleware/auth';
 import { getPublicAppSettings } from '../config/aiModelConfig';
 import { resolveAiChoice, type AiPreferences } from '../config/aiPreferences';
 import { isBrowserChatSiteId, type BrowserChatSiteId } from '../config/providerCatalog';
-import { listProfiles } from '../database/profileRepository';
+import { listProfilesFor, type Viewer } from '../database/profileRepository';
 import { describeFailure } from '../middleware/aiErrors';
 import {
   getGenerationQueue,
@@ -33,6 +34,15 @@ import { openBatchStream } from './batchStream';
  */
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
 
 type SubmitBody = {
   label?: string;
@@ -108,11 +118,11 @@ export function normalizeJobs(
   });
 }
 
-function loadProfiles(profileIds?: string[]): Profile[] {
+function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
   const selected = Array.isArray(profileIds)
     ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
     : null;
-  return listProfiles()
+  return listProfilesFor(viewer)
     .filter((profile) => !profile.disabled)
     .filter((profile) => !selected || selected.has(profile.id))
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -269,7 +279,7 @@ router.post('/batches', async (req: Request, res: Response) => {
     const settings = await getPublicAppSettings();
     const jobs = normalizeJobs(body, settings.outputPathUsesJobTitle);
 
-    const profiles = loadProfiles(body.profileIds);
+    const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
       res.status(400).json({
         error: 'No matching profiles available. Add profiles in Admin or update group members.',

@@ -9,6 +9,11 @@ import {
   BROWSER_CHAT_SCHEMA_VERSION,
   type BrowserChatMigrationReport,
 } from './002_seed_browser_chat_models';
+import {
+  migrate003,
+  OWNERSHIP_SCHEMA_VERSION,
+  type OwnershipMigrationReport,
+} from './003_assign_owners';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -36,7 +41,7 @@ function writeVersion(db: Database.Database, version: number): void {
 }
 
 /** The version a fully migrated database is at. */
-export const CURRENT_SCHEMA_VERSION = BROWSER_CHAT_SCHEMA_VERSION;
+export const CURRENT_SCHEMA_VERSION = OWNERSHIP_SCHEMA_VERSION;
 
 function describe(report: MigrationReport): string {
   const parts: string[] = [];
@@ -56,8 +61,22 @@ function describeBrowserChat(report: BrowserChatMigrationReport): string {
   return parts.length ? parts.join(', ') : 'nothing to change';
 }
 
-/** What the runner needs back from a migration, whatever else it reports. */
-type MigrationOutcome = { ran: boolean; notes: string[]; summary: string };
+function describeOwnership(report: OwnershipMigrationReport): string {
+  const parts: string[] = [];
+  if (report.profiles) parts.push(`${report.profiles} profile(s)`);
+  if (report.groups) parts.push(`${report.groups} group(s)`);
+  return parts.length ? `${parts.join(' and ')} assigned to ${report.ownerEmail}` : 'nothing to change';
+}
+
+/**
+ * What the runner needs back from a migration, whatever else it reports.
+ *
+ * `deferred` says the step could not run yet through no fault of its own, and
+ * the version must NOT be written - it has to be tried again on the next boot.
+ * Distinct from `ran: false`, which means it looked and found nothing to do and
+ * never needs to look again.
+ */
+type MigrationOutcome = { ran: boolean; notes: string[]; summary: string; deferred?: boolean };
 
 type MigrationStep = {
   /** The version the database is at once this step has run. */
@@ -93,6 +112,19 @@ const MIGRATIONS: readonly MigrationStep[] = [
       return { ran: report.ran, notes: report.notes, summary: describeBrowserChat(report) };
     },
   },
+  {
+    version: OWNERSHIP_SCHEMA_VERSION,
+    label: 'Ownership migration',
+    apply: (db) => {
+      const report = migrate003(db);
+      return {
+        ran: report.ran,
+        deferred: report.deferred,
+        notes: report.notes,
+        summary: describeOwnership(report),
+      };
+    },
+  },
 ];
 
 /**
@@ -122,6 +154,11 @@ export function runDataMigrations(db: Database.Database): void {
           console.warn(`[db] ${note}`);
         }
       }
+      if (report.deferred) {
+        // Not done, and not a failure: it is waiting on something a later boot
+        // will have. Leaving the version alone is what brings it back.
+        continue;
+      }
       writeVersion(db, migration.version);
       current = migration.version;
     } catch (error) {
@@ -135,5 +172,5 @@ export function runDataMigrations(db: Database.Database): void {
   }
 }
 
-export { PROVIDER_SCHEMA_VERSION, BROWSER_CHAT_SCHEMA_VERSION };
-export type { MigrationReport, BrowserChatMigrationReport };
+export { PROVIDER_SCHEMA_VERSION, BROWSER_CHAT_SCHEMA_VERSION, OWNERSHIP_SCHEMA_VERSION };
+export type { MigrationReport, BrowserChatMigrationReport, OwnershipMigrationReport };

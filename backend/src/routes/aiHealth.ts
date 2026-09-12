@@ -1,5 +1,5 @@
 import express, { Request, Response } from 'express';
-import { authMiddleware } from '../middleware/auth';
+import { requireUser } from '../middleware/auth';
 import { AI_PROVIDER_IDS, getProviderDescriptor } from '../config/providerCatalog';
 import {
   checkProviderHealth,
@@ -18,8 +18,17 @@ import {
  * endpoint is what the "Claude Subscription" card reads.
  */
 const router = express.Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
 
-router.get('/health', authMiddleware, async (_req: Request, res: Response) => {
+
+router.get('/health', requireUser, async (_req: Request, res: Response) => {
   try {
     const capabilities = listProviderCapabilities();
     const providers = await Promise.all(

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { requireUser } from '../middleware/auth';
 import path from 'path';
 import {
   analyzeJobDescription,
@@ -23,11 +24,20 @@ import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
-import { getProfile, listProfiles } from '../database/profileRepository';
+import { getProfileFor, listProfilesFor, type Viewer } from '../database/profileRepository';
 import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
 import { AIProvider, GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
 
 /**
  * A signal that fires when the client goes away before the response is sent.
@@ -306,12 +316,18 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
   }
 });
 
-// Load all non-disabled profiles
-async function loadAllProfiles(profileIds?: string[]): Promise<Profile[]> {
+/**
+ * The requester's non-disabled profiles, optionally narrowed to a set of ids.
+ *
+ * Scoped by the viewer, and the narrowing happens AFTER: naming somebody else's
+ * profile id in `profileIds` selects nothing rather than reaching it, so the
+ * request builds fewer resumes than asked rather than one it should not.
+ */
+async function loadAllProfiles(viewer: Viewer, profileIds?: string[]): Promise<Profile[]> {
   const selectedIds = Array.isArray(profileIds)
     ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
     : null;
-  return listProfiles()
+  return listProfilesFor(viewer)
     .filter((profile) => !selectedIds || selectedIds.has(profile.id))
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
@@ -447,7 +463,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     }
 
     // Load profiles
-    const profiles = await loadAllProfiles(profileIds);
+    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
       return;
@@ -638,7 +654,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       return;
     }
 
-    const profiles = await loadAllProfiles(profileIds);
+    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
       return;
@@ -877,7 +893,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     const aiOverrides = readAiOverrides(req.body);
     const selectedModel = await resolveAiChoice(aiOverrides);
 
-    const profiles = await loadAllProfiles(profileIds);
+    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
       return;
@@ -1008,7 +1024,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     }
 
     // Load profile
-    const profile = getProfile(profileId);
+    const profile = getProfileFor(req.user ?? null, profileId);
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
@@ -1167,7 +1183,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     // Load profile
-    const profile = getProfile(profileId);
+    const profile = getProfileFor(req.user ?? null, profileId);
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;

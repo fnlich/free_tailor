@@ -13,6 +13,9 @@ import resumeRoutes from './routes/resume';
 import generationRoutes from './routes/generation';
 import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
+import authRoutes from './routes/auth';
+import accountRoutes from './routes/accounts';
+import { attachUser, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
 import promptRoutes from './routes/prompts';
@@ -110,7 +113,23 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/api/generated/:filename(*)', async (req, res) => {
+/**
+ * Resolves the session before any route runs.
+ *
+ * App-wide and non-refusing: it only attaches `req.user`. Deciding who may do
+ * what is each router's business, and putting the decision here would mean one
+ * list of paths to keep in step with the routers - the classic way a new route
+ * ends up unprotected because somebody forgot the list existed.
+ */
+app.use(attachUser);
+
+/**
+ * Downloading a generated file needs an account.
+ *
+ * The filename is derived from the profile, the company and the date, so it is
+ * guessable enough that "you would have to know the URL" is not a control.
+ */
+app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
   try {
     // Express 4 exposes `:filename(*)` as `params.filename`; the bracketed key
     // is Express 5's shape. Reading the wrong one made this route answer 404
@@ -129,7 +148,9 @@ app.get('/api/generated/:filename(*)', async (req, res) => {
   }
 });
 
-// Routes
+// Routes. Auth first: it is the only one reachable while signed out.
+app.use('/api/auth', authRoutes);
+app.use('/api/admin/accounts', accountRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);

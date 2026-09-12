@@ -1,9 +1,19 @@
 import { Router, Request, Response } from 'express';
+import { requireUser } from '../middleware/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { Group, CreateGroupDTO } from '../types/group';
-import { deleteGroup, getGroup, listGroups, saveGroup } from '../database/groupRepository';
+import { deleteGroup, getGroupFor, listGroupsFor, saveGroup } from '../database/groupRepository';
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
 
 function normalizeProfileIds(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
@@ -28,9 +38,9 @@ function normalizeGroupPayload(input: CreateGroupDTO, existing?: Group): Omit<Gr
   };
 }
 
-router.get('/', (_req: Request, res: Response) => {
+router.get('/', (req: Request, res: Response) => {
   try {
-    res.json(listGroups());
+    res.json(listGroupsFor(req.user!, { allOwners: req.query.allOwners === 'true' }));
   } catch (error) {
     console.error('Error fetching groups:', error);
     res.status(500).json({ error: 'Failed to fetch groups' });
@@ -38,7 +48,7 @@ router.get('/', (_req: Request, res: Response) => {
 });
 
 router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
-  const group = getGroup(req.params.id);
+  const group = getGroupFor(req.user!, req.params.id);
   if (!group) {
     res.status(404).json({ error: 'Group not found' });
     return;
@@ -58,6 +68,7 @@ router.post('/', (req: Request, res: Response) => {
     const group = saveGroup({
       ...normalized,
       id: uuidv4(),
+      ownerId: req.user!.id,
       createdAt: now,
       updatedAt: now,
     });
@@ -69,7 +80,7 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
-  const existing = getGroup(req.params.id);
+  const existing = getGroupFor(req.user!, req.params.id);
   if (!existing) {
     res.status(404).json({ error: 'Group not found' });
     return;
@@ -78,6 +89,7 @@ router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
   const updated = saveGroup({
     ...normalizeGroupPayload(req.body as CreateGroupDTO, existing),
     id: existing.id,
+    ownerId: existing.ownerId,
     createdAt: existing.createdAt,
     updatedAt: new Date().toISOString(),
   });
@@ -85,7 +97,7 @@ router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
 });
 
 router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
-  if (!deleteGroup(req.params.id)) {
+  if (!getGroupFor(req.user!, req.params.id) || !deleteGroup(req.params.id)) {
     res.status(404).json({ error: 'Group not found' });
     return;
   }
