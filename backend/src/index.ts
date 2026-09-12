@@ -10,6 +10,7 @@ import { getDatabasePath, getDb } from './database/sqlite';
 import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
+import generationRoutes from './routes/generation';
 import adminRoutes from './routes/admin';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
@@ -131,6 +132,7 @@ app.get('/api/generated/:filename(*)', async (req, res) => {
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
+app.use('/api/generation', generationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);

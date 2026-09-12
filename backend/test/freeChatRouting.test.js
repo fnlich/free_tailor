@@ -119,3 +119,34 @@ test('the hybrid id is reserved and is not a provider id', () => {
   // such a row would leave every profile that picked it pointing at nothing.
   assert.equal(HYBRID_MODEL_ID, 'free-hybrid');
 });
+
+test('a profile that inherits an app default of Hybrid IS on Hybrid', async () => {
+  // Found by running thirty resumes across three browsers and measuring two at
+  // a time. A profile that has never chosen a model inherits the app default,
+  // and the hybrid check only looked at the id STORED ON THE PROFILE - which is
+  // empty in exactly that case. Every such task was then pinned to whichever
+  // single site Hybrid happened to resolve to, so the other browser sat idle
+  // with work waiting for it.
+  const { useTempStorage, loadFresh } = require('./helpers');
+  useTempStorage('inherited-hybrid');
+
+  const config = loadFresh('../dist/config/aiModelConfig');
+  await config.updateAppSettings({
+    browserChatEndpoints: [
+      { siteId: 'claude-web', port: 9951 },
+      { siteId: 'chatgpt-web', port: 9952 },
+    ],
+  });
+  await config.updateAppSettings({ defaultModelId: HYBRID_MODEL_ID });
+
+  assert.equal(
+    await config.isHybridSelection(''),
+    true,
+    'an empty model means inherit, and the default is Hybrid'
+  );
+  assert.equal(await config.isHybridSelection(HYBRID_MODEL_ID), true);
+
+  const { resolveAiChoice } = loadFresh('../dist/config/aiPreferences');
+  const choice = await resolveAiChoice(undefined, { profileSettings: { ai: {} } });
+  assert.equal(choice.route, 'hybrid', 'so the task must be eligible for both browsers');
+});

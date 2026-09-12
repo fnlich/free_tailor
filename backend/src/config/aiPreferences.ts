@@ -1,7 +1,10 @@
 import { EFFORT_LEVELS, isEffortLevel, type EffortLevel } from '../services/ai/types';
 import { DEFAULT_CLI_EFFORT } from '../services/ai/providers/claudeCli/options';
-import { resolveRequestedAIModel, resolveStoredAIModelPreference } from './aiModelConfig';
-import { isHybridModelId } from './providerCatalog';
+import {
+  isHybridSelection,
+  resolveRequestedAIModel,
+  resolveStoredAIModelPreference,
+} from './aiModelConfig';
 import type { FreeChatRoute } from '../services/ai/freeChatRouting';
 import type { AIProvider } from '../types/template';
 
@@ -164,11 +167,16 @@ export async function resolveAiChoice(
     ? await resolveRequestedAIModel(overridePreferences.modelId)
     : await resolveStoredAIModelPreference(profilePreferences.modelId);
 
-  // Read from the id that was ASKED FOR, not from the record that came back.
-  // Hybrid resolves to one of the two free accounts, so by the time the record
-  // exists it is indistinguishable from having picked that account outright -
-  // and that difference is the whole of what hybrid means.
-  const hybrid = isHybridModelId(preferences.modelId);
+  // Read from what was ASKED FOR, not from the record that came back. Hybrid
+  // resolves to one of the two free accounts, so by the time the record exists
+  // it is indistinguishable from having picked that account outright - and that
+  // difference is the whole of what hybrid means.
+  //
+  // Asked of the layer below rather than of `preferences.modelId` alone,
+  // because an absent model means INHERIT: a profile that has never chosen runs
+  // on the app default, and an install whose default is Hybrid has every such
+  // profile on Hybrid.
+  const hybrid = await isHybridSelection(preferences.modelId);
 
   return {
     provider: model.provider,
