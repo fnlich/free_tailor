@@ -668,6 +668,40 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       };
     });
 
+    /**
+     * The analysis for one job, run once however many profiles want it.
+     *
+     * Memoised on the PROMISE, not on the result, so three profiles starting
+     * the same job at the same moment share one call rather than racing to make
+     * three. The job may already carry an analysis - a caller that did its own -
+     * and then nothing is called at all.
+     *
+     * It runs INSIDE the unit that needs it rather than in a pass of its own
+     * beforehand. A separate pass would be a second wave: thirty analyses, then
+     * thirty builds, with every browser idle between the two whenever one job's
+     * analysis ran long. Here a unit is the whole of one resume - analyse, then
+     * build - so a browser that takes a task keeps it until that resume is
+     * done, which is what the queue is supposed to look like.
+     */
+    const analysisByJob = new Map<string, Promise<JobAnalysis | undefined>>();
+    const analysisFor = (job: (typeof normalizedJobs)[number]): Promise<JobAnalysis | undefined> => {
+      if (job.analysis) return Promise.resolve(job.analysis);
+      if (!job.jobDescription || job.jobDescription.length <= 50) return Promise.resolve(undefined);
+
+      const key = `${job.sourceRowNumber ?? ''}\u0000${job.companyName}\u0000${job.jobDescription}`;
+      const existing = analysisByJob.get(key);
+      if (existing) return existing;
+
+      const started = analyzeJobDescription(
+        job.jobDescription,
+        selectedModel,
+        undefined,
+        requestSignal(req, res)
+      );
+      analysisByJob.set(key, started);
+      return started;
+    };
+
     const formatNorm = (format as string) === 'both' ? 'both' : format === 'docx' ? 'docx' : 'pdf';
     const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
     const results: Array<{
@@ -684,6 +718,10 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
     const failedCompanies = new Set<string>();
     const unconfirmedHardMap = new Map<string, string>();
     const unconfirmedSoftMap = new Map<string, string>();
+    // Whether any resume was actually tailored. Read from what the units DID,
+    // not from what the request arrived with: the analysis now happens inside
+    // the batch, so the request usually arrives carrying none.
+    let anyTailored = false;
 
     /**
      * One unit of work: this profile, for this job.
@@ -714,11 +752,13 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         throw new Error('Default template not available');
       }
 
+      const analysis = await analysisFor(job);
+
       let tailoredContent: TailoredContent | undefined;
-      if (job.analysis) {
+      if (analysis) {
         tailoredContent = await tailorResume(
           profile,
-          job.analysis,
+          analysis,
           selectedModel,
           requestSignal(req, res)
         );
@@ -766,7 +806,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         entry[formatNorm] = filename;
       }
 
-      return { entry, tailoredContent };
+      return { entry, tailoredContent, tailored: Boolean(analysis) };
     });
 
     // Collected in INPUT order, not completion order. `mapWithConcurrency`
@@ -781,6 +821,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
           unconfirmedHardMap,
           unconfirmedSoftMap
         );
+        if (outcome.value.tailored) anyTailored = true;
         results.push(outcome.value.entry);
         return;
       }
@@ -804,7 +845,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       results,
       failures,
       failedCompanies: Array.from(failedCompanies),
-      tailored: normalizedJobs.some((job) => Boolean(job.analysis)),
+      tailored: anyTailored,
       unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
       unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
     });

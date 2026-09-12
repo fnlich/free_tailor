@@ -1266,6 +1266,24 @@ export async function resolveStoredAIModelPreference(
  * being offered in that state, but a profile that picked it while both were
  * there still has to generate.
  */
+/**
+ * Was Hybrid actually chosen - by this id, or by the default it inherits?
+ *
+ * Read separately from the resolved record, because by the time Hybrid has
+ * resolved it is indistinguishable from having picked that account outright.
+ * And read through the DEFAULT too: a profile that names no model inherits the
+ * app default, so an install whose default is Hybrid has every such profile on
+ * Hybrid - and checking only the stored id said otherwise. Measured: a batch
+ * with three browsers ran two at a time, because the tasks were pinned to the
+ * one site Hybrid happened to resolve to instead of being eligible for both.
+ */
+export async function isHybridSelection(storedModelId?: string): Promise<boolean> {
+  const requested = typeof storedModelId === 'string' ? storedModelId.trim() : '';
+  if (requested) return isHybridModelId(requested);
+  const settings = await readSettings();
+  return isHybridModelId(settings.defaultModelId);
+}
+
 export function resolveHybridModel(settings: AppSettings): AIModelRecord {
   const runnable = getRunnableModels(settings);
   for (const site of planRoute('hybrid')) {

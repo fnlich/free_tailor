@@ -15,6 +15,14 @@ import {
   JobAnalysis,
   TailoredContent,
 } from '@/lib/api';
+import {
+  forgetBatch,
+  generationApi,
+  rememberBatch,
+  rememberedBatch,
+  type BatchSnapshot,
+  type SubmitBatchRequest,
+} from '@/lib/generationQueue';
 import AppTopNav from '@/components/AppTopNav';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
 import ProfileSelector from '@/components/ProfileSelector';
@@ -98,6 +106,8 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState('');
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
+  /** The batch this page is watching, so a reload can pick it back up. */
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
@@ -231,6 +241,60 @@ export default function Home() {
     setIsSheetsImportOpen(false);
   }, [hasGoogleSheetSources, isSheetsImportOpen]);
 
+  /**
+   * Picks a running batch back up after a reload.
+   *
+   * The work belongs to the server's queue, so closing this page never stopped
+   * it - but until this, reopening the page showed nothing and the resumes
+   * appeared on disk with no explanation. Tried in two ways because each covers
+   * what the other cannot: the remembered id survives a reload of THIS browser,
+   * and asking the server covers a different browser, cleared storage, or a
+   * second tab.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const reattach = async () => {
+      const remembered = rememberedBatch();
+      let batchId: string | null = null;
+
+      if (remembered) {
+        const snapshot = await generationApi.snapshot(remembered).catch(() => null);
+        // Gone means the server restarted or the batch aged out. Forget it
+        // rather than asking again for ever.
+        if (!snapshot) forgetBatch();
+        else if (snapshot.state === 'running') batchId = remembered;
+        else forgetBatch();
+      }
+
+      if (!batchId) {
+        const active = await generationApi.listActive().catch(() => ({ batches: [] }));
+        batchId = active.batches[0]?.batchId ?? null;
+      }
+
+      if (!batchId || cancelled) return;
+      setIsGenerating(true);
+      const snapshot = await followBatch(batchId, { phase: 'Building resumes' });
+      if (cancelled) return;
+      setIsGenerating(false);
+      setGenerationStep('');
+      clearGenerationProgress();
+      if (snapshot) {
+        setSuccessMessage(
+          `Finished ${snapshot.completed} of ${snapshot.total} resume(s) from a run started earlier.`
+        );
+      }
+    };
+
+    void reattach();
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately once, on mount. Re-running this on every render would attach
+    // a second reader to the same stream.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const getSelectedProfilesForSheetsBuilder = () => {
     if (sheetsTargetMode === 'single') {
       if (!selectedSheetsProfileId) {
@@ -349,6 +413,98 @@ export default function Home() {
     return selectedProfiles;
   };
 
+  /**
+   * Runs a batch on the server and follows it to the end.
+   *
+   * One request carrying every resume, rather than one request per resume. That
+   * is the whole difference: the backend puts the tasks in a queue and hands
+   * them to browsers as they come free, so three browsers build three resumes at
+   * once. The loop this replaced awaited each resume in turn, so however many
+   * browsers were registered, two of every three sat idle.
+   *
+   * Progress comes back down the stream. Every line is a COMPLETE snapshot, so
+   * this can replace its state each time instead of applying deltas in order -
+   * which is also what makes it safe to reattach to a batch already in flight.
+   */
+  const runBatch = async (
+    request: SubmitBatchRequest,
+    describe: { phase: string; jobCount?: number }
+  ): Promise<BatchSnapshot | null> => {
+    const submitted = await generationApi.submit(request);
+    rememberBatch(submitted.batchId);
+    setActiveBatchId(submitted.batchId);
+    return followBatch(submitted.batchId, describe);
+  };
+
+  /**
+   * Watches a batch until it ends, driving the progress bar from its snapshots.
+   *
+   * Separate from submitting, because this is also how the page picks a batch
+   * back up after a reload - the work did not stop, so neither should the view
+   * of it.
+   */
+  const followBatch = async (
+    batchId: string,
+    describe: { phase: string; jobCount?: number }
+  ): Promise<BatchSnapshot | null> => {
+    let last: BatchSnapshot | null = null;
+
+    const show = (snapshot: BatchSnapshot) => {
+      last = snapshot;
+      const finished = snapshot.completed + snapshot.failed + snapshot.cancelled;
+      // Named from the OLDEST running task rather than the newest, so the label
+      // is steady instead of flickering between however many run at once.
+      const current = snapshot.tasks.find((task) => task.state === 'running');
+      setGenerationStep(
+        snapshot.running > 0
+          ? `${describe.phase} - ${snapshot.running} running, ${finished}/${snapshot.total} done`
+          : `${describe.phase} - ${finished}/${snapshot.total} done`
+      );
+      setGenerationProgress({
+        total: snapshot.total,
+        completed: finished,
+        running: snapshot.running,
+        queued: snapshot.queued,
+        phase: snapshot.running > 0 ? 'Building resumes' : describe.phase,
+        currentProfileName: current?.profileName,
+        currentCompanyName: current?.companyName,
+        currentJobTitle: current?.role,
+        ...(describe.jobCount !== undefined ? { importedJobCount: describe.jobCount } : {}),
+      });
+    };
+
+    try {
+      await generationApi.follow(batchId, show);
+    } catch (err) {
+      // A stream that drops is not a batch that failed - the work is on the
+      // server. Fall back to one snapshot so the page reports the truth rather
+      // than the state of its own connection.
+      last = await generationApi.snapshot(batchId).catch(() => last);
+    }
+
+    forgetBatch();
+    setActiveBatchId(null);
+    return last;
+  };
+
+  /** Turns a finished batch into the shape the page reports after a generation. */
+  const summarizeBatch = (snapshot: BatchSnapshot | null, fallbackCompany: string) => {
+    const failures: GenerationFailure[] = (snapshot?.failures ?? []).map((failure) => ({
+      profileId: failure.profileId,
+      profileName: failure.profileName,
+      companyName: failure.companyName || fallbackCompany,
+      error: failure.error,
+    }));
+    return {
+      generated: snapshot?.completed ?? 0,
+      failed: failures.length,
+      failures,
+      failedCompanies: snapshot?.failedCompanies ?? [],
+      unconfirmedHardSkills: snapshot?.unconfirmedHardSkills ?? [],
+      unconfirmedSoftSkills: snapshot?.unconfirmedSoftSkills ?? [],
+    };
+  };
+
   const generateSequentialResumes = async ({
     targetProfiles,
     analysis,
@@ -362,52 +518,42 @@ export default function Home() {
     resolvedRole: string;
     tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
   }) => {
-    const failures: GenerationFailure[] = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
-    const total = targetProfiles.length;
-    let completed = 0;
+    updateGenerationProgress(
+      targetProfiles.length,
+      0,
+      'Queueing resumes',
+      undefined,
+      targetCompanyName
+    );
 
-    updateGenerationProgress(total, 0, 'Preparing resume generation', undefined, targetCompanyName);
-
+    const tailoredByProfileId: Record<string, unknown> = {};
     for (const profile of targetProfiles) {
-      setGenerationStep(`Generating ${completed + 1}/${total}: ${profile.name} x ${targetCompanyName}`);
-      updateGenerationProgress(total, completed, 'Building resumes', profile.name, targetCompanyName);
-
-      try {
-        const result = await resumeApi.generate({
-          ...aiRequestOverrides,
-          profileId: profile.id,
-          templateId: profile.preferredTemplate || 'default',
-          jobDescription,
-          jobAnalysis: analysis,
-          tailoredContent: tailoredContentByProfileId?.get(profile.id),
-          companyName: targetCompanyName,
-          role: resolvedRole,
-          ...getDefaultGenerationOptions(),
-        });
-        collectUnconfirmedFromGenerateResult(unconfirmedHardMap, unconfirmedSoftMap, result);
-      } catch (err) {
-        failures.push({
-          profileId: profile.id,
-          profileName: profile.name,
-          companyName: targetCompanyName,
-          error: err instanceof Error ? err.message : 'Generation failed',
-        });
-      } finally {
-        completed += 1;
-        updateGenerationProgress(total, completed, 'Building resumes', profile.name, targetCompanyName);
-      }
+      const tailored = tailoredContentByProfileId?.get(profile.id);
+      if (tailored) tailoredByProfileId[profile.id] = tailored;
     }
 
-    return {
-      generated: total - failures.length,
-      failed: failures.length,
-      failures,
-      failedCompanies: failures.length > 0 ? [targetCompanyName] : [],
-      unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
-    };
+    const snapshot = await runBatch(
+      {
+        ...aiRequestOverrides,
+        label: `${targetCompanyName}`,
+        profileIds: targetProfiles.map((profile) => profile.id),
+        jobs: [
+          {
+            companyName: targetCompanyName,
+            role: resolvedRole,
+            jobDescription,
+            jobAnalysis: analysis,
+          },
+        ],
+        ...(Object.keys(tailoredByProfileId).length > 0
+          ? { tailoredContentByProfileId: tailoredByProfileId }
+          : {}),
+        ...getDefaultGenerationOptions(),
+      },
+      { phase: 'Building resumes' }
+    );
+
+    return summarizeBatch(snapshot, targetCompanyName);
   };
 
   const handleImportJobsFromSheets = async (
@@ -426,119 +572,60 @@ export default function Home() {
     setSuccessMessage('');
     resetGenerationOutputs();
 
-    const failures: string[] = [];
-    const failedCompanies = new Set<string>();
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const totalBuilds = selectedProfiles.length * normalizedJobs.length;
-    let completedBuilds = 0;
-    let failedBuilds = 0;
-    let hasSetJobAnalysis = false;
+    let snapshot: BatchSnapshot | null = null;
 
     try {
       updateGenerationProgress(
         totalBuilds,
         0,
-        'Preparing imported jobs',
+        'Queueing imported jobs',
         undefined,
         undefined,
         undefined,
         undefined,
         normalizedJobs.length
       );
-      for (const [jobIndex, job] of normalizedJobs.entries()) {
-        const trimmedJobDescription = job.jobDescription.trim();
-        const normalizedCompanyName = job.companyName.trim();
-        const importedJobTitle = job.jobTitle.trim();
 
-        setGenerationStep(`Analyzing job ${jobIndex + 1}/${normalizedJobs.length}: ${normalizedCompanyName}`);
-        updateGenerationProgress(
-          totalBuilds,
-          completedBuilds,
-          'Analyzing job description',
-          undefined,
-          normalizedCompanyName,
-          importedJobTitle,
-          jobIndex + 1,
-          normalizedJobs.length
-        );
+      /**
+       * ONE request carrying every resume, not one request per resume.
+       *
+       * This was a nested loop - for each job, analyse it, then for each profile
+       * await a generate - so thirty sheet rows were thirty analyses and thirty
+       * builds, strictly one at a time. However many browsers were registered,
+       * all but one sat idle for the whole run.
+       *
+       * Now the server queues the lot and hands them out as browsers come free,
+       * and the analysis happens inside the task, shared between the profiles
+       * that need the same job.
+       */
+      snapshot = await runBatch(
+        {
+          ...aiRequestOverrides,
+          label: `Sheets import (${normalizedJobs.length} job${normalizedJobs.length === 1 ? '' : 's'})`,
+          profileIds: selectedProfiles.map((profile) => profile.id),
+          jobs: normalizedJobs.map((job) => ({
+            companyName: job.companyName.trim(),
+            role: job.jobTitle.trim(),
+            jobDescription: job.jobDescription.trim(),
+            sourceRowNumber: job.sourceRowNumber,
+          })),
+          ...getDefaultGenerationOptions(),
+        },
+        { phase: 'Building resumes', jobCount: normalizedJobs.length }
+      );
 
-        try {
-          const analysis = await resumeApi.analyze(trimmedJobDescription, aiRequestOverrides);
-          if (!hasSetJobAnalysis) {
-            setJobAnalysis(analysis);
-            hasSetJobAnalysis = true;
-          }
-
-          const resolvedRole = shouldShowRoleInput
-            ? (job.jobTitle.trim() || fallbackRole || getAnalysisJobTitle(analysis) || '')
-            : (job.jobTitle.trim() || getAnalysisJobTitle(analysis) || '');
-
-          for (const profile of selectedProfiles) {
-            setGenerationStep(`Generating ${completedBuilds + 1}/${totalBuilds}: ${profile.name} x ${normalizedCompanyName}`);
-            updateGenerationProgress(
-              totalBuilds,
-              completedBuilds,
-              'Building resumes',
-              profile.name,
-              normalizedCompanyName,
-              resolvedRole,
-              jobIndex + 1,
-              normalizedJobs.length
-            );
-
-            try {
-              const result = await resumeApi.generate({
-                ...aiRequestOverrides,
-                profileId: profile.id,
-                templateId: profile.preferredTemplate || 'default',
-                jobDescription: trimmedJobDescription,
-                jobAnalysis: analysis,
-                companyName: normalizedCompanyName,
-                role: resolvedRole,
-                sourceRowNumber: job.sourceRowNumber,
-                ...getDefaultGenerationOptions(),
-              });
-              collectUnconfirmedFromGenerateResult(unconfirmedHardMap, unconfirmedSoftMap, result);
-            } catch (err) {
-              failedCompanies.add(normalizedCompanyName);
-              failedBuilds += 1;
-              failures.push(
-                `${normalizedCompanyName} / ${profile.name}: ${err instanceof Error ? err.message : 'Generation failed'}`
-              );
-            } finally {
-              completedBuilds += 1;
-              updateGenerationProgress(
-                totalBuilds,
-                completedBuilds,
-                'Building resumes',
-                profile.name,
-                normalizedCompanyName,
-                resolvedRole,
-                jobIndex + 1,
-                normalizedJobs.length
-              );
-            }
-          }
-        } catch (err) {
-          failedCompanies.add(normalizedCompanyName);
-          failedBuilds += selectedProfiles.length;
-          failures.push(
-            `Row ${job.sourceRowNumber} / ${normalizedCompanyName}: ${err instanceof Error ? err.message : 'Analysis failed'}`
-          );
-          completedBuilds += selectedProfiles.length;
-          updateGenerationProgress(
-            totalBuilds,
-            completedBuilds,
-            'Analyzing job description',
-            undefined,
-            normalizedCompanyName,
-            importedJobTitle,
-            jobIndex + 1,
-            normalizedJobs.length
-          );
-        }
-      }
+      const unconfirmedHardMap = new Map(
+        (snapshot?.unconfirmedHardSkills ?? []).map((skill) => [skill.toLowerCase(), skill])
+      );
+      const unconfirmedSoftMap = new Map(
+        (snapshot?.unconfirmedSoftSkills ?? []).map((skill) => [skill.toLowerCase(), skill])
+      );
+      const failures = (snapshot?.failures ?? []).map(
+        (failure) => `${failure.companyName} / ${failure.profileName}: ${failure.error}`
+      );
+      const failedCompanies = new Set(snapshot?.failedCompanies ?? []);
+      const failedBuilds = failures.length;
 
       setUnconfirmedHardSkills(toUnconfirmedItems(Array.from(unconfirmedHardMap.values())));
       setUnconfirmedSoftSkills(toUnconfirmedItems(Array.from(unconfirmedSoftMap.values())));

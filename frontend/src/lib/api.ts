@@ -129,8 +129,81 @@ export class ApiUnreachableError extends Error {
   }
 }
 
+/**
+ * Reads a line-delimited JSON stream, calling back per line.
+ *
+ * Its own function rather than `apiFetch`, because `apiFetch` parses one JSON
+ * body and returns - which is the opposite of what this is for. It shares the
+ * candidate-base loop, so a stream reaches the same backend the rest of the app
+ * found, and the same "cannot reach the backend" sentence explains it when
+ * nothing answers.
+ *
+ * Resolves when the server closes the stream. Aborting the signal stops
+ * READING; it does not stop the work, which belongs to the server's queue.
+ */
+export async function apiStream(
+  endpoint: string,
+  onLine: (value: Record<string, unknown>) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  let lastConnectionError: Error | null = null;
+  const tried: string[] = [];
+
+  for (const apiBase of buildApiBaseCandidates()) {
+    tried.push(apiBase);
+    let response: Response;
+    try {
+      response = await fetch(`${apiBase}${endpoint}`, { headers: getAuthHeaders(), signal });
+    } catch (error) {
+      if (signal?.aborted) return;
+      lastConnectionError = error instanceof Error ? error : new Error(String(error));
+      continue;
+    }
+
+    resolvedApiBase = apiBase;
+    if (!response.ok || !response.body) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new ApiResponseError(
+        body.error || `Request failed with HTTP ${response.status}`,
+        response.status,
+        `${apiBase}${endpoint}`
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        // Split on newlines and keep the remainder: a chunk boundary falls in
+        // the middle of a line often enough that not doing this is a bug that
+        // only shows up under load.
+        const lines = buffered.split('\n');
+        buffered = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            onLine(JSON.parse(line) as Record<string, unknown>);
+          } catch {
+            // A half-written line is not worth failing a whole batch's progress
+            // over; the next complete snapshot carries the same information.
+          }
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+    return;
+  }
+
+  throw new ApiUnreachableError(tried, lastConnectionError ?? new Error('No API base configured'));
+}
+
 // Generic fetch wrapper
-async function apiFetch<T>(
+export async function apiFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
@@ -1872,36 +1945,6 @@ export const resumeApi = {
       body: JSON.stringify({ jobDescription, ...overrides, promptId }),
     }),
 
-  analyzeMultiJob: (data: {
-    jobs: Array<{
-      companyName: string;
-      jobDescription: string;
-      sourceRowNumber?: number;
-    }>;
-    model?: string;
-    effort?: EffortLevel;
-    thinking?: ThinkingMode;
-  }) =>
-    apiFetch<{
-      provider: AIProvider;
-      analyzed: number;
-      analyses: Array<{
-        companyName: string;
-        sourceRowNumber?: number;
-        jobDescription: string;
-        analysis: JobAnalysis;
-      }>;
-      failed: number;
-      failures: Array<{
-        companyName: string;
-        sourceRowNumber?: number;
-        error: string;
-      }>;
-    }>('/resume/analyze-multi-job', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
   generate: (data: {
     profileId: string;
     templateId: string;
@@ -1944,89 +1987,6 @@ export const resumeApi = {
         body: JSON.stringify(data),
       }
     ),
-
-  generateAll: (data: {
-    templateId?: string;
-    jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
-    companyName: string;
-    role: string;
-    model?: string;
-    effort?: EffortLevel;
-    thinking?: ThinkingMode;
-    profileIds?: string[];
-    format?: 'pdf' | 'docx' | 'both';
-    includeCoverLetterDocx?: boolean;
-  }) =>
-    apiFetch<{
-      generated: number;
-      failed: number;
-      results: Array<{
-        profileId: string;
-        profileName: string;
-        pdf?: string;
-        docx?: string;
-        coverLetterPdf?: string;
-        coverLetterDocx?: string;
-      }>;
-      failures: Array<{
-        profileId: string;
-        profileName: string;
-        companyName: string;
-        error: string;
-      }>;
-      failedCompanies: string[];
-      tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }>('/resume/generate-all', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  generateMultiJob: (data: {
-    templateId?: string;
-    jobs: Array<{
-      companyName: string;
-      role: string;
-      jobDescription?: string;
-      jobAnalysis?: JobAnalysis;
-      sourceRowNumber?: number;
-    }>;
-    model?: string;
-    effort?: EffortLevel;
-    thinking?: ThinkingMode;
-    profileIds?: string[];
-    format?: 'pdf' | 'docx' | 'both';
-    includeCoverLetterDocx?: boolean;
-  }) =>
-    apiFetch<{
-      generated: number;
-      failed: number;
-      results: Array<{
-        profileId: string;
-        profileName: string;
-        companyName: string;
-        role: string;
-        pdf?: string;
-        docx?: string;
-        coverLetterPdf?: string;
-        coverLetterDocx?: string;
-      }>;
-      failures: Array<{
-        profileId: string;
-        profileName: string;
-        companyName: string;
-        error: string;
-      }>;
-      failedCompanies: string[];
-      tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }>('/resume/generate-multi-job', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
 
   confirmSkill: (data: { type: 'hard' | 'soft'; skill: string }) =>
     apiFetch<{ added: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills/confirm', {

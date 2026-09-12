@@ -10,6 +10,8 @@ import { getDatabasePath, getDb } from './database/sqlite';
 import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
+import generationRoutes from './routes/generation';
+import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
@@ -131,6 +133,7 @@ app.get('/api/generated/:filename(*)', async (req, res) => {
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
+app.use('/api/generation', generationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);
@@ -202,6 +205,10 @@ const server = app.listen(PORT, HOST, () => {
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
+  // Picks up a generation run the last process was part way through. Whatever
+  // was in a browser when it stopped is built again, and whatever was queued
+  // carries on - which is the whole point of the queue being on disk.
+  restoreGenerationQueue();
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();

@@ -98,6 +98,40 @@ const SCHEMA = `
     updated_at TEXT
   );
 
+  /**
+   * Generation batches, so a run survives the server restarting.
+   *
+   * Two tables rather than one blob per batch, because the write pattern is
+   * lopsided: a batch is written once and read rarely, while its tasks change
+   * state four times each. Thirty resumes is a hundred and twenty transitions,
+   * and re-writing the whole batch each time would mean re-writing every job
+   * description with it - about a megabyte a transition for a sheet import.
+   *
+   * The job descriptions live HERE, on the batch, once. A task refers to its job
+   * by index rather than carrying a copy, which is the same saving again: thirty
+   * tasks on one job would otherwise hold thirty copies of its posting.
+   */
+  CREATE TABLE IF NOT EXISTS generation_batches (
+    id         TEXT PRIMARY KEY,
+    state      TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS generation_tasks (
+    id         TEXT PRIMARY KEY,
+    batch_id   TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    state      TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_generation_tasks_batch
+    ON generation_tasks (batch_id, seq);
+
   CREATE TABLE IF NOT EXISTS schema_meta (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
