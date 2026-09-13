@@ -17,11 +17,17 @@ export interface UserAccount {
   lastLoginAt?: string;
 }
 
-/** What an admin may change about somebody else's account. */
+/**
+ * What an admin may change about somebody else's account.
+ *
+ * `credits` is deliberately NOT here. A balance is not a field to be set: it is
+ * the sum of a ledger, and moving it goes through services/credits so the move
+ * leaves a row explaining itself. The accounts route reads the number from the
+ * same request body and hands it to `setBalance`.
+ */
 export interface AccountUpdate {
   role?: UserRole;
   plan?: AccountPlanId;
-  credits?: number;
   disabled?: boolean;
   name?: string;
 }

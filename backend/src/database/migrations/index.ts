@@ -14,6 +14,11 @@ import {
   OWNERSHIP_SCHEMA_VERSION,
   type OwnershipMigrationReport,
 } from './003_assign_owners';
+import {
+  migrate004,
+  CREDIT_LEDGER_SCHEMA_VERSION,
+  type CreditLedgerMigrationReport,
+} from './004_credit_opening_balances';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -41,7 +46,7 @@ function writeVersion(db: Database.Database, version: number): void {
 }
 
 /** The version a fully migrated database is at. */
-export const CURRENT_SCHEMA_VERSION = OWNERSHIP_SCHEMA_VERSION;
+export const CURRENT_SCHEMA_VERSION = CREDIT_LEDGER_SCHEMA_VERSION;
 
 function describe(report: MigrationReport): string {
   const parts: string[] = [];
@@ -66,6 +71,12 @@ function describeOwnership(report: OwnershipMigrationReport): string {
   if (report.profiles) parts.push(`${report.profiles} profile(s)`);
   if (report.groups) parts.push(`${report.groups} group(s)`);
   return parts.length ? `${parts.join(' and ')} assigned to ${report.ownerEmail}` : 'nothing to change';
+}
+
+function describeCreditLedger(report: CreditLedgerMigrationReport): string {
+  return report.accounts
+    ? `${report.units} credit(s) across ${report.accounts} account(s) given an opening entry`
+    : 'nothing to change';
 }
 
 /**
@@ -125,6 +136,14 @@ const MIGRATIONS: readonly MigrationStep[] = [
       };
     },
   },
+  {
+    version: CREDIT_LEDGER_SCHEMA_VERSION,
+    label: 'Credit ledger migration',
+    apply: (db) => {
+      const report = migrate004(db);
+      return { ran: report.ran, notes: report.notes, summary: describeCreditLedger(report) };
+    },
+  },
 ];
 
 /**
@@ -156,8 +175,12 @@ export function runDataMigrations(db: Database.Database): void {
       }
       if (report.deferred) {
         // Not done, and not a failure: it is waiting on something a later boot
-        // will have. Leaving the version alone is what brings it back.
-        continue;
+        // will have. STOP rather than skip - the version is a single monotonic
+        // number, so letting a LATER migration run and write its own higher
+        // version would put the database past this step and it would never be
+        // retried. Every migration after a deferred one waits for it, which is
+        // the same order they would have run in anyway.
+        return;
       }
       writeVersion(db, migration.version);
       current = migration.version;
@@ -172,5 +195,15 @@ export function runDataMigrations(db: Database.Database): void {
   }
 }
 
-export { PROVIDER_SCHEMA_VERSION, BROWSER_CHAT_SCHEMA_VERSION, OWNERSHIP_SCHEMA_VERSION };
-export type { MigrationReport, BrowserChatMigrationReport, OwnershipMigrationReport };
+export {
+  PROVIDER_SCHEMA_VERSION,
+  BROWSER_CHAT_SCHEMA_VERSION,
+  OWNERSHIP_SCHEMA_VERSION,
+  CREDIT_LEDGER_SCHEMA_VERSION,
+};
+export type {
+  MigrationReport,
+  BrowserChatMigrationReport,
+  OwnershipMigrationReport,
+  CreditLedgerMigrationReport,
+};

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { useAuth } from '@/contexts/AuthContext';
@@ -11,6 +11,7 @@ import {
   type ManagedAccount,
   type UserRole,
 } from '@/lib/auth';
+import { describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credits';
 
 /**
  * Managing everybody's accounts.
@@ -44,6 +45,24 @@ function AccountsTable() {
   const [notice, setNotice] = useState<string | null>(null);
   /** Which row is mid-write, so its controls can be disabled individually. */
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  /**
+   * Which account's history is open, and what it holds.
+   *
+   * A request token rather than comparing against the state: reading `detail`
+   * inside an async callback captures the value from the render that started
+   * it, which is the PREVIOUS one - so a guard written that way would reject
+   * the right response and admit a stale one, painting another account's
+   * ledger under this row.
+   */
+  const ledgerRequest = useRef(0);
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const [history, setHistory] = useState<LedgerEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const [grantFor, setGrantFor] = useState<string | null>(null);
+  const [grantAmount, setGrantAmount] = useState('');
+  const [grantNote, setGrantNote] = useState('');
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [invitePlan, setInvitePlan] = useState<AccountPlanId>('default');
@@ -89,6 +108,43 @@ function AccountsTable() {
     } finally {
       setBusyId(null);
     }
+  };
+
+  const openHistory = async (id: string) => {
+    if (historyFor === id) {
+      setHistoryFor(null);
+      return;
+    }
+    const token = (ledgerRequest.current += 1);
+    setHistoryFor(id);
+    setHistory([]);
+    setHistoryLoading(true);
+    try {
+      const result = await accountsApi.ledger(id);
+      // Only if this is still the newest request. Two quick clicks would
+      // otherwise let the slower response paint under the wrong account.
+      if (ledgerRequest.current === token) setHistory(result.entries);
+    } catch (caught) {
+      if (ledgerRequest.current === token) {
+        setError(caught instanceof Error ? caught.message : 'Could not load that history.');
+      }
+    } finally {
+      if (ledgerRequest.current === token) setHistoryLoading(false);
+    }
+  };
+
+  const grant = async (row: ManagedAccount) => {
+    const amount = Number(grantAmount);
+    if (!Number.isFinite(amount) || Math.floor(amount) === 0) return;
+
+    await apply(row.id, async () => {
+      const result = await accountsApi.grantCredits(row.id, Math.floor(amount), grantNote.trim());
+      return result.account;
+    });
+    setGrantFor(null);
+    setGrantAmount('');
+    setGrantNote('');
+    if (historyFor === row.id) await openHistory(row.id);
   };
 
   const invite = async (event: React.FormEvent) => {
@@ -225,7 +281,8 @@ function AccountsTable() {
                 const busy = busyId === row.id;
                 const isMe = row.id === me?.id;
                 return (
-                  <tr key={row.id} className={row.disabled ? 'opacity-60' : undefined}>
+                  <Fragment key={row.id}>
+                  <tr className={row.disabled ? 'opacity-60' : undefined}>
                     <td className="px-4 py-3">
                       <p className="font-medium text-gray-900 dark:text-white">
                         {row.name || row.email}
@@ -286,24 +343,56 @@ function AccountsTable() {
                     </td>
 
                     <td className="px-4 py-3">
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        defaultValue={row.credits}
-                        disabled={busy}
-                        // On blur, not on every keystroke: a write per digit
-                        // would store 4 on the way to typing 40.
-                        onBlur={(event) => {
-                          const credits = Number(event.target.value);
-                          if (!Number.isFinite(credits) || credits === row.credits) return;
-                          void apply(
-                            row.id,
-                            async () => (await accountsApi.update(row.id, { credits })).account
-                          );
-                        }}
-                        className={`${SELECT} w-20`}
-                      />
+                      <div className="flex items-center gap-1">
+                        <input
+                          // Remounted when the balance moves from elsewhere. The
+                          // input is uncontrolled, so after a delta grant it
+                          // would otherwise still show the pre-grant number and
+                          // the next blur would write that stale absolute value
+                          // back over the grant.
+                          key={`${row.id}:${row.credits}`}
+                          type="number"
+                          min={0}
+                          step={1}
+                          defaultValue={row.credits}
+                          disabled={busy}
+                          title="Set the balance to this number"
+                          // On blur, not on every keystroke: a write per digit
+                          // would store 4 on the way to typing 40.
+                          onBlur={(event) => {
+                            const credits = Number(event.target.value);
+                            if (!Number.isFinite(credits) || credits === row.credits) return;
+                            void apply(
+                              row.id,
+                              async () => (await accountsApi.update(row.id, { credits })).account
+                            );
+                          }}
+                          className={`${SELECT} w-20`}
+                        />
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setGrantFor(grantFor === row.id ? null : row.id);
+                            setGrantAmount('');
+                            setGrantNote('');
+                          }}
+                          title="Add or take away credits, rather than setting a total"
+                          className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          +/-
+                        </button>
+                      </div>
+                      {row.role === 'admin' && (
+                        // The number is real and grantable, but it is not a
+                        // budget: administrators spend nothing.
+                        <p
+                          className="mt-1 text-xs text-gray-400 dark:text-slate-500"
+                          title="Administrators are exempt from credits and spend nothing."
+                        >
+                          exempt
+                        </p>
+                      )}
                     </td>
 
                     <td className="px-4 py-3 text-xs text-gray-500 dark:text-slate-400">
@@ -340,6 +429,15 @@ function AccountsTable() {
                         </button>
                         <button
                           type="button"
+                          disabled={busy}
+                          onClick={() => void openHistory(row.id)}
+                          title="Show where this balance came from"
+                          className="rounded-lg border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          {historyFor === row.id ? 'Hide' : 'History'}
+                        </button>
+                        <button
+                          type="button"
                           disabled={busy || isMe}
                           onClick={() => void remove(row)}
                           title={isMe ? 'You cannot delete the account you are signed in with.' : undefined}
@@ -350,6 +448,137 @@ function AccountsTable() {
                       </div>
                     </td>
                   </tr>
+
+                  {/*
+                    A full-width row beneath the account it belongs to, rather
+                    than more columns. The table is already wide, and a history
+                    has no business being squeezed into a cell.
+                  */}
+                  {(grantFor === row.id || historyFor === row.id) && (
+                    <tr className="bg-gray-50 dark:bg-slate-950">
+                      <td colSpan={7} className="px-4 py-4">
+                        {grantFor === row.id && (
+                          <form
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void grant(row);
+                            }}
+                            className="mb-4 flex flex-wrap items-end gap-3"
+                          >
+                            <div>
+                              <label
+                                className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400"
+                                htmlFor={`grant-${row.id}`}
+                              >
+                                Add credits
+                              </label>
+                              <input
+                                id={`grant-${row.id}`}
+                                type="number"
+                                step={1}
+                                autoFocus
+                                value={grantAmount}
+                                onChange={(event) => setGrantAmount(event.target.value)}
+                                placeholder="10"
+                                className={`${SELECT} mt-1 block w-28 py-2`}
+                              />
+                            </div>
+                            <div className="min-w-[14rem] flex-1">
+                              <label
+                                className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400"
+                                htmlFor={`grant-note-${row.id}`}
+                              >
+                                Note (optional)
+                              </label>
+                              <input
+                                id={`grant-note-${row.id}`}
+                                value={grantNote}
+                                onChange={(event) => setGrantNote(event.target.value)}
+                                placeholder="Why these credits were added"
+                                className={`${SELECT} mt-1 block w-full py-2`}
+                              />
+                            </div>
+                            <button
+                              type="submit"
+                              // Disabled rather than silently rejecting: a
+                              // button that does nothing is indistinguishable
+                              // from a broken one.
+                              disabled={!Number.isFinite(Number(grantAmount)) || Math.floor(Number(grantAmount)) === 0}
+                              title={
+                                Math.floor(Number(grantAmount)) === 0
+                                  ? 'Enter a number of credits to add, or a negative one to take away.'
+                                  : undefined
+                              }
+                              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
+                            >
+                              Apply
+                            </button>
+                            <p className="w-full text-xs text-gray-500 dark:text-slate-400">
+                              A positive number adds, a negative one takes away. The field in the
+                              table above sets a total instead.
+                            </p>
+                          </form>
+                        )}
+
+                        {historyFor === row.id && (
+                          <div>
+                            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                              Credit history for {row.email}
+                            </h3>
+                            {historyLoading ? (
+                              <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+                                Loading...
+                              </p>
+                            ) : history.length === 0 ? (
+                              <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
+                                Nothing has moved on this account yet.
+                              </p>
+                            ) : (
+                              <ul className="mt-2 divide-y divide-gray-200 dark:divide-slate-800">
+                                {[...history]
+                                  .sort((left, right) => right.seq - left.seq)
+                                  .map((entry) => (
+                                    <li
+                                      key={entry.id}
+                                      className="flex items-start justify-between gap-4 py-2 text-sm"
+                                    >
+                                      <div className="min-w-0">
+                                        <p className="text-gray-900 dark:text-white">
+                                          {describeLedgerReason(entry)}
+                                        </p>
+                                        {entry.note && (
+                                          <p className="truncate text-xs text-gray-500 dark:text-slate-400">
+                                            {entry.note}
+                                          </p>
+                                        )}
+                                        <p className="text-xs text-gray-400 dark:text-slate-500">
+                                          {formatDate(entry.createdAt)}
+                                        </p>
+                                      </div>
+                                      <div className="shrink-0 text-right">
+                                        <p
+                                          className={`font-semibold ${
+                                            entry.delta > 0
+                                              ? 'text-green-700 dark:text-green-300'
+                                              : 'text-red-700 dark:text-red-300'
+                                          }`}
+                                        >
+                                          {formatDelta(entry.delta)}
+                                        </p>
+                                        <p className="text-xs text-gray-500 dark:text-slate-400">
+                                          {entry.balanceAfter} after
+                                        </p>
+                                      </div>
+                                    </li>
+                                  ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>

@@ -15,6 +15,8 @@ import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
 import accountRoutes from './routes/accounts';
+import creditRoutes from './routes/credits';
+import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { attachUser, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
@@ -151,6 +153,7 @@ app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
 // Routes. Auth first: it is the only one reachable while signed out.
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/accounts', accountRoutes);
+app.use('/api/credits', creditRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
@@ -230,6 +233,14 @@ const server = app.listen(PORT, HOST, () => {
   // was in a browser when it stopped is built again, and whatever was queued
   // carries on - which is the whole point of the queue being on disk.
   restoreGenerationQueue();
+  // After the queue, not before: restore requeues what was mid-flight, and a
+  // reservation whose tasks are about to run again must not be released as
+  // abandoned in between.
+  reconcileCredits();
+  // Reachable whenever ADMIN_EMAILS is set and somebody else signs in first -
+  // that path never falls back to the first-account rule, so the install can
+  // genuinely end up with nobody who can administer it.
+  warnIfNoAdmin();
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();

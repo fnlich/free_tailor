@@ -14,6 +14,7 @@ import {
   updateUser,
 } from '../database/userRepository';
 import { requireAdmin } from '../middleware/auth';
+import { getLedger, grantCredits, setBalance } from '../services/credits';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 
 /**
@@ -100,10 +101,16 @@ router.post('/', (req: Request, res: Response) => {
 
   const update: AccountUpdate = {};
   if (isAccountPlanId(req.body?.plan)) update.plan = req.body.plan;
-  if (Number.isFinite(Number(req.body?.credits))) update.credits = Number(req.body.credits);
-  const finished = Object.keys(update).length > 0 ? updateUser(account.id, update) : account;
+  const patched = Object.keys(update).length > 0 ? updateUser(account.id, update) : account;
 
-  res.status(201).json({ account: describe(finished ?? account) });
+  // Through the ledger, so even an opening balance typed on this form has a row
+  // saying who granted it and when.
+  const opening = Number(req.body?.credits);
+  if (Number.isFinite(opening) && opening > 0) {
+    grantCredits(account.id, Math.floor(opening), req.user!.id, 'Opening balance set when the account was added.');
+  }
+
+  res.status(201).json({ account: describe(getUserById(account.id) ?? patched ?? account) });
 });
 
 router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
@@ -122,18 +129,22 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
     }
     update.plan = req.body.plan;
   }
+  // Read from the same body but applied separately: a balance is the sum of a
+  // ledger, not a column to be overwritten, so it goes through setBalance which
+  // writes the difference and a row explaining it.
+  let wantedCredits: number | null = null;
   if (req.body?.credits !== undefined) {
     const credits = Number(req.body.credits);
     if (!Number.isFinite(credits) || credits < 0) {
       res.status(400).json({ error: 'Credits must be a whole number of zero or more.' });
       return;
     }
-    update.credits = credits;
+    wantedCredits = Math.floor(credits);
   }
   if (typeof req.body?.disabled === 'boolean') update.disabled = req.body.disabled;
   if (typeof req.body?.name === 'string') update.name = req.body.name;
 
-  if (Object.keys(update).length === 0) {
+  if (Object.keys(update).length === 0 && wantedCredits === null) {
     res.status(400).json({ error: 'There is nothing to change.' });
     return;
   }
@@ -148,7 +159,12 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
-  const updated = updateUser(target.id, update);
+  if (wantedCredits !== null) {
+    setBalance(target.id, wantedCredits, req.user!.id, 'Set from the accounts page.');
+  }
+
+  const updated =
+    Object.keys(update).length > 0 ? updateUser(target.id, update) : getUserById(target.id);
   if (!updated) {
     res.status(404).json({ error: 'No such account.' });
     return;
@@ -213,6 +229,42 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
         }
       : {}),
   });
+});
+
+/**
+ * Adds to a balance, rather than setting it.
+ *
+ * Beside the absolute field on purpose: "give them ten more" and "make it ten"
+ * are different intentions, and making an admin do the arithmetic to express the
+ * first is how somebody ends up taking credits away by accident.
+ */
+router.post('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
+  const target = getUserById(req.params.id);
+  if (!target) {
+    res.status(404).json({ error: 'No such account.' });
+    return;
+  }
+
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(amount) || Math.floor(amount) === 0) {
+    res.status(400).json({ error: 'Give a whole number of credits to add, or a negative one to take away.' });
+    return;
+  }
+
+  const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+  const balance = grantCredits(target.id, Math.floor(amount), req.user!.id, note);
+  const updated = getUserById(target.id);
+  res.json({ account: describe(updated ?? target), balance });
+});
+
+/** Every movement on one account, newest first, so a balance can be explained. */
+router.get('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
+  const target = getUserById(req.params.id);
+  if (!target) {
+    res.status(404).json({ error: 'No such account.' });
+    return;
+  }
+  res.json({ balance: target.credits, entries: getLedger(target.id, 200) });
 });
 
 export default router;

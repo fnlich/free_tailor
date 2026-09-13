@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 
 import AppTopNav from '@/components/AppTopNav';
+import CreditLedger from '@/components/CreditLedger';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountPlan } from '@/lib/auth';
+import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
 
 /**
  * The signed-in account's own page: who they are, what plan they are on, and
@@ -30,6 +32,8 @@ export default function AccountPage() {
   const { account, refresh, adopt } = useAuth();
 
   const [plans, setPlans] = useState<AccountPlan[]>([]);
+  const [credits, setCredits] = useState<CreditStatus | null>(null);
+  const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -37,6 +41,22 @@ export default function AccountPage() {
 
   useEffect(() => {
     authApi.plans().then(({ plans: list }) => setPlans(list)).catch(() => setPlans([]));
+  }, []);
+
+  /**
+   * Settled, not all: the balance and the history are independent, and one
+   * failing should not blank the other. A user whose history loaded fine has no
+   * reason to be shown an error instead of it.
+   */
+  useEffect(() => {
+    void (async () => {
+      const [status, entries] = await Promise.allSettled([
+        creditsApi.status(),
+        creditsApi.ledger(50),
+      ]);
+      if (status.status === 'fulfilled') setCredits(status.value);
+      if (entries.status === 'fulfilled') setLedger(entries.value.entries);
+    })();
   }, []);
 
   useEffect(() => {
@@ -133,18 +153,53 @@ export default function AccountPage() {
           </form>
         </section>
 
-        <section className={CARD}>
+        <section id="credits" className={CARD}>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Credits</h2>
+
+          {/*
+            Stated unconditionally, not only once the fetch lands. If /credits
+            fails, a balance with no explanation beside it is exactly the
+            information vacuum this section exists to fill.
+          */}
           <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-            {/* Said plainly rather than dressed up. A balance of zero next to
-                no explanation reads as "you cannot use this yet", which is not
-                true in this release. */}
-            Nothing spends credits yet. The balance is here so an administrator can grant it and so
-            it is already correct when something does.
+            One credit builds one resume, however many files it produces - a PDF, a DOCX and a cover
+            letter together still cost one. Previews are free and keep working at zero.
           </p>
+
           <p className="mt-4 text-3xl font-semibold text-gray-900 dark:text-white">
-            {account.credits}
+            {credits?.balance ?? account.credits}
           </p>
+
+          {credits && credits.held > 0 && (
+            <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+              {/* The dip is real, so it is named. Otherwise the number appears to
+                  drop and then come back from nowhere. */}
+              A run in progress is holding <strong>{credits.held}</strong>. Any resume that does not
+              build gives its credit back.
+            </p>
+          )}
+
+          {credits?.exempt ? (
+            <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:bg-blue-900/30 dark:text-blue-100">
+              You are an administrator, so your runs spend nothing. This balance stays where it is.
+            </p>
+          ) : (
+            (credits?.balance ?? account.credits) === 0 && (
+              <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+                {/* No checkout exists, and implying one would send somebody
+                    looking for a button that is not there. */}
+                You have no credits, so generating a resume will be refused. Previews still work. Ask
+                an administrator of this installation to add some.
+              </p>
+            )
+          )}
+
+          <div className="mt-6 border-t border-gray-200 pt-4 dark:border-slate-800">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">History</h3>
+            <div className="mt-2">
+              <CreditLedger entries={ledger} />
+            </div>
+          </div>
         </section>
 
         <section id="subscription" className={CARD}>

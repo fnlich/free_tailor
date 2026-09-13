@@ -144,6 +144,66 @@ const SCHEMA = `
    * Stored lowercased and trimmed, and UNIQUE, so the database refuses the
    * duplicate rather than trusting every caller to normalize first.
    */
+  /**
+   * Every movement of a credit, append-only.
+   *
+   * A table rather than a column that is simply written: "you have three" is not
+   * an answer anybody can check. Rows are never updated and never deleted, so the
+   * balance on users is a cache of SUM(delta) and any disagreement is visible.
+   *
+   * seq is an AUTOINCREMENT integer and not created_at, because created_at is an
+   * ISO string at millisecond resolution and two entries written in the same tick
+   * tie. A ledger whose order is ambiguous is not a ledger.
+   *
+   * idempotency_key is UNIQUE and is the whole safety story. A refund is written
+   * by a queue hook that can fire again after a restart; the key is what makes the
+   * second write a no-op instead of a gift.
+   */
+  CREATE TABLE IF NOT EXISTS credit_ledger (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              TEXT NOT NULL UNIQUE,
+    user_id         TEXT NOT NULL,
+    delta           INTEGER NOT NULL,
+    balance_after   INTEGER NOT NULL,
+    reason          TEXT NOT NULL,
+    ref_kind        TEXT NOT NULL DEFAULT '',
+    ref_id          TEXT NOT NULL DEFAULT '',
+    actor_id        TEXT,
+    note            TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at      TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger (user_id, seq DESC);
+  CREATE INDEX IF NOT EXISTS idx_credit_ledger_ref  ON credit_ledger (ref_kind, ref_id);
+
+  /**
+   * A run that has been charged and has not finished being accounted for.
+   *
+   * The refunded <= units invariant lives here rather than in the code that
+   * refunds, because that code is called from a queue hook which can fire more
+   * than once and from a boot reconciler which cannot see it. A cap in SQL cannot
+   * be reasoned past.
+   *
+   * The id IS the batch id for a queued run. That is what lets a hook holding only
+   * task.batchId find the account to credit, with no owner column on
+   * generation_batches and no user id on the task payload.
+   */
+  CREATE TABLE IF NOT EXISTS credit_reservations (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    units      INTEGER NOT NULL,
+    refunded   INTEGER NOT NULL DEFAULT 0,
+    state      TEXT NOT NULL DEFAULT 'open',
+    label      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_credit_reservations_open
+    ON credit_reservations (state, created_at);
+
   CREATE TABLE IF NOT EXISTS users (
     id            TEXT PRIMARY KEY,
     email         TEXT NOT NULL UNIQUE,
@@ -286,6 +346,11 @@ export function getDb(): Database.Database {
 
   const db = new Database(filePath);
   db.pragma('journal_mode = WAL');
+  // A second connection to the same file is not hypothetical: every test that
+  // calls loadFresh on this module gets a fresh `connections` map and opens one.
+  // Without a timeout the loser of a write race throws SQLITE_BUSY immediately,
+  // which would surface as a flaky test rather than as the refusal being tested.
+  db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
   addMissingColumns(db);
   // The connection is registered BEFORE the migrations run. That ordering is

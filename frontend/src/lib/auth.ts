@@ -1,4 +1,5 @@
 import { apiFetch, removeToken, setToken } from './api';
+import type { LedgerEntry } from './credits';
 
 /**
  * Signing in, and what the app knows about who is signed in.
@@ -105,6 +106,27 @@ export const authApi = {
 export type ManagedAccount = Account & { planLabel: string };
 
 export const accountsApi = {
+  /**
+   * Adds to a balance, rather than setting it.
+   *
+   * `amount` is a DELTA - positive adds, negative takes away. Distinct from
+   * `update({credits})`, which sets an absolute number: "give them ten more"
+   * and "make it ten" are different intentions, and making an admin do the
+   * arithmetic to express the first is how somebody takes credits away by
+   * accident.
+   */
+  grantCredits: (id: string, amount: number, note?: string) =>
+    apiFetch<{ account: ManagedAccount; balance: number }>(
+      `/admin/accounts/${encodeURIComponent(id)}/credits`,
+      { method: 'POST', body: JSON.stringify({ amount, note }) }
+    ),
+
+  /** Every movement on one account, so an admin can explain a balance. */
+  ledger: (id: string) =>
+    apiFetch<{ balance: number; entries: LedgerEntry[] }>(
+      `/admin/accounts/${encodeURIComponent(id)}/credits`
+    ),
+
   list: () => apiFetch<{ accounts: ManagedAccount[]; plans: AccountPlan[] }>('/admin/accounts'),
 
   create: (input: { email: string; name?: string; role?: UserRole; plan?: AccountPlanId; credits?: number }) =>
@@ -134,9 +156,19 @@ export const accountsApi = {
     ),
 };
 
-/** "2 of 5", or "2 of unlimited". */
+/**
+ * "2 of 5", or "2 of unlimited".
+ *
+ * An ADMIN is exempt from the cap, so their plan's number is not a limit they
+ * have - saying "5 of 1" to somebody who can freely make a sixth would be
+ * simply false, and it is the common case, since every account starts on the
+ * one-profile Default plan.
+ */
 export function describeProfileUsage(account: Account): string {
-  return `${account.profilesUsed} of ${account.profileLimit === null ? 'unlimited' : account.profileLimit}`;
+  if (account.role === 'admin' || account.profileLimit === null) {
+    return `${account.profilesUsed} of unlimited`;
+  }
+  return `${account.profilesUsed} of ${account.profileLimit}`;
 }
 
 /** True when the account is at its plan's profile limit. */

@@ -159,6 +159,11 @@ export type BatchEvent =
   | { type: 'task'; batchId: string; taskId: string; snapshot: BatchSnapshot }
   | { type: 'done'; batchId: string; snapshot: BatchSnapshot };
 
+/** The batch id prefix, in one place, so a caller can mint one the same way. */
+export function newBatchId(): string {
+  return `bat_${randomUUID()}`;
+}
+
 type Listener = (event: BatchEvent) => void;
 
 /**
@@ -186,6 +191,23 @@ export type QueueStore = {
   saveBatch(batch: Batch): void;
   saveTask(task: Task): void;
   deleteBatch(batchId: string): void;
+};
+
+/**
+ * Told when a task stops being work.
+ *
+ * A SEPARATE seam from QueueStore, deliberately. QueueStore is documented above
+ * as "where the queue is written down"; a terminal-state notification is not
+ * writing the queue down, and folding it in would make the persistence
+ * interface carry a lifecycle concern it has no business knowing about. A
+ * second optional parameter costs one line and keeps both contracts honest -
+ * and keeps this class constructible bare, which the dispatcher's tests rely on.
+ *
+ * The dispatcher still has no database import. What the hook does with a
+ * finished task is the composition root's business, not the queue's.
+ */
+export type QueueHooks = {
+  taskFinished?(task: Task): void;
 };
 
 function describeError(error: unknown): string {
@@ -230,7 +252,8 @@ export class TaskQueue {
 
   constructor(
     private readonly readCapacity: () => Promise<Capacity>,
-    private readonly store?: QueueStore
+    private readonly store?: QueueStore,
+    private readonly hooks?: QueueHooks
   ) {}
 
   /**
@@ -290,9 +313,12 @@ export class TaskQueue {
    */
   submit<T>(
     descriptors: Array<TaskDescriptor<T>>,
-    meta: { label?: string; jobCount?: number; shared?: Record<string, unknown> } = {}
+    meta: { id?: string; label?: string; jobCount?: number; shared?: Record<string, unknown> } = {}
   ): Batch<T> {
-    const batchId = `bat_${randomUUID()}`;
+    // The caller may mint the id. `restore` already does, and a caller that must
+    // reserve something against this batch needs the id BEFORE any task can
+    // start - `submit` dispatches immediately, so there is no window afterwards.
+    const batchId = meta.id ?? newBatchId();
     const tasks: Task<T>[] = descriptors.map((descriptor, seq) => ({
       ...descriptor,
       id: `tsk_${randomUUID()}`,
@@ -413,7 +439,16 @@ export class TaskQueue {
     let aborted = 0;
     for (const task of batch.tasks) {
       if (task.state === 'queued') {
-        task.state = 'cancelled';
+        // Through the funnel, but NOT through `settle`: its tail would mark the
+        // batch done in the middle of cancelling it. The write and the
+        // announcement are suppressed because this method does both in bulk
+        // below - otherwise a thirty-task batch would write and emit thirty
+        // times for one click.
+        this.finishTask(task, 'cancelled', {
+          error: 'Cancelled before it started',
+          persist: false,
+          emit: false,
+        });
         cancelled += 1;
       } else if (task.state === 'running') {
         aborted += 1;
@@ -630,12 +665,44 @@ export class TaskQueue {
     });
   }
 
-  private settle(task: Task, state: TaskState, error?: string): void {
+  /**
+   * The ONE place a task stops being work.
+   *
+   * There were two. `settle` handled done, failed and cancelled-while-running;
+   * `cancel` flipped its QUEUED tasks inline and never came through here. Any
+   * hook wired to `settle` alone would therefore miss every queued task of every
+   * cancelled batch - which on a two-hundred-row sheet import is nearly all of
+   * them.
+   *
+   * Rerouting `cancel` through `settle` would have been wrong the other way:
+   * `settle`'s tail marks the batch done once nothing is left queued or running,
+   * so it would declare a batch finished half way through cancelling it and emit
+   * a second terminal event. So the shared half lives here and both paths call
+   * it, with `cancel` suppressing the per-task write and emit it does in bulk.
+   */
+  private finishTask(
+    task: Task,
+    state: TaskState,
+    options: { error?: string; persist?: boolean; emit?: boolean } = {}
+  ): void {
     task.state = state;
     task.runningOn = undefined;
-    if (error) task.error = error;
-    this.persist((store) => store.saveTask(task));
-    this.emitTask(task);
+    if (options.error) task.error = options.error;
+    if (options.persist !== false) this.persist((store) => store.saveTask(task));
+
+    try {
+      this.hooks?.taskFinished?.(task);
+    } catch (error) {
+      // Same posture as `persist` above: a hook that throws costs whatever the
+      // hook was for, not the task that was only reporting it had stopped.
+      console.warn('[queue] A task-finished hook threw; the task itself is unaffected.', error);
+    }
+
+    if (options.emit !== false) this.emitTask(task);
+  }
+
+  private settle(task: Task, state: TaskState, error?: string): void {
+    this.finishTask(task, state, { error });
 
     const batch = this.batches.get(task.batchId);
     if (!batch || batch.state !== 'running') return;

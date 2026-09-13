@@ -24,7 +24,8 @@ By default it runs on **a chat tab you are already signed in to** rather than me
 | Feature | Description |
 |---------|-------------|
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
-| **Plans** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets the plan; credits are tracked and spend on nothing yet |
+| **Plans** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets the plan |
+| **Credits** | One credit per generated resume, whatever it writes. Charged before the first model call and given back for any resume that does not build, so credits spent always equals resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
@@ -111,12 +112,50 @@ them. The same migration switches the two on if every provider the install had
 enabled turns out to be locked, and repoints a stored default that named the
 locked seat at a free model rather than at a metered one.
 
+### Credits
+
+One credit buys **one resume** - one profile against one job - however many files
+that produces. A run asking for PDF and DOCX plus a cover letter writes four
+files and costs one credit, because what was asked for is one tailored resume.
+
+The charge happens **at submit, before the first model call**, and every resume
+that does not build gives its credit back. So the invariant is: *credits spent
+equals resumes delivered*. A run that is cancelled refunds everything that had
+not started; one that fails half way refunds the half that failed.
+
+Charging up front rather than on delivery is what makes a refusal mean
+something. The batch endpoint returns a job id before any work runs, and by the
+time a task reaches a browser there is no request and no user attached to it - so
+the only moment a charge can be both truthful and attributable is when the work
+is asked for. It also means a run of thirty is refused as thirty, rather than
+being refused on the thirtieth after twenty-nine resumes already exist.
+
+- **Previews are free.** `/preview` and `/preview-all` write no file, and the
+  tailored output they return is reused by the real run - charging both would
+  bill the ordinary preview-then-generate flow twice for one piece of model work.
+  A new account on zero credits can still paste a job description and see the
+  result; what it cannot do is take the file away.
+- **Administrators are exempt.** They can already set any balance, so metering
+  them is a formality. The first account to sign in is an administrator, which is
+  why a fresh install works on day one with nobody holding a credit.
+- **Every movement is explainable.** The ledger is append-only and records the
+  reserve, each refund, each grant and who made it. `users.credits` is a cache of
+  its sum, and a disagreement is reported at startup rather than quietly fixed -
+  it would mean something wrote the balance outside the credit service.
+- **A balance dips while a run is in flight.** The account page shows that as
+  *held*, rather than hiding it and having the number appear to come back from
+  nowhere.
+
+A brand-new account starts at **0** and needs an administrator to grant it some.
+Set `CREDIT_SIGNUP_GRANT` to give an open installation a self-serve trial instead.
+
 ### Where data lives
 
 | Data | Storage |
 |------|---------|
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
+| Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
@@ -400,7 +439,7 @@ File and folder names are templated per profile.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, plan, credits and profile use. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's plan before they arrive; it is not a way in, since they still prove the address through Google or a code |
+| **Accounts** | Every account on the installation, with its role, plan, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's plan before they arrive; it is not a way in, since they still prove the address through Google or a code |
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **Add Manually**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
@@ -427,7 +466,8 @@ File and folder names are templated per profile.
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
 | | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
-| `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave empty and the first account to sign in does |
+| `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave empty and the first account to sign in does. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
+| `CREDIT_SIGNUP_GRANT` | Credits a brand-new account starts with. `0` by default |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |

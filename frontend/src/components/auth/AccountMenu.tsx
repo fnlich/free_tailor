@@ -103,18 +103,32 @@ export default function AccountMenu() {
               )}
             </div>
 
-            <dl className="mt-3 space-y-1 text-xs text-gray-600 dark:text-slate-300">
-              <div className="flex justify-between">
-                <dt>Credits</dt>
-                <dd className="font-medium text-gray-900 dark:text-white">{account.credits}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt>Profiles</dt>
-                <dd className="font-medium text-gray-900 dark:text-white">
+            {/*
+              A div rather than a dl, because these rows are links now and an
+              anchor is not a valid child of a dl. The number is worth a
+              destination: it dips while a run is in flight, and somebody
+              noticing that needs somewhere to find out why.
+            */}
+            <div className="mt-3 space-y-1 text-xs text-gray-600 dark:text-slate-300">
+              <Link
+                href="/account#credits"
+                onClick={() => setOpen(false)}
+                className="-mx-1 flex justify-between rounded px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-900"
+              >
+                <span>Credits</span>
+                <span className="font-medium text-gray-900 dark:text-white">{account.credits}</span>
+              </Link>
+              <Link
+                href="/account#subscription"
+                onClick={() => setOpen(false)}
+                className="-mx-1 flex justify-between rounded px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-900"
+              >
+                <span>Profiles</span>
+                <span className="font-medium text-gray-900 dark:text-white">
                   {describeProfileUsage(account)}
-                </dd>
-              </div>
-            </dl>
+                </span>
+              </Link>
+            </div>
           </div>
 
           <Link href="/account" onClick={() => setOpen(false)} className={ITEM}>

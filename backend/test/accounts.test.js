@@ -202,11 +202,19 @@ test('credits start at zero and block nothing', () => {
   // Nothing in this release spends them, so a brand-new account can still work.
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
 
-  assert.equal(users.updateUser(alice.id, { credits: 25 }).credits, 25);
-  // A fractional or negative balance has no meaning, and a negative one would
-  // read as a debt this app has no way to collect.
-  assert.equal(users.updateUser(alice.id, { credits: -5 }).credits, 0);
-  assert.equal(users.updateUser(alice.id, { credits: 7.9 }).credits, 7);
+  // Balances move through the credit service now, never through updateUser -
+  // its absolute SET lost concurrent debits, so the branch was removed.
+  const credits = loadFresh('../dist/services/credits');
+  credits.setBalance(alice.id, 25, 'admin-1', 'test');
+  assert.equal(users.getUserById(alice.id).credits, 25);
+
+  // A negative balance would read as a debt this app has no way to collect,
+  // so a revoke of more than somebody holds takes them to zero.
+  credits.grantCredits(alice.id, -100, 'admin-1', 'test');
+  assert.equal(users.getUserById(alice.id).credits, 0);
+
+  credits.setBalance(alice.id, 7.9, 'admin-1', 'test');
+  assert.equal(users.getUserById(alice.id).credits, 7);
 });
 
 test('disabling an account ends its sessions at once', () => {

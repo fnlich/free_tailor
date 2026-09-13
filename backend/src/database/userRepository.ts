@@ -138,6 +138,25 @@ function roleForNewUser(email: string, requested?: UserRole): UserRole {
   return row.n === 0 ? 'admin' : 'user';
 }
 
+/**
+ * Credits given to a brand-new account, when an operator configured any.
+ *
+ * Imported lazily inside `createUser` rather than at the top of this module,
+ * because services/credits imports this file to read an account back - and a
+ * static import both ways is a cycle that leaves one of them half-initialised.
+ */
+function applyOpeningGrant(account: UserAccount): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const credits = require('../services/credits') as typeof import('../services/credits');
+    credits.applySignupGrant(account);
+  } catch (error) {
+    // An account that exists with no welcome credits is recoverable by an
+    // admin; an account that failed to be created is not.
+    console.warn('[credits] Could not apply the signup grant to a new account.', error);
+  }
+}
+
 export function createUser(input: CreateUserInput): UserAccount {
   const email = normalizeEmail(input.email);
   if (!email) throw new Error('An email address is required to create an account.');
@@ -168,7 +187,11 @@ export function createUser(input: CreateUserInput): UserAccount {
     )
     .run(account);
 
-  return toAccount(account);
+  const created = toAccount(account);
+  applyOpeningGrant(created);
+  // Re-read, so the caller sees the balance the grant left rather than the zero
+  // the row was inserted with.
+  return getUserById(created.id) ?? created;
 }
 
 /**
@@ -224,13 +247,12 @@ export function updateUser(id: string, update: AccountUpdate): UserAccount | nul
     patch.push('plan = @plan');
     values.plan = update.plan;
   }
-  if (update.credits !== undefined) {
-    patch.push('credits = @credits');
-    // Floored and clamped at zero. A fractional or negative balance has no
-    // meaning here, and a negative one would read as a debt the app has no way
-    // to collect.
-    values.credits = Math.max(0, Math.floor(update.credits));
-  }
+  // NO `credits` BRANCH. It used to be here, as an absolute SET, and that is
+  // exactly why it had to go: two debits arriving together composed as "last one
+  // wins" and the first spend simply vanished. Every balance change now goes
+  // through creditRepository, which moves it with a conditional UPDATE inside a
+  // transaction and writes a ledger row explaining the move. `setBalance` in
+  // services/credits is what the admin page's field calls.
   if (update.disabled !== undefined) {
     patch.push('disabled = @disabled');
     values.disabled = update.disabled ? 1 : 0;

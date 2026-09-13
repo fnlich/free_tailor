@@ -10,6 +10,7 @@ import {
 import { getProfile } from '../../database/profileRepository';
 import { cliConcurrency } from '../ai/batchCapacity';
 import type { BrowserChatSiteId } from '../../config/providerCatalog';
+import { closeIfSettled, refundTaskUnit } from '../credits';
 import {
   registerTaskRunner,
   TaskQueue,
@@ -23,7 +24,7 @@ import {
 } from './taskQueue';
 import { makeResumeRunner, RESUME_TASK_KIND, type ResumeJob } from './resumeTask';
 
-export { TaskQueue, registerTaskRunner } from './taskQueue';
+export { TaskQueue, registerTaskRunner, newBatchId } from './taskQueue';
 export type {
   Assignment,
   Batch,
@@ -129,7 +130,47 @@ let queue: TaskQueue | null = null;
  */
 export function getGenerationQueue(): TaskQueue {
   if (!queue) {
-    queue = new TaskQueue(() => readCapacity(), store);
+    queue = new TaskQueue(() => readCapacity(), store, {
+      /**
+       * Gives a credit back for every unit that did not deliver.
+       *
+       * The hook needs no identity plumbing at all: a reservation's id IS the
+       * batch id, and it carries the account. That is why there is no user id on
+       * the task payload and no owner column on generation_tasks - the one thing
+       * a refund needs, it already has in `task.batchId`.
+       *
+       * A task that reached 'done' wrote a file, so its credit is spent and
+       * stays spent. Note the asymmetry with the line below: a unit that FAILED
+       * after writing a partial file is still refunded, because a half-finished
+       * run is not a deliverable. An abort that lands after the file was written
+       * arrives here as 'done' and is correctly kept.
+       */
+      taskFinished: (task) => {
+        // A task that delivered keeps its credit; one that did not gives it
+        // back. Either way the batch may now be finished, so the close check
+        // below runs for BOTH - skipping it for 'done' would leave a fully
+        // successful batch holding its credits until the reconciler swept them
+        // back hours later, which is to say it would eventually make a
+        // successful run free.
+        if (task.state !== 'done') {
+          refundTaskUnit(
+            task.batchId,
+            task.id,
+            `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
+          );
+        }
+        const batch = queue?.getBatch(task.batchId);
+        closeIfSettled(
+          task.batchId,
+          batch
+            ? {
+                queued: batch.tasks.filter((entry) => entry.state === 'queued').length,
+                running: batch.tasks.filter((entry) => entry.state === 'running').length,
+              }
+            : null
+        );
+      },
+    });
     registerTaskRunner(
       RESUME_TASK_KIND,
       makeResumeRunner(

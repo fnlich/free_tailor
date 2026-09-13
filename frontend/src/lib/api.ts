@@ -121,11 +121,58 @@ export class ApiResponseError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly url: string
+    readonly url: string,
+    /**
+     * The whole error body, not just its message.
+     *
+     * A refusal carries fields that say what KIND of refusal it is - `code`,
+     * and numbers like `needed`, `balance` or `limit`. Throwing them away left a
+     * component with nothing but English to classify by, and a component that
+     * matched on the wording would break the moment somebody improved it.
+     *
+     * Last and defaulted, so the three-argument form still compiles.
+     */
+    readonly body: Record<string, unknown> = {}
   ) {
     super(message);
     this.name = 'ApiResponseError';
   }
+
+  /** The machine-readable reason, when the server gave one. */
+  get code(): string | undefined {
+    return typeof this.body.code === 'string' ? this.body.code : undefined;
+  }
+
+  /** A number from the body, when it really is one. */
+  number(field: string): number | undefined {
+    const value = this.body[field];
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  }
+}
+
+/**
+ * The parsed error body, always a plain object.
+ *
+ * `response.json()` can legitimately produce `null` or an array, and reading
+ * `.error` off either throws a TypeError from inside the error path - which
+ * would turn "the server said no" into a thrown exception the retry loop
+ * misreads as a lost connection.
+ */
+async function readErrorBody(response: Response): Promise<Record<string, unknown>> {
+  const parsed = await response.json().catch(() => null);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+
+/** The account cannot afford the run it just asked for. */
+export function isInsufficientCredits(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.code === 'insufficient-credits';
+}
+
+/** The account is at its plan's profile limit. */
+export function isProfileLimit(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.code === 'profile-limit';
 }
 
 /**
@@ -194,15 +241,16 @@ export async function apiStream(
 
     resolvedApiBase = apiBase;
     if (!response.ok || !response.body) {
-      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      const body = await readErrorBody(response);
       if (response.status === 401) {
         removeToken();
         onUnauthorized?.();
       }
       throw new ApiResponseError(
-        body.error || `Request failed with HTTP ${response.status}`,
+        typeof body.error === 'string' ? body.error : `Request failed with HTTP ${response.status}`,
         response.status,
-        `${apiBase}${endpoint}`
+        `${apiBase}${endpoint}`,
+        body
       );
     }
 
@@ -279,7 +327,7 @@ export async function apiFetch<T>(
     resolvedApiBase = apiBase;
 
     if (!response.ok) {
-      const body = await response.json().catch(() => ({}) as { error?: string });
+      const body = await readErrorBody(response);
       if (response.status === 401) {
         // The session is gone - expired, revoked, or the account disabled.
         // Clearing the stale copy here means the next call does not send it.
@@ -287,9 +335,10 @@ export async function apiFetch<T>(
         onUnauthorized?.();
       }
       throw new ApiResponseError(
-        body.error || `Request failed with HTTP ${response.status}`,
+        typeof body.error === 'string' ? body.error : `Request failed with HTTP ${response.status}`,
         response.status,
-        url
+        url,
+        body
       );
     }
 
