@@ -318,6 +318,9 @@ router.post('/batches', async (req: Request, res: Response) => {
     try {
       batch = queue.submit(descriptors, {
         id: batchId,
+        // Written by `persistNewBatch` below, in one transaction, rather than
+        // row by row here and then again there.
+        deferPersist: true,
         label: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Generation',
         jobCount: jobs.length,
         // The jobs live on the BATCH, once. Each task refers to its own by index,
@@ -366,6 +369,32 @@ router.post('/batches', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Whether this account may see a batch at all.
+ *
+ * The owner is recorded on `shared` at submit, which `restore` reads back, so it
+ * survives a restart for free. A batch with NO owner predates this check or was
+ * written by an older build; it reads as admin-only rather than public, the same
+ * safe direction an unowned profile takes.
+ *
+ * This matters more than it looks. A snapshot carries the task labels AND the
+ * generated file paths, and `/api/generated/:filename` only asks for a session -
+ * so an unscoped read here would hand one account another's finished resumes.
+ */
+function canSeeBatch(viewer: Viewer, batch: { shared: Record<string, unknown> } | undefined): boolean {
+  if (!batch) return false;
+  if (viewer === null) return true;
+  if (viewer.role === 'admin') return true;
+  const ownerId = batch.shared.ownerId;
+  return typeof ownerId === 'string' && ownerId === viewer.id;
+}
+
+/** The batch, or null when it is not this account's to see. */
+function visibleBatch(req: Request, batchId: string) {
+  const batch = getGenerationQueue().getBatch(batchId);
+  return canSeeBatch(req.user ?? null, batch) ? batch : null;
+}
+
 /** Every batch the server still holds; `?active=1` for the unfinished ones. */
 router.get('/batches', (req: Request, res: Response) => {
   const queue = getGenerationQueue();
@@ -373,6 +402,11 @@ router.get('/batches', (req: Request, res: Response) => {
   res.json({
     batches: queue
       .listBatches(activeOnly)
+      // Filtered BEFORE the snapshot is built, so another account's work is
+      // never even serialized. The page that reloads takes the first batch in
+      // this list and attaches to it, so an unfiltered list would silently
+      // point somebody at a stranger's run.
+      .filter((batch) => canSeeBatch(req.user ?? null, batch))
       .map((batch) => queue.snapshot(batch.id))
       .filter(Boolean),
     queues: queue.stats(),
@@ -380,7 +414,11 @@ router.get('/batches', (req: Request, res: Response) => {
 });
 
 router.get('/batches/:id', (req: Request<{ id: string }>, res: Response) => {
-  const snapshot = getGenerationQueue().snapshot(req.params.id);
+  // 404 rather than 403 for somebody else's batch, matching the profile
+  // routes: a 403 would confirm that a batch with that id exists.
+  const snapshot = visibleBatch(req, req.params.id)
+    ? getGenerationQueue().snapshot(req.params.id)
+    : null;
   if (!snapshot) {
     // Named, because the page that asks is usually one that reloaded and is
     // holding an id from before a server restart - and "unknown batch" alone
@@ -404,7 +442,7 @@ router.get('/batches/:id', (req: Request<{ id: string }>, res: Response) => {
  */
 router.get('/batches/:id/stream', (req: Request<{ id: string }>, res: Response) => {
   const queue = getGenerationQueue();
-  const snapshot = queue.snapshot(req.params.id);
+  const snapshot = visibleBatch(req, req.params.id) ? queue.snapshot(req.params.id) : null;
   if (!snapshot) {
     res.status(404).json({
       error: 'That batch is no longer on the server.',
@@ -436,7 +474,12 @@ router.get('/batches/:id/stream', (req: Request<{ id: string }>, res: Response) 
 });
 
 router.post('/batches/:id/cancel', (req: Request<{ id: string }>, res: Response) => {
-  const outcome = getGenerationQueue().cancel(req.params.id);
+  // Resolved through the viewer FIRST. Cancelling is destructive - it aborts
+  // work in a browser - so an unscoped id here let any signed-in account stop
+  // any other account's run.
+  const outcome = visibleBatch(req, req.params.id)
+    ? getGenerationQueue().cancel(req.params.id)
+    : null;
   if (!outcome) {
     res.status(404).json({ error: 'That batch is not running.' });
     return;

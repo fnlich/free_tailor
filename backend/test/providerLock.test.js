@@ -406,3 +406,43 @@ test('an operator who already added their own row for a locked-out provider keep
   assert.deepEqual(claudeWeb.map((model) => model.id), ['claude-web-mine']);
   assert.ok(loaded.aiModels.some((model) => model.id === 'chatgpt-web-chat'), 'the other seed still lands');
 });
+
+test('a profile pinned to a locked provider still runs hybrid when the default is', async () => {
+  useTempStorage('lock-hybrid-fallback');
+  lockSeat();
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const preferences = loadFresh('../dist/config/aiPreferences');
+
+  // The install's default is the browser entry, which is what a fresh install
+  // lands on once the seat is locked.
+  const settings = await config.getPublicAppSettings();
+  assert.equal(settings.defaultModelId, 'free-hybrid');
+
+  const choice = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'claude-cli-sonnet' } },
+  });
+
+  // The stored id names a LOCKED provider, so the preference falls back to the
+  // app default - and that default is hybrid. Reading hybrid-ness from the
+  // stored id alone said otherwise, which pinned the run to whichever site it
+  // happened to resolve to and quietly halved the browsers a batch could use.
+  assert.equal(choice.route, 'hybrid');
+});
+
+test('a profile pinned to a runnable model is not made hybrid by the default', async () => {
+  useTempStorage('lock-hybrid-no-false-positive');
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const preferences = loadFresh('../dist/config/aiPreferences');
+
+  await config.updateAppSettings({ defaultModelId: 'free-hybrid' });
+
+  const choice = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'openai-gpt-5-1' } },
+  });
+
+  // The other direction matters as much: a stored model that survives is the
+  // choice, and inheriting hybrid-ness from the default would override a
+  // deliberate pick.
+  assert.equal(choice.route, undefined);
+  assert.equal(choice.provider, 'openai');
+});

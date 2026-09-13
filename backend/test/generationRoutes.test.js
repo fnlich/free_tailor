@@ -71,6 +71,7 @@ async function serve() {
     routes,
     account,
     token,
+    origin: `http://127.0.0.1:${port}`,
     close: () => server.close(),
     call: (path, init = {}) =>
       fetch(`http://127.0.0.1:${port}/api/generation${path}`, {
@@ -286,6 +287,56 @@ test('the batch endpoints are closed to a request with no session', async () => 
       body: JSON.stringify({ jobs: jobsFor(1), profileIds: ['p1'] }),
     });
     assert.equal(submitted.status, 401, 'submitting work needs an account');
+  } finally {
+    server.close();
+  }
+});
+
+/**
+ * One account's run is not another's to read, watch or stop.
+ *
+ * A snapshot carries the task labels AND the generated file paths, and the
+ * download route only asks for a session - so an unscoped read here would hand
+ * a stranger somebody's finished resumes.
+ */
+test('a batch belongs to the account that submitted it', async () => {
+  const server = await serve();
+  try {
+    const users = require('../dist/database/userRepository');
+    // A second ordinary account. The harness's own account was created first,
+    // so it is the admin; this one is a plain user.
+    const stranger = users.createUser({ email: 'stranger@example.com' });
+    const strangerToken = users.createSession(stranger.id);
+
+    const submitted = await (
+      await server.post('/batches', { jobs: jobsFor(2), profileIds: ['p1'] })
+    ).json();
+
+    const asStranger = (path, init = {}) =>
+      fetch(`${server.origin}/api/generation${path}`, {
+        ...init,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${strangerToken}`, ...(init.headers ?? {}) },
+      });
+
+    // The UNFILTERED list. `?active=1` would be empty for both of them the
+    // moment the batch finishes, so it could pass while proving nothing.
+    const listed = await (await asStranger('/batches')).json();
+    assert.deepEqual(listed.batches, [], 'a stranger sees none of it');
+
+    // 404, not 403 - a 403 would confirm the batch exists.
+    assert.equal((await asStranger(`/batches/${submitted.batchId}`)).status, 404);
+    assert.equal((await asStranger(`/batches/${submitted.batchId}/stream`)).status, 404);
+    assert.equal(
+      (await asStranger(`/batches/${submitted.batchId}/cancel`, { method: 'POST' })).status,
+      404,
+      'and cannot stop work that is not theirs'
+    );
+
+    // The owner still sees their own.
+    const own = await (await server.call(`/batches/${submitted.batchId}`)).json();
+    assert.equal(own.batchId, submitted.batchId);
+    const mine = await (await server.call('/batches')).json();
+    assert.equal(mine.batches.length, 1, 'while the owner still sees their own');
   } finally {
     server.close();
   }
