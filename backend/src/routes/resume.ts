@@ -1,4 +1,13 @@
 import { Router, Request, Response } from 'express';
+import {
+  InsufficientCreditsError,
+  newReservationId,
+  refundUnits,
+  releaseReservation,
+  reserveCredits,
+  settleRun,
+} from '../services/credits';
+import { requireUser } from '../middleware/auth';
 import path from 'path';
 import {
   analyzeJobDescription,
@@ -23,11 +32,20 @@ import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
-import { getProfile, listProfiles } from '../database/profileRepository';
+import { getProfileFor, listProfilesFor, type Viewer } from '../database/profileRepository';
 import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
 import { AIProvider, GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
 
 /**
  * A signal that fires when the client goes away before the response is sent.
@@ -306,12 +324,18 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
   }
 });
 
-// Load all non-disabled profiles
-async function loadAllProfiles(profileIds?: string[]): Promise<Profile[]> {
+/**
+ * The requester's non-disabled profiles, optionally narrowed to a set of ids.
+ *
+ * Scoped by the viewer, and the narrowing happens AFTER: naming somebody else's
+ * profile id in `profileIds` selects nothing rather than reaching it, so the
+ * request builds fewer resumes than asked rather than one it should not.
+ */
+async function loadAllProfiles(viewer: Viewer, profileIds?: string[]): Promise<Profile[]> {
   const selectedIds = Array.isArray(profileIds)
     ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
     : null;
-  return listProfiles()
+  return listProfilesFor(viewer)
     .filter((profile) => !selectedIds || selectedIds.has(profile.id))
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
@@ -447,12 +471,26 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     }
 
     // Load profiles
-    const profiles = await loadAllProfiles(profileIds);
+    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
       return;
     }
 
+    /**
+     * The charge, above the analysis rather than beside the file writes.
+     *
+     * It has to sit here: the tailoring below spends the model budget for every
+     * profile before anything is written, so a check placed next to the writes
+     * would refuse a run the account had already paid the expensive part of.
+     */
+    const reservation = newReservationId();
+    reserveCredits(req.user!, profiles.length, {
+      kind: 'request',
+      id: reservation,
+      label: `Generate for ${profiles.length} profile(s)`,
+    });
+    try {
 
     let analysis: JobAnalysis | undefined;
 
@@ -587,6 +625,20 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       });
     });
 
+    // Every profile that did not produce a resume gives its credit back. A
+    // profile skipped before it was ever attempted counts too, which is why
+    // this is measured against what was reserved rather than against
+    // `buildable`.
+    refundUnits(
+      reservation,
+      profiles.length - results.length,
+      `${profiles.length - results.length} of ${profiles.length} did not build`
+    );
+    // Accounted for: the failures have been refunded and the rest delivered, so
+    // what is still held is exactly what was earned. The `finally` below then
+    // finds a closed reservation and does nothing.
+    settleRun(reservation);
+
     res.json({
       generated: results.length,
       results,
@@ -597,7 +649,21 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       unconfirmedHardSkills: bulkTailoring?.unconfirmedHardSkills ?? Array.from(unconfirmedHardMap.values()),
       unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
     });
+    } finally {
+      // Sweeps anything still outstanding - the whole reservation when the body
+      // threw before settling, nothing when it completed normally.
+      releaseReservation(reservation, 'The run did not finish.');
+    }
   } catch (error) {
+    if (error instanceof InsufficientCreditsError) {
+      res.status(402).json({
+        error: error.message,
+        code: 'insufficient-credits',
+        needed: error.needed,
+        balance: error.balance,
+      });
+      return;
+    }
     console.error('Error generating resumes for all profiles:', error);
     if (sendAiError(res, error)) return;
     res.status(500).json({
@@ -638,7 +704,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       return;
     }
 
-    const profiles = await loadAllProfiles(profileIds);
+    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
       return;
@@ -667,6 +733,23 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         sourceRowNumber: job.sourceRowNumber,
       };
     });
+
+    /**
+     * The charge, as one multiplication before the first analysis.
+     *
+     * This is the largest call in the app - M jobs by N profiles, with no cap on
+     * either - so decrementing as it went would refuse the thirtieth unit after
+     * twenty-nine resumes already existed and thirty model calls had been paid
+     * for. A refusal that arrives after the cost is not a refusal.
+     */
+    const multiReservation = newReservationId();
+    const multiUnits = normalizedJobs.length * profiles.length;
+    reserveCredits(req.user!, multiUnits, {
+      kind: 'request',
+      id: multiReservation,
+      label: `${normalizedJobs.length} job(s) x ${profiles.length} profile(s)`,
+    });
+    try {
 
     /**
      * The analysis for one job, run once however many profiles want it.
@@ -839,6 +922,13 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       failedCompanies.add(job.companyName);
     });
 
+    refundUnits(
+      multiReservation,
+      multiUnits - results.length,
+      `${multiUnits - results.length} of ${multiUnits} did not build`
+    );
+    settleRun(multiReservation);
+
     res.json({
       generated: results.length,
       failed: failures.length,
@@ -849,7 +939,19 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
       unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
     });
+    } finally {
+      releaseReservation(multiReservation, 'The run did not finish.');
+    }
   } catch (error) {
+    if (error instanceof InsufficientCreditsError) {
+      res.status(402).json({
+        error: error.message,
+        code: 'insufficient-credits',
+        needed: error.needed,
+        balance: error.balance,
+      });
+      return;
+    }
     console.error('Error generating resumes for multiple jobs:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to generate resumes for multiple jobs',
@@ -877,7 +979,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     const aiOverrides = readAiOverrides(req.body);
     const selectedModel = await resolveAiChoice(aiOverrides);
 
-    const profiles = await loadAllProfiles(profileIds);
+    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
       return;
@@ -1008,7 +1110,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     }
 
     // Load profile
-    const profile = getProfile(profileId);
+    const profile = getProfileFor(req.user ?? null, profileId);
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;
@@ -1017,6 +1119,22 @@ router.post('/generate', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Selected profile is disabled' });
       return;
     }
+
+    // One resume, one credit - however many files it writes. A run asking for
+    // PDF and DOCX plus a cover letter produces four files and still costs one,
+    // because what was asked for is one tailored resume.
+    //
+    // Note where this ISN'T: /preview below has the identical shape and is NOT
+    // charged, because it writes no file and its tailored output is handed back
+    // for /batches to reuse. Charging both would bill the ordinary
+    // preview-then-generate flow twice for one piece of model work.
+    const singleReservation = newReservationId();
+    reserveCredits(req.user!, 1, {
+      kind: 'request',
+      id: singleReservation,
+      label: `${profile.name} / ${companyName}`,
+    });
+    try {
 
     // Resolved here rather than at the top of the handler: the model, effort
     // and thinking are a per-profile setting, so the profile has to be loaded
@@ -1145,7 +1263,25 @@ router.post('/generate', async (req: Request, res: Response) => {
         unconfirmedSoftSkills,
       });
     }
+    // The resume exists, so the credit is spent.
+    settleRun(singleReservation);
+    } finally {
+      // A no-op on the happy path, because `settleRun` above already closed it
+      // with its one credit spent. On a throw nothing settled it, so this
+      // sweeps the credit back - which is the whole reason the body is wrapped
+      // rather than refunded at each exit.
+      releaseReservation(singleReservation, 'The run did not finish.');
+    }
   } catch (error) {
+    if (error instanceof InsufficientCreditsError) {
+      res.status(402).json({
+        error: error.message,
+        code: 'insufficient-credits',
+        needed: error.needed,
+        balance: error.balance,
+      });
+      return;
+    }
     console.error('Error generating resume:', error);
     if (sendAiError(res, error)) return;
     res.status(500).json({
@@ -1167,7 +1303,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     // Load profile
-    const profile = getProfile(profileId);
+    const profile = getProfileFor(req.user ?? null, profileId);
     if (!profile) {
       res.status(404).json({ error: 'Profile not found' });
       return;

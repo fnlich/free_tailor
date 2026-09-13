@@ -1,11 +1,14 @@
 import { Router, type Request, type Response } from 'express';
+import { InsufficientCreditsError, releaseReservation, reserveCredits } from '../services/credits';
+import { requireUser } from '../middleware/auth';
 import { getPublicAppSettings } from '../config/aiModelConfig';
 import { resolveAiChoice, type AiPreferences } from '../config/aiPreferences';
 import { isBrowserChatSiteId, type BrowserChatSiteId } from '../config/providerCatalog';
-import { listProfiles } from '../database/profileRepository';
+import { listProfilesFor, type Viewer } from '../database/profileRepository';
 import { describeFailure } from '../middleware/aiErrors';
 import {
   getGenerationQueue,
+  newBatchId,
   persistNewBatch,
   RESUME_TASK_KIND,
   type Batch,
@@ -33,6 +36,15 @@ import { openBatchStream } from './batchStream';
  */
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
 
 type SubmitBody = {
   label?: string;
@@ -108,11 +120,11 @@ export function normalizeJobs(
   });
 }
 
-function loadProfiles(profileIds?: string[]): Profile[] {
+function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
   const selected = Array.isArray(profileIds)
     ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
     : null;
-  return listProfiles()
+  return listProfilesFor(viewer)
     .filter((profile) => !profile.disabled)
     .filter((profile) => !selected || selected.has(profile.id))
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -151,7 +163,8 @@ export function routeFor(choice: {
 export async function buildTasks(
   body: SubmitBody,
   jobs: NormalizedJob[],
-  profiles: Profile[]
+  profiles: Profile[],
+  batchId: string
 ): Promise<Array<TaskDescriptor<ResumeTaskResult>>> {
   const overrides = readAiOverrides(body);
   const format = body.format === 'docx' ? 'docx' : body.format === 'pdf' ? 'pdf' : 'both';
@@ -191,9 +204,9 @@ export async function buildTasks(
         // database and read back after a restart - and so thirty tasks on one
         // posting do not carry thirty copies of it.
         payload: {
-          // Rewritten to the real batch id once the batch exists; `submit` is
-          // what mints that, and the payload has to be built before it.
-          batchId: '',
+          // Correct from the start now that the route mints the id. It used to
+          // be written blank here and patched up after `submit` returned.
+          batchId,
           profileId: profile.id,
           jobIndex,
           templateId: body.templateId,
@@ -269,7 +282,7 @@ router.post('/batches', async (req: Request, res: Response) => {
     const settings = await getPublicAppSettings();
     const jobs = normalizeJobs(body, settings.outputPathUsesJobTitle);
 
-    const profiles = loadProfiles(body.profileIds);
+    const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
       res.status(400).json({
         error: 'No matching profiles available. Add profiles in Admin or update group members.',
@@ -277,25 +290,50 @@ router.post('/batches', async (req: Request, res: Response) => {
       return;
     }
 
-    const descriptors = await buildTasks(body, jobs, profiles);
-    const queue = getGenerationQueue();
-    const batch = queue.submit(descriptors, {
-      label: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Generation',
-      jobCount: jobs.length,
-      // The jobs live on the BATCH, once. Each task refers to its own by index,
-      // so thirty tasks on one posting do not carry thirty copies of it.
-      shared: { jobs },
+    // Minted here rather than inside `submit`, because the credits have to be
+    // reserved against this batch BEFORE any task can start - and `submit`
+    // dispatches immediately, so there is no window afterwards in which to do it.
+    const batchId = newBatchId();
+    const descriptors = await buildTasks(body, jobs, profiles, batchId);
+
+    /**
+     * The charge, before the first model call.
+     *
+     * Placed here on purpose: after `normalizeJobs` and the empty-profiles check
+     * (so a 400 never costs anything), after `buildTasks` (which only reads
+     * settings - no model call, no file), and before `submit`.
+     *
+     * Per handler rather than as router middleware, and that is the guarantee
+     * that keeps previews free: this router also serves reads, and a blanket
+     * charge would catch anything added later by accident.
+     */
+    reserveCredits(req.user!, descriptors.length, {
+      kind: 'batch',
+      id: batchId,
+      label: `${jobs.length} job(s) x ${profiles.length} profile(s)`,
     });
 
-    // The batch id only exists once `submit` has minted it, and every payload
-    // needs it to find its job again after a restart.
-    for (const task of batch.tasks) {
-      (task.payload as ResumeTaskPayload).batchId = batch.id;
+    const queue = getGenerationQueue();
+    let batch;
+    try {
+      batch = queue.submit(descriptors, {
+        id: batchId,
+        label: typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Generation',
+        jobCount: jobs.length,
+        // The jobs live on the BATCH, once. Each task refers to its own by index,
+        // so thirty tasks on one posting do not carry thirty copies of it.
+        shared: { jobs, ownerId: req.user!.id },
+      });
+      // Written as one transaction rather than row by row: a batch that half
+      // landed because the process died mid-loop would come back with tasks whose
+      // batch does not exist.
+      persistNewBatch(batch as Batch);
+    } catch (error) {
+      // Charged for a run that never started. Give it all back rather than
+      // leaving the account short for a failure that was ours.
+      releaseReservation(batchId, 'The batch could not be queued.');
+      throw error;
     }
-    // Written as one transaction rather than row by row: a batch that half
-    // landed because the process died mid-loop would come back with tasks whose
-    // batch does not exist.
-    persistNewBatch(batch as Batch);
 
     console.log(
       `[queue] batch ${batch.id}: ${descriptors.length} resume(s) queued ` +
@@ -312,6 +350,15 @@ router.post('/batches', async (req: Request, res: Response) => {
   } catch (error) {
     if (error instanceof SubmitError) {
       res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error instanceof InsufficientCreditsError) {
+      res.status(402).json({
+        error: error.message,
+        code: 'insufficient-credits',
+        needed: error.needed,
+        balance: error.balance,
+      });
       return;
     }
     console.error('Error queueing a generation batch:', error);

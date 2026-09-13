@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   adminApi,
   AdminAppSettings,
@@ -45,7 +46,7 @@ function toDraft(model: AIModelRecord): ModelDraft {
   };
 }
 
-export default function ModelsPage() {
+function ModelsPageBody() {
   const [settings, setSettings] = useState<AdminAppSettings | null>(null);
   const [draft, setDraft] = useState<ModelDraft>(EMPTY_DRAFT);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -414,5 +415,22 @@ export default function ModelsPage() {
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * Administrator-only.
+ *
+ * This page changes things shared by everybody on the installation - the AI
+ * providers, the prompts every account's resumes are built from, the shared
+ * skill library - so it is not a per-user setting despite living behind a
+ * "Settings" menu. `AdminOnly` explains that rather than rendering nothing: a
+ * blank page reads as broken.
+ */
+export default function ModelsPage() {
+  return (
+    <AdminOnly>
+      <ModelsPageBody />
+    </AdminOnly>
   );
 }

@@ -8,6 +8,7 @@ const Papa = require('papaparse');
 const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
 const profileRepository = require('../database/profileRepository');
+const { requireUser } = require('../middleware/auth');
 const profileService = require('../services/profileService');
 
 const backendDirectory = path.join(__dirname, '..', '..');
@@ -59,6 +60,14 @@ Keep it under {{charLimit}} characters.
 Avoid corporate buzzwords and make it sound like a real person.`;
 
 router.use(express.json({ limit: '2mb' }));
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
 
 // Ensures a profile id is safe to use as a record key.
 function validateProfileId(profileId) {
@@ -122,19 +131,19 @@ class ProfileNotFoundError extends Error {
   }
 }
 
-// Reads one profile record from the shared database.
-function readProfile(profileId) {
-  const profile = profileRepository.getProfile(profileId);
+// Reads one profile record, scoped to whoever is asking.
+function readProfile(profileId, viewer) {
+  const profile = profileRepository.getProfileFor(viewer ?? null, profileId);
   if (!profile) {
     throw new ProfileNotFoundError();
   }
   return profile;
 }
 
-// Reads every profile record from the shared database.
-function readAllProfiles() {
+// Reads the requester's profile records.
+function readAllProfiles(viewer) {
   return profileRepository
-    .listProfiles({ includeDisabled: true })
+    .listProfilesFor(viewer ?? null, { includeDisabled: true })
     .sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)));
 }
 
@@ -145,14 +154,18 @@ function assertProfilePayload(payload) {
 }
 
 // Applies a full profile JSON payload on top of an existing record.
-function updateProfile(profileId, nextProfile) {
+function updateProfile(profileId, nextProfile, viewer) {
   assertProfilePayload(nextProfile);
-  const currentProfile = readProfile(profileId);
-  return profileRepository.saveProfile(profileService.buildUpdatedProfile(currentProfile, nextProfile));
+  const currentProfile = readProfile(profileId, viewer);
+  return profileRepository.saveProfile({
+    ...profileService.buildUpdatedProfile(currentProfile, nextProfile),
+    // Kept, so an edit through this page does not orphan the profile.
+    ownerId: currentProfile.ownerId,
+  });
 }
 
 // Creates a new profile record from the provided payload.
-function createProfile(profile) {
+function createProfile(profile, viewer) {
   assertProfilePayload(profile);
   const requestedId = typeof profile.id === 'string' ? profile.id.trim() : '';
   const nextId = requestedId || randomUUID();
@@ -162,12 +175,24 @@ function createProfile(profile) {
     throw new Error('A profile with this id already exists.');
   }
 
-  return profileRepository.saveProfile(profileService.buildNewProfile(profile, nextId));
+  // The plan's cap applies here as much as on the profiles page: this is a
+  // second door into the same table, and a limit only one door honours is not
+  // a limit.
+  profileRepository.assertCanAddProfile(viewer);
+
+  return profileRepository.saveProfile({
+    ...profileService.buildNewProfile(profile, nextId),
+    ownerId: viewer.id,
+  });
 }
 
 // Deletes one profile record.
-function deleteProfile(profileId) {
+function deleteProfile(profileId, viewer) {
   validateProfileId(profileId);
+  // Resolved through the viewer first, so this cannot delete somebody else's.
+  if (!profileRepository.getProfileFor(viewer ?? null, profileId)) {
+    throw new ProfileNotFoundError();
+  }
   if (!profileRepository.deleteProfile(profileId)) {
     throw new ProfileNotFoundError();
   }
@@ -778,7 +803,7 @@ router.put('/settings/prompt-template', async (req, res) => {
 // Returns all profile records.
 router.get('/profiles', (req, res) => {
   try {
-    res.json(readAllProfiles());
+    res.json(readAllProfiles(req.user));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -787,7 +812,7 @@ router.get('/profiles', (req, res) => {
 // Creates one new profile record.
 router.post('/profiles', (req, res) => {
   try {
-    const profile = createProfile(req.body || {});
+    const profile = createProfile(req.body || {}, req.user);
     res.json(profile);
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -798,7 +823,7 @@ router.post('/profiles', (req, res) => {
 // Returns one profile record.
 router.get('/profiles/:profileId', (req, res) => {
   try {
-    res.json(readProfile(req.params.profileId));
+    res.json(readProfile(req.params.profileId, req.user));
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
     res.status(errorDetails.status).json({ error: errorDetails.message });
@@ -808,7 +833,7 @@ router.get('/profiles/:profileId', (req, res) => {
 // Replaces one profile record with the submitted JSON.
 router.put('/profiles/:profileId', (req, res) => {
   try {
-    const profile = updateProfile(req.params.profileId, req.body || {});
+    const profile = updateProfile(req.params.profileId, req.body || {}, req.user);
     res.json({ message: 'Profile saved successfully.', profile });
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -819,7 +844,7 @@ router.put('/profiles/:profileId', (req, res) => {
 // Deletes one profile record.
 router.delete('/profiles/:profileId', (req, res) => {
   try {
-    deleteProfile(req.params.profileId);
+    deleteProfile(req.params.profileId, req.user);
     res.json({ message: 'Profile deleted successfully.' });
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -899,7 +924,7 @@ router.post('/ask', async (req, res) => {
     });
 
     for (const profileId of targetProfileIds || []) {
-      targetProfiles.push(readProfile(profileId));
+      targetProfiles.push(readProfile(profileId, req.user));
     }
 
     if (normalizedQuestions.some((item) => item.isManualAnswer && !item.manualAnswer)) {

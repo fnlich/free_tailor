@@ -17,19 +17,23 @@
 
 Tailored Resume Builder is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
 
-By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **Claude subscription seat** through the local `claude` CLI is also supported, but locked until you sign that seat in - see Locked providers below. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
+By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **Claude subscription seat** through the local `claude` CLI is also offered, and needs only that the `claude` binary is installed and signed in on the machine running the server. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
 
 ### ✨ Features
 
 | Feature | Description |
 |---------|-------------|
+| **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
+| **Plans** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets the plan |
+| **Credits** | One credit per generated resume, whatever it writes. Charged before the first model call and given back for any resume that does not build, so credits spent always equals resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
+| **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
 | **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skill ordering |
-| **Admin Panel** | Manage profiles, groups, templates, prompts, skills, and AI model settings |
+| **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and AI model settings |
 | **PDF & DOCX** | Export resumes in both formats |
 
 ---
@@ -67,27 +71,31 @@ is a compile error rather than a silent fall-through.
 |---|---|---|
 | `claude-web` (default) | A claude.ai tab you signed in to yourself | Free. Slow, and one conversation per browser. |
 | `chatgpt-web` | A chatgpt.com tab you signed in to yourself | Free, same terms. |
-| `claude-cli` | The `claude` CLI's own sign-in — no key | **Locked** by default; see below. Free at the margin, one subprocess per call. |
+| `claude-cli` | The `claude` CLI's own sign-in — no key | Offered. Needs `claude` installed and signed in on the server's machine. Free at the margin, one subprocess per call. |
 | `claude` | `ANTHROPIC_API_KEY` | Metered. The only provider that can still honour `temperature`. |
 | `openai` | `OPENAI_API_KEY` | Metered. |
 | `deepseek` | `DEEPSEEK_API_KEY` | Metered. |
 
 **Locked providers.** A lock means this installation cannot run a provider —
 distinct from the admin's enable switch, which records what an operator wants.
-`claude-cli` is locked out of the box, because it needs a Claude subscription
-seat signed in to the CLI on the machine running the server and most do not
-have one. Its models stay in every picker, greyed out behind a 🔒 with the
-reason next to them, rather than vanishing: a model that disappears reads as a
-bug. Nothing dispatches to a locked provider — naming one by model id, by
-provider id or as `provider:modelName` is refused with a sentence saying so.
+**Nothing is locked out of the box.** A locked provider's models stay in every
+picker, greyed out behind a 🔒 with the reason next to them, rather than
+vanishing: a model that disappears reads as a bug. Nothing dispatches to a
+locked provider — naming one by model id, by provider id or as
+`provider:modelName` is refused with a sentence saying so.
 
-Unlock it once the seat is signed in by listing it in `.env`:
+Lock one from `.env` when the machine cannot run it — a box with no `claude`
+binary signed in, or a shared install whose operator does not want the
+subscription seat spent:
 
 ```env
-AI_UNLOCKED_PROVIDERS=claude-cli
+AI_LOCKED_PROVIDERS=claude-cli
 ```
 
-There is deliberately no button for that in the admin UI. A lock is a fact
+`AI_UNLOCKED_PROVIDERS` is the mirror, and wins when a provider is in both, so
+it stays an escape hatch.
+
+There is deliberately no button for either in the admin UI. A lock is a fact
 about the machine, and only whoever set the machine up can know it has changed.
 
 The `openrouter` provider was **replaced** by `claude-cli`. An existing database
@@ -96,7 +104,7 @@ is migrated on the next boot (its settings row is backed up first, and
 read as `claude-cli` whether or not that migration has run.
 
 A second migration gives an install upgrading from before the browser-chat
-providers their `Claude (free)` and `ChatGPT (free)` model records. Model
+providers their `claude-web` and `chatgpt-web` model records. Model
 records are stored per install, so the seed list a new install starts from
 could never reach one that had already saved settings - which is why those two
 providers were enabled and configurable while no model in any picker named
@@ -104,11 +112,50 @@ them. The same migration switches the two on if every provider the install had
 enabled turns out to be locked, and repoints a stored default that named the
 locked seat at a free model rather than at a metered one.
 
+### Credits
+
+One credit buys **one resume** - one profile against one job - however many files
+that produces. A run asking for PDF and DOCX plus a cover letter writes four
+files and costs one credit, because what was asked for is one tailored resume.
+
+The charge happens **at submit, before the first model call**, and every resume
+that does not build gives its credit back. So the invariant is: *credits spent
+equals resumes delivered*. A run that is cancelled refunds everything that had
+not started; one that fails half way refunds the half that failed.
+
+Charging up front rather than on delivery is what makes a refusal mean
+something. The batch endpoint returns a job id before any work runs, and by the
+time a task reaches a browser there is no request and no user attached to it - so
+the only moment a charge can be both truthful and attributable is when the work
+is asked for. It also means a run of thirty is refused as thirty, rather than
+being refused on the thirtieth after twenty-nine resumes already exist.
+
+- **Previews are free.** `/preview` and `/preview-all` write no file, and the
+  tailored output they return is reused by the real run - charging both would
+  bill the ordinary preview-then-generate flow twice for one piece of model work.
+  A new account on zero credits can still paste a job description and see the
+  result; what it cannot do is take the file away.
+- **Administrators are exempt.** They can already set any balance, so metering
+  them is a formality. The first account to sign in is an administrator, which is
+  why a fresh install works on day one with nobody holding a credit.
+- **Every movement is explainable.** The ledger is append-only and records the
+  reserve, each refund, each grant and who made it. `users.credits` is a cache of
+  its sum, and a disagreement is reported at startup rather than quietly fixed -
+  it would mean something wrote the balance outside the credit service.
+- **A balance dips while a run is in flight.** The account page shows that as
+  *held*, rather than hiding it and having the number appear to come back from
+  nowhere.
+
+A brand-new account starts at **0** and needs an administrator to grant it some.
+Set `CREDIT_SIGNUP_GRANT` to give an open installation a self-serve trial instead.
+
 ### Where data lives
 
 | Data | Storage |
 |------|---------|
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
+| Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
+| Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
@@ -129,9 +176,8 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 - A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
   Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
   backend prints the resolved path at startup.
-- **Claude Code**, only if you want to run on a subscription seat. That
-  provider is locked until you install it, sign it in, and name it in
-  `AI_UNLOCKED_PROVIDERS`; the free browser-chat providers need none of this.
+- **Claude Code**, only if you want to run on a subscription seat. Install it
+  and sign it in; the free browser-chat route needs none of this.
 
   ```bash
   npm i -g @anthropic-ai/claude-code
@@ -215,10 +261,10 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   free Claude requests run at once; measured against a fixture answering in
   about three seconds, four requests took 25.5s on one browser and 12.9s on two.
 
-  Each provider has its **own queue** - Claude (free), ChatGPT (free) and the
-  Claude CLI never wait for one another - and **no queue has a length limit**.
-  Whenever one of that site's tabs frees, the request that has waited longest
-  takes it. A request only ever gives up on its own timeout, never for being
+  There are **two queues** - one shared by every browser whichever site it
+  shows, and one for the Claude CLI seat, so a slow seat never stalls the
+  browsers - and **neither has a length limit**. Whenever a browser frees, the
+  task that has waited longest takes it. A request only ever gives up on its own timeout, never for being
   late in the line. If a configured browser turns out not to be running, the
   request is retried on another of that site's browsers and the dead one is set
   aside for a short while.
@@ -264,8 +310,23 @@ HOST=0.0.0.0             # backend listens on every interface
 PORT=3001
 #DB_DIR=                 # SQLite database directory; see the note below
 NEXT_PUBLIC_API_URL=http://localhost:3001/api
-ADMIN_PASSWORD=change-me
+
+# One of these two, or nobody can sign in:
+GOOGLE_CLIENT_ID=        # OAuth 2.0 Web application client id
+SMTP_HOST=               # ...or SMTP, for emailed six-digit codes
+SMTP_USER=
+SMTP_PASS=
 ```
+
+**Somebody has to be able to sign in.** Set up Google sign-in or SMTP - the
+login page names what is missing if neither is configured. The **first account
+to sign in becomes the administrator**, because account management is
+admin-only and an install whose first user was an ordinary one would have no
+way to appoint one. Set `ADMIN_EMAILS` to decide in advance instead.
+
+Upgrading an install that has profiles already? They have no owner, so they are
+invisible to ordinary accounts and visible to administrators until the first
+administrator signs in, at which point they are adopted automatically.
 
 `DB_DIR` is commented out in `.env.example` on purpose, so a fresh checkout
 picks the writable default for the platform it is on. Set it when you want the
@@ -275,8 +336,8 @@ and is resolved from the directory the backend was started in.
 Nothing else is required for AI generation: the default provider drives a
 claude.ai tab in the debug Chrome described above, which costs nothing and
 needs no key. The `AI_CLI_*` variables in `.env.example` tune the model,
-effort, concurrency and timeouts of the subscription-seat provider, which is
-locked until `AI_UNLOCKED_PROVIDERS` names it.
+effort, concurrency and timeouts of the subscription-seat provider, which
+needs the `claude` CLI installed and signed in on this machine.
 
 The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the page was loaded from, and the backend accepts requests from any origin on the same host as the API. That means you can open the app through `localhost`, a LAN IP, or a hostname without changing configuration.
 
@@ -378,6 +439,7 @@ File and folder names are templated per profile.
 
 | Section | Purpose |
 |---------|---------|
+| **Accounts** | Every account on the installation, with its role, plan, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's plan before they arrive; it is not a way in, since they still prove the address through Google or a code |
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **Add Manually**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
@@ -386,7 +448,7 @@ File and folder names are templated per profile.
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
 | **AI defaults per profile** | Each profile picks its own model, effort (`low`..`max`) and thinking mode; the builder shows those defaults and can override any of them for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag. Thinking is on by default and adaptive - the models decide per answer - so the choice is whether to allow it, not how much; depth is what effort controls |
 | **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
-| **Prompts** | Edit default prompts or add custom variants per feature |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | AI providers, models, output location, and live Claude subscription status (sign-in, usage window, in-flight calls). Each provider row shows what it reports right now; a metered provider's key comes from `.env`. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose |
 
@@ -404,7 +466,10 @@ File and folder names are templated per profile.
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
 | | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
-| `ADMIN_PASSWORD` | Admin login password |
+| `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave empty and the first account to sign in does. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
+| `CREDIT_SIGNUP_GRANT` | Credits a brand-new account starts with. `0` by default |
+| `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
 | `AI_CLI_MODEL` / `AI_CLI_EFFORT` | Default model alias (`sonnet`) and reasoning effort (`low`) |
 | `AI_CLI_CONCURRENCY` | Simultaneous `claude` processes, process-wide (default `4`) |
@@ -437,18 +502,18 @@ See `.env.example` for the full `AI_CLI_*` list.
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Browsers take tasks off the head of the queue as they come free, so with three browsers three resumes are built at once and the moment one finishes the next task starts on that browser. A second request appends behind the first. There are two queues, because there are two resources: one shared by every debug browser, one for the Claude CLI seat, so a stalled seat cannot hold up the browsers. |
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of browser time. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was in a browser at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones in a browser are aborted. |
-| A profile's platform choice inside a batch | Still honoured. A profile set to `Claude (free)` waits for a Claude browser even if a ChatGPT one is idle; a profile on `Hybrid (free)` goes to whichever frees up first. A pinned task at the head does not block a browser it cannot use - the browser reaches past it for the next task it can run. A task no registered browser can serve fails with that reason rather than waiting for ever. |
+| A profile's platform choice inside a batch | Still honoured. A profile that had picked `claude-web` before the pickers were folded into one entry still waits for a Claude browser even if a ChatGPT one is idle; a profile on `Default (browser)` goes to whichever frees up first. A pinned task at the head does not block a browser it cannot use - the browser reaches past it for the next task it can run. A task no registered browser can serve fails with that reason rather than waiting for ever. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: the browsers registered for that site, both sites' added together under Hybrid, or `AI_CLI_CONCURRENCY` slots for the subscription seat. The queues were already there - a free browser is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. |
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
 | One browser is out of messages and the whole request fails | Fixed. A browser that is reachable but cannot take the prompt - out of messages, signed out, wedged, or a previous turn that never let go - is passed over for the next browser of that site, and left out for a few minutes so later calls skip it too. That is the reason to run more than one: each window is a separate session, so an account's wall is not the site's. The retry only happens when the prompt never reached the site; once it has landed, another browser would be asking the same question twice. When every browser refuses, the error is still that browser's own (a usage wall is a 429, a signed-out tab a 503) with each browser and its reason named in the log. |
-| A free account runs out of messages halfway through a batch | Set the profile's model to **Hybrid (free)**. It spreads calls across both free accounts - a tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry - and moves to the other one when either is out of messages, signed out, or has no browser running. Hybrid only appears when both free providers are enabled, since with one there is nothing to be hybrid between. |
+| A free account runs out of messages halfway through a batch | Nothing to set - **Default (browser)** already spreads calls across both free accounts. A tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry, so it moves to the other whenever one is out of messages, signed out, or has no browser running. It appears whenever at least one free provider is enabled, and covers whichever of the two are. |
 | Effort and Thinking are greyed out | The chosen model is a chat window, and a chat window has no effort flag and no thinking budget - there is nowhere to put either. The two selects go inactive rather than accept a setting that would change nothing. Pick the Claude CLI seat to get them back. |
 | Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
-| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. `claude-cli` needs a Claude subscription seat signed in to the CLI on this machine; sign it in and add `AI_UNLOCKED_PROVIDERS=claude-cli` to `.env`, then restart. Use `Claude (free)` or `ChatGPT (free)` otherwise. |
+| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. Nothing is locked by default, so this means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart, or use `Default (browser)`. |
 | The free Claude and ChatGPT models are missing from the model menus | An install that saved settings before those providers existed stores its own model list, which the newer seed list cannot reach. The migration on the next boot adds them; if it did not run, the backend log says why on a `[db]` line. Adding them by hand under Admin → Models works too: provider `Claude (browser)` or `ChatGPT (browser)`, model name `chat`. |
 | A free provider says it `has no browser set up yet` | No debug port is registered for that site. Register one under Admin → Settings → Browser Chat (free), start it with `npm run browser:debug`, and sign in to the tab it opens. |
 | A platform shows **Not active** though its window is plainly open | Active means the provider found a signed-in chat tab, not merely a running browser. Open that window, check the tab is signed in and showing the chat site, then press **Check status**. The line under each platform says how many registered ports are reachable and how many are showing the site, which separates "not started" from "started but signed out". |
@@ -491,7 +556,7 @@ and spawns no subprocess.
 |-------|--------------|
 | **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
 | **Backend** | Express, TypeScript, better-sqlite3 |
-| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI (subscription seat, locked by default), OpenAI, Anthropic API, DeepSeek |
+| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI (subscription seat), OpenAI, Anthropic API, DeepSeek |
 | **PDF** | Puppeteer |
 | **DOCX** | html-to-docx |
 | **Templates** | Handlebars |

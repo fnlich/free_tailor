@@ -18,26 +18,37 @@ const {
  * one another. What is pinned here is that a locked provider cannot be
  * dispatched to by ANY of the ways a model can be named, that the UI is still
  * told about it so it can show a padlock rather than silently dropping the
- * model, and that an install upgrading into the lock lands on a model that
+ * model, and that an install locked out of a provider lands on a model that
  * works and costs nothing.
+ *
+ * Nothing is locked in the shipped catalog any more - the subscription seat is
+ * offered, and the browser entry is the free default. So the subject here is an
+ * operator who locks the seat out with AI_LOCKED_PROVIDERS, which is the same
+ * machinery the catalog lock used and the case that still happens for real: a
+ * box with no `claude` binary signed in.
  */
 
 const APP_SETTINGS_KEY = 'app-settings';
 
-/** The lock is read from the environment on every call; reset between tests. */
-function withLock(unlocked) {
-  if (unlocked) {
-    process.env.AI_UNLOCKED_PROVIDERS = unlocked;
-  } else {
-    delete process.env.AI_UNLOCKED_PROVIDERS;
-  }
+/** Both lock lists are read from the environment on every call; reset between tests. */
+function withLock({ locked, unlocked } = {}) {
+  if (locked) process.env.AI_LOCKED_PROVIDERS = locked;
+  else delete process.env.AI_LOCKED_PROVIDERS;
+  if (unlocked) process.env.AI_UNLOCKED_PROVIDERS = unlocked;
+  else delete process.env.AI_UNLOCKED_PROVIDERS;
 }
 
-test.beforeEach(() => withLock(null));
-test.after(() => withLock(null));
+/** The case every test here is about: the seat locked out by the operator. */
+function lockSeat() {
+  withLock({ locked: 'claude-cli' });
+}
 
-test('the subscription seat is locked, and says so instead of disappearing', async () => {
+test.beforeEach(() => withLock());
+test.after(() => withLock());
+
+test('a seat the operator locked out says so instead of disappearing', async () => {
   useTempStorage('lock-public');
+  lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
   const settings = await config.getPublicAppSettings();
 
@@ -59,23 +70,48 @@ test('the subscription seat is locked, and says so instead of disappearing', asy
     'the models behind the lock come with it'
   );
 
-  // And the default is one that can actually run, at no cost.
-  assert.equal(settings.defaultModelId, 'claude-web-chat');
+  // And the default is one that can actually run, at no cost: the browser
+  // entry, which is what the picker offers in place of the per-site models.
+  assert.equal(settings.defaultModelId, 'free-hybrid');
 });
 
-test('the free browser-chat models are offered on a fresh install', async () => {
+test('the picker offers one browser entry, not a model per chat site', async () => {
   useTempStorage('lock-browser-models');
   const config = loadFresh('../dist/config/aiModelConfig');
   const { aiModels } = await config.getPublicAppSettings();
 
   const byId = new Map(aiModels.map((model) => [model.id, model]));
-  assert.equal(byId.get('claude-web-chat')?.provider, 'claude-web');
-  assert.equal(byId.get('chatgpt-web-chat')?.provider, 'chatgpt-web');
+  // One entry standing for both free chat sites. Which site a given resume
+  // lands on is the queue's business, not a choice to put in front of a user
+  // who only wants the free route.
+  assert.equal(byId.get('free-hybrid')?.name, 'Default (browser)');
+  assert.equal(byId.has('claude-web-chat'), false, 'Claude (free) is not offered separately');
+  assert.equal(byId.has('chatgpt-web-chat'), false, 'ChatGPT (free) is not offered separately');
+
+  // The per-site rows still exist underneath, for Admin -> Models and for
+  // profiles that picked one before this change.
+  const admin = await config.getAdminAppSettings();
+  const adminIds = new Set(admin.aiModels.map((model) => model.id));
+  assert.ok(adminIds.has('claude-web-chat') && adminIds.has('chatgpt-web-chat'));
+});
+
+test('the subscription seat is offered, and is the default, when nothing locks it', async () => {
+  useTempStorage('lock-seat-offered');
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const settings = await config.getPublicAppSettings();
+
+  assert.deepEqual(settings.providerLocks, [], 'nothing is locked in the shipped catalog');
+  assert.ok(
+    settings.aiModels.some((model) => model.id === 'claude-cli-sonnet'),
+    'the CLI seat is pickable'
+  );
+  assert.equal(settings.defaultModelId, 'claude-cli-sonnet');
 });
 
 test('AI_UNLOCKED_PROVIDERS lifts the lock', async () => {
   useTempStorage('lock-unlocked');
-  withLock('claude-cli');
+  // Named in both lists. Unlock wins, so the escape hatch stays an escape hatch.
+  withLock({ locked: 'claude-cli', unlocked: 'claude-cli' });
   const config = loadFresh('../dist/config/aiModelConfig');
   const settings = await config.getPublicAppSettings();
 
@@ -86,6 +122,7 @@ test('AI_UNLOCKED_PROVIDERS lifts the lock', async () => {
 
 test('every way of naming a locked model is refused, and says why', async () => {
   useTempStorage('lock-resolve');
+  lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
 
   // By model id, by bare provider id, and by the "provider:modelName" form -
@@ -112,6 +149,7 @@ test('every way of naming a locked model is refused, and says why', async () => 
 
 test('a request that names no provider reroutes off the locked one', async () => {
   useTempStorage('lock-default-provider');
+  lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
   const settings = await config.getAIModelSettings();
 
@@ -124,6 +162,7 @@ test('a request that names no provider reroutes off the locked one', async () =>
 
 test('a profile that had picked the locked model keeps working', async () => {
   useTempStorage('lock-stored-preference');
+  lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
   const preferences = loadFresh('../dist/config/aiPreferences');
 
@@ -163,6 +202,7 @@ test('a profile that had picked the locked model keeps working', async () => {
 
 test('settings that would leave only locked providers enabled are refused', async () => {
   useTempStorage('lock-assert');
+  lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
 
   await assert.rejects(
@@ -179,6 +219,7 @@ test('settings that would leave only locked providers enabled are refused', asyn
 
 test('a prompt pinned to the locked provider runs instead of failing', async () => {
   const { staticDir } = useTempStorage('lock-prompt-override');
+  lockSeat();
   // Exactly what the earlier provider migration wrote onto every custom
   // prompt: an override naming the subscription seat. Honouring it under a
   // lock would make each of those prompts unusable, with nothing in the UI to
@@ -269,6 +310,7 @@ function preBrowserChatSettings(rootDir, overrides = {}) {
 
 test('an install that predates the browser-chat models is given them', async () => {
   const { rootDir, dbDir } = useTempStorage('lock-migrate');
+  lockSeat();
   writeSettingRaw(dbDir, APP_SETTINGS_KEY, JSON.stringify(preBrowserChatSettings(rootDir)));
 
   const config = loadFresh('../dist/config/aiModelConfig');
@@ -283,12 +325,16 @@ test('an install that predates the browser-chat models is given them', async () 
   // rather than at the first runnable one - which here would have been the
   // metered OpenAI row, and an install must not start billing for a default
   // nobody chose.
-  assert.equal(loaded.defaultModelId, 'claude-web-chat');
   assert.equal(JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY)).defaultModelId, 'claude-web-chat');
+  // Read back, that stored row surfaces as the browser entry: the picker no
+  // longer offers the per-site model by name, and a default it does not show
+  // would render as an empty selection.
+  assert.equal(loaded.defaultModelId, 'free-hybrid');
 });
 
 test('the browser-chat migration is idempotent', async () => {
   const { rootDir, dbDir } = useTempStorage('lock-migrate-twice');
+  lockSeat();
   writeSettingRaw(dbDir, APP_SETTINGS_KEY, JSON.stringify(preBrowserChatSettings(rootDir)));
 
   const first = loadFresh('../dist/config/aiModelConfig');
@@ -313,6 +359,7 @@ test('the browser-chat migration is idempotent', async () => {
 
 test('an install whose only enabled provider is locked is carried by the free ones', async () => {
   const { rootDir, dbDir } = useTempStorage('lock-migrate-rescue');
+  lockSeat();
   writeSettingRaw(
     dbDir,
     APP_SETTINGS_KEY,
@@ -338,6 +385,7 @@ test('an install whose only enabled provider is locked is carried by the free on
 
 test('an operator who already added their own row for a locked-out provider keeps just that one', async () => {
   const { rootDir, dbDir } = useTempStorage('lock-migrate-existing');
+  lockSeat();
   const settings = preBrowserChatSettings(rootDir);
   settings.aiModels.push({
     id: 'claude-web-mine',

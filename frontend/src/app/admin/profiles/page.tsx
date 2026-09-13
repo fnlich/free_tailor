@@ -1,15 +1,20 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import {
+  isProfileLimit,
   profilesApi,
   readProfileImportFile,
   Profile,
   CreateProfileDTO,
 } from '@/lib/api';
 import ProfileForm from '@/components/admin/ProfileForm';
+import { useAuth } from '@/contexts/AuthContext';
+import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
 
 export default function ProfilesPage() {
+  const { account, loading: authLoading, refresh } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -40,8 +45,15 @@ export default function ProfilesPage() {
     try {
       await profilesApi.create(data);
       await loadProfiles();
+      // The account's own count feeds the menu in the layout above, which would
+      // otherwise read one behind this page until the next navigation.
+      await refresh();
       setShowForm(false);
     } catch (err) {
+      // Rethrown so ProfileForm shows it in the modal the user is looking at.
+      // The re-sync matters for the race: two tabs at the limit, one wins, and
+      // the loser should find its buttons disabled rather than keep trying.
+      if (isProfileLimit(err)) await refresh();
       throw err;
     }
   };
@@ -63,6 +75,7 @@ export default function ProfilesPage() {
     try {
       await profilesApi.delete(id);
       await loadProfiles();
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete profile');
     }
@@ -110,11 +123,13 @@ export default function ProfilesPage() {
       setUploadProgress('Extracting profile information with AI...');
       const profile = await profilesApi.uploadResume(file);
       await loadProfiles();
+      await refresh();
       setUploadProgress('');
       // Open edit form with the extracted profile so user can review/edit
       setEditingProfile(profile);
       setShowForm(true);
     } catch (err) {
+      if (isProfileLimit(err)) await refresh();
       setError(err instanceof Error ? err.message : 'Failed to extract profile from PDF');
     } finally {
       setIsUploading(false);
@@ -152,6 +167,7 @@ export default function ProfilesPage() {
       const parsed = await readProfileImportFile(file);
       const result = await profilesApi.importJson(parsed);
       await loadProfiles();
+      await refresh();
 
       if (result.imported === 1) {
         // Straight into the form, like the PDF path: one imported profile is
@@ -165,6 +181,10 @@ export default function ProfilesPage() {
         `Imported ${result.imported} profile${result.imported === 1 ? '' : 's'} from ${file.name}.${reused}`
       );
     } catch (err) {
+      // A file with more profiles than the remaining room is only knowable
+      // server-side - the count is unreadable until the file is picked - so the
+      // cap refusal arrives here and re-syncs the gate.
+      if (isProfileLimit(err)) await refresh();
       setError(err instanceof Error ? err.message : 'Failed to import profiles');
     } finally {
       setIsUploading(false);
@@ -179,6 +199,33 @@ export default function ProfilesPage() {
     jsonInputRef.current?.click();
   };
 
+  /**
+   * The cap, measured against the list rather than the account's snapshot.
+   *
+   * `profilesUsed` comes from the last /auth/me and goes stale the moment
+   * somebody deletes a profile here. Reading it directly would leave the banner
+   * telling them to delete one and the buttons still disabled after they did.
+   * The list is this page's own fetch and includes disabled profiles, which is
+   * exactly what the server counts.
+   */
+  const liveAccount = account ? { ...account, profilesUsed: profiles.length } : null;
+  const atLimit = liveAccount ? isAtProfileLimit(liveAccount) : false;
+
+  /**
+   * Disabled while the account is still arriving, too.
+   *
+   * The profile list and /auth/me are independent fetches. Without this, the
+   * window between them renders every Add button enabled with no banner - which
+   * is precisely the "let them do the work, then refuse" this page exists to
+   * stop, just narrowed to the first few hundred milliseconds.
+   */
+  const addBlocked = atLimit || authLoading;
+  const blockedReason = authLoading
+    ? 'Checking your plan...'
+    : liveAccount
+      ? `The ${liveAccount.planLabel} plan allows ${liveAccount.profileLimit} profile${liveAccount.profileLimit === 1 ? '' : 's'}. Delete one, or ask an administrator for a larger plan.`
+      : '';
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -190,7 +237,15 @@ export default function ProfilesPage() {
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Profiles</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Profiles</h1>
+          {liveAccount && (
+            <p className="mt-1 text-sm text-gray-600">
+              {describeProfileUsage(liveAccount)} profiles used
+              {liveAccount.role === 'admin' ? ' (administrators have no limit)' : ` on ${liveAccount.planLabel}`}
+            </p>
+          )}
+        </div>
         <div className="flex gap-3">
           <input
             ref={fileInputRef}
@@ -201,7 +256,8 @@ export default function ProfilesPage() {
           />
           <button
             onClick={triggerFileUpload}
-            disabled={isUploading}
+            disabled={isUploading || addBlocked}
+            title={addBlocked ? blockedReason : undefined}
             className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {isUploading ? (
@@ -230,8 +286,8 @@ export default function ProfilesPage() {
           />
           <button
             onClick={triggerJsonImport}
-            disabled={isUploading}
-            title="Create profiles from a profile JSON file"
+            disabled={isUploading || addBlocked}
+            title={addBlocked ? blockedReason : 'Create profiles from a profile JSON file'}
             className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -241,7 +297,9 @@ export default function ProfilesPage() {
           </button>
           <button
             onClick={openCreateForm}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+            disabled={addBlocked}
+            title={addBlocked ? blockedReason : undefined}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Add Manually
           </button>
@@ -255,6 +313,23 @@ export default function ProfilesPage() {
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
           {uploadProgress}
+        </div>
+      )}
+
+      {atLimit && liveAccount && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-md mb-4">
+          <p className="font-medium">
+            You are using all {liveAccount.profileLimit} profile
+            {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.planLabel} plan.
+          </p>
+          <p className="mt-1 text-sm">
+            Delete one below to make room, or ask an administrator of this installation to move your
+            account to a larger plan.{' '}
+            <Link href="/account" className="underline">
+              See your plan
+            </Link>
+            .
+          </p>
         </div>
       )}
 

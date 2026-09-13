@@ -1,8 +1,9 @@
 'use client';
 
 import GoogleSheetsRangeImporter from '@/components/admin/GoogleSheetsRangeImporter';
+import { AdminOnly } from '@/components/auth/AuthGate';
 
-export default function AdminGoogleSheetsPage() {
+function AdminGoogleSheetsPageBody() {
   return (
     <div className="max-w-5xl space-y-6">
       <div>
@@ -16,5 +17,22 @@ export default function AdminGoogleSheetsPage() {
         <GoogleSheetsRangeImporter />
       </div>
     </div>
+  );
+}
+
+/**
+ * Administrator-only.
+ *
+ * This page changes things shared by everybody on the installation - the AI
+ * providers, the prompts every account's resumes are built from, the shared
+ * skill library - so it is not a per-user setting despite living behind a
+ * "Settings" menu. `AdminOnly` explains that rather than rendering nothing: a
+ * blank page reads as broken.
+ */
+export default function AdminGoogleSheetsPage() {
+  return (
+    <AdminOnly>
+      <AdminGoogleSheetsPageBody />
+    </AdminOnly>
   );
 }

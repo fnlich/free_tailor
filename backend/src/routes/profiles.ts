@@ -5,15 +5,17 @@ import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import pdf from 'pdf-parse';
 import { CreateProfileDTO } from '../types/profile';
-import { authMiddleware } from '../middleware/auth';
+import { requireUser } from '../middleware/auth';
 import { extractProfileFromResume } from '../services/resumeService';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
 import { buildImportedProfiles, ProfileImportError } from '../services/profileImport';
 import {
+  assertCanAddProfile,
   deleteProfile,
-  getProfile,
+  getProfileFor,
   hasProfile,
-  listProfiles,
+  listProfilesFor,
+  ProfileLimitError,
   saveProfile,
   saveProfiles,
 } from '../database/profileRepository';
@@ -48,11 +50,24 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
-// Get all profiles
+/**
+ * Reading is now signed-in too.
+ *
+ * It was open, which was fine while there was one user and nothing to separate.
+ * A profile carries a name, an address, a phone number and an employment
+ * history, so an open list endpoint on a machine reachable from a network hands
+ * all of that to whoever asks.
+ */
+router.use(requireUser);
+
+// Get all profiles this account can see
 router.get('/', (req: Request, res: Response) => {
   try {
     const includeDisabled = req.query.includeDisabled === 'true';
-    res.json(listProfiles({ includeDisabled }));
+    // `allOwners` only for an admin who asked: the builder wants an admin's own
+    // profiles, the admin pages want everybody's, and the query says which.
+    const allOwners = req.query.allOwners === 'true';
+    res.json(listProfilesFor(req.user!, { includeDisabled, allOwners }));
   } catch (error) {
     console.error('Error fetching profiles:', error);
     res.status(500).json({ error: 'Failed to fetch profiles' });
@@ -61,7 +76,9 @@ router.get('/', (req: Request, res: Response) => {
 
 // Get single profile
 router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
-  const profile = getProfile(req.params.id);
+  // 404, not 403, for somebody else's profile. A 403 would confirm that a
+  // profile with that id exists, which is more than a stranger should learn.
+  const profile = getProfileFor(req.user!, req.params.id);
   if (!profile) {
     res.status(404).json({ error: 'Profile not found' });
     return;
@@ -69,12 +86,22 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
   res.json(profile);
 });
 
-// Create profile (protected)
-router.post('/', authMiddleware, (req: Request, res: Response) => {
+// Create profile
+router.post('/', (req: Request, res: Response) => {
   try {
-    const profile = saveProfile(buildNewProfile(req.body as CreateProfileDTO, uuidv4()));
+    assertCanAddProfile(req.user!);
+    const profile = saveProfile({
+      ...buildNewProfile(req.body as CreateProfileDTO, uuidv4()),
+      // Set here rather than taken from the body: a client that could name the
+      // owner could hand a profile to somebody else, or to nobody.
+      ownerId: req.user!.id,
+    });
     res.status(201).json(profile);
   } catch (error) {
+    if (error instanceof ProfileLimitError) {
+      res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
+      return;
+    }
     console.error('Error creating profile:', error);
     const message = error instanceof Error ? error.message : 'Failed to create profile';
     const status = /output (token|file name)/i.test(message) ? 400 : 500;
@@ -82,25 +109,33 @@ router.post('/', authMiddleware, (req: Request, res: Response) => {
   }
 });
 
-// Update profile (protected)
-router.put('/:id', authMiddleware, (req: Request<{ id: string }>, res: Response) => {
-  const existingProfile = getProfile(req.params.id);
+// Update profile
+router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
+  const existingProfile = getProfileFor(req.user!, req.params.id);
   if (!existingProfile) {
     res.status(404).json({ error: 'Profile not found' });
     return;
   }
 
   try {
-    const updatedProfile = saveProfile(buildUpdatedProfile(existingProfile, req.body as CreateProfileDTO));
+    const updatedProfile = saveProfile({
+      ...buildUpdatedProfile(existingProfile, req.body as CreateProfileDTO),
+      // Carried through explicitly. `buildUpdatedProfile` composes a new object
+      // from the DTO, and an owner dropped by an edit would make the profile
+      // vanish from its owner's list on save.
+      ownerId: existingProfile.ownerId,
+    });
     res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to update profile' });
   }
 });
 
-// Delete profile (protected)
-router.delete('/:id', authMiddleware, (req: Request<{ id: string }>, res: Response) => {
-  if (!deleteProfile(req.params.id)) {
+// Delete profile
+router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
+  // Resolved through the viewer FIRST, so deleting somebody else's profile is
+  // a 404 rather than a delete.
+  if (!getProfileFor(req.user!, req.params.id) || !deleteProfile(req.params.id)) {
     res.status(404).json({ error: 'Profile not found' });
     return;
   }
@@ -119,10 +154,15 @@ router.delete('/:id', authMiddleware, (req: Request<{ id: string }>, res: Respon
  * Unlike /upload this costs no AI call. It is the path for moving a profile
  * between installs, restoring one from a backup, or writing one by hand.
  */
-router.post('/import', authMiddleware, (req: Request, res: Response) => {
+router.post('/import', (req: Request, res: Response) => {
   try {
     const imported = buildImportedProfiles(req.body, { idExists: hasProfile, newId: uuidv4 });
-    const profiles = saveProfiles(imported.map((entry) => entry.profile));
+    // Counted as a whole before any of it is written: importing six profiles
+    // into a plan with room for two must refuse all six, not land two and fail.
+    assertCanAddProfile(req.user!, imported.length);
+    const profiles = saveProfiles(
+      imported.map((entry) => ({ ...entry.profile, ownerId: req.user!.id }))
+    );
 
     res.status(201).json({
       profiles,
@@ -130,6 +170,10 @@ router.post('/import', authMiddleware, (req: Request, res: Response) => {
       keptIds: imported.filter((entry) => entry.keptId).length,
     });
   } catch (error) {
+    if (error instanceof ProfileLimitError) {
+      res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
+      return;
+    }
     if (error instanceof ProfileImportError) {
       res.status(400).json({ error: error.message });
       return;
@@ -144,10 +188,22 @@ router.post('/import', authMiddleware, (req: Request, res: Response) => {
 });
 
 // Upload resume PDF and extract profile (protected)
-router.post('/upload', authMiddleware, upload.single('resume'), async (req: Request, res: Response) => {
+router.post('/upload', upload.single('resume'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No PDF file uploaded' });
+    }
+
+    // Checked before the AI call, not after: the extraction is the expensive
+    // part, and refusing afterwards would spend it for nothing.
+    try {
+      assertCanAddProfile(req.user!);
+    } catch (error) {
+      await fs.unlink(req.file.path).catch(() => {});
+      if (error instanceof ProfileLimitError) {
+        return res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
+      }
+      throw error;
     }
 
     // Read and parse PDF
@@ -160,7 +216,10 @@ router.post('/upload', authMiddleware, upload.single('resume'), async (req: Requ
     }
 
     const extractedData = await extractProfileFromResume(pdfData.text);
-    const profile = saveProfile(buildNewProfile(extractedData, uuidv4()));
+    const profile = saveProfile({
+      ...buildNewProfile(extractedData, uuidv4()),
+      ownerId: req.user!.id,
+    });
 
     // Clean up uploaded file
     await fs.unlink(req.file.path);
