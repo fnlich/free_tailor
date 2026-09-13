@@ -2,11 +2,9 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
-  APP_DEFAULT_THINKING,
   appDefaultEffort,
   describeAiChoice,
   describeAiPreferenceDefaults,
-  isThinkingMode,
   mergeAiPreferences,
   normalizeAiPreferences,
 } = require('../dist/config/aiPreferences');
@@ -18,11 +16,19 @@ const { normalizeProfileSettings } = require('../dist/services/profileService');
 
 test('only values this build understands survive normalization', () => {
   assert.deepEqual(
-    normalizeAiPreferences({ modelId: '  model-1  ', effort: 'max', thinking: 'off' }),
-    { modelId: 'model-1', effort: 'max', thinking: 'off' }
+    normalizeAiPreferences({ modelId: '  model-1  ', effort: 'max' }),
+    { modelId: 'model-1', effort: 'max' }
   );
   // An unknown level must not reach the CLI, which would reject the call.
-  assert.deepEqual(normalizeAiPreferences({ effort: 'ludicrous', thinking: 'sometimes' }), {});
+  assert.deepEqual(normalizeAiPreferences({ effort: 'ludicrous' }), {});
+
+  // An ALLOW-LIST, which is what makes the removed `thinking` knob a non-event
+  // for an existing install: a profile that still stores one is read without it
+  // and saved without it, so no migration was needed.
+  assert.deepEqual(
+    normalizeAiPreferences({ modelId: 'm-1', effort: 'high', thinking: 'off' }),
+    { modelId: 'm-1', effort: 'high' }
+  );
   assert.deepEqual(normalizeAiPreferences({ modelId: '   ' }), {});
   assert.deepEqual(normalizeAiPreferences(null), {});
   assert.deepEqual(normalizeAiPreferences('nonsense'), {});
@@ -34,7 +40,7 @@ test('an absent field inherits rather than resetting the layer beneath it', () =
     mergeAiPreferences({ modelId: 'from-profile', effort: 'low' }, { effort: 'max' }),
     { modelId: 'from-profile', effort: 'max' }
   );
-  assert.deepEqual(mergeAiPreferences({ thinking: 'off' }, {}), { thinking: 'off' });
+  assert.deepEqual(mergeAiPreferences({ modelId: 'only-a-model' }, {}), { modelId: 'only-a-model' });
   assert.deepEqual(mergeAiPreferences(undefined, undefined), {});
 });
 
@@ -48,51 +54,39 @@ test('the app default effort is read from the variable the provider reads', () =
 test('the defaults sent to the UI list what may be chosen', () => {
   const defaults = describeAiPreferenceDefaults({ AI_CLI_EFFORT: 'high' });
   assert.equal(defaults.effort, 'high');
-  assert.equal(defaults.thinking, APP_DEFAULT_THINKING);
   assert.deepEqual([...defaults.effortLevels], ['low', 'medium', 'high', 'xhigh', 'max']);
-  assert.deepEqual([...defaults.thinkingModes], ['default', 'off']);
-  assert.ok(isThinkingMode(defaults.thinking));
+  // Model and effort are the whole of it now.
+  assert.deepEqual(Object.keys(defaults).sort(), ['effort', 'effortLevels']);
 });
 
-// Thinking has no CLI flag. The budget variable is the only control, and this
-// is the one place it is set, so it is worth asserting directly.
-test('thinking off sets the budget to zero, and default sets nothing', () => {
-  assert.equal(buildChildEnv({ PATH: '/usr/bin' }, { thinking: 'off' }).MAX_THINKING_TOKENS, '0');
-  assert.equal(
-    buildChildEnv({ PATH: '/usr/bin' }, { thinking: 'default' }).MAX_THINKING_TOKENS,
-    undefined
-  );
+/**
+ * Nothing sets the thinking budget any more, and the strip is what keeps it
+ * that way.
+ *
+ * The per-profile thinking knob is gone, so the CLI is left to think
+ * adaptively - its own default. An operator who happens to have exported
+ * MAX_THINKING_TOKENS must not be able to make one machine answer differently
+ * from another, which is the whole reason the strip outlived the setting.
+ */
+test('the thinking budget is never set, and an exported one is stripped', () => {
   assert.equal(buildChildEnv({ PATH: '/usr/bin' }).MAX_THINKING_TOKENS, undefined);
-});
 
-test("the operator's own thinking budget cannot override the chosen one", () => {
   const parent = { PATH: '/usr/bin', MAX_THINKING_TOKENS: '30000' };
-  // Inherited, it would silently win over a profile that asked for thinking
-  // off - and over the app's default of leaving the model alone.
   assert.equal(buildChildEnv(parent).MAX_THINKING_TOKENS, undefined);
-  assert.equal(buildChildEnv(parent, { thinking: 'default' }).MAX_THINKING_TOKENS, undefined);
-  assert.equal(buildChildEnv(parent, { thinking: 'off' }).MAX_THINKING_TOKENS, '0');
   // The rest of the environment is untouched.
   assert.equal(buildChildEnv(parent).PATH, '/usr/bin');
 });
 
-test('a provider that cannot honour these says so instead of ignoring them', () => {
-  const capable = { id: 'claude-cli', label: 'Claude CLI', effort: true, thinking: true };
-  const incapable = { id: 'openai', label: 'OpenAI', effort: false, thinking: false };
+test('a provider that cannot honour effort says so instead of ignoring it', () => {
+  const capable = { id: 'claude-cli', label: 'Claude CLI', effort: true };
+  const incapable = { id: 'openai', label: 'OpenAI', effort: false };
 
+  assert.deepEqual(collectUnsupportedReasoningParams({ effort: 'max', callSite: 'x' }, capable), []);
   assert.deepEqual(
-    collectUnsupportedReasoningParams({ effort: 'max', thinking: 'off', callSite: 'x' }, capable),
-    []
+    collectUnsupportedReasoningParams({ effort: 'max', callSite: 'y' }, incapable),
+    ['effort']
   );
-  assert.deepEqual(
-    collectUnsupportedReasoningParams({ effort: 'max', thinking: 'off', callSite: 'y' }, incapable),
-    ['effort', 'thinking']
-  );
-  // `default` is the absence of a request, so there is nothing to drop.
-  assert.deepEqual(
-    collectUnsupportedReasoningParams({ thinking: 'default', callSite: 'z' }, incapable),
-    []
-  );
+  // Asking for nothing drops nothing.
   assert.deepEqual(collectUnsupportedReasoningParams({ callSite: 'w' }, incapable), []);
 });
 
@@ -112,8 +106,8 @@ test('a profile stores the preferences, and keeps them when a client omits them'
 
 test('the log line names what a run actually used', () => {
   assert.equal(
-    describeAiChoice({ provider: 'claude-cli', modelName: 'sonnet', effort: 'max', thinking: 'off' }),
-    'claude-cli/sonnet effort=max thinking=off'
+    describeAiChoice({ provider: 'claude-cli', modelName: 'sonnet', effort: 'max' }),
+    'claude-cli/sonnet effort=max'
   );
   // Inherited values are absent rather than guessed at.
   assert.equal(

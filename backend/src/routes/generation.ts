@@ -53,7 +53,6 @@ type SubmitBody = {
   includeCoverLetterDocx?: boolean;
   model?: string;
   effort?: string;
-  thinking?: string;
   profileIds?: string[];
   jobs?: Array<{
     companyName?: string;
@@ -74,7 +73,6 @@ function readAiOverrides(body: SubmitBody): AiPreferences {
   return {
     ...(body.model ? { modelId: body.model } : {}),
     ...(body.effort ? { effort: body.effort as AiPreferences['effort'] } : {}),
-    ...(body.thinking ? { thinking: body.thinking as AiPreferences['thinking'] } : {}),
   };
 }
 

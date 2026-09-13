@@ -624,14 +624,7 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 /**
- * `default` leaves the models' own adaptive thinking alone - which is ON -
- * and `off` suppresses it. How deeply it thinks when it does is `effort`.
- */
-export const THINKING_MODES = ['default', 'off'] as const;
-export type ThinkingMode = (typeof THINKING_MODES)[number];
-
-/**
- * A model, effort and thinking choice.
+ * A model and effort choice.
  *
  * Every field is optional and absent means INHERIT: a profile inherits the app
  * default, and one generation inherits the profile. That is why the same type
@@ -640,14 +633,11 @@ export type ThinkingMode = (typeof THINKING_MODES)[number];
 export interface AiPreferences {
   modelId?: string;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
 }
 
 export interface AiPreferenceDefaults {
   effort: EffortLevel;
-  thinking: ThinkingMode;
   effortLevels: EffortLevel[];
-  thinkingModes: ThinkingMode[];
 }
 
 export const EFFORT_LABELS: Record<EffortLevel, string> = {
@@ -658,29 +648,19 @@ export const EFFORT_LABELS: Record<EffortLevel, string> = {
   max: 'Max - slowest, most thorough',
 };
 
-export const THINKING_LABELS: Record<ThinkingMode, string> = {
-  default: 'Let the model decide',
-  off: 'Off - answer without thinking first',
-};
-
 export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
-}
-
-export function isThinkingMode(value: unknown): value is ThinkingMode {
-  return typeof value === 'string' && (THINKING_MODES as readonly string[]).includes(value);
 }
 
 /**
  * The per-run override fields every generate endpoint accepts.
  *
  * Named `model` rather than `modelId` because that is the field the API has
- * always taken; the other two are new and keep their own names.
+ * always taken; `effort` keeps its own name.
  */
 export interface AiRequestOverrides {
   model?: string;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
 }
 
 /** Only fields that were actually chosen are sent, so the rest inherit. */
@@ -688,7 +668,6 @@ export function toAiRequestOverrides(preferences: AiPreferences): AiRequestOverr
   return {
     ...(preferences.modelId ? { model: preferences.modelId } : {}),
     ...(preferences.effort ? { effort: preferences.effort } : {}),
-    ...(preferences.thinking ? { thinking: preferences.thinking } : {}),
   };
 }
 
@@ -698,7 +677,6 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
   const modelId = typeof source.modelId === 'string' ? source.modelId.trim() : '';
   if (modelId) preferences.modelId = modelId;
   if (isEffortLevel(source.effort)) preferences.effort = source.effort;
-  if (isThinkingMode(source.thinking)) preferences.thinking = source.thinking;
   return preferences;
 }
 
@@ -714,9 +692,9 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
 /**
  * Which tuning knobs actually reach a given provider's model.
  *
- * A chat window has no effort flag and no thinking budget - there is nowhere to
- * put either - so the two selects have to go inactive rather than accept a
- * setting that changes nothing and says nothing.
+ * A chat window has no effort flag - there is nowhere to put one - so the
+ * select has to go inactive rather than accept a setting that changes nothing
+ * and says nothing.
  */
 /**
  * The reserved model id that means "use both free chat accounts".
@@ -731,7 +709,6 @@ export const HYBRID_MODEL_ID = 'free-hybrid';
 export interface ProviderTuningSupport {
   provider: AIProvider;
   effort: boolean;
-  thinking: boolean;
 }
 
 export interface ProviderLock {
@@ -762,7 +739,7 @@ export interface PublicAppSettings {
   browserChatEndpoints: BrowserChatEndpoint[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
-  /** Which providers honour effort and thinking at all. */
+  /** Which providers honour effort at all. */
   providerTuning: ProviderTuningSupport[];
 }
 
@@ -851,9 +828,7 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   outputPathUsesJobTitle: true,
   aiPreferenceDefaults: {
     effort: 'low',
-    thinking: 'default',
     effortLevels: [...EFFORT_LEVELS],
-    thinkingModes: [...THINKING_MODES],
   },
   aiModels: [],
   googleSheetsSources: [],
@@ -874,14 +849,9 @@ function normalizeAiPreferenceDefaults(value: unknown): AiPreferenceDefaults {
   const effortLevels = Array.isArray(source.effortLevels)
     ? source.effortLevels.filter(isEffortLevel)
     : [];
-  const thinkingModes = Array.isArray(source.thinkingModes)
-    ? source.thinkingModes.filter(isThinkingMode)
-    : [];
   return {
     effort: isEffortLevel(source.effort) ? source.effort : DEFAULT_PUBLIC_APP_SETTINGS.aiPreferenceDefaults.effort,
-    thinking: isThinkingMode(source.thinking) ? source.thinking : 'default',
     effortLevels: effortLevels.length ? effortLevels : [...EFFORT_LEVELS],
-    thinkingModes: thinkingModes.length ? thinkingModes : [...THINKING_MODES],
   };
 }
 
@@ -923,7 +893,6 @@ function normalizeProviderTuning(value: unknown): ProviderTuningSupport[] {
         // the empty list above is what makes that case permissive. A row that
         // IS sent is believed exactly as sent.
         effort: entry.effort === true,
-        thinking: entry.thinking === true,
       } satisfies ProviderTuningSupport;
     })
     .filter((entry): entry is ProviderTuningSupport => entry !== null);
@@ -940,7 +909,7 @@ function normalizeProviderTuning(value: unknown): ProviderTuningSupport[] {
 export function providerHonours(
   tuning: ProviderTuningSupport[],
   provider: AIProvider | undefined,
-  knob: 'effort' | 'thinking'
+  knob: 'effort'
 ): boolean {
   if (!provider) return true;
   const row = tuning.find((entry) => entry.provider === provider);
@@ -1529,7 +1498,7 @@ export interface ProfileSettings {
   hardSkillOrdering?: HardSkillOrdering;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
-  /** This profile's default model, effort and thinking mode. */
+  /** This profile's default model and effort. */
   ai?: AiPreferences;
 }
 
@@ -2066,7 +2035,6 @@ export const resumeApi = {
     sourceRowNumber?: number;
     model?: string;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
   }) =>
@@ -2138,7 +2106,6 @@ export const resumeApi = {
     tailoredContent?: TailoredContent;
     model?: string;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
   }) =>
     apiFetch<{ html: string; tailored: boolean; tailoredContent?: TailoredContent }>('/resume/preview', {
       method: 'POST',
@@ -2151,7 +2118,6 @@ export const resumeApi = {
     jobAnalysis?: JobAnalysis;
     model?: string;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
     profileIds?: string[];
   }) =>
     apiFetch<{

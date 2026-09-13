@@ -1,15 +1,12 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const {
-  providerSupportsEffort,
-  providerSupportsThinking,
-  AI_PROVIDER_IDS,
-} = require('../dist/config/providerCatalog');
+const { providerSupportsEffort, AI_PROVIDER_IDS } = require('../dist/config/providerCatalog');
 const { listProviderTuningSupport } = require('../dist/config/aiModelConfig');
+const { normalizeAiPreferences } = require('../dist/config/aiPreferences');
 
 /**
- * Which tuning knobs reach which provider.
+ * Which tuning knob reaches which provider.
  *
  * The reason this is a fact about the provider rather than a fact about the
  * adapter: the picker needs it, and the picker cannot reach an adapter. Keeping
@@ -18,27 +15,22 @@ const { listProviderTuningSupport } = require('../dist/config/aiModelConfig');
  * either behaviour on its own.
  */
 
-test('a chat window honours neither knob', () => {
-  // There is nowhere in a chat window to put an effort flag or a thinking
-  // budget. Offering the selects anyway let a profile be saved asking for
-  // effort=max on ChatGPT, where it changed nothing and said nothing.
+test('a chat window honours no effort flag', () => {
+  // There is nowhere in a chat window to put one. Offering the select anyway
+  // let a profile be saved asking for effort=max on ChatGPT, where it changed
+  // nothing and said nothing.
   for (const site of ['claude-web', 'chatgpt-web']) {
     assert.equal(providerSupportsEffort(site), false, `${site} has no effort flag`);
-    assert.equal(providerSupportsThinking(site), false, `${site} has no thinking budget`);
   }
 });
 
-test('the subscription seat honours both', () => {
-  // `--effort` is a documented flag on the CLI, and thinking is what
-  // MAX_THINKING_TOKENS controls.
+test('the subscription seat is the one provider that honours effort', () => {
   assert.equal(providerSupportsEffort('claude-cli'), true);
-  assert.equal(providerSupportsThinking('claude-cli'), true);
 });
 
-test('the metered HTTP providers honour neither', () => {
+test('the metered HTTP providers honour no effort flag', () => {
   for (const provider of ['claude', 'openai', 'deepseek']) {
     assert.equal(providerSupportsEffort(provider), false);
-    assert.equal(providerSupportsThinking(provider), false);
   }
 });
 
@@ -49,7 +41,6 @@ test('every provider has an answer, so no picker has to guess', () => {
     const row = tuning.find((entry) => entry.provider === id);
     assert.ok(row, `${id} is missing from the tuning report`);
     assert.equal(typeof row.effort, 'boolean');
-    assert.equal(typeof row.thinking, 'boolean');
   }
 });
 
@@ -64,10 +55,23 @@ test('the adapters report the same answer the pickers are given', () => {
       providerSupportsEffort(capability.id),
       `${capability.id} disagrees with the catalog about effort`
     );
-    assert.equal(
-      capability.thinking,
-      providerSupportsThinking(capability.id),
-      `${capability.id} disagrees with the catalog about thinking`
-    );
   }
+});
+
+/**
+ * The upgrade path every existing profile takes.
+ *
+ * `thinking` was a real stored field until this release, so profiles in a live
+ * database still carry one. It has to be IGNORED, not rejected: a profile that
+ * threw on read would take its owner's whole builder down over a dead key.
+ */
+test('a profile still storing a thinking mode is read without it', () => {
+  const stored = { modelId: 'claude-cli-sonnet', effort: 'high', thinking: 'off' };
+  assert.deepEqual(normalizeAiPreferences(stored), {
+    modelId: 'claude-cli-sonnet',
+    effort: 'high',
+  });
+
+  // Even a value that was never valid, since nothing validates it any more.
+  assert.deepEqual(normalizeAiPreferences({ thinking: 'nonsense' }), {});
 });

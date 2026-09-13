@@ -70,7 +70,7 @@ export default function Home() {
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   /**
-   * Model, effort and thinking for THIS run only.
+   * Model and effort for THIS run only.
    *
    * Empty means every field falls through to the selected profile's own
    * setting, and then to the app default - nothing here is persisted.
@@ -159,7 +159,6 @@ export default function Home() {
   const inheritedChoice = {
     modelLabel: inheritedModel?.name || 'the first enabled model',
     effort: profilePreferences.effort ?? modelSettings.aiPreferenceDefaults.effort,
-    thinking: profilePreferences.thinking ?? modelSettings.aiPreferenceDefaults.thinking,
   };
 
   const loadInitialData = async () => {
@@ -1603,7 +1602,7 @@ export default function Home() {
 
             <details className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
               <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
-                Model, effort and thinking
+                Model and effort
                 {hasAiOverrides && (
                   <span className="ml-2 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                     overridden for this run
@@ -1619,7 +1618,6 @@ export default function Home() {
                   providerLocks={modelSettings.providerLocks}
                   providerTuning={modelSettings.providerTuning}
                   effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
-                  thinkingModes={modelSettings.aiPreferenceDefaults.thinkingModes}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                   inherited={inheritedChoice}
                   disabled={isGenerating}

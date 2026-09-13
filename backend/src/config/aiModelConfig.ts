@@ -22,7 +22,6 @@ import {
   listLockedProviderIds,
   providerRequiresApiKey,
   providerSupportsEffort,
-  providerSupportsThinking,
 } from './providerCatalog';
 import {
   DEFAULT_CLAUDE_CLI_MODEL,
@@ -134,14 +133,12 @@ export type LegacyProviderFlags = {
 export type ProviderTuningSupport = {
   provider: AIProvider;
   effort: boolean;
-  thinking: boolean;
 };
 
 export function listProviderTuningSupport(): ProviderTuningSupport[] {
   return AI_PROVIDER_IDS.map((provider) => ({
     provider,
     effort: providerSupportsEffort(provider),
-    thinking: providerSupportsThinking(provider),
   }));
 }
 
@@ -177,11 +174,11 @@ export type ProviderLock = {
 };
 
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
-  /** Which providers honour effort and thinking at all. */
+  /** Which providers honour effort at all. */
   providerTuning: ProviderTuningSupport[];
   outputPathUsesJobTitle: boolean;
   /**
-   * The effort and thinking a run uses when nothing overrides them, plus the
+   * The effort a run uses when nothing overrides it, plus the
    * values that may be chosen. Sent rather than hard-coded in the client so
    * that the "use the app default" option can name the value it will really
    * use, and so a new effort level does not need a matching frontend release.

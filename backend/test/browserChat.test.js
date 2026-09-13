@@ -270,15 +270,14 @@ test('a chat window reports the knobs it cannot honour rather than ignoring them
     responseFormat: 'text',
     sampling: { temperature: 0.7, maxOutputTokens: 1500 },
     effort: 'max',
-    thinking: 'off',
     deadline: createDeadline(5_000),
     callSite: 'probe',
   });
 
   assert.equal(result.text, 'prose, as a chat window gives');
   assert.equal(result.providerId, 'chatgpt-web');
-  // All four: a select box that does nothing must say so somewhere.
-  for (const dropped of ['temperature', 'maxOutputTokens', 'effort', 'thinking']) {
+  // All three: a select box that does nothing must say so somewhere.
+  for (const dropped of ['temperature', 'maxOutputTokens', 'effort']) {
     assert.ok(result.droppedParams.includes(dropped), `${dropped} should be reported as dropped`);
   }
   // Nothing is metered, so counting tokens would be inventing them.

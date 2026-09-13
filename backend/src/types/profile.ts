@@ -87,7 +87,7 @@ export interface ProfileSettings {
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**
-   * This profile's default model, effort and thinking mode.
+   * This profile's default model and effort.
    *
    * Every field is optional and an absent one inherits the app default, so a
    * profile that has never been touched behaves exactly as it did before this

@@ -266,7 +266,7 @@ export default function ProfileForm({
     resumeApi.listSkills('hard').then((res) => setHardSkillLibrary(res.skills)).catch(() => setHardSkillLibrary([]));
   }, []);
 
-  // The model list and the app's own effort/thinking defaults, so the inherit
+  // The model list and the app's own effort default, so the inherit
   // option can say what inheriting actually gets you.
   useEffect(() => {
     resumeApi.getModels().then(setAppSettings).catch(() => setAppSettings(DEFAULT_PUBLIC_APP_SETTINGS));
@@ -648,14 +648,12 @@ export default function ProfileForm({
           providerLocks={appSettings.providerLocks}
           providerTuning={appSettings.providerTuning}
           effortLevels={appSettings.aiPreferenceDefaults.effortLevels}
-          thinkingModes={appSettings.aiPreferenceDefaults.thinkingModes}
           inheritedFrom="app default"
           inherited={{
             modelLabel:
               appSettings.aiModels.find((model) => model.id === appSettings.defaultModelId)?.name ||
               'the first enabled model',
             effort: appSettings.aiPreferenceDefaults.effort,
-            thinking: appSettings.aiPreferenceDefaults.thinking,
           }}
         />
       </div>

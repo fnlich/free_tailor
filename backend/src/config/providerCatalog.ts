@@ -40,7 +40,7 @@ export type ProviderDescriptor = {
     | 'deepseekEnabled'
     | null;
   /**
-   * Whether the effort and thinking knobs reach the model at all.
+   * Whether the effort knob reaches the model at all.
    *
    * Here, with the provider's other facts, rather than only on the adapter,
    * because the UI needs it and the adapter is not reachable from the settings
@@ -48,12 +48,11 @@ export type ProviderDescriptor = {
    * picker greys a select with is the same one the transport acts on.
    *
    * The chat providers are the reason this exists. A chat window has no effort
-   * flag and no thinking budget: there is nowhere to put either. Offering the
+   * flag: there is nowhere to put one. Offering the
    * two selects anyway meant a profile could be saved asking for `effort=max`
    * on ChatGPT, where it changed nothing and said nothing.
    */
   supportsEffort: boolean;
-  supportsThinking: boolean;
   /** Environment variable holding this provider's key, or null when keyless. */
   envKeyVar: string | null;
   requiresApiKey: boolean;
@@ -98,7 +97,6 @@ export const PROVIDER_CATALOG = {
     label: 'Claude (subscription)',
     summary: 'Runs the local `claude` CLI on the signed-in subscription seat. No API key, no metered tokens.',
     supportsEffort: true,
-    supportsThinking: true,
     legacyEnabledField: 'claudeCliEnabled',
     envKeyVar: null,
     requiresApiKey: false,
@@ -123,7 +121,6 @@ export const PROVIDER_CATALOG = {
     label: 'Anthropic API',
     summary: 'Anthropic Messages API with an API key. Billed per token.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: 'claudeEnabled',
     envKeyVar: 'ANTHROPIC_API_KEY',
     requiresApiKey: true,
@@ -137,7 +134,6 @@ export const PROVIDER_CATALOG = {
     label: 'OpenAI',
     summary: 'OpenAI chat completions with an API key. Billed per token.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: 'openaiEnabled',
     envKeyVar: 'OPENAI_API_KEY',
     requiresApiKey: true,
@@ -151,7 +147,6 @@ export const PROVIDER_CATALOG = {
     label: 'DeepSeek',
     summary: 'DeepSeek chat completions with an API key. Billed per token.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: 'deepseekEnabled',
     envKeyVar: 'DEEPSEEK_API_KEY',
     requiresApiKey: true,
@@ -166,7 +161,6 @@ export const PROVIDER_CATALOG = {
     summary:
       'Drives claude.ai in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -181,7 +175,6 @@ export const PROVIDER_CATALOG = {
     summary:
       'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -410,7 +403,3 @@ export function providerSupportsEffort(id: AIProvider): boolean {
   return getProviderDescriptor(id).supportsEffort;
 }
 
-/** Does this provider honour the thinking knob? */
-export function providerSupportsThinking(id: AIProvider): boolean {
-  return getProviderDescriptor(id).supportsThinking;
-}

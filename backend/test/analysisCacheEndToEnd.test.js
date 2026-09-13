@@ -29,7 +29,6 @@ function setUp(name, promptText = 'Analyze this.\n[[jobDescription]]') {
       temperature: false,
       maxOutputTokens: false,
       effort: false,
-      thinking: false,
       nativeJsonMode: 'json-schema',
       systemBlocks: true,
       requiresApiKey: false,
