@@ -296,10 +296,21 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 git clone <repo-url>
 cd free_tailor
 
+npm run install:all     # root, backend and frontend
+```
+
+Or the three on their own, which is what `install:all` runs:
+
+```bash
 npm install
 npm install --prefix backend
 npm install --prefix frontend
 ```
+
+**Already have a checkout?** Run `npm run install:all` again after every pull.
+A pull brings new `package.json` entries but not the packages themselves, and
+the symptom is a compile error naming a module that "cannot be found" - most
+recently `nodemailer`, which v2 added for the emailed sign-in codes.
 
 ### 2. Environment Setup
 
