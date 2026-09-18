@@ -7,6 +7,7 @@ import CreditLedger from '@/components/CreditLedger';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountPlan } from '@/lib/auth';
 import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
+import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
 
 /**
  * The signed-in account's own page: who they are, what plan they are on, and
@@ -38,6 +39,9 @@ export default function AccountPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<AccountSheet | null>(null);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
 
   useEffect(() => {
     authApi.plans().then(({ plans: list }) => setPlans(list)).catch(() => setPlans([]));
@@ -59,6 +63,24 @@ export default function AccountPage() {
     })();
   }, []);
 
+  /**
+   * The sheet loads on its own, and slowly the first time.
+   *
+   * On a brand new account this call is what creates the spreadsheet, which is
+   * several round trips to Google - so it is deliberately not bundled with the
+   * credits fetch above. A page that waited for it would be blank for seconds
+   * on the one visit where everything else is already known.
+   */
+  useEffect(() => {
+    void (async () => {
+      try {
+        setSheet(await sheetApi.get());
+      } catch (caught) {
+        setSheetError(caught instanceof Error ? caught.message : 'Could not load your sheet.');
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     if (account) setName(account.name);
   }, [account]);
@@ -71,6 +93,22 @@ export default function AccountPage() {
   }, []);
 
   if (!account) return null;
+
+  const changeVisibility = async (visibility: SheetVisibility) => {
+    setSharing(true);
+    setSheetError(null);
+    try {
+      const result = await sheetApi.setVisibility(visibility);
+      // Stored from the response rather than from the button that was pressed:
+      // the server reads the answer back from Drive, and that is the state that
+      // is actually true.
+      setSheet((current) => (current ? { ...current, visibility: result.visibility } : current));
+    } catch (caught) {
+      setSheetError(caught instanceof Error ? caught.message : 'Could not change the sharing.');
+    } finally {
+      setSharing(false);
+    }
+  };
 
   const saveName = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -151,6 +189,97 @@ export default function AccountPage() {
             {saved && <p className="mt-2 text-sm text-green-700 dark:text-green-300">Saved.</p>}
             {error && <p className="mt-2 text-sm text-red-700 dark:text-red-300">{error}</p>}
           </form>
+        </section>
+
+        <section id="sheet" className={CARD}>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Your job sheet</h2>
+          <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+            One Google spreadsheet belongs to this account, with a tab for each day you sign in,
+            named like <code className="rounded bg-gray-100 px-1 dark:bg-slate-800">09/17/2026</code>.
+            Each tab starts with the job columns - company, job title, link, description, rate and
+            your notes.
+          </p>
+
+          {sheetError && (
+            <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+              {sheetError}
+            </p>
+          )}
+
+          {!sheet && !sheetError && (
+            <p className="mt-4 text-sm text-gray-600 dark:text-slate-300">
+              {/* The honest wording. On a new account this call is creating the
+                  spreadsheet, and "loading" would undersell how long that takes. */}
+              Preparing your sheet...
+            </p>
+          )}
+
+          {sheet && !sheet.configured && (
+            <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+              {sheet.message ?? 'Google Sheets is not set up on this server.'}
+            </p>
+          )}
+
+          {sheet?.configured && sheet.spreadsheetUrl && (
+            <>
+              <dl className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <dt className={LABEL}>Spreadsheet</dt>
+                  <dd className="mt-1 text-sm">
+                    <a
+                      href={sheet.spreadsheetUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      Open in Google Sheets
+                    </a>
+                  </dd>
+                </div>
+                <div>
+                  <dt className={LABEL}>Today&apos;s tab</dt>
+                  <dd className={VALUE}>{sheet.todayTab}</dd>
+                </div>
+              </dl>
+
+              <div className="mt-6 border-t border-gray-200 pt-4 dark:border-slate-800">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Who can open it</h3>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(['public', 'private'] as const).map((option) => {
+                    const current = sheet.visibility === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        disabled={sharing || current}
+                        onClick={() => void changeVisibility(option)}
+                        className={`rounded-lg border px-4 py-2 text-sm font-medium transition ${
+                          current
+                            ? 'border-blue-500 bg-blue-600 text-white'
+                            : 'border-gray-300 text-gray-700 hover:border-gray-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:text-slate-200'
+                        }`}
+                      >
+                        {option === 'public' ? 'Anyone with the link' : 'Only me'}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Named plainly, because the link is the only thing between a
+                    stranger and rewriting these rows. */}
+                <p className="mt-3 text-sm text-gray-600 dark:text-slate-300">
+                  {sheet.visibility === 'public'
+                    ? 'Anyone who has the link can open this sheet and edit it. Share the link carefully.'
+                    : 'Only you can open this sheet. Your account keeps edit access through the address you sign in with.'}
+                </p>
+                <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
+                  Either way this server keeps its own access, so job links, company names and
+                  descriptions still load when you generate resumes.
+                </p>
+              </div>
+            </>
+          )}
         </section>
 
         <section id="credits" className={CARD}>

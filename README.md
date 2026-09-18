@@ -149,12 +149,48 @@ being refused on the thirtieth after twenty-nine resumes already exist.
 A brand-new account starts at **0** and needs an administrator to grant it some.
 Set `CREDIT_SIGNUP_GRANT` to give an open installation a self-serve trial instead.
 
+### The job sheet
+
+Every account gets **one Google spreadsheet of its own**, and inside it **one tab
+per day**, named `MM/DD/YYYY`. The tab is created on the first sign-in of that
+date and skipped on every sign-in after, so a day's rows stay together and a
+quiet day costs nothing. A new tab opens with the job columns - `NO(DATE)`,
+`Company`, `Job Title`, `Job Link`, `Job Description`, `Rate`, `note`,
+`Job Finder` - frozen, filtered and formatted.
+
+Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
+being able to log in is not, so a Google outage must not become an outage of
+logging in. The account page ensures the same thing when it loads, which is what
+covers an account whose sign-in ran while Google was down, and accounts created
+before this feature existed - a paced backfill at startup takes care of the rest.
+
+New sheets are **public by default**, meaning anyone with the link can *edit*
+them. The toggle on the account page withdraws that. Either way the server keeps
+its own access, because the file belongs to the service account rather than to a
+person - so job links, company names and descriptions still load after somebody
+goes private.
+
+Two things this needs from Google, and both are easy to miss:
+
+- The **Drive API** enabled for the same Cloud project as the key, not just the
+  Sheets API. Sharing is a Drive concept, and a missing Drive API produces a 403
+  that blames the file rather than the setting.
+- Room in the service account's own Drive. Files it creates count against *its*
+  quota, not against any person's, so a large installation should point the key
+  at a shared drive.
+
+`SHEET_TIMEZONE` decides which day a tab belongs to. A server running in UTC
+rolls the day over at midnight UTC, which for a user in New York is seven in the
+evening - so an evening's work would land on the next day's tab. Set it to the
+zone the users actually live in.
+
 ### Where data lives
 
 | Data | Storage |
 |------|---------|
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
+| Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row. Sharing state is **not** stored - Drive is asked each time, because somebody can change it in Google's own UI and a cached copy would go quietly wrong |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
@@ -487,7 +523,9 @@ File and folder names are templated per profile.
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
-| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets. Needs **both** the Sheets API and the Drive API enabled for its Cloud project - the per-account sheets are shared through Drive |
+| `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
+| `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
 
 See `.env.example` for the full `AI_CLI_*` list.
 

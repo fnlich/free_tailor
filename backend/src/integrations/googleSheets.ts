@@ -3,8 +3,27 @@ import fs from 'fs/promises';
 import path from 'path';
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4';
+const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
+
+/**
+ * Both scopes, because sharing is not a Sheets operation.
+ *
+ * Creating a spreadsheet and writing to it needs `spreadsheets`. Deciding WHO
+ * can open it is a Drive concept - a spreadsheet is a Drive file with a
+ * permission list - so changing visibility needs `drive` and a different API
+ * host. Asking for one and calling the other is the failure this comment exists
+ * to prevent: the token is accepted, the Drive call returns 403, and the
+ * message blames the file rather than the scope.
+ *
+ * The scope is requested at token time, so an existing deployment picks it up
+ * on the next token refresh - but only once the Drive API is enabled for the
+ * Cloud project the key belongs to.
+ */
 const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+const OAUTH_SCOPES = `${SHEETS_SCOPE} ${DRIVE_SCOPE}`;
+
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
 
 type GoogleServiceAccountCredentials = {
@@ -355,6 +374,22 @@ async function resolveServiceAccountPath(): Promise<string> {
   );
 }
 
+/**
+ * Whether this install has a service-account key at all.
+ *
+ * Its own predicate so callers can answer "not configured" as a fact rather
+ * than by catching the 500 that every sheets call would otherwise throw. A
+ * missing key is a deployment that has not set sheets up yet, not a failure.
+ */
+export async function isGoogleSheetsConfigured(): Promise<boolean> {
+  try {
+    await resolveServiceAccountPath();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function loadServiceAccountCredentials(): Promise<Required<GoogleServiceAccountCredentials>> {
   const filePath = await resolveServiceAccountPath();
   const raw = await fs.readFile(filePath, 'utf8');
@@ -389,7 +424,7 @@ function buildJwtAssertion(credentials: Required<GoogleServiceAccountCredentials
   const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
     iss: credentials.client_email,
-    scope: SHEETS_SCOPE,
+    scope: OAUTH_SCOPES,
     aud: credentials.token_uri,
     iat: now,
     exp: now + 3600,
@@ -483,6 +518,54 @@ async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRet
     throw new GoogleSheetsRequestError(response.status, errorMessage);
   }
 
+  return response.json() as Promise<T>;
+}
+
+/**
+ * The same call shape against Drive rather than Sheets.
+ *
+ * A separate function rather than a base-url parameter on the one above,
+ * because everything else about them is the same and an accidental Sheets path
+ * sent to Drive returns a 404 that reads like a missing file.
+ */
+async function googleDriveFetch<T>(pathname: string, init?: RequestInit, hasRetried = false): Promise<T> {
+  const accessToken = await getAccessToken();
+  const response = await fetch(`${DRIVE_API_BASE}${pathname}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (response.status === 401 && !hasRetried) {
+    cachedAccessToken = null;
+    return googleDriveFetch<T>(pathname, init, true);
+  }
+
+  if (!response.ok) {
+    let errorMessage = 'Google Drive request failed.';
+    try {
+      const errorBody = (await response.json()) as GoogleApiStructuredError;
+      if (errorBody.error?.message) {
+        errorMessage = errorBody.error.message;
+      }
+    } catch {
+      // Ignore JSON parsing failures and use the fallback message.
+    }
+    // The single most likely first-run failure, and the raw message says
+    // nothing about the cause: the token is valid, so this reads as a problem
+    // with the file rather than with what the project is allowed to do.
+    if (response.status === 403 && /api|disabled|permission/i.test(errorMessage)) {
+      errorMessage =
+        `${errorMessage} (Sharing a sheet needs the Drive API. Enable it for the Cloud project ` +
+        'this service account belongs to, and make sure the key was issued after that.)';
+    }
+    throw new GoogleSheetsRequestError(response.status, errorMessage);
+  }
+
+  // A 204 has no body, which `response.json()` would throw on.
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -1012,4 +1095,251 @@ export async function updateGoogleSheetsRow(
     updatedColumns: updateResponse.totalUpdatedColumns ?? normalizedUpdates.length,
     updatedCells: updateResponse.totalUpdatedCells ?? normalizedUpdates.length,
   };
+}
+
+/* ------------------------------------------------- creating and sharing ---- */
+
+/**
+ * The columns a new dated tab starts with, in order.
+ *
+ * `NO(DATE)` first because that is what the sheet this was modelled on uses:
+ * the row number doubles as the day's sequence. The names are reproduced
+ * exactly, lower-case `note` included - a header somebody later matches on by
+ * string should match what they see.
+ */
+export const JOB_SHEET_HEADERS = [
+  'NO(DATE)',
+  'Company',
+  'Job Title',
+  'Job Link',
+  'Job Description',
+  'Rate',
+  'note',
+  'Job Finder',
+] as const;
+
+export type CreatedSpreadsheet = {
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+};
+
+/**
+ * Creates an empty spreadsheet owned by the service account.
+ *
+ * Worth being clear about the ownership, because it surprises people: a file
+ * created this way belongs to the service account, not to any person, so it
+ * appears in nobody's Drive until it is shared. `shareSpreadsheetWithEmail`
+ * below is what makes it reachable, and skipping that step leaves a sheet that
+ * exists and that no human can open.
+ */
+export async function createSpreadsheet(title: string): Promise<CreatedSpreadsheet> {
+  const created = await googleSheetsFetch<{ spreadsheetId?: string; spreadsheetUrl?: string }>(
+    '/spreadsheets',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ properties: { title } }),
+    }
+  );
+
+  if (!created.spreadsheetId) {
+    throw new GoogleSheetsRequestError(500, 'Google did not return an id for the new spreadsheet.');
+  }
+
+  return {
+    spreadsheetId: created.spreadsheetId,
+    spreadsheetUrl:
+      created.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${created.spreadsheetId}/edit`,
+  };
+}
+
+/** Every tab title in a spreadsheet, so a caller can tell new from existing. */
+export async function listSheetTabTitles(spreadsheetId: string): Promise<string[]> {
+  const metadata = await googleSheetsFetch<SpreadsheetMetadataResponse>(
+    `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(title))`
+  );
+  return (metadata.sheets ?? [])
+    .map((sheet) => sheet.properties?.title)
+    .filter((title): title is string => typeof title === 'string');
+}
+
+const HEADER_BACKGROUND = { red: 0, green: 0, blue: 0 };
+const HEADER_FOREGROUND = { red: 1, green: 1, blue: 1 };
+
+/**
+ * Adds a tab and lays out its header row, in ONE batch.
+ *
+ * One request rather than four because the steps are not independent: the
+ * formatting, the frozen row and the filter all address the sheet by the id
+ * that `addSheet` mints, and a batch is the only way to use that id in the same
+ * call that creates it. Sending them separately also leaves a visible
+ * half-built tab if the second call fails.
+ *
+ * Returns the new sheet id, or null when a tab of that name already existed -
+ * which is the ordinary case on every sign-in after the first of a day.
+ */
+export async function addSheetTabWithHeaders(
+  spreadsheetId: string,
+  title: string,
+  headers: readonly string[] = JOB_SHEET_HEADERS
+): Promise<number | null> {
+  const existing = await listSheetTabTitles(spreadsheetId);
+  if (existing.includes(title)) return null;
+
+  const added = await googleSheetsFetch<{
+    replies?: Array<{ addSheet?: { properties?: { sheetId?: number } } }>;
+  }>(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: [
+        {
+          addSheet: {
+            properties: {
+              title,
+              gridProperties: { rowCount: 1000, columnCount: Math.max(headers.length, 12), frozenRowCount: 1 },
+            },
+          },
+        },
+      ],
+    }),
+  });
+
+  const sheetId = added.replies?.[0]?.addSheet?.properties?.sheetId;
+  if (typeof sheetId !== 'number') {
+    throw new GoogleSheetsRequestError(500, `Google did not return an id for the new "${title}" tab.`);
+  }
+
+  await googleSheetsFetch(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: [
+        {
+          updateCells: {
+            rows: [
+              {
+                values: headers.map((header) => ({
+                  userEnteredValue: { stringValue: header },
+                  userEnteredFormat: {
+                    backgroundColor: HEADER_BACKGROUND,
+                    textFormat: { bold: true, foregroundColor: HEADER_FOREGROUND },
+                    verticalAlignment: 'MIDDLE',
+                  },
+                })),
+              },
+            ],
+            fields: 'userEnteredValue,userEnteredFormat',
+            start: { sheetId, rowIndex: 0, columnIndex: 0 },
+          },
+        },
+        {
+          // The dropdown on the header row. Bounded to the header's own columns
+          // so a filter does not claim the empty half of the grid.
+          setBasicFilter: {
+            filter: {
+              range: { sheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: headers.length },
+            },
+          },
+        },
+        {
+          autoResizeDimensions: {
+            dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: headers.length },
+          },
+        },
+      ],
+    }),
+  });
+
+  return sheetId;
+}
+
+/* ------------------------------------------------------------- permissions -- */
+
+export type SheetVisibility = 'public' | 'private';
+
+/**
+ * Gives one person write access by email.
+ *
+ * `sendNotificationEmail=false` on purpose: this runs during sign-in, and a
+ * "someone shared a file with you" mail every time an account is created is
+ * noise for something the app is about to show them a link to anyway.
+ */
+export async function shareSpreadsheetWithEmail(spreadsheetId: string, email: string): Promise<void> {
+  await googleDriveFetch(
+    `/files/${encodeURIComponent(spreadsheetId)}/permissions?sendNotificationEmail=false&supportsAllDrives=true`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'writer', type: 'user', emailAddress: email }),
+    }
+  );
+}
+
+type DrivePermission = { id?: string; type?: string; role?: string };
+
+async function listPermissions(spreadsheetId: string): Promise<DrivePermission[]> {
+  const listed = await googleDriveFetch<{ permissions?: DrivePermission[] }>(
+    `/files/${encodeURIComponent(spreadsheetId)}/permissions?fields=permissions(id,type,role)&supportsAllDrives=true`
+  );
+  return listed.permissions ?? [];
+}
+
+/**
+ * Whether anyone holding the link can open this spreadsheet.
+ *
+ * Read from Drive rather than from our own stored flag, because Drive is where
+ * the truth is: somebody can change the sharing in the Google UI at any time,
+ * and a toggle that reported our last write would then be confidently wrong.
+ */
+export async function getSpreadsheetVisibility(spreadsheetId: string): Promise<SheetVisibility> {
+  const permissions = await listPermissions(spreadsheetId);
+  return permissions.some((permission) => permission.type === 'anyone') ? 'public' : 'private';
+}
+
+/**
+ * Sets the link-sharing state.
+ *
+ * `public` here means anyone with the link may EDIT, which is what was asked
+ * for and is worth naming plainly: the URL is the only thing standing between a
+ * stranger and rewriting somebody's job rows. `private` withdraws that, leaving
+ * the per-account grant made at allocation - so the owner keeps access and
+ * everyone else loses it.
+ */
+export async function setSpreadsheetVisibility(
+  spreadsheetId: string,
+  visibility: SheetVisibility
+): Promise<SheetVisibility> {
+  const permissions = await listPermissions(spreadsheetId);
+  const anyone = permissions.filter((permission) => permission.type === 'anyone');
+
+  if (visibility === 'public') {
+    if (anyone.some((permission) => permission.role === 'writer')) return 'public';
+    // A reader-for-anyone left over from an earlier policy would otherwise sit
+    // alongside the writer grant and make the state ambiguous.
+    for (const permission of anyone) {
+      if (permission.id) await revokePermission(spreadsheetId, permission.id);
+    }
+    await googleDriveFetch(
+      `/files/${encodeURIComponent(spreadsheetId)}/permissions?supportsAllDrives=true`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'writer', type: 'anyone' }),
+      }
+    );
+    return 'public';
+  }
+
+  for (const permission of anyone) {
+    if (permission.id) await revokePermission(spreadsheetId, permission.id);
+  }
+  return 'private';
+}
+
+async function revokePermission(spreadsheetId: string, permissionId: string): Promise<void> {
+  await googleDriveFetch(
+    `/files/${encodeURIComponent(spreadsheetId)}/permissions/${encodeURIComponent(permissionId)}?supportsAllDrives=true`,
+    { method: 'DELETE' }
+  );
 }

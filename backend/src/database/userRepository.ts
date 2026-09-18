@@ -26,10 +26,14 @@ type UserRow = {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  sheet_id: string | null;
+  sheet_url: string | null;
+  sheet_tab_date: string | null;
 };
 
 const USER_COLUMNS =
-  'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, last_login_at';
+  'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
+  'last_login_at, sheet_id, sheet_url, sheet_tab_date';
 
 function now(): string {
   return new Date().toISOString();
@@ -66,6 +70,9 @@ function toAccount(row: UserRow): UserAccount {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.last_login_at ? { lastLoginAt: row.last_login_at } : {}),
+    ...(row.sheet_id ? { sheetId: row.sheet_id } : {}),
+    ...(row.sheet_url ? { sheetUrl: row.sheet_url } : {}),
+    ...(row.sheet_tab_date ? { sheetTabDate: row.sheet_tab_date } : {}),
   };
 }
 
@@ -177,13 +184,19 @@ export function createUser(input: CreateUserInput): UserAccount {
     created_at: timestamp,
     updated_at: timestamp,
     last_login_at: null,
+    // Allocated after the account exists, by the sheets service. Creating a
+    // spreadsheet is several network calls, and none of them belongs inside the
+    // transaction that makes somebody an account.
+    sheet_id: null,
+    sheet_url: null,
+    sheet_tab_date: null,
   };
 
   getDb()
     .prepare(
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
-               @created_at, @updated_at, @last_login_at)`
+               @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date)`
     )
     .run(account);
 
@@ -268,6 +281,46 @@ export function updateUser(id: string, update: AccountUpdate): UserAccount | nul
     .prepare(`UPDATE users SET ${patch.join(', ')}, updated_at = @updated_at WHERE id = @id`)
     .run(values);
   return getUserById(id);
+}
+
+/**
+ * Claims the spreadsheet slot for an account, once.
+ *
+ * Conditional on purpose. Two callers can reach the allocation at the same
+ * moment - a sign-in and the Account page loading beside it - and both will have
+ * created a spreadsheet by the time either writes. The WHERE clause makes the
+ * second write a no-op rather than a silent overwrite, and returning false lets
+ * the loser adopt the winner's sheet and say so in the log instead of leaving
+ * two spreadsheets with one of them unreachable.
+ */
+export function recordAccountSheet(id: string, sheetId: string, sheetUrl: string): boolean {
+  const result = getDb()
+    .prepare(
+      `UPDATE users SET sheet_id = @sheet_id, sheet_url = @sheet_url, updated_at = @updated_at
+       WHERE id = @id AND (sheet_id IS NULL OR sheet_id = '')`
+    )
+    .run({ id, sheet_id: sheetId, sheet_url: sheetUrl, updated_at: now() });
+  return result.changes > 0;
+}
+
+/** Remembers that today's tab is prepared, so the next sign-in calls nobody. */
+export function recordSheetTabDate(id: string, date: string): void {
+  getDb()
+    .prepare('UPDATE users SET sheet_tab_date = ?, updated_at = ? WHERE id = ?')
+    .run(date, now(), id);
+}
+
+/** Accounts from before this feature, in creation order, for the boot backfill. */
+export function listAccountsWithoutSheet(): UserAccount[] {
+  return (
+    getDb()
+      .prepare(
+        `SELECT ${USER_COLUMNS} FROM users
+         WHERE (sheet_id IS NULL OR sheet_id = '') AND disabled = 0
+         ORDER BY created_at ASC`
+      )
+      .all() as UserRow[]
+  ).map(toAccount);
 }
 
 export function markSignedIn(id: string): void {
