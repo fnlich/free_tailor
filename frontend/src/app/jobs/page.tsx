@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import AppTopNav from '@/components/AppTopNav';
+import { useAuth } from '@/contexts/AuthContext';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import {
   GoogleSheetSource,
   GoogleSheetTab,
@@ -223,6 +225,18 @@ export default function JobsPage() {
   const [jobType, setJobType] = useState<ScraperJobType | ''>('');
   const [remoteOnly, setRemoteOnly] = useState(true);
   const [limit, setLimit] = useState(250);
+  const { account } = useAuth();
+  const isAdmin = account?.role === 'admin';
+  const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
+  /**
+   * Where the scraped rows go.
+   *
+   * `mine` sends no spreadsheet id, no tab and no columns at all - the backend
+   * fills in the account's own sheet, today's tab and the fixed layout. It is
+   * the only option an ordinary user has, because the shared sources belong to
+   * the administrator who configured them and are not theirs to write into.
+   */
+  const [exportTarget, setExportTarget] = useState<'mine' | 'shared'>('mine');
   const [sheetExportForm, setSheetExportForm] = useState<SheetExportFormState>(DEFAULT_SHEET_EXPORT_FORM);
   const [sheetSources, setSheetSources] = useState<GoogleSheetSource[]>([]);
   const [sheetTabs, setSheetTabs] = useState<GoogleSheetTab[]>([]);
@@ -311,6 +325,18 @@ export default function JobsPage() {
       setLimit(JOB_BOARD_MAX_RESULTS);
     }
   }, [source, limit]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAccountSheet(await sheetApi.get());
+      } catch {
+        // Not fatal: the panel falls back to naming no tab, and the server
+        // still resolves the destination on its own.
+        setAccountSheet(null);
+      }
+    })();
+  }, []);
 
   const handleLoadSheetTabs = async () => {
     const sheetId = sheetExportForm.sheetId.trim();
@@ -404,17 +430,27 @@ export default function JobsPage() {
       let response: ScraperRunResponse;
 
       if (writeToGoogleSheet) {
+        // Sending nothing is what selects the account's own sheet: the server
+        // knows the spreadsheet, the day's tab and the column layout, and a
+        // number typed here could only disagree with them.
         const exportResponse = await jobsApi.exportScraperToGoogleSheet({
           ...commonPayload,
           source,
           provider: selectedProviderId || undefined,
-          sheetId: sheetExportForm.sheetId.trim(),
-          tabName: sheetExportForm.tabName.trim(),
-          startRow: parsePositiveWholeNumber('Start row', sheetExportForm.startRow),
-          companyNameCol: parseSpreadsheetColumnInput('Company column', sheetExportForm.companyNameCol),
-          jobTitleCol: parseSpreadsheetColumnInput('Job title column', sheetExportForm.jobTitleCol),
-          jobLinkCol: parseSpreadsheetColumnInput('Job link column', sheetExportForm.jobLinkCol),
-          jobDescriptionCol: parseSpreadsheetColumnInput('Job description column', sheetExportForm.jobDescriptionCol),
+          ...(exportTarget === 'shared'
+            ? {
+                sheetId: sheetExportForm.sheetId.trim(),
+                tabName: sheetExportForm.tabName.trim(),
+                startRow: parsePositiveWholeNumber('Start row', sheetExportForm.startRow),
+                companyNameCol: parseSpreadsheetColumnInput('Company column', sheetExportForm.companyNameCol),
+                jobTitleCol: parseSpreadsheetColumnInput('Job title column', sheetExportForm.jobTitleCol),
+                jobLinkCol: parseSpreadsheetColumnInput('Job link column', sheetExportForm.jobLinkCol),
+                jobDescriptionCol: parseSpreadsheetColumnInput(
+                  'Job description column',
+                  sheetExportForm.jobDescriptionCol
+                ),
+              }
+            : {}),
         });
         response = exportResponse;
         setExportMeta(exportResponse.export);
@@ -708,6 +744,52 @@ export default function JobsPage() {
                 </div>
               </div>
 
+              {/* Ordinary accounts have exactly one destination, so there is
+                  nothing to choose. An administrator can still write into a
+                  shared source they configured. */}
+              {isAdmin && (
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {(['mine', 'shared'] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => setExportTarget(option)}
+                      disabled={isLoading}
+                      className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                        exportTarget === option
+                          ? 'border-blue-500 bg-blue-600 text-white'
+                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {exportTarget === 'mine' ? (
+                <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
+                    <>
+                      Rows go to{' '}
+                      <a
+                        className="font-semibold underline"
+                        href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        your job sheet
+                      </a>
+                      , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
+                      Company, Job Title, Job Link and Job Description. New rows are added after the ones
+                      already there, and jobs already in the tab are skipped.
+                    </>
+                  ) : (
+                    'Rows go to your own job sheet, on today\'s tab. Open the account page if you want to see it.'
+                  )}
+                </div>
+              ) : (
+              <>
               <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
                 <label className="space-y-2">
                   <span className="text-sm font-medium text-gray-700">Google Sheet</span>
@@ -830,6 +912,8 @@ export default function JobsPage() {
                   />
                 </label>
               </div>
+              </>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-3">

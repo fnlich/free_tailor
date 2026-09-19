@@ -29,11 +29,12 @@ type UserRow = {
   sheet_id: string | null;
   sheet_url: string | null;
   sheet_tab_date: string | null;
+  sheet_tab_gid: string | null;
 };
 
 const USER_COLUMNS =
   'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
-  'last_login_at, sheet_id, sheet_url, sheet_tab_date';
+  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid';
 
 function now(): string {
   return new Date().toISOString();
@@ -73,6 +74,7 @@ function toAccount(row: UserRow): UserAccount {
     ...(row.sheet_id ? { sheetId: row.sheet_id } : {}),
     ...(row.sheet_url ? { sheetUrl: row.sheet_url } : {}),
     ...(row.sheet_tab_date ? { sheetTabDate: row.sheet_tab_date } : {}),
+    ...(row.sheet_tab_gid ? { sheetTabGid: row.sheet_tab_gid } : {}),
   };
 }
 
@@ -190,13 +192,15 @@ export function createUser(input: CreateUserInput): UserAccount {
     sheet_id: null,
     sheet_url: null,
     sheet_tab_date: null,
+    sheet_tab_gid: null,
   };
 
   getDb()
     .prepare(
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
-               @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date)`
+               @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
+               @sheet_tab_gid)`
     )
     .run(account);
 
@@ -304,10 +308,10 @@ export function recordAccountSheet(id: string, sheetId: string, sheetUrl: string
 }
 
 /** Remembers that today's tab is prepared, so the next sign-in calls nobody. */
-export function recordSheetTabDate(id: string, date: string): void {
+export function recordSheetTabDate(id: string, date: string, gid?: number): void {
   getDb()
-    .prepare('UPDATE users SET sheet_tab_date = ?, updated_at = ? WHERE id = ?')
-    .run(date, now(), id);
+    .prepare('UPDATE users SET sheet_tab_date = ?, sheet_tab_gid = ?, updated_at = ? WHERE id = ?')
+    .run(date, gid === undefined ? null : String(gid), now(), id);
 }
 
 /** Accounts from before this feature, in creation order, for the boot backfill. */
@@ -329,6 +333,19 @@ export function markSignedIn(id: string): void {
 
 export function deleteUser(id: string): boolean {
   const db = getDb();
+  // Named before the row goes, because afterwards nothing connects the file to
+  // anybody. The spreadsheet is deliberately NOT deleted - it may hold months
+  // of somebody's work, and an account removed by mistake is recoverable while
+  // a deleted Drive file is much less so. It does keep counting against the
+  // service account's quota, which is why the id is logged rather than lost.
+  const orphan = getUserById(id);
+  if (orphan?.sheetId) {
+    console.log(
+      `[sheets] ${orphan.email} is being deleted; spreadsheet ${orphan.sheetId} is now unreferenced ` +
+        'and still counts against the service account quota.'
+    );
+  }
+
   return db.transaction(() => {
     db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(id);
     return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;

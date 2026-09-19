@@ -23,6 +23,8 @@ export interface UserAccount {
    * a fact about the spreadsheet - see the column comment in sqlite.ts.
    */
   sheetTabDate?: string;
+  /** The gid of that tab, for a link that opens the right day. */
+  sheetTabGid?: string;
 }
 
 /**

@@ -5,6 +5,7 @@ import { GoogleSheetsRequestError } from '../integrations/googleSheets';
 import {
   describeAccountSheet,
   setAccountSheetVisibility,
+  SheetAccessError,
 } from '../services/sheets/accountSheet';
 
 /**
@@ -25,6 +26,12 @@ const NOT_CONFIGURED =
   '(GOOGLE_SERVICE_ACCOUNT_KEY_PATH) and enable the Sheets and Drive APIs for its project.';
 
 function fail(res: Response, error: unknown): void {
+  if (error instanceof SheetAccessError) {
+    // Carries its own status and its own sentence - the refusal to go private
+    // while the owner has no grant of their own is the one that matters.
+    res.status(error.status).json({ error: error.message });
+    return;
+  }
   if (error instanceof GoogleSheetsRequestError) {
     // Pass Google's own status through. The 403 in particular carries the
     // "enable the Drive API" sentence, which is the actual fix.

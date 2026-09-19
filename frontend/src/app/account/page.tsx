@@ -227,7 +227,11 @@ export default function AccountPage() {
                   <dt className={LABEL}>Spreadsheet</dt>
                   <dd className="mt-1 text-sm">
                     <a
-                      href={sheet.spreadsheetUrl}
+                      // Today's tab when we know its id, so the link opens the
+                      // day being worked on rather than whichever tab Google
+                      // decides to show first - which, once there are thirty
+                      // of them, is not the one anybody wants.
+                      href={sheet.todayTabUrl ?? sheet.spreadsheetUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="font-medium text-blue-600 hover:underline dark:text-blue-400"

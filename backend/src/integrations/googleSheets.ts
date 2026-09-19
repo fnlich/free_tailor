@@ -1118,13 +1118,49 @@ export const JOB_SHEET_HEADERS = [
   'Job Finder',
 ] as const;
 
+function columnOf(header: (typeof JOB_SHEET_HEADERS)[number]): number {
+  const index = JOB_SHEET_HEADERS.indexOf(header);
+  if (index < 0) throw new Error(`"${header}" is not one of the job sheet headers.`);
+  return index + 1;
+}
+
+/**
+ * Where each field lives, in 1-based spreadsheet columns.
+ *
+ * Derived from the header list rather than written out, so reordering the
+ * headers moves the columns with them. A hand-kept copy of these numbers is
+ * exactly the thing that drifts: the sheet gets a new column, the constant does
+ * not, and every export afterwards writes company names over job links.
+ */
+export const JOB_SHEET_COLUMNS = {
+  no: columnOf('NO(DATE)'),
+  company: columnOf('Company'),
+  jobTitle: columnOf('Job Title'),
+  jobLink: columnOf('Job Link'),
+  jobDescription: columnOf('Job Description'),
+  rate: columnOf('Rate'),
+  note: columnOf('note'),
+  jobFinder: columnOf('Job Finder'),
+} as const;
+
+/** Row 1 is the header, so data starts at 2. */
+export const JOB_SHEET_FIRST_DATA_ROW = 2;
+
 export type CreatedSpreadsheet = {
   spreadsheetId: string;
   spreadsheetUrl: string;
+  /** The gid of the tab it was created with, ready to be formatted. */
+  firstTabGid: number;
 };
 
 /**
- * Creates an empty spreadsheet owned by the service account.
+ * Creates a spreadsheet whose FIRST tab is already the one we want.
+ *
+ * Naming the first sheet in the create call, rather than adding a tab
+ * afterwards, is what keeps Google's default `Sheet1` out of the file. A
+ * spreadsheet must always contain at least one sheet, so `Sheet1` cannot simply
+ * be deleted after the fact without first adding a replacement - and the
+ * in-between state is visible to anyone who opens the link.
  *
  * Worth being clear about the ownership, because it surprises people: a file
  * created this way belongs to the service account, not to any person, so it
@@ -1132,72 +1168,28 @@ export type CreatedSpreadsheet = {
  * below is what makes it reachable, and skipping that step leaves a sheet that
  * exists and that no human can open.
  */
-export async function createSpreadsheet(title: string): Promise<CreatedSpreadsheet> {
-  const created = await googleSheetsFetch<{ spreadsheetId?: string; spreadsheetUrl?: string }>(
-    '/spreadsheets',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ properties: { title } }),
-    }
-  );
-
-  if (!created.spreadsheetId) {
-    throw new GoogleSheetsRequestError(500, 'Google did not return an id for the new spreadsheet.');
-  }
-
-  return {
-    spreadsheetId: created.spreadsheetId,
-    spreadsheetUrl:
-      created.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${created.spreadsheetId}/edit`,
-  };
-}
-
-/** Every tab title in a spreadsheet, so a caller can tell new from existing. */
-export async function listSheetTabTitles(spreadsheetId: string): Promise<string[]> {
-  const metadata = await googleSheetsFetch<SpreadsheetMetadataResponse>(
-    `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(title))`
-  );
-  return (metadata.sheets ?? [])
-    .map((sheet) => sheet.properties?.title)
-    .filter((title): title is string => typeof title === 'string');
-}
-
-const HEADER_BACKGROUND = { red: 0, green: 0, blue: 0 };
-const HEADER_FOREGROUND = { red: 1, green: 1, blue: 1 };
-
-/**
- * Adds a tab and lays out its header row, in ONE batch.
- *
- * One request rather than four because the steps are not independent: the
- * formatting, the frozen row and the filter all address the sheet by the id
- * that `addSheet` mints, and a batch is the only way to use that id in the same
- * call that creates it. Sending them separately also leaves a visible
- * half-built tab if the second call fails.
- *
- * Returns the new sheet id, or null when a tab of that name already existed -
- * which is the ordinary case on every sign-in after the first of a day.
- */
-export async function addSheetTabWithHeaders(
-  spreadsheetId: string,
+export async function createSpreadsheet(
   title: string,
-  headers: readonly string[] = JOB_SHEET_HEADERS
-): Promise<number | null> {
-  const existing = await listSheetTabTitles(spreadsheetId);
-  if (existing.includes(title)) return null;
-
-  const added = await googleSheetsFetch<{
-    replies?: Array<{ addSheet?: { properties?: { sheetId?: number } } }>;
-  }>(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+  firstTabTitle: string,
+  headerCount: number = JOB_SHEET_HEADERS.length
+): Promise<CreatedSpreadsheet> {
+  const created = await googleSheetsFetch<{
+    spreadsheetId?: string;
+    spreadsheetUrl?: string;
+    sheets?: Array<{ properties?: { sheetId?: number } }>;
+  }>('/spreadsheets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      requests: [
+      properties: { title },
+      sheets: [
         {
-          addSheet: {
-            properties: {
-              title,
-              gridProperties: { rowCount: 1000, columnCount: Math.max(headers.length, 12), frozenRowCount: 1 },
+          properties: {
+            title: firstTabTitle,
+            gridProperties: {
+              rowCount: NEW_TAB_ROW_COUNT,
+              columnCount: Math.max(headerCount, NEW_TAB_MIN_COLUMNS),
+              frozenRowCount: 1,
             },
           },
         },
@@ -1205,10 +1197,59 @@ export async function addSheetTabWithHeaders(
     }),
   });
 
-  const sheetId = added.replies?.[0]?.addSheet?.properties?.sheetId;
-  if (typeof sheetId !== 'number') {
-    throw new GoogleSheetsRequestError(500, `Google did not return an id for the new "${title}" tab.`);
+  if (!created.spreadsheetId) {
+    throw new GoogleSheetsRequestError(500, 'Google did not return an id for the new spreadsheet.');
   }
+
+  const firstTabGid = created.sheets?.[0]?.properties?.sheetId;
+  if (typeof firstTabGid !== 'number') {
+    throw new GoogleSheetsRequestError(500, 'Google did not return an id for the new spreadsheet\'s first tab.');
+  }
+
+  return {
+    spreadsheetId: created.spreadsheetId,
+    spreadsheetUrl:
+      created.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${created.spreadsheetId}/edit`,
+    firstTabGid,
+  };
+}
+
+export type SheetTab = { title: string; gid: number };
+
+/** Every tab with its gid, so a caller can tell new from existing and deep-link. */
+export async function listSheetTabs(spreadsheetId: string): Promise<SheetTab[]> {
+  const metadata = await googleSheetsFetch<SpreadsheetMetadataResponse>(
+    `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(title,sheetId))`
+  );
+  return (metadata.sheets ?? [])
+    .map((sheet) => ({ title: sheet.properties?.title, gid: sheet.properties?.sheetId }))
+    .filter((tab): tab is SheetTab => typeof tab.title === 'string' && typeof tab.gid === 'number');
+}
+
+const HEADER_BACKGROUND = { red: 0, green: 0, blue: 0 };
+const HEADER_FOREGROUND = { red: 1, green: 1, blue: 1 };
+const NEW_TAB_ROW_COUNT = 1000;
+const NEW_TAB_MIN_COLUMNS = 12;
+/**
+ * Auto-fit sizes a column to its header text, and "Job Description" holds
+ * paragraphs. Left to autofit it would be the narrowest column on the sheet
+ * carrying the widest content, so it is given a width outright.
+ */
+const JOB_DESCRIPTION_WIDTH_PIXELS = 420;
+
+/**
+ * Lays out the header row on a tab that already exists.
+ *
+ * Separate from creating the tab because the two happen in different orders in
+ * the two cases that matter: a brand new spreadsheet arrives with its first tab
+ * already made, while a new day adds one. Both need the identical header.
+ */
+export async function formatJobSheetTab(
+  spreadsheetId: string,
+  gid: number,
+  headers: readonly string[] = JOB_SHEET_HEADERS
+): Promise<void> {
+  const descriptionIndex = headers.indexOf('Job Description');
 
   await googleSheetsFetch(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
     method: 'POST',
@@ -1230,7 +1271,7 @@ export async function addSheetTabWithHeaders(
               },
             ],
             fields: 'userEnteredValue,userEnteredFormat',
-            start: { sheetId, rowIndex: 0, columnIndex: 0 },
+            start: { sheetId: gid, rowIndex: 0, columnIndex: 0 },
           },
         },
         {
@@ -1238,20 +1279,84 @@ export async function addSheetTabWithHeaders(
           // so a filter does not claim the empty half of the grid.
           setBasicFilter: {
             filter: {
-              range: { sheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: headers.length },
+              range: { sheetId: gid, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: headers.length },
             },
           },
         },
         {
           autoResizeDimensions: {
-            dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: headers.length },
+            dimensions: { sheetId: gid, dimension: 'COLUMNS', startIndex: 0, endIndex: headers.length },
+          },
+        },
+        // After the autofit, so it is not undone by it.
+        ...(descriptionIndex >= 0
+          ? [
+              {
+                updateDimensionProperties: {
+                  range: {
+                    sheetId: gid,
+                    dimension: 'COLUMNS',
+                    startIndex: descriptionIndex,
+                    endIndex: descriptionIndex + 1,
+                  },
+                  properties: { pixelSize: JOB_DESCRIPTION_WIDTH_PIXELS },
+                  fields: 'pixelSize',
+                },
+              },
+            ]
+          : []),
+      ],
+    }),
+  });
+}
+
+export type EnsuredTab = { gid: number; created: boolean };
+
+/**
+ * Adds a dated tab and lays out its header, or reports the one already there.
+ *
+ * `created: false` is the ordinary answer on every sign-in after the first of a
+ * day, and is not a failure - it is the skip the whole feature is built around.
+ */
+export async function addSheetTabWithHeaders(
+  spreadsheetId: string,
+  title: string,
+  headers: readonly string[] = JOB_SHEET_HEADERS
+): Promise<EnsuredTab> {
+  const existing = await listSheetTabs(spreadsheetId);
+  const already = existing.find((tab) => tab.title === title);
+  if (already) return { gid: already.gid, created: false };
+
+  const added = await googleSheetsFetch<{
+    replies?: Array<{ addSheet?: { properties?: { sheetId?: number } } }>;
+  }>(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: [
+        {
+          addSheet: {
+            properties: {
+              title,
+              gridProperties: {
+                rowCount: NEW_TAB_ROW_COUNT,
+                columnCount: Math.max(headers.length, NEW_TAB_MIN_COLUMNS),
+                frozenRowCount: 1,
+              },
+            },
           },
         },
       ],
     }),
   });
 
-  return sheetId;
+  const gid = added.replies?.[0]?.addSheet?.properties?.sheetId;
+  if (typeof gid !== 'number') {
+    throw new GoogleSheetsRequestError(500, `Google did not return an id for the new "${title}" tab.`);
+  }
+
+  await formatJobSheetTab(spreadsheetId, gid, headers);
+  return { gid, created: true };
 }
 
 /* ------------------------------------------------------------- permissions -- */
@@ -1276,13 +1381,31 @@ export async function shareSpreadsheetWithEmail(spreadsheetId: string, email: st
   );
 }
 
-type DrivePermission = { id?: string; type?: string; role?: string };
+type DrivePermission = { id?: string; type?: string; role?: string; emailAddress?: string };
 
 async function listPermissions(spreadsheetId: string): Promise<DrivePermission[]> {
   const listed = await googleDriveFetch<{ permissions?: DrivePermission[] }>(
-    `/files/${encodeURIComponent(spreadsheetId)}/permissions?fields=permissions(id,type,role)&supportsAllDrives=true`
+    `/files/${encodeURIComponent(spreadsheetId)}/permissions` +
+      '?fields=permissions(id,type,role,emailAddress)&supportsAllDrives=true'
   );
   return listed.permissions ?? [];
+}
+
+/**
+ * Whether this person holds a grant of their own on the file.
+ *
+ * Asked before withdrawing link sharing. The two together are the only ways in:
+ * take the link away from somebody who never got a personal grant and they are
+ * locked out of their own spreadsheet, with the service account the only thing
+ * left that can open it.
+ */
+export async function hasPersonalGrant(spreadsheetId: string, email: string): Promise<boolean> {
+  const wanted = email.trim().toLowerCase();
+  const permissions = await listPermissions(spreadsheetId);
+  return permissions.some(
+    (permission) =>
+      permission.type === 'user' && (permission.emailAddress ?? '').trim().toLowerCase() === wanted
+  );
 }
 
 /**

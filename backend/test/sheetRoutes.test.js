@@ -14,26 +14,36 @@ const { loadFresh, useTempStorage } = require('./helpers');
 
 function makeClient() {
   const visibility = new Map();
+  const shares = new Map();
   let minted = 0;
+  let nextGid = 100;
   return {
     visibility,
+    shares,
     client: {
       async isConfigured() {
         return true;
       },
-      async createSpreadsheet() {
+      async createSpreadsheet(title, firstTabTitle) {
         minted += 1;
         const spreadsheetId = `sheet-${minted}`;
         visibility.set(spreadsheetId, 'private');
         return {
           spreadsheetId,
           spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+          firstTabGid: (nextGid += 1),
         };
       },
+      async formatJobSheetTab() {},
       async addSheetTabWithHeaders() {
-        return 1;
+        return { gid: (nextGid += 1), created: true };
       },
-      async shareSpreadsheetWithEmail() {},
+      async shareSpreadsheetWithEmail(spreadsheetId, email) {
+        shares.set(spreadsheetId, email);
+      },
+      async hasPersonalGrant(spreadsheetId, email) {
+        return shares.get(spreadsheetId) === email;
+      },
       async getSpreadsheetVisibility(id) {
         return visibility.get(id) ?? 'private';
       },

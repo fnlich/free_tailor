@@ -14,6 +14,7 @@ import {
   updateUser,
 } from '../database/userRepository';
 import { requireAdmin } from '../middleware/auth';
+import { ensureAccountSheet } from '../services/sheets/accountSheet';
 import { getLedger, grantCredits, setBalance } from '../services/credits';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 
@@ -109,6 +110,14 @@ router.post('/', (req: Request, res: Response) => {
   if (Number.isFinite(opening) && opening > 0) {
     grantCredits(account.id, Math.floor(opening), req.user!.id, 'Opening balance set when the account was added.');
   }
+
+  // Started, not awaited, exactly as on the sign-in path: an account made here
+  // would otherwise have no spreadsheet until its owner first signed in, or
+  // until the next restart ran the backfill - which on a long-lived server
+  // could be weeks.
+  void ensureAccountSheet(account).catch((error) => {
+    console.warn(`[sheets] Could not prepare the sheet for ${account.email}.`, error);
+  });
 
   res.status(201).json({ account: describe(getUserById(account.id) ?? patched ?? account) });
 });

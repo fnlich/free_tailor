@@ -179,6 +179,21 @@ Two things this needs from Google, and both are easy to miss:
   quota, not against any person's, so a large installation should point the key
   at a shared drive.
 
+**The job pages write into it.** Scraping jobs and filtering them used to make
+you supply a spreadsheet id, a tab name and four column letters. They now default
+to your own sheet, today's tab, and the layout above - `Company`, `Job Title`,
+`Job Link` and `Job Description` for an export; the job link read back, with the
+filter's verdict in `Rate` and its reason in `note`. Rows are appended after
+what is already there, and jobs already in the tab are skipped.
+
+**Who may point them where.** A spreadsheet id supplied by a request is checked
+rather than trusted: an ordinary account may address only its own sheet, and an
+administrator may also address the shared sources they configured on the admin
+page. Anything else is a 404. This matters more than it looks - the service
+account *owns* every account's spreadsheet, so a route that took an id on trust
+would read and overwrite anybody's for anyone who knew it, and a link-shared
+sheet hands that id out in its URL.
+
 `SHEET_TIMEZONE` decides which day a tab belongs to. A server running in UTC
 rolls the day over at midnight UTC, which for a user in New York is seven in the
 evening - so an evening's work would land on the next day's tab. Set it to the

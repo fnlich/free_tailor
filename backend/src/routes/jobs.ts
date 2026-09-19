@@ -14,6 +14,13 @@ import {
   resolveLinkedInPostedSince,
   searchLinkedInRemoteJobs,
 } from '../services/linkedinJobs';
+import { JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW } from '../integrations/googleSheets';
+import { SheetAccessError } from '../services/sheets/accountSheet';
+import {
+  resolveAppendRow,
+  resolveColumn,
+  resolveJobSheetTarget,
+} from '../services/sheets/jobSheetTarget';
 import { resolvePromptExecutionConfig } from '../services/ai';
 import {
   evaluateJobFilterAnalysis,
@@ -539,7 +546,11 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to run scraper';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /unknown scraper provider/i.test(message)
           ? 400
@@ -557,16 +568,20 @@ router.get('/scrapers/providers', (_req: Request, res: Response) => {
 router.post('/scrapers/export', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // FIRST, before any other validation. Defaults to the caller's own sheet
+    // and today's tab, and checks the id when one is supplied - the service
+    // account can open every account's spreadsheet, so an id taken on trust
+    // here would read and overwrite anybody's. Running it ahead of everything
+    // else means a request for somebody else's sheet is refused on its own
+    // terms rather than incidentally failing some other check first.
+    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
     const source = requireSupportedScraperSource(body.source);
     const providerId = typeof body.provider === 'string' ? body.provider : undefined;
     const filters = applySourceSpecificScraperDefaults(source, normalizeScraperFilters(body, source, providerId));
-    const sheetId = body.sheetId;
-    const tabName = body.tabName;
-    const startRow = typeof body.startRow === 'number' ? body.startRow : Number(body.startRow);
-    const companyNameCol = body.companyNameCol;
-    const jobTitleCol = body.jobTitleCol;
-    const jobLinkCol = body.jobLinkCol;
-    const jobDescriptionCol = body.jobDescriptionCol;
+    const companyNameCol = resolveColumn(body.companyNameCol, JOB_SHEET_COLUMNS.company);
+    const jobTitleCol = resolveColumn(body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
+    const jobLinkCol = resolveColumn(body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    const jobDescriptionCol = resolveColumn(body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
     const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
     const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
       fetchGoogleSheetsColumnValues({
@@ -589,6 +604,15 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
     if (!sheetMetadata.tabs.some((tab) => tab.title === String(tabName ?? '').trim())) {
       throw new GoogleSheetsRequestError(400, `Tab "${String(tabName ?? '')}" was not found in the spreadsheet.`);
     }
+
+    // Appends. Starting at row 2 by default would overwrite the morning's rows
+    // on the afternoon's run; the columns are already in hand for the
+    // duplicate check, so their length is the honest first free row.
+    const startRow = resolveAppendRow(body.startRow, [
+      existingCompanyColumn,
+      existingJobTitleColumn,
+      existingJobLinkColumn,
+    ]);
 
     const seenJobs = buildSeenExportRowKeys(
       existingCompanyColumn.values,
@@ -709,7 +733,11 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export scraper jobs';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /unknown scraper provider/i.test(message)
           ? 400
@@ -748,8 +776,10 @@ router.get('/linkedin', async (req: Request, res: Response) => {
 router.post('/linkedin/search-and-export', async (req: Request, res: Response) => {
   try {
     const body = req.body ?? {};
-    const keywords = typeof body.keywords === 'string' ? body.keywords : '';
+    // FIRST, for the reason spelled out on the scraper export above.
+    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
 
+    const keywords = typeof body.keywords === 'string' ? body.keywords : '';
     if (!keywords.trim()) {
       res.status(400).json({ error: 'Keywords are required' });
       return;
@@ -757,13 +787,10 @@ router.post('/linkedin/search-and-export', async (req: Request, res: Response) =
 
     const postedSince = resolveLinkedInPostedSince(body.postedSince);
     const limit = normalizeLinkedInLimit(body.limit);
-    const sheetId = body.sheetId;
-    const tabName = body.tabName;
-    const startRow = typeof body.startRow === 'number' ? body.startRow : Number(body.startRow);
-    const companyNameCol = body.companyNameCol;
-    const jobTitleCol = body.jobTitleCol;
-    const jobLinkCol = body.jobLinkCol;
-    const jobDescriptionCol = body.jobDescriptionCol;
+    const companyNameCol = resolveColumn(body.companyNameCol, JOB_SHEET_COLUMNS.company);
+    const jobTitleCol = resolveColumn(body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
+    const jobLinkCol = resolveColumn(body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    const jobDescriptionCol = resolveColumn(body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
     const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
     const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
       fetchGoogleSheetsColumnValues({
@@ -786,6 +813,15 @@ router.post('/linkedin/search-and-export', async (req: Request, res: Response) =
     if (!sheetMetadata.tabs.some((tab) => tab.title === String(tabName ?? '').trim())) {
       throw new GoogleSheetsRequestError(400, `Tab "${String(tabName ?? '')}" was not found in the spreadsheet.`);
     }
+
+    // Appends. Starting at row 2 by default would overwrite the morning's rows
+    // on the afternoon's run; the columns are already in hand for the
+    // duplicate check, so their length is the honest first free row.
+    const startRow = resolveAppendRow(body.startRow, [
+      existingCompanyColumn,
+      existingJobTitleColumn,
+      existingJobLinkColumn,
+    ]);
 
     const seenJobs = buildSeenExportRowKeys(
       existingCompanyColumn.values,
@@ -898,7 +934,11 @@ router.post('/linkedin/search-and-export', async (req: Request, res: Response) =
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export LinkedIn jobs';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /rate limited/i.test(message)
           ? 429
@@ -910,16 +950,38 @@ router.post('/linkedin/search-and-export', async (req: Request, res: Response) =
 router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   try {
     const body = req.body ?? {};
-    const sheetId = requireNonEmptyString('sheetId', body.sheetId);
-    const tabName = requireNonEmptyString('tabName', body.tabName);
-    const startRow = toPositiveInteger('startRow', body.startRow);
-    const endRow = toPositiveInteger('endRow', body.endRow);
-    const jobLinkCol = toPositiveInteger('jobLinkCol', body.jobLinkCol);
-    const resultCol = toPositiveInteger('resultCol', body.resultCol);
-    const reasonCol = toPositiveInteger('reasonCol', body.reasonCol);
+    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
+    const jobLinkCol = resolveColumn(body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    // The job sheet has no column of its own for a verdict, so the two spare
+    // ones carry it: the decision in `Rate`, the explanation in `note`.
+    const resultCol = resolveColumn(body.resultCol, JOB_SHEET_COLUMNS.rate);
+    const reasonCol = resolveColumn(body.reasonCol, JOB_SHEET_COLUMNS.note);
+    const startRow =
+      body.startRow === undefined ? JOB_SHEET_FIRST_DATA_ROW : toPositiveInteger('startRow', body.startRow);
 
-    if (startRow > endRow) {
-      throw new GoogleSheetsRequestError(400, 'startRow must be less than or equal to endRow.');
+    // Without an explicit end, run to the last row that actually has a job
+    // link. Asking the caller for it made sense when they had picked the sheet;
+    // now that it is their own, "all of today's jobs" is the only sane default.
+    const endRow =
+      body.endRow === undefined
+        ? (await fetchGoogleSheetsColumnValues({ sheetId, tabName, col: jobLinkCol })).values.length
+        : toPositiveInteger('endRow', body.endRow);
+
+    if (endRow < startRow) {
+      // Not an error: an empty tab simply has nothing to filter.
+      res.json({
+        spreadsheetId: sheetId,
+        selectedTab: tabName,
+        startRow,
+        endRow,
+        processedRows: 0,
+        skippedRows: 0,
+        scrapedRows: 0,
+        errorRows: 0,
+        rowErrors: [],
+        message: 'There are no job rows in that tab yet.',
+      });
+      return;
     }
 
     const distinctColumns = [
@@ -1045,7 +1107,11 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to filter Google Sheet jobs';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /rate limited/i.test(message)
           ? 429

@@ -1319,6 +1319,24 @@ export const importApi = {
     }),
 };
 
+/**
+ * Every sheet field is optional now.
+ *
+ * Leaving them out is what asks for the account's own job sheet, today's tab
+ * and the fixed column layout - which is what the ordinary flow sends. They
+ * remain for an administrator writing into a shared source they configured,
+ * where none of those defaults apply.
+ */
+export type JobSheetDestination = {
+  sheetId?: string;
+  tabName?: string;
+  startRow?: number;
+  companyNameCol?: number;
+  jobTitleCol?: number;
+  jobLinkCol?: number;
+  jobDescriptionCol?: number;
+};
+
 export const jobsApi = {
   getScraperProviders: () => apiFetch<ScraperSourceProviderCatalog[]>('/jobs/scrapers/providers'),
 
@@ -1335,17 +1353,10 @@ export const jobsApi = {
     return apiFetch<LinkedInJobSearchResponse>(`/jobs/linkedin?${params.toString()}`);
   },
 
-  searchLinkedInAndExport: (data: {
+  searchLinkedInAndExport: (data: JobSheetDestination & {
     keywords: string;
     postedSince: LinkedInPostedSince;
     limit?: number;
-    sheetId: string;
-    tabName: string;
-    startRow: number;
-    companyNameCol: number;
-    jobTitleCol: number;
-    jobLinkCol: number;
-    jobDescriptionCol: number;
   }) =>
     apiFetch<LinkedInJobSearchAndExportResponse>('/jobs/linkedin/search-and-export', {
       method: 'POST',
@@ -1358,16 +1369,9 @@ export const jobsApi = {
       body: JSON.stringify(data),
     }),
 
-  exportScraperToGoogleSheet: (data: ScraperRunFilters & {
+  exportScraperToGoogleSheet: (data: ScraperRunFilters & JobSheetDestination & {
     source: ScraperSource;
     provider?: string;
-    sheetId: string;
-    tabName: string;
-    startRow: number;
-    companyNameCol: number;
-    jobTitleCol: number;
-    jobLinkCol: number;
-    jobDescriptionCol: number;
   }) =>
     apiFetch<ScraperExportResponse>('/jobs/scrapers/export', {
       method: 'POST',
@@ -1375,13 +1379,14 @@ export const jobsApi = {
     }),
 
   filterGoogleSheetJobs: (data: {
-    sheetId: string;
-    tabName: string;
-    startRow: number;
-    endRow: number;
-    jobLinkCol: number;
-    resultCol: number;
-    reasonCol: number;
+    sheetId?: string;
+    tabName?: string;
+    startRow?: number;
+    /** Left out, the filter runs to the last row that has a job link. */
+    endRow?: number;
+    jobLinkCol?: number;
+    resultCol?: number;
+    reasonCol?: number;
   }) =>
     apiFetch<GoogleSheetJobFilterResponse>('/jobs/filter-google-sheet', {
       method: 'POST',

@@ -21,6 +21,8 @@ export type AccountSheet = {
   visibility?: SheetVisibility;
   /** Today's tab, whether or not this call is what created it. */
   todayTab: string;
+  /** A link that opens today's tab rather than whichever Google opens first. */
+  todayTabUrl?: string;
 };
 
 export const sheetApi = {

@@ -1,11 +1,14 @@
 import {
   addSheetTabWithHeaders,
   createSpreadsheet,
+  formatJobSheetTab,
   getSpreadsheetVisibility,
+  hasPersonalGrant,
   isGoogleSheetsConfigured,
   setSpreadsheetVisibility,
   shareSpreadsheetWithEmail,
   type CreatedSpreadsheet,
+  type EnsuredTab,
   type SheetVisibility,
 } from '../../integrations/googleSheets';
 import {
@@ -46,18 +49,22 @@ export type AccountSheetState = {
  */
 export type SheetsClient = {
   isConfigured(): Promise<boolean>;
-  createSpreadsheet(title: string): Promise<CreatedSpreadsheet>;
-  addSheetTabWithHeaders(spreadsheetId: string, title: string): Promise<number | null>;
+  createSpreadsheet(title: string, firstTabTitle: string): Promise<CreatedSpreadsheet>;
+  formatJobSheetTab(spreadsheetId: string, gid: number): Promise<void>;
+  addSheetTabWithHeaders(spreadsheetId: string, title: string): Promise<EnsuredTab>;
   shareSpreadsheetWithEmail(spreadsheetId: string, email: string): Promise<void>;
+  hasPersonalGrant(spreadsheetId: string, email: string): Promise<boolean>;
   getSpreadsheetVisibility(spreadsheetId: string): Promise<SheetVisibility>;
   setSpreadsheetVisibility(spreadsheetId: string, visibility: SheetVisibility): Promise<SheetVisibility>;
 };
 
 const realClient: SheetsClient = {
   isConfigured: isGoogleSheetsConfigured,
-  createSpreadsheet,
+  createSpreadsheet: (title, firstTabTitle) => createSpreadsheet(title, firstTabTitle),
+  formatJobSheetTab: (spreadsheetId, gid) => formatJobSheetTab(spreadsheetId, gid),
   addSheetTabWithHeaders: (spreadsheetId, title) => addSheetTabWithHeaders(spreadsheetId, title),
   shareSpreadsheetWithEmail,
+  hasPersonalGrant,
   getSpreadsheetVisibility,
   setSpreadsheetVisibility,
 };
@@ -135,24 +142,29 @@ async function ensure(account: UserAccount): Promise<AccountSheetState> {
   const current = getUserById(account.id) ?? account;
   let spreadsheetId = current.sheetId ?? '';
   let spreadsheetUrl = current.sheetUrl ?? '';
+  let todayGid: number | undefined;
 
   if (!spreadsheetId) {
-    const created = await client.createSpreadsheet(spreadsheetTitleFor(current));
+    // The spreadsheet arrives with today's tab already on it, so there is never
+    // a stray `Sheet1` and never a moment where the file has the wrong tab.
+    const created = await client.createSpreadsheet(spreadsheetTitleFor(current), todayTab);
 
     if (recordAccountSheet(current.id, created.spreadsheetId, created.spreadsheetUrl)) {
       spreadsheetId = created.spreadsheetId;
       spreadsheetUrl = created.spreadsheetUrl;
+      todayGid = created.firstTabGid;
 
-      // After the claim, never before it: if sharing fails we still want the
-      // spreadsheet on the row, because the alternative is creating a fresh one
-      // on every attempt and leaving a trail of unreachable files in Drive.
+      await client.formatJobSheetTab(spreadsheetId, created.firstTabGid);
+      recordSheetTabDate(current.id, todayTab, created.firstTabGid);
+
+      // Public ONLY here, on the sheet's first day. Re-asserting it on every
+      // ensure would quietly undo the private toggle on the next sign-in,
+      // which is the opposite of what pressing it meant.
       try {
-        await client.shareSpreadsheetWithEmail(spreadsheetId, current.email);
         await client.setSpreadsheetVisibility(spreadsheetId, 'public');
       } catch (error) {
         console.warn(
-          `[sheets] Created ${spreadsheetId} for ${current.email} but could not finish sharing it. ` +
-            'The owner can fix the sharing from the account page.',
+          `[sheets] Created ${spreadsheetId} for ${current.email} but could not make it link-shared.`,
           error
         );
       }
@@ -173,15 +185,54 @@ async function ensure(account: UserAccount): Promise<AccountSheetState> {
     return { configured: true, todayTab };
   }
 
-  const known = getUserById(current.id)?.sheetTabDate;
-  if (known !== todayTab) {
-    // Returns null when the tab is already there, which is not a failure - it is
-    // the ordinary answer for an account whose row simply had not caught up.
-    await client.addSheetTabWithHeaders(spreadsheetId, todayTab);
-    recordSheetTabDate(current.id, todayTab);
+  // Sharing is repaired here, not only at creation. The first run of a new
+  // install is exactly when it fails - the Drive API is usually not enabled yet
+  // - and a grant that was attempted once and lost is a person who cannot open
+  // their own spreadsheet, with nothing in the product that would ever retry.
+  await ensureOwnerAccess(spreadsheetId, current.email);
+
+  const stored = getUserById(current.id);
+  if (stored?.sheetTabDate !== todayTab) {
+    // `created: false` means the tab was already in the spreadsheet while our
+    // row had not caught up - the ordinary answer, not a failure.
+    const tab = await client.addSheetTabWithHeaders(spreadsheetId, todayTab);
+    todayGid = tab.gid;
+    recordSheetTabDate(current.id, todayTab, tab.gid);
+  } else if (todayGid === undefined && stored?.sheetTabGid) {
+    todayGid = Number(stored.sheetTabGid);
   }
 
-  return { configured: true, spreadsheetId, spreadsheetUrl, todayTab };
+  return {
+    configured: true,
+    spreadsheetId,
+    spreadsheetUrl,
+    todayTab,
+    ...(Number.isFinite(todayGid)
+      ? { todayTabUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${todayGid}` }
+      : {}),
+  };
+}
+
+/**
+ * Makes sure the owner holds a grant of their own, repairing it if not.
+ *
+ * Never fatal. A failure here leaves the sheet exactly as it was, and the
+ * private toggle refuses to take the link away until this has succeeded - so
+ * the worst case is a sheet that stays public, not one nobody can open.
+ */
+async function ensureOwnerAccess(spreadsheetId: string, email: string): Promise<boolean> {
+  try {
+    if (await client.hasPersonalGrant(spreadsheetId, email)) return true;
+    await client.shareSpreadsheetWithEmail(spreadsheetId, email);
+    return true;
+  } catch (error) {
+    console.warn(
+      `[sheets] Could not give ${email} their own access to ${spreadsheetId}. ` +
+        'Sharing a file needs the Drive API enabled for the service account\'s project.',
+      error
+    );
+    return false;
+  }
 }
 
 /** Allocation plus the current sharing state, which is what the UI needs. */
@@ -193,6 +244,16 @@ export async function describeAccountSheet(
   return { ...state, visibility: await client.getSpreadsheetVisibility(state.spreadsheetId) };
 }
 
+export class SheetAccessError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 409) {
+    super(message);
+    this.name = 'SheetAccessError';
+    this.status = status;
+  }
+}
+
 /** Flips link sharing, and reports what Drive says afterwards rather than what was asked for. */
 export async function setAccountSheetVisibility(
   account: UserAccount,
@@ -200,9 +261,83 @@ export async function setAccountSheetVisibility(
 ): Promise<SheetVisibility> {
   const state = await ensureAccountSheet(account);
   if (!state.spreadsheetId) {
-    throw new Error('This account has no spreadsheet yet. Try again in a moment.');
+    throw new SheetAccessError('This account has no spreadsheet yet. Try again in a moment.', 503);
   }
+
+  // Refused rather than attempted. Going private withdraws the link, so if the
+  // personal grant is missing this is the request that locks somebody out of
+  // their own spreadsheet - and the UI has no way back from that.
+  if (visibility === 'private' && !(await ensureOwnerAccess(state.spreadsheetId, account.email))) {
+    throw new SheetAccessError(
+      'This sheet cannot be made private yet: your account does not have its own access to it, ' +
+        'so withdrawing the link would lock you out. This usually means the Drive API is not ' +
+        "enabled for the server's Google project."
+    );
+  }
+
   return client.setSpreadsheetVisibility(state.spreadsheetId, visibility);
+}
+
+/**
+ * Which spreadsheet this person is allowed to point a job route at.
+ *
+ * The guard exists because the service account now OWNS every account's
+ * spreadsheet. Before that it could only reach sheets an administrator had
+ * deliberately shared with it, so a route taking an id on trust was harmless;
+ * now the same route would read - and write - anybody's sheet for anybody who
+ * knows the id. Sheets are public by default, so the id travels in a URL people
+ * pass around, and the private toggle does not help: these routes reach Google
+ * as the service account rather than as the person.
+ *
+ * A non-admin may address exactly one spreadsheet: their own. An admin may also
+ * address the shared sources they configured. Anything else is NOT FOUND rather
+ * than forbidden, because the difference between those two answers confirms
+ * that a given spreadsheet exists.
+ */
+export async function resolveAddressableSheet(
+  account: UserAccount,
+  requested: unknown,
+  allowedForAdmins: readonly string[] = [],
+  known?: AccountSheetState
+): Promise<string> {
+  const state = known ?? (await ensureAccountSheet(account));
+  const own = state.spreadsheetId ?? '';
+  const asked = typeof requested === 'string' ? requested.trim() : '';
+
+  // The common case, and the one the UI now takes: say nothing, get your own.
+  if (!asked) {
+    if (!own) {
+      throw new SheetAccessError(
+        'Your job sheet is not ready yet. Open the account page to finish setting it up.',
+        503
+      );
+    }
+    return own;
+  }
+
+  if (asked === own) return own;
+  if (account.role === 'admin' && allowedForAdmins.some((id) => id.trim() === asked)) return asked;
+
+  throw new SheetAccessError('That spreadsheet was not found.', 404);
+}
+
+/** The tab a job route writes to when the caller names none: today's. */
+export async function resolveAddressableTab(
+  account: UserAccount,
+  spreadsheetId: string,
+  requested: unknown,
+  known?: AccountSheetState
+): Promise<string> {
+  const asked = typeof requested === 'string' ? requested.trim() : '';
+  if (asked) return asked;
+
+  const state = known ?? (await ensureAccountSheet(account));
+  // Only meaningful for the account's own sheet; an admin naming a shared
+  // source has to name its tab too, since we do not manage its layout.
+  if (spreadsheetId !== state.spreadsheetId) {
+    throw new SheetAccessError('A tab name is required for this spreadsheet.', 400);
+  }
+  return state.todayTab;
 }
 
 /**
