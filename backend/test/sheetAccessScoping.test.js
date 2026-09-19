@@ -78,6 +78,7 @@ async function serve(sharedSources = []) {
   const { attachUser } = loadFresh('../dist/middleware/auth');
   const importRoutes = loadFresh('../dist/routes/import');
   const jobRoutes = loadFresh('../dist/routes/jobs');
+  const bidRoutes = loadFresh('../dist/routes/bidAssistant');
 
   // First in is the admin; the other two are ordinary accounts.
   const admin = users.createUser({ email: 'admin@example.com' });
@@ -89,6 +90,7 @@ async function serve(sharedSources = []) {
   app.use(attachUser);
   app.use('/api/import', importRoutes.default);
   app.use('/api/jobs', jobRoutes.default);
+  app.use('/api/bid-assistant', bidRoutes.default ?? bidRoutes);
   const server = app.listen(0);
   const port = server.address().port;
 
@@ -213,22 +215,73 @@ test('an admin may address a configured shared source, an ordinary user may not'
   }
 });
 
-test('naming no sheet at all is allowed, and means your own', async () => {
+test('naming no sheet at all resolves to YOUR sheet, not just to some sheet', async () => {
   const server = await serve();
   try {
+    // Every account has one, so "it returned a sheet" proves nothing on its
+    // own - an earlier version of this test asserted only notEqual(404), which
+    // a guard handing back the FIRST account's sheet would have passed.
     const hers = await server.sheetIdFor(server.alice);
-    const response = await server.post(server.aliceToken, '/api/import', { tabName: 'Sheet1' });
+    const his = await server.sheetIdFor(server.bob);
+    const admins = await server.sheetIdFor(server.admin);
+    assert.equal(new Set([hers, his, admins]).size, 3);
 
-    // Past the guard: it resolved to her sheet and went on to Google, which
-    // this test does not stand up. A 404, or a "not found" in the body, would
-    // mean the guard rejected her instead.
+    // Asked through the service, where the answer is inspectable rather than
+    // hidden behind a Google call this test does not stand up.
+    const resolved = await server.sheets.resolveAddressableSheet(
+      server.users.getUserById(server.alice.id),
+      undefined
+    );
+    assert.equal(resolved, hers);
+    assert.notEqual(resolved, his);
+    assert.notEqual(resolved, admins);
+
+    // And over HTTP: it gets past the guard and reaches the real integration,
+    // which has no key here. A refusal would name the spreadsheet instead.
+    const response = await server.post(server.aliceToken, '/api/import', { tabName: 'Sheet1' });
     assert.notEqual(response.status, 404);
-    // It reached the real integration, which this test gives no key - proof
-    // the guard resolved her sheet and stood aside rather than refusing.
     const { error } = await response.json();
     assert.doesNotMatch(error ?? '', /That spreadsheet was not found/);
     assert.match(error ?? '', /Service Account key/i);
-    assert.ok(hers);
+  } finally {
+    server.close();
+  }
+});
+
+test("the bid assistant cannot be used to register another account's sheet", async () => {
+  const server = await serve();
+  try {
+    const bobsSheet = await server.sheetIdFor(server.bob);
+
+    // The hole this closes: the bid assistant's saved sources are a global list
+    // with no owner, and they are read with the SAME service account that owns
+    // every per-account spreadsheet. Saving one was a way to read somebody
+    // else's sheet through a feature that never had an owner concept.
+    const saved = await server.post(server.aliceToken, '/api/bid-assistant/google-sheets', {
+      label: 'not mine',
+      sheetId: bobsSheet,
+    });
+    assert.equal(saved.status, 404);
+    assert.match((await saved.json()).error, /not found/i);
+
+    // Her own is fine, and so is a spreadsheet that belongs to no account -
+    // pointing at a sheet somebody shared with this installation is the whole
+    // purpose of these sources.
+    const hers = await server.sheetIdFor(server.alice);
+    assert.equal(
+      (await server.post(server.aliceToken, '/api/bid-assistant/google-sheets', {
+        label: 'mine',
+        sheetId: hers,
+      })).status,
+      200
+    );
+    assert.equal(
+      (await server.post(server.aliceToken, '/api/bid-assistant/google-sheets', {
+        label: 'a sheet shared with this install',
+        sheetId: '1cTf_t9B9V6D5A29bT-Phh6Z0Lafwdi3KYIK_eSlENE8',
+      })).status,
+      200
+    );
   } finally {
     server.close();
   }

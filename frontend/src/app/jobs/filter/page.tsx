@@ -177,6 +177,12 @@ export default function JobFilterPage() {
         const resultCol = parseSpreadsheetColumnInput('Result column', form.resultCol);
         const reasonCol = parseSpreadsheetColumnInput('Reason column', form.reasonCol);
 
+        // Same reason as the export page: an empty id would resolve to the
+        // caller's own sheet, which is not what "a shared sheet" asked for.
+        if (!form.sheetId.trim()) {
+          throw new Error('Choose a shared Google Sheet, or switch back to your own job sheet.');
+        }
+
         if (!form.tabName.trim()) {
           throw new Error('Sheet tab is required.');
         }
@@ -422,7 +428,11 @@ export default function JobFilterPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 type="submit"
-                disabled={isLoading || !hasSavedSheets}
+                // Gated on the shared source ONLY when that is what was chosen.
+                // Gating it always made the ordinary path - your own sheet, which
+                // needs no configuration at all - impossible to run on an install
+                // where no administrator had ever saved a shared sheet.
+                disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
                 className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-emerald-300"
               >
                 {isLoading ? 'Filtering jobs...' : 'Run job filter'}

@@ -9,6 +9,10 @@ const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
 const profileRepository = require('../database/profileRepository');
 const { requireUser } = require('../middleware/auth');
+const {
+  assertSheetNotOwnedByAnotherAccount,
+  SheetAccessError,
+} = require('../services/sheets/accountSheet');
 const profileService = require('../services/profileService');
 
 const backendDirectory = path.join(__dirname, '..', '..');
@@ -369,6 +373,12 @@ function validateGoogleSheetPayload(payload) {
 
 // Maps known Google Sheet source errors to cleaner API responses.
 function getGoogleSheetErrorDetails(error) {
+  // The addressability guard carries its own status. Without this it would
+  // surface as a 500, which reads as "the server broke" rather than "no".
+  if (error instanceof SheetAccessError) {
+    return { status: error.status, message: error.message };
+  }
+
   if (error.message === 'Label is required.' || error.message === 'Sheet ID is required.') {
     return {
       status: 400,
@@ -391,6 +401,10 @@ function getGoogleSheetErrorDetails(error) {
 
 // Maps Google Sheet import errors to cleaner API responses.
 function getGoogleSheetImportErrorDetails(error) {
+  if (error instanceof SheetAccessError) {
+    return { status: error.status, message: error.message };
+  }
+
   const importValidationMessages = [
     'Select a tab before importing.',
     'From row must be a whole number greater than or equal to 1.',
@@ -621,6 +635,10 @@ router.get('/google-sheets/:id/tabs', async (req, res) => {
       return res.status(404).json({ error: 'Google Sheet source not found.' });
     }
 
+    // Checked on the way out as well as on the way in: a row saved before this
+    // guard existed, or before its spreadsheet was allocated to somebody, would
+    // otherwise still be readable.
+    assertSheetNotOwnedByAnotherAccount(req.user, sheet.sheet_id);
     const tabs = await listGoogleSheetTabs(sheet.sheet_id);
     res.json(tabs);
   } catch (error) {
@@ -632,7 +650,14 @@ router.get('/google-sheets/:id/tabs', async (req, res) => {
 // Creates one saved Google Sheet source.
 router.post('/google-sheets', async (req, res) => {
   try {
-    const sheet = createGoogleSheet(validateGoogleSheetPayload(req.body || {}));
+    const payload = validateGoogleSheetPayload(req.body || {});
+    // These sources may point at any spreadsheet shared with this installation,
+    // which is the whole point of them - but NOT at another account's personal
+    // job sheet. The service account owns those, so without this check saving a
+    // source would be a way to read somebody else's sheet through a feature
+    // that never had an owner concept.
+    assertSheetNotOwnedByAnotherAccount(req.user, payload.sheet_id);
+    const sheet = createGoogleSheet(payload);
     res.json(sheet);
   } catch (error) {
     const errorDetails = getGoogleSheetErrorDetails(error);
@@ -650,7 +675,9 @@ router.put('/google-sheets/:id', async (req, res) => {
       return res.status(404).json({ error: 'Google Sheet source not found.' });
     }
 
-    const sheet = updateGoogleSheet(id, validateGoogleSheetPayload(req.body || {}));
+    const payload = validateGoogleSheetPayload(req.body || {});
+    assertSheetNotOwnedByAnotherAccount(req.user, payload.sheet_id);
+    const sheet = updateGoogleSheet(id, payload);
     res.json(sheet);
   } catch (error) {
     const errorDetails = getGoogleSheetErrorDetails(error);
@@ -685,6 +712,7 @@ router.post('/google-sheets/:id/import', async (req, res) => {
       return res.status(404).json({ error: 'Google Sheet source not found.' });
     }
 
+    assertSheetNotOwnedByAnotherAccount(req.user, sheet.sheet_id);
     const tabName = validateImportTabName(req.body || {});
     const { fromRow, toRow } = validateImportRange(req.body || {});
     const jobs = await loadJobsFromGoogleSheet(sheet, tabName, fromRow, toRow);

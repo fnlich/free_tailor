@@ -139,19 +139,23 @@ test("today's tab is created once and then never asked about again", async () =>
   assert.equal(named('formatJobSheetTab').length, 1);
 });
 
-test('a new date gets a new tab, beside the old one', async () => {
-  const { users, sheets, named, titles } = setup('new-date');
+test('a new date gets a new tab, and BESIDE the old one', async () => {
+  const { users, sheets, named, titles, tabs } = setup('new-date');
   const account = users.createUser({ email: 'alice@example.com' });
 
   const state = await sheets.ensureAccountSheet(account);
-  // Yesterday, as the row would read on the first sign-in of a new day.
-  users.recordSheetTabDate(account.id, '01/02/2020');
+
+  // A real previous day, present in the spreadsheet - not just a stale date on
+  // the row. Without this the test could not tell "added a tab" from "replaced
+  // the only tab", and a rewrite that deleted yesterday would still pass.
+  const yesterday = '01/02/2020';
+  tabs.get(state.spreadsheetId).set(yesterday, 999);
+  users.recordSheetTabDate(account.id, yesterday);
 
   await sheets.ensureAccountSheet(account);
 
-  // One call, for the new day. Allocation did not need one.
   assert.equal(named('addSheetTabWithHeaders').length, 1);
-  assert.deepEqual(titles(state.spreadsheetId), [state.todayTab]);
+  assert.deepEqual(titles(state.spreadsheetId).sort(), [yesterday, state.todayTab].sort());
   assert.equal(users.getUserById(account.id).sheetTabDate, state.todayTab);
 });
 
@@ -170,7 +174,7 @@ test('a tab that already exists in the spreadsheet is skipped, not treated as a 
   assert.equal(users.getUserById(account.id).sheetTabDate, state.todayTab);
 });
 
-test('two calls racing produce one spreadsheet, not two', async () => {
+test('two calls racing join rather than each creating a spreadsheet', async () => {
   const { users, sheets, named } = setup('race');
   const account = users.createUser({ email: 'alice@example.com' });
 
@@ -179,8 +183,54 @@ test('two calls racing produce one spreadsheet, not two', async () => {
     sheets.ensureAccountSheet(account),
   ]);
 
+  // The in-flight join: the second caller got the first one's promise, so only
+  // one conversation with Google happened at all.
   assert.equal(named('createSpreadsheet').length, 1);
   assert.equal(first.spreadsheetId, second.spreadsheetId);
+});
+
+test('a genuine race - two creates, one winner - leaves the loser adopting the winner', async () => {
+  // The join above is the usual defence. This is the one underneath it: two
+  // callers that BOTH reached Google before either wrote. Forced by holding the
+  // first create open until the second has started, which the in-flight map
+  // cannot prevent because the map is bypassed here on purpose.
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started = 0;
+  const { users, sheets } = setup('race-real', {
+    async createSpreadsheet(title, firstTabTitle) {
+      started += 1;
+      const mine = started;
+      if (mine === 1) await held;
+      return {
+        spreadsheetId: `sheet-${mine}`,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/sheet-${mine}/edit`,
+        firstTabGid: 10 + mine,
+      };
+    },
+  });
+  const account = users.createUser({ email: 'alice@example.com' });
+
+  // Two separate ensures, not two handles on one.
+  const slow = sheets.ensureAccountSheet(account);
+  await new Promise((resolve) => setImmediate(resolve));
+  sheets.resetInFlightForTests();
+  const fast = sheets.ensureAccountSheet(users.getUserById(account.id));
+  await fast;
+  release();
+  const slowState = await slow;
+
+  // Counted by the override itself: `named` reads the recording stub, which an
+  // override replaces - so it would sit at zero and prove nothing.
+  assert.equal(started, 2, 'both callers really did create one');
+
+  // One id is stored, and BOTH callers report it - the loser must adopt the
+  // winner's sheet rather than keep the orphan it just made.
+  const stored = users.getUserById(account.id).sheetId;
+  assert.equal((await fast).spreadsheetId, stored);
+  assert.equal(slowState.spreadsheetId, stored);
 });
 
 test('the claim on the spreadsheet slot is conditional, so a loser cannot overwrite', () => {
@@ -467,7 +517,18 @@ test('an export with no start row appends instead of overwriting the morning', (
   // An explicit choice still wins.
   assert.equal(resolveAppendRow(40, [{ values: ['h', 'a'] }]), 40);
 
-  assert.equal(resolveColumn(undefined, JOB_SHEET_COLUMNS.company), JOB_SHEET_COLUMNS.company);
-  assert.equal(resolveColumn(7, JOB_SHEET_COLUMNS.company), 7);
-  assert.equal(resolveColumn('not a column', JOB_SHEET_COLUMNS.jobLink), JOB_SHEET_COLUMNS.jobLink);
+  assert.equal(resolveColumn('Company column', undefined, JOB_SHEET_COLUMNS.company), JOB_SHEET_COLUMNS.company);
+  assert.equal(resolveColumn('Company column', 7, JOB_SHEET_COLUMNS.company), 7);
+
+  // Supplied but wrong is a 400, NOT a quiet fall back to the default. The
+  // difference matters: a caller sending a 0-based index used to be refused,
+  // and substituting a column they did not ask for would write into it instead.
+  for (const bad of ['not a column', 0, -3, 1.5]) {
+    assert.throws(
+      () => resolveColumn('Job link column', bad, JOB_SHEET_COLUMNS.jobLink),
+      (error) => error.status === 400 && /Job link column/.test(error.message),
+      `expected a 400 for ${JSON.stringify(bad)}`
+    );
+  }
+  assert.throws(() => resolveAppendRow(0, [{ values: [] }]), { status: 400 });
 });

@@ -438,7 +438,17 @@ export default function JobsPage() {
           source,
           provider: selectedProviderId || undefined,
           ...(exportTarget === 'shared'
-            ? {
+            ? (() => {
+                // An empty picker must not fall through to the account's own
+                // sheet: "a shared sheet" and "my sheet" are different
+                // destinations, and sending '' silently means the second.
+                if (!sheetExportForm.sheetId.trim()) {
+                  throw new Error('Choose a shared Google Sheet, or switch back to your own job sheet.');
+                }
+                if (!sheetExportForm.tabName.trim()) {
+                  throw new Error('Choose a tab in the shared Google Sheet.');
+                }
+                return {
                 sheetId: sheetExportForm.sheetId.trim(),
                 tabName: sheetExportForm.tabName.trim(),
                 startRow: parsePositiveWholeNumber('Start row', sheetExportForm.startRow),
@@ -449,7 +459,8 @@ export default function JobsPage() {
                   'Job description column',
                   sheetExportForm.jobDescriptionCol
                 ),
-              }
+                };
+              })()
             : {}),
         });
         response = exportResponse;

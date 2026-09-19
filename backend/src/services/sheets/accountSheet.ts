@@ -13,6 +13,7 @@ import {
 } from '../../integrations/googleSheets';
 import {
   getUserById,
+  getUserBySheetId,
   listAccountsWithoutSheet,
   recordAccountSheet,
   recordSheetTabDate,
@@ -38,6 +39,12 @@ export type AccountSheetState = {
   spreadsheetUrl?: string;
   /** The `MM/DD/YYYY` tab for today, whether or not it was just created. */
   todayTab: string;
+  /**
+   * A link that opens today's tab rather than whichever one Google shows first.
+   * Absent when the gid is not known - an upgraded row from before it was
+   * stored, or a day whose tab this call did not touch.
+   */
+  todayTabUrl?: string;
 };
 
 /**
@@ -80,6 +87,17 @@ export function resetSheetsClientForTests(): void {
 }
 
 /**
+ * Drops the in-flight join, so a test can force the race it normally prevents.
+ *
+ * The join is the first line of defence and the conditional write is the second
+ * - and the second is only reachable once the first is out of the way, which no
+ * amount of ordinary concurrency can arrange.
+ */
+export function resetInFlightForTests(): void {
+  inFlight.clear();
+}
+
+/**
  * Today, as the tab is named.
  *
  * `SHEET_TIMEZONE` matters more than it looks. A server running in UTC rolls
@@ -119,18 +137,38 @@ function spreadsheetTitleFor(account: UserAccount): string {
  */
 const inFlight = new Map<string, Promise<AccountSheetState>>();
 
-export function ensureAccountSheet(account: UserAccount): Promise<AccountSheetState> {
-  const existing = inFlight.get(account.id);
+export type EnsureOptions = {
+  /**
+   * Ask Google whether today's tab is really there, instead of trusting the
+   * stored date.
+   *
+   * Off by default, and deliberately off for sign-in: the stored date is what
+   * keeps a repeat sign-in free of network calls. But the sheet is one anybody
+   * with the link may edit, so the tab can be renamed or deleted under us, and
+   * a job route that then writes to a tab name Google does not have fails the
+   * whole run. The job routes are already several calls deep, so one listing is
+   * proportionate there and wasteful on the hot path.
+   */
+  verifyTab?: boolean;
+};
+
+export function ensureAccountSheet(
+  account: UserAccount,
+  options: EnsureOptions = {}
+): Promise<AccountSheetState> {
+  // A verifying call must not be satisfied by a trusting one already in flight.
+  const key = options.verifyTab ? `${account.id}:verify` : account.id;
+  const existing = inFlight.get(key);
   if (existing) return existing;
 
-  const run = ensure(account).finally(() => {
-    inFlight.delete(account.id);
+  const run = ensure(account, options).finally(() => {
+    inFlight.delete(key);
   });
-  inFlight.set(account.id, run);
+  inFlight.set(key, run);
   return run;
 }
 
-async function ensure(account: UserAccount): Promise<AccountSheetState> {
+async function ensure(account: UserAccount, options: EnsureOptions = {}): Promise<AccountSheetState> {
   const todayTab = todaySheetTitle();
 
   if (!(await client.isConfigured())) {
@@ -192,7 +230,7 @@ async function ensure(account: UserAccount): Promise<AccountSheetState> {
   await ensureOwnerAccess(spreadsheetId, current.email);
 
   const stored = getUserById(current.id);
-  if (stored?.sheetTabDate !== todayTab) {
+  if (stored?.sheetTabDate !== todayTab || options.verifyTab) {
     // `created: false` means the tab was already in the spreadsheet while our
     // row had not caught up - the ordinary answer, not a failure.
     const tab = await client.addSheetTabWithHeaders(spreadsheetId, todayTab);
@@ -318,6 +356,30 @@ export async function resolveAddressableSheet(
   if (asked === own) return own;
   if (account.role === 'admin' && allowedForAdmins.some((id) => id.trim() === asked)) return asked;
 
+  throw new SheetAccessError('That spreadsheet was not found.', 404);
+}
+
+/**
+ * Refuses a spreadsheet that is some other account's personal sheet.
+ *
+ * A narrower guard than `resolveAddressableSheet`, for surfaces that legitimately
+ * address spreadsheets this installation does not manage - the bid assistant's
+ * saved sources, for one. Those may point anywhere the service account can
+ * reach, and before per-account sheets existed that meant only spreadsheets
+ * somebody had deliberately shared with it. Now it also means every user's own
+ * sheet, so the one thing such a surface must not accept is another account's.
+ *
+ * Synchronous and cheap: one indexed lookup, no Google call.
+ */
+export function assertSheetNotOwnedByAnotherAccount(account: UserAccount, sheetId: unknown): void {
+  const asked = typeof sheetId === 'string' ? sheetId.trim() : '';
+  if (!asked) return;
+
+  const owner = getUserBySheetId(asked);
+  if (!owner || owner.id === account.id) return;
+
+  // 404, like the other guard, so the status does not confirm that a
+  // spreadsheet with this id exists.
   throw new SheetAccessError('That spreadsheet was not found.', 404);
 }
 

@@ -578,10 +578,10 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
     const source = requireSupportedScraperSource(body.source);
     const providerId = typeof body.provider === 'string' ? body.provider : undefined;
     const filters = applySourceSpecificScraperDefaults(source, normalizeScraperFilters(body, source, providerId));
-    const companyNameCol = resolveColumn(body.companyNameCol, JOB_SHEET_COLUMNS.company);
-    const jobTitleCol = resolveColumn(body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
-    const jobLinkCol = resolveColumn(body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
-    const jobDescriptionCol = resolveColumn(body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
+    const companyNameCol = resolveColumn('Company column', body.companyNameCol, JOB_SHEET_COLUMNS.company);
+    const jobTitleCol = resolveColumn('Job title column', body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
+    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    const jobDescriptionCol = resolveColumn('Job description column', body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
     const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
     const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
       fetchGoogleSheetsColumnValues({
@@ -787,10 +787,10 @@ router.post('/linkedin/search-and-export', async (req: Request, res: Response) =
 
     const postedSince = resolveLinkedInPostedSince(body.postedSince);
     const limit = normalizeLinkedInLimit(body.limit);
-    const companyNameCol = resolveColumn(body.companyNameCol, JOB_SHEET_COLUMNS.company);
-    const jobTitleCol = resolveColumn(body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
-    const jobLinkCol = resolveColumn(body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
-    const jobDescriptionCol = resolveColumn(body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
+    const companyNameCol = resolveColumn('Company column', body.companyNameCol, JOB_SHEET_COLUMNS.company);
+    const jobTitleCol = resolveColumn('Job title column', body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
+    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    const jobDescriptionCol = resolveColumn('Job description column', body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
     const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
     const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
       fetchGoogleSheetsColumnValues({
@@ -951,11 +951,11 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   try {
     const body = req.body ?? {};
     const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
-    const jobLinkCol = resolveColumn(body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
     // The job sheet has no column of its own for a verdict, so the two spare
     // ones carry it: the decision in `Rate`, the explanation in `note`.
-    const resultCol = resolveColumn(body.resultCol, JOB_SHEET_COLUMNS.rate);
-    const reasonCol = resolveColumn(body.reasonCol, JOB_SHEET_COLUMNS.note);
+    const resultCol = resolveColumn('Result column', body.resultCol, JOB_SHEET_COLUMNS.rate);
+    const reasonCol = resolveColumn('Reason column', body.reasonCol, JOB_SHEET_COLUMNS.note);
     const startRow =
       body.startRow === undefined ? JOB_SHEET_FIRST_DATA_ROW : toPositiveInteger('startRow', body.startRow);
 
@@ -967,21 +967,10 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         ? (await fetchGoogleSheetsColumnValues({ sheetId, tabName, col: jobLinkCol })).values.length
         : toPositiveInteger('endRow', body.endRow);
 
-    if (endRow < startRow) {
-      // Not an error: an empty tab simply has nothing to filter.
-      res.json({
-        spreadsheetId: sheetId,
-        selectedTab: tabName,
-        startRow,
-        endRow,
-        processedRows: 0,
-        skippedRows: 0,
-        scrapedRows: 0,
-        errorRows: 0,
-        rowErrors: [],
-        message: 'There are no job rows in that tab yet.',
-      });
-      return;
+    // Only meaningful against an explicit range - an empty tab reports zero
+    // rows below rather than an error.
+    if (body.endRow !== undefined && body.startRow !== undefined && endRow < startRow) {
+      throw new GoogleSheetsRequestError(400, 'startRow must be less than or equal to endRow.');
     }
 
     const distinctColumns = [
@@ -998,6 +987,34 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
     }
 
     const executionConfig = await resolvePromptExecutionConfig('filter-google-sheet-job', JOB_FILTER_PROVIDER);
+
+    if (endRow < startRow) {
+      // An empty tab is not an error - a sheet created this morning that nobody
+      // has exported into yet is the ordinary first run. It must answer in the
+      // SAME shape as a real run, though: the page renders every field, and one
+      // missing array is a crash rather than an empty state.
+      res.json({
+        spreadsheetId: sheetId,
+        spreadsheetTitle: '',
+        selectedTab: tabName,
+        provider: executionConfig.provider,
+        modelName: executionConfig.modelName ?? '',
+        startRow,
+        endRow,
+        jobLinkCol,
+        resultCol,
+        reasonCol,
+        scannedRows: 0,
+        processedRows: 0,
+        skippedRows: 0,
+        scrapedRows: 0,
+        errorRows: 0,
+        updatedRanges: [],
+        rowErrors: [],
+        message: 'There are no job rows in that tab yet.',
+      });
+      return;
+    }
 
     // A sheet filter is the longest-running AI loop in the app - one call per
     // row. Without this, closing the tab left it running to the end of the

@@ -5,6 +5,7 @@ import {
   ensureAccountSheet,
   resolveAddressableSheet,
   resolveAddressableTab,
+  SheetAccessError,
 } from './accountSheet';
 
 /**
@@ -47,7 +48,9 @@ export async function resolveJobSheetTarget(
   // Resolved once and handed to both, rather than each fetching it: two calls
   // would be two independent answers to "what is today's tab", and on the
   // stroke of midnight they would not have to agree.
-  const state = await ensureAccountSheet(account);
+  // Verifying: a job route is about to write into the tab this resolves, and
+  // the stored date alone cannot tell us the tab is still there.
+  const state = await ensureAccountSheet(account, { verifyTab: true });
   const spreadsheetId = await resolveAddressableSheet(
     account,
     body?.sheetId,
@@ -58,10 +61,22 @@ export async function resolveJobSheetTarget(
   return { spreadsheetId, tabName };
 }
 
-/** A column the caller named, or the one the job sheet layout puts it in. */
-export function resolveColumn(value: unknown, fallback: number): number {
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+/**
+ * A column the caller named, or the one the job sheet layout puts it in.
+ *
+ * Absent means "use the layout". Present but not a positive column number is an
+ * ERROR, not a reason to fall back: silently substituting a default would take
+ * a request that used to be refused with a 400 and turn it into a write to a
+ * column the caller never asked for.
+ */
+export function resolveColumn(field: string, value: unknown, fallback: number): number {
+  if (value === undefined || value === null || value === '') return fallback;
+
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new SheetAccessError(`${field} must be a whole number greater than or equal to 1.`, 400);
+  }
+  return parsed;
 }
 
 /**
@@ -73,8 +88,13 @@ export function resolveColumn(value: unknown, fallback: number): number {
  * length is the honest answer and costs nothing extra.
  */
 export function resolveAppendRow(value: unknown, existingColumns: Array<{ values: unknown[] }>): number {
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  if (value !== undefined && value !== null && value !== '') {
+    const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new SheetAccessError('startRow must be a whole number greater than or equal to 1.', 400);
+    }
+    return parsed;
+  }
 
   const used = Math.max(0, ...existingColumns.map((column) => column.values.length));
   return Math.max(JOB_SHEET_FIRST_DATA_ROW, used + 1);

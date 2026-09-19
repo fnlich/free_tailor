@@ -109,12 +109,31 @@ test('the sheet is only ever readable by the account that owns it', async () => 
     assert.ok(bob.spreadsheetId);
     assert.notEqual(alice.spreadsheetId, bob.spreadsheetId);
 
-    // An id supplied by the caller is not a way in. The route reads req.user
-    // and nothing else, which is the guard the batch routes once lacked.
-    const smuggled = await (
-      await server.request(server.aliceToken, `/?userId=${encodeURIComponent('bob@example.com')}`)
-    ).json();
-    assert.equal(smuggled.spreadsheetId, alice.spreadsheetId);
+    // An id supplied by the caller is not a way in. The route reads req.user and
+    // nothing else. The payloads below are Bob's REAL account id and his real
+    // spreadsheet id - an earlier version of this test sent his email address,
+    // which no lookup would ever have matched, so it could not have failed.
+    const bobsId = server.users.getUserByEmail('bob@example.com').id;
+    for (const query of [
+      `?userId=${encodeURIComponent(bobsId)}`,
+      `?id=${encodeURIComponent(bobsId)}`,
+      `?spreadsheetId=${encodeURIComponent(bob.spreadsheetId)}`,
+      `?sheetId=${encodeURIComponent(bob.spreadsheetId)}`,
+    ]) {
+      const smuggled = await (await server.request(server.aliceToken, `/${query}`)).json();
+      assert.equal(smuggled.spreadsheetId, alice.spreadsheetId, `query ${query} changed the answer`);
+      assert.notEqual(smuggled.spreadsheetId, bob.spreadsheetId);
+    }
+
+    // And the same through the body, which POST /visibility does read.
+    const viaBody = await server.request(server.aliceToken, '/visibility', {
+      method: 'POST',
+      body: JSON.stringify({ visibility: 'private', userId: bobsId, sheetId: bob.spreadsheetId }),
+    });
+    assert.equal(viaBody.status, 200);
+    // Bob's sheet is untouched; hers is the one that moved.
+    assert.equal(server.visibility.get(bob.spreadsheetId), 'public');
+    assert.equal(server.visibility.get(alice.spreadsheetId), 'private');
   } finally {
     server.close();
   }

@@ -1310,6 +1310,33 @@ export async function formatJobSheetTab(
   });
 }
 
+/**
+ * Writes the header only when the first row is not already it.
+ *
+ * Deliberately a read before a write: re-formatting on every sign-in would undo
+ * a column somebody widened, and would spend a write call a day per account for
+ * nothing.
+ */
+async function formatJobSheetTabIfBlank(
+  spreadsheetId: string,
+  gid: number,
+  title: string,
+  headers: readonly string[]
+): Promise<void> {
+  const range = `${quoteSheetTitle(title)}!A1:${toColumnLetters(headers.length)}1`;
+  const current = await googleSheetsFetch<GoogleSheetsValuesResponse>(
+    `/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`
+  );
+
+  const firstRow = current.values?.[0] ?? [];
+  const alreadyThere = headers.every(
+    (header, index) => String(firstRow[index] ?? '').trim() === header
+  );
+  if (alreadyThere) return;
+
+  await formatJobSheetTab(spreadsheetId, gid, headers);
+}
+
 export type EnsuredTab = { gid: number; created: boolean };
 
 /**
@@ -1325,7 +1352,15 @@ export async function addSheetTabWithHeaders(
 ): Promise<EnsuredTab> {
   const existing = await listSheetTabs(spreadsheetId);
   const already = existing.find((tab) => tab.title === title);
-  if (already) return { gid: already.gid, created: false };
+  if (already) {
+    // Existing is not the same as finished. If a previous attempt created the
+    // tab and then failed before laying out the header - a 429 between the two
+    // calls is enough - nothing would ever write one, because every later
+    // attempt sees the tab and stops here. So the header is checked, and
+    // written when it is missing.
+    await formatJobSheetTabIfBlank(spreadsheetId, already.gid, title, headers);
+    return { gid: already.gid, created: false };
+  }
 
   const added = await googleSheetsFetch<{
     replies?: Array<{ addSheet?: { properties?: { sheetId?: number } } }>;

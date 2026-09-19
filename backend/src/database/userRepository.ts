@@ -314,6 +314,23 @@ export function recordSheetTabDate(id: string, date: string, gid?: number): void
     .run(date, gid === undefined ? null : String(gid), now(), id);
 }
 
+/**
+ * The account a spreadsheet belongs to, if any.
+ *
+ * The inverse lookup, and it exists for one purpose: telling a route that an id
+ * it was handed is somebody's personal sheet rather than a spreadsheet shared
+ * with this installation. The service account can open both, so nothing else
+ * distinguishes them.
+ */
+export function getUserBySheetId(sheetId: string): UserAccount | null {
+  const wanted = sheetId.trim();
+  if (!wanted) return null;
+  const row = getDb()
+    .prepare(`SELECT ${USER_COLUMNS} FROM users WHERE sheet_id = ?`)
+    .get(wanted) as UserRow | undefined;
+  return row ? toAccount(row) : null;
+}
+
 /** Accounts from before this feature, in creation order, for the boot backfill. */
 export function listAccountsWithoutSheet(): UserAccount[] {
   return (
