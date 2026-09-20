@@ -18,6 +18,10 @@ import {
   type ResumeTaskResult,
   type TaskDescriptor,
 } from '../services/queue';
+import { createOrder, failOrder } from '../database/orderRepository';
+import { orderRetentionDays } from '../services/orders/retention';
+import { ORDER_OUTPUT_PATH_TEMPLATE } from '../utils/outputStorage';
+import { accountFolderName } from '../utils/generatedPath';
 import type { Profile } from '../types/profile';
 import type { JobAnalysis } from '../types/template';
 import { openBatchStream } from './batchStream';
@@ -63,6 +67,15 @@ type SubmitBody = {
   }>;
   /** Tailored content a preview already produced, keyed by profile id. */
   tailoredContentByProfileId?: Record<string, unknown>;
+  /**
+   * Place this as an ORDER rather than a build the caller waits for.
+   *
+   * What the sheet import sends. It changes three things: the files are filed
+   * under the fixed order tree instead of the administrator's template, a
+   * durable record is kept that outlives the batch, and the response carries an
+   * order number the caller shows instead of waiting for results.
+   */
+  asOrder?: boolean;
 };
 
 export type NormalizedJob = ResumeJob;
@@ -158,11 +171,18 @@ export function routeFor(choice: {
  * become the cross-product that goes in the queue, and getting the count or the
  * order wrong is invisible in the response.
  */
+export type BuildTaskOptions = {
+  /** Set for an order: the account segment and the fixed order tree. */
+  accountFolder?: string;
+  pathTemplate?: string;
+};
+
 export async function buildTasks(
   body: SubmitBody,
   jobs: NormalizedJob[],
   profiles: Profile[],
-  batchId: string
+  batchId: string,
+  options: BuildTaskOptions = {}
 ): Promise<Array<TaskDescriptor<ResumeTaskResult>>> {
   const overrides = readAiOverrides(body);
   const format = body.format === 'docx' ? 'docx' : body.format === 'pdf' ? 'pdf' : 'both';
@@ -211,6 +231,11 @@ export async function buildTasks(
           format,
           includeCoverLetterDocx,
           choice,
+          // Carried rather than looked up when the task runs, so the second
+          // half of an order cannot land somewhere else because a setting was
+          // edited, or because midnight passed, while it was queued.
+          ...(options.accountFolder ? { accountFolder: options.accountFolder } : {}),
+          ...(options.pathTemplate ? { pathTemplate: options.pathTemplate } : {}),
           ...(tailoredByProfile[profile.id]
             ? { tailoredContent: tailoredByProfile[profile.id] }
             : {}),
@@ -292,7 +317,16 @@ router.post('/batches', async (req: Request, res: Response) => {
     // reserved against this batch BEFORE any task can start - and `submit`
     // dispatches immediately, so there is no window afterwards in which to do it.
     const batchId = newBatchId();
-    const descriptors = await buildTasks(body, jobs, profiles, batchId);
+    const asOrder = body.asOrder === true;
+    const descriptors = await buildTasks(
+      body,
+      jobs,
+      profiles,
+      batchId,
+      asOrder
+        ? { accountFolder: accountFolderName(req.user), pathTemplate: ORDER_OUTPUT_PATH_TEMPLATE }
+        : {}
+    );
 
     /**
      * The charge, before the first model call.
@@ -313,7 +347,44 @@ router.post('/batches', async (req: Request, res: Response) => {
 
     const queue = getGenerationQueue();
     let batch;
+    let order = null;
     try {
+      /**
+       * The order exists BEFORE the first task can finish.
+       *
+       * `submit` dispatches immediately, so a resume can be built and reported
+       * within milliseconds. Creating the order afterwards would race that: the
+       * hook would look for an item row, find none, and the first few resumes
+       * of every run would go silently unrecorded.
+       *
+       * Inside the try, not above it, because the credits have already been
+       * charged by this point - a throw out here without the release below
+       * leaves the account short for a run that never started.
+       */
+      order = asOrder
+        ? createOrder(
+            {
+              userId: req.user!.id,
+              batchId,
+              label:
+                typeof body.label === 'string' && body.label.trim()
+                  ? body.label.trim()
+                  : `${jobs.length} job(s) x ${profiles.length} profile(s)`,
+              retentionDays: orderRetentionDays(),
+            },
+            descriptors.map((descriptor, seq) => ({
+              seq,
+              profileId: descriptor.label.profileId,
+              profileName: descriptor.label.profileName,
+              companyName: descriptor.label.companyName,
+              role: descriptor.label.role,
+              ...(typeof descriptor.label.sourceRowNumber === 'number'
+                ? { sourceRowNumber: descriptor.label.sourceRowNumber }
+                : {}),
+            }))
+          )
+        : null;
+
       batch = queue.submit(descriptors, {
         id: batchId,
         // Written by `persistNewBatch` below, in one transaction, rather than
@@ -333,6 +404,9 @@ router.post('/batches', async (req: Request, res: Response) => {
       // Charged for a run that never started. Give it all back rather than
       // leaving the account short for a failure that was ours.
       releaseReservation(batchId, 'The batch could not be queued.');
+      // And an order whose batch never ran would sit at `running` with every
+      // item queued and nothing left to move them, its bar stuck at zero.
+      if (order) failOrder(order.id, 'The order could not be queued.');
       throw error;
     }
 
@@ -347,6 +421,7 @@ router.post('/batches', async (req: Request, res: Response) => {
       jobCount: jobs.length,
       profileCount: profiles.length,
       queues: queue.stats(),
+      ...(order ? { orderId: order.id, orderNumber: order.number } : {}),
     });
   } catch (error) {
     if (error instanceof SubmitError) {

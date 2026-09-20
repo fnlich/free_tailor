@@ -53,6 +53,16 @@ export type ResumeTaskPayload = {
   choice: AiChoice;
   /** Tailored content a preview already produced, so the model is not re-asked. */
   tailoredContent?: import('../../types/template').TailoredContent;
+  /**
+   * Where an ORDERED build files itself, carried rather than looked up.
+   *
+   * Both are plain strings for the same reason the profile is an id: the
+   * payload is written to SQLite and replayed after a restart, and a path
+   * derived from a setting that has since been edited would put the second
+   * half of an order somewhere the first half is not.
+   */
+  accountFolder?: string;
+  pathTemplate?: string;
 };
 
 export type ResumeTaskInput = {
@@ -63,6 +73,8 @@ export type ResumeTaskInput = {
   includeCoverLetterDocx: boolean;
   choice: AiChoice;
   tailoredContent?: import('../../types/template').TailoredContent;
+  accountFolder?: string;
+  pathTemplate?: string;
 };
 
 /** The kind a resume task is registered under. */
@@ -205,12 +217,11 @@ export async function runResumeTask(
     ? tailoredContent.coverLetter.trim()
     : await generateCoverLetter(profile, job.companyName, job.role, choice, assignment.signal);
 
-  const pathInfo = await getGeneratedOutputPath(
-    profile,
-    job.companyName,
-    job.role,
-    job.sourceRowNumber
-  );
+  const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, {
+    sourceRowNumber: job.sourceRowNumber,
+    accountName: input.accountFolder,
+    pathTemplate: input.pathTemplate,
+  });
   const coverLetterPdf = await saveCoverLetter(profile, coverLetterBody, pathInfo);
   const coverLetterDocx = input.includeCoverLetterDocx
     ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
@@ -300,6 +311,8 @@ export function makeResumeRunner(
         format: input.format,
         includeCoverLetterDocx: input.includeCoverLetterDocx,
         choice: input.choice,
+        accountFolder: input.accountFolder,
+        pathTemplate: input.pathTemplate,
         ...(input.tailoredContent ? { tailoredContent: input.tailoredContent } : {}),
       },
       assignment

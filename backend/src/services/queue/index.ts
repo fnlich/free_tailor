@@ -11,6 +11,7 @@ import { getProfile } from '../../database/profileRepository';
 import { cliConcurrency } from '../ai/batchCapacity';
 import type { BrowserChatSiteId } from '../../config/providerCatalog';
 import { closeIfSettled, refundTaskUnit } from '../credits';
+import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
 import {
   registerTaskRunner,
   TaskQueue,
@@ -131,6 +132,9 @@ let queue: TaskQueue | null = null;
 export function getGenerationQueue(): TaskQueue {
   if (!queue) {
     queue = new TaskQueue(() => readCapacity(), store, {
+      /** Moves an order's item from "waiting" to "being built". A no-op for
+       *  every batch that was not placed as an order, which is most of them. */
+      taskStarted: (task) => recordTaskStarted(task),
       /**
        * Gives a credit back for every unit that did not deliver.
        *
@@ -159,6 +163,11 @@ export function getGenerationQueue(): TaskQueue {
             `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
           );
         }
+        // After the refund, and never before it: this writes to a different
+        // table and swallows its own failures, but the credit is the thing a
+        // person notices missing, so it goes first.
+        recordTaskFinished(task);
+
         const batch = queue?.getBatch(task.batchId);
         closeIfSettled(
           task.batchId,

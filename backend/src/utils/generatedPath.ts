@@ -13,12 +13,28 @@ import {
 } from './outputStorage';
 import { getOutputStorageSettings } from '../config/aiModelConfig';
 
-function getCurrentDateFolder(): string {
+/** The day an order's files are filed under, and the tree's second segment. */
+export function getCurrentDateFolder(): string {
   const now = new Date();
   const year = now.getFullYear();
   const month = `${now.getMonth() + 1}`.padStart(2, '0');
   const day = `${now.getDate()}`.padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * The account's own segment of the output tree.
+ *
+ * The EMAIL rather than the display name, which reads less prettily and is the
+ * right call anyway: `users.email` is `NOT NULL UNIQUE` and a display name is
+ * neither, so two people called "John Smith" would otherwise file into one
+ * directory. It is the same identity the account's spreadsheet is titled with.
+ */
+export function accountFolderName(
+  account: { name?: string | null; email?: string | null } | null | undefined
+): string {
+  const email = typeof account?.email === 'string' ? account.email.trim() : '';
+  return email || 'unknown';
 }
 
 function normalizeSourceRowNumber(value: unknown): string {
@@ -47,18 +63,34 @@ export function getCoverLetterOutputFilename(pathInfo: GeneratedPathInfo, extens
   return `${pathInfo.coverLetterFileStem || `${pathInfo.profileSlug}_cover_letter`}.${extension}`;
 }
 
+/**
+ * How a build may override where it is filed.
+ *
+ * `pathTemplate` exists for orders, which use the fixed
+ * `ORDER_OUTPUT_PATH_TEMPLATE` rather than the administrator's setting - see
+ * the comment on that constant for why. `accountName` fills the account
+ * segment; it is optional because a script or a test has no account in scope,
+ * and an absent one renders as `unknown` like any other empty segment.
+ */
+export type GeneratedPathOptions = {
+  sourceRowNumber?: number;
+  accountName?: string;
+  pathTemplate?: string;
+};
+
 export async function getGeneratedOutputPath(
   profile: Profile,
   companyName: string,
   role: string,
-  sourceRowNumber?: number
+  options: GeneratedPathOptions = {}
 ): Promise<GeneratedPathInfo> {
   const { outputBaseDir, outputPathTemplate } = await getOutputStorageSettings();
   const profileSlug = sanitizePathSegment(profile.name) || 'unknown';
   const roleSlug = sanitizePathSegment(role || 'resume') || 'resume';
-  const rowNumber = normalizeSourceRowNumber(sourceRowNumber);
+  const rowNumber = normalizeSourceRowNumber(options.sourceRowNumber);
   const baseTemplateVariables = {
     date: getCurrentDateFolder(),
+    accountName: options.accountName || 'unknown',
     profileName: profile.name || 'unknown',
     companyName: companyName || 'unknown',
     rowNumber,
@@ -73,7 +105,10 @@ export async function getGeneratedOutputPath(
     ...baseTemplateVariables,
     companyName: companyFolderName,
   };
-  const relativeBase = renderOutputPathTemplate(outputPathTemplate, pathTemplateVariables);
+  const relativeBase = renderOutputPathTemplate(
+    options.pathTemplate || outputPathTemplate,
+    pathTemplateVariables
+  );
   const resumeFileStem = renderOutputFileNameTemplate(
     profile.profileSettings?.resumeFileNameTemplate || DEFAULT_RESUME_FILE_NAME_TEMPLATE,
     baseTemplateVariables,

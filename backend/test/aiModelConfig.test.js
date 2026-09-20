@@ -236,7 +236,7 @@ test('generated path helpers apply per-profile company folder name templates', a
     { name: 'Jane Doe' },
     'Acme Inc',
     'Senior Engineer',
-    12
+    { sourceRowNumber: 12 }
   );
 
   assert.equal(defaultResult.relativeBase, 'jane_doe/12_acme_inc/senior_engineer');
@@ -251,7 +251,7 @@ test('generated path helpers apply per-profile company folder name templates', a
     },
     'Acme Inc',
     'Senior Engineer',
-    12
+    { sourceRowNumber: 12 }
   );
 
   assert.equal(customResult.relativeBase, 'jane_doe/acme_inc_row_12/senior_engineer');

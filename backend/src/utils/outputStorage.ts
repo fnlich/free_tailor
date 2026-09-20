@@ -9,8 +9,27 @@ export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}';
 export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_letter';
 export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company name}}';
 
+/**
+ * Where an ORDERED resume is filed, and why it is a constant rather than a
+ * setting.
+ *
+ * `outputPathTemplate` above belongs to the administrator: they may rearrange
+ * it whenever they like, and a manual build lands wherever it currently says.
+ * An order cannot work that way. Its files are listed, downloaded, zipped and
+ * eventually deleted by path, days after they were written - so a layout edited
+ * between the build and the download would strand a live order's files and aim
+ * the purge at a directory that no longer holds them.
+ *
+ * The account segment comes first for the same reason: it makes every file an
+ * order owns live under one directory per account, which is what lets the purge
+ * prune emptied folders without ever walking into somebody else's tree.
+ */
+export const ORDER_OUTPUT_PATH_TEMPLATE =
+  '/{{account name}}/{{date}}/{{profile name}}/{{company name}}';
+
 export const OUTPUT_PATH_TOKENS = [
   { token: '{{date}}', description: 'Current date as YYYY-MM-DD' },
+  { token: '{{account name}}', description: 'Signed-in account name' },
   { token: '{{profile name}}', description: 'Selected profile name' },
   { token: '{{company name}}', description: 'Company name' },
   { token: '{{row number}}', description: 'Source Google Sheet row number' },
@@ -23,10 +42,18 @@ export type OutputTemplateVariables = {
   companyName: string;
   rowNumber?: string;
   jobTitle: string;
+  /**
+   * Optional because most callers have no account in scope - a script, a test,
+   * the admin's template preview. Rendering an absent one gives `unknown`,
+   * which is what every other empty segment already becomes.
+   */
+  accountName?: string;
 };
 
 const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
   date: 'date',
+  account: 'accountName',
+  'account name': 'accountName',
   profile: 'profileName',
   'profile name': 'profileName',
   company: 'companyName',
@@ -318,6 +345,7 @@ export function renderOutputFolderNameTemplate(
 export function buildOutputPathPreview(template: string): string {
   return `/${renderOutputPathTemplate(template, {
     date: '2026-04-10',
+    accountName: 'jane@example.com',
     profileName: 'Jane Doe',
     companyName: 'Acme Inc',
     rowNumber: '12',

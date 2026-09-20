@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import Link from 'next/link';
 import {
   profilesApi,
   groupsApi,
@@ -36,6 +37,16 @@ import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
 type SheetsTargetMode = 'single' | 'all' | 'group';
+
+/** What a placed sheet import reports back, before any of it has been built. */
+type PlacedOrder = {
+  id: string;
+  number: string;
+  total: number;
+  jobCount: number;
+  profileCount: number;
+  skippedNote: string;
+};
 
 /**
  * The id standing for "this account's own job sheet".
@@ -123,6 +134,8 @@ export default function Home() {
   /** The batch this page is watching, so a reload can pick it back up. */
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  /** The receipt for a sheet import, kept as data so it can carry a link. */
+  const [placedOrder, setPlacedOrder] = useState<PlacedOrder | null>(null);
 
   useEffect(() => {
     loadInitialData();
@@ -604,6 +617,15 @@ export default function Home() {
     return summarizeBatch(snapshot, targetCompanyName);
   };
 
+  /**
+   * A sheet import is placed as an ORDER, not waited for.
+   *
+   * It used to hold the page open until the last resume was rendered - which on
+   * three hundred rows is an hour of a browser tab that cannot be closed, and a
+   * reload part way through left the files on the server with nothing offering
+   * them. Now the server records what was asked for, answers with an order
+   * number, and the Orders page collects the files as they land.
+   */
   const handleImportJobsFromSheets = async (
     importedJobs: ImportedSheetJob[],
     meta: { skippedRows: number }
@@ -618,23 +640,10 @@ export default function Home() {
     setIsGenerating(true);
     setError('');
     setSuccessMessage('');
+    setPlacedOrder(null);
     resetGenerationOutputs();
 
-    const totalBuilds = selectedProfiles.length * normalizedJobs.length;
-    let snapshot: BatchSnapshot | null = null;
-
     try {
-      updateGenerationProgress(
-        totalBuilds,
-        0,
-        'Queueing imported jobs',
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        normalizedJobs.length
-      );
-
       /**
        * ONE request carrying every resume, not one request per resume.
        *
@@ -647,51 +656,42 @@ export default function Home() {
        * and the analysis happens inside the task, shared between the profiles
        * that need the same job.
        */
-      snapshot = await runBatch(
-        {
-          ...aiRequestOverrides,
-          label: `Sheets import (${normalizedJobs.length} job${normalizedJobs.length === 1 ? '' : 's'})`,
-          profileIds: selectedProfiles.map((profile) => profile.id),
-          jobs: normalizedJobs.map((job) => ({
-            companyName: job.companyName.trim(),
-            role: job.jobTitle.trim(),
-            jobDescription: job.jobDescription.trim(),
-            sourceRowNumber: job.sourceRowNumber,
-          })),
-          ...getDefaultGenerationOptions(),
-        },
-        { phase: 'Building resumes', jobCount: normalizedJobs.length }
-      );
+      const submitted = await generationApi.submit({
+        ...aiRequestOverrides,
+        asOrder: true,
+        label: `Sheets import (${normalizedJobs.length} job${normalizedJobs.length === 1 ? '' : 's'})`,
+        profileIds: selectedProfiles.map((profile) => profile.id),
+        jobs: normalizedJobs.map((job) => ({
+          companyName: job.companyName.trim(),
+          role: job.jobTitle.trim(),
+          jobDescription: job.jobDescription.trim(),
+          sourceRowNumber: job.sourceRowNumber,
+        })),
+        ...getDefaultGenerationOptions(),
+      });
 
-      const unconfirmedHardMap = new Map(
-        (snapshot?.unconfirmedHardSkills ?? []).map((skill) => [skill.toLowerCase(), skill])
-      );
-      const unconfirmedSoftMap = new Map(
-        (snapshot?.unconfirmedSoftSkills ?? []).map((skill) => [skill.toLowerCase(), skill])
-      );
-      const failures = (snapshot?.failures ?? []).map(
-        (failure) => `${failure.companyName} / ${failure.profileName}: ${failure.error}`
-      );
-      const failedCompanies = new Set(snapshot?.failedCompanies ?? []);
-      const failedBuilds = failures.length;
-
-      setUnconfirmedHardSkills(toUnconfirmedItems(Array.from(unconfirmedHardMap.values())));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(Array.from(unconfirmedSoftMap.values())));
-
-      const generatedCount = totalBuilds - failedBuilds;
       const skippedNote = meta.skippedRows
         ? ` Skipped ${meta.skippedRows} imported row(s) with missing required values.`
         : '';
-      setSuccessMessage(
-        `Generated ${generatedCount} build(s) from ${normalizedJobs.length} imported job(s) across ${selectedProfiles.length} profile(s).${skippedNote}`
-      );
 
-      if (failures.length) {
-        const failedCompanySummary = formatCompanySummary(Array.from(failedCompanies));
-        setError(
-          `Some builds failed (${failedBuilds}/${totalBuilds}). Failed companies: ${failedCompanySummary || 'Unknown'}. ${failures.slice(0, 3).join(' | ')}${failures.length > 3 ? ' | ...' : ''}`
+      if (submitted.orderId && submitted.orderNumber) {
+        setPlacedOrder({
+          id: submitted.orderId,
+          number: submitted.orderNumber,
+          total: submitted.total,
+          jobCount: submitted.jobCount,
+          profileCount: submitted.profileCount,
+          skippedNote,
+        });
+      } else {
+        // An older server that does not place orders. The work is queued either
+        // way, so say so rather than leaving the click looking like it failed.
+        setSuccessMessage(
+          `Queued ${submitted.total} build(s) from ${submitted.jobCount} imported job(s).${skippedNote}`
         );
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not place that order.');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -1526,6 +1526,24 @@ export default function Home() {
             <button onClick={() => setError('')} className="text-red-700 hover:text-red-900 font-bold">
               ×
             </button>
+          </div>
+        )}
+
+        {placedOrder && (
+          <div className="mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-green-800">
+            <p className="font-semibold">
+              You ordered successfully: Order number -{' '}
+              <span className="font-mono">{placedOrder.number}</span>
+            </p>
+            <p className="mt-1 text-sm">
+              {placedOrder.total} resume(s) from {placedOrder.jobCount} imported job(s) across{' '}
+              {placedOrder.profileCount} profile(s) are being built. You can close this page - they
+              are waiting for you under{' '}
+              <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline">
+                Order status &amp; built resumes
+              </Link>
+              .{placedOrder.skippedNote}
+            </p>
           </div>
         )}
 

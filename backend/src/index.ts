@@ -11,6 +11,8 @@ import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
 import generationRoutes from './routes/generation';
+import orderRoutes from './routes/orders';
+import { orderRetentionDays, startOrderRetention } from './services/orders/retention';
 import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
@@ -163,6 +165,7 @@ app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
 app.use('/api/generation', generationRoutes);
+app.use('/api/orders', orderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);
@@ -261,6 +264,18 @@ const server = app.listen(PORT, HOST, () => {
   void backfillAccountSheets().catch((error) => {
     console.warn('[sheets] The account spreadsheet backfill did not finish.', error);
   });
+  /*
+   * Deletes ordered resumes once their keep-until has passed, now and every six
+   * hours after.
+   *
+   * Started HERE rather than when the module loads, which is the whole reason
+   * it is a function: every test in this suite loads the modules it exercises,
+   * and a sweep that began on import would delete files under a temp directory
+   * while an unrelated test was still using them. The interval is unref'd, so
+   * it never holds the process open.
+   */
+  startOrderRetention();
+  console.log(`[orders] Ordered files are kept for ${orderRetentionDays()} day(s).`);
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();
