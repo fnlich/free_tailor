@@ -498,9 +498,21 @@ export async function resolveServiceAccountPath(): Promise<string> {
     path.join(__dirname, '../../../service-account-key.json'),
   ].filter((value): value is string => Boolean(value));
 
+  // Deduplicated by resolved path, and case-insensitively because Windows
+  // treats paths that way. Several candidates point at the SAME file whenever
+  // the process runs from backend/ - `<cwd>/service-account-key.json` and
+  // `<dist>/../../service-account-key.json` are then one file by two routes,
+  // and reporting it as two keys is a warning about a problem nobody has.
   const present: string[] = [];
+  const seen = new Set<string>();
   for (const candidate of candidates) {
-    if (await fileExists(candidate)) present.push(candidate);
+    const resolved = path.resolve(candidate);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    if (await fileExists(resolved)) {
+      seen.add(key);
+      present.push(resolved);
+    }
   }
 
   if (present.length > 0) {
