@@ -726,3 +726,213 @@ test('several key files on disk are reported rather than silently ranked', async
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('going private invites the owner BEFORE it withdraws the link', async () => {
+  const order = [];
+  const { users, sheets } = setup('private-order', {
+    async shareSpreadsheetWithEmail(spreadsheetId, email) {
+      order.push(`share:${email}`);
+    },
+    async hasPersonalGrant() {
+      order.push('check');
+      // Never confirmed, so the invite is attempted on the way through - the
+      // sequence this test is about.
+      return false;
+    },
+    async setSpreadsheetVisibility(spreadsheetId, next) {
+      order.push(`visibility:${next}`);
+      return next;
+    },
+  });
+  const account = users.createUser({ email: 'alice@example.com' });
+  await sheets.ensureAccountSheet(account);
+
+  order.length = 0;
+  await sheets.setAccountSheetVisibility(users.getUserById(account.id), 'private');
+
+  // The order is the whole safety property. Withdrawing the link first, then
+  // failing to invite, leaves somebody locked out of their own spreadsheet with
+  // no way back through the UI.
+  assert.deepEqual(order, ['check', 'share:alice@example.com', 'visibility:private']);
+});
+
+test('the owner is invited as a WRITER, on the file, by email', async () => {
+  // Checked against the real request rather than the fake, because the role is
+  // decided in the integration and a fake cannot get it wrong. "Invite them as
+  // an editor" is the requirement; `reader` would satisfy every other test here
+  // and still be wrong.
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-share-'));
+  fs.writeFileSync(
+    nodePath.join(dir, 'google-oauth-credentials.json'),
+    JSON.stringify({
+      type: 'authorized_user',
+      client_id: 'id',
+      client_secret: 'secret',
+      refresh_token: 'refresh',
+    })
+  );
+
+  const requests = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('oauth2.googleapis.com/token')) {
+      return new Response(JSON.stringify({ access_token: 'token', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(null, { status: 204 });
+  };
+
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const sheets = loadFresh('../dist/integrations/googleSheets');
+    await sheets.shareSpreadsheetWithEmail('sheet-1', 'alice@example.com');
+
+    const share = requests.find((entry) => entry.url.includes('/permissions'));
+    assert.ok(share, 'no Drive permissions request was made');
+    assert.match(share.url, /\/files\/sheet-1\/permissions/);
+    assert.equal(share.init.method, 'POST');
+
+    const body = JSON.parse(share.init.body);
+    assert.deepEqual(body, { role: 'writer', type: 'user', emailAddress: 'alice@example.com' });
+
+    // And no mail about it: this runs during sign-in, and the app is about to
+    // show them the link anyway.
+    assert.match(share.url, /sendNotificationEmail=false/);
+  } finally {
+    process.chdir(cwd);
+    globalThis.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('going private withdraws only the link, leaving the owner their grant', async () => {
+  const revoked = [];
+  const permissions = [
+    { id: 'anyone-1', type: 'anyone', role: 'writer' },
+    { id: 'owner-1', type: 'user', role: 'writer', emailAddress: 'alice@example.com' },
+  ];
+
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-revoke-'));
+  fs.writeFileSync(
+    nodePath.join(dir, 'google-oauth-credentials.json'),
+    JSON.stringify({ type: 'authorized_user', client_id: 'i', client_secret: 's', refresh_token: 'r' })
+  );
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const href = String(url);
+    if (href.includes('oauth2.googleapis.com/token')) {
+      return new Response(JSON.stringify({ access_token: 't', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (init?.method === 'DELETE') {
+      revoked.push(href.split('/permissions/')[1].split('?')[0]);
+      return new Response(null, { status: 204 });
+    }
+    return new Response(JSON.stringify({ permissions }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const sheets = loadFresh('../dist/integrations/googleSheets');
+    assert.equal(await sheets.setSpreadsheetVisibility('sheet-1', 'private'), 'private');
+
+    // Only the anyone-with-the-link grant goes. The owner's own grant is what
+    // keeps them able to open it at all, so revoking it would be the lockout
+    // the whole refusal path exists to prevent.
+    assert.deepEqual(revoked, ['anyone-1']);
+  } finally {
+    process.chdir(cwd);
+    globalThis.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the downloaded OAuth client is not a credential, and says which half it is', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  // Exactly what the Cloud console downloads. Saving it under the OUTPUT name
+  // is the trap: the app prefers that name over a working service account key,
+  // so the whole feature stops rather than falling back.
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-halfcred-'));
+  fs.writeFileSync(
+    nodePath.join(dir, 'google-oauth-credentials.json'),
+    JSON.stringify({ web: { client_id: 'id.apps.googleusercontent.com', client_secret: 'secret' } })
+  );
+  // And a perfectly good service account key beside it, to prove the broken
+  // file wins rather than being skipped over.
+  fs.writeFileSync(
+    nodePath.join(dir, 'service-account-key.json'),
+    JSON.stringify({
+      type: 'service_account',
+      client_email: 'x@y.iam.gserviceaccount.com',
+      private_key: 'key',
+    })
+  );
+
+  const cwd = process.cwd();
+  process.chdir(dir);
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const sheets = loadFresh('../dist/integrations/googleSheets');
+    assert.match(await sheets.resolveCredentialPath(), /google-oauth-credentials\.json$/);
+
+    await assert.rejects(
+      () => sheets.getAccessToken(sheets.SHEETS_SCOPE),
+      (error) => {
+        // It must name the file, say what is missing, and say what to run -
+        // the three things somebody staring at a 403 does not have.
+        assert.match(error.message, /google-oauth-credentials\.json/);
+        assert.match(error.message, /refresh_token/);
+        assert.match(error.message, /sheets:login/);
+        return true;
+      }
+    );
+  } finally {
+    process.chdir(cwd);
+    console.warn = realWarn;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the header is written to the tab Google actually minted, not to gid 0', async () => {
+  const { users, sheets, named } = setup('gid-carried');
+  const account = users.createUser({ email: 'alice@example.com' });
+
+  const state = await sheets.ensureAccountSheet(account);
+
+  // The contract the doctor broke: gid 0 is only the first tab's id while
+  // GOOGLE creates that tab and calls it Sheet1. Naming the tab at creation
+  // means Google mints a random id, and writing to 0 then fails with
+  // "No grid with id: 0" - which reads like a broken spreadsheet and is not.
+  const [, , formattedGid] = named('formatJobSheetTab')[0];
+  assert.equal(typeof formattedGid, 'number');
+  assert.notEqual(formattedGid, 0);
+
+  // And it is the id that came back from creating it, not any other number.
+  assert.match(state.todayTabUrl, new RegExp(`#gid=${formattedGid}$`));
+});

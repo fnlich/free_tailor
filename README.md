@@ -191,11 +191,27 @@ logging in. The account page ensures the same thing when it loads, which is what
 covers an account whose sign-in ran while Google was down, and accounts created
 before this feature existed - a paced backfill at startup takes care of the rest.
 
-New sheets are **public by default**, meaning anyone with the link can *edit*
-them. The toggle on the account page withdraws that. Either way the server keeps
-its own access, because the file belongs to the service account rather than to a
-person - so job links, company names and descriptions still load after somebody
-goes private.
+**Who owns them, and who can open them.** Every sheet is created in the Drive of
+whichever Google account signed in with `npm run sheets:login` - the operator's,
+normally - and each account is invited to its own sheet as an **editor**, by
+email, without a notification mail.
+
+New sheets are **public by default**, meaning anyone with the link can edit them.
+The toggle on the account page withdraws exactly that one grant and nothing else:
+the owner's personal invitation stays, which is what still lets them open it. The
+order matters and is enforced - the invitation is confirmed *before* the link is
+taken away, and the request is refused outright if it cannot be, because
+withdrawing the link from somebody who never got an invitation locks them out of
+their own spreadsheet with no way back through the UI.
+
+Either way the server keeps its own access, since the file belongs to the account
+whose credentials it holds - so job links, company names and descriptions still
+load after somebody goes private.
+
+Nothing ties the credential to the app's administrator: sheets land in whichever
+Drive consented, which may not be the address `ADMIN_EMAILS` or `SMTP_USER`
+names. `npm run sheets:doctor` reports the owning account and says so when the
+two differ.
 
 **Who administers the installation.** Not whoever signs in first - on a server
 anybody can reach, that handed the keys to the quickest stranger. It is
@@ -610,7 +626,7 @@ File and folder names are templated per profile.
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
-| `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key |
+| `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |

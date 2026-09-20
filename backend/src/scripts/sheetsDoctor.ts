@@ -1,5 +1,6 @@
 import '../config/env';
 
+import { resolveAdminIdentity } from '../config/adminIdentity';
 import {
   createSpreadsheet,
   deleteSpreadsheet,
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
   console.log('Google Sheets doctor\n');
 
   let spreadsheetId = '';
+  let firstTabGid = -1;
   let owner = '';
 
   const steps: Step[] = [
@@ -139,7 +141,26 @@ async function main(): Promise<void> {
           );
         }
 
-        return `drive reachable, ${used} of ${limit} used`;
+        /**
+         * Whose Drive the sheets will land in, checked against who the app
+         * calls an administrator.
+         *
+         * Nothing links the two. The credential belongs to whichever Google
+         * account ran `sheets:login`, and the admin is whoever ADMIN_EMAILS or
+         * SMTP_USER names - so signing in with the wrong account puts every
+         * user's sheet in a Drive nobody expected, silently and permanently.
+         * Cheap to notice now, expensive once sheets exist.
+         */
+        const owner = about.user?.emailAddress ?? '(not reported)';
+        const admins = resolveAdminIdentity().emails;
+        const mismatch =
+          admins.length > 0 && !admins.includes(owner.trim().toLowerCase())
+            ? `\n    NOTE: sheets will be owned by ${owner}, but this installation's ` +
+              `administrator is ${admins.join(', ')}.\n` +
+              '          That works, but the sheets land in a different Drive than you may expect.'
+            : '';
+
+        return `drive reachable as ${owner}, ${used} of ${limit} used${mismatch}`;
       },
       remedy: (error) => {
         const said = reason(error);
@@ -168,7 +189,11 @@ async function main(): Promise<void> {
       run: async () => {
         const created = await createSpreadsheet('Free Tailor - doctor check', '01/01/2000');
         spreadsheetId = created.spreadsheetId;
-        return `${created.spreadsheetUrl}`;
+        // Carried to the next step. It used to be assumed to be 0, which held
+        // only while Google made the first tab itself and called it `Sheet1`;
+        // naming the tab at creation means Google mints a random id for it.
+        firstTabGid = created.firstTabGid;
+        return `${created.spreadsheetUrl} (first tab gid ${firstTabGid})`;
       },
       remedy: () =>
         'This is the call that fails in your log. With the steps above green, the usual\n' +
@@ -178,10 +203,13 @@ async function main(): Promise<void> {
     {
       title: 'Write the job sheet header into it',
       run: async () => {
-        await formatJobSheetTab(spreadsheetId, 0);
+        await formatJobSheetTab(spreadsheetId, firstTabGid);
         return 'header written';
       },
-      remedy: () => 'The spreadsheet exists but cannot be written to, which should not happen.',
+      remedy: () =>
+        'The spreadsheet exists but cannot be written to, which should not happen when creating\n' +
+        '  it just worked. "No grid with id" here means this check sent the wrong tab id rather\n' +
+        '  than anything being wrong with your setup - report it.',
     },
   ];
 

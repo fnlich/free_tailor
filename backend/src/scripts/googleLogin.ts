@@ -40,6 +40,8 @@ type ClientSecretFile = {
   web?: { client_id?: string; client_secret?: string };
   client_id?: string;
   client_secret?: string;
+  /** Present once this script has already run against the file. */
+  refresh_token?: string;
 };
 
 function argValue(flag: string): string {
@@ -70,6 +72,12 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
     : [
         path.join(process.cwd(), 'oauth-client.json'),
         path.join(process.cwd(), 'backend', 'oauth-client.json'),
+        // The output filename is searched too, because saving the downloaded
+        // client under it is an easy mistake and a miserable one: the app
+        // prefers that name, finds no refresh_token in it and refuses, while
+        // this script said "no client found" about the very file it needed.
+        // Both messages were true and neither was any help.
+        path.join(process.cwd(), OUTPUT_FILE),
         ...(await fs.readdir(process.cwd()).catch(() => [] as string[]))
           .filter((name) => name.startsWith('client_secret') && name.endsWith('.json'))
           .map((name) => path.join(process.cwd(), name)),
@@ -78,6 +86,32 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
   for (const candidate of candidates) {
     if (!(await exists(candidate))) continue;
     const parsed = JSON.parse(await fs.readFile(candidate, 'utf8')) as ClientSecretFile;
+
+    // Already finished - nothing to do, and re-running would only replace a
+    // working consent with an identical one.
+    if (parsed.refresh_token) continue;
+
+    /**
+     * A Web application client cannot complete this flow.
+     *
+     * The loopback redirect lands on a RANDOM free port, and a web client only
+     * accepts redirect URIs registered in advance - so Google answers
+     * `redirect_uri_mismatch`, which names the port rather than the client type
+     * and sends people off registering ports one at a time. A Desktop client
+     * accepts any loopback port by design.
+     */
+    if (parsed.web && !parsed.installed) {
+      throw new Error(
+        `${candidate} is a WEB APPLICATION OAuth client, and this flow needs a DESKTOP one.\n\n` +
+          'The sign-in redirect comes back to a random port on 127.0.0.1. A web client only\n' +
+          'accepts redirect URIs registered beforehand, so Google would refuse with\n' +
+          '"redirect_uri_mismatch"; a desktop client accepts any loopback port.\n\n' +
+          'In https://console.cloud.google.com/apis/credentials:\n' +
+          '  CREATE CREDENTIALS -> OAuth client ID -> Application type: Desktop app\n' +
+          'Download that one and put it in backend/. You can delete the web client.\n'
+      );
+    }
+
     const block = parsed.installed ?? parsed.web ?? parsed;
     const clientId = block.client_id?.trim();
     const clientSecret = block.client_secret?.trim();

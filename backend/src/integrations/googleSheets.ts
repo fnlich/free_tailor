@@ -581,7 +581,7 @@ export async function resolveCredentialPath(): Promise<string> {
       console.warn(
         `[sheets] ${present.length} Google credential files were found and only the first is used.\n` +
           present.map((file, index) => `         ${index === 0 ? 'USING  ' : 'ignored'} ${file}`).join('\n') +
-          '\n         Delete the ones you do not want, or set GOOGLE_SERVICE_ACCOUNT_KEY_PATH to be explicit.'
+          '\n         Delete the ones you do not want, or set GOOGLE_CREDENTIALS_PATH to be explicit.'
       );
     }
     return present[0];
