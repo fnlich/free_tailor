@@ -272,7 +272,12 @@ test('an unpaid or expired session closes the payment without crediting', async 
     const response = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
     assert.equal(response.status, 200);
     assert.equal(server.balance(), 0);
-    assert.equal(server.payments.getPayment(payment.id).state, 'expired');
+    const closed = server.payments.getPayment(payment.id);
+    assert.equal(closed.state, 'expired');
+    // What the buyer reads on the return page. The provider's own event name
+    // is on the payment_events row instead, where reconciliation needs it.
+    assert.match(closed.failure, /expired before it was paid/i);
+    assert.doesNotMatch(closed.failure, /checkout\.session/);
   } finally {
     server.close();
   }
