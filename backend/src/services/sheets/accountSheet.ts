@@ -1,6 +1,9 @@
 import {
   addSheetTabWithHeaders,
   createSpreadsheet,
+  describeCredentialInUse,
+  getAccessToken,
+  SHEETS_SCOPE,
   formatJobSheetTab,
   getSpreadsheetVisibility,
   hasPersonalGrant,
@@ -431,6 +434,17 @@ export async function resolveAddressableTab(
 export async function backfillAccountSheets(pauseMs = 250): Promise<{ done: number; failed: number }> {
   if (process.env.SHEET_BACKFILL === 'off') return { done: 0, failed: 0 };
   if (!(await client.isConfigured())) return { done: 0, failed: 0 };
+
+  // Said BEFORE anything can fail, because the commonest cause of a refusal is
+  // a key that is not the one somebody just installed - and until this line
+  // existed there was no way to tell that apart from a misconfigured project.
+  try {
+    await getAccessToken(SHEETS_SCOPE);
+    const using = describeCredentialInUse();
+    if (using) console.log(`[sheets] Using ${using}.`);
+  } catch (error) {
+    console.warn('[sheets] Could not load the Google credentials.', error);
+  }
 
   const pending = listAccountsWithoutSheet();
   if (pending.length === 0) return { done: 0, failed: 0 };

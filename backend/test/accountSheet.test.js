@@ -673,3 +673,56 @@ test('a tab headered by an older build is detected as needing the new columns', 
   misspelled[6] = 'Note';
   assert.equal(jobSheetHeaderIsCurrent(misspelled), false);
 });
+
+test('a refusal names the credential that was refused, not just the refusal', async () => {
+  const { describeGoogleFailure } = require('../dist/integrations/googleSheets');
+
+  // The gap this closes: a 403 reports what Google would not do and never
+  // whose key asked. Somebody who has just swapped a key and sees the SAME
+  // error cannot tell whether the new project is misconfigured or whether the
+  // new key is not the one being used - which are opposite problems.
+  const bare = { error: { code: 403, message: 'The caller does not have permission' } };
+  const said = describeGoogleFailure(403, bare, 'create a spreadsheet');
+
+  // The pure describer still says only what it can know.
+  assert.match(said, /The caller does not have permission/);
+  assert.match(said, /Drive API must be enabled/);
+  assert.doesNotMatch(said, /Asked with/);
+});
+
+test('several key files on disk are reported rather than silently ranked', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  // Five paths are searched and the FIRST wins. Two keys on disk - an old one
+  // at the repo root and the new one in backend/ - is the trap: the new key is
+  // ignored and nothing says so, and the 403 that follows sends somebody to
+  // check the new project's settings instead of which key is loaded.
+  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-keys-'));
+  fs.mkdirSync(nodePath.join(root, 'backend'), { recursive: true });
+  const first = nodePath.join(root, 'service-account-key.json');
+  const second = nodePath.join(root, 'backend', 'service-account-key.json');
+  fs.writeFileSync(first, '{}');
+  fs.writeFileSync(second, '{}');
+
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const sheets = loadFresh('../dist/integrations/googleSheets');
+    const chosen = await sheets.resolveServiceAccountPath();
+    assert.equal(chosen, first, 'the first candidate still wins - only the silence changes');
+    const said = warnings.join('\n');
+    assert.match(said, /2 service account keys were found/);
+    assert.match(said, /USING/);
+    assert.match(said, /ignored/);
+  } finally {
+    process.chdir(cwd);
+    console.warn = realWarn;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
