@@ -13,6 +13,7 @@ const {
   assertSheetNotOwnedByAnotherAccount,
   SheetAccessError,
 } = require('../services/sheets/accountSheet');
+const { getAccessToken, SHEETS_SCOPE } = require('../integrations/googleSheets');
 const profileService = require('../services/profileService');
 
 const backendDirectory = path.join(__dirname, '..', '..');
@@ -43,7 +44,6 @@ const {
 import { generateAnswers } from '../bidAssistant/aiHelper';
 
 const router = express.Router();
-const googleSheetsScopes = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const promptTemplateSettingKey = 'ask_ai_prompt_template';
 const defaultPromptTemplate = `Candidate:
 - Name: {{candidateName}}
@@ -230,55 +230,23 @@ function getProfileErrorDetails(error) {
   };
 }
 
-async function googleServiceAccountKeyFileExists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// Loads Google service account credentials from env or the shared app key file.
-async function loadGoogleServiceAccountCredentials() {
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-  }
-
-  const keyFilePath =
-    process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE
-    || process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH
-    || process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const candidates = [
-    keyFilePath,
-    path.join(repoDirectory, 'service-account-key.json'),
-    path.join(backendDirectory, 'service-account-key.json')
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    const resolvedPath = path.isAbsolute(candidate)
-      ? candidate
-      : path.join(repoDirectory, candidate);
-
-    if (await googleServiceAccountKeyFileExists(resolvedPath)) {
-      const fileContents = await fs.readFile(resolvedPath, 'utf8');
-      return JSON.parse(fileContents);
-    }
-  }
-
-  throw new Error('Google Sheets credentials are not configured.');
-}
-
-// Creates an authenticated Google Sheets client using the configured service account.
+/**
+ * The same credentials the rest of the app uses, not a second set.
+ *
+ * This had its own loader, its own env variables and its own search paths, and
+ * it only understood a service account key - it read `client_email` and
+ * `private_key` straight out of the file. So the moment the app started signing
+ * in as a person instead, this router alone said "Google Sheets credentials are
+ * not configured" while everything else worked.
+ *
+ * Taking an access token from the shared layer fixes that and removes the
+ * second set of variables: whatever `GOOGLE_CREDENTIALS_PATH` resolves to is
+ * what this uses too, whichever of the two shapes it turns out to be.
+ */
 async function createGoogleSheetsClient() {
-  const credentials = await loadGoogleServiceAccountCredentials();
-  const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: credentials.client_email,
-      private_key: credentials.private_key
-    },
-    scopes: googleSheetsScopes
-  });
+  const accessToken = await getAccessToken(SHEETS_SCOPE);
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken });
 
   return google.sheets({
     version: 'v4',
