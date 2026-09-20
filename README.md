@@ -266,6 +266,46 @@ Two things this needs from Google, and both are easy to miss:
   quota, not against any person's, so a large installation should point the key
   at a shared drive.
 
+**Moving to another server.** Nothing is registered with Google a second time.
+The Cloud project, the enabled Sheets and Drive APIs, the consent screen and the
+OAuth client all belong to the Google account that consented - not to a machine -
+so a new host inherits them by holding the same credential file. Copy
+`backend/google-oauth-credentials.json` across and give it mode `0600`: the
+refresh token inside is tied to an account, not to a host or an IP. Running
+`npm run sheets:login` on the new machine is equivalent and mints a second
+refresh token for the same account, both valid - but its redirect goes to
+`127.0.0.1`, so it needs a browser on that machine, which a headless server has
+not got.
+
+**Copy the database too, with the backend stopped**, and this is the part that
+does damage if it is missed. An account's row is the *only* record of which
+spreadsheet is its own. Start a new server on an empty database and every
+account looks like an account from before the feature existed, so the startup
+backfill allocates each one a **brand-new spreadsheet** and the real ones are
+left orphaned in the Drive that owns them - with a log line that reads like a
+success. The file is `free_tailor.db` in `DB_DIR`, and the default differs by
+platform, so a Windows-to-Linux move will never find the old one by accident:
+
+```
+Linux/macOS   /data/db/free_tailor.db
+Windows       %LOCALAPPDATA%\free_tailor\db\free_tailor.db
+```
+
+`SHEET_BACKFILL=off` is how to bring the new host up *before* the database is in
+place without it allocating anything.
+
+`.env` does not travel with the repository and has to be written again -
+`ADMIN_EMAILS`, the `SMTP_*` block, `DB_DIR`, `SHEET_TIMEZONE`,
+`SHEET_BACKFILL`. Do not carry a relative `GOOGLE_SERVICE_ACCOUNT_KEY_PATH`
+across: it resolves from whatever directory the backend was started in on the
+new machine, and it names a credential this setup no longer wants. Then
+`cd backend && npm run sheets:doctor` on the new host, which walks the same
+chain allocation walks and says which step is missing.
+
+One thing to check that is neither the old server's nor the new one's: an OAuth
+consent screen still in **Testing** expires its refresh tokens after seven days,
+on every machine equally. Publish it.
+
 **The job pages write into it.** Scraping jobs and filtering them used to make
 you supply a spreadsheet id, a tab name and four column letters. They now default
 to your own sheet, today's tab, and the layout above - `Company`, `Job Title`,
@@ -273,6 +313,14 @@ to your own sheet, today's tab, and the layout above - `Company`, `Job Title`,
 filter's verdict in `Filter Result` and its reason in `Filter Reason` - two
 columns the filter owns, so `Rate`, `note` and `Job Finder` stay yours. Rows are appended after
 what is already there, and jobs already in the tab are skipped.
+
+**And the builder reads back out of it.** *Import from Sheets* on the builder
+offers your own sheet first and by default, on today's tab, with `Company`,
+`Job Title` and `Job Description` already mapped - because the layout is one
+this app wrote. A saved source is somebody else's spreadsheet and keeps the
+older column guesses. Only an administrator is offered the saved sources at all:
+they are not a user-addressable sheet, so listing them for everyone did nothing
+but offer a 404.
 
 **Who may point them where.** A spreadsheet id supplied by a request is checked
 rather than trusted: an ordinary account may address only its own sheet, and an
@@ -293,7 +341,7 @@ zone the users actually live in.
 |------|---------|
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
-| Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row. Sharing state is **not** stored - Drive is asked each time, because somebody can change it in Google's own UI and a cached copy would go quietly wrong |
+| Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
