@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 
 import AppTopNav from '@/components/AppTopNav';
 import CreditLedger from '@/components/CreditLedger';
@@ -319,12 +320,26 @@ export default function AccountPage() {
           ) : (
             (credits?.balance ?? account.credits) === 0 && (
               <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
-                {/* No checkout exists, and implying one would send somebody
-                    looking for a button that is not there. */}
-                You have no credits, so generating a resume will be refused. Previews still work. Ask
-                an administrator of this installation to add some.
+                You have no credits, so generating a resume will be refused. Previews still work.{' '}
+                {/* The buy page decides what to offer - it is the only thing
+                    that knows whether a payment method is configured, and
+                    saying "buy some" here when none is would be worse than the
+                    "ask an administrator" copy this replaced. */}
+                <Link href="/credits" className="font-semibold underline">
+                  Buy credits
+                </Link>
+                .
               </p>
             )
+          )}
+
+          {(credits?.balance ?? account.credits) > 0 && !credits?.exempt && (
+            <Link
+              href="/credits"
+              className="mt-4 inline-block rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+            >
+              Buy credits
+            </Link>
           )}
 
           <div className="mt-6 border-t border-gray-200 pt-4 dark:border-slate-800">

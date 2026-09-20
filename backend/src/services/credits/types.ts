@@ -17,6 +17,10 @@ export const CREDIT_REASONS = [
   'generation-refund',
   'generation-release',
   'reconcile-orphan',
+  // Money in, and money back out. A purchase is the only reason a balance ever
+  // rises without an administrator deciding it should.
+  'purchase',
+  'purchase-refund',
 ] as const;
 
 export type CreditReason = (typeof CREDIT_REASONS)[number];

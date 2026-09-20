@@ -693,6 +693,16 @@ export interface AdminAppSettings extends PublicAppSettings {
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
+  /**
+   * What a credit sells for, and the bounds on one purchase.
+   *
+   * Administrator-only, not public: the buy page reads the price from
+   * `/payments/methods`, which is also the thing that knows whether a payment
+   * method is configured at all. One answer to "what does this cost".
+   */
+  creditPriceCents: number;
+  creditMinCredits: number;
+  creditMaxCredits: number;
 }
 
 function normalizeGoogleSheetSources(value: unknown): GoogleSheetSource[] {
@@ -940,12 +950,18 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
+    creditPriceCents: typeof source.creditPriceCents === 'number' ? source.creditPriceCents : 50,
+    creditMinCredits: typeof source.creditMinCredits === 'number' ? source.creditMinCredits : 10,
+    creditMaxCredits: typeof source.creditMaxCredits === 'number' ? source.creditMaxCredits : 5000,
   };
 }
 
 export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   outputBaseDir?: string;
   outputPathTemplate?: string;
+  creditPriceCents?: number;
+  creditMinCredits?: number;
+  creditMaxCredits?: number;
 }
 
 /** One debug browser: which chat site it shows, and the port it listens on. */

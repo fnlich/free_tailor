@@ -12,6 +12,8 @@ import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
 import generationRoutes from './routes/generation';
 import orderRoutes from './routes/orders';
+import paymentRoutes, { adminPaymentsRouter } from './routes/payments';
+import paymentWebhookRoutes from './routes/paymentWebhooks';
 import { ownerOfGeneratedFile } from './database/orderRepository';
 import { orderRetentionDays, startOrderRetention } from './services/orders/retention';
 import { restoreGenerationQueue } from './services/queue';
@@ -124,6 +126,23 @@ app.use((req, res, next) => {
 
   cors({ origin: true, credentials: true })(req, res, next);
 });
+/*
+ * Payment webhooks, mounted BEFORE the JSON parser and not by accident.
+ *
+ * A provider signs the bytes it sent. `express.json` replaces those bytes with
+ * an object, and re-serializing that object gives back a string that is usually
+ * identical to what was signed and occasionally is not - a different key order,
+ * a unicode escape, a number that round-trips differently. "Usually" is not a
+ * security property, so this router gets the raw Buffer and the parser never
+ * sees these requests at all.
+ *
+ * It sits above `attachUser` too, because the caller is Stripe rather than a
+ * person: the signature is the authentication, and there is no session to
+ * attach. It passes the CORS gate above because a server-to-server POST sends
+ * no Origin, and `isOriginAllowed` allows that.
+ */
+app.use('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), paymentWebhookRoutes);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -192,6 +211,8 @@ app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
 app.use('/api/generation', generationRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/admin/payments', adminPaymentsRouter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);
