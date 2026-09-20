@@ -314,6 +314,14 @@ filter's verdict in `Filter Result` and its reason in `Filter Reason` - two
 columns the filter owns, so `Rate`, `note` and `Job Finder` stay yours. Rows are appended after
 what is already there, and jobs already in the tab are skipped.
 
+**And the builder reads back out of it.** *Import from Sheets* on the builder
+offers your own sheet first and by default, on today's tab, with `Company`,
+`Job Title` and `Job Description` already mapped - because the layout is one
+this app wrote. A saved source is somebody else's spreadsheet and keeps the
+older column guesses. Only an administrator is offered the saved sources at all:
+they are not a user-addressable sheet, so listing them for everyone did nothing
+but offer a 404.
+
 **Who may point them where.** A spreadsheet id supplied by a request is checked
 rather than trusted: an ordinary account may address only its own sheet, and an
 administrator may also address the shared sources they configured on the admin

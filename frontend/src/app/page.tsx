@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   profilesApi,
   groupsApi,
@@ -28,12 +28,23 @@ import GenerationProgress, { type GenerationProgressState } from '@/components/G
 import ProfileSelector from '@/components/ProfileSelector';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
-import SheetsImportModal, { ImportedSheetJob } from '@/components/SheetsImportModal';
+import SheetsImportModal, { ImportedSheetJob, type ImportSheetSource } from '@/components/SheetsImportModal';
+import { useAuth } from '@/contexts/AuthContext';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 
 type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
 type SheetsTargetMode = 'single' | 'all' | 'group';
+
+/**
+ * The id standing for "this account's own job sheet".
+ *
+ * Not the spreadsheet id: that arrives asynchronously and changes the first
+ * time a sheet is allocated, and a selection keyed on it would be dropped the
+ * moment it did.
+ */
+const OWN_SHEET_SOURCE_ID = 'own';
 
 type UnconfirmedSkill = { original: string; value: string };
 
@@ -65,6 +76,8 @@ function getAnalysisJobTitle(analysis?: JobAnalysis): string {
 }
 
 export default function Home() {
+  const { account } = useAuth();
+  const isAdmin = account?.role === 'admin';
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
@@ -83,6 +96,7 @@ export default function Home() {
   const [selectedSheetsProfileId, setSelectedSheetsProfileId] = useState<string | null>(null);
   const [selectedSheetsGroupId, setSelectedSheetsGroupId] = useState<string>('');
   const [selectedSheetsSourceId, setSelectedSheetsSourceId] = useState<string>('');
+  const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState('');
   const [jobDescription, setJobDescription] = useState('');
@@ -163,15 +177,19 @@ export default function Home() {
 
   const loadInitialData = async () => {
     try {
-      const [profilesData, groupsData, modelData] = await Promise.all([
+      const [profilesData, groupsData, modelData, ownSheet] = await Promise.all([
         profilesApi.getAll({ includeDisabled: true }),
         groupsApi.getAll().catch(() => []),
         resumeApi.getModels().catch(() => DEFAULT_PUBLIC_APP_SETTINGS),
+        // Never fatal to this page: the import dialog is one feature of it, and
+        // a Google outage must not stop the builder from loading.
+        sheetApi.get().catch(() => null),
       ]);
       const enabledProfiles = profilesData.filter((p) => !p.disabled);
       setProfiles(enabledProfiles);
       setGroups(groupsData);
       setModelSettings(modelData);
+      setAccountSheet(ownSheet);
       setAutoGenerate(modelData.defaultMode === 'generate');
       setStoredDefaultTheme(modelData.defaultTheme);
 
@@ -185,13 +203,6 @@ export default function Home() {
         setSelectedProfileId(initialProfileId);
         setSelectedSheetsProfileId(initialProfileId);
       }
-
-      setSelectedSheetsSourceId((current) => {
-        if (current && modelData.googleSheetsSources.some((source) => source.id === current)) {
-          return current;
-        }
-        return modelData.googleSheetsSources[0]?.id ?? '';
-      });
 
       if (modelData.defaultResumeSelection === 'single') {
         setGenerateMode('single');
@@ -229,15 +240,56 @@ export default function Home() {
     includeCoverLetterDocx: modelSettings.defaultCoverLetterDocxEnabled,
   });
   const shouldShowRoleInput = modelSettings.outputPathUsesJobTitle;
-  const hasGoogleSheetSources = modelSettings.googleSheetsSources.length > 0;
+  /**
+   * Which spreadsheets this account may import from.
+   *
+   * Its own, first and by default - that is the one every account has, and the
+   * only one an ordinary account is allowed to address. The saved sources
+   * belong to the administrator who configured them, so offering them to
+   * everybody sent a user at a spreadsheet the backend would rightly refuse:
+   * "That spreadsheet was not found." They stay, for the administrator, behind
+   * the account's own sheet.
+   */
+  const sheetImportSources = useMemo<ImportSheetSource[]>(() => {
+    const own: ImportSheetSource[] =
+      accountSheet?.configured && accountSheet.spreadsheetId
+        ? [
+            {
+              id: OWN_SHEET_SOURCE_ID,
+              name: 'My job sheet',
+              sheetId: accountSheet.spreadsheetId,
+              isOwnSheet: true,
+              preferredTab: accountSheet.todayTab,
+            },
+          ]
+        : [];
+
+    return isAdmin ? [...own, ...modelSettings.googleSheetsSources] : own;
+  }, [accountSheet, isAdmin, modelSettings.googleSheetsSources]);
+  const hasImportableSheet = sheetImportSources.length > 0;
+  /** Why there is nothing to import from, in the words that fit the reason. */
+  const sheetImportNotice =
+    accountSheet && !accountSheet.configured
+      ? accountSheet.message ?? 'Google Sheets is not set up on this server yet.'
+      : 'Your job sheet is not ready yet. Open the Account page and try again.';
   const selectedSheetsProfileName = sheetsTargetMode === 'single'
     ? profiles.find((profile) => profile.id === selectedSheetsProfileId)?.name ?? ''
     : '';
 
+  // Keep a sheet selected: the account's own unless the administrator has
+  // deliberately chosen a saved source that is still in the list.
   useEffect(() => {
-    if (hasGoogleSheetSources || !isSheetsImportOpen) return;
+    setSelectedSheetsSourceId((current) =>
+      current && sheetImportSources.some((source) => source.id === current)
+        ? current
+        : sheetImportSources[0]?.id ?? ''
+    );
+  }, [sheetImportSources]);
+
+  useEffect(() => {
+    if (hasImportableSheet || !isSheetsImportOpen) return;
     setIsSheetsImportOpen(false);
-  }, [hasGoogleSheetSources, isSheetsImportOpen]);
+  }, [hasImportableSheet, isSheetsImportOpen]);
 
   /**
    * Picks a running batch back up after a reload.
@@ -1887,17 +1939,17 @@ export default function Home() {
               </div>
             )}
 
-            {!hasGoogleSheetSources && (
+            {!hasImportableSheet && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Save at least one Google Sheet in the Admin Google Sheets panel before importing jobs here.
+                {sheetImportNotice}
               </div>
             )}
 
             <button
               type="button"
               onClick={() => {
-                if (!hasGoogleSheetSources) {
-                  setError('Save at least one Google Sheet in the Admin Google Sheets panel before importing.');
+                if (!hasImportableSheet) {
+                  setError(sheetImportNotice);
                   return;
                 }
                 setError('');
@@ -2076,7 +2128,7 @@ export default function Home() {
         isOpen={isSheetsImportOpen}
         isSubmitting={isGenerating}
         showJobTitleMapping={shouldShowRoleInput}
-        sources={modelSettings.googleSheetsSources}
+        sources={sheetImportSources}
         selectedSourceId={selectedSheetsSourceId}
         selectedProfileName={selectedSheetsProfileName}
         generationProgress={generationProgress}
