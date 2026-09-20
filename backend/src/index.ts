@@ -19,6 +19,8 @@ import creditRoutes from './routes/credits';
 import sheetRoutes from './routes/sheet';
 import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
+import { describeAdminIdentity } from './config/adminIdentity';
+import { promoteConfiguredAdmins } from './database/userRepository';
 import { attachUser, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
@@ -243,6 +245,15 @@ const server = app.listen(PORT, HOST, () => {
   // Reachable whenever ADMIN_EMAILS is set and somebody else signs in first -
   // that path never falls back to the first-account rule, so the install can
   // genuinely end up with nobody who can administer it.
+  // Before the warning, not after: an account that already exists and is named
+  // by ADMIN_EMAILS or SMTP_USER becomes an administrator here, and warning
+  // first would report a problem this line is about to fix.
+  try {
+    const promoted = promoteConfiguredAdmins();
+    if (promoted > 0) console.log(`[auth] ${describeAdminIdentity()}`);
+  } catch (error) {
+    console.warn('[auth] Could not apply the configured administrator.', error);
+  }
   warnIfNoAdmin();
   // Gives a spreadsheet to accounts created before this feature existed. Serial
   // and paced, so it is a slow trickle in the background rather than a burst of

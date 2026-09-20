@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * Credits through the REAL queue, end to end.
@@ -19,6 +19,7 @@ let harnessSeq = 0;
 
 async function harness(name) {
   useTempStorage(`generation-credits-${name}`);
+  useAdminEmails('admin@example.com');
 
   // Real registered browsers, the way the app gets its capacity. There is no
   // test seam for this on purpose - the dispatcher reads the same settings row

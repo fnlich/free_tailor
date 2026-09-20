@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * Credits, and the ledger that explains them.
@@ -14,6 +14,7 @@ const { loadFresh, useTempStorage } = require('./helpers');
 
 function setup(name) {
   useTempStorage(name);
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const credits = loadFresh('../dist/services/credits');
   const repo = loadFresh('../dist/database/creditRepository');
@@ -251,6 +252,7 @@ test('the held figure shows what a run is holding while it is in flight', () => 
 
 test('a new account starts at zero unless an operator says otherwise', () => {
   useTempStorage('credits-signup-default');
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   users.createUser({ email: 'admin@example.com' });
   assert.equal(users.createUser({ email: 'alice@example.com' }).credits, 0);
@@ -258,6 +260,7 @@ test('a new account starts at zero unless an operator says otherwise', () => {
 
 test('CREDIT_SIGNUP_GRANT gives new accounts an opening balance, once', () => {
   useTempStorage('credits-signup-grant');
+  useAdminEmails('admin@example.com');
   process.env.CREDIT_SIGNUP_GRANT = '3';
   try {
     const users = loadFresh('../dist/database/userRepository');

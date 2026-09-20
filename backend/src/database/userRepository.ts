@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 
 import { DEFAULT_ACCOUNT_PLAN, isAccountPlanId, type AccountPlanId } from '../config/accountPlans';
+import { isConfiguredAdmin, resolveAdminIdentity } from '../config/adminIdentity';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 import { getDb } from './sqlite';
 
@@ -124,27 +125,46 @@ export type CreateUserInput = {
 };
 
 /**
- * The first account to sign in becomes the admin.
+ * The role a brand new account is created with.
  *
- * Somebody has to be, and there is no other way to appoint one: the admin pages
- * are where accounts are managed, and they are admin-only, so an install whose
- * first user was an ordinary user would have no way to ever get an admin
- * without editing the database by hand. ADMIN_EMAILS overrides this when an
- * operator wants to say in advance who it is.
+ * Configuration decides, never arrival order - see config/adminIdentity for why.
  */
 function roleForNewUser(email: string, requested?: UserRole): UserRole {
   if (requested) return requested;
+  // ADMIN_EMAILS, else SMTP_USER, else nobody - see config/adminIdentity. There
+  // is no longer a "first account wins" rule: on a server anybody can reach,
+  // that handed the installation to whoever signed up first.
+  return isConfiguredAdmin(email) ? 'admin' : 'user';
+}
 
-  const listed = (process.env.ADMIN_EMAILS ?? '')
-    .split(/[,\s]+/)
-    .map(normalizeEmail)
-    .filter(Boolean);
-  if (listed.length > 0) {
-    return listed.includes(email) ? 'admin' : 'user';
+/**
+ * Promotes an account the configuration says should be an administrator.
+ *
+ * Promote only, never demote. A demoting version would mean a typo in .env, or
+ * an SMTP provider swapped for one that uses a username, locks the operator out
+ * of their own installation with no way back through the UI. Returns true when
+ * it actually changed something, so the caller can say so and re-run the
+ * ownership migration that waits for an admin to exist.
+ */
+export function promoteIfConfiguredAdmin(account: UserAccount): boolean {
+  if (account.role === 'admin' || !isConfiguredAdmin(account.email)) return false;
+
+  getDb()
+    .prepare("UPDATE users SET role = 'admin', updated_at = ? WHERE id = ? AND role <> 'admin'")
+    .run(now(), account.id);
+  console.log(`[auth] ${account.email} is configured as an administrator; role updated.`);
+  return true;
+}
+
+/** The startup pass. Same rule, applied to accounts that already existed. */
+export function promoteConfiguredAdmins(): number {
+  const { emails } = resolveAdminIdentity();
+  let promoted = 0;
+  for (const email of emails) {
+    const account = getUserByEmail(email);
+    if (account && promoteIfConfiguredAdmin(account)) promoted += 1;
   }
-
-  const row = getDb().prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
-  return row.n === 0 ? 'admin' : 'user';
+  return promoted;
 }
 
 /**

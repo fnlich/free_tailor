@@ -952,10 +952,11 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
     const body = req.body ?? {};
     const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
     const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
-    // The job sheet has no column of its own for a verdict, so the two spare
-    // ones carry it: the decision in `Rate`, the explanation in `note`.
-    const resultCol = resolveColumn('Result column', body.resultCol, JOB_SHEET_COLUMNS.rate);
-    const reasonCol = resolveColumn('Reason column', body.reasonCol, JOB_SHEET_COLUMNS.note);
+    // Two columns of the filter's own. Rate, note and Job Finder are fields
+    // somebody types into, so a verdict written into one of them would destroy
+    // what was there.
+    const resultCol = resolveColumn('Result column', body.resultCol, JOB_SHEET_COLUMNS.filterResult);
+    const reasonCol = resolveColumn('Reason column', body.reasonCol, JOB_SHEET_COLUMNS.filterReason);
     const startRow =
       body.startRow === undefined ? JOB_SHEET_FIRST_DATA_ROW : toPositiveInteger('startRow', body.startRow);
 

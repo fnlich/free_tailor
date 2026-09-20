@@ -1,3 +1,4 @@
+import { describeAdminIdentity, resolveAdminIdentity } from '../../config/adminIdentity';
 import { countAdmins } from '../../database/userRepository';
 import {
   abandonReservation,
@@ -79,12 +80,12 @@ export function reconcileCredits(now = Date.now()): ReconcileReport {
 /**
  * Says so when an installation has nobody who can administer it.
  *
- * This is reachable, and not only in theory. `roleForNewUser` defers ENTIRELY to
- * ADMIN_EMAILS when that variable is set - it does not fall back to the
- * first-account rule - so an operator who sets it and then has somebody else
- * sign in first gets an install whose only user is an ordinary one, on zero
- * credits, with no administrator to grant any. Nothing in the app can fix that
- * from inside, so the least it can do is say what is wrong on the way past.
+ * Since the first-account rule was removed this is the ONLY guard left. An
+ * install with neither ADMIN_EMAILS nor an email-shaped SMTP_USER will never
+ * mint an administrator, and nothing inside the app can repair that: the pages
+ * that appoint one are themselves admin-only. So the warning has to be specific
+ * enough to act on without reading the source, and it names both variables and
+ * whichever is currently in force.
  */
 export function warnIfNoAdmin(): boolean {
   try {
@@ -93,10 +94,25 @@ export function warnIfNoAdmin(): boolean {
     return false;
   }
 
+  const { source, emails } = resolveAdminIdentity();
+
+  if (source === 'none') {
+    console.warn(
+      '[auth] This installation has NO administrator and no way to appoint one. Nobody can ' +
+        'manage accounts, edit prompts, or grant credits.\n' +
+        '       Set one of these in .env and restart:\n' +
+        '         SMTP_USER=you@example.com     the mailbox sign-in codes are sent from\n' +
+        '         ADMIN_EMAILS=you@example.com  an explicit list, which wins over SMTP_USER\n' +
+        '       The account is promoted as soon as that address exists, whether it signs in ' +
+        'before or after the restart.'
+    );
+    return true;
+  }
+
   console.warn(
-    '[auth] This installation has no enabled administrator. Nobody can manage accounts, ' +
-      'edit prompts, or grant credits. Set ADMIN_EMAILS in .env to an address that has signed ' +
-      'in (or will), then restart.'
+    `[auth] This installation has no enabled administrator yet. ${describeAdminIdentity()} ` +
+      `That account will become an administrator the moment it signs in - nothing else to do. ` +
+      `(Configured: ${emails.join(', ')}.)`
   );
   return true;
 }

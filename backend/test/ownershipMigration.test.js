@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * Adopting the data that predates accounts.
@@ -32,6 +32,7 @@ function legacyProfile(id, name) {
 
 test('the migration waits rather than failing when there is no admin yet', () => {
   useTempStorage('ownership-defer');
+  useAdminEmails('admin@example.com');
   const profiles = loadFresh('../dist/database/profileRepository');
   const { migrate003 } = loadFresh('../dist/database/migrations/003_assign_owners');
   const { getDb } = loadFresh('../dist/database/sqlite');
@@ -46,6 +47,7 @@ test('the migration waits rather than failing when there is no admin yet', () =>
 
 test('a deferred step does not record its version, so it runs again', () => {
   useTempStorage('ownership-retry');
+  useAdminEmails('admin@example.com');
   const profiles = loadFresh('../dist/database/profileRepository');
   const { getDb } = loadFresh('../dist/database/sqlite');
   const { runDataMigrations, OWNERSHIP_SCHEMA_VERSION } = loadFresh('../dist/database/migrations');
@@ -63,6 +65,7 @@ test('a deferred step does not record its version, so it runs again', () => {
 
 test('the first admin adopts every unowned profile and group', () => {
   useTempStorage('ownership-adopt');
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
   const groups = loadFresh('../dist/database/groupRepository');
@@ -85,6 +88,7 @@ test('the first admin adopts every unowned profile and group', () => {
 
 test('adoption touches only the unowned rows, and running it twice changes nothing', () => {
   useTempStorage('ownership-idempotent');
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
 
@@ -115,6 +119,7 @@ test('adoption touches only the unowned rows, and running it twice changes nothi
 
 test('signing in as the first admin adopts the old data without waiting for a restart', () => {
   useTempStorage('ownership-on-signin');
+  useAdminEmails('admin@example.com');
   const profiles = loadFresh('../dist/database/profileRepository');
   const users = loadFresh('../dist/database/userRepository');
 

@@ -7,7 +7,20 @@ const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
 
 /**
- * Both scopes, because sharing is not a Sheets operation.
+ * Two scopes, asked for SEPARATELY - one token per API.
+ *
+ * Sharing is not a Sheets operation: a spreadsheet is a Drive file, so deciding
+ * who may open it needs the `drive` scope and a different API host. Asking for
+ * one and calling the other is the failure this comment exists to prevent - the
+ * token is accepted, the Drive call returns 403, and the message blames the file
+ * rather than the scope.
+ *
+ * They are minted separately rather than as one token carrying both, and that is
+ * the important part: a project where Drive is unavailable would otherwise have
+ * every call refused, including creating a spreadsheet that never needed Drive.
+ * Split, a Drive problem can only break sharing.
+ *
+ * Old doc follows: sharing is not a Sheets operation.
  *
  * Creating a spreadsheet and writing to it needs `spreadsheets`. Deciding WHO
  * can open it is a Drive concept - a spreadsheet is a Drive file with a
@@ -20,9 +33,8 @@ const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
  * on the next token refresh - but only once the Drive API is enabled for the
  * Cloud project the key belongs to.
  */
-const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
-const OAUTH_SCOPES = `${SHEETS_SCOPE} ${DRIVE_SCOPE}`;
+export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
 
@@ -134,12 +146,115 @@ type GoogleApiErrorResponse = {
   error_description?: string;
 };
 
+type GoogleErrorDetail = {
+  '@type'?: string;
+  reason?: string;
+  domain?: string;
+  metadata?: Record<string, string>;
+};
+
 type GoogleApiStructuredError = {
   error?: {
+    code?: number;
     message?: string;
     status?: string;
+    details?: GoogleErrorDetail[];
+    errors?: Array<{ reason?: string; message?: string; domain?: string }>;
   };
 };
+
+/**
+ * What the request was trying to do, said in words, from its own shape.
+ *
+ * Derived here rather than passed in from every call site: the pathname already
+ * says it, and threading a label through a dozen callers would be a lot of
+ * churn for a string only an error message reads.
+ */
+function describeOperation(pathname: string, method: string): string {
+  const verb = (method || 'GET').toUpperCase();
+  if (pathname.startsWith('/spreadsheets') && verb === 'POST' && !pathname.includes(':')) {
+    return 'create a spreadsheet';
+  }
+  if (pathname.includes(':batchUpdate')) return 'change a spreadsheet';
+  if (pathname.includes('/values/')) return verb === 'GET' ? 'read a range' : 'write a range';
+  if (pathname.includes('/permissions')) {
+    if (verb === 'DELETE') return 'withdraw access to a spreadsheet';
+    return verb === 'GET' ? 'read who can open a spreadsheet' : 'share a spreadsheet';
+  }
+  if (pathname.startsWith('/files')) return 'reach a spreadsheet in Drive';
+  return 'read a spreadsheet';
+}
+
+/**
+ * Turns a Google failure into something that names its own remedy.
+ *
+ * THE PROBLEM THIS SOLVES. Google's `error.message` for a 403 is often the bare
+ * string "The caller does not have permission", which is true of every possible
+ * cause and useful for none of them. The body carries the actual reason in
+ * `details[].reason` - whether an API is switched off, whether the token's
+ * scopes were too narrow, whether the service account's Drive is full - plus,
+ * for a disabled API, the exact console URL that enables it. All of that used to
+ * be parsed away and thrown on the floor.
+ *
+ * An unrecognised reason still yields Google's own message: the point is to add
+ * the remedy where we know it, never to replace a specific message with a guess.
+ */
+export function describeGoogleFailure(
+  status: number,
+  body: GoogleApiStructuredError | null,
+  operation: string
+): string {
+  const base = body?.error?.message?.trim() || `Google refused the request (HTTP ${status}).`;
+
+  const details = body?.error?.details ?? [];
+  const legacy = body?.error?.errors ?? [];
+  const reasons = new Set(
+    [...details.map((d) => d.reason), ...legacy.map((e) => e.reason)].filter(
+      (reason): reason is string => Boolean(reason)
+    )
+  );
+
+  const disabled = details.find((detail) => detail.reason === 'SERVICE_DISABLED');
+  if (disabled) {
+    const service = disabled.metadata?.service ?? 'the Google API this needs';
+    const project = disabled.metadata?.consumer?.replace(/^projects\//, '') ?? 'the key\'s project';
+    const url = disabled.metadata?.activationUrl;
+    return (
+      `${base} ${service} is switched off for project ${project}. ` +
+      `Enable it, wait a minute, then try again${url ? `: ${url}` : '.'}`
+    );
+  }
+
+  if (reasons.has('ACCESS_TOKEN_SCOPE_INSUFFICIENT')) {
+    return (
+      `${base} The access token did not carry the scope needed to ${operation}. ` +
+      'This app asks for the Sheets scope on Sheets calls and the Drive scope on Drive calls; ' +
+      'a service account restricted by a domain-wide delegation policy can still have them stripped.'
+    );
+  }
+
+  if (reasons.has('storageQuotaExceeded') || reasons.has('quotaExceeded')) {
+    return (
+      `${base} The service account's own Drive is full - files it creates count against its ` +
+      'quota, not against any person\'s. Point the key at a shared drive, or delete spreadsheets it owns.'
+    );
+  }
+
+  if (status === 403) {
+    // The bare "caller does not have permission", with no reason attached. Name
+    // the likeliest cause for THIS operation rather than leaving it at that.
+    const hint =
+      operation === 'create a spreadsheet'
+        ? 'Creating a spreadsheet makes a file in Drive, so the Drive API must be enabled for the ' +
+          'same Cloud project as the key - having only the Sheets API on is the usual cause.'
+        : operation.includes('share') || operation.includes('access') || operation.includes('open')
+          ? 'Sharing is a Drive operation, so the Drive API must be enabled for the key\'s project.'
+          : 'The service account may not have been given access to this spreadsheet.';
+    return `${base} ${hint} Run "npm run sheets:doctor" in backend/ to see which step fails.`;
+  }
+
+  return base;
+}
 
 export type GoogleSheetTab = {
   title: string;
@@ -323,7 +438,12 @@ type GoogleSheetsBatchUpdateValuesResponse = {
   }>;
 };
 
-let cachedAccessToken: CachedAccessToken | null = null;
+/**
+ * One entry per scope. Keyed rather than single, because the Sheets token and
+ * the Drive token are now different tokens and a shared slot would have each
+ * call evicting the other's.
+ */
+const cachedAccessTokens = new Map<string, CachedAccessToken>();
 
 export class GoogleSheetsRequestError extends Error {
   statusCode: number;
@@ -351,7 +471,7 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function resolveServiceAccountPath(): Promise<string> {
+export async function resolveServiceAccountPath(): Promise<string> {
   const explicitPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim();
   const cwd = process.cwd();
   const candidates = [
@@ -381,6 +501,39 @@ async function resolveServiceAccountPath(): Promise<string> {
  * than by catching the 500 that every sheets call would otherwise throw. A
  * missing key is a deployment that has not set sheets up yet, not a failure.
  */
+/** The key's own identity, for the doctor to print before it tries anything. */
+export async function describeServiceAccount(): Promise<{
+  path: string;
+  clientEmail: string;
+  projectId: string;
+}> {
+  const path = await resolveServiceAccountPath();
+  const parsed = JSON.parse(await fs.readFile(path, 'utf8')) as {
+    client_email?: string;
+    project_id?: string;
+  };
+  return {
+    path,
+    clientEmail: parsed.client_email ?? '(missing)',
+    projectId: parsed.project_id ?? '(missing)',
+  };
+}
+
+/** A raw Drive GET, so the doctor can ask Drive about itself. */
+export async function driveAbout(): Promise<{
+  user?: { emailAddress?: string };
+  storageQuota?: { limit?: string; usage?: string };
+}> {
+  return googleDriveFetch('/about?fields=user(emailAddress),storageQuota(limit,usage)');
+}
+
+/** Removes a spreadsheet outright. Only the doctor's throwaway uses this. */
+export async function deleteSpreadsheet(spreadsheetId: string): Promise<void> {
+  await googleDriveFetch(`/files/${encodeURIComponent(spreadsheetId)}?supportsAllDrives=true`, {
+    method: 'DELETE',
+  });
+}
+
 export async function isGoogleSheetsConfigured(): Promise<boolean> {
   try {
     await resolveServiceAccountPath();
@@ -419,12 +572,15 @@ async function loadServiceAccountCredentials(): Promise<Required<GoogleServiceAc
   };
 }
 
-function buildJwtAssertion(credentials: Required<GoogleServiceAccountCredentials>): string {
+function buildJwtAssertion(
+  credentials: Required<GoogleServiceAccountCredentials>,
+  scope: string
+): string {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
     iss: credentials.client_email,
-    scope: OAUTH_SCOPES,
+    scope,
     aud: credentials.token_uri,
     iat: now,
     exp: now + 3600,
@@ -438,13 +594,14 @@ function buildJwtAssertion(credentials: Required<GoogleServiceAccountCredentials
   return `${unsignedToken}.${signature}`;
 }
 
-async function getAccessToken(): Promise<string> {
-  if (cachedAccessToken && cachedAccessToken.expiresAt - ACCESS_TOKEN_REFRESH_BUFFER_MS > Date.now()) {
-    return cachedAccessToken.token;
+export async function getAccessToken(scope: string): Promise<string> {
+  const cached = cachedAccessTokens.get(scope);
+  if (cached && cached.expiresAt - ACCESS_TOKEN_REFRESH_BUFFER_MS > Date.now()) {
+    return cached.token;
   }
 
   const credentials = await loadServiceAccountCredentials();
-  const assertion = buildJwtAssertion(credentials);
+  const assertion = buildJwtAssertion(credentials, scope);
   const response = await fetch(credentials.token_uri, {
     method: 'POST',
     headers: {
@@ -482,16 +639,17 @@ async function getAccessToken(): Promise<string> {
     throw new GoogleSheetsRequestError(500, 'Google Sheets authentication response did not include an access token.');
   }
 
-  cachedAccessToken = {
+  const minted = {
     token: data.access_token,
     expiresAt: Date.now() + data.expires_in * 1000,
   };
+  cachedAccessTokens.set(scope, minted);
 
-  return cachedAccessToken.token;
+  return minted.token;
 }
 
 async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRetried = false): Promise<T> {
-  const accessToken = await getAccessToken();
+  const accessToken = await getAccessToken(SHEETS_SCOPE);
   const response = await fetch(`${SHEETS_API_BASE}${pathname}`, {
     ...init,
     headers: {
@@ -501,24 +659,31 @@ async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRet
   });
 
   if (response.status === 401 && !hasRetried) {
-    cachedAccessToken = null;
+    cachedAccessTokens.delete(SHEETS_SCOPE);
     return googleSheetsFetch<T>(pathname, init, true);
   }
 
   if (!response.ok) {
-    let errorMessage = 'Google Sheets request failed.';
-    try {
-      const errorBody = (await response.json()) as GoogleApiStructuredError;
-      if (errorBody.error?.message) {
-        errorMessage = errorBody.error.message;
-      }
-    } catch {
-      // Ignore JSON parsing failures and use the fallback message.
-    }
-    throw new GoogleSheetsRequestError(response.status, errorMessage);
+    throw new GoogleSheetsRequestError(
+      response.status,
+      describeGoogleFailure(
+        response.status,
+        await readErrorBody(response),
+        describeOperation(pathname, String(init?.method ?? 'GET'))
+      )
+    );
   }
 
   return response.json() as Promise<T>;
+}
+
+/** Google's error body, or null when it sent something that is not one. */
+async function readErrorBody(response: Response): Promise<GoogleApiStructuredError | null> {
+  try {
+    return (await response.json()) as GoogleApiStructuredError;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -529,7 +694,7 @@ async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRet
  * sent to Drive returns a 404 that reads like a missing file.
  */
 async function googleDriveFetch<T>(pathname: string, init?: RequestInit, hasRetried = false): Promise<T> {
-  const accessToken = await getAccessToken();
+  const accessToken = await getAccessToken(DRIVE_SCOPE);
   const response = await fetch(`${DRIVE_API_BASE}${pathname}`, {
     ...init,
     headers: {
@@ -539,29 +704,19 @@ async function googleDriveFetch<T>(pathname: string, init?: RequestInit, hasRetr
   });
 
   if (response.status === 401 && !hasRetried) {
-    cachedAccessToken = null;
+    cachedAccessTokens.delete(DRIVE_SCOPE);
     return googleDriveFetch<T>(pathname, init, true);
   }
 
   if (!response.ok) {
-    let errorMessage = 'Google Drive request failed.';
-    try {
-      const errorBody = (await response.json()) as GoogleApiStructuredError;
-      if (errorBody.error?.message) {
-        errorMessage = errorBody.error.message;
-      }
-    } catch {
-      // Ignore JSON parsing failures and use the fallback message.
-    }
-    // The single most likely first-run failure, and the raw message says
-    // nothing about the cause: the token is valid, so this reads as a problem
-    // with the file rather than with what the project is allowed to do.
-    if (response.status === 403 && /api|disabled|permission/i.test(errorMessage)) {
-      errorMessage =
-        `${errorMessage} (Sharing a sheet needs the Drive API. Enable it for the Cloud project ` +
-        'this service account belongs to, and make sure the key was issued after that.)';
-    }
-    throw new GoogleSheetsRequestError(response.status, errorMessage);
+    throw new GoogleSheetsRequestError(
+      response.status,
+      describeGoogleFailure(
+        response.status,
+        await readErrorBody(response),
+        describeOperation(pathname, String(init?.method ?? 'GET'))
+      )
+    );
   }
 
   // A 204 has no body, which `response.json()` would throw on.
@@ -1116,6 +1271,12 @@ export const JOB_SHEET_HEADERS = [
   'Rate',
   'note',
   'Job Finder',
+  // The filter's own two, and the reason they exist: everything above is a
+  // field somebody types into. Writing a verdict into one of them would
+  // overwrite the rate or the note it had, so the filter gets columns nothing
+  // else owns.
+  'Filter Result',
+  'Filter Reason',
 ] as const;
 
 function columnOf(header: (typeof JOB_SHEET_HEADERS)[number]): number {
@@ -1141,6 +1302,8 @@ export const JOB_SHEET_COLUMNS = {
   rate: columnOf('Rate'),
   note: columnOf('note'),
   jobFinder: columnOf('Job Finder'),
+  filterResult: columnOf('Filter Result'),
+  filterReason: columnOf('Filter Reason'),
 } as const;
 
 /** Row 1 is the header, so data starts at 2. */
@@ -1311,6 +1474,22 @@ export async function formatJobSheetTab(
 }
 
 /**
+ * Whether a tab's first row is the header this build expects.
+ *
+ * Its own function, and exported, because it decides two different upgrades: a
+ * tab created but never formatted (an allocation that died between the two
+ * calls), and a tab formatted by an OLDER build with fewer columns. Both look
+ * the same from here - the row does not match - and both are fixed by writing
+ * the header again.
+ */
+export function jobSheetHeaderIsCurrent(
+  firstRow: ReadonlyArray<unknown>,
+  headers: readonly string[] = JOB_SHEET_HEADERS
+): boolean {
+  return headers.every((header, index) => String(firstRow[index] ?? '').trim() === header);
+}
+
+/**
  * Writes the header only when the first row is not already it.
  *
  * Deliberately a read before a write: re-formatting on every sign-in would undo
@@ -1328,11 +1507,7 @@ async function formatJobSheetTabIfBlank(
     `/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`
   );
 
-  const firstRow = current.values?.[0] ?? [];
-  const alreadyThere = headers.every(
-    (header, index) => String(firstRow[index] ?? '').trim() === header
-  );
-  if (alreadyThere) return;
+  if (jobSheetHeaderIsCurrent(current.values?.[0] ?? [], headers)) return;
 
   await formatJobSheetTab(spreadsheetId, gid, headers);
 }

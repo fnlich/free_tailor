@@ -3,7 +3,7 @@ const test = require('node:test');
 
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * The batch HTTP surface.
@@ -16,6 +16,10 @@ const { loadFresh, useTempStorage } = require('./helpers');
 
 async function serve() {
   const { dbDir } = useTempStorage(`generation-routes-${Math.random().toString(36).slice(2)}`);
+  // The submitter used to be an administrator by virtue of being the first
+  // account, and administrators spend no credits. Named explicitly now, so
+  // these stay tests about batches rather than tests about a 402.
+  useAdminEmails('batch-runner@example.com');
   const express = require('express');
 
   // A signed-in owner. Every generation route needs one now, and the profile

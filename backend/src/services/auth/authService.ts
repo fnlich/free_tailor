@@ -10,6 +10,7 @@ import {
   LOGIN_CODE_TTL_MS,
   markSignedIn,
   normalizeEmail,
+  promoteIfConfiguredAdmin,
   storeLoginCode,
 } from '../../database/userRepository';
 import type { UserAccount } from '../../types/account';
@@ -66,7 +67,14 @@ function completeSignIn(input: {
     );
   }
 
-  if (created && account.role === 'admin') {
+  // An account that predates the current configuration - or that signed up
+  // before ADMIN_EMAILS / SMTP_USER named it - is promoted here, on the way in.
+  // Without this the operator would have to wait for a restart to administer
+  // their own installation.
+  const promoted = promoteIfConfiguredAdmin(account);
+  if (promoted) account.role = 'admin';
+
+  if ((created || promoted) && account.role === 'admin') {
     try {
       runDataMigrations(getDb());
     } catch (error) {
