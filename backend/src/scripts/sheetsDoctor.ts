@@ -79,19 +79,27 @@ async function main(): Promise<void> {
 
   const steps: Step[] = [
     {
-      title: 'Find the service account key',
+      title: 'Find the Google credentials',
       run: async () => {
         const account = await describeServiceAccount();
-        owner = account.clientEmail;
-        return `${account.path}\n    service account: ${account.clientEmail}\n    project:         ${account.projectId}`;
+        owner = account.identity;
+        const label = account.kind === 'authorized_user' ? 'OAuth client:   ' : 'service account:';
+        return (
+          `${account.path}\n` +
+          `    kind:            ${
+            account.kind === 'authorized_user' ? 'your own Google account' : 'service account'
+          }\n` +
+          `    ${label} ${account.identity}\n` +
+          `    project:         ${account.projectId}`
+        );
       },
       remedy: () =>
-        'Set GOOGLE_SERVICE_ACCOUNT_KEY_PATH in .env, or put service-account-key.json in the\n' +
-        '  project root or backend/. Download it from the Cloud console under\n' +
-        '  IAM & Admin -> Service Accounts -> Keys -> Add key -> JSON.',
+        'Run "npm run sheets:login" in backend/ to sign in with your own Google account, or put\n' +
+        '  a service account key at backend/service-account-key.json. GOOGLE_CREDENTIALS_PATH\n' +
+        '  overrides where to look.',
     },
     {
-      title: 'Mint a token for the Sheets scope',
+      title: 'Mint an access token for the Sheets scope',
       run: async () => `${(await getAccessToken(SHEETS_SCOPE)).slice(0, 12)}... (ok)`,
       remedy: () =>
         'The key was rejected outright. Usually the service account was deleted or its key\n' +
@@ -99,11 +107,12 @@ async function main(): Promise<void> {
         '  off will also do this, because the assertion is signed with a timestamp.',
     },
     {
-      title: 'Mint a token for the Drive scope',
+      title: 'Mint an access token for the Drive scope',
       run: async () => `${(await getAccessToken(DRIVE_SCOPE)).slice(0, 12)}... (ok)`,
       remedy: () =>
-        'The Sheets scope worked and this one did not, which points at a domain-wide\n' +
-        '  delegation policy restricting which scopes this service account may hold.',
+        'The Sheets scope worked and this one did not. With a service account that points at a\n' +
+        '  domain-wide delegation policy; with your own account it means the consent did not\n' +
+        '  include Drive - run "npm run sheets:login" again and accept both.',
     },
     {
       title: 'Ask Drive about itself (proves the Drive API is enabled)',

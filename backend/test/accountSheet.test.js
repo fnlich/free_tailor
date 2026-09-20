@@ -714,10 +714,10 @@ test('several key files on disk are reported rather than silently ranked', async
   process.chdir(root);
   try {
     const sheets = loadFresh('../dist/integrations/googleSheets');
-    const chosen = await sheets.resolveServiceAccountPath();
+    const chosen = await sheets.resolveCredentialPath();
     assert.equal(chosen, first, 'the first candidate still wins - only the silence changes');
     const said = warnings.join('\n');
-    assert.match(said, /2 service account keys were found/);
+    assert.match(said, /2 Google credential files were found/);
     assert.match(said, /USING/);
     assert.match(said, /ignored/);
   } finally {

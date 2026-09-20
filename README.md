@@ -220,6 +220,27 @@ npm run sheets:doctor -- --email you@example.com   # also tests sharing
 npm run sheets:doctor -- --keep                    # leave the throwaway behind
 ```
 
+**Which credential, and why it probably is not a service account.** The tidy
+arrangement is a service account key, and on a Google Workspace domain with a
+shared drive it works. On a **consumer Google project it cannot**: the service
+account is given a Drive quota of **zero bytes**, so it authenticates perfectly
+and can never own a file - and creating a spreadsheet means owning one. The
+failure is a 403 that blames permissions and means storage.
+
+So the app accepts either credential, and prefers the one that works:
+
+```
+cd backend
+npm run sheets:login     # sign in as yourself, once
+```
+
+That saves `google-oauth-credentials.json`, and every account's sheet is then
+created in **your** Drive and shared with its owner as an editor. It needs an
+OAuth client from the Cloud console (Desktop app type) - the script says exactly
+where to click if it cannot find one. `GOOGLE_CREDENTIALS_PATH` overrides where
+credentials are looked for; a service account key at
+`backend/service-account-key.json` still works if you have a shared drive for it.
+
 Two things this needs from Google, and both are easy to miss:
 
 - The **Drive API** enabled for the same Cloud project as the key, not just the
@@ -589,7 +610,8 @@ File and folder names are templated per profile.
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
-| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets. Needs **both** the Sheets API and the Drive API enabled for its Cloud project - the per-account sheets are shared through Drive |
+| `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
 | `ADMIN_EMAILS` | Who administers this installation. Wins over `SMTP_USER`; a comma-separated list may name several |
