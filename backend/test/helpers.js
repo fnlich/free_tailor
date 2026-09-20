@@ -19,7 +19,25 @@ function useTempStorage(name) {
   fs.mkdirSync(staticDir, { recursive: true });
   process.env.DB_DIR = dbDir;
   process.env.TAILOR_STATIC_DIR = staticDir;
+  // Fresh storage means a fresh installation, and an installation does not
+  // inherit the previous test's administrator.
+  delete process.env.ADMIN_EMAILS;
+  delete process.env.SMTP_USER;
   return { rootDir, dbDir, staticDir };
+}
+
+/**
+ * Names the administrator, the way an installation does in .env.
+ *
+ * Needed explicitly now that arrival order decides nothing: without it a test
+ * creates a pile of ordinary accounts and no administrator, which is exactly
+ * what a real install with neither ADMIN_EMAILS nor SMTP_USER gets.
+ *
+ * Cleared by `useTempStorage`, so one test naming an admin cannot leak into the
+ * next one in the same file.
+ */
+function useAdminEmails(...emails) {
+  process.env.ADMIN_EMAILS = emails.flat().join(',');
 }
 
 function writeStaticJson(staticDir, relativePath, value) {
@@ -164,6 +182,7 @@ function loadFresh(modulePath) {
 
 module.exports = {
   loadFresh,
+  useAdminEmails,
   makeFakeCliRunner,
   readCliFixture,
   makeTempDataDir,

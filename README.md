@@ -156,7 +156,8 @@ per day**, named `MM/DD/YYYY`. The tab is created on the first sign-in of that
 date and skipped on every sign-in after, so a day's rows stay together and a
 quiet day costs nothing. A new tab opens with the job columns - `NO(DATE)`,
 `Company`, `Job Title`, `Job Link`, `Job Description`, `Rate`, `note`,
-`Job Finder` - frozen, filtered and formatted.
+`Job Finder`, `Filter Result`, `Filter Reason` - frozen, filtered and formatted.
+The first eight are yours to fill in; the last two belong to the job filter.
 
 Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
 being able to log in is not, so a Google outage must not become an outage of
@@ -169,6 +170,29 @@ them. The toggle on the account page withdraws that. Either way the server keeps
 its own access, because the file belongs to the service account rather than to a
 person - so job links, company names and descriptions still load after somebody
 goes private.
+
+**Who administers the installation.** Not whoever signs in first - on a server
+anybody can reach, that handed the keys to the quickest stranger. It is
+`ADMIN_EMAILS` when that is set, otherwise the `SMTP_USER` address: the mailbox
+sign-in codes are sent *from* is a credential the operator had to configure, so
+it identifies them. With neither set there is **no administrator at all**, and
+startup says so loudly. An account named by either is promoted the moment it
+exists - at boot or on its next sign-in - and nothing is ever demoted, so a typo
+in `.env` cannot lock you out.
+
+**When it will not work: `npm run sheets:doctor`.** Allocation fails with a 403
+whose message is often only "The caller does not have permission" - true of a
+disabled API, a narrow scope, a full Drive and a revoked key alike. The doctor
+walks the same chain allocation walks, with the real API calls, and stops at the
+first step that breaks with the remedy for that step. It creates one throwaway
+spreadsheet and deletes it again.
+
+```
+cd backend
+npm run sheets:doctor
+npm run sheets:doctor -- --email you@example.com   # also tests sharing
+npm run sheets:doctor -- --keep                    # leave the throwaway behind
+```
 
 Two things this needs from Google, and both are easy to miss:
 
@@ -183,7 +207,8 @@ Two things this needs from Google, and both are easy to miss:
 you supply a spreadsheet id, a tab name and four column letters. They now default
 to your own sheet, today's tab, and the layout above - `Company`, `Job Title`,
 `Job Link` and `Job Description` for an export; the job link read back, with the
-filter's verdict in `Rate` and its reason in `note`. Rows are appended after
+filter's verdict in `Filter Result` and its reason in `Filter Reason` - two
+columns the filter owns, so `Rate`, `note` and `Job Finder` stay yours. Rows are appended after
 what is already there, and jobs already in the tab are skipped.
 
 **Who may point them where.** A spreadsheet id supplied by a request is checked
@@ -541,6 +566,8 @@ File and folder names are templated per profile.
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets. Needs **both** the Sheets API and the Drive API enabled for its Cloud project - the per-account sheets are shared through Drive |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
+| `ADMIN_EMAILS` | Who administers this installation. Wins over `SMTP_USER`; a comma-separated list may name several |
+| `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
 
 See `.env.example` for the full `AI_CLI_*` list.
 

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * The admin account pages, and the one thing they must never allow.
@@ -14,6 +14,7 @@ const { loadFresh, useTempStorage } = require('./helpers');
 
 async function serve() {
   useTempStorage(`account-routes-${Math.random().toString(36).slice(2)}`);
+  useAdminEmails('admin@example.com');
   const express = require('express');
 
   const users = loadFresh('../dist/database/userRepository');

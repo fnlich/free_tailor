@@ -166,7 +166,8 @@ export default function JobFilterPage() {
     try {
       // Own sheet: send nothing. The server knows the spreadsheet, today's
       // tab, which column the job links are in, and that the verdict belongs
-      // in `Rate` with its reason in `note`. It also decides the last row, so
+      // in `Filter Result` with its reason in `Filter Reason`. It also decides
+      // the last row, so
       // "everything in today's tab" needs no arithmetic here.
       let payload: Parameters<typeof jobsApi.filterGoogleSheetJobs>[0] = {};
 
@@ -284,8 +285,9 @@ export default function JobFilterPage() {
                       {accountSheet.todayTab}
                     </a>{' '}
                     tab of your job sheet, reading the Job Link column and writing the verdict into
-                    <span className="font-semibold"> Rate</span> with its reason in
-                    <span className="font-semibold"> note</span>. Rows already judged are skipped.
+                    <span className="font-semibold"> Filter Result</span> with its reason in
+                    <span className="font-semibold"> Filter Reason</span>. Your own fields — Rate,
+                    note and Job Finder — are never written to. Rows already judged are skipped.
                   </>
                 ) : (
                   "Filters every job on today's tab of your own job sheet."

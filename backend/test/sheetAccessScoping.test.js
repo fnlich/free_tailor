@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage, writeSettingRaw } = require('./helpers');
+const { loadFresh, useTempStorage, writeSettingRaw, useAdminEmails } = require('./helpers');
 
 /**
  * The routes that take a spreadsheet id, and who may point them where.
@@ -56,6 +56,8 @@ function makeClient() {
 
 async function serve(sharedSources = []) {
   const { dbDir } = useTempStorage(`sheet-scoping-${Math.random().toString(36).slice(2)}`);
+  // First in is no longer automatically the admin, so the admin is named.
+  useAdminEmails('admin@example.com');
   const express = require('express');
 
   // Written before anything reads settings: the settings module caches, so a

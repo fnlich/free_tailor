@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * One spreadsheet per account, one tab per day.
@@ -84,6 +84,7 @@ function makeClient(overrides = {}) {
 
 function setup(name, overrides) {
   useTempStorage(`account-sheet-${name}`);
+  useAdminEmails('admin@example.com');
   loadFresh('../dist/database/sqlite');
   const users = loadFresh('../dist/database/userRepository');
   const sheets = loadFresh('../dist/services/sheets/accountSheet');
@@ -339,10 +340,23 @@ test('accounts from before the feature are given a spreadsheet by the backfill',
 test('the header row is the one from the tracking sheet, spelling included', () => {
   const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
   // Reproduced exactly, lower-case `note` and all: anybody matching a column by
-  // its heading is matching the string a person reads on screen.
+  // its heading is matching the string a person reads on screen. The first
+  // eight are the tracking sheet's own; the last two belong to the job filter,
+  // which needed somewhere to write that was not a field somebody fills in.
   assert.deepEqual(
     [...JOB_SHEET_HEADERS],
-    ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder']
+    [
+      'NO(DATE)',
+      'Company',
+      'Job Title',
+      'Job Link',
+      'Job Description',
+      'Rate',
+      'note',
+      'Job Finder',
+      'Filter Result',
+      'Filter Reason',
+    ]
   );
 });
 
@@ -500,9 +514,15 @@ test('the column map follows the header row rather than repeating it', () => {
   assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.jobTitle - 1], 'Job Title');
   assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.jobLink - 1], 'Job Link');
   assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.jobDescription - 1], 'Job Description');
-  // And the two the filter writes its verdict into.
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.rate - 1], 'Rate');
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.note - 1], 'note');
+  // And the two the filter writes its verdict into - which must NOT be Rate,
+  // note or Job Finder, because those are fields somebody types into and a
+  // verdict written there would destroy what was in them.
+  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.filterResult - 1], 'Filter Result');
+  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.filterReason - 1], 'Filter Reason');
+  for (const owned of [JOB_SHEET_COLUMNS.rate, JOB_SHEET_COLUMNS.note, JOB_SHEET_COLUMNS.jobFinder]) {
+    assert.notEqual(owned, JOB_SHEET_COLUMNS.filterResult);
+    assert.notEqual(owned, JOB_SHEET_COLUMNS.filterReason);
+  }
   assert.equal(JOB_SHEET_FIRST_DATA_ROW, 2);
 });
 
@@ -531,4 +551,85 @@ test('an export with no start row appends instead of overwriting the morning', (
     );
   }
   assert.throws(() => resolveAppendRow(0, [{ values: [] }]), { status: 400 });
+});
+
+test('a Google 403 names its own remedy instead of "caller does not have permission"', () => {
+  const { describeGoogleFailure } = require('../dist/integrations/googleSheets');
+
+  // The body Google actually sends when an API is switched off. The bare
+  // message is true of every possible cause and useful for none of them; the
+  // reason and the activation URL are the parts worth keeping.
+  const disabled = {
+    error: {
+      code: 403,
+      message: 'Google Drive API has not been used in project 12345 before or it is disabled.',
+      status: 'PERMISSION_DENIED',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason: 'SERVICE_DISABLED',
+          metadata: {
+            service: 'drive.googleapis.com',
+            consumer: 'projects/12345',
+            activationUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=12345',
+          },
+        },
+      ],
+    },
+  };
+  const said = describeGoogleFailure(403, disabled, 'create a spreadsheet');
+  assert.match(said, /drive\.googleapis\.com is switched off for project 12345/);
+  assert.match(said, /console\.developers\.google\.com/);
+
+  // A scope problem, which reads identically from outside without this.
+  const scope = { error: { message: 'Request had insufficient authentication scopes.',
+    details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] } };
+  assert.match(describeGoogleFailure(403, scope, 'share a spreadsheet'), /scope needed to share/);
+
+  // A full Drive, which is its own thing entirely.
+  const quota = { error: { message: 'Quota exceeded.', errors: [{ reason: 'storageQuotaExceeded' }] } };
+  assert.match(describeGoogleFailure(403, quota, 'create a spreadsheet'), /Drive is full/);
+
+  // The bare 403 from the log that prompted all this: no reason at all, so the
+  // remedy is inferred from what the call was doing.
+  const bare = { error: { code: 403, message: 'The caller does not have permission', status: 'PERMISSION_DENIED' } };
+  const inferred = describeGoogleFailure(403, bare, 'create a spreadsheet');
+  assert.match(inferred, /The caller does not have permission/);
+  assert.match(inferred, /Drive API must be enabled/);
+  assert.match(inferred, /sheets:doctor/);
+});
+
+test("an unrecognised failure keeps Google's own words rather than guessing", () => {
+  const { describeGoogleFailure } = require('../dist/integrations/googleSheets');
+
+  // The rule that keeps this helper honest: add a remedy where one is known,
+  // never replace a specific message with a general one.
+  const odd = { error: { code: 400, message: 'Unable to parse range: NotATab!A1' } };
+  assert.equal(describeGoogleFailure(400, odd, 'read a range'), 'Unable to parse range: NotATab!A1');
+
+  // And a body that is not JSON at all still says something with the status in it.
+  assert.match(describeGoogleFailure(502, null, 'read a range'), /HTTP 502/);
+});
+
+test('a tab headered by an older build is detected as needing the new columns', () => {
+  const { jobSheetHeaderIsCurrent, JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
+
+  // What every sheet created before the filter had columns of its own looks
+  // like. Without this returning false those two columns stay blank forever,
+  // because the tab already exists and nothing would write a header again.
+  const oldBuild = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder'];
+  assert.equal(jobSheetHeaderIsCurrent(oldBuild), false);
+
+  // The current one is left alone - re-writing it on every sign-in would undo
+  // a column somebody had widened and spend a write call a day for nothing.
+  assert.equal(jobSheetHeaderIsCurrent([...JOB_SHEET_HEADERS]), true);
+  // Extra columns of somebody's own past the header do not make it stale.
+  assert.equal(jobSheetHeaderIsCurrent([...JOB_SHEET_HEADERS, 'my own column']), true);
+
+  // A tab created and then never formatted - the interrupted allocation.
+  assert.equal(jobSheetHeaderIsCurrent([]), false);
+  // And one whose spelling drifted.
+  const misspelled = [...JOB_SHEET_HEADERS];
+  misspelled[6] = 'Note';
+  assert.equal(jobSheetHeaderIsCurrent(misspelled), false);
 });

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * Accounts, plans and the profile cap.
@@ -33,30 +33,80 @@ function profile(id, name, ownerId) {
   };
 }
 
-test('the first account is the admin and every one after it is a user', () => {
-  useTempStorage('accounts-first-admin');
+test('arrival order decides nothing: with no configuration there is no admin', () => {
+  useTempStorage('accounts-no-config');
   const users = loadFresh('../dist/database/userRepository');
 
-  // Somebody has to be. The admin pages are where accounts are managed and
-  // they are admin-only, so an install whose first user was ordinary would
-  // have no way to ever appoint one.
-  assert.equal(users.createUser({ email: 'first@example.com' }).role, 'admin');
+  // The first account through the door used to become the administrator. On a
+  // server anybody can reach, that handed the installation to whoever signed
+  // up first - so now it is configuration or nobody.
+  assert.equal(users.createUser({ email: 'first@example.com' }).role, 'user');
   assert.equal(users.createUser({ email: 'second@example.com' }).role, 'user');
-  assert.equal(users.createUser({ email: 'third@example.com' }).role, 'user');
+  assert.equal(users.countAdmins(), 0);
 });
 
-test('ADMIN_EMAILS decides instead, when it is set', () => {
+test('SMTP_USER is the administrator: whoever the codes are sent from', () => {
+  useTempStorage('accounts-smtp-user');
+  process.env.SMTP_USER = 'Operator@Example.com';
+  const users = loadFresh('../dist/database/userRepository');
+
+  // Not arrival order. The mailbox the sign-in codes go out from is a
+  // credential the operator had to configure, so it identifies them.
+  assert.equal(users.createUser({ email: 'early@example.com' }).role, 'user');
+  assert.equal(users.createUser({ email: 'operator@example.com' }).role, 'admin');
+});
+
+test('an SMTP_USER that is not an address names nobody', () => {
+  useTempStorage('accounts-smtp-username');
+  // Plenty of providers want a bare username or an API key id here. Treating
+  // one as an admin address would promote nobody while looking like it worked.
+  process.env.SMTP_USER = 'apikey';
+  const users = loadFresh('../dist/database/userRepository');
+
+  assert.equal(users.createUser({ email: 'apikey@example.com' }).role, 'user');
+  assert.equal(users.countAdmins(), 0);
+});
+
+test('ADMIN_EMAILS wins over SMTP_USER, and may name more than one', () => {
+  useTempStorage('accounts-admin-wins');
+  process.env.SMTP_USER = 'mailer@example.com';
+  process.env.ADMIN_EMAILS = 'boss@example.com, deputy@example.com';
+  const users = loadFresh('../dist/database/userRepository');
+
+  assert.equal(users.createUser({ email: 'mailer@example.com' }).role, 'user');
+  assert.equal(users.createUser({ email: 'boss@example.com' }).role, 'admin');
+  assert.equal(users.createUser({ email: 'deputy@example.com' }).role, 'admin');
+});
+
+test('an account that predates the configuration is promoted, and none is demoted', () => {
+  useTempStorage('accounts-promote');
+  const users = loadFresh('../dist/database/userRepository');
+
+  // How an existing install looks after the rule changed: somebody already
+  // holds admin from the old first-account rule, and the operator has not
+  // signed in yet.
+  const legacy = users.createUser({ email: 'legacy@example.com', role: 'admin' });
+  const operator = users.createUser({ email: 'operator@example.com' });
+  process.env.SMTP_USER = 'operator@example.com';
+
+  assert.equal(users.promoteConfiguredAdmins(), 1);
+  assert.equal(users.getUserById(operator.id).role, 'admin');
+  // Never demoted: a typo in .env must not be able to lock somebody out of
+  // their own installation, and there is no way back through the UI.
+  assert.equal(users.getUserById(legacy.id).role, 'admin');
+
+  // Idempotent - a second startup promotes nobody.
+  assert.equal(users.promoteConfiguredAdmins(), 0);
+});
+
+test('ADMIN_EMAILS decides, and the address is matched case-insensitively', () => {
   useTempStorage('accounts-admin-emails');
   process.env.ADMIN_EMAILS = 'boss@example.com';
-  try {
-    const users = loadFresh('../dist/database/userRepository');
-    // First in, but not on the list: an ordinary user, and the install waits
-    // for the named address rather than handing the keys to whoever is quickest.
-    assert.equal(users.createUser({ email: 'early@example.com' }).role, 'user');
-    assert.equal(users.createUser({ email: 'BOSS@Example.com' }).role, 'admin');
-  } finally {
-    delete process.env.ADMIN_EMAILS;
-  }
+  const users = loadFresh('../dist/database/userRepository');
+  // First in, but not on the list: an ordinary user, and the install waits
+  // for the named address rather than handing the keys to whoever is quickest.
+  assert.equal(users.createUser({ email: 'early@example.com' }).role, 'user');
+  assert.equal(users.createUser({ email: 'BOSS@Example.com' }).role, 'admin');
 });
 
 test('the two sign-in paths land on one account', () => {
@@ -82,6 +132,7 @@ test('the two sign-in paths land on one account', () => {
 
 test('a profile belongs to whoever made it, and nobody else can see it', () => {
   useTempStorage('accounts-scoping');
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
 
@@ -112,6 +163,7 @@ test('a profile belongs to whoever made it, and nobody else can see it', () => {
 
 test('a row from before accounts existed is admin-only until it is adopted', () => {
   useTempStorage('accounts-unowned');
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
 
@@ -127,6 +179,7 @@ test('a row from before accounts existed is admin-only until it is adopted', () 
 
 test('the plan caps how many profiles an account may keep', () => {
   useTempStorage('accounts-plan-cap');
+  useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
 

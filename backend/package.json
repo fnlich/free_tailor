@@ -11,6 +11,7 @@
     "setup:browser": "node scripts/installBrowser.js",
     "browser:debug": "npm run build && node dist/scripts/launchDebugBrowsers.js",
     "browser:doctor": "npm run build && node dist/scripts/browserChatDoctor.js",
+    "sheets:doctor": "npm run build && node dist/scripts/sheetsDoctor.js",
     "start": "node dist/index.js",
     "migrate:legacy": "npm run build && node dist/scripts/migrateLegacyData.js",
     "test": "npm run build && node --test \"test/*.test.js\"",
