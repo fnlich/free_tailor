@@ -9,8 +9,38 @@ export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}';
 export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_letter';
 export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company name}}';
 
+/**
+ * Where an ORDERED resume is filed, and why it is a constant rather than a
+ * setting.
+ *
+ * `outputPathTemplate` above belongs to the administrator: they may rearrange
+ * it whenever they like, and a manual build lands wherever it currently says.
+ * An order cannot work that way. Its files are listed, downloaded, zipped and
+ * eventually deleted by path, days after they were written - so a layout edited
+ * between the build and the download would strand a live order's files and aim
+ * the purge at a directory that no longer holds them.
+ *
+ * The account segment comes first because it makes every file an order owns
+ * live under one directory per account, which is what lets the purge prune
+ * emptied folders without ever walking into somebody else's tree.
+ *
+ * THE ORDER NUMBER IS WHAT MAKES A PATH UNIQUE, and it is here because nothing
+ * else in the tree is. Account, date, profile and company are all repeatable:
+ * import the same sheet twice in one afternoon and every segment matches, so
+ * the second run would overwrite the first - leaving the first order listing
+ * files whose contents belong to the second, and its earlier expiry deleting
+ * files the second still offers. Worse, the account segment is sanitized, and
+ * `john.smith@` and `john-smith@` sanitize to one string, so two DIFFERENT
+ * accounts could land on one file. An order number is unique across the
+ * install, which settles all of it in one segment.
+ */
+export const ORDER_OUTPUT_PATH_TEMPLATE =
+  '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}';
+
 export const OUTPUT_PATH_TOKENS = [
   { token: '{{date}}', description: 'Current date as YYYY-MM-DD' },
+  { token: '{{account name}}', description: 'Signed-in account name' },
+  { token: '{{order number}}', description: 'Order number, for ordered builds' },
   { token: '{{profile name}}', description: 'Selected profile name' },
   { token: '{{company name}}', description: 'Company name' },
   { token: '{{row number}}', description: 'Source Google Sheet row number' },
@@ -23,10 +53,22 @@ export type OutputTemplateVariables = {
   companyName: string;
   rowNumber?: string;
   jobTitle: string;
+  /**
+   * Optional because most callers have no account in scope - a script, a test,
+   * the admin's template preview. Rendering an absent one gives `unknown`,
+   * which is what every other empty segment already becomes.
+   */
+  accountName?: string;
+  /** Set for an ordered build. Absent everywhere else, and then `unknown`. */
+  orderNumber?: string;
 };
 
 const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
   date: 'date',
+  account: 'accountName',
+  'account name': 'accountName',
+  order: 'orderNumber',
+  'order number': 'orderNumber',
   profile: 'profileName',
   'profile name': 'profileName',
   company: 'companyName',
@@ -318,6 +360,8 @@ export function renderOutputFolderNameTemplate(
 export function buildOutputPathPreview(template: string): string {
   return `/${renderOutputPathTemplate(template, {
     date: '2026-04-10',
+    accountName: 'jane@example.com',
+    orderNumber: 'FT-20260410-0001',
     profileName: 'Jane Doe',
     companyName: 'Acme Inc',
     rowNumber: '12',

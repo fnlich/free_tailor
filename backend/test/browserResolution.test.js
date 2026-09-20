@@ -5,6 +5,7 @@ const {
   describeMissingBrowser,
   findInstalledBrowser,
   resolveBrowser,
+  resolvePuppeteerPath,
 } = require('../dist/config/browser');
 
 // Windows and Ubuntu both have to work, and neither can be exercised from the
@@ -186,4 +187,54 @@ test('the failure points at the cache directory actually in use', () => {
   });
   assert.match(message, /\/srv\/puppeteer-cache/);
   assert.doesNotMatch(message, /\/home\/app/);
+});
+
+
+/**
+ * Puppeteer's own answer, in both the shapes its API has had.
+ *
+ * `executablePath()` returns a STRING in puppeteer 24 and a PROMISE in 25.
+ * Only one of those can be exercised by actually calling puppeteer on any
+ * given machine, which is exactly why the unwrapping is a separate function
+ * taking a reader: both shapes can then be tested wherever this suite runs.
+ *
+ * The change is invisible at runtime - the promise resolves immediately - but
+ * it is a hard compile error against a signature that says `string`, and it
+ * surfaces in a file nobody touched.
+ */
+test('puppeteer\'s download path is unwrapped whichever shape its API returns', async () => {
+  const downloaded = '/home/kelvin/.cache/puppeteer/chrome/linux-140/chrome';
+
+  // Puppeteer 24.
+  assert.equal(await resolvePuppeteerPath(() => downloaded), downloaded);
+  // Puppeteer 25.
+  assert.equal(await resolvePuppeteerPath(() => Promise.resolve(downloaded)), downloaded);
+});
+
+test('no download to offer is a real answer, not a crash', async () => {
+  // Every way puppeteer can decline, in either major.
+  assert.equal(await resolvePuppeteerPath(() => null), null);
+  assert.equal(await resolvePuppeteerPath(() => ''), null);
+  assert.equal(await resolvePuppeteerPath(() => Promise.resolve('')), null);
+
+  // It throws when it cannot work a path out at all, which is the same answer
+  // said louder - and a rejected promise is the puppeteer 25 spelling of it.
+  assert.equal(
+    await resolvePuppeteerPath(() => {
+      throw new Error('no cache directory');
+    }),
+    null
+  );
+  assert.equal(await resolvePuppeteerPath(() => Promise.reject(new Error('nope'))), null);
+});
+
+test('a resolution with no puppeteer download still finds an installed browser', () => {
+  // What the synchronous path does on puppeteer 25 before the boot-time warm-up
+  // has run: puppeteer's own copy is skipped rather than waited for, so the
+  // fallbacks carry it instead of the resolution failing outright.
+  const resolved = resolveBrowser(
+    deps({ files: ['/usr/bin/google-chrome'], puppeteerPath: null })
+  );
+  assert.equal(resolved.source, 'installed browser');
+  assert.equal(resolved.exists, true);
 });

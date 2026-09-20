@@ -23,6 +23,7 @@
   "license": "ISC",
   "dependencies": {
     "apify-client": "^2.23.0",
+    "archiver": "^7.0.1",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -40,6 +41,7 @@
     "uuid": "^11.0.5"
   },
   "devDependencies": {
+    "@types/archiver": "^6.0.4",
     "@types/better-sqlite3": "^9.6.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",

@@ -18,6 +18,10 @@ import {
   type ResumeTaskResult,
   type TaskDescriptor,
 } from '../services/queue';
+import { createOrder, failOrder } from '../database/orderRepository';
+import { orderRetentionDays } from '../services/orders/retention';
+import { ORDER_OUTPUT_PATH_TEMPLATE } from '../utils/outputStorage';
+import { accountFolderName } from '../utils/generatedPath';
 import type { Profile } from '../types/profile';
 import type { JobAnalysis } from '../types/template';
 import { openBatchStream } from './batchStream';
@@ -63,6 +67,15 @@ type SubmitBody = {
   }>;
   /** Tailored content a preview already produced, keyed by profile id. */
   tailoredContentByProfileId?: Record<string, unknown>;
+  /**
+   * Place this as an ORDER rather than a build the caller waits for.
+   *
+   * What the sheet import sends. It changes three things: the files are filed
+   * under the fixed order tree instead of the administrator's template, a
+   * durable record is kept that outlives the batch, and the response carries an
+   * order number the caller shows instead of waiting for results.
+   */
+  asOrder?: boolean;
 };
 
 export type NormalizedJob = ResumeJob;
@@ -158,11 +171,25 @@ export function routeFor(choice: {
  * become the cross-product that goes in the queue, and getting the count or the
  * order wrong is invisible in the response.
  */
+export type BuildTaskOptions = {
+  /**
+   * Who this is being built for, filling `{{account name}}`.
+   *
+   * Passed for EVERY submission, not only orders. The token is offered to the
+   * administrator's own template too, and a template using it would otherwise
+   * file every queued build into one shared `unknown/` tree while the
+   * synchronous routes filed correctly - which is the shape where accounts
+   * start overwriting each other.
+   */
+  accountFolder?: string;
+};
+
 export async function buildTasks(
   body: SubmitBody,
   jobs: NormalizedJob[],
   profiles: Profile[],
-  batchId: string
+  batchId: string,
+  options: BuildTaskOptions = {}
 ): Promise<Array<TaskDescriptor<ResumeTaskResult>>> {
   const overrides = readAiOverrides(body);
   const format = body.format === 'docx' ? 'docx' : body.format === 'pdf' ? 'pdf' : 'both';
@@ -211,6 +238,10 @@ export async function buildTasks(
           format,
           includeCoverLetterDocx,
           choice,
+          // Carried rather than looked up when the task runs, so the second
+          // half of an order cannot land somewhere else because a setting was
+          // edited, or because midnight passed, while it was queued.
+          ...(options.accountFolder ? { accountFolder: options.accountFolder } : {}),
           ...(tailoredByProfile[profile.id]
             ? { tailoredContent: tailoredByProfile[profile.id] }
             : {}),
@@ -277,8 +308,13 @@ function fullSnapshot(snapshot: BatchSnapshot) {
 router.post('/batches', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as SubmitBody;
+    const asOrder = body.asOrder === true;
     const settings = await getPublicAppSettings();
-    const jobs = normalizeJobs(body, settings.outputPathUsesJobTitle);
+    // An order does not use the administrator's template, so it must not be
+    // held to that template's requirements: refusing a sheet row for having no
+    // role, to fill a `{{job title}}` segment an order never renders, is a
+    // refusal for a reason that does not apply to it.
+    const jobs = normalizeJobs(body, asOrder ? false : settings.outputPathUsesJobTitle);
 
     const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
@@ -292,7 +328,9 @@ router.post('/batches', async (req: Request, res: Response) => {
     // reserved against this batch BEFORE any task can start - and `submit`
     // dispatches immediately, so there is no window afterwards in which to do it.
     const batchId = newBatchId();
-    const descriptors = await buildTasks(body, jobs, profiles, batchId);
+    const descriptors = await buildTasks(body, jobs, profiles, batchId, {
+      accountFolder: accountFolderName(req.user),
+    });
 
     /**
      * The charge, before the first model call.
@@ -313,7 +351,61 @@ router.post('/batches', async (req: Request, res: Response) => {
 
     const queue = getGenerationQueue();
     let batch;
+    let order = null;
     try {
+      /**
+       * The order exists BEFORE the first task can finish.
+       *
+       * `submit` dispatches immediately, so a resume can be built and reported
+       * within milliseconds. Creating the order afterwards would race that: the
+       * hook would look for an item row, find none, and the first few resumes
+       * of every run would go silently unrecorded.
+       *
+       * Inside the try, not above it, because the credits have already been
+       * charged by this point - a throw out here without the release below
+       * leaves the account short for a run that never started.
+       */
+      order = asOrder
+        ? createOrder(
+            {
+              userId: req.user!.id,
+              batchId,
+              label:
+                typeof body.label === 'string' && body.label.trim()
+                  ? body.label.trim()
+                  : `${jobs.length} job(s) x ${profiles.length} profile(s)`,
+              retentionDays: orderRetentionDays(),
+            },
+            descriptors.map((descriptor, seq) => ({
+              seq,
+              profileId: descriptor.label.profileId,
+              profileName: descriptor.label.profileName,
+              companyName: descriptor.label.companyName,
+              role: descriptor.label.role,
+              ...(typeof descriptor.label.sourceRowNumber === 'number'
+                ? { sourceRowNumber: descriptor.label.sourceRowNumber }
+                : {}),
+            }))
+          )
+        : null;
+
+      /**
+       * The order's number reaches the paths here, after it has been issued and
+       * before a single task has been dispatched.
+       *
+       * The number cannot be known when `buildTasks` runs - it is allocated by
+       * the insert above - and it cannot be applied after `submit`, which
+       * dispatches on the spot. This window is the only place it fits, and the
+       * payloads are ours to finish until they are handed over.
+       */
+      if (order) {
+        for (const descriptor of descriptors) {
+          const payload = descriptor.payload as ResumeTaskPayload;
+          payload.orderNumber = order.number;
+          payload.pathTemplate = ORDER_OUTPUT_PATH_TEMPLATE;
+        }
+      }
+
       batch = queue.submit(descriptors, {
         id: batchId,
         // Written by `persistNewBatch` below, in one transaction, rather than
@@ -333,6 +425,21 @@ router.post('/batches', async (req: Request, res: Response) => {
       // Charged for a run that never started. Give it all back rather than
       // leaving the account short for a failure that was ours.
       releaseReservation(batchId, 'The batch could not be queued.');
+      /*
+       * Only when the work never started.
+       *
+       * `submit` dispatches on the spot and cannot be taken back, so a throw
+       * from `persistNewBatch` - which runs AFTER it - leaves three hundred
+       * tasks running. Failing the order there would be a lie that outlives
+       * itself: the tasks go on to finish and write their results back, but
+       * `settleOrderIfFinished` refuses to move an order out of `failed`, so it
+       * would sit at "Failed" for ever over a full set of ready resumes.
+       *
+       * An order whose batch genuinely never ran is the opposite case, and does
+       * need closing - otherwise it waits at `running` with every item queued
+       * and nothing left to move them.
+       */
+      if (order && !batch) failOrder(order.id, 'The order could not be queued.');
       throw error;
     }
 
@@ -347,6 +454,7 @@ router.post('/batches', async (req: Request, res: Response) => {
       jobCount: jobs.length,
       profileCount: profiles.length,
       queues: queue.stats(),
+      ...(order ? { orderId: order.id, orderNumber: order.number } : {}),
     });
   } catch (error) {
     if (error instanceof SubmitError) {

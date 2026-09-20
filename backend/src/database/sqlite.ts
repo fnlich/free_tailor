@@ -132,6 +132,76 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_generation_tasks_batch
     ON generation_tasks (batch_id, seq);
 
+  /*
+   * Orders, and why they are not the generation batch that produces them.
+   *
+   * A batch is a unit of WORK and is deliberately short-lived: evictFinished
+   * drops it an hour after it settles, or once twenty newer batches exist, and
+   * deletes the rows above with it. That is right for a queue - nobody needs a
+   * finished dispatcher record - and useless for the thing a person came back
+   * for three days later.
+   *
+   * So an order is the unit of DELIVERY, and it outlives its batch. It keeps
+   * batch_id to reach the live queue while the work is running (to cancel
+   * it), and nothing it shows a user depends on that batch still existing:
+   * counts come from the item rows, which is why "122 of 300" still reads
+   * correctly long after the dispatcher has forgotten the run.
+   *
+   * expires_at is written at creation rather than computed from created_at,
+   * so changing the retention window cannot silently reach back and delete
+   * files somebody was promised for five days.
+   */
+  CREATE TABLE IF NOT EXISTS orders (
+    id         TEXT PRIMARY KEY,
+    number     TEXT NOT NULL UNIQUE,
+    user_id    TEXT NOT NULL,
+    batch_id   TEXT,
+    label      TEXT NOT NULL DEFAULT '',
+    total      INTEGER NOT NULL,
+    state      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT,
+    expires_at TEXT NOT NULL,
+    purged_at  TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_orders_user
+    ON orders (user_id, created_at DESC);
+
+  /* A finishing task knows its batch, not its order. This is that lookup. */
+  CREATE INDEX IF NOT EXISTS idx_orders_batch
+    ON orders (batch_id);
+
+  /*
+   * One row per resume the order asked for - one profile against one job.
+   *
+   * seq is the position in the batch's task list, and it is how a finished
+   * task finds its row: the queue hands back (batchId, seq) and nothing else
+   * that survives a restart. files is a JSON array rather than a third table
+   * because a file is never asked about on its own, only ever through its item,
+   * and its kind gives it a stable address in a download URL.
+   */
+  CREATE TABLE IF NOT EXISTS order_items (
+    id                TEXT PRIMARY KEY,
+    order_id          TEXT NOT NULL,
+    seq               INTEGER NOT NULL,
+    task_id           TEXT,
+    profile_id        TEXT NOT NULL DEFAULT '',
+    profile_name      TEXT NOT NULL DEFAULT '',
+    company_name      TEXT NOT NULL DEFAULT '',
+    role              TEXT NOT NULL DEFAULT '',
+    source_row_number INTEGER,
+    state             TEXT NOT NULL,
+    error             TEXT,
+    files             TEXT NOT NULL DEFAULT '[]',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_order_items_order
+    ON order_items (order_id, seq);
+
   /**
    * Accounts.
    *

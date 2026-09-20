@@ -5,6 +5,7 @@ const test = require('node:test');
 const { moveCaseInsensitiveMatches, uniqueCaseInsensitive } = require('../dist/utils/array');
 const { extractJSON } = require('../dist/utils/json');
 const {
+  ORDER_OUTPUT_PATH_TEMPLATE,
   buildOutputPathPreview,
   normalizeOutputBaseDir,
   normalizeOutputFolderNameTemplate,
@@ -142,6 +143,41 @@ test('sanitizeFileNameStem escapes reserved names and Windows-illegal characters
   // A trailing dot or space is silently stripped by Windows; strip it here so
   // the name on disk is the name that was asked for.
   assert.equal(sanitizeFileNameStem('report. '), 'report');
+});
+
+test('the account segment renders like any other, and is not required', () => {
+  // Added for orders, which file under the account first so that one directory
+  // holds everything one person ordered - which is what lets the retention
+  // sweep prune emptied folders without walking into anybody else's tree.
+  assert.equal(
+    renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
+      date: '2026-04-18',
+      accountName: 'Jane.Doe@Example.com',
+      orderNumber: 'FT-20260418-0007',
+      profileName: 'Jane Doe',
+      companyName: 'Acme Inc.',
+      rowNumber: '12',
+      jobTitle: 'Senior Engineer',
+    }),
+    'jane_doe_example_com/2026_04_18/ft_20260418_0007/jane_doe/acme_inc'
+  );
+
+  // Optional, because a script and a test have no account in scope. An absent
+  // one becomes `unknown` like every other empty segment rather than throwing
+  // or collapsing the level away.
+  assert.equal(
+    renderOutputPathTemplate('/{{account name}}/{{company name}}', {
+      date: '2026-04-18',
+      profileName: 'Jane Doe',
+      companyName: 'Acme Inc.',
+      jobTitle: 'Senior Engineer',
+    }),
+    'unknown/acme_inc'
+  );
+
+  // And the short alias works the way `profile` and `company` already do.
+  assert.equal(validateOutputPathTemplate('/{{account}}'), '/{{account}}');
+  assert.throws(() => validateOutputPathTemplate('/{{accounts}}'), /Unsupported output path token/);
 });
 
 test('renderOutputPathTemplate produces a path that is legal on both platforms', () => {

@@ -40,10 +40,16 @@ const TIMEOUT_MS = Number(process.env.BROWSER_INSTALL_TIMEOUT_MS) || (NEVER_FAIL
  * `executablePath()` reports where it expects the browser without checking
  * that anything is there, and the path embeds both values:
  *   <cacheDir>/chrome/<platform>-<buildId>/chrome-<platform>/chrome
+ *
+ * Awaited because that call returns a STRING in puppeteer 24 and a PROMISE in
+ * 25. Awaiting a string is the string, so one line covers both - and without
+ * it, this crashes during `npm install` itself with
+ * `executablePath.lastIndexOf is not a function`, which reads like a bug in
+ * the installer rather than a version difference.
  */
-function readPuppeteerExpectation() {
+async function readPuppeteerExpectation() {
   const puppeteer = require('puppeteer');
-  const executablePath = puppeteer.executablePath();
+  const executablePath = await puppeteer.executablePath();
   const marker = `${path.sep}chrome${path.sep}`;
   const markerIndex = executablePath.lastIndexOf(marker);
   if (markerIndex === -1) return { executablePath, cacheDir: null, buildId: null };
@@ -61,7 +67,7 @@ function fail(message) {
 }
 
 async function main() {
-  const { executablePath, cacheDir, buildId } = readPuppeteerExpectation();
+  const { executablePath, cacheDir, buildId } = await readPuppeteerExpectation();
 
   if (fs.existsSync(executablePath)) {
     console.log(`[browser] Chrome is already installed at ${executablePath}`);
