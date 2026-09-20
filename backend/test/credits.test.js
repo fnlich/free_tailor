@@ -67,8 +67,12 @@ test('the refusal names the numbers, not just the problem', () => {
     assert.fail('should have refused');
   } catch (error) {
     // A zero balance and a merely-insufficient one point at different remedies.
-    assert.match(error.message, /has none/i);
-    assert.match(error.message, /administrator/i);
+    // The message deliberately does not name WHERE to get more: it is written
+    // once and read on installs that may or may not have a checkout, so the
+    // page catching it links accordingly.
+    assert.match(error.message, /needs 4 credits and the account has none/i);
+    assert.match(error.message, /add credits/i);
+    assert.doesNotMatch(error.message, /administrator/i);
   }
 
   credits.setBalance(broke.id, 2, 'admin-1');

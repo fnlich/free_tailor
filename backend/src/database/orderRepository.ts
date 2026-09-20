@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { getDb } from './sqlite';
+import { formatSequenceDate, nextDailyReference } from './dailySequence';
 
 /**
  * Orders and the resumes they delivered.
@@ -201,50 +202,15 @@ function toItem(row: OrderItemRow): OrderItem {
   };
 }
 
-/** `FT-YYYYMMDD-NNNN`, short enough to read out and unique across the install. */
-export function formatOrderDate(at: Date): string {
-  const year = at.getFullYear();
-  const month = `${at.getMonth() + 1}`.padStart(2, '0');
-  const day = `${at.getDate()}`.padStart(2, '0');
-  return `${year}${month}${day}`;
-}
-
 /**
- * The next number for a day, taken from the highest already issued.
+ * `FT-YYYYMMDD-NNNN`, short enough to read out and unique across the install.
  *
- * MAX rather than COUNT, because COUNT reissues a number the moment ANY row
- * for that day goes: delete the third of five and the sixth order is handed
- * `0005`, which already exists. MAX narrows that to the one case nothing in
- * this app performs - deleting the newest order of a day - and the UNIQUE index
- * on `number` is what makes even that a caught error rather than two orders
- * answering to one name. A gap in the sequence costs nothing; a duplicate is
- * the number somebody quotes back at you meaning two different things.
+ * The arithmetic lives in `dailySequence`, shared with payment references,
+ * because both are numbers somebody quotes back at you and the numeric-MAX
+ * trap in there is not worth falling into twice.
  */
 function nextOrderNumber(datePart: string): string {
-  /*
-   * The highest sequence of the day, taken NUMERICALLY.
-   *
-   * `MAX(number)` looked right and was a trap: it is a string maximum over a
-   * zero-padded field, so the moment a day issues its ten-thousandth order
-   * `'FT-...-10000'` sorts BELOW `'FT-...-9999'`. MAX would then keep answering
-   * 9999, every retry would collide with the UNIQUE index, and the fifth would
-   * throw - failing that order and every other order for the rest of the day.
-   *
-   * Casting the suffix makes the comparison the one that was always meant, and
-   * the padding becomes presentation rather than something correctness rests on.
-   */
-  const row = getDb()
-    .prepare(
-      `SELECT MAX(CAST(substr(number, @suffixFrom) AS INTEGER)) AS highest
-       FROM orders WHERE number LIKE @prefix`
-    )
-    .get({ prefix: `FT-${datePart}-%`, suffixFrom: `FT-${datePart}-`.length + 1 }) as
-    | { highest: number | null }
-    | undefined;
-
-  const highest = typeof row?.highest === 'number' ? row.highest : 0;
-  const next = highest > 0 ? highest + 1 : 1;
-  return `FT-${datePart}-${`${next}`.padStart(4, '0')}`;
+  return nextDailyReference('orders', 'number', 'FT-', datePart);
 }
 
 export type NewOrderItem = {
@@ -277,7 +243,7 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
   const db = getDb();
   const timestamp = at.toISOString();
   const expiresAt = new Date(at.getTime() + order.retentionDays * 24 * 60 * 60 * 1000).toISOString();
-  const datePart = formatOrderDate(at);
+  const datePart = formatSequenceDate(at);
 
   const insert = db.transaction((number: string): OrderRow => {
     const id = `ord_${crypto.randomUUID()}`;

@@ -17,7 +17,9 @@ export type CreditReason =
   | 'generation-reserve'
   | 'generation-refund'
   | 'generation-release'
-  | 'reconcile-orphan';
+  | 'reconcile-orphan'
+  | 'purchase'
+  | 'purchase-refund';
 
 export type LedgerEntry = {
   /** Monotonic, and authoritative for ordering: two rows can share a timestamp. */
@@ -69,6 +71,8 @@ const REASON_PHRASES: Record<CreditReason, string> = {
   'generation-refund': 'Refunded - a resume did not build',
   'generation-release': 'Returned - the run did not finish',
   'reconcile-orphan': 'Returned - the run never finished',
+  purchase: 'Bought',
+  'purchase-refund': 'Refunded to your payment method',
 };
 
 /**

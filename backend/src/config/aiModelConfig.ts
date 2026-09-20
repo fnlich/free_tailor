@@ -82,6 +82,17 @@ type AppSettings = {
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
   outputPathTemplate: string;
+  /**
+   * What a credit costs, and how many may be bought at once.
+   *
+   * In the smallest currency unit, because money in a floating-point number is
+   * a rounding error waiting for a large enough order. The bounds are not
+   * decoration: an amount arrives from a browser, and a field with no ceiling
+   * is a field somebody will send 100000000 to.
+   */
+  creditPriceCents: number;
+  creditMinCredits: number;
+  creditMaxCredits: number;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /**
@@ -193,6 +204,9 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
+  creditPriceCents: number;
+  creditMinCredits: number;
+  creditMaxCredits: number;
 };
 
 export type AppSettingsUpdate = Partial<PublicAppSettings> & {
@@ -200,7 +214,24 @@ export type AppSettingsUpdate = Partial<PublicAppSettings> & {
   openrouterEnabled?: boolean;
   outputBaseDir?: string;
   outputPathTemplate?: string;
+  creditPriceCents?: number;
+  creditMinCredits?: number;
+  creditMaxCredits?: number;
 };
+
+/**
+ * The price of one credit, and the bounds on a single purchase.
+ *
+ * Deliberately NOT in the public settings: the buy page reads them from
+ * `/api/payments/methods`, which also says which providers are actually
+ * configured. Keeping the price beside the thing that charges it means there is
+ * one answer to "what does this cost", not a settings copy that can disagree
+ * with the checkout.
+ */
+export const DEFAULT_CREDIT_PRICE_CENTS = 50;
+export const DEFAULT_CREDIT_MIN = 10;
+export const DEFAULT_CREDIT_MAX = 5000;
+export const CREDIT_CURRENCY = 'usd';
 
 export const APP_SETTINGS_KEY = 'app-settings';
 
@@ -403,6 +434,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultCoverLetterDocxEnabled: true,
   outputBaseDir: DEFAULT_GENERATED_RESUMES_DIR,
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
+  creditPriceCents: DEFAULT_CREDIT_PRICE_CENTS,
+  creditMinCredits: DEFAULT_CREDIT_MIN,
+  creditMaxCredits: DEFAULT_CREDIT_MAX,
   aiModels: DEFAULT_MODEL_RECORDS,
   googleSheetsSources: [],
   browserChatEndpoints: defaultBrowserChatEndpoints(),
@@ -936,10 +970,20 @@ function normalizeSettings(
         : strict
             ? (() => { throw new Error('outputPathTemplate must be a non-empty string'); })()
             : validateOutputPathTemplate(normalizeOutputPathTemplate(fallback.outputPathTemplate)),
+    creditPriceCents: normalizeBoundedInteger(
+      source.creditPriceCents, fallback.creditPriceCents, 1, 1_000_000, 'creditPriceCents', strict
+    ),
+    creditMinCredits: normalizeBoundedInteger(
+      source.creditMinCredits, fallback.creditMinCredits, 1, 1_000_000, 'creditMinCredits', strict
+    ),
+    creditMaxCredits: normalizeBoundedInteger(
+      source.creditMaxCredits, fallback.creditMaxCredits, 1, 1_000_000, 'creditMaxCredits', strict
+    ),
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
 }
+
 
 function assertAtLeastOneProviderEnabled(settings: AppSettings): void {
   if (!AI_PROVIDER_IDS.some((id) => settings.providersEnabled[id])) {
@@ -1039,6 +1083,9 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
     outputPathPreview: buildOutputPathPreview(settings.outputPathTemplate),
+    creditPriceCents: settings.creditPriceCents,
+    creditMinCredits: settings.creditMinCredits,
+    creditMaxCredits: settings.creditMaxCredits,
   };
 }
 
@@ -1190,6 +1237,11 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
 
   assertAtLeastOneProviderEnabled(next);
   assertAtLeastOneRunnableModel(next);
+  // A minimum above the maximum is a form nobody can submit: the buy page would
+  // refuse every amount, and the reason would be invisible from the page.
+  if (next.creditMinCredits > next.creditMaxCredits) {
+    throw new Error('creditMinCredits cannot be greater than creditMaxCredits');
+  }
 
   const shouldValidateOutputDir =
     typeof input.outputBaseDir !== 'undefined' ||
@@ -1554,6 +1606,22 @@ export async function getProviderApiKey(provider: AIProvider): Promise<string> {
     return '';
   }
   return getEnvironmentApiKey(provider);
+}
+
+/** What a credit costs and the bounds on one purchase. */
+export async function getCreditPricingSettings(): Promise<{
+  creditPriceCents: number;
+  creditMinCredits: number;
+  creditMaxCredits: number;
+  currency: string;
+}> {
+  const settings = await readSettings();
+  return {
+    creditPriceCents: settings.creditPriceCents,
+    creditMinCredits: settings.creditMinCredits,
+    creditMaxCredits: settings.creditMaxCredits,
+    currency: CREDIT_CURRENCY,
+  };
 }
 
 export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'outputBaseDir' | 'outputPathTemplate'>> {
