@@ -34,7 +34,12 @@ import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
-import { describeBrowser, describeMissingBrowser, getResolvedBrowser } from './config/browser';
+import {
+  describeBrowser,
+  describeMissingBrowser,
+  getResolvedBrowser,
+  warmPuppeteerExecutablePath,
+} from './config/browser';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -299,14 +304,22 @@ const server = app.listen(PORT, HOST, () => {
   console.log(`[orders] Ordered files are kept for ${orderRetentionDays()} day(s).`);
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
-  const browser = getResolvedBrowser();
-  if (browser?.exists) {
-    console.log(`[pdf] Rendering with ${describeBrowser()}`);
-  } else if (browser) {
-    console.warn(`[pdf] ${describeBrowser()}. PDF generation will fail until that path is right.`);
-  } else {
-    console.warn(`[pdf] ${describeMissingBrowser(process)}`);
-  }
+  //
+  // Awaited first, because puppeteer 25 answers "where is my download" with a
+  // promise where 24 answered with a string. Resolving it once here keeps
+  // every reader of that answer synchronous, which they all are.
+  void warmPuppeteerExecutablePath()
+    .catch(() => {})
+    .then(() => {
+      const browser = getResolvedBrowser();
+      if (browser?.exists) {
+        console.log(`[pdf] Rendering with ${describeBrowser()}`);
+      } else if (browser) {
+        console.warn(`[pdf] ${describeBrowser()}. PDF generation will fail until that path is right.`);
+      } else {
+        console.warn(`[pdf] ${describeMissingBrowser(process)}`);
+      }
+    });
 });
 
 // Node's `requestTimeout` bounds RECEIVING a request, and `headersTimeout` its
