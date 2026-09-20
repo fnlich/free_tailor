@@ -153,12 +153,13 @@ test('the account segment renders like any other, and is not required', () => {
     renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
       date: '2026-04-18',
       accountName: 'Jane.Doe@Example.com',
+      orderNumber: 'FT-20260418-0007',
       profileName: 'Jane Doe',
       companyName: 'Acme Inc.',
       rowNumber: '12',
       jobTitle: 'Senior Engineer',
     }),
-    'jane_doe_example_com/2026_04_18/jane_doe/acme_inc'
+    'jane_doe_example_com/2026_04_18/ft_20260418_0007/jane_doe/acme_inc'
   );
 
   // Optional, because a script and a test have no account in scope. An absent

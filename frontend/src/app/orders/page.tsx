@@ -48,15 +48,26 @@ export default function OrdersPage() {
     live.current = anyLive(orders);
   }, [orders]);
 
+  /**
+   * Sequenced, so a slow reply cannot overwrite a newer one.
+   *
+   * A three-hundred-item order takes long enough to serialize that two polls
+   * can be in flight at once, and without a token the older one resolving last
+   * makes the counts visibly jump backwards.
+   */
+  const latestRequest = useRef(0);
   const load = useCallback(async () => {
+    const token = ++latestRequest.current;
     try {
       const response = await ordersApi.list();
+      if (token !== latestRequest.current) return;
       setOrders(response.orders);
       setError('');
     } catch (err) {
+      if (token !== latestRequest.current) return;
       setError(err instanceof Error ? err.message : 'Could not load your orders.');
     } finally {
-      setLoading(false);
+      if (token === latestRequest.current) setLoading(false);
     }
   }, []);
 
@@ -144,7 +155,7 @@ export default function OrdersPage() {
                   >
                     View resumes
                   </Link>
-                  {order.counts.done > 0 && order.state !== 'expired' && (
+                  {order.hasFiles && order.state !== 'expired' && (
                     <a
                       href={orderZipUrl(order.id)}
                       className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"

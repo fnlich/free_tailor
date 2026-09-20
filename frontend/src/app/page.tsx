@@ -148,6 +148,10 @@ export default function Home() {
   }, []);
 
   const resetGenerationOutputs = useCallback(() => {
+    // The order receipt is one of these outputs. Without this it sat on the
+    // Builder over every later manual build, still congratulating somebody on
+    // an import they made twenty minutes ago.
+    setPlacedOrder(null);
     setPreviewHtml('');
     setPreviewTailored(false);
     setIsSinglePreviewOpen(false);

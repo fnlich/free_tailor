@@ -58,6 +58,8 @@ export type Order = {
   expiresAt: string;
   purgedAt?: string;
   counts: OrderCounts;
+  /** Whether anything was actually produced. `done` alone does not imply it. */
+  hasFiles: boolean;
 };
 
 export type OrderItem = {

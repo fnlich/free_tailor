@@ -377,7 +377,12 @@ deletes files somebody was already promised.
 
 An order belongs to one account. Every route takes an id and checks it against
 the caller; somebody else's order answers **404**, not 403, because the
-difference between those two replies is itself an answer.
+difference between those two replies is itself an answer. The two older download
+routes - `/api/generated` and `/api/resume/download` - now ask the same question
+of any path an order owns: a fixed template makes an ordered path *derivable*
+rather than merely guessable, and a signed-in-only check would otherwise hand
+every account's resumes to anybody with a login. A path no order claims is a
+manual build and is unaffected.
 
 ### Where data lives
 
@@ -683,7 +688,7 @@ File and folder names are templated per profile.
 constant rather than a setting:
 
 ```
-{account}/{date}/{profile}/{company}/
+{account}/{date}/{order number}/{profile}/{company}/
 ```
 
 Not configurable on purpose. These files are listed, downloaded, zipped and
@@ -692,6 +697,15 @@ administrator edited in between would strand a live order's files and point the
 purge at a directory that no longer holds them. The account comes first so that
 everything one person ordered lives under one directory, which is what lets the
 clean-up prune emptied folders without ever walking into somebody else's tree.
+
+**The order number is there because nothing else in the tree is unique.**
+Account, date, profile and company all repeat: import the same sheet twice in
+one afternoon and every segment matches, so the second run would overwrite the
+first - leaving the first order listing files that hold the second's contents,
+and its earlier expiry deleting files the second still offers. The account
+segment is no help either, since it is sanitized for the filesystem and
+`john.smith@` and `john-smith@` both become `john_smith_`. An order number is
+unique across the install, which settles all of it in one segment.
 
 ---
 

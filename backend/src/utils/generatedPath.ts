@@ -25,10 +25,15 @@ export function getCurrentDateFolder(): string {
 /**
  * The account's own segment of the output tree.
  *
- * The EMAIL rather than the display name, which reads less prettily and is the
- * right call anyway: `users.email` is `NOT NULL UNIQUE` and a display name is
- * neither, so two people called "John Smith" would otherwise file into one
- * directory. It is the same identity the account's spreadsheet is titled with.
+ * The EMAIL rather than the display name: it reads less prettily and is far
+ * more likely to be distinct, since a display name is neither unique nor
+ * required. It is the same identity the account's spreadsheet is titled with.
+ *
+ * It is NOT a unique key and must not be treated as one. `sanitizePathSegment`
+ * lowercases and collapses every non-alphanumeric run, so `john.smith@acme.com`
+ * and `john-smith@acme.com` both become `john_smith_acme_com`. This segment is
+ * for a person reading the tree; the order number a level below is what
+ * actually keeps two orders' files apart.
  */
 export function accountFolderName(
   account: { name?: string | null; email?: string | null } | null | undefined
@@ -75,6 +80,8 @@ export function getCoverLetterOutputFilename(pathInfo: GeneratedPathInfo, extens
 export type GeneratedPathOptions = {
   sourceRowNumber?: number;
   accountName?: string;
+  /** The order's number, which is what makes an ordered path unique. */
+  orderNumber?: string;
   pathTemplate?: string;
 };
 
@@ -91,6 +98,7 @@ export async function getGeneratedOutputPath(
   const baseTemplateVariables = {
     date: getCurrentDateFolder(),
     accountName: options.accountName || 'unknown',
+    orderNumber: options.orderNumber || 'unknown',
     profileName: profile.name || 'unknown',
     companyName: companyName || 'unknown',
     rowNumber,

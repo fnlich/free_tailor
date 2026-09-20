@@ -20,6 +20,7 @@ import { generateResumePDF, generatePreviewHTML, getGeneratedPDFPath } from '../
 import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
 import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
+import { ownerOfGeneratedFile } from '../database/orderRepository';
 import { getTemplateById } from '../extractors/templateExtractor';
 import { getPublicAppSettings } from '../config/aiModelConfig';
 import {
@@ -1365,6 +1366,16 @@ router.post('/preview', async (req: Request, res: Response) => {
 // Download generated resume (PDF or DOCX)
 router.get('/download/:filename(*)', async (req: Request<{ filename: string }>, res: Response) => {
   try {
+    // The same ownership check as `/api/generated`, and for the same reason:
+    // an ordered resume's path is derivable from a fixed template, so a
+    // signed-in-only check on a path parameter hands out everybody's files.
+    // See `ownerOfGeneratedFile`. A path no order claims is unaffected.
+    const owner = ownerOfGeneratedFile(req.params.filename);
+    if (owner && owner !== req.user!.id) {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+
     const filepath = await getGeneratedPDFPath(req.params.filename);
     if (!filepath) {
       res.status(404).json({ error: 'File not found' });

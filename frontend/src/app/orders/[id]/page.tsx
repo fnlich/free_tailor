@@ -61,15 +61,27 @@ export default function OrderDetailPage() {
     live.current = order ? isOrderLive(order) : false;
   }, [order]);
 
+  /**
+   * Sequenced, so a slow reply cannot overwrite a newer one.
+   *
+   * Three hundred items take long enough to serialize that two polls can be in
+   * flight at once, and without a token the older one resolving last makes the
+   * counts visibly jump backwards.
+   */
+  const latestRequest = useRef(0);
   const load = useCallback(async () => {
     if (!orderId) return;
+    const token = ++latestRequest.current;
     try {
-      setOrder(await ordersApi.get(orderId));
+      const next = await ordersApi.get(orderId);
+      if (token !== latestRequest.current) return;
+      setOrder(next);
       setError('');
     } catch (err) {
+      if (token !== latestRequest.current) return;
       setError(err instanceof Error ? err.message : 'Could not load that order.');
     } finally {
-      setLoading(false);
+      if (token === latestRequest.current) setLoading(false);
     }
   }, [orderId]);
 
@@ -204,7 +216,7 @@ export default function OrderDetailPage() {
           <OrderProgress counts={order.counts} className="mt-5" />
 
           <div className="mt-5 flex flex-wrap gap-2">
-            {order.counts.done > 0 && !expired && (
+            {readyItems.length > 0 && !expired && (
               <a
                 href={orderZipUrl(order.id)}
                 className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
@@ -224,7 +236,7 @@ export default function OrderDetailPage() {
                 Download {downloadable.length} selected as .zip
               </a>
             )}
-            {!expired && order.counts.done > 0 && (
+            {!expired && readyItems.length > 0 && (
               <button
                 type="button"
                 onClick={selectAllReady}

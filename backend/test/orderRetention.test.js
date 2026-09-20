@@ -178,6 +178,9 @@ test('a backlog larger than one page is cleared by a single sweep', async () => 
       state: 'done',
       files: [{ kind: 'resume-pdf', path: relative }],
     });
+    // Settled, because the sweep deliberately skips an order that is still
+    // running - see the test below.
+    context.orders.settleOrderIfFinished(order.id);
     context.orders.setOrderExpiryForTests(order.id, '2026-09-19T00:00:00.000Z');
   }
 
@@ -185,6 +188,42 @@ test('a backlog larger than one page is cleared by a single sweep', async () => 
   assert.equal(report.orders, total);
   assert.equal(report.filesRemoved, total);
   assert.equal(context.orders.listExpiredOrders(AFTER).length, 0, 'nothing left for the next sweep');
+});
+
+test('an order whose work is still running is never purged', async () => {
+  const context = setup('still-running');
+  // ORDER_RETENTION_DAYS=0 is legal and documented, and the sweep also runs at
+  // boot beside the queue restore - so "expired while still building" is a
+  // state a real install reaches, not a contrived one.
+  const order = context.orders.createOrder(
+    { userId: 'u1', batchId: 'bat_live', retentionDays: 0 },
+    [
+      { seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+      { seq: 1, profileId: 'p1', profileName: 'Ada', companyName: 'Globex', role: 'SWE' },
+    ],
+    new Date('2026-09-19T00:00:00.000Z')
+  );
+  write(context.outputBaseDir, ALICE_RESUME, 'STILL BEING WRITTEN');
+  context.orders.recordItemOutcome('bat_live', 0, {
+    state: 'done',
+    files: [{ kind: 'resume-pdf', path: ALICE_RESUME }],
+  });
+
+  // Past its expiry, with one resume still queued.
+  const report = await context.retention.purgeExpiredOrders(AFTER);
+  assert.equal(report.orders, 0, 'a live order waits for the sweep after it settles');
+  assert.equal(fs.existsSync(path.join(context.outputBaseDir, ...ALICE_RESUME.split('/'))), true);
+
+  const untouched = context.orders.getOrder(order.id);
+  assert.equal(untouched.state, 'running');
+  assert.equal(untouched.purgedAt, undefined, 'and is not marked purged, so it is still reachable');
+
+  // Once it settles, the next sweep takes it.
+  context.orders.recordItemOutcome('bat_live', 1, { state: 'failed', error: 'x' });
+  context.orders.settleOrderIfFinished(order.id);
+  const second = await context.retention.purgeExpiredOrders(AFTER);
+  assert.equal(second.orders, 1);
+  assert.equal(context.orders.getOrder(order.id).state, 'expired');
 });
 
 test('the retention window is read from the environment, and a bad one falls back', () => {
@@ -225,6 +264,7 @@ test('a zero-day order expires immediately, which is what the setting promises',
     state: 'done',
     files: [{ kind: 'resume-pdf', path: ALICE_RESUME }],
   });
+  context.orders.settleOrderIfFinished(order.id);
 
   const report = await context.retention.purgeExpiredOrders('2026-09-20T00:00:01.000Z');
   assert.equal(report.orders, 1);

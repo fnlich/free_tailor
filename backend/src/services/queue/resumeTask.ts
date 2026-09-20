@@ -62,6 +62,7 @@ export type ResumeTaskPayload = {
    * half of an order somewhere the first half is not.
    */
   accountFolder?: string;
+  orderNumber?: string;
   pathTemplate?: string;
 };
 
@@ -74,6 +75,7 @@ export type ResumeTaskInput = {
   choice: AiChoice;
   tailoredContent?: import('../../types/template').TailoredContent;
   accountFolder?: string;
+  orderNumber?: string;
   pathTemplate?: string;
 };
 
@@ -220,6 +222,7 @@ export async function runResumeTask(
   const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, {
     sourceRowNumber: job.sourceRowNumber,
     accountName: input.accountFolder,
+    orderNumber: input.orderNumber,
     pathTemplate: input.pathTemplate,
   });
   const coverLetterPdf = await saveCoverLetter(profile, coverLetterBody, pathInfo);
@@ -312,6 +315,7 @@ export function makeResumeRunner(
         includeCoverLetterDocx: input.includeCoverLetterDocx,
         choice: input.choice,
         accountFolder: input.accountFolder,
+        orderNumber: input.orderNumber,
         pathTemplate: input.pathTemplate,
         ...(input.tailoredContent ? { tailoredContent: input.tailoredContent } : {}),
       },

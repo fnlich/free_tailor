@@ -1,6 +1,6 @@
 import path from 'path';
 import { Router, type Request, type Response } from 'express';
-import { ZipArchive, type ArchiverError } from 'archiver';
+import archiver, { type ArchiverError } from 'archiver';
 
 import { requireUser } from '../middleware/auth';
 import {
@@ -11,6 +11,8 @@ import {
   isOrderFileKind,
   listOrderItems,
   listOrdersForUser,
+  ordersWithFiles,
+  settleOrderIfFinished,
   type Order,
   type OrderCounts,
   type OrderFile,
@@ -51,10 +53,25 @@ function notFound(res: Response): void {
   res.status(404).json({ error: 'That order was not found.' });
 }
 
-type OrderView = Order & { counts: OrderCounts };
+type OrderView = Order & { counts: OrderCounts; hasFiles: boolean };
 
-function view(order: Order, counts: OrderCounts): OrderView {
-  return { ...order, counts };
+function view(order: Order, counts: OrderCounts, hasFiles: boolean): OrderView {
+  return { ...order, counts, hasFiles };
+}
+
+/**
+ * Closes an order that finished without anyone noticing.
+ *
+ * `settleOrderIfFinished` normally runs from the finished hook, so an order
+ * settles the moment its last task reports. A process killed between that
+ * report and the settle leaves the order at `running` with nothing left to move
+ * it, and nothing else in the system would ever look at it again - the page
+ * would read "In progress" for ever. Reading it is the natural moment to check,
+ * and the call is a no-op for every order that is genuinely still working.
+ */
+function reconciled(order: Order): Order {
+  if (order.state !== 'running') return order;
+  return settleOrderIfFinished(order.id) ?? order;
 }
 
 /** A file the caller can still fetch. A purged one is listed but not offered. */
@@ -63,27 +80,31 @@ function availableFiles(item: OrderItem): OrderFile[] {
 }
 
 router.get('/', (req: Request, res: Response) => {
-  const orders = listOrdersForUser(req.user!.id);
+  const orders = listOrdersForUser(req.user!.id).map(reconciled);
   // One grouped count for the whole page rather than one query per order, and
   // certainly not the item rows themselves: twenty orders of three hundred is
   // six thousand rows to render twenty progress bars.
-  const counts = countsForOrders(orders.map((order) => order.id));
+  const ids = orders.map((order) => order.id);
+  const counts = countsForOrders(ids);
+  const withFiles = ordersWithFiles(ids);
   res.json({
-    orders: orders.map((order) => view(order, counts.get(order.id)!)),
+    orders: orders.map((order) => view(order, counts.get(order.id)!, withFiles.has(order.id))),
     retentionNote: 'Ordered files are deleted automatically once their order expires.',
   });
 });
 
 router.get('/:id', (req: Request, res: Response) => {
-  const order = mine(req);
-  if (!order) {
+  const found = mine(req);
+  if (!found) {
     notFound(res);
     return;
   }
 
+  const order = reconciled(found);
+  const items = listOrderItems(order.id);
   res.json({
-    ...view(order, countsForOrder(order.id)),
-    items: listOrderItems(order.id).map((item) => ({
+    ...view(order, countsForOrder(order.id), items.some((item) => item.files.length > 0)),
+    items: items.map((item) => ({
       ...item,
       // What the page may offer a link for. The full list stays on `files` so
       // an expired order can still show what it built.
@@ -160,7 +181,16 @@ router.get('/:id/items/:itemId/:kind', async (req: Request, res: Response) => {
 
     const extension = path.extname(absolute).toLowerCase();
     if (CONTENT_TYPES[extension]) res.setHeader('Content-Type', CONTENT_TYPES[extension]);
-    res.download(absolute, path.basename(absolute));
+    // The callback matters: `res.download` reports a send failure through it,
+    // not by rejecting, so the surrounding catch would never see a file that
+    // vanished between `fs.access` and the read - and Express's default handler
+    // would then try to write a response over headers already sent.
+    res.download(absolute, path.basename(absolute), (sendError) => {
+      if (!sendError) return;
+      console.warn(`[orders] Could not finish sending ${file.path}.`, sendError);
+      if (!res.headersSent) res.status(410).json({ error: 'That file is no longer on the server.' });
+      else res.destroy();
+    });
   } catch (error) {
     // Express 4 does not catch a rejected async handler, and an uncaught one
     // takes the process down rather than just the request.
@@ -199,7 +229,20 @@ router.get('/:id/zip', async (req: Request, res: Response) => {
       return;
     }
 
-    const requested = typeof req.query.items === 'string' ? req.query.items : '';
+    /*
+     * Flattened, never ignored.
+     *
+     * `?items=a&items=b` parses to an ARRAY, and reading only the string case
+     * left `wanted` empty - which this route reads as "no selection", i.e. the
+     * whole order. A selection that silently widens to everything is the one
+     * failure mode a selection must not have.
+     */
+    const rawItems = req.query.items;
+    const requested = Array.isArray(rawItems)
+      ? rawItems.map(String).join(',')
+      : typeof rawItems === 'string'
+        ? rawItems
+        : '';
     const wanted = new Set(
       requested
         .split(',')
@@ -234,12 +277,36 @@ router.get('/:id/zip', async (req: Request, res: Response) => {
       return;
     }
 
-    // `store`, not deflate: PDFs and DOCX files are already compressed, so
-    // recompressing them burns CPU per byte to save almost nothing.
-    const archive = new ZipArchive({ store: true });
+    /*
+     * `store`, not deflate: PDFs and DOCX files are already compressed, so
+     * recompressing them burns CPU per byte to save almost nothing.
+     *
+     * archiver is pinned to 7.x deliberately. 8.x is ESM-only, and this backend
+     * compiles to CommonJS - it loads here only because Node 22 allows
+     * `require` of an ES module. On an older runtime the `require` emitted for
+     * this file throws at import time, and because this router is imported by
+     * index.ts that takes down the entire server rather than just the orders
+     * routes.
+     */
+    const archive = archiver('zip', { store: true });
     let failed = false;
     archive.on('warning', (error: ArchiverError) => {
       console.warn(`[orders] Zip warning for ${order.number}.`, error);
+      /*
+       * A file that vanished between the listing loop above and the streaming
+       * loop below - which the retention sweep can do, and for a big order the
+       * gap is the whole duration of the stream.
+       *
+       * archiver reports that as a WARNING, not an error: it decrements its
+       * entry count and carries on. Left alone, the caller would get HTTP 200
+       * and a valid archive quietly missing files, which is precisely the
+       * outcome the error handler below exists to prevent. So it is treated the
+       * same way - a broken download beats a complete-looking one.
+       */
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        failed = true;
+        res.destroy(error);
+      }
     });
     archive.on('error', (error: ArchiverError) => {
       failed = true;

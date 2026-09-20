@@ -221,13 +221,29 @@ export function formatOrderDate(at: Date): string {
  * the number somebody quotes back at you meaning two different things.
  */
 function nextOrderNumber(datePart: string): string {
+  /*
+   * The highest sequence of the day, taken NUMERICALLY.
+   *
+   * `MAX(number)` looked right and was a trap: it is a string maximum over a
+   * zero-padded field, so the moment a day issues its ten-thousandth order
+   * `'FT-...-10000'` sorts BELOW `'FT-...-9999'`. MAX would then keep answering
+   * 9999, every retry would collide with the UNIQUE index, and the fifth would
+   * throw - failing that order and every other order for the rest of the day.
+   *
+   * Casting the suffix makes the comparison the one that was always meant, and
+   * the padding becomes presentation rather than something correctness rests on.
+   */
   const row = getDb()
-    .prepare(`SELECT MAX(number) AS highest FROM orders WHERE number LIKE @prefix`)
-    .get({ prefix: `FT-${datePart}-%` }) as { highest: string | null } | undefined;
+    .prepare(
+      `SELECT MAX(CAST(substr(number, @suffixFrom) AS INTEGER)) AS highest
+       FROM orders WHERE number LIKE @prefix`
+    )
+    .get({ prefix: `FT-${datePart}-%`, suffixFrom: `FT-${datePart}-`.length + 1 }) as
+    | { highest: number | null }
+    | undefined;
 
-  const highest = row?.highest ?? '';
-  const sequence = Number.parseInt(highest.slice(highest.lastIndexOf('-') + 1), 10);
-  const next = Number.isFinite(sequence) && sequence > 0 ? sequence + 1 : 1;
+  const highest = typeof row?.highest === 'number' ? row.highest : 0;
+  const next = highest > 0 ? highest + 1 : 1;
   return `FT-${datePart}-${`${next}`.padStart(4, '0')}`;
 }
 
@@ -406,6 +422,29 @@ export function countsForOrders(orderIds: string[]): Map<string, OrderCounts> {
   return counts;
 }
 
+/**
+ * Which of these orders have at least one file recorded.
+ *
+ * `done` is not the same question: an item can finish having produced nothing,
+ * and a list offering "Download all" for such an order sends somebody to a page
+ * of raw JSON. One grouped count answers it for the whole page.
+ */
+export function ordersWithFiles(orderIds: string[]): Set<string> {
+  const withFiles = new Set<string>();
+  if (orderIds.length === 0) return withFiles;
+
+  const placeholders = orderIds.map(() => '?').join(', ');
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT order_id FROM order_items
+       WHERE order_id IN (${placeholders}) AND files != '[]'`
+    )
+    .all(...orderIds) as Array<{ order_id: string }>;
+
+  for (const row of rows) withFiles.add(row.order_id);
+  return withFiles;
+}
+
 export function countsForOrder(orderId: string): OrderCounts {
   return countsForOrders([orderId]).get(orderId) ?? { ...EMPTY_COUNTS };
 }
@@ -514,16 +553,73 @@ export function failOrder(orderId: string, message: string): void {
   })();
 }
 
-/** Everything whose keep-until has passed and whose files are still on disk. */
+/**
+ * Everything whose keep-until has passed, whose files are still on disk, and
+ * whose work has FINISHED.
+ *
+ * The state filter is not tidiness. `ORDER_RETENTION_DAYS=0` is legal and makes
+ * an order expire the moment it is placed; the sweep also runs at boot, beside
+ * the queue restore. Without this, a three-hundred-resume run would have its
+ * files unlinked while its tasks were still writing them - and worse, every
+ * task that finished afterwards would write a fresh `files` array with no
+ * `removedAt`, so the order would show working download links under a "Files
+ * deleted" banner while `purged_at` kept the sweep from ever looking at it
+ * again. Those files would then be leaked on disk for ever, which is the exact
+ * accumulation this feature exists to stop.
+ *
+ * A still-running order simply waits: it is collected by the next sweep after
+ * it settles.
+ */
 export function listExpiredOrders(nowIso: string = now(), limit = 200): Order[] {
   const rows = getDb()
     .prepare(
       `SELECT ${ORDER_COLUMNS} FROM orders
-       WHERE purged_at IS NULL AND expires_at <= ?
+       WHERE purged_at IS NULL AND expires_at <= ? AND state != 'running'
        ORDER BY expires_at ASC LIMIT ?`
     )
     .all(nowIso, limit) as OrderRow[];
   return rows.map(toOrder);
+}
+
+/**
+ * Who, if anyone, owns a generated file by path.
+ *
+ * The question the older download routes have to ask now. `/api/generated` and
+ * `/api/resume/download` take a path and check only that the caller is signed
+ * in - defensible while a path was an opaque thing you had to be told, and not
+ * once ordered files are filed under a FIXED, published template whose segments
+ * are an email, a date, an order number and a company. That makes them
+ * derivable rather than guessable, and a derivable path behind a
+ * signed-in-only check is a directory of everybody's resumes.
+ *
+ * Matched with LIKE against the stored JSON rather than by parsing it: the
+ * column holds an array, the path appears in it verbatim as `"path":"<value>"`,
+ * and SQLite has no JSON index here worth building for a lookup that happens
+ * once per download. The candidate rows are then confirmed properly, so a
+ * substring that merely looks similar cannot pass.
+ *
+ * Returns null when no order claims the path, which is the right answer for
+ * every manually built resume - those are left exactly as they were.
+ */
+export function ownerOfGeneratedFile(relativePath: string): string | null {
+  const wanted = relativePath.replace(/\\/g, '/').trim();
+  if (!wanted) return null;
+
+  const rows = getDb()
+    .prepare(
+      `SELECT o.user_id AS userId, i.files AS files
+       FROM order_items i JOIN orders o ON o.id = i.order_id
+       WHERE i.files LIKE @needle`
+    )
+    .all({ needle: `%${JSON.stringify(wanted).slice(1, -1)}%` }) as Array<{
+    userId: string;
+    files: string;
+  }>;
+
+  for (const row of rows) {
+    if (parseFiles(row.files).some((file) => file.path === wanted)) return row.userId;
+  }
+  return null;
 }
 
 export function recordItemFiles(itemId: string, files: OrderFile[]): void {

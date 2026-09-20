@@ -90,6 +90,27 @@ test('two orders can never answer to one number, whatever the sequence says', ()
   );
 });
 
+test('the sequence keeps counting past the padding width', () => {
+  const orders = setup('overflow');
+  const day = new Date('2026-09-20T09:00:00Z');
+  const first = orders.createOrder({ userId: 'u1', retentionDays: 5 }, ONE_ITEM, day);
+
+  // Straight to the edge. A STRING max over a zero-padded field sorts
+  // 'FT-...-10000' below 'FT-...-9999', so it would keep answering 9999, every
+  // retry would collide with the UNIQUE index, and the fifth would throw -
+  // failing this order and every other order for the rest of the day.
+  const { getDb } = require('../dist/database/sqlite');
+  getDb()
+    .prepare(`UPDATE orders SET number = 'FT-20260920-9999' WHERE id = ?`)
+    .run(first.id);
+
+  const next = orders.createOrder({ userId: 'u1', retentionDays: 5 }, ONE_ITEM, day);
+  assert.equal(next.number, 'FT-20260920-10000');
+
+  const after = orders.createOrder({ userId: 'u1', retentionDays: 5 }, ONE_ITEM, day);
+  assert.equal(after.number, 'FT-20260920-10001');
+});
+
 test('the expiry is stamped at creation, not derived later', () => {
   const orders = setup('expiry');
   const at = new Date('2026-09-20T09:00:00Z');

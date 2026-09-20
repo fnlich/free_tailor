@@ -152,14 +152,21 @@ test('an ordered build is filed under the account, and a manual one is not', asy
 
     const orderedPayload = readPayload(ordered.batchId);
     assert.equal(orderedPayload.accountFolder, 'orderer@example.com');
+    assert.equal(orderedPayload.orderNumber, ordered.orderNumber);
     assert.equal(
       orderedPayload.pathTemplate,
-      '/{{account name}}/{{date}}/{{profile name}}/{{company name}}',
+      '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}',
       'an order uses the fixed tree, not the administrator\'s template'
     );
 
+    // A manual build keeps the administrator's template - but it is still told
+    // WHO it is for, because `{{account name}}` is a token that template may
+    // use too, and filling it only for orders would file every queued build
+    // into one shared `unknown/` tree while the synchronous routes filed
+    // correctly.
     const plainPayload = readPayload(plain.batchId);
-    assert.equal(plainPayload.accountFolder, undefined);
+    assert.equal(plainPayload.accountFolder, 'orderer@example.com');
+    assert.equal(plainPayload.orderNumber, undefined);
     assert.equal(plainPayload.pathTemplate, undefined);
   } finally {
     server.close();
@@ -188,6 +195,77 @@ function syntheticOrder(server, count, batchId) {
     }))
   );
 }
+
+test('two orders for the same job on the same day write to different paths', async () => {
+  const server = await serve();
+  try {
+    // The same sheet imported twice in one afternoon - a partial failure, a
+    // tweak, a double-clicked button. Account, date, profile and company all
+    // match, so without a discriminator the second run would overwrite the
+    // first: the first order would then list files holding the second's
+    // contents, and its earlier expiry would delete files the second offers.
+    const first = await (
+      await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
+    ).json();
+    const second = await (
+      await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
+    ).json();
+
+    const payloadFor = (batchId) => {
+      const rows = require('better-sqlite3')(`${server.dbDir}/free_tailor.db`)
+        .prepare('SELECT data FROM generation_tasks WHERE batch_id = ? ORDER BY seq')
+        .all(batchId);
+      return JSON.parse(rows[0].data).payload;
+    };
+
+    assert.notEqual(first.orderNumber, second.orderNumber);
+    assert.equal(payloadFor(first.batchId).orderNumber, first.orderNumber);
+    assert.equal(payloadFor(second.batchId).orderNumber, second.orderNumber);
+
+    // And the template renders that difference into the path itself.
+    const { renderOutputPathTemplate, ORDER_OUTPUT_PATH_TEMPLATE } = require('../dist/utils/outputStorage');
+    const render = (orderNumber) =>
+      renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
+        date: '2026-09-20',
+        accountName: 'orderer@example.com',
+        orderNumber,
+        profileName: 'Ada',
+        companyName: '2_company_0',
+        jobTitle: 'Engineer',
+      });
+    assert.notEqual(render(first.orderNumber), render(second.orderNumber));
+  } finally {
+    server.close();
+  }
+});
+
+test('two accounts whose emails sanitize alike still write to different paths', () => {
+  // `john.smith@acme.com` and `john-smith@acme.com` both become
+  // `john_smith_acme_com`, so the account segment is NOT a unique key and the
+  // comment that once claimed it was has been corrected. The order number is
+  // what actually keeps them apart, and it is unique across the install.
+  const { renderOutputPathTemplate, ORDER_OUTPUT_PATH_TEMPLATE } = require('../dist/utils/outputStorage');
+  const render = (accountName, orderNumber) =>
+    renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
+      date: '2026-09-20',
+      accountName,
+      orderNumber,
+      profileName: 'John Smith',
+      companyName: '14_stripe',
+      jobTitle: 'Engineer',
+    });
+
+  assert.equal(
+    render('john.smith@acme.com', 'FT-20260920-0001').split('/')[0],
+    render('john-smith@acme.com', 'FT-20260920-0002').split('/')[0],
+    'the account segment really does collide'
+  );
+  assert.notEqual(
+    render('john.smith@acme.com', 'FT-20260920-0001'),
+    render('john-smith@acme.com', 'FT-20260920-0002'),
+    'and the order number is what stops that becoming one file'
+  );
+});
 
 test('a finished task lands on its own item, found by batch and position', async () => {
   const server = await serve();

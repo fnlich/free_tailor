@@ -172,9 +172,16 @@ export function routeFor(choice: {
  * order wrong is invisible in the response.
  */
 export type BuildTaskOptions = {
-  /** Set for an order: the account segment and the fixed order tree. */
+  /**
+   * Who this is being built for, filling `{{account name}}`.
+   *
+   * Passed for EVERY submission, not only orders. The token is offered to the
+   * administrator's own template too, and a template using it would otherwise
+   * file every queued build into one shared `unknown/` tree while the
+   * synchronous routes filed correctly - which is the shape where accounts
+   * start overwriting each other.
+   */
   accountFolder?: string;
-  pathTemplate?: string;
 };
 
 export async function buildTasks(
@@ -235,7 +242,6 @@ export async function buildTasks(
           // half of an order cannot land somewhere else because a setting was
           // edited, or because midnight passed, while it was queued.
           ...(options.accountFolder ? { accountFolder: options.accountFolder } : {}),
-          ...(options.pathTemplate ? { pathTemplate: options.pathTemplate } : {}),
           ...(tailoredByProfile[profile.id]
             ? { tailoredContent: tailoredByProfile[profile.id] }
             : {}),
@@ -302,8 +308,13 @@ function fullSnapshot(snapshot: BatchSnapshot) {
 router.post('/batches', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as SubmitBody;
+    const asOrder = body.asOrder === true;
     const settings = await getPublicAppSettings();
-    const jobs = normalizeJobs(body, settings.outputPathUsesJobTitle);
+    // An order does not use the administrator's template, so it must not be
+    // held to that template's requirements: refusing a sheet row for having no
+    // role, to fill a `{{job title}}` segment an order never renders, is a
+    // refusal for a reason that does not apply to it.
+    const jobs = normalizeJobs(body, asOrder ? false : settings.outputPathUsesJobTitle);
 
     const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
@@ -317,16 +328,9 @@ router.post('/batches', async (req: Request, res: Response) => {
     // reserved against this batch BEFORE any task can start - and `submit`
     // dispatches immediately, so there is no window afterwards in which to do it.
     const batchId = newBatchId();
-    const asOrder = body.asOrder === true;
-    const descriptors = await buildTasks(
-      body,
-      jobs,
-      profiles,
-      batchId,
-      asOrder
-        ? { accountFolder: accountFolderName(req.user), pathTemplate: ORDER_OUTPUT_PATH_TEMPLATE }
-        : {}
-    );
+    const descriptors = await buildTasks(body, jobs, profiles, batchId, {
+      accountFolder: accountFolderName(req.user),
+    });
 
     /**
      * The charge, before the first model call.
@@ -385,6 +389,23 @@ router.post('/batches', async (req: Request, res: Response) => {
           )
         : null;
 
+      /**
+       * The order's number reaches the paths here, after it has been issued and
+       * before a single task has been dispatched.
+       *
+       * The number cannot be known when `buildTasks` runs - it is allocated by
+       * the insert above - and it cannot be applied after `submit`, which
+       * dispatches on the spot. This window is the only place it fits, and the
+       * payloads are ours to finish until they are handed over.
+       */
+      if (order) {
+        for (const descriptor of descriptors) {
+          const payload = descriptor.payload as ResumeTaskPayload;
+          payload.orderNumber = order.number;
+          payload.pathTemplate = ORDER_OUTPUT_PATH_TEMPLATE;
+        }
+      }
+
       batch = queue.submit(descriptors, {
         id: batchId,
         // Written by `persistNewBatch` below, in one transaction, rather than
@@ -404,9 +425,21 @@ router.post('/batches', async (req: Request, res: Response) => {
       // Charged for a run that never started. Give it all back rather than
       // leaving the account short for a failure that was ours.
       releaseReservation(batchId, 'The batch could not be queued.');
-      // And an order whose batch never ran would sit at `running` with every
-      // item queued and nothing left to move them, its bar stuck at zero.
-      if (order) failOrder(order.id, 'The order could not be queued.');
+      /*
+       * Only when the work never started.
+       *
+       * `submit` dispatches on the spot and cannot be taken back, so a throw
+       * from `persistNewBatch` - which runs AFTER it - leaves three hundred
+       * tasks running. Failing the order there would be a lie that outlives
+       * itself: the tasks go on to finish and write their results back, but
+       * `settleOrderIfFinished` refuses to move an order out of `failed`, so it
+       * would sit at "Failed" for ever over a full set of ready resumes.
+       *
+       * An order whose batch genuinely never ran is the opposite case, and does
+       * need closing - otherwise it waits at `running` with every item queued
+       * and nothing left to move them.
+       */
+      if (order && !batch) failOrder(order.id, 'The order could not be queued.');
       throw error;
     }
 
