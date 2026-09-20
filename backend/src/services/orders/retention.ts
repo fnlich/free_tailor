@@ -89,6 +89,9 @@ async function pruneEmptyDirectories(directories: Set<string>, baseDir: string):
   }
 }
 
+/** 200 orders a page, so this is 40,000 - a bound, not a working limit. */
+const MAX_SWEEP_PAGES = 200;
+
 export type PurgeReport = {
   orders: number;
   filesRemoved: number;
@@ -96,55 +99,79 @@ export type PurgeReport = {
 };
 
 /**
- * One pass over everything past its keep-until date.
+ * Deletes one order's files and marks it expired.
  *
  * `getGeneratedFilePath` is what resolves each path, deliberately: it applies
  * the same traversal guard the download routes use, so a doctored row cannot
  * make the sweep unlink something outside the output directory. A path it
- * refuses and a file already gone are indistinguishable here, and both are
- * counted as missing rather than treated as a failure - the end state wanted is
- * "not on disk", which is already true.
+ * refuses and a file already gone are indistinguishable here, and both count as
+ * missing rather than as a failure - the end state wanted is "not on disk",
+ * which is already true.
  */
-export async function purgeExpiredOrders(nowIso: string = new Date().toISOString()): Promise<PurgeReport> {
-  const expired = listExpiredOrders(nowIso);
-  const report: PurgeReport = { orders: 0, filesRemoved: 0, filesMissing: 0 };
-  if (expired.length === 0) return report;
+async function purgeOrder(
+  orderId: string,
+  report: PurgeReport,
+  emptiedDirectories: Set<string>
+): Promise<void> {
+  for (const item of listOrderItems(orderId)) {
+    if (item.files.length === 0) continue;
 
+    const removedAt = new Date().toISOString();
+    const next: OrderFile[] = [];
+    for (const file of item.files) {
+      if (file.removedAt) {
+        next.push(file);
+        continue;
+      }
+
+      const absolute = await getGeneratedFilePath(file.path);
+      if (absolute) {
+        try {
+          await fs.unlink(absolute);
+          emptiedDirectories.add(path.dirname(absolute));
+          report.filesRemoved += 1;
+        } catch {
+          report.filesMissing += 1;
+        }
+      } else {
+        report.filesMissing += 1;
+      }
+
+      next.push({ ...file, removedAt });
+    }
+    recordItemFiles(item.id, next);
+  }
+
+  markOrderPurged(orderId);
+  report.orders += 1;
+}
+
+/** One pass over everything past its keep-until date. */
+export async function purgeExpiredOrders(nowIso: string = new Date().toISOString()): Promise<PurgeReport> {
+  const report: PurgeReport = { orders: 0, filesRemoved: 0, filesMissing: 0 };
   const { outputBaseDir } = await getOutputStorageSettings();
   const emptiedDirectories = new Set<string>();
 
-  for (const order of expired) {
-    for (const item of listOrderItems(order.id)) {
-      if (item.files.length === 0) continue;
+  /*
+   * Worked in pages until there is nothing left, rather than taking one page
+   * and waiting six hours for the next sweep.
+   *
+   * An install that was switched off for a fortnight comes back with every
+   * order of those two weeks expired at once; clearing two hundred at a time
+   * would take days to catch up while the disk stayed full. Each page re-reads
+   * the query rather than paging by offset, because the previous page is no
+   * longer in the result - `markOrderPurged` removes it.
+   *
+   * The bound only exists so that a row which somehow refuses to purge cannot
+   * spin this for ever.
+   */
+  for (let page = 0; page < MAX_SWEEP_PAGES; page += 1) {
+    const expired = listExpiredOrders(nowIso);
+    if (expired.length === 0) break;
 
-      const removedAt = new Date().toISOString();
-      const next: OrderFile[] = [];
-      for (const file of item.files) {
-        if (file.removedAt) {
-          next.push(file);
-          continue;
-        }
-
-        const absolute = await getGeneratedFilePath(file.path);
-        if (absolute) {
-          try {
-            await fs.unlink(absolute);
-            emptiedDirectories.add(path.dirname(absolute));
-            report.filesRemoved += 1;
-          } catch {
-            report.filesMissing += 1;
-          }
-        } else {
-          report.filesMissing += 1;
-        }
-
-        next.push({ ...file, removedAt });
-      }
-      recordItemFiles(item.id, next);
+    for (const order of expired) {
+      await purgeOrder(order.id, report, emptiedDirectories);
     }
-
-    markOrderPurged(order.id);
-    report.orders += 1;
   }
 
   if (outputBaseDir) {

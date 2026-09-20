@@ -160,6 +160,33 @@ test('a file that is already gone is counted, not treated as a failure', async (
   assert.equal(context.orders.getOrder(order.id).state, 'expired');
 });
 
+test('a backlog larger than one page is cleared by a single sweep', async () => {
+  const context = setup('backlog');
+  // Above the 200-order page size, so a sweep that took one page and stopped
+  // would leave the rest sitting on disk until six hours later - and an install
+  // that was off for a fortnight comes back with exactly this shape.
+  const total = 205;
+  for (let index = 0; index < total; index += 1) {
+    const batchId = `bat_backlog_${index}`;
+    const order = context.orders.createOrder(
+      { userId: 'u1', batchId, retentionDays: 5 },
+      [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: `Co${index}`, role: 'SWE' }]
+    );
+    const relative = `alice@example.com/2026-09-14/ada/co${index}/Ada.pdf`;
+    write(context.outputBaseDir, relative, 'BYTES');
+    context.orders.recordItemOutcome(batchId, 0, {
+      state: 'done',
+      files: [{ kind: 'resume-pdf', path: relative }],
+    });
+    context.orders.setOrderExpiryForTests(order.id, '2026-09-19T00:00:00.000Z');
+  }
+
+  const report = await context.retention.purgeExpiredOrders(AFTER);
+  assert.equal(report.orders, total);
+  assert.equal(report.filesRemoved, total);
+  assert.equal(context.orders.listExpiredOrders(AFTER).length, 0, 'nothing left for the next sweep');
+});
+
 test('the retention window is read from the environment, and a bad one falls back', () => {
   const context = setup('window');
   const original = process.env.ORDER_RETENTION_DAYS;
