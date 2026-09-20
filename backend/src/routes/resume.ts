@@ -19,7 +19,8 @@ import {
 import { generateResumePDF, generatePreviewHTML, getGeneratedPDFPath } from '../generators/pdfGenerator';
 import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
-import { getGeneratedOutputPath } from '../utils/generatedPath';
+import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
+import { ownerOfGeneratedFile } from '../database/orderRepository';
 import { getTemplateById } from '../extractors/templateExtractor';
 import { getPublicAppSettings } from '../config/aiModelConfig';
 import {
@@ -569,7 +570,9 @@ router.post('/generate-all', async (req: Request, res: Response) => {
           requestSignal(req, res)
         );
       }
-      const pathInfo = await getGeneratedOutputPath(profile, normalizedCompanyName, resolvedRole);
+      const pathInfo = await getGeneratedOutputPath(profile, normalizedCompanyName, resolvedRole, {
+        accountName: accountFolderName(req.user),
+      });
       const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
       const coverLetterDocxPath = generateCoverLetterDocx
         ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
@@ -859,7 +862,10 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         );
       }
 
-      const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, job.sourceRowNumber);
+      const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, {
+        sourceRowNumber: job.sourceRowNumber,
+        accountName: accountFolderName(req.user),
+      });
       const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
       const coverLetterDocxPath = generateCoverLetterDocx
         ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
@@ -1191,12 +1197,10 @@ router.post('/generate', async (req: Request, res: Response) => {
       );
     });
 
-    const pathInfo = await getGeneratedOutputPath(
-      profile,
-      companyName.trim(),
-      resolvedRole,
-      sourceRowNumber
-    );
+    const pathInfo = await getGeneratedOutputPath(profile, companyName.trim(), resolvedRole, {
+      sourceRowNumber,
+      accountName: accountFolderName(req.user),
+    });
     const { coverLetterPdfPath, coverLetterDocxPath } = await timeResumeStage('Cover letter file generation', async () => {
       const pdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
       const docxPath = generateCoverLetterDocx
@@ -1362,6 +1366,16 @@ router.post('/preview', async (req: Request, res: Response) => {
 // Download generated resume (PDF or DOCX)
 router.get('/download/:filename(*)', async (req: Request<{ filename: string }>, res: Response) => {
   try {
+    // The same ownership check as `/api/generated`, and for the same reason:
+    // an ordered resume's path is derivable from a fixed template, so a
+    // signed-in-only check on a path parameter hands out everybody's files.
+    // See `ownerOfGeneratedFile`. A path no order claims is unaffected.
+    const owner = ownerOfGeneratedFile(req.params.filename);
+    if (owner && owner !== req.user!.id) {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+
     const filepath = await getGeneratedPDFPath(req.params.filename);
     if (!filepath) {
       res.status(404).json({ error: 'File not found' });

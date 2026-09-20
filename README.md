@@ -28,6 +28,7 @@ By default it runs on **a chat tab you are already signed in to** rather than me
 | **Credits** | One credit per generated resume, whatever it writes. Charged before the first model call and given back for any resume that does not build, so credits spent always equals resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
+| **Order & Download** | A Google Sheet import is placed as an order and answers with an order number instead of making you wait. Track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates |
@@ -159,6 +160,7 @@ checks and one is not a substitute for the other.
 | Section | Who | Why |
 |---|---|---|
 | Builder, Calendar, Jobs, Job Filter, Bid Assistant, Profiles | anybody signed in | their own work |
+| **Orders** | anybody signed in | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
 | **Find the job** | anybody signed in | opens today's tab of their own job sheet in a new tab |
 | **Groups** | **Premium and above** | an entitlement, checked on the plan alone |
 | **Templates** (managing them) | **administrators** | a template is shared - editing one changes how everybody's resumes look. Everybody still *picks* a template when building |
@@ -335,6 +337,53 @@ rolls the day over at midnight UTC, which for a user in New York is seven in the
 evening - so an evening's work would land on the next day's tab. Set it to the
 zone the users actually live in.
 
+### Order & Download
+
+There are two ways to generate, and which one you get follows from where the
+jobs came from rather than from a toggle.
+
+**Building manually** is unchanged: one resume, built while you wait, downloaded
+when it is done.
+
+**A Google Sheet import is placed as an order.** Pressing *Generate* in the
+import dialog answers immediately with
+
+> You ordered successfully: Order number - `FT-20260920-0007`
+
+and the page is then free. That is the point: three hundred rows is an hour of
+work, and holding a browser tab open for it meant a reload part way through left
+the files on the server with nothing offering them. The server now records what
+was asked for and builds it whether or not anybody is watching.
+
+**Orders** in the navigation lists what you ordered, newest first, each with a
+`122 of 300` progress bar. Open one and every resume is there as it lands:
+download a single file, tick a few and take them as a zip, or take the whole
+order as one archive. Failures show their reason in place rather than being
+counted away, and the bar counts *settled* work, so a run with failures still
+reaches the end instead of stalling at 98% for ever.
+
+**The order outlives the run that produced it**, and that is the reason it
+exists as its own record. The generation queue evicts a finished batch an hour
+after it settles and deletes its rows - right for a dispatcher, useless for
+somebody coming back the next morning - so counts, items and file paths all come
+from the order's own tables and keep reading correctly long afterwards.
+
+**Files are deleted automatically after five days** (`ORDER_RETENTION_DAYS`).
+The sweep runs at startup and every six hours; it removes the files, prunes the
+folders it emptied, and **keeps the order**, marked *Files deleted*, so the list
+still says what was built rather than going quietly blank. The expiry is stamped
+on each order when it is placed, so shortening the window never reaches back and
+deletes files somebody was already promised.
+
+An order belongs to one account. Every route takes an id and checks it against
+the caller; somebody else's order answers **404**, not 403, because the
+difference between those two replies is itself an answer. The two older download
+routes - `/api/generated` and `/api/resume/download` - now ask the same question
+of any path an order owns: a fixed template makes an ordered path *derivable*
+rather than merely guessable, and a signed-in-only check would otherwise hand
+every account's resumes to anybody with a login. A path no order claims is a
+manual build and is unaffected.
+
 ### Where data lives
 
 | Data | Storage |
@@ -342,6 +391,7 @@ zone the users actually live in.
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
+| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir` |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
@@ -619,7 +669,10 @@ free_tailor/
 
 ## 📤 Output Structure
 
-Generated files are saved under the configured output directory using the output path template from the admin settings, for example:
+There are **two ways to generate, and they file their output differently.**
+
+**Building manually** is one resume at a time, downloaded as soon as it is
+built. It uses the output path template from the admin settings, for example:
 
 ```
 {profile}/{date}/{company}/{role}/
@@ -630,6 +683,29 @@ Generated files are saved under the configured output directory using the output
 ```
 
 File and folder names are templated per profile.
+
+**Order & Download** is what a Google Sheet import does, and its layout is a
+constant rather than a setting:
+
+```
+{account}/{date}/{order number}/{profile}/{company}/
+```
+
+Not configurable on purpose. These files are listed, downloaded, zipped and
+eventually deleted *by path*, days after they were written - so a layout an
+administrator edited in between would strand a live order's files and point the
+purge at a directory that no longer holds them. The account comes first so that
+everything one person ordered lives under one directory, which is what lets the
+clean-up prune emptied folders without ever walking into somebody else's tree.
+
+**The order number is there because nothing else in the tree is unique.**
+Account, date, profile and company all repeat: import the same sheet twice in
+one afternoon and every segment matches, so the second run would overwrite the
+first - leaving the first order listing files that hold the second's contents,
+and its earlier expiry deleting files the second still offers. The account
+segment is no help either, since it is sanitized for the filesystem and
+`john.smith@` and `john-smith@` both become `john_smith_`. An order number is
+unique across the install, which settles all of it in one segment.
 
 ---
 
@@ -664,7 +740,7 @@ File and folder names are templated per profile.
 | `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
 | | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
 | `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
-| `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave empty and the first account to sign in does. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
+| `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave it empty and the `SMTP_USER` address is used instead; with neither set the install has **no administrator at all** and says so at startup. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
 | `CREDIT_SIGNUP_GRANT` | Credits a brand-new account starts with. `0` by default |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
@@ -677,6 +753,7 @@ File and folder names are templated per profile.
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
+| `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
 | `ADMIN_EMAILS` | Who administers this installation. Wins over `SMTP_USER`; a comma-separated list may name several |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |

@@ -207,6 +207,7 @@ export type QueueStore = {
  * finished task is the composition root's business, not the queue's.
  */
 export type QueueHooks = {
+  taskStarted?(task: Task): void;
   taskFinished?(task: Task): void;
 };
 
@@ -640,6 +641,17 @@ export class TaskQueue {
     this.busy.set(slot.id, task);
     this.persist((store) => store.saveTask(task));
     this.emitTask(task);
+
+    try {
+      // Told, not asked: nothing outside can see a task START, only that some
+      // later snapshot says it is running. An order's item list wants the
+      // difference between "waiting" and "being built" while the run is live.
+      this.hooks?.taskStarted?.(task);
+    } catch (error) {
+      // Same posture as the finished hook below: a listener that throws costs
+      // whatever the listener was for, never the dispatch loop it threw inside.
+      console.warn('[queue] A task-started hook threw; the task itself is unaffected.', error);
+    }
 
     const release = () => {
       this.busy.delete(slot.id);

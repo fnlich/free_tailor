@@ -35,6 +35,9 @@ type NavItem = {
  */
 const NAV_ITEMS: NavItem[] = [
   { href: '/', label: 'Builder' },
+  // Beside the builder because it is the other half of it: a sheet import
+  // returns an order number rather than files, and this is where the files are.
+  { href: '/orders', label: 'Orders' },
   { href: '/calendar', label: 'Calendar' },
   // Was "LinkedIn Jobs" while LinkedIn was one of its scrapers. It is not any
   // more, and a label naming a source the page cannot run would be a lie.

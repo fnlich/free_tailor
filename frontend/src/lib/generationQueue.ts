@@ -72,6 +72,14 @@ export type SubmitBatchRequest = AiRequestOverrides & {
     sourceRowNumber?: number;
   }>;
   tailoredContentByProfileId?: Record<string, unknown>;
+  /**
+   * Place this as an order instead of waiting for it.
+   *
+   * What the Google Sheet import sends. The caller gets an order number back
+   * immediately and the files are collected on the Orders page, rather than the
+   * page holding a connection open for however long three hundred resumes take.
+   */
+  asOrder?: boolean;
 };
 
 export type SubmitBatchResponse = {
@@ -79,6 +87,9 @@ export type SubmitBatchResponse = {
   total: number;
   jobCount: number;
   profileCount: number;
+  /** Present only for a submission that asked to be placed as an order. */
+  orderId?: string;
+  orderNumber?: string;
 };
 
 /** Where the running batch's id is kept, so a reload can find it again. */

@@ -11,6 +11,9 @@ import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
 import generationRoutes from './routes/generation';
+import orderRoutes from './routes/orders';
+import { ownerOfGeneratedFile } from './database/orderRepository';
+import { orderRetentionDays, startOrderRetention } from './services/orders/retention';
 import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
@@ -143,6 +146,26 @@ app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
     // reads the correct key, which is why downloads themselves still worked.
     const params = req.params as Record<string, string | undefined>;
     const filename = params.filename ?? '';
+
+    /*
+     * Whose file this is, before it is handed over.
+     *
+     * Signed-in used to be the whole check, which was defensible while a path
+     * was something you had to be told. Ordered resumes are filed under a
+     * FIXED template - account email, date, order number, profile, company - so
+     * their paths are derivable, not guessable, and this route would otherwise
+     * serve every account's documents to anybody with a login.
+     *
+     * A path no order claims is a manually built resume and is left exactly as
+     * it was; narrowing those as well is a separate change with a separate
+     * blast radius. 404, not 403, for the same reason the order routes use it.
+     */
+    const owner = ownerOfGeneratedFile(filename);
+    if (owner && owner !== req.user!.id) {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+
     const filepath = await getGeneratedFilePath(filename);
     if (!filepath) {
       res.status(404).json({ error: 'File not found' });
@@ -163,6 +186,7 @@ app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
 app.use('/api/generation', generationRoutes);
+app.use('/api/orders', orderRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);
@@ -261,6 +285,18 @@ const server = app.listen(PORT, HOST, () => {
   void backfillAccountSheets().catch((error) => {
     console.warn('[sheets] The account spreadsheet backfill did not finish.', error);
   });
+  /*
+   * Deletes ordered resumes once their keep-until has passed, now and every six
+   * hours after.
+   *
+   * Started HERE rather than when the module loads, which is the whole reason
+   * it is a function: every test in this suite loads the modules it exercises,
+   * and a sweep that began on import would delete files under a temp directory
+   * while an unrelated test was still using them. The interval is unref'd, so
+   * it never holds the process open.
+   */
+  startOrderRetention();
+  console.log(`[orders] Ordered files are kept for ${orderRetentionDays()} day(s).`);
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();
