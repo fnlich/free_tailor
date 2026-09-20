@@ -867,3 +867,54 @@ test('going private withdraws only the link, leaving the owner their grant', asy
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the downloaded OAuth client is not a credential, and says which half it is', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  // Exactly what the Cloud console downloads. Saving it under the OUTPUT name
+  // is the trap: the app prefers that name over a working service account key,
+  // so the whole feature stops rather than falling back.
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-halfcred-'));
+  fs.writeFileSync(
+    nodePath.join(dir, 'google-oauth-credentials.json'),
+    JSON.stringify({ web: { client_id: 'id.apps.googleusercontent.com', client_secret: 'secret' } })
+  );
+  // And a perfectly good service account key beside it, to prove the broken
+  // file wins rather than being skipped over.
+  fs.writeFileSync(
+    nodePath.join(dir, 'service-account-key.json'),
+    JSON.stringify({
+      type: 'service_account',
+      client_email: 'x@y.iam.gserviceaccount.com',
+      private_key: 'key',
+    })
+  );
+
+  const cwd = process.cwd();
+  process.chdir(dir);
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const sheets = loadFresh('../dist/integrations/googleSheets');
+    assert.match(await sheets.resolveCredentialPath(), /google-oauth-credentials\.json$/);
+
+    await assert.rejects(
+      () => sheets.getAccessToken(sheets.SHEETS_SCOPE),
+      (error) => {
+        // It must name the file, say what is missing, and say what to run -
+        // the three things somebody staring at a 403 does not have.
+        assert.match(error.message, /google-oauth-credentials\.json/);
+        assert.match(error.message, /refresh_token/);
+        assert.match(error.message, /sheets:login/);
+        return true;
+      }
+    );
+  } finally {
+    process.chdir(cwd);
+    console.warn = realWarn;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
