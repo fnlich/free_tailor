@@ -15,3 +15,9 @@ frontend/node_modules
 frontend/.agents
 frontend/.next
 frontend/.codex
+
+# Google OAuth: the downloaded client and the consent it produces.
+oauth-client.json
+client_secret*.json
+google-oauth-credentials.json
+backend/google-oauth-credentials.json

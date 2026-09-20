@@ -79,19 +79,27 @@ async function main(): Promise<void> {
 
   const steps: Step[] = [
     {
-      title: 'Find the service account key',
+      title: 'Find the Google credentials',
       run: async () => {
         const account = await describeServiceAccount();
-        owner = account.clientEmail;
-        return `${account.path}\n    service account: ${account.clientEmail}\n    project:         ${account.projectId}`;
+        owner = account.identity;
+        const label = account.kind === 'authorized_user' ? 'OAuth client:   ' : 'service account:';
+        return (
+          `${account.path}\n` +
+          `    kind:            ${
+            account.kind === 'authorized_user' ? 'your own Google account' : 'service account'
+          }\n` +
+          `    ${label} ${account.identity}\n` +
+          `    project:         ${account.projectId}`
+        );
       },
       remedy: () =>
-        'Set GOOGLE_SERVICE_ACCOUNT_KEY_PATH in .env, or put service-account-key.json in the\n' +
-        '  project root or backend/. Download it from the Cloud console under\n' +
-        '  IAM & Admin -> Service Accounts -> Keys -> Add key -> JSON.',
+        'Run "npm run sheets:login" in backend/ to sign in with your own Google account, or put\n' +
+        '  a service account key at backend/service-account-key.json. GOOGLE_CREDENTIALS_PATH\n' +
+        '  overrides where to look.',
     },
     {
-      title: 'Mint a token for the Sheets scope',
+      title: 'Mint an access token for the Sheets scope',
       run: async () => `${(await getAccessToken(SHEETS_SCOPE)).slice(0, 12)}... (ok)`,
       remedy: () =>
         'The key was rejected outright. Usually the service account was deleted or its key\n' +
@@ -99,25 +107,61 @@ async function main(): Promise<void> {
         '  off will also do this, because the assertion is signed with a timestamp.',
     },
     {
-      title: 'Mint a token for the Drive scope',
+      title: 'Mint an access token for the Drive scope',
       run: async () => `${(await getAccessToken(DRIVE_SCOPE)).slice(0, 12)}... (ok)`,
       remedy: () =>
-        'The Sheets scope worked and this one did not, which points at a domain-wide\n' +
-        '  delegation policy restricting which scopes this service account may hold.',
+        'The Sheets scope worked and this one did not. With a service account that points at a\n' +
+        '  domain-wide delegation policy; with your own account it means the consent did not\n' +
+        '  include Drive - run "npm run sheets:login" again and accept both.',
     },
     {
       title: 'Ask Drive about itself (proves the Drive API is enabled)',
       run: async () => {
         const about = await driveAbout();
         const used = formatBytes(about.storageQuota?.usage);
-        const limit = about.storageQuota?.limit ? formatBytes(about.storageQuota.limit) : 'unlimited';
+        const rawLimit = about.storageQuota?.limit;
+        const limit = rawLimit ? formatBytes(rawLimit) : 'unlimited';
+
+        /**
+         * A limit of zero is the whole answer, and it must not pass as green.
+         *
+         * It means this service account has no Drive storage of its own, so it
+         * cannot OWN a file - and creating a spreadsheet creates a file it
+         * would own. The next step then fails with "the caller does not have
+         * permission", which reads like a misconfigured API and is not.
+         * Service accounts on a consumer project get no storage; only a shared
+         * drive, or credentials belonging to an actual person, have any.
+         */
+        if (rawLimit !== undefined && Number(rawLimit) === 0) {
+          throw new Error(
+            'This service account has NO Drive storage (limit is 0 bytes), so it cannot own ' +
+              'any file - which is what creating a spreadsheet requires.'
+          );
+        }
+
         return `drive reachable, ${used} of ${limit} used`;
       },
-      remedy: (error) =>
-        reason(error).includes('switched off')
-          ? 'Follow the URL above, enable the API, wait a minute and run this again.'
-          : 'Enable the Google Drive API for this key\'s project. Creating a spreadsheet makes a\n' +
-            '  Drive file, so allocation cannot work without it even though the error names Sheets.',
+      remedy: (error) => {
+        const said = reason(error);
+        if (said.includes('switched off')) {
+          return 'Follow the URL above, enable the API, wait a minute and run this again.';
+        }
+        if (said.includes('NO Drive storage')) {
+          return (
+            'Nothing is misconfigured - a service account simply has no storage of its own on a\n' +
+            '  consumer Google project, and Google stopped granting it. Two ways out:\n' +
+            '    - a Google Workspace domain, and a SHARED DRIVE the service account belongs to,\n' +
+            '      where files count against the shared drive rather than the account; or\n' +
+            '    - credentials belonging to a real person, so the sheets live in THEIR Drive.\n' +
+            '  The second needs no Workspace and no paid plan, and is the one to pick for a\n' +
+            '  personal Google account.'
+          );
+        }
+        return (
+          'Enable the Google Drive API for this key\'s project. Creating a spreadsheet makes a\n' +
+          '  Drive file, so allocation cannot work without it even though the error names Sheets.'
+        );
+      },
     },
     {
       title: 'Create a throwaway spreadsheet',

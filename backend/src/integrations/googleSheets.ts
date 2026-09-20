@@ -38,13 +38,52 @@ export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
 
-type GoogleServiceAccountCredentials = {
+/**
+ * The two credential shapes Google issues, and why both are supported.
+ *
+ * A SERVICE ACCOUNT authenticates as itself. That is the tidier arrangement and
+ * it is what this started with - until the first real install hit the reason it
+ * cannot work on a consumer project: a service account there has a Drive quota
+ * of ZERO bytes, so it can authenticate perfectly and still not own a single
+ * file. Creating a spreadsheet means owning one, so it fails with a 403 that
+ * blames permissions and means storage.
+ *
+ * An AUTHORIZED USER is a refresh token a person granted once. The files then
+ * belong to that person's Drive, which has room, and they can see them. It
+ * needs no Workspace domain and no paid plan, which is why it is the path for
+ * anybody running this on a personal Google account.
+ *
+ * Both are read from the same place and both end up as an access token; the
+ * only difference is how that token is minted.
+ */
+type GoogleCredentialFile = {
+  type?: string;
+  // Service account.
   client_email?: string;
   private_key?: string;
-  token_uri?: string;
-  /** Not used to authenticate - only to say WHICH project a refusal came from. */
   project_id?: string;
+  // Authorized user.
+  client_id?: string;
+  client_secret?: string;
+  refresh_token?: string;
+  // Both.
+  token_uri?: string;
 };
+
+type LoadedCredentials =
+  | {
+      kind: 'service_account';
+      clientEmail: string;
+      privateKey: string;
+      tokenUri: string;
+    }
+  | {
+      kind: 'authorized_user';
+      clientId: string;
+      clientSecret: string;
+      refreshToken: string;
+      tokenUri: string;
+    };
 
 type SpreadsheetMetadataResponse = {
   spreadsheetId: string;
@@ -487,20 +526,43 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-export async function resolveServiceAccountPath(): Promise<string> {
-  const explicitPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim();
+/**
+ * The credential filenames, in the order a tie is broken.
+ *
+ * User credentials come first deliberately. Somebody who has both files has
+ * usually just added the second because the first could not create anything -
+ * a service account on a consumer project owns no storage - so preferring the
+ * one that works is the answer they were reaching for. `GOOGLE_CREDENTIALS_PATH`
+ * overrides the lot when the guess is wrong.
+ */
+const CREDENTIAL_FILENAMES = ['google-oauth-credentials.json', 'service-account-key.json'];
+
+export async function resolveCredentialPath(): Promise<string> {
+  const explicitPath =
+    process.env.GOOGLE_CREDENTIALS_PATH?.trim() ||
+    process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim();
   const cwd = process.cwd();
+  const directories = [cwd, path.join(cwd, 'backend'), path.join(__dirname, '../..'), path.join(__dirname, '../../..')];
   const candidates = [
     explicitPath,
-    path.join(cwd, 'service-account-key.json'),
-    path.join(cwd, 'backend/service-account-key.json'),
-    path.join(__dirname, '../../service-account-key.json'),
-    path.join(__dirname, '../../../service-account-key.json'),
+    ...CREDENTIAL_FILENAMES.flatMap((name) => directories.map((dir) => path.join(dir, name))),
   ].filter((value): value is string => Boolean(value));
 
+  // Deduplicated by resolved path, and case-insensitively because Windows
+  // treats paths that way. Several candidates point at the SAME file whenever
+  // the process runs from backend/ - `<cwd>/service-account-key.json` and
+  // `<dist>/../../service-account-key.json` are then one file by two routes,
+  // and reporting it as two keys is a warning about a problem nobody has.
   const present: string[] = [];
+  const seen = new Set<string>();
   for (const candidate of candidates) {
-    if (await fileExists(candidate)) present.push(candidate);
+    const resolved = path.resolve(candidate);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    if (await fileExists(resolved)) {
+      seen.add(key);
+      present.push(resolved);
+    }
   }
 
   if (present.length > 0) {
@@ -517,7 +579,7 @@ export async function resolveServiceAccountPath(): Promise<string> {
     if (present.length > 1 && !warnedAboutExtraKeys) {
       warnedAboutExtraKeys = true;
       console.warn(
-        `[sheets] ${present.length} service account keys were found and only the first is used.\n` +
+        `[sheets] ${present.length} Google credential files were found and only the first is used.\n` +
           present.map((file, index) => `         ${index === 0 ? 'USING  ' : 'ignored'} ${file}`).join('\n') +
           '\n         Delete the ones you do not want, or set GOOGLE_SERVICE_ACCOUNT_KEY_PATH to be explicit.'
       );
@@ -527,7 +589,9 @@ export async function resolveServiceAccountPath(): Promise<string> {
 
   throw new GoogleSheetsRequestError(
     500,
-    'Google Service Account key file was not found. Set GOOGLE_SERVICE_ACCOUNT_KEY_PATH or place service-account-key.json in the project or backend directory.'
+    'No Google credentials were found. Run "npm run sheets:login" in backend/ to sign in with ' +
+      'your own Google account, or place a service account key at ' +
+      'backend/service-account-key.json. GOOGLE_CREDENTIALS_PATH overrides where to look.'
   );
 }
 
@@ -538,21 +602,21 @@ export async function resolveServiceAccountPath(): Promise<string> {
  * than by catching the 500 that every sheets call would otherwise throw. A
  * missing key is a deployment that has not set sheets up yet, not a failure.
  */
-/** The key's own identity, for the doctor to print before it tries anything. */
+/** The credential's own identity, for the doctor to print before it tries anything. */
 export async function describeServiceAccount(): Promise<{
   path: string;
-  clientEmail: string;
+  kind: LoadedCredentials['kind'];
+  identity: string;
   projectId: string;
 }> {
-  const path = await resolveServiceAccountPath();
-  const parsed = JSON.parse(await fs.readFile(path, 'utf8')) as {
-    client_email?: string;
-    project_id?: string;
-  };
+  const filePath = await resolveCredentialPath();
+  const parsed = JSON.parse(await fs.readFile(filePath, 'utf8')) as GoogleCredentialFile;
+  const isUser = Boolean(parsed.refresh_token?.trim());
   return {
-    path,
-    clientEmail: parsed.client_email ?? '(missing)',
-    projectId: parsed.project_id ?? '(missing)',
+    path: filePath,
+    kind: isUser ? 'authorized_user' : 'service_account',
+    identity: isUser ? (parsed.client_id ?? '(missing)') : (parsed.client_email ?? '(missing)'),
+    projectId: parsed.project_id ?? '(not in this file)',
   };
 }
 
@@ -573,34 +637,54 @@ export async function deleteSpreadsheet(spreadsheetId: string): Promise<void> {
 
 export async function isGoogleSheetsConfigured(): Promise<boolean> {
   try {
-    await resolveServiceAccountPath();
+    await resolveCredentialPath();
     return true;
   } catch {
     return false;
   }
 }
 
-type LoadedCredentials = Required<Pick<GoogleServiceAccountCredentials, 'client_email' | 'private_key' | 'token_uri'>>;
-
-async function loadServiceAccountCredentials(): Promise<LoadedCredentials> {
-  const filePath = await resolveServiceAccountPath();
+async function loadGoogleCredentials(): Promise<LoadedCredentials> {
+  const filePath = await resolveCredentialPath();
   const raw = await fs.readFile(filePath, 'utf8');
 
-  let parsed: GoogleServiceAccountCredentials;
+  let parsed: GoogleCredentialFile;
   try {
-    parsed = JSON.parse(raw) as GoogleServiceAccountCredentials;
+    parsed = JSON.parse(raw) as GoogleCredentialFile;
   } catch {
-    throw new GoogleSheetsRequestError(500, 'Google Service Account key file is not valid JSON.');
+    throw new GoogleSheetsRequestError(500, `${filePath} is not valid JSON.`);
+  }
+
+  const tokenUri = parsed.token_uri?.trim() || DEFAULT_TOKEN_URI;
+  const refreshToken = parsed.refresh_token?.trim();
+
+  // Recognised by what it CONTAINS rather than by `type`, because a file
+  // written by hand or by gcloud does not always carry the field.
+  if (refreshToken) {
+    const clientId = parsed.client_id?.trim();
+    const clientSecret = parsed.client_secret?.trim();
+    if (!clientId || !clientSecret) {
+      throw new GoogleSheetsRequestError(
+        500,
+        `${filePath} has a refresh_token but no client_id and client_secret to use it with. ` +
+          'Run "npm run sheets:login" in backend/ to make a complete one.'
+      );
+    }
+
+    credentialSummary = `user credentials ${filePath} (OAuth client ${clientId})`;
+    return { kind: 'authorized_user', clientId, clientSecret, refreshToken, tokenUri };
   }
 
   const clientEmail = parsed.client_email?.trim();
   const privateKey = parsed.private_key?.trim();
-  const tokenUri = parsed.token_uri?.trim() || DEFAULT_TOKEN_URI;
 
   if (!clientEmail || !privateKey) {
     throw new GoogleSheetsRequestError(
       500,
-      'Google Service Account credentials are incomplete. Expected client_email and private_key.'
+      `${filePath} is not a credential this app can use. Expected either a service account key ` +
+        '(client_email and private_key) or user credentials (client_id, client_secret and ' +
+        'refresh_token). If this is an OAuth client file you just downloaded, it is only half of ' +
+        'the second - run "npm run sheets:login" in backend/ to finish it.'
     );
   }
 
@@ -609,9 +693,10 @@ async function loadServiceAccountCredentials(): Promise<LoadedCredentials> {
     `${parsed.project_id ? `, project ${parsed.project_id}` : ''})`;
 
   return {
-    client_email: clientEmail,
-    private_key: normalizePrivateKey(privateKey),
-    token_uri: tokenUri,
+    kind: 'service_account',
+    clientEmail,
+    privateKey: normalizePrivateKey(privateKey),
+    tokenUri,
   };
 }
 
@@ -629,15 +714,15 @@ function whoAsked(status: number): string {
 }
 
 function buildJwtAssertion(
-  credentials: LoadedCredentials,
+  credentials: Extract<LoadedCredentials, { kind: 'service_account' }>,
   scope: string
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const payload = {
-    iss: credentials.client_email,
+    iss: credentials.clientEmail,
     scope,
-    aud: credentials.token_uri,
+    aud: credentials.tokenUri,
     iat: now,
     exp: now + 3600,
   };
@@ -645,7 +730,7 @@ function buildJwtAssertion(
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   const unsignedToken = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsignedToken), credentials.private_key).toString('base64url');
+  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsignedToken), credentials.privateKey).toString('base64url');
 
   return `${unsignedToken}.${signature}`;
 }
@@ -656,17 +741,36 @@ export async function getAccessToken(scope: string): Promise<string> {
     return cached.token;
   }
 
-  const credentials = await loadServiceAccountCredentials();
-  const assertion = buildJwtAssertion(credentials, scope);
-  const response = await fetch(credentials.token_uri, {
+  const credentials = await loadGoogleCredentials();
+
+  /**
+   * A service account asks for the scope it needs; a person already granted it.
+   *
+   * The scopes on a refresh token are fixed at consent time and cannot be
+   * narrowed per call, so the per-API split that keeps a Drive problem away
+   * from Sheets work only applies to the first shape. For the second, both
+   * scope keys end up holding the same token, which is correct and costs one
+   * extra cache entry.
+   */
+  const body =
+    credentials.kind === 'service_account'
+      ? new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion: buildJwtAssertion(credentials, scope),
+        })
+      : new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: credentials.clientId,
+          client_secret: credentials.clientSecret,
+          refresh_token: credentials.refreshToken,
+        });
+
+  const response = await fetch(credentials.tokenUri, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-    }).toString(),
+    body: body.toString(),
   });
 
   if (!response.ok) {
@@ -681,9 +785,22 @@ export async function getAccessToken(scope: string): Promise<string> {
     } catch {
       // Ignore JSON parsing failures and use the fallback message.
     }
+    if (errorMessage.toLowerCase().includes('invalid_grant')) {
+      errorMessage =
+        `${errorMessage}\n` +
+        (credentials.kind === 'authorized_user'
+          ? 'The saved consent is no longer valid - it was revoked, or it expired because the ' +
+            'OAuth consent screen is still in Testing mode, where refresh tokens last seven days. ' +
+            'Run "npm run sheets:login" in backend/ again, and publish the consent screen to stop ' +
+            'it recurring.'
+          : 'The service account key was rejected. It may have been deleted or revoked; issue a ' +
+            'new one. A clock more than a few minutes out will also do this.');
+    }
     if (errorMessage.toLowerCase().includes('user not found')) {
       errorMessage =
-        `Google service account was not recognized: ${credentials.client_email}. ` +
+        `Google service account was not recognized: ${
+          credentials.kind === 'service_account' ? credentials.clientEmail : '(user credentials)'
+        }. ` +
         'This usually means the JSON key belongs to a deleted or disabled service account, or the key file does not match the live account. ' +
         'Create a new key for the current service account and replace backend/service-account-key.json.';
     }
