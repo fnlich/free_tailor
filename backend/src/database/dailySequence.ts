@@ -14,6 +14,9 @@ import { getDb } from './sqlite';
  * answering to one name.
  */
 
+const ALLOWED_TABLES = new Set(['orders', 'payments']);
+const ALLOWED_COLUMNS = new Set(['number', 'reference']);
+
 /** The `YYYYMMDD` part, in the server's own zone. */
 export function formatSequenceDate(at: Date): string {
   const year = at.getFullYear();
@@ -46,10 +49,19 @@ export function nextDailyReference(
   prefix: string,
   datePart: string
 ): string {
-  // `table` and `column` are a closed union rather than free strings: they are
-  // interpolated into SQL, where a parameter cannot stand, and a union is the
-  // difference between that being safe by construction and being safe by
-  // everyone remembering.
+  /*
+   * Checked at runtime, not only at compile time.
+   *
+   * `table` and `column` are interpolated into SQL, where a parameter cannot
+   * stand. The union above says what is allowed and TypeScript enforces it -
+   * until a plain JavaScript caller, an `as` cast, or a future call that
+   * forwards something from a request erases it. The type is the documentation;
+   * this is the check.
+   */
+  if (!ALLOWED_TABLES.has(table) || !ALLOWED_COLUMNS.has(column)) {
+    throw new Error('nextDailyReference was given a table or column it does not know.');
+  }
+
   const stem = `${prefix}${datePart}-`;
   const row = getDb()
     .prepare(

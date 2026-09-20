@@ -54,6 +54,9 @@ async function serve({ withKeys = true, settings = {} } = {}) {
 
   loadFresh('../dist/database/sqlite');
   const users = loadFresh('../dist/database/userRepository');
+  // Reloaded in dependency order: a module that keeps the previous test's
+  // sqlite handle writes to the previous test's database.
+  loadFresh('../dist/database/creditRepository');
   const payments = loadFresh('../dist/database/paymentRepository');
   loadFresh('../dist/config/aiModelConfig');
 
@@ -285,17 +288,74 @@ test('a checkout the provider refuses leaves no payment anybody could complete',
   try {
     const stripe = require('../dist/integrations/stripe');
     stripe.createCheckoutSession = async () => {
-      throw new stripe.StripeError('Your card provider is unavailable.');
+      // Stripe's own refusals quote back what they were sent, including the
+      // tail of the API key. This is the shape of a real one.
+      throw new stripe.StripeError('Invalid API Key provided: sk_live_****************abcd');
     };
 
     const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
     assert.equal(response.status, 502);
+    assert.doesNotMatch((await response.json()).error, /sk_live/, 'not told to the buyer either');
 
     // The row survives as a record that it was attempted, but closed - a
     // pending row here would look like something still completable.
     const [payment] = server.payments.listPaymentsForUser(server.alice.id);
     assert.equal(payment.state, 'failed');
-    assert.match(payment.failure, /unavailable/i);
+    /*
+     * A fixed sentence, not the provider's.
+     *
+     * `failure` is served to whoever clicked Buy, on their own return page. An
+     * operator's misconfiguration must not turn into a customer's view of a
+     * secret, so the detail goes to the log and the row gets something safe.
+     */
+    assert.doesNotMatch(payment.failure, /sk_live/);
+    assert.match(payment.failure, /would not open a checkout page/i);
+  } finally {
+    server.close();
+  }
+});
+
+test('a credit count with anything else in it is refused', async () => {
+  const server = await serve();
+  try {
+    // `parseFloat` reads every one of these as a number, which would mean a
+    // purchase nobody asked for at a price nobody was shown.
+    for (const credits of ['20abc', '2e1', '', ' ', '0x14', 'twenty', null, {}, [20]]) {
+      const response = await server.checkout(server.aliceToken, { method: 'card', credits });
+      assert.equal(response.status, 400, `${JSON.stringify(credits)} was accepted`);
+    }
+
+    // The two spellings that ARE a count still work.
+    assert.equal((await server.checkout(server.aliceToken, { method: 'card', credits: 20 })).status, 201);
+    assert.equal(
+      (await server.checkout(server.aliceToken, { method: 'card', credits: ' 20 ' })).status,
+      201
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('an account cannot open unlimited checkouts', async () => {
+  const server = await serve();
+  try {
+    /*
+     * Each of these is a call to a payment provider, so a loop here is a loop
+     * on somebody else's bill. Abandoning a checkout is ordinary, so the limit
+     * is generous - it is here to stop a script, not a person.
+     */
+    let refused = null;
+    for (let attempt = 0; attempt < 25 && refused === null; attempt += 1) {
+      const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+      if (response.status !== 201) refused = response;
+    }
+
+    assert.ok(refused, 'the endpoint never refused');
+    assert.equal(refused.status, 429);
+    assert.match((await refused.json()).error, /too many checkouts/i);
+
+    // And it is per account, not global: the limit must not lock everybody out.
+    assert.equal((await server.checkout(server.bobToken, { method: 'card', credits: 20 })).status, 201);
   } finally {
     server.close();
   }

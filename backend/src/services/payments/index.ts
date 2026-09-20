@@ -1,7 +1,10 @@
 import { applyAdjustment } from '../../database/creditRepository';
+import { getDb } from '../../database/sqlite';
 import { getUserById } from '../../database/userRepository';
 import {
   attachProviderRef,
+  beginRefund,
+  countPaymentsSince,
   createPayment,
   getPayment,
   getPaymentByProviderRef,
@@ -9,6 +12,7 @@ import {
   markRefunded,
   markUnpaid,
   recordEventOnce,
+  releaseRefund,
   type Payment,
   type PaymentMethod,
   type PaymentProvider,
@@ -102,6 +106,10 @@ export function returnBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
 
 export type StartedCheckout = { payment: Payment; redirectUrl: string };
 
+/** How many checkouts one account may open in an hour. */
+const MAX_CHECKOUTS_PER_WINDOW = 20;
+const CHECKOUT_WINDOW_MS = 60 * 60 * 1000;
+
 /**
  * Prices the request, records it, and asks the provider for a checkout.
  *
@@ -131,6 +139,23 @@ export async function startCheckout(
     );
   }
 
+  /*
+   * A ceiling on how often one account may open a checkout.
+   *
+   * Every checkout is a call to Stripe or Coinbase, so an endpoint that any
+   * signed-in account can loop is an endpoint that runs up somebody else's
+   * provider bill and fills the payments table with rows nobody will ever pay.
+   * Abandoning a checkout is normal, so the limit is generous - it is here to
+   * stop a loop, not to scold somebody who changed their mind twice.
+   */
+  const since = new Date(Date.now() - CHECKOUT_WINDOW_MS).toISOString();
+  if (countPaymentsSince(account.id, since) >= MAX_CHECKOUTS_PER_WINDOW) {
+    throw new PaymentError(
+      'Too many checkouts started in the last hour. Finish or abandon one, then try again.',
+      429
+    );
+  }
+
   // The browser sent a COUNT. The price is worked out here, from settings, and
   // an `amount` in the request body is never read.
   const quote = await quoteCredits(requestedCredits);
@@ -149,42 +174,78 @@ export async function startCheckout(
   const successUrl = `${base}/credits/return?payment=${encodeURIComponent(payment.id)}`;
   const cancelUrl = `${base}/credits?cancelled=${encodeURIComponent(payment.id)}`;
 
-  try {
-    if (method === 'card') {
-      const session = await stripe.createCheckoutSession({
+  /*
+   * Only a refusal BY THE PROVIDER closes the payment.
+   *
+   * The distinction matters more than it looks. If the checkout page was
+   * created and something after it throws - a socket dropped while reading the
+   * response, a database write - then a live session exists at the provider
+   * with this payment's id on it, and somebody may still pay it. Marking it
+   * `failed` here would mean the webhook for that payment arrives, finds a row
+   * that is not `pending`, and credits nothing: money taken, nothing given.
+   * So the catch that closes a payment wraps the provider call and nothing
+   * else.
+   */
+  const opened = await (async () => {
+    try {
+      if (method === 'card') {
+        const session = await stripe.createCheckoutSession({
+          paymentId: payment.id,
+          reference: payment.reference,
+          credits: quote.credits,
+          amountCents: quote.amountCents,
+          currency: quote.currency,
+          customerEmail: account.email,
+          successUrl,
+          cancelUrl,
+        });
+        return { ref: session.id, url: session.url ?? '' };
+      }
+
+      const charge = await coinbase.createCharge({
         paymentId: payment.id,
         reference: payment.reference,
         credits: quote.credits,
         amountCents: quote.amountCents,
         currency: quote.currency,
-        customerEmail: account.email,
-        successUrl,
+        redirectUrl: successUrl,
         cancelUrl,
       });
-      if (!session.url) throw new PaymentError('Stripe did not return a checkout page.', 502);
-      attachProviderRef(payment.id, session.id);
-      return { payment: getPayment(payment.id) ?? payment, redirectUrl: session.url };
+      return { ref: charge.code, url: charge.hosted_url ?? '' };
+    } catch (error) {
+      /*
+       * The detail goes to the log, and a fixed sentence goes in the row.
+       *
+       * A provider's own error text quotes back what it was sent, including
+       * the tail of the API key it was sent with, and `failure` is served to
+       * the person who clicked Buy. An operator's misconfiguration must not
+       * become a customer's view of a secret.
+       */
+      console.error(`[payments] ${payment.reference}: the provider refused to open a checkout.`, error);
+      markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
+      throw new PaymentError(
+        'The payment provider would not open a checkout page. Try again in a moment.',
+        502
+      );
     }
+  })();
 
-    const charge = await coinbase.createCharge({
-      paymentId: payment.id,
-      reference: payment.reference,
-      credits: quote.credits,
-      amountCents: quote.amountCents,
-      currency: quote.currency,
-      redirectUrl: successUrl,
-      cancelUrl,
-    });
-    if (!charge.hosted_url) throw new PaymentError('Coinbase did not return a checkout page.', 502);
-    attachProviderRef(payment.id, charge.code);
-    return { payment: getPayment(payment.id) ?? payment, redirectUrl: charge.hosted_url };
-  } catch (error) {
-    // The provider refused, so this payment can never be paid. Closing it now
-    // keeps it out of the pending list, where it would look like something
-    // somebody might still complete.
-    markUnpaid(payment.id, 'failed', error instanceof Error ? error.message : 'Checkout failed.');
-    throw error;
+  if (!opened.url) {
+    // A session may exist without a usable URL, so this payment is NOT closed:
+    // see the note above. It simply cannot be sent anywhere.
+    console.error(`[payments] ${payment.reference}: the provider returned no checkout URL.`);
+    throw new PaymentError('The payment provider did not return a checkout page.', 502);
   }
+
+  if (opened.ref && !attachProviderRef(payment.id, opened.ref)) {
+    // Not fatal, and not silent. A reference that will not attach means one is
+    // already there, which is the only case the condition refuses.
+    console.warn(
+      `[payments] ${payment.reference}: a provider reference was already recorded; keeping it.`
+    );
+  }
+
+  return { payment: getPayment(payment.id) ?? payment, redirectUrl: opened.url };
 }
 
 export type CreditOutcome = { credited: boolean; payment: Payment | null };
@@ -212,7 +273,10 @@ export function creditPaid(paymentId: string): CreditOutcome {
     return { credited: false, payment: getPayment(paymentId) };
   }
 
-  applyAdjustment({
+  // `applied` rather than an assumption: the ledger refuses a key it has
+  // already used, and a caller that reported success anyway would put a line
+  // in the log saying credits were added when none were.
+  const { applied } = applyAdjustment({
     userId: payment.userId,
     delta: payment.credits,
     reason: 'purchase',
@@ -220,7 +284,7 @@ export function creditPaid(paymentId: string): CreditOutcome {
     note: `${payment.reference} - ${payment.credits} credits`,
   });
 
-  return { credited: true, payment: getPayment(paymentId) };
+  return { credited: applied, payment: getPayment(paymentId) };
 }
 
 export type RefundOutcome = {
@@ -254,24 +318,51 @@ export async function refundPayment(
   const payment = getPayment(paymentId);
   if (!payment) throw new PaymentError('That payment was not found.', 404);
   if (payment.state === 'refunded') throw new PaymentError('That payment is already refunded.', 409);
+  if (payment.state === 'refunding') {
+    throw new PaymentError('That payment is already being refunded.', 409);
+  }
   if (payment.state !== 'paid') throw new PaymentError('Only a paid payment can be refunded.', 409);
   if (!payment.providerRef) throw new PaymentError('That payment has no provider reference.', 409);
 
-  if (payment.provider === 'stripe') {
-    const session = await stripe.getCheckoutSession(payment.providerRef);
-    const intent =
-      typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
-    if (!intent) throw new PaymentError('Stripe has no payment to refund for that session.', 409);
-    await stripe.refundPaymentIntent(intent, payment.id);
-  } else {
-    // Coinbase Commerce has no refund API: a chain payment cannot be pulled
-    // back, only sent back. Saying so is the only honest answer - the operator
-    // returns the funds themselves and this records that they did.
-    throw new PaymentError(
-      'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
-        'Coinbase Commerce account, then adjust the balance from the accounts page.',
-      409
-    );
+  /*
+   * Claimed before anything is said to the provider.
+   *
+   * The checks above are a read, and a read is not a claim: two tabs, or two
+   * administrators, both see `paid` and both go on. This UPDATE is the
+   * decision, because only one of them can change the row. Without it the
+   * loser measures a balance the winner has already moved and reports
+   * "reversed 0 of 200 - the rest had been spent", which is a false statement
+   * about a customer's account made to the person who is about to write to
+   * them.
+   */
+  if (!beginRefund(payment.id)) {
+    throw new PaymentError('That payment is already being refunded.', 409);
+  }
+
+  try {
+    if (payment.provider === 'stripe') {
+      const session = await stripe.getCheckoutSession(payment.providerRef);
+      const intent =
+        typeof session.payment_intent === 'string'
+          ? session.payment_intent
+          : session.payment_intent?.id;
+      if (!intent) throw new PaymentError('Stripe has no payment to refund for that session.', 409);
+      await stripe.refundPaymentIntent(intent, payment.id);
+    } else {
+      // Coinbase Commerce has no refund API: a chain payment cannot be pulled
+      // back, only sent back. Saying so is the only honest answer - the operator
+      // returns the funds themselves and this records that they did.
+      throw new PaymentError(
+        'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
+          'Coinbase Commerce account, then adjust the balance from the accounts page.',
+        409
+      );
+    }
+  } catch (error) {
+    // The money did not move, so the claim goes back and the button works
+    // again. Leaving it claimed would strand a refundable payment.
+    releaseRefund(payment.id);
+    throw error;
   }
 
   /*
@@ -295,7 +386,13 @@ export async function refundPayment(
   const balanceAfter = getUserById(payment.userId)?.credits ?? 0;
 
   const reversed = Math.max(0, balanceBefore - balanceAfter);
-  markRefunded(payment.id, reversed);
+  if (!markRefunded(payment.id, reversed)) {
+    // The claim above makes this unreachable short of a direct database edit.
+    // It is checked rather than assumed because the alternative is reporting a
+    // refund that the record does not show.
+    console.error(`[payments] ${payment.reference}: the refund could not be recorded.`);
+    throw new PaymentError('The refund was made but could not be recorded. Check the provider.', 500);
+  }
 
   return {
     payment: getPayment(paymentId)!,
@@ -303,6 +400,175 @@ export async function refundPayment(
     creditsReversed: reversed,
     shortfall: payment.credits - reversed,
   };
+}
+
+export type WebhookOutcome = 'paid' | 'failed' | 'expired' | 'ignore';
+
+export type WebhookEvent = {
+  provider: PaymentProvider;
+  eventId: string;
+  type: string;
+  payload: string;
+  providerRef: string;
+  paymentIdHint?: string;
+  outcome: WebhookOutcome;
+  /** What the provider says was actually paid, when the event says. */
+  paidAmountCents?: number;
+  paidCurrency?: string;
+};
+
+export type Settlement = {
+  /**
+   * `replayed` - this exact event has been seen; `unknown` - nothing here is
+   * about a payment this server started; `mismatch` - it is about a payment
+   * whose amount it does not agree with; `handled` - it was applied.
+   */
+  status: 'replayed' | 'unknown' | 'mismatch' | 'handled';
+  payment: Payment | null;
+  credited: boolean;
+};
+
+/**
+ * Records a webhook and acts on it, both or neither.
+ *
+ * The transaction is the point, and it is not decoration. Writing the event
+ * down first and crediting afterwards looks safer - a crash in between leaves
+ * an event that a retry recognises - but that is exactly backwards for the
+ * failure that matters: the provider retries, finds the event already
+ * recorded, is told 200, and the customer who paid never gets their credits.
+ * Committing both together means a failure rolls the event row back with it,
+ * so the retry is a first delivery again and lands.
+ *
+ * Doing it in this order is only safe because crediting twice is impossible
+ * anyway: `markPaid` moves a payment out of `pending` in one conditional
+ * UPDATE, and the ledger key is `purchase:<paymentId>`. The event row is the
+ * third guard, not the only one.
+ *
+ * Everything inside is synchronous, which is what allows a single
+ * better-sqlite3 transaction to cover it. `applyAdjustment` opens its own
+ * transaction and nests as a SAVEPOINT.
+ */
+/**
+ * Field names a provider uses for the customer, dropped before the event is
+ * stored. Compared case-insensitively, at any depth.
+ */
+const PERSONAL_FIELDS = new Set([
+  'customer_details',
+  'customer_email',
+  'customer_name',
+  'customer_phone',
+  'billing_details',
+  'billing_address',
+  'shipping',
+  'shipping_details',
+  'receipt_email',
+  'address',
+  'email',
+  'phone',
+  'name',
+  'tax_ids',
+]);
+
+/**
+ * Keeps the event, drops the person.
+ *
+ * An event body is worth storing: it is what this server was told, and a
+ * dispute months later is argued from it. What is NOT worth storing is the
+ * copy of the customer's name, email, address and card details a provider
+ * includes with it - written to a plain file, kept for ever, and never once
+ * read by this application. Ids, amounts, currencies and statuses survive;
+ * everything that identifies a person is replaced by a marker, so what is left
+ * still reads as a record rather than as a gap.
+ *
+ * A body that will not parse is stored as nothing at all. It cannot be
+ * redacted, and storing it unredacted to be helpful is the mistake this
+ * function exists to avoid.
+ */
+export function redactEventPayload(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return '';
+  }
+
+  const scrub = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        out[key] = PERSONAL_FIELDS.has(key.toLowerCase()) ? '[redacted]' : scrub(entry);
+      }
+      return out;
+    }
+    return value;
+  };
+
+  return JSON.stringify(scrub(parsed)).slice(0, 20_000);
+}
+
+export function settleWebhookEvent(event: WebhookEvent): Settlement {
+  return getDb().transaction((): Settlement => {
+    /*
+     * By provider reference first, by our own id second.
+     *
+     * Two routes to the same row because the providers are not consistent
+     * about which they quote: the session or charge is the natural key, but an
+     * event fired from a dashboard action can carry only the metadata we set.
+     * The fallback re-checks the provider, so a hinted id belonging to some
+     * other provider's payment cannot be credited by this one.
+     */
+    const byRef = getPaymentByProviderRef(event.provider, event.providerRef);
+    const byHint = event.paymentIdHint ? getPayment(event.paymentIdHint) : null;
+    const payment = byRef ?? (byHint && byHint.provider === event.provider ? byHint : null);
+
+    const fresh = recordEventOnce({
+      provider: event.provider,
+      eventId: event.eventId,
+      type: event.type,
+      payload: redactEventPayload(event.payload),
+      ...(payment ? { paymentId: payment.id } : {}),
+    });
+    if (!fresh) return { status: 'replayed', payment, credited: false };
+
+    // A charge created from the provider's own dashboard, or a test event.
+    // Neither is an error, and the event row above is the record that it came.
+    if (!payment) return { status: 'unknown', payment: null, credited: false };
+
+    /*
+     * What was paid has to be what was quoted.
+     *
+     * Nothing today can make these disagree - the amount is set server-side on
+     * a Checkout Session and the browser never sends one - but "nothing today"
+     * is a property of settings at the provider, not of this code. An operator
+     * who turns on promotion codes, or a crypto charge settled short, would
+     * otherwise credit the full order for a smaller payment. The payment is
+     * left `pending` rather than failed, because somebody has to look at it.
+     */
+    if (event.outcome === 'paid' && typeof event.paidAmountCents === 'number') {
+      const currencyDiffers =
+        typeof event.paidCurrency === 'string' &&
+        event.paidCurrency.toLowerCase() !== payment.currency.toLowerCase();
+      if (event.paidAmountCents !== payment.amountCents || currencyDiffers) {
+        console.error(
+          `[payments] ${payment.reference}: the provider reported ` +
+            `${event.paidAmountCents} ${event.paidCurrency ?? ''} against ` +
+            `${payment.amountCents} ${payment.currency}. Nothing was credited.`
+        );
+        return { status: 'mismatch', payment, credited: false };
+      }
+    }
+
+    if (event.outcome === 'paid') {
+      const result = creditPaid(payment.id);
+      return { status: 'handled', payment: result.payment ?? payment, credited: result.credited };
+    }
+    if (event.outcome === 'failed' || event.outcome === 'expired') {
+      markUnpaid(payment.id, event.outcome, event.type);
+      return { status: 'handled', payment: getPayment(payment.id), credited: false };
+    }
+    return { status: 'handled', payment, credited: false };
+  })();
 }
 
 /** Looks a payment up the way a webhook refers to it: by provider reference. */

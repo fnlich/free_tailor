@@ -60,10 +60,22 @@ export async function getPricingLimits(): Promise<PricingLimits> {
 export async function quoteCredits(requested: unknown): Promise<Quote> {
   const limits = await getPricingLimits();
 
-  const credits =
-    typeof requested === 'number'
-      ? requested
-      : Number.parseFloat(String(requested ?? '').trim());
+  /*
+   * Digits, or a number. Nothing in between.
+   *
+   * `parseFloat` would read "25abc" as 25 and "1e3" as 1000, which is a
+   * purchase the person did not ask for arriving at a price they did not see.
+   * A field that should hold a count of credits either holds one or is a
+   * refusal with a reason.
+   */
+  let credits: number;
+  if (typeof requested === 'number') {
+    credits = requested;
+  } else if (typeof requested === 'string' && /^\s*\d+\s*$/.test(requested)) {
+    credits = Number(requested.trim());
+  } else {
+    throw new PriceError('Choose a whole number of credits.');
+  }
 
   if (!Number.isFinite(credits) || !Number.isSafeInteger(credits)) {
     throw new PriceError('Choose a whole number of credits.');

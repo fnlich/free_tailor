@@ -11,12 +11,9 @@ import {
   verifyCoinbaseSignature,
 } from '../integrations/coinbaseCommerce';
 import {
-  creditPaid,
-  findByProviderRef,
-  getPayment,
-  markUnpaid,
-  recordEventOnce,
+  settleWebhookEvent,
   type PaymentProvider,
+  type WebhookOutcome,
 } from '../services/payments';
 
 /**
@@ -81,7 +78,9 @@ type Handled = {
   type: string;
   providerRef: string;
   paymentIdHint?: string;
-  outcome: 'paid' | 'failed' | 'expired' | 'ignore';
+  outcome: WebhookOutcome;
+  paidAmountCents?: number;
+  paidCurrency?: string;
 };
 
 /**
@@ -90,50 +89,47 @@ type Handled = {
  * Shared because the two providers differ only in how an event is parsed and
  * proven; what happens next - find the payment, credit it or close it - is the
  * same, and two copies of the crediting logic is two places to get it wrong.
+ *
+ * The work itself is one transaction in the service, so that recording the
+ * event and acting on it commit together. This function only decides what to
+ * say about the result.
  */
 function apply(event: Handled, rawBody: Buffer, res: Response): void {
-  /*
-   * By provider reference first, by our own id second.
-   *
-   * Two routes to the same row because the providers are not consistent about
-   * which they quote: the session or charge is the natural key, but an event
-   * fired from a dashboard action can carry only the metadata we set. The
-   * fallback re-checks the provider, so a hinted id belonging to some other
-   * provider's payment cannot be credited by this one.
-   */
-  const byRef = findByProviderRef(event.provider, event.providerRef);
-  const byHint = event.paymentIdHint ? getPayment(event.paymentIdHint) : null;
-  const payment = byRef ?? (byHint && byHint.provider === event.provider ? byHint : null);
-
-  // Written down BEFORE acting, so a crash between the two is a replay that
-  // finds the event already recorded rather than one that credits twice.
-  const fresh = recordEventOnce({
+  const settlement = settleWebhookEvent({
     provider: event.provider,
     eventId: event.eventId,
     type: event.type,
-    payload: rawBody.toString('utf8').slice(0, 20_000),
-    ...(payment ? { paymentId: payment.id } : {}),
+    providerRef: event.providerRef,
+    ...(event.paymentIdHint ? { paymentIdHint: event.paymentIdHint } : {}),
+    outcome: event.outcome,
+    ...(typeof event.paidAmountCents === 'number'
+      ? { paidAmountCents: event.paidAmountCents }
+      : {}),
+    ...(event.paidCurrency ? { paidCurrency: event.paidCurrency } : {}),
+    payload: rawBody.toString('utf8'),
   });
 
-  if (!fresh) {
+  if (settlement.status === 'replayed') {
     acknowledge(res, 'already handled');
     return;
   }
-  if (!payment) {
-    // A charge created from the provider's own dashboard, or a test event.
-    // Neither is an error here.
+  if (settlement.status === 'unknown') {
     acknowledge(res, 'no matching payment');
     return;
   }
+  if (settlement.status === 'mismatch') {
+    // 200: the event was understood and is not going to be understood any
+    // better on a retry. It is recorded, logged, and left for a person.
+    acknowledge(res, 'amount does not match');
+    return;
+  }
 
-  if (event.outcome === 'paid') {
-    const result = creditPaid(payment.id);
+  const payment = settlement.payment;
+  if (payment && event.outcome === 'paid') {
     console.log(
       `[payments] ${payment.reference}: ${event.type} -> ` +
-        (result.credited ? `${payment.credits} credits added` : 'already settled')
+        (settlement.credited ? `${payment.credits} credits added` : 'already settled')
     );
-  } else if (event.outcome === 'failed' || event.outcome === 'expired') {
-    markUnpaid(payment.id, event.outcome, event.type);
   }
 
   acknowledge(res, 'handled');
@@ -204,6 +200,12 @@ router.post('/stripe', (req: Request, res: Response) => {
       providerRef: sessionId,
       ...(metadata.paymentId ? { paymentIdHint: metadata.paymentId } : {}),
       outcome,
+      // `amount_total` is already in the smallest currency unit, which is what
+      // the payment row stores, so these are comparable without arithmetic.
+      ...(typeof object.amount_total === 'number'
+        ? { paidAmountCents: object.amount_total }
+        : {}),
+      ...(typeof object.currency === 'string' ? { paidCurrency: object.currency } : {}),
     },
     rawBody,
     res
@@ -270,6 +272,17 @@ router.post('/coinbase', (req: Request, res: Response) => {
     return;
   }
 
+  const local = ((charge.pricing ?? {}) as Record<string, unknown>).local as
+    | { amount?: string; currency?: string }
+    | undefined;
+  // Coinbase quotes a decimal string in the local currency ("12.50"), not
+  // minor units, so this is the one place a conversion happens - rounded, not
+  // truncated, because 12.50 is not exactly representable.
+  const paidCents =
+    local && typeof local.amount === 'string' && local.amount.trim() !== ''
+      ? Math.round(Number.parseFloat(local.amount) * 100)
+      : Number.NaN;
+
   apply(
     {
       provider: 'coinbase',
@@ -278,6 +291,8 @@ router.post('/coinbase', (req: Request, res: Response) => {
       providerRef: code,
       ...(metadata.paymentId ? { paymentIdHint: metadata.paymentId } : {}),
       outcome,
+      ...(Number.isFinite(paidCents) ? { paidAmountCents: paidCents } : {}),
+      ...(local && typeof local.currency === 'string' ? { paidCurrency: local.currency } : {}),
     },
     rawBody,
     res

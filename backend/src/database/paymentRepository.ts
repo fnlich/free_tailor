@@ -25,8 +25,14 @@ export type PaymentProvider = 'stripe' | 'coinbase';
  * overwhelming majority of rows at any moment, because a person who opens a
  * checkout page and closes it leaves one behind. Only `paid` has ever moved
  * credits, and only a `paid` payment can be refunded.
+ *
+ * `refunding` exists for one reason: a refund calls the provider over the
+ * network, and two administrators - or one with two tabs - would otherwise
+ * both read `paid`, both call out, and both report an outcome for work only
+ * one of them did. Claiming the row before the network call makes the second
+ * attempt a refusal instead of a false report.
  */
-export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
+export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded';
 
 export type Payment = {
   id: string;
@@ -159,14 +165,21 @@ export function createPayment(input: NewPayment, at: Date = new Date()): Payment
  *
  * Separate from creating the row because the provider assigns it: the session
  * or charge does not exist until we have asked for one, and we cannot ask
- * without something to quote. Conditional on the row still being `pending` so
- * a late write cannot re-point a decided payment at a different session.
+ * without something to quote.
+ *
+ * Conditional on the reference still being EMPTY, not on the state still
+ * being `pending`. Both stop a late write re-pointing a payment at a different
+ * session, which is the thing to prevent; only this one still records the
+ * reference when a webhook has decided the payment during the round trip that
+ * produced it. The difference is not academic - a `paid` payment with no
+ * provider reference is money taken that the refund path then refuses to give
+ * back.
  */
 export function attachProviderRef(paymentId: string, providerRef: string): boolean {
   const result = getDb()
     .prepare(
       `UPDATE payments SET provider_ref = @providerRef, updated_at = @at
-       WHERE id = @id AND state = 'pending'`
+       WHERE id = @id AND (provider_ref IS NULL OR provider_ref = '')`
     )
     .run({ id: paymentId, providerRef, at: now() });
   return result.changes > 0;
@@ -260,10 +273,61 @@ export function markRefunded(paymentId: string, reversedCredits: number): boolea
     .prepare(
       `UPDATE payments SET state = 'refunded', refunded_at = @at, refunded_credits = @reversed,
                            updated_at = @at
-       WHERE id = @id AND state = 'paid'`
+       WHERE id = @id AND state = 'refunding'`
     )
     .run({ id: paymentId, reversed: Math.max(0, Math.trunc(reversedCredits)), at: timestamp });
   return result.changes > 0;
+}
+
+/**
+ * Claims a payment for a refund, and says whether THIS caller got it.
+ *
+ * One conditional UPDATE, before anything is said to the provider. The second
+ * caller changes no rows, is told `false`, and answers the administrator with
+ * a refusal - rather than calling the provider a second time, measuring a
+ * balance that the first caller has already moved, and reporting that nothing
+ * could be reversed.
+ */
+export function beginRefund(paymentId: string): boolean {
+  const result = getDb()
+    .prepare(
+      `UPDATE payments SET state = 'refunding', updated_at = @at
+       WHERE id = @id AND state = 'paid'`
+    )
+    .run({ id: paymentId, at: now() });
+  return result.changes > 0;
+}
+
+/**
+ * Gives the claim back when the refund did not happen.
+ *
+ * Only from `refunding`, so a claim released late cannot talk a payment that
+ * has since been refunded back into being refundable.
+ */
+export function releaseRefund(paymentId: string): boolean {
+  const result = getDb()
+    .prepare(
+      `UPDATE payments SET state = 'paid', updated_at = @at
+       WHERE id = @id AND state = 'refunding'`
+    )
+    .run({ id: paymentId, at: now() });
+  return result.changes > 0;
+}
+
+/**
+ * How many checkouts an account has opened recently.
+ *
+ * Every one of these cost a call to a payment provider, so this is what stops
+ * a signed-in account looping the checkout endpoint and running up somebody
+ * else's API bill. Counting rows rather than requests deliberately: a refused
+ * checkout leaves a `failed` row, and a loop of refusals is the same abuse as
+ * a loop of successes.
+ */
+export function countPaymentsSince(userId: string, sinceIso: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS n FROM payments WHERE user_id = ? AND created_at >= ?')
+    .get(userId, sinceIso) as { n: number };
+  return row.n;
 }
 
 export type PaymentEvent = {

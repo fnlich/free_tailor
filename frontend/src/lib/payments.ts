@@ -11,7 +11,7 @@ import { apiFetch } from './api';
 
 export type PaymentMethod = 'card' | 'crypto';
 export type PaymentProvider = 'stripe' | 'coinbase';
-export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
+export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded';
 
 export type MethodAvailability = {
   method: PaymentMethod;
@@ -73,6 +73,7 @@ export const STATE_LABELS: Record<PaymentState, string> = {
   paid: 'Paid',
   failed: 'Failed',
   expired: 'Expired',
+  refunding: 'Refund in progress',
   refunded: 'Refunded',
 };
 
@@ -81,6 +82,7 @@ export const STATE_STYLES: Record<PaymentState, string> = {
   paid: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200',
   failed: 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200',
   expired: 'bg-gray-200 text-gray-700 dark:bg-slate-700 dark:text-slate-200',
+  refunding: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200',
   refunded: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200',
 };
 

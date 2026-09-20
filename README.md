@@ -177,18 +177,33 @@ server ever sees a card number.
 its own settings every time, so no request can set what it will be charged; the
 buy page displays that same number rather than working one out. The price and
 the purchase bounds are set under **Admin → Payments**, and each payment records
-the price it was made at, so changing it never rewrites a past receipt.
+the price it was made at, so changing it never rewrites a past receipt. One
+account may open twenty checkouts an hour; abandoning one is ordinary, but each
+costs a call to a payment provider, so a loop is refused with a 429 rather than
+run up somebody else's bill.
 
 **Paying twice is guarded three times**, because the failure it prevents is
 giving credits away: the provider's event id is UNIQUE in `payment_events`, the
 payment only moves out of `pending` once, and the ledger entry carries a
 deterministic `purchase:<id>` key. Any one would usually do.
 
+**Paying once and getting nothing is guarded too**, which is the mirror failure
+and the easier one to miss. Recording the event and adding the credits is a
+single transaction: if anything fails in between, the event row goes back with
+it, so the provider's retry is a first delivery rather than a duplicate the
+guards above would refuse. A webhook that reports an amount other than the one
+the payment was quoted at credits nothing and leaves the payment `pending` for
+somebody to look at, and a checkout that is created at the provider is never
+marked failed locally - somebody may still pay it.
+
 **Refunds** are on the admin payments page, for card payments. They report three
 numbers rather than a tick, and the reason is arithmetic: a balance may not go
 negative, so refunding somebody who has already spent what they bought returns
 all of their money and reverses only what is left. The page says how many
-credits were actually reversed and how many had already gone. Crypto cannot be
+credits were actually reversed and how many had already gone. A refund claims
+the payment - `paid` to `refunding` - before it calls the provider, so two tabs
+or two administrators cannot both report an outcome for one refund; the second
+is refused rather than told that nothing could be reversed. Crypto cannot be
 refunded automatically - a chain payment can only be sent back, not pulled - and
 the app says so rather than pretending.
 
@@ -436,7 +451,7 @@ manual build and is unaffected.
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
 | Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir` |
-| Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The provider's raw payload is kept: when a payment is disputed months later, what the provider actually said is the only evidence there is |
+| Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |

@@ -215,3 +215,68 @@ test('a crypto payment says plainly that it cannot be refunded automatically', a
   );
   assert.equal(context.balance(), 60, 'and nothing is reversed on a promise');
 });
+
+test('two refunds of the same payment at once: one refunds, the other is refused', async () => {
+  const context = await setup();
+  const payment = context.paidPayment(200);
+
+  /*
+   * The race an admin makes by having two tabs open.
+   *
+   * Both requests read `paid` before either calls Stripe, so a check that is
+   * only a read lets both through. What must not happen is the second one
+   * measuring a balance the first has already moved and reporting "0 of 200
+   * reversed - the rest had been spent", which is a false statement about the
+   * customer's account handed to the person about to write to them.
+   */
+  let releaseProvider = () => {};
+  const held = new Promise((resolve) => {
+    releaseProvider = resolve;
+  });
+  const stripe = require('../dist/integrations/stripe');
+  stripe.getCheckoutSession = async () => {
+    await held;
+    return { id: 'cs_1', payment_intent: 'pi_1' };
+  };
+
+  const first = context.payments.refundPayment(payment.id, context.admin.id, 'first');
+  const second = context.payments
+    .refundPayment(payment.id, context.admin.id, 'second')
+    .then(() => null)
+    .catch((error) => error);
+
+  const refusal = await second;
+  releaseProvider();
+  const outcome = await first;
+
+  assert.ok(refusal instanceof Error, 'the second attempt is an error, not a second answer');
+  assert.equal(refusal.status, 409);
+  assert.match(refusal.message, /already being refunded/i);
+
+  assert.equal(outcome.creditsReversed, 200, 'the one that ran reports the truth');
+  assert.equal(outcome.shortfall, 0);
+  assert.equal(context.balance(), 0);
+  assert.equal(context.paymentsDb.getPayment(payment.id).state, 'refunded');
+  assert.equal(context.refunds.length, 1, 'and the provider was asked exactly once');
+});
+
+test('a provider that refuses leaves the payment refundable', async () => {
+  const context = await setup();
+  const payment = context.paidPayment(100);
+
+  const stripe = require('../dist/integrations/stripe');
+  stripe.refundPaymentIntent = async () => {
+    throw new Error('Stripe is unreachable');
+  };
+
+  await assert.rejects(() => context.payments.refundPayment(payment.id, context.admin.id, ''));
+
+  // Claimed, then given back: a refund that did not happen must not leave a
+  // payment stuck in a state with no button on it.
+  assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid');
+  assert.equal(context.balance(), 100, 'and nothing was reversed');
+
+  stripe.refundPaymentIntent = async () => {};
+  const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'retried');
+  assert.equal(outcome.creditsReversed, 100);
+});

@@ -216,9 +216,12 @@ export function verifyStripeSignature(
   if (!Number.isFinite(signedAt)) return false;
   if (Math.abs(nowSeconds - signedAt) > SIGNATURE_TOLERANCE_SECONDS) return false;
 
+  // The bytes, not a string made from them. Identical for valid UTF-8, which
+  // is everything Stripe sends - but a body with a stray byte would decode
+  // lossily and be judged on something other than what was signed.
   const expected = crypto
     .createHmac('sha256', secret)
-    .update(`${timestamp}.${rawBody.toString('utf8')}`)
+    .update(Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), rawBody]))
     .digest('hex');
 
   return candidates.some((candidate) => timingSafeEquals(candidate, expected));

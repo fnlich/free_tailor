@@ -48,8 +48,13 @@ async function serve() {
 
   const express = require('express');
 
+  // Dependency order, and it matters: every module below caches the sqlite
+  // module it was first loaded with, so one reloaded out of order keeps a
+  // handle on the PREVIOUS test's database - two connections, two files, and
+  // a balance that moves somewhere nobody is looking.
   loadFresh('../dist/database/sqlite');
   const users = loadFresh('../dist/database/userRepository');
+  loadFresh('../dist/database/creditRepository');
   const payments = loadFresh('../dist/database/paymentRepository');
   const credits = loadFresh('../dist/services/credits');
   loadFresh('../dist/config/aiModelConfig');
@@ -359,6 +364,144 @@ test("one provider's event cannot settle another provider's payment", async () =
     assert.equal(response.status, 200);
     assert.equal(server.balance(), 0, 'the card payment was left alone');
     assert.equal(server.payments.getPayment(card.id).state, 'pending');
+  } finally {
+    server.close();
+  }
+});
+
+test('a webhook that fails while crediting records nothing, so the retry lands', async () => {
+  const server = await serve();
+  const db = require('../dist/database/sqlite').getDb();
+  try {
+    const payment = pendingPayment(server, { credits: 200 });
+    const body = stripeEvent(payment, { id: 'evt_retry' });
+
+    /*
+     * A failure in the middle of settling, forced rather than waited for.
+     *
+     * The real ones are a locked database or a full disk, which a test cannot
+     * arrange; a trigger that refuses the purchase row reproduces the shape of
+     * them exactly - the event has been written down, and the credit then
+     * cannot be. What must NOT happen is that the provider's retry is answered
+     * "already handled", because the person has paid and would never be
+     * credited. So the whole settlement is one transaction: this delivery has
+     * to leave the database as it found it.
+     */
+    db.exec(
+      `CREATE TRIGGER refuse_purchase BEFORE INSERT ON credit_ledger
+       WHEN NEW.reason = 'purchase'
+       BEGIN SELECT RAISE(ABORT, 'simulated ledger failure'); END`
+    );
+
+    const failed = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+    assert.equal(failed.status, 500, 'the provider is told to retry rather than told all is well');
+    assert.equal(server.balance(), 0);
+    assert.equal(server.payments.getPayment(payment.id).state, 'pending', 'not left marked paid');
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS n FROM payment_events').get().n,
+      0,
+      'the event row rolled back with the credit that failed'
+    );
+
+    db.exec('DROP TRIGGER refuse_purchase');
+
+    // The same event id again: it is a first delivery as far as the database
+    // is concerned, which is the whole point of rolling the first one back.
+    const retried = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+    assert.equal(retried.status, 200);
+    assert.equal(server.balance(), 200);
+    assert.equal(server.payments.getPayment(payment.id).state, 'paid');
+  } finally {
+    server.close();
+  }
+});
+
+test('an event that reports a different amount credits nothing', async () => {
+  const server = await serve();
+  try {
+    const payment = pendingPayment(server, { credits: 200 }); // 200 x 50c = $100
+    const body = JSON.stringify({
+      id: 'evt_short',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: payment.providerRef,
+          payment_status: 'paid',
+          amount_total: 100, // one dollar, for a hundred dollars of credits
+          currency: 'usd',
+          metadata: { paymentId: payment.id },
+        },
+      },
+    });
+
+    const response = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+
+    // 200, because a retry would say the same thing - but nothing is credited
+    // and the payment stays pending, where a person will see it.
+    assert.equal(response.status, 200);
+    assert.equal(server.balance(), 0);
+    assert.equal(server.payments.getPayment(payment.id).state, 'pending');
+  } finally {
+    server.close();
+  }
+});
+
+test('the matching amount and currency still credit normally', async () => {
+  const server = await serve();
+  try {
+    const payment = pendingPayment(server, { credits: 200 });
+    const body = JSON.stringify({
+      id: 'evt_exact',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: payment.providerRef,
+          payment_status: 'paid',
+          amount_total: 10_000,
+          currency: 'USD', // the provider's casing is not a mismatch
+          metadata: { paymentId: payment.id },
+        },
+      },
+    });
+
+    await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+    assert.equal(server.balance(), 200);
+  } finally {
+    server.close();
+  }
+});
+
+test('the stored event keeps the payment and drops the person', async () => {
+  const server = await serve();
+  const db = require('../dist/database/sqlite').getDb();
+  try {
+    const payment = pendingPayment(server, { credits: 10 });
+    const body = JSON.stringify({
+      id: 'evt_pii',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: payment.providerRef,
+          payment_status: 'paid',
+          amount_total: 500,
+          currency: 'usd',
+          customer_email: 'buyer@example.com',
+          customer_details: { email: 'buyer@example.com', address: { line1: '1 Test Street' } },
+          metadata: { paymentId: payment.id },
+        },
+      },
+    });
+
+    await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+
+    const stored = db.prepare('SELECT payload FROM payment_events WHERE event_id = ?').get('evt_pii');
+    // What the row is FOR survives: the event id, the session, the amount.
+    assert.match(stored.payload, /evt_pii/);
+    assert.match(stored.payload, /amount_total/);
+    // What it was never for does not.
+    assert.doesNotMatch(stored.payload, /buyer@example\.com/);
+    assert.doesNotMatch(stored.payload, /1 Test Street/);
+    assert.equal(server.balance(), 10, 'and the credit still landed');
   } finally {
     server.close();
   }
