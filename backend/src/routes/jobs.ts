@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { requireUser } from '../middleware/auth';
 import {
   batchUpdateGoogleSheetsColumns,
   fetchGoogleSheetsColumnValues,
@@ -6,13 +7,13 @@ import {
   GoogleSheetsRequestError,
   updateGoogleSheetsRow,
 } from '../integrations/googleSheets';
+import { JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW } from '../integrations/googleSheets';
+import { SheetAccessError } from '../services/sheets/accountSheet';
 import {
-  hasLinkedInExternalApplyUrl,
-  LinkedInJobResult,
-  normalizeLinkedInLimit,
-  resolveLinkedInPostedSince,
-  searchLinkedInRemoteJobs,
-} from '../services/linkedinJobs';
+  resolveAppendRow,
+  resolveColumn,
+  resolveJobSheetTarget,
+} from '../services/sheets/jobSheetTarget';
 import { resolvePromptExecutionConfig } from '../services/ai';
 import {
   evaluateJobFilterAnalysis,
@@ -31,8 +32,17 @@ import {
 const { isBroadSoftwareRoleSearch } = require('../../scrapers/filters');
 
 const router = Router();
-const LINKEDIN_EXPORT_BATCH_SIZE = 50;
-const DEFAULT_LINKEDIN_LOCATION = 'United States';
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
+const SCRAPER_EXPORT_BATCH_SIZE = 50;
+const DEFAULT_SCRAPER_LOCATION = 'United States';
 const BROAD_SOFTWARE_TITLE_PATTERNS = [
   /\bsoftware (engineer|developer)\b/i,
   /\b(frontend|front-end|backend|back-end|full[- ]stack|web|mobile|ios|android|embedded|firmware|systems|cloud|platform|infrastructure|devops|site reliability|sre|security|application security|data|machine learning|mlops|ai|computer vision|robotics|distributed systems|database|storage)\s+(engineer|developer)\b/i,
@@ -88,7 +98,7 @@ function toColumnLetters(columnNumber: number): string {
   return letters;
 }
 
-function getJobSheetLink(job: LinkedInJobResult): string {
+function getJobSheetLink(job: { externalApplyUrl?: string }): string {
   return job.externalApplyUrl || '';
 }
 
@@ -157,28 +167,6 @@ function normalizeScraperFilters(
   source: ScraperSource,
   providerId?: string
 ): UnifiedScraperFilters {
-  if (source === 'linkedin') {
-    const title = typeof payload.title === 'string'
-      ? payload.title.trim()
-      : typeof payload.keywords === 'string'
-        ? payload.keywords.trim()
-        : '';
-    if (!title) {
-      throw new GoogleSheetsRequestError(400, 'title is required.');
-    }
-
-    const rowsValue = payload.rows ?? payload.maxResults;
-    const rows = rowsValue === undefined ? 1000 : toPositiveInteger('rows', rowsValue);
-    if (rows > 1000) {
-      throw new GoogleSheetsRequestError(400, 'rows must be 1000 or less.');
-    }
-
-    return {
-      title,
-      rows,
-    };
-  }
-
   const keywords = typeof payload.keywords === 'string' ? payload.keywords.trim() : '';
   const startUrl = normalizeOptionalHttpUrl('startUrl', payload.startUrl);
   const requiresStartUrlOnly = isStartUrlOnlyProvider(source, providerId);
@@ -385,14 +373,10 @@ function applySourceSpecificScraperDefaults(
   source: ScraperSource,
   filters: UnifiedScraperFilters
 ): UnifiedScraperFilters {
-  if (source === 'linkedin') {
-    return filters;
-  }
-
   if (!filters.location) {
     return {
       ...filters,
-      location: DEFAULT_LINKEDIN_LOCATION,
+      location: DEFAULT_SCRAPER_LOCATION,
     };
   }
 
@@ -412,18 +396,6 @@ async function runScraper(
 }> {
   const provider = resolveScraperProvider(source, providerId);
   const rawResults = await provider.run(filters);
-
-  if (source === 'linkedin') {
-    const finalResults = rawResults.slice(0, filters.rows ?? 1000);
-
-    return {
-      provider,
-      rawResultCount: rawResults.length,
-      resultsWithinPostedWindowCount: rawResults.length,
-      remoteFilteredCount: 0,
-      finalResults,
-    };
-  }
 
   const keywordScopedResults = shouldApplyBroadSoftwareRoleFilter(filters.keywords ?? '')
     ? rawResults.filter((job) => matchesBroadSoftwareRoleJob(job))
@@ -529,7 +501,11 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to run scraper';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /unknown scraper provider/i.test(message)
           ? 400
@@ -547,16 +523,20 @@ router.get('/scrapers/providers', (_req: Request, res: Response) => {
 router.post('/scrapers/export', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // FIRST, before any other validation. Defaults to the caller's own sheet
+    // and today's tab, and checks the id when one is supplied - the service
+    // account can open every account's spreadsheet, so an id taken on trust
+    // here would read and overwrite anybody's. Running it ahead of everything
+    // else means a request for somebody else's sheet is refused on its own
+    // terms rather than incidentally failing some other check first.
+    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
     const source = requireSupportedScraperSource(body.source);
     const providerId = typeof body.provider === 'string' ? body.provider : undefined;
     const filters = applySourceSpecificScraperDefaults(source, normalizeScraperFilters(body, source, providerId));
-    const sheetId = body.sheetId;
-    const tabName = body.tabName;
-    const startRow = typeof body.startRow === 'number' ? body.startRow : Number(body.startRow);
-    const companyNameCol = body.companyNameCol;
-    const jobTitleCol = body.jobTitleCol;
-    const jobLinkCol = body.jobLinkCol;
-    const jobDescriptionCol = body.jobDescriptionCol;
+    const companyNameCol = resolveColumn('Company column', body.companyNameCol, JOB_SHEET_COLUMNS.company);
+    const jobTitleCol = resolveColumn('Job title column', body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
+    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    const jobDescriptionCol = resolveColumn('Job description column', body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
     const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
     const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
       fetchGoogleSheetsColumnValues({
@@ -579,6 +559,15 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
     if (!sheetMetadata.tabs.some((tab) => tab.title === String(tabName ?? '').trim())) {
       throw new GoogleSheetsRequestError(400, `Tab "${String(tabName ?? '')}" was not found in the spreadsheet.`);
     }
+
+    // Appends. Starting at row 2 by default would overwrite the morning's rows
+    // on the afternoon's run; the columns are already in hand for the
+    // duplicate check, so their length is the honest first free row.
+    const startRow = resolveAppendRow(body.startRow, [
+      existingCompanyColumn,
+      existingJobTitleColumn,
+      existingJobLinkColumn,
+    ]);
 
     const seenJobs = buildSeenExportRowKeys(
       existingCompanyColumn.values,
@@ -653,7 +642,7 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
         jobDescription: job.description,
       });
 
-      if (pendingRows.length >= LINKEDIN_EXPORT_BATCH_SIZE) {
+      if (pendingRows.length >= SCRAPER_EXPORT_BATCH_SIZE) {
         await flushPendingRows();
       }
     }
@@ -699,7 +688,11 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export scraper jobs';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /unknown scraper provider/i.test(message)
           ? 400
@@ -710,205 +703,30 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/linkedin', async (req: Request, res: Response) => {
-  try {
-    const keywords = typeof req.query.keywords === 'string' ? req.query.keywords : '';
-
-    if (!keywords.trim()) {
-      res.status(400).json({ error: 'Keywords are required' });
-      return;
-    }
-
-    const postedSince = resolveLinkedInPostedSince(req.query.postedSince);
-    const limit = normalizeLinkedInLimit(req.query.limit);
-    const result = await searchLinkedInRemoteJobs({
-      keywords,
-      postedSince,
-      limit,
-    });
-
-    res.json(result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch LinkedIn jobs';
-    const statusCode = /rate limited/i.test(message) ? 429 : 500;
-    res.status(statusCode).json({ error: message });
-  }
-});
-
-router.post('/linkedin/search-and-export', async (req: Request, res: Response) => {
-  try {
-    const body = req.body ?? {};
-    const keywords = typeof body.keywords === 'string' ? body.keywords : '';
-
-    if (!keywords.trim()) {
-      res.status(400).json({ error: 'Keywords are required' });
-      return;
-    }
-
-    const postedSince = resolveLinkedInPostedSince(body.postedSince);
-    const limit = normalizeLinkedInLimit(body.limit);
-    const sheetId = body.sheetId;
-    const tabName = body.tabName;
-    const startRow = typeof body.startRow === 'number' ? body.startRow : Number(body.startRow);
-    const companyNameCol = body.companyNameCol;
-    const jobTitleCol = body.jobTitleCol;
-    const jobLinkCol = body.jobLinkCol;
-    const jobDescriptionCol = body.jobDescriptionCol;
-    const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
-    const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: companyNameCol,
-      }),
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: jobTitleCol,
-      }),
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: jobLinkCol,
-      }),
-    ]);
-
-    if (!sheetMetadata.tabs.some((tab) => tab.title === String(tabName ?? '').trim())) {
-      throw new GoogleSheetsRequestError(400, `Tab "${String(tabName ?? '')}" was not found in the spreadsheet.`);
-    }
-
-    const seenJobs = buildSeenExportRowKeys(
-      existingCompanyColumn.values,
-      existingJobTitleColumn.values,
-      existingJobLinkColumn.values
-    );
-    let rowsWritten = 0;
-    let unresolvedJobLinks = 0;
-    let skippedCompanyDuplicates = 0;
-    let pendingRows: Array<{
-      companyName: string;
-      jobTitle: string;
-      jobLink: string;
-      jobDescription: string;
-    }> = [];
-
-    const flushPendingRows = async () => {
-      if (pendingRows.length === 0) {
-        return;
-      }
-
-      const batchStartRow = startRow + rowsWritten;
-      const batchRows = pendingRows;
-
-      await batchUpdateGoogleSheetsColumns({
-        sheetId,
-        tabName,
-        startRow: batchStartRow,
-        updates: [
-          { col: companyNameCol, values: batchRows.map((row) => row.companyName) },
-          { col: jobTitleCol, values: batchRows.map((row) => row.jobTitle) },
-          { col: jobLinkCol, values: batchRows.map((row) => row.jobLink) },
-          { col: jobDescriptionCol, values: batchRows.map((row) => row.jobDescription) },
-        ],
-      });
-
-      rowsWritten += batchRows.length;
-      unresolvedJobLinks += batchRows.filter((row) => !row.jobLink).length;
-      pendingRows = [];
-
-      console.info(
-        `[LinkedIn Jobs] Wrote rows ${batchStartRow}-${batchStartRow + batchRows.length - 1} to Google Sheets ` +
-          `(${rowsWritten} job${rowsWritten === 1 ? '' : 's'} exported).`
-      );
-    };
-
-    const result = await searchLinkedInRemoteJobs({
-      keywords,
-      postedSince,
-      limit,
-      onJobCollected: async (job) => {
-        if (!hasLinkedInExternalApplyUrl(job)) {
-          return;
-        }
-
-        const jobLink = getJobSheetLink(job);
-        const duplicateKeys = buildExportRowDuplicateKeys({
-          companyName: job.company,
-          jobTitle: job.title,
-          jobLink,
-        });
-
-        if (duplicateKeys.some((key) => seenJobs.has(key))) {
-          skippedCompanyDuplicates += 1;
-          return;
-        }
-
-        for (const key of duplicateKeys) {
-          seenJobs.add(key);
-        }
-
-        pendingRows.push({
-          companyName: job.company,
-          jobTitle: job.title,
-          jobLink,
-          jobDescription: job.description,
-        });
-
-        if (pendingRows.length >= LINKEDIN_EXPORT_BATCH_SIZE) {
-          await flushPendingRows();
-        }
-      },
-    });
-    await flushPendingRows();
-    const endRow = rowsWritten > 0 ? startRow + rowsWritten - 1 : startRow;
-    const updatedRanges =
-      rowsWritten > 0
-        ? [
-            buildColumnRange(String(tabName), startRow, endRow, Number(companyNameCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobTitleCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobLinkCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobDescriptionCol)),
-          ]
-        : [];
-
-    res.json({
-      ...result,
-      export: {
-        spreadsheetId: sheetMetadata.spreadsheetId,
-        spreadsheetTitle: sheetMetadata.spreadsheetTitle,
-        selectedTab: String(tabName),
-        updatedRanges,
-        rowsWritten,
-        startRow,
-        endRow,
-        unresolvedJobLinks,
-        skippedCompanyDuplicates,
-      },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export LinkedIn jobs';
-    const statusCode =
-      error instanceof GoogleSheetsRequestError
-        ? error.statusCode
-        : /rate limited/i.test(message)
-          ? 429
-          : 500;
-    res.status(statusCode).json({ error: message });
-  }
-});
-
 router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   try {
     const body = req.body ?? {};
-    const sheetId = requireNonEmptyString('sheetId', body.sheetId);
-    const tabName = requireNonEmptyString('tabName', body.tabName);
-    const startRow = toPositiveInteger('startRow', body.startRow);
-    const endRow = toPositiveInteger('endRow', body.endRow);
-    const jobLinkCol = toPositiveInteger('jobLinkCol', body.jobLinkCol);
-    const resultCol = toPositiveInteger('resultCol', body.resultCol);
-    const reasonCol = toPositiveInteger('reasonCol', body.reasonCol);
+    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
+    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
+    // Two columns of the filter's own. Rate, note and Job Finder are fields
+    // somebody types into, so a verdict written into one of them would destroy
+    // what was there.
+    const resultCol = resolveColumn('Result column', body.resultCol, JOB_SHEET_COLUMNS.filterResult);
+    const reasonCol = resolveColumn('Reason column', body.reasonCol, JOB_SHEET_COLUMNS.filterReason);
+    const startRow =
+      body.startRow === undefined ? JOB_SHEET_FIRST_DATA_ROW : toPositiveInteger('startRow', body.startRow);
 
-    if (startRow > endRow) {
+    // Without an explicit end, run to the last row that actually has a job
+    // link. Asking the caller for it made sense when they had picked the sheet;
+    // now that it is their own, "all of today's jobs" is the only sane default.
+    const endRow =
+      body.endRow === undefined
+        ? (await fetchGoogleSheetsColumnValues({ sheetId, tabName, col: jobLinkCol })).values.length
+        : toPositiveInteger('endRow', body.endRow);
+
+    // Only meaningful against an explicit range - an empty tab reports zero
+    // rows below rather than an error.
+    if (body.endRow !== undefined && body.startRow !== undefined && endRow < startRow) {
       throw new GoogleSheetsRequestError(400, 'startRow must be less than or equal to endRow.');
     }
 
@@ -926,6 +744,34 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
     }
 
     const executionConfig = await resolvePromptExecutionConfig('filter-google-sheet-job', JOB_FILTER_PROVIDER);
+
+    if (endRow < startRow) {
+      // An empty tab is not an error - a sheet created this morning that nobody
+      // has exported into yet is the ordinary first run. It must answer in the
+      // SAME shape as a real run, though: the page renders every field, and one
+      // missing array is a crash rather than an empty state.
+      res.json({
+        spreadsheetId: sheetId,
+        spreadsheetTitle: '',
+        selectedTab: tabName,
+        provider: executionConfig.provider,
+        modelName: executionConfig.modelName ?? '',
+        startRow,
+        endRow,
+        jobLinkCol,
+        resultCol,
+        reasonCol,
+        scannedRows: 0,
+        processedRows: 0,
+        skippedRows: 0,
+        scrapedRows: 0,
+        errorRows: 0,
+        updatedRanges: [],
+        rowErrors: [],
+        message: 'There are no job rows in that tab yet.',
+      });
+      return;
+    }
 
     // A sheet filter is the longest-running AI loop in the app - one call per
     // row. Without this, closing the tab left it running to the end of the
@@ -1035,7 +881,11 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to filter Google Sheet jobs';
     const statusCode =
-      error instanceof GoogleSheetsRequestError
+      // A 404 from the addressability guard, so a caller cannot learn whether
+      // somebody else's spreadsheet exists by watching the status change.
+      error instanceof SheetAccessError
+        ? error.status
+        : error instanceof GoogleSheetsRequestError
         ? error.statusCode
         : /rate limited/i.test(message)
           ? 429

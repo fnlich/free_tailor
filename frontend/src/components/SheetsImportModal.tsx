@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { GoogleSheetSource, importApi } from '@/lib/api';
+import { importApi } from '@/lib/api';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
 
 export type ImportedSheetJob = {
@@ -17,11 +17,75 @@ type ColumnMapping = {
   jobDescription: string;
 };
 
+/**
+ * A spreadsheet this dialog may read from.
+ *
+ * Wider than the admin-configured `GoogleSheetSource` it used to take, because
+ * the list those made up was the wrong list: every account has its OWN job
+ * sheet and almost nobody has a saved source. Offering only the saved ones sent
+ * an ordinary user at a spreadsheet they are not allowed to address, and the
+ * backend answered - correctly - that it was not found.
+ */
+export type ImportSheetSource = {
+  id: string;
+  name: string;
+  sheetId: string;
+  /** The account's own job sheet, whose layout this app decides. */
+  isOwnSheet?: boolean;
+  /** Today's tab, preferred over whichever tab Google happens to list first. */
+  preferredTab?: string;
+};
+
+/**
+ * Where the fields sit, per kind of sheet.
+ *
+ * The account's own sheet is written BY this app, so its columns are known
+ * exactly - `NO(DATE)`, `Company`, `Job Title`, `Job Link`, `Job Description`,
+ * and then columns an import has no use for. B:E is therefore the range that
+ * covers what is needed and nothing else, and row 2 is the first that is not
+ * the header. A saved source is somebody else's spreadsheet, so it keeps the
+ * D:G it always had: a guess, and one that reads a job link as a company name
+ * if it is applied to a sheet this app laid out.
+ */
+type SheetLayout = {
+  fromRow: string;
+  toRow: string;
+  fromCol: string;
+  toCol: string;
+  companyColumn: string;
+  jobTitleColumn: string;
+  jobDescriptionColumn: string;
+};
+
+const OWN_SHEET_LAYOUT: SheetLayout = {
+  fromRow: '2',
+  toRow: '11',
+  fromCol: 'B',
+  toCol: 'E',
+  companyColumn: 'B',
+  jobTitleColumn: 'C',
+  jobDescriptionColumn: 'E',
+};
+
+const SAVED_SOURCE_LAYOUT: SheetLayout = {
+  fromRow: '1',
+  toRow: '10',
+  fromCol: 'D',
+  toCol: 'G',
+  companyColumn: 'D',
+  jobTitleColumn: '',
+  jobDescriptionColumn: 'G',
+};
+
+function layoutFor(source: ImportSheetSource | null | undefined): SheetLayout {
+  return source?.isOwnSheet ? OWN_SHEET_LAYOUT : SAVED_SOURCE_LAYOUT;
+}
+
 type Props = {
   isOpen: boolean;
   isSubmitting: boolean;
   showJobTitleMapping: boolean;
-  sources: GoogleSheetSource[];
+  sources: ImportSheetSource[];
   selectedSourceId: string;
   selectedProfileName?: string;
   generationProgress?: GenerationProgressState | null;
@@ -30,15 +94,12 @@ type Props = {
   onConfirm: (jobs: ImportedSheetJob[], meta: { skippedRows: number }) => Promise<void>;
 };
 
-const DEFAULT_MAPPING: ColumnMapping = {
-  companyName: '0',
+/** Nothing mapped yet. The real mapping is derived once a range has loaded. */
+const EMPTY_MAPPING: ColumnMapping = {
+  companyName: '',
   jobTitle: '',
-  jobDescription: '3',
+  jobDescription: '',
 };
-const DEFAULT_FROM_COLUMN = 'D';
-const DEFAULT_TO_COLUMN = 'G';
-const DEFAULT_COMPANY_COLUMN = 'D';
-const DEFAULT_JOB_DESCRIPTION_COLUMN = 'G';
 
 function toSpreadsheetColumnLabel(columnNumber: number): string {
   let current = columnNumber;
@@ -89,12 +150,16 @@ export default function SheetsImportModal({
   onConfirm,
 }: Props) {
   const selectedSource = sources.find((source) => source.id === selectedSourceId) ?? null;
+  const layout = layoutFor(selectedSource);
   const [tabName, setTabName] = useState('');
-  const [fromRow, setFromRow] = useState('1');
-  const [toRow, setToRow] = useState('10');
-  const [fromCol, setFromCol] = useState(DEFAULT_FROM_COLUMN);
-  const [toCol, setToCol] = useState(DEFAULT_TO_COLUMN);
-  const [mapping, setMapping] = useState<ColumnMapping>(DEFAULT_MAPPING);
+  // Seeded from the layout of whatever is selected on the first render, so the
+  // dialog never shows one sheet's range for a beat before the effect corrects
+  // it. The effects below keep them in step after that.
+  const [fromRow, setFromRow] = useState(layout.fromRow);
+  const [toRow, setToRow] = useState(layout.toRow);
+  const [fromCol, setFromCol] = useState(layout.fromCol);
+  const [toCol, setToCol] = useState(layout.toCol);
+  const [mapping, setMapping] = useState<ColumnMapping>(EMPTY_MAPPING);
   const [values, setValues] = useState<string[][]>([]);
   const [rangeStartRow, setRangeStartRow] = useState(1);
   const [rangeStartCol, setRangeStartCol] = useState(1);
@@ -107,11 +172,11 @@ export default function SheetsImportModal({
   useEffect(() => {
     if (!isOpen) {
       setTabName('');
-      setFromRow('1');
-      setToRow('10');
-      setFromCol(DEFAULT_FROM_COLUMN);
-      setToCol(DEFAULT_TO_COLUMN);
-      setMapping(DEFAULT_MAPPING);
+      setFromRow(layout.fromRow);
+      setToRow(layout.toRow);
+      setFromCol(layout.fromCol);
+      setToCol(layout.toCol);
+      setMapping(EMPTY_MAPPING);
       setValues([]);
       setRangeStartRow(1);
       setRangeStartCol(1);
@@ -121,7 +186,7 @@ export default function SheetsImportModal({
       setIsLoading(false);
       setError('');
     }
-  }, [isOpen]);
+  }, [isOpen, layout]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -130,9 +195,15 @@ export default function SheetsImportModal({
     setRangeStartRow(1);
     setRangeStartCol(1);
     setSheetTabs([]);
-    setMapping(DEFAULT_MAPPING);
+    setMapping(EMPTY_MAPPING);
     setIsAdvancedOpen(false);
     setError('');
+    // The range belongs to the sheet, not to the dialog: switching between the
+    // account's own sheet and a saved source changes which columns hold what.
+    setFromRow(layout.fromRow);
+    setToRow(layout.toRow);
+    setFromCol(layout.fromCol);
+    setToCol(layout.toCol);
 
     if (!selectedSource?.sheetId.trim()) return;
 
@@ -143,7 +214,11 @@ export default function SheetsImportModal({
         if (isCancelled) return;
         const tabTitles = response.tabs.map((tab) => tab.title).filter(Boolean);
         setSheetTabs(tabTitles);
-        setTabName(tabTitles[0] ?? '');
+        // Today's tab where the sheet has one. On the account's own sheet the
+        // tabs are dates, and the one being filled in today is the one to
+        // import from - it is rarely the one Google lists first.
+        const preferred = selectedSource?.preferredTab?.trim() ?? '';
+        setTabName(preferred && tabTitles.includes(preferred) ? preferred : tabTitles[0] ?? '');
         if (!tabTitles.length) {
           setError('No tabs were found in the selected Google Sheet.');
         }
@@ -161,7 +236,10 @@ export default function SheetsImportModal({
     return () => {
       isCancelled = true;
     };
-  }, [isOpen, selectedSource?.id, selectedSource?.sheetId]);
+    // `layout` is one of two module constants, so it is stable: it changes only
+    // when the selected source changes kind, which is exactly when the range
+    // should be reset.
+  }, [isOpen, layout, selectedSource?.id, selectedSource?.sheetId, selectedSource?.preferredTab]);
 
   useEffect(() => {
     if (showJobTitleMapping) return;
@@ -239,7 +317,7 @@ export default function SheetsImportModal({
     nextMapping: ColumnMapping;
   }> => {
     if (!selectedSource?.sheetId.trim()) {
-      throw new Error('Select a saved Google Sheet before generating.');
+      throw new Error('Select a Google Sheet before generating.');
     }
     if (!tabName.trim()) {
       throw new Error('Sheet tab is required.');
@@ -260,9 +338,14 @@ export default function SheetsImportModal({
     const responseStartCol = response.range?.fromCol ?? parsedFromCol;
     const totalColumns = importedValues.reduce((max, row) => Math.max(max, row.length), 0);
     const nextMapping = {
-      companyName: getColumnOffset(responseStartCol, DEFAULT_COMPANY_COLUMN, totalColumns),
-      jobTitle: '',
-      jobDescription: getColumnOffset(responseStartCol, DEFAULT_JOB_DESCRIPTION_COLUMN, totalColumns),
+      companyName: getColumnOffset(responseStartCol, layout.companyColumn, totalColumns),
+      // The own sheet HAS a job title column, so map it when the form wants
+      // one. A saved source has no layout to promise that, and leaves it unset.
+      jobTitle:
+        showJobTitleMapping && layout.jobTitleColumn
+          ? getColumnOffset(responseStartCol, layout.jobTitleColumn, totalColumns)
+          : '',
+      jobDescription: getColumnOffset(responseStartCol, layout.jobDescriptionColumn, totalColumns),
     };
 
     setValues(importedValues);
@@ -356,7 +439,7 @@ export default function SheetsImportModal({
 
               <div className="grid gap-4">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">Saved Google Sheet</label>
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Google Sheet</label>
                   <select
                     value={selectedSourceId}
                     onChange={(e) => onSelectSource(e.target.value)}
@@ -364,7 +447,7 @@ export default function SheetsImportModal({
                     className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
                   >
                     <option value="">
-                      {sources.length ? 'Choose a saved Google Sheet...' : 'No saved Google Sheets available'}
+                      {sources.length ? 'Choose a Google Sheet...' : 'No Google Sheet available'}
                     </option>
                     {sources.map((source) => (
                       <option key={source.id} value={source.id}>
@@ -422,7 +505,7 @@ export default function SheetsImportModal({
                 >
                   <span>Advanced columns</span>
                   <span className="text-xs text-gray-500">
-                    Range {fromCol.trim().toUpperCase() || DEFAULT_FROM_COLUMN}:{toCol.trim().toUpperCase() || DEFAULT_TO_COLUMN}
+                    Range {fromCol.trim().toUpperCase() || layout.fromCol}:{toCol.trim().toUpperCase() || layout.toCol}
                   </span>
                 </button>
                 {isAdvancedOpen && (
@@ -456,7 +539,7 @@ export default function SheetsImportModal({
                         value={fromCol}
                         onChange={(e) => setFromCol(e.target.value)}
                         disabled={isLoading || isSubmitting}
-                        placeholder={DEFAULT_FROM_COLUMN}
+                        placeholder={layout.fromCol}
                         className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -467,7 +550,7 @@ export default function SheetsImportModal({
                         value={toCol}
                         onChange={(e) => setToCol(e.target.value)}
                         disabled={isLoading || isSubmitting}
-                        placeholder={DEFAULT_TO_COLUMN}
+                        placeholder={layout.toCol}
                         className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -490,7 +573,7 @@ export default function SheetsImportModal({
                 <>
                   <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
                     <div className="text-sm text-gray-700">
-                      Every imported row will be treated as one job record using company column {DEFAULT_COMPANY_COLUMN} and description column {DEFAULT_JOB_DESCRIPTION_COLUMN}.
+                      Every imported row will be treated as one job record using company column {layout.companyColumn} and description column {layout.jobDescriptionColumn}.
                     </div>
                     <div className="text-xs text-gray-500">Rows loaded: {values.length}</div>
                   </div>

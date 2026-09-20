@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   profilesApi,
   groupsApi,
@@ -15,17 +15,36 @@ import {
   JobAnalysis,
   TailoredContent,
 } from '@/lib/api';
+import {
+  forgetBatch,
+  generationApi,
+  rememberBatch,
+  rememberedBatch,
+  type BatchSnapshot,
+  type SubmitBatchRequest,
+} from '@/lib/generationQueue';
 import AppTopNav from '@/components/AppTopNav';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
 import ProfileSelector from '@/components/ProfileSelector';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
-import SheetsImportModal, { ImportedSheetJob } from '@/components/SheetsImportModal';
+import SheetsImportModal, { ImportedSheetJob, type ImportSheetSource } from '@/components/SheetsImportModal';
+import { useAuth } from '@/contexts/AuthContext';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 
 type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
 type SheetsTargetMode = 'single' | 'all' | 'group';
+
+/**
+ * The id standing for "this account's own job sheet".
+ *
+ * Not the spreadsheet id: that arrives asynchronously and changes the first
+ * time a sheet is allocated, and a selection keyed on it would be dropped the
+ * moment it did.
+ */
+const OWN_SHEET_SOURCE_ID = 'own';
 
 type UnconfirmedSkill = { original: string; value: string };
 
@@ -57,12 +76,14 @@ function getAnalysisJobTitle(analysis?: JobAnalysis): string {
 }
 
 export default function Home() {
+  const { account } = useAuth();
+  const isAdmin = account?.role === 'admin';
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   /**
-   * Model, effort and thinking for THIS run only.
+   * Model and effort for THIS run only.
    *
    * Empty means every field falls through to the selected profile's own
    * setting, and then to the app default - nothing here is persisted.
@@ -75,6 +96,7 @@ export default function Home() {
   const [selectedSheetsProfileId, setSelectedSheetsProfileId] = useState<string | null>(null);
   const [selectedSheetsGroupId, setSelectedSheetsGroupId] = useState<string>('');
   const [selectedSheetsSourceId, setSelectedSheetsSourceId] = useState<string>('');
+  const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState('');
   const [jobDescription, setJobDescription] = useState('');
@@ -98,6 +120,7 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState('');
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
+  /** The batch this page is watching, so a reload can pick it back up. */
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
@@ -150,20 +173,23 @@ export default function Home() {
   const inheritedChoice = {
     modelLabel: inheritedModel?.name || 'the first enabled model',
     effort: profilePreferences.effort ?? modelSettings.aiPreferenceDefaults.effort,
-    thinking: profilePreferences.thinking ?? modelSettings.aiPreferenceDefaults.thinking,
   };
 
   const loadInitialData = async () => {
     try {
-      const [profilesData, groupsData, modelData] = await Promise.all([
+      const [profilesData, groupsData, modelData, ownSheet] = await Promise.all([
         profilesApi.getAll({ includeDisabled: true }),
         groupsApi.getAll().catch(() => []),
         resumeApi.getModels().catch(() => DEFAULT_PUBLIC_APP_SETTINGS),
+        // Never fatal to this page: the import dialog is one feature of it, and
+        // a Google outage must not stop the builder from loading.
+        sheetApi.get().catch(() => null),
       ]);
       const enabledProfiles = profilesData.filter((p) => !p.disabled);
       setProfiles(enabledProfiles);
       setGroups(groupsData);
       setModelSettings(modelData);
+      setAccountSheet(ownSheet);
       setAutoGenerate(modelData.defaultMode === 'generate');
       setStoredDefaultTheme(modelData.defaultTheme);
 
@@ -177,13 +203,6 @@ export default function Home() {
         setSelectedProfileId(initialProfileId);
         setSelectedSheetsProfileId(initialProfileId);
       }
-
-      setSelectedSheetsSourceId((current) => {
-        if (current && modelData.googleSheetsSources.some((source) => source.id === current)) {
-          return current;
-        }
-        return modelData.googleSheetsSources[0]?.id ?? '';
-      });
 
       if (modelData.defaultResumeSelection === 'single') {
         setGenerateMode('single');
@@ -221,15 +240,110 @@ export default function Home() {
     includeCoverLetterDocx: modelSettings.defaultCoverLetterDocxEnabled,
   });
   const shouldShowRoleInput = modelSettings.outputPathUsesJobTitle;
-  const hasGoogleSheetSources = modelSettings.googleSheetsSources.length > 0;
+  /**
+   * Which spreadsheets this account may import from.
+   *
+   * Its own, first and by default - that is the one every account has, and the
+   * only one an ordinary account is allowed to address. The saved sources
+   * belong to the administrator who configured them, so offering them to
+   * everybody sent a user at a spreadsheet the backend would rightly refuse:
+   * "That spreadsheet was not found." They stay, for the administrator, behind
+   * the account's own sheet.
+   */
+  const sheetImportSources = useMemo<ImportSheetSource[]>(() => {
+    const own: ImportSheetSource[] =
+      accountSheet?.configured && accountSheet.spreadsheetId
+        ? [
+            {
+              id: OWN_SHEET_SOURCE_ID,
+              name: 'My job sheet',
+              sheetId: accountSheet.spreadsheetId,
+              isOwnSheet: true,
+              preferredTab: accountSheet.todayTab,
+            },
+          ]
+        : [];
+
+    return isAdmin ? [...own, ...modelSettings.googleSheetsSources] : own;
+  }, [accountSheet, isAdmin, modelSettings.googleSheetsSources]);
+  const hasImportableSheet = sheetImportSources.length > 0;
+  /** Why there is nothing to import from, in the words that fit the reason. */
+  const sheetImportNotice =
+    accountSheet && !accountSheet.configured
+      ? accountSheet.message ?? 'Google Sheets is not set up on this server yet.'
+      : 'Your job sheet is not ready yet. Open the Account page and try again.';
   const selectedSheetsProfileName = sheetsTargetMode === 'single'
     ? profiles.find((profile) => profile.id === selectedSheetsProfileId)?.name ?? ''
     : '';
 
+  // Keep a sheet selected: the account's own unless the administrator has
+  // deliberately chosen a saved source that is still in the list.
   useEffect(() => {
-    if (hasGoogleSheetSources || !isSheetsImportOpen) return;
+    setSelectedSheetsSourceId((current) =>
+      current && sheetImportSources.some((source) => source.id === current)
+        ? current
+        : sheetImportSources[0]?.id ?? ''
+    );
+  }, [sheetImportSources]);
+
+  useEffect(() => {
+    if (hasImportableSheet || !isSheetsImportOpen) return;
     setIsSheetsImportOpen(false);
-  }, [hasGoogleSheetSources, isSheetsImportOpen]);
+  }, [hasImportableSheet, isSheetsImportOpen]);
+
+  /**
+   * Picks a running batch back up after a reload.
+   *
+   * The work belongs to the server's queue, so closing this page never stopped
+   * it - but until this, reopening the page showed nothing and the resumes
+   * appeared on disk with no explanation. Tried in two ways because each covers
+   * what the other cannot: the remembered id survives a reload of THIS browser,
+   * and asking the server covers a different browser, cleared storage, or a
+   * second tab.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const reattach = async () => {
+      const remembered = rememberedBatch();
+      let batchId: string | null = null;
+
+      if (remembered) {
+        const snapshot = await generationApi.snapshot(remembered).catch(() => null);
+        // Gone means the server restarted or the batch aged out. Forget it
+        // rather than asking again for ever.
+        if (!snapshot) forgetBatch();
+        else if (snapshot.state === 'running') batchId = remembered;
+        else forgetBatch();
+      }
+
+      if (!batchId) {
+        const active = await generationApi.listActive().catch(() => ({ batches: [] }));
+        batchId = active.batches[0]?.batchId ?? null;
+      }
+
+      if (!batchId || cancelled) return;
+      setIsGenerating(true);
+      const snapshot = await followBatch(batchId, { phase: 'Building resumes' });
+      if (cancelled) return;
+      setIsGenerating(false);
+      setGenerationStep('');
+      clearGenerationProgress();
+      if (snapshot) {
+        setSuccessMessage(
+          `Finished ${snapshot.completed} of ${snapshot.total} resume(s) from a run started earlier.`
+        );
+      }
+    };
+
+    void reattach();
+    return () => {
+      cancelled = true;
+    };
+    // Deliberately once, on mount. Re-running this on every render would attach
+    // a second reader to the same stream.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const getSelectedProfilesForSheetsBuilder = () => {
     if (sheetsTargetMode === 'single') {
@@ -309,28 +423,6 @@ export default function Home() {
     });
   };
 
-  const collectUnconfirmedFromGenerateResult = (
-    targetHard: Map<string, string>,
-    targetSoft: Map<string, string>,
-    result: {
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }
-  ) => {
-    for (const skill of result.unconfirmedHardSkills ?? []) {
-      const key = skill.trim().toLowerCase();
-      if (key && !targetHard.has(key)) {
-        targetHard.set(key, skill.trim());
-      }
-    }
-    for (const skill of result.unconfirmedSoftSkills ?? []) {
-      const key = skill.trim().toLowerCase();
-      if (key && !targetSoft.has(key)) {
-        targetSoft.set(key, skill.trim());
-      }
-    }
-  };
-
   const getSelectedProfilesForManualBuilder = (): Profile[] => {
     if (multipleTarget === 'all') {
       return profiles;
@@ -349,6 +441,118 @@ export default function Home() {
     return selectedProfiles;
   };
 
+  /**
+   * Runs a batch on the server and follows it to the end.
+   *
+   * One request carrying every resume, rather than one request per resume. That
+   * is the whole difference: the backend puts the tasks in a queue and hands
+   * them to browsers as they come free, so three browsers build three resumes at
+   * once. The loop this replaced awaited each resume in turn, so however many
+   * browsers were registered, two of every three sat idle.
+   *
+   * Progress comes back down the stream. Every line is a COMPLETE snapshot, so
+   * this can replace its state each time instead of applying deltas in order -
+   * which is also what makes it safe to reattach to a batch already in flight.
+   */
+  const runBatch = async (
+    request: SubmitBatchRequest,
+    describe: { phase: string; jobCount?: number }
+  ): Promise<BatchSnapshot | null> => {
+    const submitted = await generationApi.submit(request);
+    rememberBatch(submitted.batchId);
+    return followBatch(submitted.batchId, describe);
+  };
+
+  /**
+   * Watches a batch until it ends, driving the progress bar from its snapshots.
+   *
+   * Separate from submitting, because this is also how the page picks a batch
+   * back up after a reload - the work did not stop, so neither should the view
+   * of it.
+   */
+  const followBatch = async (
+    batchId: string,
+    describe: { phase: string; jobCount?: number }
+  ): Promise<BatchSnapshot | null> => {
+    let last: BatchSnapshot | null = null;
+
+    const show = (snapshot: BatchSnapshot) => {
+      last = snapshot;
+      const finished = snapshot.completed + snapshot.failed + snapshot.cancelled;
+      // Named from the OLDEST running task rather than the newest, so the label
+      // is steady instead of flickering between however many run at once.
+      const current = snapshot.tasks.find((task) => task.state === 'running');
+      setGenerationStep(
+        snapshot.running > 0
+          ? `${describe.phase} - ${snapshot.running} running, ${finished}/${snapshot.total} done`
+          : `${describe.phase} - ${finished}/${snapshot.total} done`
+      );
+      setGenerationProgress({
+        total: snapshot.total,
+        completed: finished,
+        running: snapshot.running,
+        queued: snapshot.queued,
+        phase: snapshot.running > 0 ? 'Building resumes' : describe.phase,
+        currentProfileName: current?.profileName,
+        currentCompanyName: current?.companyName,
+        currentJobTitle: current?.role,
+        ...(describe.jobCount !== undefined ? { importedJobCount: describe.jobCount } : {}),
+      });
+    };
+
+    /**
+     * Reattaches until the BATCH says it is finished, not until the stream ends.
+     *
+     * A stream can end without the work being over: a proxy or a laptop lid
+     * closes an idle connection, and `follow` then resolves perfectly normally.
+     * Treating that as the end reported "Finished 4 of 30" while the server
+     * carried on building the other twenty-six - the page describing its own
+     * connection rather than the run.
+     *
+     * Every line is a complete snapshot, so rejoining costs nothing and needs no
+     * reconciliation. Bounded so a batch the server has genuinely forgotten
+     * cannot spin here for ever.
+     */
+    const MAX_REATTACHES = 20;
+    for (let attempt = 0; attempt <= MAX_REATTACHES; attempt += 1) {
+      try {
+        await generationApi.follow(batchId, show);
+      } catch {
+        // A dropped stream is not a failed batch - the work is the server's.
+        // Fall through to the snapshot below, which is the authority.
+      }
+
+      last = (await generationApi.snapshot(batchId).catch(() => last)) ?? last;
+      if (!last || last.state !== 'running') break;
+
+      if (attempt === MAX_REATTACHES) break;
+      // A short pause, so a server that is refusing the stream outright does
+      // not turn this into a tight loop.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    forgetBatch();
+    return last;
+  };
+
+  /** Turns a finished batch into the shape the page reports after a generation. */
+  const summarizeBatch = (snapshot: BatchSnapshot | null, fallbackCompany: string) => {
+    const failures: GenerationFailure[] = (snapshot?.failures ?? []).map((failure) => ({
+      profileId: failure.profileId,
+      profileName: failure.profileName,
+      companyName: failure.companyName || fallbackCompany,
+      error: failure.error,
+    }));
+    return {
+      generated: snapshot?.completed ?? 0,
+      failed: failures.length,
+      failures,
+      failedCompanies: snapshot?.failedCompanies ?? [],
+      unconfirmedHardSkills: snapshot?.unconfirmedHardSkills ?? [],
+      unconfirmedSoftSkills: snapshot?.unconfirmedSoftSkills ?? [],
+    };
+  };
+
   const generateSequentialResumes = async ({
     targetProfiles,
     analysis,
@@ -362,52 +566,42 @@ export default function Home() {
     resolvedRole: string;
     tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
   }) => {
-    const failures: GenerationFailure[] = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
-    const total = targetProfiles.length;
-    let completed = 0;
+    updateGenerationProgress(
+      targetProfiles.length,
+      0,
+      'Queueing resumes',
+      undefined,
+      targetCompanyName
+    );
 
-    updateGenerationProgress(total, 0, 'Preparing resume generation', undefined, targetCompanyName);
-
+    const tailoredByProfileId: Record<string, unknown> = {};
     for (const profile of targetProfiles) {
-      setGenerationStep(`Generating ${completed + 1}/${total}: ${profile.name} x ${targetCompanyName}`);
-      updateGenerationProgress(total, completed, 'Building resumes', profile.name, targetCompanyName);
-
-      try {
-        const result = await resumeApi.generate({
-          ...aiRequestOverrides,
-          profileId: profile.id,
-          templateId: profile.preferredTemplate || 'default',
-          jobDescription,
-          jobAnalysis: analysis,
-          tailoredContent: tailoredContentByProfileId?.get(profile.id),
-          companyName: targetCompanyName,
-          role: resolvedRole,
-          ...getDefaultGenerationOptions(),
-        });
-        collectUnconfirmedFromGenerateResult(unconfirmedHardMap, unconfirmedSoftMap, result);
-      } catch (err) {
-        failures.push({
-          profileId: profile.id,
-          profileName: profile.name,
-          companyName: targetCompanyName,
-          error: err instanceof Error ? err.message : 'Generation failed',
-        });
-      } finally {
-        completed += 1;
-        updateGenerationProgress(total, completed, 'Building resumes', profile.name, targetCompanyName);
-      }
+      const tailored = tailoredContentByProfileId?.get(profile.id);
+      if (tailored) tailoredByProfileId[profile.id] = tailored;
     }
 
-    return {
-      generated: total - failures.length,
-      failed: failures.length,
-      failures,
-      failedCompanies: failures.length > 0 ? [targetCompanyName] : [],
-      unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
-    };
+    const snapshot = await runBatch(
+      {
+        ...aiRequestOverrides,
+        label: `${targetCompanyName}`,
+        profileIds: targetProfiles.map((profile) => profile.id),
+        jobs: [
+          {
+            companyName: targetCompanyName,
+            role: resolvedRole,
+            jobDescription,
+            jobAnalysis: analysis,
+          },
+        ],
+        ...(Object.keys(tailoredByProfileId).length > 0
+          ? { tailoredContentByProfileId: tailoredByProfileId }
+          : {}),
+        ...getDefaultGenerationOptions(),
+      },
+      { phase: 'Building resumes' }
+    );
+
+    return summarizeBatch(snapshot, targetCompanyName);
   };
 
   const handleImportJobsFromSheets = async (
@@ -426,119 +620,60 @@ export default function Home() {
     setSuccessMessage('');
     resetGenerationOutputs();
 
-    const failures: string[] = [];
-    const failedCompanies = new Set<string>();
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const totalBuilds = selectedProfiles.length * normalizedJobs.length;
-    let completedBuilds = 0;
-    let failedBuilds = 0;
-    let hasSetJobAnalysis = false;
+    let snapshot: BatchSnapshot | null = null;
 
     try {
       updateGenerationProgress(
         totalBuilds,
         0,
-        'Preparing imported jobs',
+        'Queueing imported jobs',
         undefined,
         undefined,
         undefined,
         undefined,
         normalizedJobs.length
       );
-      for (const [jobIndex, job] of normalizedJobs.entries()) {
-        const trimmedJobDescription = job.jobDescription.trim();
-        const normalizedCompanyName = job.companyName.trim();
-        const importedJobTitle = job.jobTitle.trim();
 
-        setGenerationStep(`Analyzing job ${jobIndex + 1}/${normalizedJobs.length}: ${normalizedCompanyName}`);
-        updateGenerationProgress(
-          totalBuilds,
-          completedBuilds,
-          'Analyzing job description',
-          undefined,
-          normalizedCompanyName,
-          importedJobTitle,
-          jobIndex + 1,
-          normalizedJobs.length
-        );
+      /**
+       * ONE request carrying every resume, not one request per resume.
+       *
+       * This was a nested loop - for each job, analyse it, then for each profile
+       * await a generate - so thirty sheet rows were thirty analyses and thirty
+       * builds, strictly one at a time. However many browsers were registered,
+       * all but one sat idle for the whole run.
+       *
+       * Now the server queues the lot and hands them out as browsers come free,
+       * and the analysis happens inside the task, shared between the profiles
+       * that need the same job.
+       */
+      snapshot = await runBatch(
+        {
+          ...aiRequestOverrides,
+          label: `Sheets import (${normalizedJobs.length} job${normalizedJobs.length === 1 ? '' : 's'})`,
+          profileIds: selectedProfiles.map((profile) => profile.id),
+          jobs: normalizedJobs.map((job) => ({
+            companyName: job.companyName.trim(),
+            role: job.jobTitle.trim(),
+            jobDescription: job.jobDescription.trim(),
+            sourceRowNumber: job.sourceRowNumber,
+          })),
+          ...getDefaultGenerationOptions(),
+        },
+        { phase: 'Building resumes', jobCount: normalizedJobs.length }
+      );
 
-        try {
-          const analysis = await resumeApi.analyze(trimmedJobDescription, aiRequestOverrides);
-          if (!hasSetJobAnalysis) {
-            setJobAnalysis(analysis);
-            hasSetJobAnalysis = true;
-          }
-
-          const resolvedRole = shouldShowRoleInput
-            ? (job.jobTitle.trim() || fallbackRole || getAnalysisJobTitle(analysis) || '')
-            : (job.jobTitle.trim() || getAnalysisJobTitle(analysis) || '');
-
-          for (const profile of selectedProfiles) {
-            setGenerationStep(`Generating ${completedBuilds + 1}/${totalBuilds}: ${profile.name} x ${normalizedCompanyName}`);
-            updateGenerationProgress(
-              totalBuilds,
-              completedBuilds,
-              'Building resumes',
-              profile.name,
-              normalizedCompanyName,
-              resolvedRole,
-              jobIndex + 1,
-              normalizedJobs.length
-            );
-
-            try {
-              const result = await resumeApi.generate({
-                ...aiRequestOverrides,
-                profileId: profile.id,
-                templateId: profile.preferredTemplate || 'default',
-                jobDescription: trimmedJobDescription,
-                jobAnalysis: analysis,
-                companyName: normalizedCompanyName,
-                role: resolvedRole,
-                sourceRowNumber: job.sourceRowNumber,
-                ...getDefaultGenerationOptions(),
-              });
-              collectUnconfirmedFromGenerateResult(unconfirmedHardMap, unconfirmedSoftMap, result);
-            } catch (err) {
-              failedCompanies.add(normalizedCompanyName);
-              failedBuilds += 1;
-              failures.push(
-                `${normalizedCompanyName} / ${profile.name}: ${err instanceof Error ? err.message : 'Generation failed'}`
-              );
-            } finally {
-              completedBuilds += 1;
-              updateGenerationProgress(
-                totalBuilds,
-                completedBuilds,
-                'Building resumes',
-                profile.name,
-                normalizedCompanyName,
-                resolvedRole,
-                jobIndex + 1,
-                normalizedJobs.length
-              );
-            }
-          }
-        } catch (err) {
-          failedCompanies.add(normalizedCompanyName);
-          failedBuilds += selectedProfiles.length;
-          failures.push(
-            `Row ${job.sourceRowNumber} / ${normalizedCompanyName}: ${err instanceof Error ? err.message : 'Analysis failed'}`
-          );
-          completedBuilds += selectedProfiles.length;
-          updateGenerationProgress(
-            totalBuilds,
-            completedBuilds,
-            'Analyzing job description',
-            undefined,
-            normalizedCompanyName,
-            importedJobTitle,
-            jobIndex + 1,
-            normalizedJobs.length
-          );
-        }
-      }
+      const unconfirmedHardMap = new Map(
+        (snapshot?.unconfirmedHardSkills ?? []).map((skill) => [skill.toLowerCase(), skill])
+      );
+      const unconfirmedSoftMap = new Map(
+        (snapshot?.unconfirmedSoftSkills ?? []).map((skill) => [skill.toLowerCase(), skill])
+      );
+      const failures = (snapshot?.failures ?? []).map(
+        (failure) => `${failure.companyName} / ${failure.profileName}: ${failure.error}`
+      );
+      const failedCompanies = new Set(snapshot?.failedCompanies ?? []);
+      const failedBuilds = failures.length;
 
       setUnconfirmedHardSkills(toUnconfirmedItems(Array.from(unconfirmedHardMap.values())));
       setUnconfirmedSoftSkills(toUnconfirmedItems(Array.from(unconfirmedSoftMap.values())));
@@ -1519,7 +1654,7 @@ export default function Home() {
 
             <details className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
               <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
-                Model, effort and thinking
+                Model and effort
                 {hasAiOverrides && (
                   <span className="ml-2 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                     overridden for this run
@@ -1535,7 +1670,6 @@ export default function Home() {
                   providerLocks={modelSettings.providerLocks}
                   providerTuning={modelSettings.providerTuning}
                   effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
-                  thinkingModes={modelSettings.aiPreferenceDefaults.thinkingModes}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                   inherited={inheritedChoice}
                   disabled={isGenerating}
@@ -1805,17 +1939,17 @@ export default function Home() {
               </div>
             )}
 
-            {!hasGoogleSheetSources && (
+            {!hasImportableSheet && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Save at least one Google Sheet in the Admin Google Sheets panel before importing jobs here.
+                {sheetImportNotice}
               </div>
             )}
 
             <button
               type="button"
               onClick={() => {
-                if (!hasGoogleSheetSources) {
-                  setError('Save at least one Google Sheet in the Admin Google Sheets panel before importing.');
+                if (!hasImportableSheet) {
+                  setError(sheetImportNotice);
                   return;
                 }
                 setError('');
@@ -1994,7 +2128,7 @@ export default function Home() {
         isOpen={isSheetsImportOpen}
         isSubmitting={isGenerating}
         showJobTitleMapping={shouldShowRoleInput}
-        sources={modelSettings.googleSheetsSources}
+        sources={sheetImportSources}
         selectedSourceId={selectedSheetsSourceId}
         selectedProfileName={selectedSheetsProfileName}
         generationProgress={generationProgress}

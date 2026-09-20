@@ -2,6 +2,7 @@
   "name": "free_tailor",
   "private": true,
   "scripts": {
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend",
     "dev": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
     "dev:poll": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev:poll --prefix backend\" \"npm run dev --prefix frontend\"",
     "dev:live": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",

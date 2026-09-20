@@ -8,6 +8,12 @@ const Papa = require('papaparse');
 const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
 const profileRepository = require('../database/profileRepository');
+const { requireUser } = require('../middleware/auth');
+const {
+  assertSheetNotOwnedByAnotherAccount,
+  SheetAccessError,
+} = require('../services/sheets/accountSheet');
+const { getAccessToken, SHEETS_SCOPE } = require('../integrations/googleSheets');
 const profileService = require('../services/profileService');
 
 const backendDirectory = path.join(__dirname, '..', '..');
@@ -38,7 +44,6 @@ const {
 import { generateAnswers } from '../bidAssistant/aiHelper';
 
 const router = express.Router();
-const googleSheetsScopes = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const promptTemplateSettingKey = 'ask_ai_prompt_template';
 const defaultPromptTemplate = `Candidate:
 - Name: {{candidateName}}
@@ -59,6 +64,14 @@ Keep it under {{charLimit}} characters.
 Avoid corporate buzzwords and make it sound like a real person.`;
 
 router.use(express.json({ limit: '2mb' }));
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
 
 // Ensures a profile id is safe to use as a record key.
 function validateProfileId(profileId) {
@@ -122,19 +135,19 @@ class ProfileNotFoundError extends Error {
   }
 }
 
-// Reads one profile record from the shared database.
-function readProfile(profileId) {
-  const profile = profileRepository.getProfile(profileId);
+// Reads one profile record, scoped to whoever is asking.
+function readProfile(profileId, viewer) {
+  const profile = profileRepository.getProfileFor(viewer ?? null, profileId);
   if (!profile) {
     throw new ProfileNotFoundError();
   }
   return profile;
 }
 
-// Reads every profile record from the shared database.
-function readAllProfiles() {
+// Reads the requester's profile records.
+function readAllProfiles(viewer) {
   return profileRepository
-    .listProfiles({ includeDisabled: true })
+    .listProfilesFor(viewer ?? null, { includeDisabled: true })
     .sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)));
 }
 
@@ -145,14 +158,18 @@ function assertProfilePayload(payload) {
 }
 
 // Applies a full profile JSON payload on top of an existing record.
-function updateProfile(profileId, nextProfile) {
+function updateProfile(profileId, nextProfile, viewer) {
   assertProfilePayload(nextProfile);
-  const currentProfile = readProfile(profileId);
-  return profileRepository.saveProfile(profileService.buildUpdatedProfile(currentProfile, nextProfile));
+  const currentProfile = readProfile(profileId, viewer);
+  return profileRepository.saveProfile({
+    ...profileService.buildUpdatedProfile(currentProfile, nextProfile),
+    // Kept, so an edit through this page does not orphan the profile.
+    ownerId: currentProfile.ownerId,
+  });
 }
 
 // Creates a new profile record from the provided payload.
-function createProfile(profile) {
+function createProfile(profile, viewer) {
   assertProfilePayload(profile);
   const requestedId = typeof profile.id === 'string' ? profile.id.trim() : '';
   const nextId = requestedId || randomUUID();
@@ -162,12 +179,24 @@ function createProfile(profile) {
     throw new Error('A profile with this id already exists.');
   }
 
-  return profileRepository.saveProfile(profileService.buildNewProfile(profile, nextId));
+  // The plan's cap applies here as much as on the profiles page: this is a
+  // second door into the same table, and a limit only one door honours is not
+  // a limit.
+  profileRepository.assertCanAddProfile(viewer);
+
+  return profileRepository.saveProfile({
+    ...profileService.buildNewProfile(profile, nextId),
+    ownerId: viewer.id,
+  });
 }
 
 // Deletes one profile record.
-function deleteProfile(profileId) {
+function deleteProfile(profileId, viewer) {
   validateProfileId(profileId);
+  // Resolved through the viewer first, so this cannot delete somebody else's.
+  if (!profileRepository.getProfileFor(viewer ?? null, profileId)) {
+    throw new ProfileNotFoundError();
+  }
   if (!profileRepository.deleteProfile(profileId)) {
     throw new ProfileNotFoundError();
   }
@@ -201,55 +230,23 @@ function getProfileErrorDetails(error) {
   };
 }
 
-async function googleServiceAccountKeyFileExists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// Loads Google service account credentials from env or the shared app key file.
-async function loadGoogleServiceAccountCredentials() {
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    return JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-  }
-
-  const keyFilePath =
-    process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE
-    || process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH
-    || process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const candidates = [
-    keyFilePath,
-    path.join(repoDirectory, 'service-account-key.json'),
-    path.join(backendDirectory, 'service-account-key.json')
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    const resolvedPath = path.isAbsolute(candidate)
-      ? candidate
-      : path.join(repoDirectory, candidate);
-
-    if (await googleServiceAccountKeyFileExists(resolvedPath)) {
-      const fileContents = await fs.readFile(resolvedPath, 'utf8');
-      return JSON.parse(fileContents);
-    }
-  }
-
-  throw new Error('Google Sheets credentials are not configured.');
-}
-
-// Creates an authenticated Google Sheets client using the configured service account.
+/**
+ * The same credentials the rest of the app uses, not a second set.
+ *
+ * This had its own loader, its own env variables and its own search paths, and
+ * it only understood a service account key - it read `client_email` and
+ * `private_key` straight out of the file. So the moment the app started signing
+ * in as a person instead, this router alone said "Google Sheets credentials are
+ * not configured" while everything else worked.
+ *
+ * Taking an access token from the shared layer fixes that and removes the
+ * second set of variables: whatever `GOOGLE_CREDENTIALS_PATH` resolves to is
+ * what this uses too, whichever of the two shapes it turns out to be.
+ */
 async function createGoogleSheetsClient() {
-  const credentials = await loadGoogleServiceAccountCredentials();
-  const auth = new google.auth.GoogleAuth({
-    credentials: {
-      client_email: credentials.client_email,
-      private_key: credentials.private_key
-    },
-    scopes: googleSheetsScopes
-  });
+  const accessToken = await getAccessToken(SHEETS_SCOPE);
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken });
 
   return google.sheets({
     version: 'v4',
@@ -344,6 +341,12 @@ function validateGoogleSheetPayload(payload) {
 
 // Maps known Google Sheet source errors to cleaner API responses.
 function getGoogleSheetErrorDetails(error) {
+  // The addressability guard carries its own status. Without this it would
+  // surface as a 500, which reads as "the server broke" rather than "no".
+  if (error instanceof SheetAccessError) {
+    return { status: error.status, message: error.message };
+  }
+
   if (error.message === 'Label is required.' || error.message === 'Sheet ID is required.') {
     return {
       status: 400,
@@ -366,6 +369,10 @@ function getGoogleSheetErrorDetails(error) {
 
 // Maps Google Sheet import errors to cleaner API responses.
 function getGoogleSheetImportErrorDetails(error) {
+  if (error instanceof SheetAccessError) {
+    return { status: error.status, message: error.message };
+  }
+
   const importValidationMessages = [
     'Select a tab before importing.',
     'From row must be a whole number greater than or equal to 1.',
@@ -596,6 +603,10 @@ router.get('/google-sheets/:id/tabs', async (req, res) => {
       return res.status(404).json({ error: 'Google Sheet source not found.' });
     }
 
+    // Checked on the way out as well as on the way in: a row saved before this
+    // guard existed, or before its spreadsheet was allocated to somebody, would
+    // otherwise still be readable.
+    assertSheetNotOwnedByAnotherAccount(req.user, sheet.sheet_id);
     const tabs = await listGoogleSheetTabs(sheet.sheet_id);
     res.json(tabs);
   } catch (error) {
@@ -607,7 +618,14 @@ router.get('/google-sheets/:id/tabs', async (req, res) => {
 // Creates one saved Google Sheet source.
 router.post('/google-sheets', async (req, res) => {
   try {
-    const sheet = createGoogleSheet(validateGoogleSheetPayload(req.body || {}));
+    const payload = validateGoogleSheetPayload(req.body || {});
+    // These sources may point at any spreadsheet shared with this installation,
+    // which is the whole point of them - but NOT at another account's personal
+    // job sheet. The service account owns those, so without this check saving a
+    // source would be a way to read somebody else's sheet through a feature
+    // that never had an owner concept.
+    assertSheetNotOwnedByAnotherAccount(req.user, payload.sheet_id);
+    const sheet = createGoogleSheet(payload);
     res.json(sheet);
   } catch (error) {
     const errorDetails = getGoogleSheetErrorDetails(error);
@@ -625,7 +643,9 @@ router.put('/google-sheets/:id', async (req, res) => {
       return res.status(404).json({ error: 'Google Sheet source not found.' });
     }
 
-    const sheet = updateGoogleSheet(id, validateGoogleSheetPayload(req.body || {}));
+    const payload = validateGoogleSheetPayload(req.body || {});
+    assertSheetNotOwnedByAnotherAccount(req.user, payload.sheet_id);
+    const sheet = updateGoogleSheet(id, payload);
     res.json(sheet);
   } catch (error) {
     const errorDetails = getGoogleSheetErrorDetails(error);
@@ -660,6 +680,7 @@ router.post('/google-sheets/:id/import', async (req, res) => {
       return res.status(404).json({ error: 'Google Sheet source not found.' });
     }
 
+    assertSheetNotOwnedByAnotherAccount(req.user, sheet.sheet_id);
     const tabName = validateImportTabName(req.body || {});
     const { fromRow, toRow } = validateImportRange(req.body || {});
     const jobs = await loadJobsFromGoogleSheet(sheet, tabName, fromRow, toRow);
@@ -778,7 +799,7 @@ router.put('/settings/prompt-template', async (req, res) => {
 // Returns all profile records.
 router.get('/profiles', (req, res) => {
   try {
-    res.json(readAllProfiles());
+    res.json(readAllProfiles(req.user));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -787,7 +808,7 @@ router.get('/profiles', (req, res) => {
 // Creates one new profile record.
 router.post('/profiles', (req, res) => {
   try {
-    const profile = createProfile(req.body || {});
+    const profile = createProfile(req.body || {}, req.user);
     res.json(profile);
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -798,7 +819,7 @@ router.post('/profiles', (req, res) => {
 // Returns one profile record.
 router.get('/profiles/:profileId', (req, res) => {
   try {
-    res.json(readProfile(req.params.profileId));
+    res.json(readProfile(req.params.profileId, req.user));
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
     res.status(errorDetails.status).json({ error: errorDetails.message });
@@ -808,7 +829,7 @@ router.get('/profiles/:profileId', (req, res) => {
 // Replaces one profile record with the submitted JSON.
 router.put('/profiles/:profileId', (req, res) => {
   try {
-    const profile = updateProfile(req.params.profileId, req.body || {});
+    const profile = updateProfile(req.params.profileId, req.body || {}, req.user);
     res.json({ message: 'Profile saved successfully.', profile });
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -819,7 +840,7 @@ router.put('/profiles/:profileId', (req, res) => {
 // Deletes one profile record.
 router.delete('/profiles/:profileId', (req, res) => {
   try {
-    deleteProfile(req.params.profileId);
+    deleteProfile(req.params.profileId, req.user);
     res.json({ message: 'Profile deleted successfully.' });
   } catch (error) {
     const errorDetails = getProfileErrorDetails(error);
@@ -899,7 +920,7 @@ router.post('/ask', async (req, res) => {
     });
 
     for (const profileId of targetProfileIds || []) {
-      targetProfiles.push(readProfile(profileId));
+      targetProfiles.push(readProfile(profileId, req.user));
     }
 
     if (normalizedQuestions.some((item) => item.isManualAnswer && !item.manualAnswer)) {

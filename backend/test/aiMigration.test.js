@@ -97,11 +97,17 @@ test('a settings row written before the provider change migrates and then loads'
   assert.ok(loaded.aiModels.some((model) => model.id === 'openai-gpt-5-1'), 'other providers are untouched');
 
   // A default pointing at a model that no longer exists is repointed - by 001
-  // onto the subscription seat, and then by 002 off it again, because that
-  // seat is locked in this build. It lands on a free browser-chat model rather
-  // than on the first runnable one, which here would have been a metered
-  // OpenAI model this install never chose to default to.
-  assert.equal(loaded.defaultModelId, 'claude-web-chat');
+  // onto the subscription seat, and then by 002 onto a free browser-chat model
+  // rather than the first runnable one, which here would have been a metered
+  // OpenAI model this install never chose to default to. Read back it surfaces
+  // as the single browser entry, which is what the picker now offers in place
+  // of a model per chat site.
+  assert.equal(loaded.defaultModelId, 'free-hybrid');
+  assert.equal(
+    JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY)).defaultModelId,
+    'claude-web-chat',
+    'the stored row still names a real model row, not the synthesized entry'
+  );
 
   // Keys are no longer kept in the database at all, so the whole store goes -
   // including the OpenRouter key the legacy row carried.

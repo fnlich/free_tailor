@@ -1,4 +1,3 @@
-import type { ThinkingMode } from '../../types';
 
 /**
  * The environment a `claude` child process gets.
@@ -20,12 +19,15 @@ import type { ThinkingMode } from '../../types';
  * kept deliberately - it is where the operator's sign-in lives, and dropping it
  * signs the child out.
  *
- * `MAX_THINKING_TOKENS` - the CLI's thinking budget, and the only way to set
- * one: there is no `--thinking` flag. It is dropped from the parent and set
- * from the request instead, so that whatever the operator happens to have
- * exported cannot silently override a per-profile or per-request choice.
- * Measured: with the variable unset the same prompt produced a thinking block
- * on two runs out of three, and with it set to 0 on none out of three.
+ * `MAX_THINKING_TOKENS` - the CLI's thinking budget. Dropped so that thinking
+ * behaviour is the same on every machine that runs this app: the models think
+ * adaptively, deciding per turn, and an operator who happens to have exported
+ * this cannot quietly make one server answer differently from another.
+ *
+ * It used to be SET from the request, when thinking was a per-profile choice.
+ * That choice is gone - it was a single-provider on/off that the browser route
+ * could not honour at all - so nothing sets it now and the strip is all that
+ * remains.
  *
  * Everything else is kept on purpose. `PATH`, `HOME`, `ANTHROPIC_BASE_URL` and
  * proxy variables are the operator's configuration and this module has no
@@ -33,7 +35,7 @@ import type { ThinkingMode } from '../../types';
  */
 export function buildChildEnv(
   parent: NodeJS.ProcessEnv = process.env,
-  options: { allowApiKey?: boolean; thinking?: ThinkingMode } = {}
+  options: { allowApiKey?: boolean } = {}
 ): NodeJS.ProcessEnv {
   const allowApiKey = options.allowApiKey === true;
   const child: NodeJS.ProcessEnv = {};
@@ -55,12 +57,6 @@ export function buildChildEnv(
       continue;
     }
     child[name] = value;
-  }
-
-  // `default` deliberately sets nothing: the models already think adaptively,
-  // and the useful control is whether to let them, not a number to guess at.
-  if (options.thinking === 'off') {
-    child.MAX_THINKING_TOKENS = '0';
   }
 
   return child;

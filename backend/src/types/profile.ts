@@ -87,7 +87,7 @@ export interface ProfileSettings {
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**
-   * This profile's default model, effort and thinking mode.
+   * This profile's default model and effort.
    *
    * Every field is optional and an absent one inherits the app default, so a
    * profile that has never been touched behaves exactly as it did before this
@@ -98,6 +98,17 @@ export interface ProfileSettings {
 
 export interface Profile {
   id: string;
+  /**
+   * The account this profile belongs to.
+   *
+   * Optional in the type, and that is not laxness: every profile written before
+   * v2 has none, and migration 003 fills them in on the first admin sign-in.
+   * Until it has run - on a fresh install, that is until anybody signs in at
+   * all - rows genuinely lack one, and a required field would mean the app
+   * could not read its own database. The repository treats an absent owner as
+   * admin-only, so an unmigrated row is never shown to the wrong person.
+   */
+  ownerId?: string;
   name: string;
   title: string;
   totalYearsExperience?: number;

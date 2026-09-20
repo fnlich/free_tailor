@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AdminOnly } from '@/components/auth/AuthGate';
 import {
+  type PromptCategoryId,
   adminApi,
   AIModelOption,
   AIProvider,
@@ -39,6 +41,7 @@ type FeatureGroup = {
   label: string;
   prompts: PromptSummary[];
   activePrompt: PromptSummary | null;
+  category: PromptCategoryId;
 };
 
 const FEATURE_ORDER: PromptFeatureKey[] = [
@@ -122,12 +125,27 @@ function formatDate(value?: string): string {
   return new Date(value).toLocaleString();
 }
 
+/**
+ * The two kinds of prompt, in the order the app runs them.
+ *
+ * Extracting turns source material into structured data; building turns that
+ * data into what the user receives. The server sends each prompt's category and
+ * its label, so this list decides the ORDER of the headings and nothing else -
+ * a category the server adds appears without a change here.
+ */
+const CATEGORY_ORDER: PromptCategoryId[] = ['extracting', 'building', 'other'];
+
+function categoryRank(category: PromptCategoryId): number {
+  const index = CATEGORY_ORDER.indexOf(category);
+  return index === -1 ? CATEGORY_ORDER.length : index;
+}
+
 function getFeatureRank(featureKey: PromptFeatureKey): number {
   const index = FEATURE_ORDER.indexOf(featureKey);
   return index === -1 ? FEATURE_ORDER.length : index;
 }
 
-export default function PromptsPage() {
+function PromptsPageBody() {
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
   const [modelOptions, setModelOptions] = useState<AIModelOption[]>([]);
   // Seeded empty rather than optimistically all-true: an all-true seed made
@@ -169,6 +187,7 @@ export default function PromptsPage() {
       groups.set(prompt.featureKey, {
         key: prompt.featureKey,
         label: prompt.featureLabel || prompt.featureKey,
+        category: prompt.category,
         prompts: [prompt],
         activePrompt:
           prompt.isActiveForFeature && !isProfileScopedFeature(prompt.featureKey)
@@ -193,8 +212,34 @@ export default function PromptsPage() {
           return left.name.localeCompare(right.name);
         }),
       }))
-      .sort((left, right) => getFeatureRank(left.key) - getFeatureRank(right.key));
+      .sort((left, right) => {
+        // Category first, so the headings below are contiguous; the existing
+        // feature order still decides within each one.
+        const byCategory = categoryRank(left.category) - categoryRank(right.category);
+        return byCategory !== 0 ? byCategory : getFeatureRank(left.key) - getFeatureRank(right.key);
+      });
   }, [prompts]);
+
+  /**
+   * The sidebar's sections, each a category with the features under it.
+   *
+   * Derived from the sorted list rather than grouped again from `prompts`, so
+   * the order inside a section is exactly the order above and cannot drift.
+   */
+  const featureSections = useMemo(() => {
+    const sections: Array<{ category: PromptCategoryId; label: string; groups: FeatureGroup[] }> = [];
+    for (const group of featureGroups) {
+      const last = sections[sections.length - 1];
+      if (last?.category === group.category) {
+        last.groups.push(group);
+        continue;
+      }
+      const label =
+        prompts.find((prompt) => prompt.category === group.category)?.categoryLabel ?? group.category;
+      sections.push({ category: group.category, label, groups: [group] });
+    }
+    return sections;
+  }, [featureGroups, prompts]);
 
   const selectedFeatureGroup = useMemo(
     () => featureGroups.find((group) => group.key === selectedFeatureKey) ?? null,
@@ -266,6 +311,7 @@ export default function PromptsPage() {
         resetEditor({
           key: nextFeatureKey,
           label: promptsForFeature[0]?.featureLabel || nextFeatureKey,
+          category: promptsForFeature[0]?.category ?? 'other',
           prompts: promptsForFeature,
           activePrompt,
         });
@@ -550,28 +596,35 @@ export default function PromptsPage() {
       <div className="grid gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
         <aside className="overflow-hidden rounded-xl border border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-            <h2 className="font-semibold text-gray-900">Features</h2>
+            <h2 className="font-semibold text-gray-900">Prompts</h2>
             {isLoadingList && <span className="text-xs text-gray-500">Refreshing...</span>}
           </div>
           <div className="max-h-[70vh] overflow-y-auto">
-            {featureGroups.map((group) => (
-              <button
-                key={group.key}
-                onClick={() => void handleSelectFeature(group.key)}
-                className={`w-full border-b border-gray-100 px-4 py-3 text-left hover:bg-gray-50 ${
-                  selectedFeatureKey === group.key ? 'bg-blue-50' : ''
-                }`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="truncate font-medium text-gray-900">{group.label}</div>
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
-                      {group.prompts.length}
-                    </span>
-                    {group.activePrompt && <span className="h-2 w-2 rounded-full bg-emerald-500"></span>}
-                  </div>
-                </div>
-              </button>
+            {featureSections.map((section) => (
+              <div key={section.category}>
+                <h3 className="sticky top-0 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  {section.label}
+                </h3>
+                {section.groups.map((group) => (
+                  <button
+                    key={group.key}
+                    onClick={() => void handleSelectFeature(group.key)}
+                    className={`w-full border-b border-gray-100 px-4 py-3 text-left hover:bg-gray-50 ${
+                      selectedFeatureKey === group.key ? 'bg-blue-50' : ''
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="truncate font-medium text-gray-900">{group.label}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+                          {group.prompts.length}
+                        </span>
+                        {group.activePrompt && <span className="h-2 w-2 rounded-full bg-emerald-500"></span>}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         </aside>
@@ -956,5 +1009,22 @@ export default function PromptsPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+/**
+ * Administrator-only.
+ *
+ * This page changes things shared by everybody on the installation - the AI
+ * providers, the prompts every account's resumes are built from, the shared
+ * skill library - so it is not a per-user setting despite living behind a
+ * "Settings" menu. `AdminOnly` explains that rather than rendering nothing: a
+ * blank page reads as broken.
+ */
+export default function PromptsPage() {
+  return (
+    <AdminOnly>
+      <PromptsPageBody />
+    </AdminOnly>
   );
 }

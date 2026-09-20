@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import AppTopNav from '@/components/AppTopNav';
+import { useAuth } from '@/contexts/AuthContext';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import {
   GoogleSheetSource,
   GoogleSheetTab,
@@ -23,12 +25,6 @@ const SCRAPER_OPTIONS: Array<{
   badge: string;
   description: string;
 }> = [
-  {
-    value: 'linkedin',
-    label: 'LinkedIn',
-    badge: 'LinkedIn',
-    description: 'Uses only bebity/linkedin-jobs-scraper with fixed United States, remote, and past-24-hours filters.',
-  },
   {
     value: 'indeed',
     label: 'Indeed',
@@ -191,31 +187,10 @@ function getNativeJobLink(job: ScraperJob): string | null {
   return null;
 }
 
-function buildLinkedInActorInputPreview(title: string, rows: string): string {
-  return JSON.stringify(
-    {
-      location: 'United States',
-      proxy: {
-        useApifyProxy: true,
-        apifyProxyGroups: ['RESIDENTIAL'],
-        apifyProxyCountry: 'US',
-      },
-      publishedAt: 'r86400',
-      rows: Number(rows) > 0 ? Number(rows) : 1000,
-      title: title.trim() || 'software engineer',
-      workType: '2',
-    },
-    null,
-    2
-  );
-}
-
 export default function JobsPage() {
-  const [source, setSource] = useState<ScraperSource>('linkedin');
+  const [source, setSource] = useState<ScraperSource>('indeed');
   const [providerCatalog, setProviderCatalog] = useState<ScraperSourceProviderCatalog[]>([]);
   const [selectedProviders, setSelectedProviders] = useState<Partial<Record<ScraperSource, string>>>({});
-  const [linkedinTitle, setLinkedinTitle] = useState('');
-  const [linkedinRows, setLinkedinRows] = useState('1000');
   const [keywords, setKeywords] = useState('');
   const [startUrl, setStartUrl] = useState('');
   const [location, setLocation] = useState('United States');
@@ -223,6 +198,18 @@ export default function JobsPage() {
   const [jobType, setJobType] = useState<ScraperJobType | ''>('');
   const [remoteOnly, setRemoteOnly] = useState(true);
   const [limit, setLimit] = useState(250);
+  const { account } = useAuth();
+  const isAdmin = account?.role === 'admin';
+  const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
+  /**
+   * Where the scraped rows go.
+   *
+   * `mine` sends no spreadsheet id, no tab and no columns at all - the backend
+   * fills in the account's own sheet, today's tab and the fixed layout. It is
+   * the only option an ordinary user has, because the shared sources belong to
+   * the administrator who configured them and are not theirs to write into.
+   */
+  const [exportTarget, setExportTarget] = useState<'mine' | 'shared'>('mine');
   const [sheetExportForm, setSheetExportForm] = useState<SheetExportFormState>(DEFAULT_SHEET_EXPORT_FORM);
   const [sheetSources, setSheetSources] = useState<GoogleSheetSource[]>([]);
   const [sheetTabs, setSheetTabs] = useState<GoogleSheetTab[]>([]);
@@ -244,7 +231,6 @@ export default function JobsPage() {
   const isMemo23StartUrlOnlyProvider = source === 'hiringcafe' && selectedProviderId === 'apify-memo23';
   const isIndeedStartUrlOnlySource = source === 'indeed';
   const isStartUrlOnlyScraper = isIndeedStartUrlOnlySource || isMemo23StartUrlOnlyProvider;
-  const isLinkedInSource = source === 'linkedin';
   const availableLimitOptions = source === 'jobboard'
     ? LIMIT_OPTIONS.filter((value) => value <= JOB_BOARD_MAX_RESULTS)
     : LIMIT_OPTIONS;
@@ -312,6 +298,18 @@ export default function JobsPage() {
     }
   }, [source, limit]);
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAccountSheet(await sheetApi.get());
+      } catch {
+        // Not fatal: the panel falls back to naming no tab, and the server
+        // still resolves the destination on its own.
+        setAccountSheet(null);
+      }
+    })();
+  }, []);
+
   const handleLoadSheetTabs = async () => {
     const sheetId = sheetExportForm.sheetId.trim();
     if (!sheetId) {
@@ -350,21 +348,7 @@ export default function JobsPage() {
     try {
       let commonPayload: Record<string, string | number | boolean | undefined>;
 
-      if (isLinkedInSource) {
-        const trimmedTitle = linkedinTitle.trim();
-        if (!trimmedTitle) {
-          setError('Enter a job title before running the LinkedIn scraper.');
-          setIsLoading(false);
-          return;
-        }
-
-        commonPayload = {
-          source,
-          provider: selectedProviderId || undefined,
-          title: trimmedTitle,
-          rows: parsePositiveWholeNumber('Rows', linkedinRows),
-        };
-      } else if (isStartUrlOnlyScraper) {
+      if (isStartUrlOnlyScraper) {
         const trimmedStartUrl = startUrl.trim();
         if (!trimmedStartUrl) {
           setError(
@@ -404,17 +388,38 @@ export default function JobsPage() {
       let response: ScraperRunResponse;
 
       if (writeToGoogleSheet) {
+        // Sending nothing is what selects the account's own sheet: the server
+        // knows the spreadsheet, the day's tab and the column layout, and a
+        // number typed here could only disagree with them.
         const exportResponse = await jobsApi.exportScraperToGoogleSheet({
           ...commonPayload,
           source,
           provider: selectedProviderId || undefined,
-          sheetId: sheetExportForm.sheetId.trim(),
-          tabName: sheetExportForm.tabName.trim(),
-          startRow: parsePositiveWholeNumber('Start row', sheetExportForm.startRow),
-          companyNameCol: parseSpreadsheetColumnInput('Company column', sheetExportForm.companyNameCol),
-          jobTitleCol: parseSpreadsheetColumnInput('Job title column', sheetExportForm.jobTitleCol),
-          jobLinkCol: parseSpreadsheetColumnInput('Job link column', sheetExportForm.jobLinkCol),
-          jobDescriptionCol: parseSpreadsheetColumnInput('Job description column', sheetExportForm.jobDescriptionCol),
+          ...(exportTarget === 'shared'
+            ? (() => {
+                // An empty picker must not fall through to the account's own
+                // sheet: "a shared sheet" and "my sheet" are different
+                // destinations, and sending '' silently means the second.
+                if (!sheetExportForm.sheetId.trim()) {
+                  throw new Error('Choose a shared Google Sheet, or switch back to your own job sheet.');
+                }
+                if (!sheetExportForm.tabName.trim()) {
+                  throw new Error('Choose a tab in the shared Google Sheet.');
+                }
+                return {
+                sheetId: sheetExportForm.sheetId.trim(),
+                tabName: sheetExportForm.tabName.trim(),
+                startRow: parsePositiveWholeNumber('Start row', sheetExportForm.startRow),
+                companyNameCol: parseSpreadsheetColumnInput('Company column', sheetExportForm.companyNameCol),
+                jobTitleCol: parseSpreadsheetColumnInput('Job title column', sheetExportForm.jobTitleCol),
+                jobLinkCol: parseSpreadsheetColumnInput('Job link column', sheetExportForm.jobLinkCol),
+                jobDescriptionCol: parseSpreadsheetColumnInput(
+                  'Job description column',
+                  sheetExportForm.jobDescriptionCol
+                ),
+                };
+              })()
+            : {}),
         });
         response = exportResponse;
         setExportMeta(exportResponse.export);
@@ -441,9 +446,8 @@ export default function JobsPage() {
     }
   };
 
-  const searchSummaryValue = isLinkedInSource
-    ? (searchMeta?.filters.title ?? '')
-    : (searchMeta?.filters.keywords || searchMeta?.filters.startUrl || 'custom search');
+  const searchSummaryValue =
+    searchMeta?.filters.keywords || searchMeta?.filters.startUrl || 'custom search';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -532,36 +536,7 @@ export default function JobsPage() {
                 )}
               </label>
 
-              {isLinkedInSource ? (
-                <>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Title</span>
-                    <input
-                      type="text"
-                      value={linkedinTitle}
-                      onChange={(event) => setLinkedinTitle(event.target.value)}
-                      placeholder="software engineer"
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
-                      disabled={isLoading}
-                    />
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Rows</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={1000}
-                      step={1}
-                      value={linkedinRows}
-                      onChange={(event) => setLinkedinRows(event.target.value)}
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                      disabled={isLoading}
-                    />
-                    <div className="text-xs text-gray-500">Maximum 1000 rows.</div>
-                  </label>
-                </>
-              ) : isStartUrlOnlyScraper ? (
+              {isStartUrlOnlyScraper ? (
                 <label className="space-y-2">
                   <span className="text-sm font-medium text-gray-700">Start URL</span>
                   <input
@@ -662,15 +637,8 @@ export default function JobsPage() {
               )}
             </div>
 
-            {isLinkedInSource && (
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
-                <div className="font-semibold text-gray-900">Fixed LinkedIn actor payload</div>
-                <pre className="mt-3 overflow-x-auto rounded-xl bg-slate-900 p-4 text-xs leading-6 text-slate-100">{buildLinkedInActorInputPreview(linkedinTitle, linkedinRows)}</pre>
-              </div>
-            )}
-
             <div className="flex flex-wrap items-center gap-3">
-              {!isStartUrlOnlyScraper && !isLinkedInSource && (
+              {!isStartUrlOnlyScraper && (
                 <label className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700">
                   <input
                     type="checkbox"
@@ -708,6 +676,52 @@ export default function JobsPage() {
                 </div>
               </div>
 
+              {/* Ordinary accounts have exactly one destination, so there is
+                  nothing to choose. An administrator can still write into a
+                  shared source they configured. */}
+              {isAdmin && (
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {(['mine', 'shared'] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => setExportTarget(option)}
+                      disabled={isLoading}
+                      className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                        exportTarget === option
+                          ? 'border-blue-500 bg-blue-600 text-white'
+                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {exportTarget === 'mine' ? (
+                <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
+                    <>
+                      Rows go to{' '}
+                      <a
+                        className="font-semibold underline"
+                        href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        your job sheet
+                      </a>
+                      , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
+                      Company, Job Title, Job Link and Job Description. New rows are added after the ones
+                      already there, and jobs already in the tab are skipped.
+                    </>
+                  ) : (
+                    'Rows go to your own job sheet, on today\'s tab. Open the account page if you want to see it.'
+                  )}
+                </div>
+              ) : (
+              <>
               <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
                 <label className="space-y-2">
                   <span className="text-sm font-medium text-gray-700">Google Sheet</span>
@@ -830,6 +844,8 @@ export default function JobsPage() {
                   />
                 </label>
               </div>
+              </>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-3">
@@ -917,9 +933,7 @@ export default function JobsPage() {
             <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
               <div className="text-lg font-semibold text-gray-900">No jobs matched this run</div>
               <div className="mt-2 text-sm text-gray-600">
-                {isLinkedInSource
-                  ? 'Try a broader title or a larger row limit.'
-                  : 'Try a broader keyword, a wider time window, or a different scraper.'}
+                Try a broader keyword, a wider time window, or a different scraper.
               </div>
             </div>
           )}

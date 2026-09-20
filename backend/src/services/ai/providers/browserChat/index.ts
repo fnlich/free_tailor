@@ -2,7 +2,6 @@ import { getBrowserChatEndpoints } from '../../../../config/aiModelConfig';
 import {
   getProviderDescriptor,
   providerSupportsEffort,
-  providerSupportsThinking,
 } from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
 import {
@@ -370,7 +369,6 @@ export function createBrowserChatAdapter(
     temperature: false,
     maxOutputTokens: false,
     effort: providerSupportsEffort(id),
-    thinking: providerSupportsThinking(id),
     nativeJsonMode: 'none',
     // No system channel. The facade folds the system text into the head of the
     // user turn, which is the only place a chat UI has to put it.

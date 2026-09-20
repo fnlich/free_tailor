@@ -2,7 +2,6 @@ import { getProviderApiKey } from '../../../config/aiModelConfig';
 import {
   getProviderDescriptor,
   providerSupportsEffort,
-  providerSupportsThinking,
 } from '../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../errors';
 import { collectUnsupportedReasoningParams } from '../reasoningParams';
@@ -80,7 +79,6 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
     // Neither is wired for this transport yet, so a caller asking for one is
     // told it was dropped rather than left to assume it applied.
     effort: providerSupportsEffort(PROVIDER_ID),
-    thinking: providerSupportsThinking(PROVIDER_ID),
     nativeJsonMode: 'none',
     systemBlocks: true,
     requiresApiKey: true,

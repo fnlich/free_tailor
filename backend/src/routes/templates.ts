@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
-import { authMiddleware } from '../middleware/auth';
+import { requireAdmin, requireUser } from '../middleware/auth';
 import {
   extractAndSaveTemplate,
   getAllTemplates,
@@ -17,6 +17,28 @@ import { TemplateImportError } from '../services/templateImport';
 import { generateTemplatePreviewHTML } from '../generators/pdfGenerator';
 
 const router = Router();
+/**
+ * Everything below needs a signed-in account.
+ *
+ * At the router rather than per route, so a route added later is protected by
+ * default. Before v2 these were open, which was defensible with one user on one
+ * machine and is not once profiles belong to people.
+ */
+router.use(requireUser);
+
+/**
+ * Reading a template is for everybody; changing one is not.
+ *
+ * Templates are shared by the whole installation - one person editing the
+ * layout changes what every other account's resumes come out looking like - so
+ * the writes below each carry `requireAdmin`. They were all `requireUser`, which
+ * meant any signed-in account could rewrite or delete them.
+ *
+ * Per route rather than a second `router.use`, because the three GETs in
+ * between have to stay open: the builder needs them to offer a choice of
+ * template, and a user who cannot list them cannot build anything.
+ */
+
 
 // Configure multer for PDF uploads
 const uploadPdf = multer({
@@ -88,7 +110,7 @@ router.get('/:id', async (req: Request<{ id: string }>, res: Response) => {
 });
 
 // Create manual template (protected)
-router.post('/create-manual', authMiddleware, async (req: Request, res: Response) => {
+router.post('/create-manual', requireAdmin, async (req: Request, res: Response) => {
   try {
     const config = req.body as ManualTemplateConfig & { name: string };
     if (!config?.name?.trim()) {
@@ -135,7 +157,7 @@ router.post('/create-manual', authMiddleware, async (req: Request, res: Response
  * old single-template response keeps working across a deploy, which for a
  * browser tab that has not been reloaded is not a hypothetical.
  */
-router.post('/upload-json', authMiddleware, uploadJson.single('template'), async (req: Request, res: Response) => {
+router.post('/upload-json', requireAdmin, uploadJson.single('template'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No JSON file uploaded' });
@@ -162,7 +184,7 @@ router.post('/upload-json', authMiddleware, uploadJson.single('template'), async
 });
 
 // Upload PDF and extract template (protected)
-router.post('/upload', authMiddleware, uploadPdf.single('pdf'), async (req: Request, res: Response) => {
+router.post('/upload', requireAdmin, uploadPdf.single('pdf'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No PDF file uploaded' });
@@ -187,7 +209,7 @@ router.post('/upload', authMiddleware, uploadPdf.single('pdf'), async (req: Requ
 });
 
 // Update manual template (protected)
-router.put('/:id/update-manual', authMiddleware, async (req: Request<{ id: string }>, res: Response) => {
+router.put('/:id/update-manual', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     const config = req.body as ManualTemplateConfig & { name: string };
     if (!config?.name?.trim()) {
@@ -227,7 +249,7 @@ router.put('/:id/update-manual', authMiddleware, async (req: Request<{ id: strin
 });
 
 // Update template (protected) - e.g. toggle disabled, name, description
-router.patch('/:id', authMiddleware, async (req: Request<{ id: string }>, res: Response) => {
+router.patch('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     const { disabled, name, description } = req.body as { disabled?: boolean; name?: string; description?: string };
     const updates: { disabled?: boolean; name?: string; description?: string } = {};
@@ -247,7 +269,7 @@ router.patch('/:id', authMiddleware, async (req: Request<{ id: string }>, res: R
 });
 
 // Delete template (protected)
-router.delete('/:id', authMiddleware, async (req: Request<{ id: string }>, res: Response) => {
+router.delete('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
     if (await isBuiltInTemplate(req.params.id)) {
       res.status(400).json({ error: 'Cannot delete built-in templates' });

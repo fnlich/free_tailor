@@ -44,11 +44,24 @@ export function getApiOrigin(): string {
   return getCurrentApiBase().replace(/\/api$/, '');
 }
 
-// Auth helpers
+/**
+ * The session token.
+ *
+ * Kept ALONGSIDE the httpOnly cookie the server sets, not instead of it. The
+ * cookie is what makes a reload stay signed in without JavaScript; the copy
+ * here is what goes in the Authorization header, which is the only way the
+ * streaming endpoints and any cross-origin call reach the same session without
+ * every call site getting `credentials` right.
+ *
+ * The key still reads `adminToken` so a session opened by the previous build is
+ * not silently dropped on upgrade; it stopped meaning "an admin" in v2.
+ */
+const SESSION_TOKEN_KEY = 'adminToken';
+
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return localStorage.getItem('adminToken');
+    return localStorage.getItem(SESSION_TOKEN_KEY);
   } catch {
     return null;
   }
@@ -56,18 +69,33 @@ export function getToken(): string | null {
 
 export function setToken(token: string): void {
   try {
-    localStorage.setItem('adminToken', token);
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
   } catch {
-    // Ignore storage errors (private mode / blocked storage)
+    // Ignore storage errors (private mode / blocked storage). The cookie still
+    // carries the session; only the header copy is lost.
   }
 }
 
 export function removeToken(): void {
   try {
-    localStorage.removeItem('adminToken');
+    localStorage.removeItem(SESSION_TOKEN_KEY);
   } catch {
     // Ignore storage errors
   }
+}
+
+/**
+ * Called when the server says a request was not signed in.
+ *
+ * A hook rather than a redirect from here: this module knows nothing about
+ * routing, and a hard `location.assign` would throw away an unsaved form on
+ * what is often a recoverable blip. The auth provider installs the real
+ * handler, which clears its state and shows the login page.
+ */
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
 }
 
 function getAuthHeaders(): HeadersInit {
@@ -93,11 +121,58 @@ export class ApiResponseError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly url: string
+    readonly url: string,
+    /**
+     * The whole error body, not just its message.
+     *
+     * A refusal carries fields that say what KIND of refusal it is - `code`,
+     * and numbers like `needed`, `balance` or `limit`. Throwing them away left a
+     * component with nothing but English to classify by, and a component that
+     * matched on the wording would break the moment somebody improved it.
+     *
+     * Last and defaulted, so the three-argument form still compiles.
+     */
+    readonly body: Record<string, unknown> = {}
   ) {
     super(message);
     this.name = 'ApiResponseError';
   }
+
+  /** The machine-readable reason, when the server gave one. */
+  get code(): string | undefined {
+    return typeof this.body.code === 'string' ? this.body.code : undefined;
+  }
+
+  /** A number from the body, when it really is one. */
+  number(field: string): number | undefined {
+    const value = this.body[field];
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  }
+}
+
+/**
+ * The parsed error body, always a plain object.
+ *
+ * `response.json()` can legitimately produce `null` or an array, and reading
+ * `.error` off either throws a TypeError from inside the error path - which
+ * would turn "the server said no" into a thrown exception the retry loop
+ * misreads as a lost connection.
+ */
+async function readErrorBody(response: Response): Promise<Record<string, unknown>> {
+  const parsed = await response.json().catch(() => null);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+
+/** The account cannot afford the run it just asked for. */
+export function isInsufficientCredits(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.code === 'insufficient-credits';
+}
+
+/** The account is at its plan's profile limit. */
+export function isProfileLimit(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.code === 'profile-limit';
 }
 
 /**
@@ -129,8 +204,90 @@ export class ApiUnreachableError extends Error {
   }
 }
 
+/**
+ * Reads a line-delimited JSON stream, calling back per line.
+ *
+ * Its own function rather than `apiFetch`, because `apiFetch` parses one JSON
+ * body and returns - which is the opposite of what this is for. It shares the
+ * candidate-base loop, so a stream reaches the same backend the rest of the app
+ * found, and the same "cannot reach the backend" sentence explains it when
+ * nothing answers.
+ *
+ * Resolves when the server closes the stream. Aborting the signal stops
+ * READING; it does not stop the work, which belongs to the server's queue.
+ */
+export async function apiStream(
+  endpoint: string,
+  onLine: (value: Record<string, unknown>) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  let lastConnectionError: Error | null = null;
+  const tried: string[] = [];
+
+  for (const apiBase of buildApiBaseCandidates()) {
+    tried.push(apiBase);
+    let response: Response;
+    try {
+      response = await fetch(`${apiBase}${endpoint}`, {
+        headers: getAuthHeaders(),
+        credentials: 'include',
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) return;
+      lastConnectionError = error instanceof Error ? error : new Error(String(error));
+      continue;
+    }
+
+    resolvedApiBase = apiBase;
+    if (!response.ok || !response.body) {
+      const body = await readErrorBody(response);
+      if (response.status === 401) {
+        removeToken();
+        onUnauthorized?.();
+      }
+      throw new ApiResponseError(
+        typeof body.error === 'string' ? body.error : `Request failed with HTTP ${response.status}`,
+        response.status,
+        `${apiBase}${endpoint}`,
+        body
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        // Split on newlines and keep the remainder: a chunk boundary falls in
+        // the middle of a line often enough that not doing this is a bug that
+        // only shows up under load.
+        const lines = buffered.split('\n');
+        buffered = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            onLine(JSON.parse(line) as Record<string, unknown>);
+          } catch {
+            // A half-written line is not worth failing a whole batch's progress
+            // over; the next complete snapshot carries the same information.
+          }
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+    return;
+  }
+
+  throw new ApiUnreachableError(tried, lastConnectionError ?? new Error('No API base configured'));
+}
+
 // Generic fetch wrapper
-async function apiFetch<T>(
+export async function apiFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
@@ -153,7 +310,10 @@ async function apiFetch<T>(
 
     let response: Response;
     try {
-      response = await fetch(url, { ...options, headers });
+      // `credentials: 'include'` so the session cookie travels even when the
+      // API is on another origin, which it is whenever the page is opened by
+      // IP or hostname rather than localhost.
+      response = await fetch(url, { ...options, headers, credentials: 'include' });
     } catch (error) {
       // `fetch` rejects only when the request never completed: no server, DNS
       // failure, a refused CORS preflight, or a dropped connection. That, and
@@ -167,11 +327,18 @@ async function apiFetch<T>(
     resolvedApiBase = apiBase;
 
     if (!response.ok) {
-      const body = await response.json().catch(() => ({}) as { error?: string });
+      const body = await readErrorBody(response);
+      if (response.status === 401) {
+        // The session is gone - expired, revoked, or the account disabled.
+        // Clearing the stale copy here means the next call does not send it.
+        removeToken();
+        onUnauthorized?.();
+      }
       throw new ApiResponseError(
-        body.error || `Request failed with HTTP ${response.status}`,
+        typeof body.error === 'string' ? body.error : `Request failed with HTTP ${response.status}`,
         response.status,
-        url
+        url,
+        body
       );
     }
 
@@ -191,6 +358,19 @@ async function apiFetch<T>(
  *
  * The former `openrouter` id was replaced by `claude-cli`.
  */
+/**
+ * Which kind of prompt this is. Sent by the server with every prompt, derived
+ * from the feature it is attached to rather than stored on it.
+ */
+export type PromptCategoryId = 'extracting' | 'building' | 'other';
+
+export type PromptCategory = {
+  id: PromptCategoryId;
+  label: string;
+  description: string;
+  order: number;
+};
+
 export type AIProvider =
   | 'claude-cli'
   | 'claude'
@@ -287,8 +467,7 @@ export interface AIModelRecord {
   updatedAt: string;
 }
 
-export type LinkedInPostedSince = 'past-24-hours' | 'past-week' | 'past-month';
-export type ScraperSource = 'linkedin' | 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
+export type ScraperSource = 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
 export type ScraperTimePosted = '24h' | '3d' | '7d' | '30d';
 export type ScraperJobType = 'full-time' | 'part-time' | 'contract' | 'internship' | 'temporary';
 
@@ -304,58 +483,7 @@ export interface ScraperSourceProviderCatalog {
   providers: ScraperProviderSummary[];
 }
 
-export interface LinkedInJobCriteria {
-  label: string;
-  value: string;
-}
-
-export interface LinkedInJob {
-  id: string;
-  title: string;
-  company: string;
-  jobId: string | null;
-  jobTitle: string | null;
-  companyName: string | null;
-  companyLogo: string | null;
-  companyWebsite: string | null;
-  location: string | null;
-  postedAtText: string;
-  postedAtIso: string | null;
-  link: string | null;
-  jobUrl: string;
-  applyUrl: string | null;
-  easyApply: boolean | null;
-  descriptionText: string | null;
-  postedAt: string | null;
-  externalApplyUrl: string | null;
-  applyText: string;
-  workplaceType: string;
-  employmentType: string | null;
-  experienceLevel: string | null;
-  seniorityLevel: string;
-  workplaceTypes: string[] | null;
-  jobFunction: string;
-  industries: string;
-  sector: string | null;
-  description: string;
-  insights: string[];
-  criteria: LinkedInJobCriteria[];
-}
-
-export interface LinkedInJobSearchResponse {
-  fetchedAt: string;
-  filters: {
-    keywords: string;
-    postedSince: LinkedInPostedSince;
-    location: string;
-    workplaceType: 'remote';
-    excludeEasyApply: true;
-    limit: number;
-  };
-  results: LinkedInJob[];
-}
-
-export interface LinkedInJobSheetExportSummary {
+export interface JobSheetExportSummary {
   spreadsheetId: string;
   spreadsheetTitle: string;
   selectedTab: string;
@@ -366,10 +494,6 @@ export interface LinkedInJobSheetExportSummary {
   unresolvedJobLinks: number;
   skippedCompanyDuplicates: number;
   beforeExportResultCount?: number;
-}
-
-export interface LinkedInJobSearchAndExportResponse extends LinkedInJobSearchResponse {
-  export: LinkedInJobSheetExportSummary;
 }
 
 export interface ScraperJob {
@@ -413,7 +537,7 @@ export interface ScraperRunResponse {
 }
 
 export interface ScraperExportResponse extends ScraperRunResponse {
-  export: LinkedInJobSheetExportSummary;
+  export: JobSheetExportSummary;
 }
 
 export interface GoogleSheetJobFilterResponse {
@@ -444,14 +568,7 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 /**
- * `default` leaves the models' own adaptive thinking alone - which is ON -
- * and `off` suppresses it. How deeply it thinks when it does is `effort`.
- */
-export const THINKING_MODES = ['default', 'off'] as const;
-export type ThinkingMode = (typeof THINKING_MODES)[number];
-
-/**
- * A model, effort and thinking choice.
+ * A model and effort choice.
  *
  * Every field is optional and absent means INHERIT: a profile inherits the app
  * default, and one generation inherits the profile. That is why the same type
@@ -460,14 +577,11 @@ export type ThinkingMode = (typeof THINKING_MODES)[number];
 export interface AiPreferences {
   modelId?: string;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
 }
 
 export interface AiPreferenceDefaults {
   effort: EffortLevel;
-  thinking: ThinkingMode;
   effortLevels: EffortLevel[];
-  thinkingModes: ThinkingMode[];
 }
 
 export const EFFORT_LABELS: Record<EffortLevel, string> = {
@@ -478,29 +592,19 @@ export const EFFORT_LABELS: Record<EffortLevel, string> = {
   max: 'Max - slowest, most thorough',
 };
 
-export const THINKING_LABELS: Record<ThinkingMode, string> = {
-  default: 'Let the model decide',
-  off: 'Off - answer without thinking first',
-};
-
 export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
-}
-
-export function isThinkingMode(value: unknown): value is ThinkingMode {
-  return typeof value === 'string' && (THINKING_MODES as readonly string[]).includes(value);
 }
 
 /**
  * The per-run override fields every generate endpoint accepts.
  *
  * Named `model` rather than `modelId` because that is the field the API has
- * always taken; the other two are new and keep their own names.
+ * always taken; `effort` keeps its own name.
  */
 export interface AiRequestOverrides {
   model?: string;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
 }
 
 /** Only fields that were actually chosen are sent, so the rest inherit. */
@@ -508,7 +612,6 @@ export function toAiRequestOverrides(preferences: AiPreferences): AiRequestOverr
   return {
     ...(preferences.modelId ? { model: preferences.modelId } : {}),
     ...(preferences.effort ? { effort: preferences.effort } : {}),
-    ...(preferences.thinking ? { thinking: preferences.thinking } : {}),
   };
 }
 
@@ -518,7 +621,6 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
   const modelId = typeof source.modelId === 'string' ? source.modelId.trim() : '';
   if (modelId) preferences.modelId = modelId;
   if (isEffortLevel(source.effort)) preferences.effort = source.effort;
-  if (isThinkingMode(source.thinking)) preferences.thinking = source.thinking;
   return preferences;
 }
 
@@ -534,9 +636,9 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
 /**
  * Which tuning knobs actually reach a given provider's model.
  *
- * A chat window has no effort flag and no thinking budget - there is nowhere to
- * put either - so the two selects have to go inactive rather than accept a
- * setting that changes nothing and says nothing.
+ * A chat window has no effort flag - there is nowhere to put one - so the
+ * select has to go inactive rather than accept a setting that changes nothing
+ * and says nothing.
  */
 /**
  * The reserved model id that means "use both free chat accounts".
@@ -551,7 +653,6 @@ export const HYBRID_MODEL_ID = 'free-hybrid';
 export interface ProviderTuningSupport {
   provider: AIProvider;
   effort: boolean;
-  thinking: boolean;
 }
 
 export interface ProviderLock {
@@ -582,7 +683,7 @@ export interface PublicAppSettings {
   browserChatEndpoints: BrowserChatEndpoint[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
-  /** Which providers honour effort and thinking at all. */
+  /** Which providers honour effort at all. */
   providerTuning: ProviderTuningSupport[];
 }
 
@@ -671,9 +772,7 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   outputPathUsesJobTitle: true,
   aiPreferenceDefaults: {
     effort: 'low',
-    thinking: 'default',
     effortLevels: [...EFFORT_LEVELS],
-    thinkingModes: [...THINKING_MODES],
   },
   aiModels: [],
   googleSheetsSources: [],
@@ -694,14 +793,9 @@ function normalizeAiPreferenceDefaults(value: unknown): AiPreferenceDefaults {
   const effortLevels = Array.isArray(source.effortLevels)
     ? source.effortLevels.filter(isEffortLevel)
     : [];
-  const thinkingModes = Array.isArray(source.thinkingModes)
-    ? source.thinkingModes.filter(isThinkingMode)
-    : [];
   return {
     effort: isEffortLevel(source.effort) ? source.effort : DEFAULT_PUBLIC_APP_SETTINGS.aiPreferenceDefaults.effort,
-    thinking: isThinkingMode(source.thinking) ? source.thinking : 'default',
     effortLevels: effortLevels.length ? effortLevels : [...EFFORT_LEVELS],
-    thinkingModes: thinkingModes.length ? thinkingModes : [...THINKING_MODES],
   };
 }
 
@@ -743,7 +837,6 @@ function normalizeProviderTuning(value: unknown): ProviderTuningSupport[] {
         // the empty list above is what makes that case permissive. A row that
         // IS sent is believed exactly as sent.
         effort: entry.effort === true,
-        thinking: entry.thinking === true,
       } satisfies ProviderTuningSupport;
     })
     .filter((entry): entry is ProviderTuningSupport => entry !== null);
@@ -760,7 +853,7 @@ function normalizeProviderTuning(value: unknown): ProviderTuningSupport[] {
 export function providerHonours(
   tuning: ProviderTuningSupport[],
   provider: AIProvider | undefined,
-  knob: 'effort' | 'thinking'
+  knob: 'effort'
 ): boolean {
   if (!provider) return true;
   const row = tuning.find((entry) => entry.provider === provider);
@@ -1170,38 +1263,26 @@ export const importApi = {
     }),
 };
 
+/**
+ * Every sheet field is optional now.
+ *
+ * Leaving them out is what asks for the account's own job sheet, today's tab
+ * and the fixed column layout - which is what the ordinary flow sends. They
+ * remain for an administrator writing into a shared source they configured,
+ * where none of those defaults apply.
+ */
+export type JobSheetDestination = {
+  sheetId?: string;
+  tabName?: string;
+  startRow?: number;
+  companyNameCol?: number;
+  jobTitleCol?: number;
+  jobLinkCol?: number;
+  jobDescriptionCol?: number;
+};
+
 export const jobsApi = {
   getScraperProviders: () => apiFetch<ScraperSourceProviderCatalog[]>('/jobs/scrapers/providers'),
-
-  searchLinkedIn: (data: { keywords: string; postedSince: LinkedInPostedSince; limit?: number }) => {
-    const params = new URLSearchParams({
-      keywords: data.keywords,
-      postedSince: data.postedSince,
-    });
-
-    if (typeof data.limit === 'number') {
-      params.set('limit', String(data.limit));
-    }
-
-    return apiFetch<LinkedInJobSearchResponse>(`/jobs/linkedin?${params.toString()}`);
-  },
-
-  searchLinkedInAndExport: (data: {
-    keywords: string;
-    postedSince: LinkedInPostedSince;
-    limit?: number;
-    sheetId: string;
-    tabName: string;
-    startRow: number;
-    companyNameCol: number;
-    jobTitleCol: number;
-    jobLinkCol: number;
-    jobDescriptionCol: number;
-  }) =>
-    apiFetch<LinkedInJobSearchAndExportResponse>('/jobs/linkedin/search-and-export', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
 
   runScraper: (data: ScraperRunFilters & { source: ScraperSource; provider?: string }) =>
     apiFetch<ScraperRunResponse>('/jobs/scrapers/run', {
@@ -1209,16 +1290,9 @@ export const jobsApi = {
       body: JSON.stringify(data),
     }),
 
-  exportScraperToGoogleSheet: (data: ScraperRunFilters & {
+  exportScraperToGoogleSheet: (data: ScraperRunFilters & JobSheetDestination & {
     source: ScraperSource;
     provider?: string;
-    sheetId: string;
-    tabName: string;
-    startRow: number;
-    companyNameCol: number;
-    jobTitleCol: number;
-    jobLinkCol: number;
-    jobDescriptionCol: number;
   }) =>
     apiFetch<ScraperExportResponse>('/jobs/scrapers/export', {
       method: 'POST',
@@ -1226,13 +1300,14 @@ export const jobsApi = {
     }),
 
   filterGoogleSheetJobs: (data: {
-    sheetId: string;
-    tabName: string;
-    startRow: number;
-    endRow: number;
-    jobLinkCol: number;
-    resultCol: number;
-    reasonCol: number;
+    sheetId?: string;
+    tabName?: string;
+    startRow?: number;
+    /** Left out, the filter runs to the last row that has a job link. */
+    endRow?: number;
+    jobLinkCol?: number;
+    resultCol?: number;
+    reasonCol?: number;
   }) =>
     apiFetch<GoogleSheetJobFilterResponse>('/jobs/filter-google-sheet', {
       method: 'POST',
@@ -1349,7 +1424,7 @@ export interface ProfileSettings {
   hardSkillOrdering?: HardSkillOrdering;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
-  /** This profile's default model, effort and thinking mode. */
+  /** This profile's default model and effort. */
   ai?: AiPreferences;
 }
 
@@ -1485,6 +1560,9 @@ export interface PromptSummary {
   description: string;
   featureKey?: PromptFeatureKey;
   featureLabel?: string;
+  /** Building, Extracting, or unattached. Derived by the server, never stored. */
+  category: PromptCategoryId;
+  categoryLabel: string;
   responseFormat: PromptResponseFormat;
   modelProvider?: AIProvider;
   modelName?: string;
@@ -1872,36 +1950,6 @@ export const resumeApi = {
       body: JSON.stringify({ jobDescription, ...overrides, promptId }),
     }),
 
-  analyzeMultiJob: (data: {
-    jobs: Array<{
-      companyName: string;
-      jobDescription: string;
-      sourceRowNumber?: number;
-    }>;
-    model?: string;
-    effort?: EffortLevel;
-    thinking?: ThinkingMode;
-  }) =>
-    apiFetch<{
-      provider: AIProvider;
-      analyzed: number;
-      analyses: Array<{
-        companyName: string;
-        sourceRowNumber?: number;
-        jobDescription: string;
-        analysis: JobAnalysis;
-      }>;
-      failed: number;
-      failures: Array<{
-        companyName: string;
-        sourceRowNumber?: number;
-        error: string;
-      }>;
-    }>('/resume/analyze-multi-job', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
   generate: (data: {
     profileId: string;
     templateId: string;
@@ -1913,7 +1961,6 @@ export const resumeApi = {
     sourceRowNumber?: number;
     model?: string;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
   }) =>
@@ -1944,89 +1991,6 @@ export const resumeApi = {
         body: JSON.stringify(data),
       }
     ),
-
-  generateAll: (data: {
-    templateId?: string;
-    jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
-    companyName: string;
-    role: string;
-    model?: string;
-    effort?: EffortLevel;
-    thinking?: ThinkingMode;
-    profileIds?: string[];
-    format?: 'pdf' | 'docx' | 'both';
-    includeCoverLetterDocx?: boolean;
-  }) =>
-    apiFetch<{
-      generated: number;
-      failed: number;
-      results: Array<{
-        profileId: string;
-        profileName: string;
-        pdf?: string;
-        docx?: string;
-        coverLetterPdf?: string;
-        coverLetterDocx?: string;
-      }>;
-      failures: Array<{
-        profileId: string;
-        profileName: string;
-        companyName: string;
-        error: string;
-      }>;
-      failedCompanies: string[];
-      tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }>('/resume/generate-all', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  generateMultiJob: (data: {
-    templateId?: string;
-    jobs: Array<{
-      companyName: string;
-      role: string;
-      jobDescription?: string;
-      jobAnalysis?: JobAnalysis;
-      sourceRowNumber?: number;
-    }>;
-    model?: string;
-    effort?: EffortLevel;
-    thinking?: ThinkingMode;
-    profileIds?: string[];
-    format?: 'pdf' | 'docx' | 'both';
-    includeCoverLetterDocx?: boolean;
-  }) =>
-    apiFetch<{
-      generated: number;
-      failed: number;
-      results: Array<{
-        profileId: string;
-        profileName: string;
-        companyName: string;
-        role: string;
-        pdf?: string;
-        docx?: string;
-        coverLetterPdf?: string;
-        coverLetterDocx?: string;
-      }>;
-      failures: Array<{
-        profileId: string;
-        profileName: string;
-        companyName: string;
-        error: string;
-      }>;
-      failedCompanies: string[];
-      tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }>('/resume/generate-multi-job', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
 
   confirmSkill: (data: { type: 'hard' | 'soft'; skill: string }) =>
     apiFetch<{ added: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills/confirm', {
@@ -2068,7 +2032,6 @@ export const resumeApi = {
     tailoredContent?: TailoredContent;
     model?: string;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
   }) =>
     apiFetch<{ html: string; tailored: boolean; tailoredContent?: TailoredContent }>('/resume/preview', {
       method: 'POST',
@@ -2081,7 +2044,6 @@ export const resumeApi = {
     jobAnalysis?: JobAnalysis;
     model?: string;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
     profileIds?: string[];
   }) =>
     apiFetch<{

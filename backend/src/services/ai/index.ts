@@ -58,12 +58,11 @@ export type { FreeChatRoute, FreeChatSiteStatus } from './freeChatRouting';
 export { getUsageSnapshot, warnOnce } from './telemetry';
 export type { UsageSnapshot } from './telemetry';
 
-export { EFFORT_LEVELS, isEffortLevel, THINKING_MODES, isThinkingMode } from './types';
+export { EFFORT_LEVELS, isEffortLevel } from './types';
 export type {
   CompletionResponseFormat,
   CompletionResult,
   EffortLevel,
   ProviderCapabilities,
   ProviderHealth,
-  ThinkingMode,
 } from './types';

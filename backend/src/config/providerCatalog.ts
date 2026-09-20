@@ -40,7 +40,7 @@ export type ProviderDescriptor = {
     | 'deepseekEnabled'
     | null;
   /**
-   * Whether the effort and thinking knobs reach the model at all.
+   * Whether the effort knob reaches the model at all.
    *
    * Here, with the provider's other facts, rather than only on the adapter,
    * because the UI needs it and the adapter is not reachable from the settings
@@ -48,12 +48,11 @@ export type ProviderDescriptor = {
    * picker greys a select with is the same one the transport acts on.
    *
    * The chat providers are the reason this exists. A chat window has no effort
-   * flag and no thinking budget: there is nowhere to put either. Offering the
+   * flag: there is nowhere to put one. Offering the
    * two selects anyway meant a profile could be saved asking for `effort=max`
    * on ChatGPT, where it changed nothing and said nothing.
    */
   supportsEffort: boolean;
-  supportsThinking: boolean;
   /** Environment variable holding this provider's key, or null when keyless. */
   envKeyVar: string | null;
   requiresApiKey: boolean;
@@ -98,16 +97,23 @@ export const PROVIDER_CATALOG = {
     label: 'Claude (subscription)',
     summary: 'Runs the local `claude` CLI on the signed-in subscription seat. No API key, no metered tokens.',
     supportsEffort: true,
-    supportsThinking: true,
     legacyEnabledField: 'claudeCliEnabled',
     envKeyVar: null,
     requiresApiKey: false,
     credentialKind: 'subscription-seat',
-    locked: true,
+    // Offered. It was locked while this installation had no seat signed in, and
+    // that is not a build-time fact - whether the `claude` binary is on PATH and
+    // signed in is something only the machine can answer, and the health check
+    // asks it. A lock would say "this deployment cannot run it", which is now
+    // simply untrue and left the one keyless, unmetered provider unpickable.
+    //
+    // The reason survives the unlock: an operator on a box with no seat can put
+    // this provider back behind a padlock with AI_LOCKED_PROVIDERS, and the
+    // sentence they want shown then is this one, not a generic "turned off".
+    locked: false,
     lockReason:
-      'Needs a Claude subscription seat signed in to the `claude` CLI on the machine running this ' +
-      'server. Use Claude (free) or ChatGPT (free) instead, or unlock this once the seat is signed ' +
-      'in by adding claude-cli to AI_UNLOCKED_PROVIDERS in .env.',
+      'Needs the `claude` CLI installed and a subscription seat signed in on this machine. ' +
+      'Run `claude login` there, then remove it from AI_LOCKED_PROVIDERS.',
     order: 0,
   },
   claude: {
@@ -115,7 +121,6 @@ export const PROVIDER_CATALOG = {
     label: 'Anthropic API',
     summary: 'Anthropic Messages API with an API key. Billed per token.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: 'claudeEnabled',
     envKeyVar: 'ANTHROPIC_API_KEY',
     requiresApiKey: true,
@@ -129,7 +134,6 @@ export const PROVIDER_CATALOG = {
     label: 'OpenAI',
     summary: 'OpenAI chat completions with an API key. Billed per token.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: 'openaiEnabled',
     envKeyVar: 'OPENAI_API_KEY',
     requiresApiKey: true,
@@ -143,7 +147,6 @@ export const PROVIDER_CATALOG = {
     label: 'DeepSeek',
     summary: 'DeepSeek chat completions with an API key. Billed per token.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: 'deepseekEnabled',
     envKeyVar: 'DEEPSEEK_API_KEY',
     requiresApiKey: true,
@@ -158,7 +161,6 @@ export const PROVIDER_CATALOG = {
     summary:
       'Drives claude.ai in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -173,7 +175,6 @@ export const PROVIDER_CATALOG = {
     summary:
       'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
     supportsEffort: false,
-    supportsThinking: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -217,8 +218,23 @@ export function providerRequiresApiKey(id: AIProvider): boolean {
  */
 export const UNLOCKED_PROVIDERS_ENV_VAR = 'AI_UNLOCKED_PROVIDERS';
 
-function envUnlockedProviders(): Set<string> {
-  const raw = process.env[UNLOCKED_PROVIDERS_ENV_VAR];
+/**
+ * The env var that ADDS a lock: `AI_LOCKED_PROVIDERS=claude-cli`.
+ *
+ * The mirror of the one above, and it earns its place for the same reason that
+ * one does. No provider is locked in the shipped catalog any more, but whether a
+ * provider can run here is still a fact only the machine knows - a box with no
+ * `claude` binary, or a shared install whose operator does not want the
+ * subscription seat spent, wants the seat gone from the picker with a padlock
+ * and a reason rather than present and failing at generate time.
+ *
+ * Unlock wins over lock when a provider is named in both, so the escape hatch
+ * stays an escape hatch.
+ */
+export const LOCKED_PROVIDERS_ENV_VAR = 'AI_LOCKED_PROVIDERS';
+
+function envProviderList(name: string): Set<string> {
+  const raw = process.env[name];
   if (!raw) {
     return new Set();
   }
@@ -239,16 +255,29 @@ function envUnlockedProviders(): Set<string> {
  * here". `isProviderEnabled` in aiModelConfig is where the two meet.
  */
 export function isProviderLocked(id: AIProvider): boolean {
-  const descriptor = PROVIDER_CATALOG[id] as ProviderDescriptor | undefined;
-  if (!descriptor?.locked) {
+  if (envProviderList(UNLOCKED_PROVIDERS_ENV_VAR).has(id)) {
     return false;
   }
-  return !envUnlockedProviders().has(id);
+  if (envProviderList(LOCKED_PROVIDERS_ENV_VAR).has(id)) {
+    return true;
+  }
+  return (PROVIDER_CATALOG[id] as ProviderDescriptor | undefined)?.locked ?? false;
 }
 
 /** Why `id` is locked, or '' when it is not locked right now. */
 export function getProviderLockReason(id: AIProvider): string {
-  return isProviderLocked(id) ? PROVIDER_CATALOG[id]?.lockReason ?? '' : '';
+  if (!isProviderLocked(id)) {
+    return '';
+  }
+  const descriptor = PROVIDER_CATALOG[id] as ProviderDescriptor | undefined;
+  // A catalog reason when the catalog is what locked it; otherwise the operator
+  // did, and saying so points at the fix rather than at a condition the
+  // deployment does not actually have.
+  return (
+    descriptor?.lockReason ||
+    `Turned off for this installation (${LOCKED_PROVIDERS_ENV_VAR}). ` +
+      'Remove it from that list to offer it again.'
+  );
 }
 
 /** Every provider locked right now, in menu order. */
@@ -334,7 +363,18 @@ export function isBrowserChatSiteId(value: unknown): value is BrowserChatSiteId 
 }
 
 /**
- * The reserved model id that means "use both free chat accounts".
+ * The reserved model id that means BROWSER MODE: any free chat browser.
+ *
+ * The one entry the picker offers for browser work, replacing the three it used
+ * to - "Claude (free)", "ChatGPT (free)" and "Hybrid (free)". Those three were a
+ * choice nobody had a reason to make: the queue hands a task to whichever
+ * browser comes free, so pinning one to a platform only meant waiting longer for
+ * the same answer. One option that means "use the browsers" says what the app
+ * actually does.
+ *
+ * The id still reads `free-hybrid`, and that is deliberate: profiles already
+ * store it. Renaming would silently repoint every one of them at the app
+ * default.
  *
  * It lives here, with the provider catalog, rather than with the routing logic
  * that acts on it, because the two things that need it sit on opposite sides of
@@ -348,11 +388,11 @@ export function isBrowserChatSiteId(value: unknown): value is BrowserChatSiteId 
  */
 export const HYBRID_MODEL_ID = 'free-hybrid';
 
-export const HYBRID_MODEL_LABEL = 'Hybrid (free) \u2014 Claude and ChatGPT';
+export const HYBRID_MODEL_LABEL = 'Default (browser)';
 
 export const HYBRID_MODEL_DESCRIPTION =
-  'Spreads calls across both free chat accounts and moves to the other one when ' +
-  'either is out of messages, signed out, or has no browser running.';
+  'Runs on whichever free chat browser is available - Claude or ChatGPT - and ' +
+  'moves to another when one is out of messages, signed out, or not running.';
 
 export function isHybridModelId(value: unknown): boolean {
   return typeof value === 'string' && value.trim() === HYBRID_MODEL_ID;
@@ -363,7 +403,3 @@ export function providerSupportsEffort(id: AIProvider): boolean {
   return getProviderDescriptor(id).supportsEffort;
 }
 
-/** Does this provider honour the thinking knob? */
-export function providerSupportsThinking(id: AIProvider): boolean {
-  return getProviderDescriptor(id).supportsThinking;
-}

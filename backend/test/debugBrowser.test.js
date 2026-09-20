@@ -70,12 +70,17 @@ test('a running browser is found, and its open tabs are matched to sites', async
   );
 
   try {
+    // Thirty seconds, not ten. A real Chromium is being launched here, and the
+    // claim under test is that the probe FINDS a running browser - not that the
+    // browser starts quickly. Ten seconds was enough alone and intermittently
+    // short with the whole suite competing for the machine, which made this the
+    // one test that failed for reasons having nothing to do with the code.
     let status = { running: false };
-    for (let attempt = 0; attempt < 40 && !status.running; attempt += 1) {
+    for (let attempt = 0; attempt < 120 && !status.running; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       status = await probeDebugBrowser(port);
     }
-    assert.equal(status.running, true, 'the probe must find a browser that is up');
+    assert.equal(status.running, true, 'the probe must find a browser that is up within 30s');
     assert.ok(status.browser, 'and report which one');
 
     // The claude.ai tab was opened above; the chatgpt.com one was not. The

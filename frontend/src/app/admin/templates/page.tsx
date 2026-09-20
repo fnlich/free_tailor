@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { templatesApi, Template, getApiOrigin } from '@/lib/api';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
+import { AdminOnly } from '@/components/auth/AuthGate';
 
 /**
  * The preview document's own size, in CSS pixels: A4 at 96 DPI, the page
@@ -154,7 +155,7 @@ function TemplateBasicEditModal({
   );
 }
 
-export default function TemplatesPage() {
+function TemplatesPageBody() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -789,5 +790,20 @@ export default function TemplatesPage() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Administrator-only, and enforced on the API as well.
+ *
+ * Templates are shared by the whole installation: one person editing a layout
+ * changes what every other account's resumes come out looking like. Users still
+ * PICK a template when building - that is a different surface, and open to all.
+ */
+export default function TemplatesPage() {
+  return (
+    <AdminOnly>
+      <TemplatesPageBody />
+    </AdminOnly>
   );
 }

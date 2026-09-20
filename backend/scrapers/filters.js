@@ -198,38 +198,6 @@ function inferWellfoundRoles(keywords) {
     .filter((entry) => entry.pattern.test(normalizedKeywords))
     .map((entry) => entry.role);
 }
-
-function buildLinkedInSearchUrl(filters) {
-  const url = new URL('https://www.linkedin.com/jobs/search/');
-  const keywords = normalizeText(filters && filters.keywords);
-  const location = normalizeText(filters && filters.location) || DEFAULT_LINKEDIN_LOCATION;
-  const jobType = normalizeText(filters && filters.jobType);
-  const timePosted = normalizeText(filters && filters.timePosted);
-
-  if (keywords) {
-    url.searchParams.set('keywords', keywords);
-  }
-
-  if (location) {
-    url.searchParams.set('location', location);
-  }
-
-  if (filters && filters.remoteOnly) {
-    url.searchParams.set('f_WT', '2');
-  }
-
-  if (LINKEDIN_TIME_POSTED_TO_SECONDS[timePosted]) {
-    url.searchParams.set('f_TPR', `r${LINKEDIN_TIME_POSTED_TO_SECONDS[timePosted]}`);
-  }
-
-  if (LINKEDIN_JOB_TYPE_TO_CODE[jobType]) {
-    url.searchParams.set('f_JT', LINKEDIN_JOB_TYPE_TO_CODE[jobType]);
-  }
-
-  url.searchParams.set('sortBy', 'DD');
-  return url.toString();
-}
-
 function buildIndeedSearchUrl(filters) {
   const url = new URL('https://www.indeed.com/jobs/');
   const keywords = buildExpandedKeywordQuery(filters && filters.keywords);
@@ -246,27 +214,6 @@ function buildIndeedSearchUrl(filters) {
   url.searchParams.set('sort', 'date');
   return url.toString();
 }
-
-function mapFiltersForLinkedIn(filters) {
-  const title = normalizeText(filters && (filters.title || filters.keywords)) || 'software engineer';
-  const requestedRows = Number.isInteger(filters && filters.rows) && filters.rows > 0
-    ? filters.rows
-    : toMaxResults(filters || {}, 1000);
-
-  return {
-    title,
-    location: DEFAULT_LINKEDIN_LOCATION,
-    publishedAt: 'r86400',
-    rows: Math.min(requestedRows, 1000),
-    workType: '2',
-    proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL'],
-      apifyProxyCountry: 'US',
-    },
-  };
-}
-
 function mapFiltersForIndeed(filters) {
   const startUrl = normalizeText(filters && filters.startUrl);
   if (!startUrl) {
@@ -476,7 +423,6 @@ module.exports = {
   isBroadSoftwareRoleSearch,
   mapFiltersForIndeed,
   mapFiltersForIndeedBorderline,
-  mapFiltersForLinkedIn,
   mapFiltersForJobBoard,
   mapFiltersForWellfound,
   mapFiltersForHiringCafe,

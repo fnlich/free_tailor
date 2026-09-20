@@ -10,7 +10,18 @@ import { getDatabasePath, getDb } from './database/sqlite';
 import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
+import generationRoutes from './routes/generation';
+import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
+import authRoutes from './routes/auth';
+import accountRoutes from './routes/accounts';
+import creditRoutes from './routes/credits';
+import sheetRoutes from './routes/sheet';
+import { backfillAccountSheets } from './services/sheets/accountSheet';
+import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
+import { describeAdminIdentity } from './config/adminIdentity';
+import { promoteConfiguredAdmins } from './database/userRepository';
+import { attachUser, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
 import promptRoutes from './routes/prompts';
@@ -108,7 +119,23 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-app.get('/api/generated/:filename(*)', async (req, res) => {
+/**
+ * Resolves the session before any route runs.
+ *
+ * App-wide and non-refusing: it only attaches `req.user`. Deciding who may do
+ * what is each router's business, and putting the decision here would mean one
+ * list of paths to keep in step with the routers - the classic way a new route
+ * ends up unprotected because somebody forgot the list existed.
+ */
+app.use(attachUser);
+
+/**
+ * Downloading a generated file needs an account.
+ *
+ * The filename is derived from the profile, the company and the date, so it is
+ * guessable enough that "you would have to know the URL" is not a control.
+ */
+app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
   try {
     // Express 4 exposes `:filename(*)` as `params.filename`; the bracketed key
     // is Express 5's shape. Reading the wrong one made this route answer 404
@@ -127,10 +154,15 @@ app.get('/api/generated/:filename(*)', async (req, res) => {
   }
 });
 
-// Routes
+// Routes. Auth first: it is the only one reachable while signed out.
+app.use('/api/auth', authRoutes);
+app.use('/api/admin/accounts', accountRoutes);
+app.use('/api/credits', creditRoutes);
+app.use('/api/sheet', sheetRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
+app.use('/api/generation', generationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);
@@ -202,6 +234,33 @@ const server = app.listen(PORT, HOST, () => {
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
+  // Picks up a generation run the last process was part way through. Whatever
+  // was in a browser when it stopped is built again, and whatever was queued
+  // carries on - which is the whole point of the queue being on disk.
+  restoreGenerationQueue();
+  // After the queue, not before: restore requeues what was mid-flight, and a
+  // reservation whose tasks are about to run again must not be released as
+  // abandoned in between.
+  reconcileCredits();
+  // Reachable whenever ADMIN_EMAILS is set and somebody else signs in first -
+  // that path never falls back to the first-account rule, so the install can
+  // genuinely end up with nobody who can administer it.
+  // Before the warning, not after: an account that already exists and is named
+  // by ADMIN_EMAILS or SMTP_USER becomes an administrator here, and warning
+  // first would report a problem this line is about to fix.
+  try {
+    const promoted = promoteConfiguredAdmins();
+    if (promoted > 0) console.log(`[auth] ${describeAdminIdentity()}`);
+  } catch (error) {
+    console.warn('[auth] Could not apply the configured administrator.', error);
+  }
+  warnIfNoAdmin();
+  // Gives a spreadsheet to accounts created before this feature existed. Serial
+  // and paced, so it is a slow trickle in the background rather than a burst of
+  // Drive calls the moment the process comes up, and never able to fail a boot.
+  void backfillAccountSheets().catch((error) => {
+    console.warn('[sheets] The account spreadsheet backfill did not finish.', error);
+  });
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();

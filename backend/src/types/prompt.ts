@@ -1,3 +1,4 @@
+import type { PromptCategoryId } from '../config/promptCategories';
 import type { AIProvider } from './template';
 
 export type PromptResponseFormat = 'json' | 'text';
@@ -26,6 +27,14 @@ export interface PromptSummary {
   description: string;
   featureKey?: PromptFeatureKey;
   featureLabel?: string;
+  /**
+   * Building, Extracting, or unattached.
+   *
+   * Derived from `featureKey` on the way out rather than stored, so it can
+   * never disagree with the feature the prompt actually runs as.
+   */
+  category: PromptCategoryId;
+  categoryLabel: string;
   responseFormat: PromptResponseFormat;
   modelProvider?: AIProvider;
   modelName?: string;

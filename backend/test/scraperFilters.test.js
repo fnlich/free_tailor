@@ -8,48 +8,7 @@ const {
   mapFiltersForHiringCafe,
   mapFiltersForHiringCafeCrawlerbros,
   mapFiltersForHiringCafeMemo23,
-  mapFiltersForLinkedIn,
 } = require('../scrapers/filters');
-
-test('mapFiltersForLinkedIn maps title and rows into the fixed Bebity actor input', () => {
-  const result = mapFiltersForLinkedIn({
-    title: 'software engineer',
-    rows: 25,
-  });
-
-  assert.deepEqual(result, {
-    title: 'software engineer',
-    location: 'United States',
-    publishedAt: 'r86400',
-    rows: 25,
-    workType: '2',
-    proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL'],
-      apifyProxyCountry: 'US',
-    },
-  });
-});
-
-test('mapFiltersForLinkedIn falls back to the legacy keyword field and caps rows at 1000', () => {
-  const result = mapFiltersForLinkedIn({
-    keywords: 'data engineer',
-    rows: 5000,
-  });
-
-  assert.deepEqual(result, {
-    title: 'data engineer',
-    location: 'United States',
-    publishedAt: 'r86400',
-    rows: 1000,
-    workType: '2',
-    proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL'],
-      apifyProxyCountry: 'US',
-    },
-  });
-});
 
 test('mapFiltersForIndeed maps a start URL into the fixed misceres actor input', () => {
   const result = mapFiltersForIndeed({

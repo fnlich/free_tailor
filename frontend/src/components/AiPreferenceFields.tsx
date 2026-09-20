@@ -8,10 +8,7 @@ import {
   LOCK_ICON,
   ProviderLock,
   ProviderTuningSupport,
-  THINKING_LABELS,
-  ThinkingMode,
   isEffortLevel,
-  isThinkingMode,
   providerHonours,
   HYBRID_MODEL_ID,
 } from '@/lib/api';
@@ -25,7 +22,6 @@ import {
 export type InheritedAiChoice = {
   modelLabel: string;
   effort: EffortLevel;
-  thinking: ThinkingMode;
 };
 
 type Props = {
@@ -40,7 +36,7 @@ type Props = {
    */
   providerLocks?: ProviderLock[];
   /**
-   * Which providers honour effort and thinking.
+   * Which providers honour effort.
    *
    * Empty means "not known yet", and everything stays enabled - see
    * `providerHonours`. Greying a control on a guess is worse than offering one
@@ -48,7 +44,6 @@ type Props = {
    */
   providerTuning?: ProviderTuningSupport[];
   effortLevels: EffortLevel[];
-  thinkingModes: ThinkingMode[];
   inherited: InheritedAiChoice;
   /** Where an unset field falls back to: "app default", "profile", ... */
   inheritedFrom: string;
@@ -79,7 +74,7 @@ const HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
 const LOCK_HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
 
 /**
- * The model, effort and thinking selects.
+ * The model and effort selects.
  *
  * One component for both places these appear - the profile, where they set a
  * default, and the builder, where they override it for a single run - so the
@@ -93,7 +88,6 @@ export default function AiPreferenceFields({
   providerLocks = [],
   providerTuning = [],
   effortLevels,
-  thinkingModes,
   inherited,
   inheritedFrom,
   disabled = false,
@@ -112,11 +106,11 @@ export default function AiPreferenceFields({
   );
 
   /**
-   * Which provider this profile's calls will reach, for the two knobs below.
+   * Which provider this profile's calls will reach, for the effort knob below.
    *
    * Hybrid names no single provider, and both of the free accounts it routes
-   * between answer the same way - neither has an effort flag or a thinking
-   * budget - so it is read as a chat window rather than as "unknown".
+   * between answer the same way - neither has an effort flag - so it is read as
+   * a chat window rather than as "unknown".
    *
    * A blank model means INHERIT, and what it inherits is not known here: the
    * app default is a server-side setting this component is not given. So it
@@ -127,13 +121,12 @@ export default function AiPreferenceFields({
   const chosenProvider =
     value.modelId === HYBRID_MODEL_ID ? 'claude-web' : chosenModel?.provider;
   const honoursEffort = providerHonours(providerTuning, chosenProvider, 'effort');
-  const honoursThinking = providerHonours(providerTuning, chosenProvider, 'thinking');
   const notTunable = chosenModel
     ? `${chosenModel.name} is a chat window, which has no such setting.`
     : 'The chosen model is a chat window, which has no such setting.';
 
   /**
-   * Changing the model drops a knob the new one cannot honour.
+   * Changing the model drops the effort the new one cannot honour.
    *
    * Not merely cosmetic. The select below shows "Use the app default" while it
    * is inactive, so leaving a stored `effort=max` behind would have the form
@@ -145,12 +138,11 @@ export default function AiPreferenceFields({
     const next: AiPreferences = { ...value, modelId: modelId || undefined };
     const provider = modelId === HYBRID_MODEL_ID ? 'claude-web' : models.find((model) => model.id === modelId)?.provider;
     if (!providerHonours(providerTuning, provider, 'effort')) delete next.effort;
-    if (!providerHonours(providerTuning, provider, 'thinking')) delete next.thinking;
     onChange(next);
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div>
         <label className={LABEL_CLASS} htmlFor={`${idPrefix}-model`}>
           Model
@@ -218,41 +210,6 @@ export default function AiPreferenceFields({
         </p>
       </div>
 
-      <div>
-        <label
-          className={honoursThinking ? LABEL_CLASS : DISABLED_LABEL_CLASS}
-          htmlFor={`${idPrefix}-thinking`}
-        >
-          Thinking
-        </label>
-        <select
-          id={`${idPrefix}-thinking`}
-          value={value.thinking ?? ''}
-          disabled={disabled || !honoursThinking}
-          onChange={(event) =>
-            onChange({
-              ...value,
-              thinking: isThinkingMode(event.target.value) ? event.target.value : undefined,
-            })
-          }
-          className={SELECT_CLASS}
-        >
-          <option value="">{inheritOption(THINKING_LABELS[inherited.thinking])}</option>
-          {thinkingModes.map((mode) => (
-            <option key={mode} value={mode}>
-              {THINKING_LABELS[mode]}
-            </option>
-          ))}
-        </select>
-        {/* Thinking is on by default on these models and adaptive per turn, so
-            the useful choice is whether to allow it, not how much - depth is
-            what effort controls. */}
-        <p className={HINT_CLASS}>
-          {honoursThinking
-            ? 'Thinking is on by default and the model decides per answer. Turning it off is faster.'
-            : notTunable}
-        </p>
-      </div>
     </div>
   );
 }
