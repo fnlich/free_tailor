@@ -564,7 +564,21 @@ export function settleWebhookEvent(event: WebhookEvent): Settlement {
       return { status: 'handled', payment: result.payment ?? payment, credited: result.credited };
     }
     if (event.outcome === 'failed' || event.outcome === 'expired') {
-      markUnpaid(payment.id, event.outcome, event.type);
+      /*
+       * A sentence, not the event name.
+       *
+       * `failure` is rendered to the person who tried to pay, on their own
+       * return page. "checkout.session.expired" is the provider's vocabulary,
+       * not theirs; the event type is already on the payment_events row for
+       * whoever needs to reconcile.
+       */
+      markUnpaid(
+        payment.id,
+        event.outcome,
+        event.outcome === 'expired'
+          ? 'That checkout expired before it was paid.'
+          : 'The payment did not go through at the provider.'
+      );
       return { status: 'handled', payment: getPayment(payment.id), credited: false };
     }
     return { status: 'handled', payment, credited: false };

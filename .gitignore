@@ -21,3 +21,4 @@ oauth-client.json
 client_secret*.json
 google-oauth-credentials.json
 backend/google-oauth-credentials.json
+backend/test/e2e/*.png

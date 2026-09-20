@@ -196,6 +196,11 @@ the payment was quoted at credits nothing and leaves the payment `pending` for
 somebody to look at, and a checkout that is created at the provider is never
 marked failed locally - somebody may still pay it.
 
+**Before taking real money**, `backend/test/e2e/` runs the whole purchase over
+HTTP and through a browser against a fake provider that signs its webhooks the
+way the real ones do - and its README lists the five things only a live Stripe
+test-mode run can prove. See that file.
+
 **Refunds** are on the admin payments page, for card payments. They report three
 numbers rather than a tick, and the reason is arithmetic: a balance may not go
 negative, so refunding somebody who has already spent what they bought returns
