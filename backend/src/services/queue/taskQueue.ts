@@ -313,7 +313,22 @@ export class TaskQueue {
    */
   submit<T>(
     descriptors: Array<TaskDescriptor<T>>,
-    meta: { id?: string; label?: string; jobCount?: number; shared?: Record<string, unknown> } = {}
+    meta: {
+      id?: string;
+      label?: string;
+      jobCount?: number;
+      shared?: Record<string, unknown>;
+      /**
+       * The caller will write this batch itself, atomically.
+       *
+       * Set by the submit route, which wraps the batch and all N task rows in
+       * one transaction - so without this the same rows are written twice, once
+       * per row here and once as a transaction there. A hundred and fifty
+       * resumes meant three hundred and two statements for a hundred and
+       * fifty-one rows.
+       */
+      deferPersist?: boolean;
+    } = {}
   ): Batch<T> {
     // The caller may mint the id. `restore` already does, and a caller that must
     // reserve something against this batch needs the id BEFORE any task can
@@ -344,10 +359,12 @@ export class TaskQueue {
       this.queues[task.queue].push(task as Task);
     }
 
-    this.persist((store) => {
-      store.saveBatch(batch as Batch);
-      for (const task of tasks) store.saveTask(task as Task);
-    });
+    if (!meta.deferPersist) {
+      this.persist((store) => {
+        store.saveBatch(batch as Batch);
+        for (const task of tasks) store.saveTask(task as Task);
+      });
+    }
 
     this.evictFinished();
     // Refreshed rather than dispatched directly: a first submit on a cold server

@@ -22,7 +22,6 @@ import {
   listLockedProviderIds,
   providerRequiresApiKey,
   providerSupportsEffort,
-  providerSupportsThinking,
 } from './providerCatalog';
 import {
   DEFAULT_CLAUDE_CLI_MODEL,
@@ -134,14 +133,12 @@ export type LegacyProviderFlags = {
 export type ProviderTuningSupport = {
   provider: AIProvider;
   effort: boolean;
-  thinking: boolean;
 };
 
 export function listProviderTuningSupport(): ProviderTuningSupport[] {
   return AI_PROVIDER_IDS.map((provider) => ({
     provider,
     effort: providerSupportsEffort(provider),
-    thinking: providerSupportsThinking(provider),
   }));
 }
 
@@ -177,11 +174,11 @@ export type ProviderLock = {
 };
 
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
-  /** Which providers honour effort and thinking at all. */
+  /** Which providers honour effort at all. */
   providerTuning: ProviderTuningSupport[];
   outputPathUsesJobTitle: boolean;
   /**
-   * The effort and thinking a run uses when nothing overrides them, plus the
+   * The effort a run uses when nothing overrides it, plus the
    * values that may be chosen. Sent rather than hard-coded in the client so
    * that the "use the app default" option can name the value it will really
    * use, and so a new effort level does not need a matching frontend release.
@@ -977,11 +974,25 @@ function toLegacyProviderFlags(settings: AppSettings): LegacyProviderFlags {
   };
 }
 
+/**
+ * The default model id the app actually OFFERS, which is not always the one
+ * stored.
+ *
+ * They differ whenever the stored id is not pickable - most often a default the
+ * browser-chat migration repointed at `claude-web-chat`, which the picker now
+ * shows as the single browser entry. Anything reading the stored value directly
+ * would disagree with what the user is looking at; `isHybridSelection` did, and
+ * the result was an install whose picker said "Default (browser)" while its
+ * runs were pinned to Claude and used half the browsers available.
+ */
+function effectiveDefaultModelId(settings: AppSettings): string {
+  const pickable = getPickableModels(settings);
+  return pickable.some((model) => model.id === settings.defaultModelId)
+    ? settings.defaultModelId
+    : pickable[0]?.id ?? '';
+}
+
 function toPublicSettings(settings: AppSettings): PublicAppSettings {
-  // The pickable list, not the runnable one, is what the fallback below must
-  // come from. They differ now that the per-site free models are folded into
-  // one browser entry: falling back to a runnable id would name a model the
-  // picker does not show, and the page would render an empty selection.
   const pickable = getPickableModels(settings);
   return {
     providersEnabled: { ...settings.providersEnabled },
@@ -991,9 +1002,7 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
     defaultResumeSelection: settings.defaultResumeSelection,
     defaultGroupId: settings.defaultGroupId,
     defaultProfileId: settings.defaultProfileId,
-    defaultModelId: pickable.some((model) => model.id === settings.defaultModelId)
-      ? settings.defaultModelId
-      : pickable[0]?.id ?? '',
+    defaultModelId: effectiveDefaultModelId(settings),
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     aiModels: pickable.map((model) => ({ ...model })),
@@ -1302,9 +1311,27 @@ export async function resolveStoredAIModelPreference(
  */
 export async function isHybridSelection(storedModelId?: string): Promise<boolean> {
   const requested = typeof storedModelId === 'string' ? storedModelId.trim() : '';
-  if (requested) return isHybridModelId(requested);
   const settings = await readSettings();
-  return isHybridModelId(settings.defaultModelId);
+
+  if (requested) {
+    if (isHybridModelId(requested)) return true;
+
+    // The stored id does not always survive. `resolveStoredAIModelPreference`
+    // DROPS it when its provider is locked and falls back to the app default -
+    // so a profile pinned to the subscription seat on a machine that locked it
+    // runs on the default, and if that default is the browser entry the run is
+    // hybrid even though the stored id is not.
+    //
+    // This mirrors that function's decision deliberately. The two must agree:
+    // if they drift, a run lands on a browser but is pinned to whichever site
+    // it resolved to, instead of being eligible for both - which reads as the
+    // batch mysteriously using half the browsers it has.
+    const stored = settings.aiModels.find((model) => model.id === requested);
+    if (stored && !isProviderLocked(stored.provider)) return false;
+  }
+
+  // The EFFECTIVE default, not the stored one - see effectiveDefaultModelId.
+  return isHybridModelId(effectiveDefaultModelId(settings));
 }
 
 export function resolveHybridModel(settings: AppSettings): AIModelRecord {

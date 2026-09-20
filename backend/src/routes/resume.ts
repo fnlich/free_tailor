@@ -373,7 +373,7 @@ function collectUnconfirmedSkillMaps(
  * into a failed one.
  */
 /**
- * The model, effort and thinking a single request asks for.
+ * The model and effort a single request asks for.
  *
  * All three are overrides for THIS run only. Anything absent falls through to
  * the profile's own setting, and then to the app default, which is why they
@@ -384,7 +384,6 @@ function readAiOverrides(body: unknown): AiPreferences {
   return normalizeAiPreferences({
     modelId: typeof record.model === 'string' ? record.model : undefined,
     effort: record.effort,
-    thinking: record.thinking,
   });
 }
 
@@ -411,7 +410,7 @@ async function tailorResumesForProfiles(
   // waiting through all of them. Failures are still collected per profile
   // rather than aborting the batch, exactly as the sequential loop did.
   // Resolved per profile, not once for the batch: the model, effort and
-  // thinking are a PROFILE setting, so a batch of profiles that disagree must
+  // effort is a PROFILE setting, so a batch of profiles that disagree must
   // run each on its own choice rather than on whichever profile came first.
   // The request's own overrides still win over every one of them.
   // Width from the provider the REQUEST resolved to. Each profile may still
@@ -1137,7 +1136,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     try {
 
     // Resolved here rather than at the top of the handler: the model, effort
-    // and thinking are a per-profile setting, so the profile has to be loaded
+    // is a per-profile setting, so the profile has to be loaded
     // before they can be read. The request's own overrides still win.
     const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile);
 
@@ -1314,7 +1313,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     // Resolved here rather than at the top of the handler: the model, effort
-    // and thinking are a per-profile setting, so the profile has to be loaded
+    // is a per-profile setting, so the profile has to be loaded
     // before they can be read. The request's own overrides still win.
     const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile);
 

@@ -16,6 +16,8 @@ import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
 import accountRoutes from './routes/accounts';
 import creditRoutes from './routes/credits';
+import sheetRoutes from './routes/sheet';
+import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { attachUser, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
@@ -154,6 +156,7 @@ app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/accounts', accountRoutes);
 app.use('/api/credits', creditRoutes);
+app.use('/api/sheet', sheetRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
@@ -241,6 +244,12 @@ const server = app.listen(PORT, HOST, () => {
   // that path never falls back to the first-account rule, so the install can
   // genuinely end up with nobody who can administer it.
   warnIfNoAdmin();
+  // Gives a spreadsheet to accounts created before this feature existed. Serial
+  // and paced, so it is a slow trickle in the background rather than a burst of
+  // Drive calls the moment the process comes up, and never able to fail a boot.
+  void backfillAccountSheets().catch((error) => {
+    console.warn('[sheets] The account spreadsheet backfill did not finish.', error);
+  });
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();

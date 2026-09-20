@@ -70,7 +70,7 @@ export default function Home() {
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   /**
-   * Model, effort and thinking for THIS run only.
+   * Model and effort for THIS run only.
    *
    * Empty means every field falls through to the selected profile's own
    * setting, and then to the app default - nothing here is persisted.
@@ -107,7 +107,6 @@ export default function Home() {
   const [generationStep, setGenerationStep] = useState('');
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
   /** The batch this page is watching, so a reload can pick it back up. */
-  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
@@ -160,7 +159,6 @@ export default function Home() {
   const inheritedChoice = {
     modelLabel: inheritedModel?.name || 'the first enabled model',
     effort: profilePreferences.effort ?? modelSettings.aiPreferenceDefaults.effort,
-    thinking: profilePreferences.thinking ?? modelSettings.aiPreferenceDefaults.thinking,
   };
 
   const loadInitialData = async () => {
@@ -373,28 +371,6 @@ export default function Home() {
     });
   };
 
-  const collectUnconfirmedFromGenerateResult = (
-    targetHard: Map<string, string>,
-    targetSoft: Map<string, string>,
-    result: {
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }
-  ) => {
-    for (const skill of result.unconfirmedHardSkills ?? []) {
-      const key = skill.trim().toLowerCase();
-      if (key && !targetHard.has(key)) {
-        targetHard.set(key, skill.trim());
-      }
-    }
-    for (const skill of result.unconfirmedSoftSkills ?? []) {
-      const key = skill.trim().toLowerCase();
-      if (key && !targetSoft.has(key)) {
-        targetSoft.set(key, skill.trim());
-      }
-    }
-  };
-
   const getSelectedProfilesForManualBuilder = (): Profile[] => {
     if (multipleTarget === 'all') {
       return profiles;
@@ -432,7 +408,6 @@ export default function Home() {
   ): Promise<BatchSnapshot | null> => {
     const submitted = await generationApi.submit(request);
     rememberBatch(submitted.batchId);
-    setActiveBatchId(submitted.batchId);
     return followBatch(submitted.batchId, describe);
   };
 
@@ -473,17 +448,38 @@ export default function Home() {
       });
     };
 
-    try {
-      await generationApi.follow(batchId, show);
-    } catch (err) {
-      // A stream that drops is not a batch that failed - the work is on the
-      // server. Fall back to one snapshot so the page reports the truth rather
-      // than the state of its own connection.
-      last = await generationApi.snapshot(batchId).catch(() => last);
+    /**
+     * Reattaches until the BATCH says it is finished, not until the stream ends.
+     *
+     * A stream can end without the work being over: a proxy or a laptop lid
+     * closes an idle connection, and `follow` then resolves perfectly normally.
+     * Treating that as the end reported "Finished 4 of 30" while the server
+     * carried on building the other twenty-six - the page describing its own
+     * connection rather than the run.
+     *
+     * Every line is a complete snapshot, so rejoining costs nothing and needs no
+     * reconciliation. Bounded so a batch the server has genuinely forgotten
+     * cannot spin here for ever.
+     */
+    const MAX_REATTACHES = 20;
+    for (let attempt = 0; attempt <= MAX_REATTACHES; attempt += 1) {
+      try {
+        await generationApi.follow(batchId, show);
+      } catch {
+        // A dropped stream is not a failed batch - the work is the server's.
+        // Fall through to the snapshot below, which is the authority.
+      }
+
+      last = (await generationApi.snapshot(batchId).catch(() => last)) ?? last;
+      if (!last || last.state !== 'running') break;
+
+      if (attempt === MAX_REATTACHES) break;
+      // A short pause, so a server that is refusing the stream outright does
+      // not turn this into a tight loop.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     forgetBatch();
-    setActiveBatchId(null);
     return last;
   };
 
@@ -1606,7 +1602,7 @@ export default function Home() {
 
             <details className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
               <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
-                Model, effort and thinking
+                Model and effort
                 {hasAiOverrides && (
                   <span className="ml-2 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                     overridden for this run
@@ -1622,7 +1618,6 @@ export default function Home() {
                   providerLocks={modelSettings.providerLocks}
                   providerTuning={modelSettings.providerTuning}
                   effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
-                  thinkingModes={modelSettings.aiPreferenceDefaults.thinkingModes}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                   inherited={inheritedChoice}
                   disabled={isGenerating}

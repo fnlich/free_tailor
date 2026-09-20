@@ -38,7 +38,7 @@ function setUp(name) {
     id: 'claude-cli',
     capabilities: {
       id: 'claude-cli', label: 'stub', temperature: false, maxOutputTokens: false,
-      effort: false, thinking: false, nativeJsonMode: 'json-schema', systemBlocks: true,
+      effort: false, nativeJsonMode: 'json-schema', systemBlocks: true,
       requiresApiKey: false, credentialKind: 'subscription-seat', maxConcurrency: 8,
     },
     defaultModelName: () => 'sonnet',

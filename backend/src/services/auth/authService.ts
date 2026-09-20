@@ -13,6 +13,7 @@ import {
   storeLoginCode,
 } from '../../database/userRepository';
 import type { UserAccount } from '../../types/account';
+import { ensureAccountSheet } from '../sheets/accountSheet';
 import { describeMailConfig, sendLoginCode } from './mailer';
 import { isGoogleConfigured, verifyGoogleIdToken } from './google';
 
@@ -76,6 +77,16 @@ function completeSignIn(input: {
   }
 
   markSignedIn(account.id);
+
+  // Started, not awaited. Allocating a spreadsheet and adding the day's tab is
+  // several round trips to Google, and putting them in front of the session
+  // token would both slow every sign-in down and make a Google outage into an
+  // outage of logging in. The account page ensures the same thing on read, so
+  // nothing is lost by this failing quietly here.
+  void ensureAccountSheet(account).catch((error) => {
+    console.warn(`[sheets] Could not prepare the sheet for ${account.email}.`, error);
+  });
+
   return { token: createSession(account.id), account, created };
 }
 

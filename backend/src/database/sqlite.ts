@@ -216,7 +216,18 @@ const SCHEMA = `
     disabled      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
-    last_login_at TEXT
+    last_login_at TEXT,
+    /*
+     * The account's own Google spreadsheet, and the last date tab prepared in
+     * it. The date is a cache, not a record: it lets a repeat sign-in on the
+     * same day decide it has nothing to do without asking Google. Visibility is
+     * deliberately absent - Drive owns that, and a copy here would go stale the
+     * first time somebody changed the sharing in Google's own UI.
+     */
+    sheet_id       TEXT,
+    sheet_url      TEXT,
+    sheet_tab_date TEXT,
+    sheet_tab_gid  TEXT
   );
 
   /**
@@ -296,6 +307,15 @@ function addMissingColumns(db: Database.Database): void {
     // is the state every upgraded row starts in and the column has to allow it.
     { table: 'profiles', column: 'owner_id', definition: "TEXT" },
     { table: 'profile_groups', column: 'owner_id', definition: 'TEXT' },
+    // The per-account spreadsheet. NULL means "not allocated yet", which is
+    // every row on an install that upgrades into this build; the sheets service
+    // fills them in on sign-in, and the boot backfill catches the rest.
+    { table: 'users', column: 'sheet_id', definition: 'TEXT' },
+    { table: 'users', column: 'sheet_url', definition: 'TEXT' },
+    { table: 'users', column: 'sheet_tab_date', definition: 'TEXT' },
+    // The gid of that tab, so the account page can link straight to the day
+    // rather than to whichever tab Google decides to open first.
+    { table: 'users', column: 'sheet_tab_gid', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {

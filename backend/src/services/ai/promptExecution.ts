@@ -30,12 +30,10 @@ import { recordCompletion, recordFailure, warnOnce } from './telemetry';
 import {
   createDeadline,
   isEffortLevel,
-  isThinkingMode,
   type CompletionRequest,
   type CompletionResponseFormat,
   type CompletionResult,
   type EffortLevel,
-  type ThinkingMode,
 } from './types';
 
 /**
@@ -169,7 +167,6 @@ export type CreatePromptCompletionInput = {
    */
   jsonSchema?: Readonly<Record<string, unknown>>;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
   timeoutMs?: number;
   signal?: AbortSignal;
   /** The profile's free-chat route, so a hybrid call can use both accounts. */
@@ -186,7 +183,6 @@ async function runAssembled(
     temperature?: number;
     jsonSchema?: Readonly<Record<string, unknown>>;
     effort?: EffortLevel;
-    thinking?: ThinkingMode;
     timeoutMs?: number;
     signal?: AbortSignal;
     appendToUserBody?: string;
@@ -297,7 +293,6 @@ async function runAssembled(
           temperature: input.temperature,
         },
         effort: isEffortLevel(input.effort) ? input.effort : undefined,
-        thinking: isThinkingMode(input.thinking) ? input.thinking : undefined,
         deadline,
         signal: input.signal,
         callSite: input.callSite,
@@ -409,7 +404,6 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
     temperature: input.temperature,
     jsonSchema: input.jsonSchema,
     effort: input.effort,
-    thinking: input.thinking,
     timeoutMs: input.timeoutMs,
     signal: input.signal,
     appendToUserBody: input.appendToUserBody,
@@ -430,7 +424,6 @@ export type CreateRawCompletionInput = {
   temperature?: number;
   jsonSchema?: Readonly<Record<string, unknown>>;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
   timeoutMs?: number;
   signal?: AbortSignal;
   route?: FreeChatRoute;
@@ -459,7 +452,6 @@ export async function createRawCompletion(input: CreateRawCompletionInput): Prom
       temperature: input.temperature,
       jsonSchema: input.jsonSchema,
       effort: input.effort,
-      thinking: input.thinking,
       timeoutMs: input.timeoutMs,
       signal: input.signal,
       route: input.route,

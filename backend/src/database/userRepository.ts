@@ -26,10 +26,15 @@ type UserRow = {
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
+  sheet_id: string | null;
+  sheet_url: string | null;
+  sheet_tab_date: string | null;
+  sheet_tab_gid: string | null;
 };
 
 const USER_COLUMNS =
-  'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, last_login_at';
+  'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
+  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid';
 
 function now(): string {
   return new Date().toISOString();
@@ -66,6 +71,10 @@ function toAccount(row: UserRow): UserAccount {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.last_login_at ? { lastLoginAt: row.last_login_at } : {}),
+    ...(row.sheet_id ? { sheetId: row.sheet_id } : {}),
+    ...(row.sheet_url ? { sheetUrl: row.sheet_url } : {}),
+    ...(row.sheet_tab_date ? { sheetTabDate: row.sheet_tab_date } : {}),
+    ...(row.sheet_tab_gid ? { sheetTabGid: row.sheet_tab_gid } : {}),
   };
 }
 
@@ -177,13 +186,21 @@ export function createUser(input: CreateUserInput): UserAccount {
     created_at: timestamp,
     updated_at: timestamp,
     last_login_at: null,
+    // Allocated after the account exists, by the sheets service. Creating a
+    // spreadsheet is several network calls, and none of them belongs inside the
+    // transaction that makes somebody an account.
+    sheet_id: null,
+    sheet_url: null,
+    sheet_tab_date: null,
+    sheet_tab_gid: null,
   };
 
   getDb()
     .prepare(
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
-               @created_at, @updated_at, @last_login_at)`
+               @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
+               @sheet_tab_gid)`
     )
     .run(account);
 
@@ -270,12 +287,82 @@ export function updateUser(id: string, update: AccountUpdate): UserAccount | nul
   return getUserById(id);
 }
 
+/**
+ * Claims the spreadsheet slot for an account, once.
+ *
+ * Conditional on purpose. Two callers can reach the allocation at the same
+ * moment - a sign-in and the Account page loading beside it - and both will have
+ * created a spreadsheet by the time either writes. The WHERE clause makes the
+ * second write a no-op rather than a silent overwrite, and returning false lets
+ * the loser adopt the winner's sheet and say so in the log instead of leaving
+ * two spreadsheets with one of them unreachable.
+ */
+export function recordAccountSheet(id: string, sheetId: string, sheetUrl: string): boolean {
+  const result = getDb()
+    .prepare(
+      `UPDATE users SET sheet_id = @sheet_id, sheet_url = @sheet_url, updated_at = @updated_at
+       WHERE id = @id AND (sheet_id IS NULL OR sheet_id = '')`
+    )
+    .run({ id, sheet_id: sheetId, sheet_url: sheetUrl, updated_at: now() });
+  return result.changes > 0;
+}
+
+/** Remembers that today's tab is prepared, so the next sign-in calls nobody. */
+export function recordSheetTabDate(id: string, date: string, gid?: number): void {
+  getDb()
+    .prepare('UPDATE users SET sheet_tab_date = ?, sheet_tab_gid = ?, updated_at = ? WHERE id = ?')
+    .run(date, gid === undefined ? null : String(gid), now(), id);
+}
+
+/**
+ * The account a spreadsheet belongs to, if any.
+ *
+ * The inverse lookup, and it exists for one purpose: telling a route that an id
+ * it was handed is somebody's personal sheet rather than a spreadsheet shared
+ * with this installation. The service account can open both, so nothing else
+ * distinguishes them.
+ */
+export function getUserBySheetId(sheetId: string): UserAccount | null {
+  const wanted = sheetId.trim();
+  if (!wanted) return null;
+  const row = getDb()
+    .prepare(`SELECT ${USER_COLUMNS} FROM users WHERE sheet_id = ?`)
+    .get(wanted) as UserRow | undefined;
+  return row ? toAccount(row) : null;
+}
+
+/** Accounts from before this feature, in creation order, for the boot backfill. */
+export function listAccountsWithoutSheet(): UserAccount[] {
+  return (
+    getDb()
+      .prepare(
+        `SELECT ${USER_COLUMNS} FROM users
+         WHERE (sheet_id IS NULL OR sheet_id = '') AND disabled = 0
+         ORDER BY created_at ASC`
+      )
+      .all() as UserRow[]
+  ).map(toAccount);
+}
+
 export function markSignedIn(id: string): void {
   getDb().prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now(), id);
 }
 
 export function deleteUser(id: string): boolean {
   const db = getDb();
+  // Named before the row goes, because afterwards nothing connects the file to
+  // anybody. The spreadsheet is deliberately NOT deleted - it may hold months
+  // of somebody's work, and an account removed by mistake is recoverable while
+  // a deleted Drive file is much less so. It does keep counting against the
+  // service account's quota, which is why the id is logged rather than lost.
+  const orphan = getUserById(id);
+  if (orphan?.sheetId) {
+    console.log(
+      `[sheets] ${orphan.email} is being deleted; spreadsheet ${orphan.sheetId} is now unreferenced ` +
+        'and still counts against the service account quota.'
+    );
+  }
+
   return db.transaction(() => {
     db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(id);
     return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;

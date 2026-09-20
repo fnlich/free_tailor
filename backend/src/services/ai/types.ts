@@ -21,27 +21,12 @@ export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
 }
 
-/**
- * How much the model may think before answering.
- *
- * `default` leaves the model's own adaptive behaviour alone - which is thinking
- * ON, decided per turn. `off` suppresses it. Depth, when it does think, is
- * `effort`.
- */
-export const THINKING_MODES = ['default', 'off'] as const;
-export type ThinkingMode = (typeof THINKING_MODES)[number];
-
-export function isThinkingMode(value: unknown): value is ThinkingMode {
-  return typeof value === 'string' && (THINKING_MODES as readonly string[]).includes(value);
-}
-
 /** A knob a caller asked for that the chosen provider cannot honour. */
 export type DroppedParam =
   | 'temperature'
   | 'maxOutputTokens'
   | 'jsonSchema'
-  | 'effort'
-  | 'thinking';
+  | 'effort';
 
 /**
  * Sampling values the CALLER would like. They are hints, not guarantees:
@@ -102,8 +87,6 @@ export type CompletionRequest = {
   readonly jsonSchema?: Readonly<Record<string, unknown>>;
   readonly sampling: SamplingHints;
   readonly effort?: EffortLevel;
-  /** Absent means the provider's own default; see ThinkingMode. */
-  readonly thinking?: ThinkingMode;
   readonly deadline: Deadline;
   readonly signal?: AbortSignal;
   /** Stable id of the calling feature, for logs and usage buckets. */
@@ -142,8 +125,6 @@ export type ProviderCapabilities = {
   readonly maxOutputTokens: boolean;
   /** Whether `--effort`, or an equivalent, actually reaches the model. */
   readonly effort: boolean;
-  /** Whether the thinking budget can be set at all. */
-  readonly thinking: boolean;
   readonly nativeJsonMode: 'response_format' | 'json-schema' | 'none';
   /** false => the facade folds system text into the head of the user body. */
   readonly systemBlocks: boolean;

@@ -9,28 +9,17 @@ import type { FreeChatRoute } from '../services/ai/freeChatRouting';
 import type { AIProvider } from '../types/template';
 
 /**
- * How hard the model is asked to work, and whether it may think first.
+ * How hard the model is asked to work.
  *
- * Two knobs, because the CLI really has two and they are not the same thing.
+ * `--effort` is a documented CLI flag (low, medium, high, xhigh, max): how much
+ * reasoning the model spends before answering.
  *
- * `--effort` is a documented flag (low, medium, high, xhigh, max) and is the
- * depth control: how much reasoning the model spends before answering.
- *
- * Thinking is separate, adaptive, and already ON - the models decide per turn
- * whether to think, and measurably do: the same prompt run repeatedly produced
- * a thinking block about two thirds of the time with nothing configured.
- * `MAX_THINKING_TOKENS=0` suppressed it on every run. So the honest control is
- * "let the model decide" versus "don't", which is what these two values are.
- * There is deliberately no third "more thinking" option: raising the budget
- * could not be shown to change anything, and a setting that does nothing is
- * worse than no setting.
+ * There used to be a second knob beside it, `thinking`, which was an on/off for
+ * whether the model could think at all. It is gone. It reached only the Claude
+ * CLI provider - there is no equivalent on the API providers or in a chat
+ * window - so for anyone on the browser route it was a select box that did
+ * nothing, and thinking is adaptive and ON by default anyway.
  */
-export const THINKING_MODES = ['default', 'off'] as const;
-export type ThinkingMode = (typeof THINKING_MODES)[number];
-
-export function isThinkingMode(value: unknown): value is ThinkingMode {
-  return typeof value === 'string' && (THINKING_MODES as readonly string[]).includes(value);
-}
 
 /**
  * What a profile, or one generate request, asks for.
@@ -43,7 +32,6 @@ export type AiPreferences = {
   /** An `AIModelRecord` id, as configured under Admin -> Models. */
   modelId?: string;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
 };
 
 /** The label shown wherever a layer inherits rather than chooses. */
@@ -58,7 +46,6 @@ export function normalizeAiPreferences(raw: unknown): AiPreferences {
   const modelId = typeof record.modelId === 'string' ? record.modelId.trim() : '';
   if (modelId) preferences.modelId = modelId;
   if (isEffortLevel(record.effort)) preferences.effort = record.effort;
-  if (isThinkingMode(record.thinking)) preferences.thinking = record.thinking;
 
   return preferences;
 }
@@ -76,7 +63,6 @@ export function mergeAiPreferences(...layers: Array<AiPreferences | undefined>):
     if (!layer) continue;
     if (layer.modelId) merged.modelId = layer.modelId;
     if (layer.effort) merged.effort = layer.effort;
-    if (layer.thinking) merged.thinking = layer.thinking;
   }
   return merged;
 }
@@ -93,14 +79,9 @@ export function appDefaultEffort(env: NodeJS.ProcessEnv = process.env): EffortLe
   return isEffortLevel(configured) ? configured : DEFAULT_CLI_EFFORT;
 }
 
-/** Thinking when nothing names it: whatever the model does on its own. */
-export const APP_DEFAULT_THINKING: ThinkingMode = 'default';
-
 export type AiPreferenceDefaults = {
   effort: EffortLevel;
-  thinking: ThinkingMode;
   effortLevels: readonly EffortLevel[];
-  thinkingModes: readonly ThinkingMode[];
 };
 
 /** What the UI needs to label the inherit option and populate the selects. */
@@ -109,9 +90,7 @@ export function describeAiPreferenceDefaults(
 ): AiPreferenceDefaults {
   return {
     effort: appDefaultEffort(env),
-    thinking: APP_DEFAULT_THINKING,
     effortLevels: EFFORT_LEVELS,
-    thinkingModes: THINKING_MODES,
   };
 }
 
@@ -131,7 +110,6 @@ export type AiChoice = {
   modelId: string;
   modelLabel: string;
   effort?: EffortLevel;
-  thinking?: ThinkingMode;
   /**
    * Set only when the choice was Hybrid.
    *
@@ -184,7 +162,6 @@ export async function resolveAiChoice(
     modelId: model.id,
     modelLabel: hybrid ? `${model.name} (hybrid)` : model.name,
     effort: preferences.effort,
-    thinking: preferences.thinking,
     ...(hybrid ? { route: 'hybrid' as const } : {}),
   };
 }
@@ -194,6 +171,5 @@ export function describeAiChoice(choice: AiChoice): string {
   const parts = [`${choice.provider}/${choice.modelName}`];
   if (choice.route) parts.push(`route=${choice.route}`);
   if (choice.effort) parts.push(`effort=${choice.effort}`);
-  if (choice.thinking) parts.push(`thinking=${choice.thinking}`);
   return parts.join(' ');
 }

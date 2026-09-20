@@ -149,12 +149,63 @@ being refused on the thirtieth after twenty-nine resumes already exist.
 A brand-new account starts at **0** and needs an administrator to grant it some.
 Set `CREDIT_SIGNUP_GRANT` to give an open installation a self-serve trial instead.
 
+### The job sheet
+
+Every account gets **one Google spreadsheet of its own**, and inside it **one tab
+per day**, named `MM/DD/YYYY`. The tab is created on the first sign-in of that
+date and skipped on every sign-in after, so a day's rows stay together and a
+quiet day costs nothing. A new tab opens with the job columns - `NO(DATE)`,
+`Company`, `Job Title`, `Job Link`, `Job Description`, `Rate`, `note`,
+`Job Finder` - frozen, filtered and formatted.
+
+Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
+being able to log in is not, so a Google outage must not become an outage of
+logging in. The account page ensures the same thing when it loads, which is what
+covers an account whose sign-in ran while Google was down, and accounts created
+before this feature existed - a paced backfill at startup takes care of the rest.
+
+New sheets are **public by default**, meaning anyone with the link can *edit*
+them. The toggle on the account page withdraws that. Either way the server keeps
+its own access, because the file belongs to the service account rather than to a
+person - so job links, company names and descriptions still load after somebody
+goes private.
+
+Two things this needs from Google, and both are easy to miss:
+
+- The **Drive API** enabled for the same Cloud project as the key, not just the
+  Sheets API. Sharing is a Drive concept, and a missing Drive API produces a 403
+  that blames the file rather than the setting.
+- Room in the service account's own Drive. Files it creates count against *its*
+  quota, not against any person's, so a large installation should point the key
+  at a shared drive.
+
+**The job pages write into it.** Scraping jobs and filtering them used to make
+you supply a spreadsheet id, a tab name and four column letters. They now default
+to your own sheet, today's tab, and the layout above - `Company`, `Job Title`,
+`Job Link` and `Job Description` for an export; the job link read back, with the
+filter's verdict in `Rate` and its reason in `note`. Rows are appended after
+what is already there, and jobs already in the tab are skipped.
+
+**Who may point them where.** A spreadsheet id supplied by a request is checked
+rather than trusted: an ordinary account may address only its own sheet, and an
+administrator may also address the shared sources they configured on the admin
+page. Anything else is a 404. This matters more than it looks - the service
+account *owns* every account's spreadsheet, so a route that took an id on trust
+would read and overwrite anybody's for anyone who knew it, and a link-shared
+sheet hands that id out in its URL.
+
+`SHEET_TIMEZONE` decides which day a tab belongs to. A server running in UTC
+rolls the day over at midnight UTC, which for a user in New York is seven in the
+evening - so an evening's work would land on the next day's tab. Set it to the
+zone the users actually live in.
+
 ### Where data lives
 
 | Data | Storage |
 |------|---------|
 | Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
+| Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row. Sharing state is **not** stored - Drive is asked each time, because somebody can change it in Google's own UI and a cached copy would go quietly wrong |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
@@ -296,10 +347,21 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 git clone <repo-url>
 cd free_tailor
 
+npm run install:all     # root, backend and frontend
+```
+
+Or the three on their own, which is what `install:all` runs:
+
+```bash
 npm install
 npm install --prefix backend
 npm install --prefix frontend
 ```
+
+**Already have a checkout?** Run `npm run install:all` again after every pull.
+A pull brings new `package.json` entries but not the packages themselves, and
+the symptom is a compile error naming a module that "cannot be found" - most
+recently `nodemailer`, which v2 added for the emailed sign-in codes.
 
 ### 2. Environment Setup
 
@@ -446,7 +508,7 @@ File and folder names are templated per profile.
 | **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
 | **Browser Chat (free)** | Register a debug port per browser here; registering saves immediately, because this list is what the providers and the launcher both read. It shows each platform as **Active** or **Not active** (active = the provider found a signed-in chat tab, which a port probe alone cannot tell from a signed-out one) and the ports registered, reachable, and showing the site. It does **not** start browsers - `npm run browser:debug` does. Unregistering forgets a browser here; it does not close a window |
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
-| **AI defaults per profile** | Each profile picks its own model, effort (`low`..`max`) and thinking mode; the builder shows those defaults and can override any of them for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag. Thinking is on by default and adaptive - the models decide per answer - so the choice is whether to allow it, not how much; depth is what effort controls |
+| **AI defaults per profile** | Each profile picks its own model and effort (`low`..`max`); the builder shows those defaults and can override either for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag: how much reasoning the model spends before answering |
 | **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
 | **Skills** | Maintain the hard/soft skill library |
@@ -476,7 +538,9 @@ File and folder names are templated per profile.
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
-| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets. Needs **both** the Sheets API and the Drive API enabled for its Cloud project - the per-account sheets are shared through Drive |
+| `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
+| `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
 
 See `.env.example` for the full `AI_CLI_*` list.
 
@@ -508,7 +572,7 @@ See `.env.example` for the full `AI_CLI_*` list.
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
 | One browser is out of messages and the whole request fails | Fixed. A browser that is reachable but cannot take the prompt - out of messages, signed out, wedged, or a previous turn that never let go - is passed over for the next browser of that site, and left out for a few minutes so later calls skip it too. That is the reason to run more than one: each window is a separate session, so an account's wall is not the site's. The retry only happens when the prompt never reached the site; once it has landed, another browser would be asking the same question twice. When every browser refuses, the error is still that browser's own (a usage wall is a 429, a signed-out tab a 503) with each browser and its reason named in the log. |
 | A free account runs out of messages halfway through a batch | Nothing to set - **Default (browser)** already spreads calls across both free accounts. A tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry, so it moves to the other whenever one is out of messages, signed out, or has no browser running. It appears whenever at least one free provider is enabled, and covers whichever of the two are. |
-| Effort and Thinking are greyed out | The chosen model is a chat window, and a chat window has no effort flag and no thinking budget - there is nowhere to put either. The two selects go inactive rather than accept a setting that would change nothing. Pick the Claude CLI seat to get them back. |
+| Effort is greyed out | The chosen model is a chat window, and a chat window has no effort flag - there is nowhere to put one. The select goes inactive rather than accept a setting that would change nothing. Pick the Claude CLI seat to get it back. |
 | Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
@@ -528,7 +592,7 @@ See `.env.example` for the full `AI_CLI_*` list.
 | A browser provider says the tab `was navigated to ...` | Something moved that tab off the chat site mid-answer - usually a link clicked in it. Give the app a tab of its own in the debug browser, or leave that window alone while a run is in flight. |
 | A browser provider returns the prompt instead of an answer | The site's assistant selector is also matching your own message. The backend refuses the answer rather than tailoring a resume to the instructions, and says so. Set `AI_WEB_CLAUDE_ASSISTANT` or `AI_WEB_CHATGPT_ASSISTANT` to something that can only match an assistant turn. |
 | A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
-| An effort or thinking choice appears to do nothing | Look for `[ai] ... has no effort control` in the backend output. Only the Claude CLI provider honours them; the metered OpenAI, Anthropic and DeepSeek transports report them as dropped rather than pretending they applied. Switch the model, on the profile or under Admin → Models, to a Claude CLI one. |
+| An effort choice appears to do nothing | Look for `[ai] ... has no effort control` in the backend output. Only the Claude CLI provider honours it; the metered OpenAI, Anthropic and DeepSeek transports report it as dropped rather than pretending it applied. Switch the model, on the profile or under Admin → Models, to a Claude CLI one. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |
 | `The Claude CLI is not installed or is not on the server PATH` | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows npm installs the CLI as `claude.cmd`, a shim wrapping `node_modules\@anthropic-ai\claude-code\bin\claude.exe`; the server follows the shim to that binary on its own, so `AI_CLI_BIN` is only needed if that fails, and then it should name the `.exe`, not the `.cmd`. |

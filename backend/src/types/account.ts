@@ -15,6 +15,16 @@ export interface UserAccount {
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+  /** The account's own Google spreadsheet, once one has been allocated. */
+  sheetId?: string;
+  sheetUrl?: string;
+  /**
+   * The last `MM/DD/YYYY` tab prepared in it. A cache of work already done, not
+   * a fact about the spreadsheet - see the column comment in sqlite.ts.
+   */
+  sheetTabDate?: string;
+  /** The gid of that tab, for a link that opens the right day. */
+  sheetTabGid?: string;
 }
 
 /**

@@ -110,13 +110,9 @@ function AccountsTable() {
     }
   };
 
-  const openHistory = async (id: string) => {
-    if (historyFor === id) {
-      setHistoryFor(null);
-      return;
-    }
+  /** Fetches one account's ledger into the panel. Does not open or close it. */
+  const reloadHistory = async (id: string) => {
     const token = (ledgerRequest.current += 1);
-    setHistoryFor(id);
     setHistory([]);
     setHistoryLoading(true);
     try {
@@ -133,6 +129,15 @@ function AccountsTable() {
     }
   };
 
+  const openHistory = async (id: string) => {
+    if (historyFor === id) {
+      setHistoryFor(null);
+      return;
+    }
+    setHistoryFor(id);
+    await reloadHistory(id);
+  };
+
   const grant = async (row: ManagedAccount) => {
     const amount = Number(grantAmount);
     if (!Number.isFinite(amount) || Math.floor(amount) === 0) return;
@@ -144,7 +149,10 @@ function AccountsTable() {
     setGrantFor(null);
     setGrantAmount('');
     setGrantNote('');
-    if (historyFor === row.id) await openHistory(row.id);
+    // Reloaded, not re-opened: openHistory TOGGLES, so calling it on the row
+    // whose history is already open would close the panel the grant was
+    // supposed to appear in.
+    if (historyFor === row.id) await reloadHistory(row.id);
   };
 
   const invite = async (event: React.FormEvent) => {

@@ -1,7 +1,6 @@
 import {
   getProviderDescriptor,
   providerSupportsEffort,
-  providerSupportsThinking,
 } from '../../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../../errors';
 import { acquireSlot, getProviderSemaphore } from '../../concurrency';
@@ -74,10 +73,8 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     // call site instead of silently dropping it on every call.
     temperature: false,
     maxOutputTokens: false,
-    // The two it does have: --effort is a documented flag, and the thinking
-    // budget is set through the child's environment.
+    // The one it does have: --effort, a documented flag.
     effort: providerSupportsEffort(PROVIDER_ID),
-    thinking: providerSupportsThinking(PROVIDER_ID),
     nativeJsonMode: 'json-schema',
     systemBlocks: true,
     requiresApiKey: false,
@@ -188,10 +185,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       const outcome = await runner.run({
         binary: config.binary,
         argv: invocation.argv,
-        env: buildChildEnv(process.env, {
-          allowApiKey: config.allowApiKey,
-          thinking: request.thinking,
-        }),
+        env: buildChildEnv(process.env, { allowApiKey: config.allowApiKey }),
         cwd: config.workdir,
         stdin,
         deadlineMs: Math.max(1_000, Math.min(request.deadline.remainingMs(), resolveTimeoutMs(config, request.callSite))),

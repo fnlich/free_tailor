@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import AppTopNav from '@/components/AppTopNav';
+import { useAuth } from '@/contexts/AuthContext';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import {
   getAIProviderLabel,
   GoogleSheetJobFilterResponse,
@@ -75,6 +77,11 @@ export default function JobFilterPage() {
   const [sheetSources, setSheetSources] = useState<GoogleSheetSource[]>([]);
   const [sheetTabs, setSheetTabs] = useState<GoogleSheetTab[]>([]);
   const [sheetTitle, setSheetTitle] = useState('');
+  const { account } = useAuth();
+  const isAdmin = account?.role === 'admin';
+  const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
+  // Ordinary accounts filter their own sheet and nothing else.
+  const [target, setTarget] = useState<'mine' | 'shared'>('mine');
   const [form, setForm] = useState<FilterFormState>(DEFAULT_FORM);
   const [summary, setSummary] = useState<GoogleSheetJobFilterResponse | null>(null);
   const [error, setError] = useState('');
@@ -116,6 +123,16 @@ export default function JobFilterPage() {
     };
   }, []);
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAccountSheet(await sheetApi.get());
+      } catch {
+        setAccountSheet(null);
+      }
+    })();
+  }, []);
+
   const handleLoadTabs = async () => {
     const sheetId = form.sheetId.trim();
     if (!sheetId) {
@@ -147,43 +164,55 @@ export default function JobFilterPage() {
     event.preventDefault();
 
     try {
-      const startRow = parsePositiveWholeNumber('Start row', form.startRow);
-      const endRow = parsePositiveWholeNumber('End row', form.endRow);
-      const jobLinkCol = parseSpreadsheetColumnInput('Job link column', form.jobLinkCol);
-      const resultCol = parseSpreadsheetColumnInput('Result column', form.resultCol);
-      const reasonCol = parseSpreadsheetColumnInput('Reason column', form.reasonCol);
+      // Own sheet: send nothing. The server knows the spreadsheet, today's
+      // tab, which column the job links are in, and that the verdict belongs
+      // in `Rate` with its reason in `note`. It also decides the last row, so
+      // "everything in today's tab" needs no arithmetic here.
+      let payload: Parameters<typeof jobsApi.filterGoogleSheetJobs>[0] = {};
 
-      if (!form.tabName.trim()) {
-        throw new Error('Sheet tab is required.');
-      }
+      if (target === 'shared') {
+        const startRow = parsePositiveWholeNumber('Start row', form.startRow);
+        const endRow = parsePositiveWholeNumber('End row', form.endRow);
+        const jobLinkCol = parseSpreadsheetColumnInput('Job link column', form.jobLinkCol);
+        const resultCol = parseSpreadsheetColumnInput('Result column', form.resultCol);
+        const reasonCol = parseSpreadsheetColumnInput('Reason column', form.reasonCol);
 
-      if (startRow > endRow) {
-        throw new Error('Start row must be less than or equal to end row.');
-      }
+        // Same reason as the export page: an empty id would resolve to the
+        // caller's own sheet, which is not what "a shared sheet" asked for.
+        if (!form.sheetId.trim()) {
+          throw new Error('Choose a shared Google Sheet, or switch back to your own job sheet.');
+        }
 
-      const distinctColumns = [
-        jobLinkCol,
-        resultCol,
-        reasonCol,
-      ];
+        if (!form.tabName.trim()) {
+          throw new Error('Sheet tab is required.');
+        }
 
-      if (new Set(distinctColumns).size !== distinctColumns.length) {
-        throw new Error('Job link and output columns must all be different.');
+        if (startRow > endRow) {
+          throw new Error('Start row must be less than or equal to end row.');
+        }
+
+        const distinctColumns = [jobLinkCol, resultCol, reasonCol];
+
+        if (new Set(distinctColumns).size !== distinctColumns.length) {
+          throw new Error('Job link and output columns must all be different.');
+        }
+
+        payload = {
+          sheetId: form.sheetId.trim(),
+          tabName: form.tabName.trim(),
+          startRow,
+          endRow,
+          jobLinkCol,
+          resultCol,
+          reasonCol,
+        };
       }
 
       setIsLoading(true);
       setError('');
       setSummary(null);
 
-      const response = await jobsApi.filterGoogleSheetJobs({
-        sheetId: form.sheetId.trim(),
-        tabName: form.tabName.trim(),
-        startRow,
-        endRow,
-        jobLinkCol,
-        resultCol,
-        reasonCol,
-      });
+      const response = await jobsApi.filterGoogleSheetJobs(payload);
 
       setSummary(response);
     } catch (err) {
@@ -221,6 +250,49 @@ export default function JobFilterPage() {
 
         <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-950/85">
           <form className="space-y-6" onSubmit={handleSubmit}>
+            {isAdmin && (
+              <div className="flex flex-wrap gap-2">
+                {(['mine', 'shared'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setTarget(option)}
+                    disabled={isLoading}
+                    className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                      target === option
+                        ? 'border-emerald-500 bg-emerald-600 text-white'
+                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                    }`}
+                  >
+                    {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {target === 'mine' ? (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+                {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
+                  <>
+                    Filters every job on the{' '}
+                    <a
+                      className="font-semibold underline"
+                      href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {accountSheet.todayTab}
+                    </a>{' '}
+                    tab of your job sheet, reading the Job Link column and writing the verdict into
+                    <span className="font-semibold"> Rate</span> with its reason in
+                    <span className="font-semibold"> note</span>. Rows already judged are skipped.
+                  </>
+                ) : (
+                  "Filters every job on today's tab of your own job sheet."
+                )}
+              </div>
+            ) : (
+            <>
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
               <label className="space-y-2">
                 <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Google Sheet</span>
@@ -233,7 +305,7 @@ export default function JobFilterPage() {
                     setSheetTitle('');
                   }}
                   className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                  disabled={isLoading || !hasSavedSheets}
+                  disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
                 >
                   <option value="">
                     {hasSavedSheets ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
@@ -341,6 +413,8 @@ export default function JobFilterPage() {
                 />
               </label>
             </div>
+            </>
+            )}
 
             <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-4 text-sm text-blue-900 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100">
               Uses the live <span className="font-semibold">Filter Google Sheet Job</span> prompt from{' '}
@@ -354,7 +428,11 @@ export default function JobFilterPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 type="submit"
-                disabled={isLoading || !hasSavedSheets}
+                // Gated on the shared source ONLY when that is what was chosen.
+                // Gating it always made the ordinary path - your own sheet, which
+                // needs no configuration at all - impossible to run on an install
+                // where no administrator had ever saved a shared sheet.
+                disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
                 className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-emerald-300"
               >
                 {isLoading ? 'Filtering jobs...' : 'Run job filter'}

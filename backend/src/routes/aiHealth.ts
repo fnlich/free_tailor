@@ -28,7 +28,7 @@ const router = express.Router();
 router.use(requireUser);
 
 
-router.get('/health', requireUser, async (_req: Request, res: Response) => {
+router.get('/health', async (_req: Request, res: Response) => {
   try {
     const capabilities = listProviderCapabilities();
     const providers = await Promise.all(
