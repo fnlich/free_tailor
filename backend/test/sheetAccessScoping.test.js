@@ -130,11 +130,7 @@ const ID_TAKING_ROUTES = [
   },
   {
     path: '/api/jobs/scrapers/export',
-    body: () => ({ source: 'linkedin', tabName: 'Sheet1', startRow: 2 }),
-  },
-  {
-    path: '/api/jobs/linkedin/search-and-export',
-    body: () => ({ keywords: 'engineer', tabName: 'Sheet1', startRow: 2 }),
+    body: () => ({ source: 'indeed', tabName: 'Sheet1', startRow: 2 }),
   },
 ];
 
@@ -183,7 +179,7 @@ test('the guard runs before any work, so nothing is scraped or written first', a
     // A scrape request that would take minutes if it got past the guard. It
     // comes back immediately, which is the evidence that it did not.
     const response = await server.post(server.aliceToken, '/api/jobs/scrapers/export', {
-      source: 'linkedin',
+      source: 'indeed',
       sheetId: bobsSheet,
       tabName: 'Sheet1',
       startRow: 2,

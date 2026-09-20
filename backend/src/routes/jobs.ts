@@ -7,13 +7,6 @@ import {
   GoogleSheetsRequestError,
   updateGoogleSheetsRow,
 } from '../integrations/googleSheets';
-import {
-  hasLinkedInExternalApplyUrl,
-  LinkedInJobResult,
-  normalizeLinkedInLimit,
-  resolveLinkedInPostedSince,
-  searchLinkedInRemoteJobs,
-} from '../services/linkedinJobs';
 import { JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW } from '../integrations/googleSheets';
 import { SheetAccessError } from '../services/sheets/accountSheet';
 import {
@@ -48,8 +41,8 @@ const router = Router();
  */
 router.use(requireUser);
 
-const LINKEDIN_EXPORT_BATCH_SIZE = 50;
-const DEFAULT_LINKEDIN_LOCATION = 'United States';
+const SCRAPER_EXPORT_BATCH_SIZE = 50;
+const DEFAULT_SCRAPER_LOCATION = 'United States';
 const BROAD_SOFTWARE_TITLE_PATTERNS = [
   /\bsoftware (engineer|developer)\b/i,
   /\b(frontend|front-end|backend|back-end|full[- ]stack|web|mobile|ios|android|embedded|firmware|systems|cloud|platform|infrastructure|devops|site reliability|sre|security|application security|data|machine learning|mlops|ai|computer vision|robotics|distributed systems|database|storage)\s+(engineer|developer)\b/i,
@@ -105,7 +98,7 @@ function toColumnLetters(columnNumber: number): string {
   return letters;
 }
 
-function getJobSheetLink(job: LinkedInJobResult): string {
+function getJobSheetLink(job: { externalApplyUrl?: string }): string {
   return job.externalApplyUrl || '';
 }
 
@@ -174,28 +167,6 @@ function normalizeScraperFilters(
   source: ScraperSource,
   providerId?: string
 ): UnifiedScraperFilters {
-  if (source === 'linkedin') {
-    const title = typeof payload.title === 'string'
-      ? payload.title.trim()
-      : typeof payload.keywords === 'string'
-        ? payload.keywords.trim()
-        : '';
-    if (!title) {
-      throw new GoogleSheetsRequestError(400, 'title is required.');
-    }
-
-    const rowsValue = payload.rows ?? payload.maxResults;
-    const rows = rowsValue === undefined ? 1000 : toPositiveInteger('rows', rowsValue);
-    if (rows > 1000) {
-      throw new GoogleSheetsRequestError(400, 'rows must be 1000 or less.');
-    }
-
-    return {
-      title,
-      rows,
-    };
-  }
-
   const keywords = typeof payload.keywords === 'string' ? payload.keywords.trim() : '';
   const startUrl = normalizeOptionalHttpUrl('startUrl', payload.startUrl);
   const requiresStartUrlOnly = isStartUrlOnlyProvider(source, providerId);
@@ -402,14 +373,10 @@ function applySourceSpecificScraperDefaults(
   source: ScraperSource,
   filters: UnifiedScraperFilters
 ): UnifiedScraperFilters {
-  if (source === 'linkedin') {
-    return filters;
-  }
-
   if (!filters.location) {
     return {
       ...filters,
-      location: DEFAULT_LINKEDIN_LOCATION,
+      location: DEFAULT_SCRAPER_LOCATION,
     };
   }
 
@@ -429,18 +396,6 @@ async function runScraper(
 }> {
   const provider = resolveScraperProvider(source, providerId);
   const rawResults = await provider.run(filters);
-
-  if (source === 'linkedin') {
-    const finalResults = rawResults.slice(0, filters.rows ?? 1000);
-
-    return {
-      provider,
-      rawResultCount: rawResults.length,
-      resultsWithinPostedWindowCount: rawResults.length,
-      remoteFilteredCount: 0,
-      finalResults,
-    };
-  }
 
   const keywordScopedResults = shouldApplyBroadSoftwareRoleFilter(filters.keywords ?? '')
     ? rawResults.filter((job) => matchesBroadSoftwareRoleJob(job))
@@ -687,7 +642,7 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
         jobDescription: job.description,
       });
 
-      if (pendingRows.length >= LINKEDIN_EXPORT_BATCH_SIZE) {
+      if (pendingRows.length >= SCRAPER_EXPORT_BATCH_SIZE) {
         await flushPendingRows();
       }
     }
@@ -742,205 +697,6 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
         : /unknown scraper provider/i.test(message)
           ? 400
         : /rate limited|timed out/i.test(message)
-          ? 429
-          : 500;
-    res.status(statusCode).json({ error: message });
-  }
-});
-
-router.get('/linkedin', async (req: Request, res: Response) => {
-  try {
-    const keywords = typeof req.query.keywords === 'string' ? req.query.keywords : '';
-
-    if (!keywords.trim()) {
-      res.status(400).json({ error: 'Keywords are required' });
-      return;
-    }
-
-    const postedSince = resolveLinkedInPostedSince(req.query.postedSince);
-    const limit = normalizeLinkedInLimit(req.query.limit);
-    const result = await searchLinkedInRemoteJobs({
-      keywords,
-      postedSince,
-      limit,
-    });
-
-    res.json(result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch LinkedIn jobs';
-    const statusCode = /rate limited/i.test(message) ? 429 : 500;
-    res.status(statusCode).json({ error: message });
-  }
-});
-
-router.post('/linkedin/search-and-export', async (req: Request, res: Response) => {
-  try {
-    const body = req.body ?? {};
-    // FIRST, for the reason spelled out on the scraper export above.
-    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
-
-    const keywords = typeof body.keywords === 'string' ? body.keywords : '';
-    if (!keywords.trim()) {
-      res.status(400).json({ error: 'Keywords are required' });
-      return;
-    }
-
-    const postedSince = resolveLinkedInPostedSince(body.postedSince);
-    const limit = normalizeLinkedInLimit(body.limit);
-    const companyNameCol = resolveColumn('Company column', body.companyNameCol, JOB_SHEET_COLUMNS.company);
-    const jobTitleCol = resolveColumn('Job title column', body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
-    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
-    const jobDescriptionCol = resolveColumn('Job description column', body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
-    const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
-    const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: companyNameCol,
-      }),
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: jobTitleCol,
-      }),
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: jobLinkCol,
-      }),
-    ]);
-
-    if (!sheetMetadata.tabs.some((tab) => tab.title === String(tabName ?? '').trim())) {
-      throw new GoogleSheetsRequestError(400, `Tab "${String(tabName ?? '')}" was not found in the spreadsheet.`);
-    }
-
-    // Appends. Starting at row 2 by default would overwrite the morning's rows
-    // on the afternoon's run; the columns are already in hand for the
-    // duplicate check, so their length is the honest first free row.
-    const startRow = resolveAppendRow(body.startRow, [
-      existingCompanyColumn,
-      existingJobTitleColumn,
-      existingJobLinkColumn,
-    ]);
-
-    const seenJobs = buildSeenExportRowKeys(
-      existingCompanyColumn.values,
-      existingJobTitleColumn.values,
-      existingJobLinkColumn.values
-    );
-    let rowsWritten = 0;
-    let unresolvedJobLinks = 0;
-    let skippedCompanyDuplicates = 0;
-    let pendingRows: Array<{
-      companyName: string;
-      jobTitle: string;
-      jobLink: string;
-      jobDescription: string;
-    }> = [];
-
-    const flushPendingRows = async () => {
-      if (pendingRows.length === 0) {
-        return;
-      }
-
-      const batchStartRow = startRow + rowsWritten;
-      const batchRows = pendingRows;
-
-      await batchUpdateGoogleSheetsColumns({
-        sheetId,
-        tabName,
-        startRow: batchStartRow,
-        updates: [
-          { col: companyNameCol, values: batchRows.map((row) => row.companyName) },
-          { col: jobTitleCol, values: batchRows.map((row) => row.jobTitle) },
-          { col: jobLinkCol, values: batchRows.map((row) => row.jobLink) },
-          { col: jobDescriptionCol, values: batchRows.map((row) => row.jobDescription) },
-        ],
-      });
-
-      rowsWritten += batchRows.length;
-      unresolvedJobLinks += batchRows.filter((row) => !row.jobLink).length;
-      pendingRows = [];
-
-      console.info(
-        `[LinkedIn Jobs] Wrote rows ${batchStartRow}-${batchStartRow + batchRows.length - 1} to Google Sheets ` +
-          `(${rowsWritten} job${rowsWritten === 1 ? '' : 's'} exported).`
-      );
-    };
-
-    const result = await searchLinkedInRemoteJobs({
-      keywords,
-      postedSince,
-      limit,
-      onJobCollected: async (job) => {
-        if (!hasLinkedInExternalApplyUrl(job)) {
-          return;
-        }
-
-        const jobLink = getJobSheetLink(job);
-        const duplicateKeys = buildExportRowDuplicateKeys({
-          companyName: job.company,
-          jobTitle: job.title,
-          jobLink,
-        });
-
-        if (duplicateKeys.some((key) => seenJobs.has(key))) {
-          skippedCompanyDuplicates += 1;
-          return;
-        }
-
-        for (const key of duplicateKeys) {
-          seenJobs.add(key);
-        }
-
-        pendingRows.push({
-          companyName: job.company,
-          jobTitle: job.title,
-          jobLink,
-          jobDescription: job.description,
-        });
-
-        if (pendingRows.length >= LINKEDIN_EXPORT_BATCH_SIZE) {
-          await flushPendingRows();
-        }
-      },
-    });
-    await flushPendingRows();
-    const endRow = rowsWritten > 0 ? startRow + rowsWritten - 1 : startRow;
-    const updatedRanges =
-      rowsWritten > 0
-        ? [
-            buildColumnRange(String(tabName), startRow, endRow, Number(companyNameCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobTitleCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobLinkCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobDescriptionCol)),
-          ]
-        : [];
-
-    res.json({
-      ...result,
-      export: {
-        spreadsheetId: sheetMetadata.spreadsheetId,
-        spreadsheetTitle: sheetMetadata.spreadsheetTitle,
-        selectedTab: String(tabName),
-        updatedRanges,
-        rowsWritten,
-        startRow,
-        endRow,
-        unresolvedJobLinks,
-        skippedCompanyDuplicates,
-      },
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export LinkedIn jobs';
-    const statusCode =
-      // A 404 from the addressability guard, so a caller cannot learn whether
-      // somebody else's spreadsheet exists by watching the status change.
-      error instanceof SheetAccessError
-        ? error.status
-        : error instanceof GoogleSheetsRequestError
-        ? error.statusCode
-        : /rate limited/i.test(message)
           ? 429
           : 500;
     res.status(statusCode).json({ error: message });

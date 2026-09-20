@@ -7,31 +7,63 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import AccountMenu from '@/components/auth/AccountMenu';
 import { useAuth } from '@/contexts/AuthContext';
+import { planAtLeast, type AccountPlanId } from '@/lib/plans';
+import { sheetApi } from '@/lib/sheet';
 
 type Props = {
   onLogout?: () => void;
 };
 
-const NAV_ITEMS = [
+type NavItem = {
+  href: string;
+  label: string;
+  /** Who may see it. Absent means everybody who is signed in. */
+  needs?: 'admin' | AccountPlanId;
+};
+
+/**
+ * The whole navigation, with what each entry requires.
+ *
+ * Declared together rather than assembled in the markup so there is ONE list to
+ * read when asking "who can see what" - and because the bar and the mobile menu
+ * both render it, so a rule applied in one place would otherwise have to be
+ * remembered in the other.
+ *
+ * Hiding is not the protection. Every one of these pages carries its own gate
+ * and every route behind them carries a middleware; this only stops the app
+ * offering somebody a door that will not open.
+ */
+const NAV_ITEMS: NavItem[] = [
   { href: '/', label: 'Builder' },
   { href: '/calendar', label: 'Calendar' },
-  { href: '/jobs', label: 'LinkedIn Jobs' },
+  // Was "LinkedIn Jobs" while LinkedIn was one of its scrapers. It is not any
+  // more, and a label naming a source the page cannot run would be a lie.
+  { href: '/jobs', label: 'Jobs' },
   { href: '/jobs/filter', label: 'Job Filter' },
   { href: '/bid-assistant', label: 'Bid Assistant' },
-  { href: '/test', label: 'Test' },
+  { href: '/test', label: 'Test', needs: 'admin' },
   { href: '/admin/profiles', label: 'Profiles' },
-  { href: '/admin/templates', label: 'Templates' },
-  { href: '/admin/groups', label: 'Groups' },
+  // Templates are shared by the whole installation, so only an administrator
+  // may manage them. Everybody still picks one when building.
+  { href: '/admin/templates', label: 'Templates', needs: 'admin' },
+  { href: '/admin/groups', label: 'Groups', needs: 'premium' },
 ];
 
-/** Shown to everybody. The admin-only entry is appended below. */
+/** Every settings page is administrator-only, so the whole control is. */
 const SETTINGS_ITEMS = [
   { href: '/admin/settings', label: 'General' },
   { href: '/admin/google-sheets', label: 'Google Sheets' },
   { href: '/admin/prompts', label: 'Prompts' },
   { href: '/admin/models', label: 'Models' },
   { href: '/admin/skills', label: 'Skill Library' },
+  { href: '/admin/accounts', label: 'Accounts' },
 ];
+
+function canSee(item: NavItem, isAdmin: boolean, plan: unknown): boolean {
+  if (!item.needs) return true;
+  if (item.needs === 'admin') return isAdmin;
+  return planAtLeast(plan, item.needs);
+}
 
 function isActivePath(pathname: string, href: string): boolean {
   if (href === '/') {
@@ -42,13 +74,32 @@ function isActivePath(pathname: string, href: string): boolean {
 
 export default function AppTopNav({ onLogout }: Props) {
   const pathname = usePathname();
-  const { isAdmin } = useAuth();
-  // Appended rather than always present: a user who clicked it would only get
-  // the "administrators only" explanation, which is a worse answer than not
-  // offering it.
-  const settingsItems = isAdmin
-    ? [...SETTINGS_ITEMS, { href: '/admin/accounts', label: 'Accounts' }]
-    : SETTINGS_ITEMS;
+  const { isAdmin, account } = useAuth();
+  const navItems = NAV_ITEMS.filter((item) => canSee(item, isAdmin, account?.plan));
+  // The whole control, not just the Accounts entry inside it: every page behind
+  // it is administrator-only, so offering the menu to anybody else is offering
+  // five doors that all say "administrators only".
+  const settingsItems = isAdmin ? SETTINGS_ITEMS : [];
+
+  /**
+   * The account's own job sheet, for the "Find the job" link.
+   *
+   * Fetched once here because the link lives in the bar on every page. It is
+   * left out entirely until there is a URL to open - while it loads, when the
+   * server has no Google key, and when allocation has not finished - since a
+   * link that opens about:blank is worse than no link at all.
+   */
+  const [sheetUrl, setSheetUrl] = useState('');
+  useEffect(() => {
+    void (async () => {
+      try {
+        const sheet = await sheetApi.get();
+        setSheetUrl(sheet.configured ? (sheet.todayTabUrl ?? sheet.spreadsheetUrl ?? '') : '');
+      } catch {
+        setSheetUrl('');
+      }
+    })();
+  }, []);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement | null>(null);
@@ -70,6 +121,26 @@ export default function AppTopNav({ onLogout }: Props) {
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, []);
 
+  /**
+   * Not a `Link`: it leaves the app entirely, for Google's own page.
+   *
+   * `target="_blank"` on purpose - somebody looking up a job is in the middle
+   * of building a resume, and taking the tab away from them would lose it.
+   */
+  const findTheJob = (onNavigate?: () => void, className?: string) =>
+    sheetUrl ? (
+      <a
+        href={sheetUrl}
+        target="_blank"
+        rel="noreferrer"
+        onClick={onNavigate}
+        className={className}
+        title="Opens today's tab of your job sheet in a new tab"
+      >
+        Find the job
+      </a>
+    ) : null;
+
   const isSettingsActive = settingsItems.some((item) => isActivePath(pathname, item.href));
   const mobileMenuPanel =
     isMobileMenuOpen && typeof document !== 'undefined'
@@ -79,7 +150,11 @@ export default function AppTopNav({ onLogout }: Props) {
             className="fixed left-4 right-4 top-[4.5rem] max-h-[calc(100vh-5.5rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white py-2 shadow-xl dark:border-slate-800 dark:bg-slate-950"
             style={{ zIndex: 2147483000 }}
           >
-            {NAV_ITEMS.map((item) => {
+            {findTheJob(
+              () => setIsMobileMenuOpen(false),
+              'block px-4 py-3 text-sm font-semibold text-emerald-700 hover:bg-gray-50 dark:text-emerald-300 dark:hover:bg-slate-900'
+            )}
+            {navItems.map((item) => {
               const isActive = isActivePath(pathname, item.href);
               return (
                 <Link
@@ -144,7 +219,11 @@ export default function AppTopNav({ onLogout }: Props) {
             <span className="hidden sm:inline">FreeBuilder</span>
           </Link>
           <nav className="hidden flex-wrap items-center gap-2 md:flex">
-            {NAV_ITEMS.map((item) => {
+            {findTheJob(
+              undefined,
+              'rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700'
+            )}
+            {navItems.map((item) => {
               const isActive = isActivePath(pathname, item.href);
               return (
                 <Link
@@ -161,6 +240,7 @@ export default function AppTopNav({ onLogout }: Props) {
               );
             })}
 
+            {settingsItems.length > 0 && (
             <div className="relative" ref={settingsRef}>
               <button
                 type="button"
@@ -196,6 +276,7 @@ export default function AppTopNav({ onLogout }: Props) {
                 </div>
               )}
             </div>
+            )}
           </nav>
         </div>
 

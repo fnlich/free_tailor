@@ -4,24 +4,23 @@ const test = require('node:test');
 const { loadFresh } = require('./helpers');
 const { normalizeHiringCafeItems, normalizeIndeedItems } = require('../scrapers/normalize');
 
-test('scraper provider catalog keeps all categories and limits LinkedIn to Bebity', () => {
+test('scraper provider catalog keeps every remaining category', () => {
   const {
     listScraperProviderCatalog,
     resolveScraperProvider,
+    SCRAPER_SOURCES,
   } = loadFresh('../dist/services/scraperProviders');
 
   const catalog = listScraperProviderCatalog();
-  const linkedin = catalog.find((entry) => entry.source === 'linkedin');
   const indeed = catalog.find((entry) => entry.source === 'indeed');
   const hiringCafe = catalog.find((entry) => entry.source === 'hiringcafe');
   const jobboard = catalog.find((entry) => entry.source === 'jobboard');
 
-  assert.ok(linkedin);
-  assert.equal(linkedin.defaultProviderId, 'apify-bebity');
-  assert.deepEqual(
-    linkedin.providers.map((provider) => provider.id),
-    ['apify-bebity']
-  );
+  // LinkedIn was removed, and removing a source must not disturb the others -
+  // they shared the registry with it.
+  assert.deepEqual([...SCRAPER_SOURCES], ['indeed', 'jobboard', 'wellfound', 'lever', 'hiringcafe']);
+  assert.equal(catalog.find((entry) => entry.source === 'linkedin'), undefined);
+  assert.equal(catalog.length, 5);
 
   assert.ok(indeed);
   assert.equal(indeed.defaultProviderId, 'apify-misceres');
@@ -43,10 +42,11 @@ test('scraper provider catalog keeps all categories and limits LinkedIn to Bebit
     ['apify-jobboard']
   );
 
-  assert.equal(resolveScraperProvider('linkedin').id, 'apify-bebity');
   assert.equal(resolveScraperProvider('indeed').id, 'apify-misceres');
   assert.equal(resolveScraperProvider('lever').id, 'apify-lever');
-  assert.throws(() => resolveScraperProvider('linkedin', 'missing-provider'), /Unknown scraper provider/);
+  assert.throws(() => resolveScraperProvider('indeed', 'missing-provider'), /Unknown scraper provider/);
+  // And the removed one is not resolvable by name any more.
+  assert.throws(() => resolveScraperProvider('linkedin'), /Unknown scraper/);
 });
 
 test('hiring cafe normalization supports alternative provider fields', () => {

@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { planAtLeast, type AccountPlanId } from '@/lib/plans';
 import SignInPanel from './SignInPanel';
 
 /**
@@ -90,6 +91,48 @@ export function AdminOnly({ children }: { children: ReactNode }) {
         <p className="mt-1">
           This page manages settings shared by everybody on this installation, so it is limited to
           administrator accounts. Ask an administrator here if you need something changed.
+        </p>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
+/**
+ * The same idea again, for a section an account's PLAN does not include.
+ *
+ * Separate from `AdminOnly` because the remedy is different and the sentence has
+ * to say so: "ask an administrator" is right for a settings page and useless for
+ * a plan limit, where what is needed is a different plan on your own account.
+ *
+ * Note it does not let administrators through. Being an administrator is a role
+ * - who may change things shared by everybody - and a plan is an entitlement;
+ * the backend `requirePlan` draws the same line, and a gate that disagreed with
+ * it would show somebody a page whose every request then failed.
+ */
+export function RequiresPlan({
+  minimum,
+  label,
+  children,
+}: {
+  minimum: AccountPlanId;
+  /** How the plan reads to a person, e.g. "Premium". */
+  label: string;
+  children: ReactNode;
+}) {
+  const { account, loading } = useAuth();
+
+  if (loading) return <p className="text-sm text-gray-500">Loading...</p>;
+
+  if (!planAtLeast(account?.plan, minimum)) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-100">
+        <p className="font-semibold">Needs a {label} plan</p>
+        <p className="mt-1">
+          This part of the app is included from {label} upwards. Your account is on{' '}
+          <strong>{account?.planLabel ?? 'a plan that does not include it'}</strong>. Plans are set
+          by an administrator of this installation, so ask them to move your account.
         </p>
       </div>
     );

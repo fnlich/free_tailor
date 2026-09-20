@@ -83,6 +83,20 @@ export function listAccountPlans(): AccountPlan[] {
   return ACCOUNT_PLAN_IDS.map((id) => ACCOUNT_PLANS[id]).sort((a, b) => a.order - b.order);
 }
 
+/**
+ * Whether a plan is at least as high as another.
+ *
+ * Compares `order` rather than the ids, so adding a tier in the middle later
+ * does not silently change who passes an existing check - the numbers move with
+ * the list. An unrecognised stored value resolves to the smallest plan and is
+ * therefore refused, which is the same safe direction the profile cap takes: it
+ * can withhold something an account was entitled to, which an admin fixes in a
+ * click, rather than hand out an entitlement nobody granted.
+ */
+export function planAtLeast(value: unknown, minimum: AccountPlanId): boolean {
+  return resolveAccountPlan(value).order >= ACCOUNT_PLANS[minimum].order;
+}
+
 /** How the limit reads in a sentence: "5" or "unlimited". */
 export function describeProfileLimit(plan: AccountPlan): string {
   return plan.profileLimit === null ? 'unlimited' : String(plan.profileLimit);

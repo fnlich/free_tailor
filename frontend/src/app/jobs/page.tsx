@@ -26,12 +26,6 @@ const SCRAPER_OPTIONS: Array<{
   description: string;
 }> = [
   {
-    value: 'linkedin',
-    label: 'LinkedIn',
-    badge: 'LinkedIn',
-    description: 'Uses only bebity/linkedin-jobs-scraper with fixed United States, remote, and past-24-hours filters.',
-  },
-  {
     value: 'indeed',
     label: 'Indeed',
     badge: 'Indeed',
@@ -193,31 +187,10 @@ function getNativeJobLink(job: ScraperJob): string | null {
   return null;
 }
 
-function buildLinkedInActorInputPreview(title: string, rows: string): string {
-  return JSON.stringify(
-    {
-      location: 'United States',
-      proxy: {
-        useApifyProxy: true,
-        apifyProxyGroups: ['RESIDENTIAL'],
-        apifyProxyCountry: 'US',
-      },
-      publishedAt: 'r86400',
-      rows: Number(rows) > 0 ? Number(rows) : 1000,
-      title: title.trim() || 'software engineer',
-      workType: '2',
-    },
-    null,
-    2
-  );
-}
-
 export default function JobsPage() {
-  const [source, setSource] = useState<ScraperSource>('linkedin');
+  const [source, setSource] = useState<ScraperSource>('indeed');
   const [providerCatalog, setProviderCatalog] = useState<ScraperSourceProviderCatalog[]>([]);
   const [selectedProviders, setSelectedProviders] = useState<Partial<Record<ScraperSource, string>>>({});
-  const [linkedinTitle, setLinkedinTitle] = useState('');
-  const [linkedinRows, setLinkedinRows] = useState('1000');
   const [keywords, setKeywords] = useState('');
   const [startUrl, setStartUrl] = useState('');
   const [location, setLocation] = useState('United States');
@@ -258,7 +231,6 @@ export default function JobsPage() {
   const isMemo23StartUrlOnlyProvider = source === 'hiringcafe' && selectedProviderId === 'apify-memo23';
   const isIndeedStartUrlOnlySource = source === 'indeed';
   const isStartUrlOnlyScraper = isIndeedStartUrlOnlySource || isMemo23StartUrlOnlyProvider;
-  const isLinkedInSource = source === 'linkedin';
   const availableLimitOptions = source === 'jobboard'
     ? LIMIT_OPTIONS.filter((value) => value <= JOB_BOARD_MAX_RESULTS)
     : LIMIT_OPTIONS;
@@ -376,21 +348,7 @@ export default function JobsPage() {
     try {
       let commonPayload: Record<string, string | number | boolean | undefined>;
 
-      if (isLinkedInSource) {
-        const trimmedTitle = linkedinTitle.trim();
-        if (!trimmedTitle) {
-          setError('Enter a job title before running the LinkedIn scraper.');
-          setIsLoading(false);
-          return;
-        }
-
-        commonPayload = {
-          source,
-          provider: selectedProviderId || undefined,
-          title: trimmedTitle,
-          rows: parsePositiveWholeNumber('Rows', linkedinRows),
-        };
-      } else if (isStartUrlOnlyScraper) {
+      if (isStartUrlOnlyScraper) {
         const trimmedStartUrl = startUrl.trim();
         if (!trimmedStartUrl) {
           setError(
@@ -488,9 +446,8 @@ export default function JobsPage() {
     }
   };
 
-  const searchSummaryValue = isLinkedInSource
-    ? (searchMeta?.filters.title ?? '')
-    : (searchMeta?.filters.keywords || searchMeta?.filters.startUrl || 'custom search');
+  const searchSummaryValue =
+    searchMeta?.filters.keywords || searchMeta?.filters.startUrl || 'custom search';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -579,36 +536,7 @@ export default function JobsPage() {
                 )}
               </label>
 
-              {isLinkedInSource ? (
-                <>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Title</span>
-                    <input
-                      type="text"
-                      value={linkedinTitle}
-                      onChange={(event) => setLinkedinTitle(event.target.value)}
-                      placeholder="software engineer"
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
-                      disabled={isLoading}
-                    />
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Rows</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={1000}
-                      step={1}
-                      value={linkedinRows}
-                      onChange={(event) => setLinkedinRows(event.target.value)}
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                      disabled={isLoading}
-                    />
-                    <div className="text-xs text-gray-500">Maximum 1000 rows.</div>
-                  </label>
-                </>
-              ) : isStartUrlOnlyScraper ? (
+              {isStartUrlOnlyScraper ? (
                 <label className="space-y-2">
                   <span className="text-sm font-medium text-gray-700">Start URL</span>
                   <input
@@ -709,15 +637,8 @@ export default function JobsPage() {
               )}
             </div>
 
-            {isLinkedInSource && (
-              <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
-                <div className="font-semibold text-gray-900">Fixed LinkedIn actor payload</div>
-                <pre className="mt-3 overflow-x-auto rounded-xl bg-slate-900 p-4 text-xs leading-6 text-slate-100">{buildLinkedInActorInputPreview(linkedinTitle, linkedinRows)}</pre>
-              </div>
-            )}
-
             <div className="flex flex-wrap items-center gap-3">
-              {!isStartUrlOnlyScraper && !isLinkedInSource && (
+              {!isStartUrlOnlyScraper && (
                 <label className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700">
                   <input
                     type="checkbox"
@@ -1012,9 +933,7 @@ export default function JobsPage() {
             <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
               <div className="text-lg font-semibold text-gray-900">No jobs matched this run</div>
               <div className="mt-2 text-sm text-gray-600">
-                {isLinkedInSource
-                  ? 'Try a broader title or a larger row limit.'
-                  : 'Try a broader keyword, a wider time window, or a different scraper.'}
+                Try a broader keyword, a wider time window, or a different scraper.
               </div>
             </div>
           )}

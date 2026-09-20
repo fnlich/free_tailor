@@ -14,6 +14,7 @@ import {
   resumeApi,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
+import { AdminOnly } from '@/components/auth/AuthGate';
 
 type HighlightKind = 'required' | 'preferred' | 'keyword' | 'industry' | 'domain' | 'soft';
 
@@ -267,7 +268,7 @@ function renderHighlightedText(text: string, matches: HighlightMatch[]): ReactNo
   return nodes;
 }
 
-export default function TestPage() {
+function TestPageBody() {
   const [jobDescription, setJobDescription] = useState('');
   const [analysis, setAnalysis] = useState<unknown>(null);
   const [selectedModel, setSelectedModel] = useState<AIProvider>('claude-cli');
@@ -470,5 +471,18 @@ export default function TestPage() {
         </section>
       </main>
     </div>
+  );
+}
+
+/**
+ * Administrator-only. It runs prompts directly and shows the raw model output,
+ * which is a tool for whoever maintains the prompts rather than for the people
+ * building resumes with them.
+ */
+export default function TestPage() {
+  return (
+    <AdminOnly>
+      <TestPageBody />
+    </AdminOnly>
   );
 }

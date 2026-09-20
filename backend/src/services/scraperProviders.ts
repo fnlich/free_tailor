@@ -1,5 +1,4 @@
 const {
-  runLinkedInScraper,
   runIndeedScraper,
   runJobBoardScraper,
   runWellfoundScraper,
@@ -9,7 +8,7 @@ const {
   runHiringCafeMemo23Scraper,
 } = require('../../scrapers');
 
-export const SCRAPER_SOURCES = ['linkedin', 'indeed', 'jobboard', 'wellfound', 'lever', 'hiringcafe'] as const;
+export const SCRAPER_SOURCES = ['indeed', 'jobboard', 'wellfound', 'lever', 'hiringcafe'] as const;
 export type ScraperSource = (typeof SCRAPER_SOURCES)[number];
 
 export type UnifiedScraperFilters = {
@@ -57,17 +56,6 @@ type ScraperProviderDefinition = ScraperProviderSummary & {
 };
 
 const SCRAPER_PROVIDER_REGISTRY: Record<ScraperSource, { defaultProviderId: string; providers: ScraperProviderDefinition[] }> = {
-  linkedin: {
-    defaultProviderId: 'apify-bebity',
-    providers: [
-      {
-        id: 'apify-bebity',
-        label: 'Apify: Bebity',
-        description: 'Runs bebity/linkedin-jobs-scraper with fixed United States, remote, and past-24-hours filters.',
-        run: (filters: UnifiedScraperFilters) => runLinkedInScraper(filters) as Promise<UnifiedScraperJob[]>,
-      },
-    ],
-  },
   indeed: {
     defaultProviderId: 'apify-misceres',
     providers: [
@@ -155,6 +143,17 @@ export function listScraperProviderCatalog(): ScraperSourceProviderCatalog[] {
 
 export function resolveScraperProvider(source: ScraperSource, providerId?: string): ScraperProviderDefinition {
   const sourceRegistry = SCRAPER_PROVIDER_REGISTRY[source];
+  // A source the registry does not have used to crash here reading
+  // `defaultProviderId` off undefined - a TypeError from inside a service,
+  // where the caller had passed a name that simply is not one of ours. Removing
+  // LinkedIn is exactly when that happens: a saved request, a bookmarked page
+  // or an old client still names it.
+  if (!sourceRegistry) {
+    throw new Error(
+      `Unknown scraper source "${source}". Supported sources are ${SCRAPER_SOURCES.join(', ')}.`
+    );
+  }
+
   const effectiveProviderId = providerId?.trim() || sourceRegistry.defaultProviderId;
   const provider = sourceRegistry.providers.find((entry) => entry.id === effectiveProviderId);
 
