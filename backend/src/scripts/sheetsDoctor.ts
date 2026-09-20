@@ -1,5 +1,6 @@
 import '../config/env';
 
+import { resolveAdminIdentity } from '../config/adminIdentity';
 import {
   createSpreadsheet,
   deleteSpreadsheet,
@@ -139,7 +140,26 @@ async function main(): Promise<void> {
           );
         }
 
-        return `drive reachable, ${used} of ${limit} used`;
+        /**
+         * Whose Drive the sheets will land in, checked against who the app
+         * calls an administrator.
+         *
+         * Nothing links the two. The credential belongs to whichever Google
+         * account ran `sheets:login`, and the admin is whoever ADMIN_EMAILS or
+         * SMTP_USER names - so signing in with the wrong account puts every
+         * user's sheet in a Drive nobody expected, silently and permanently.
+         * Cheap to notice now, expensive once sheets exist.
+         */
+        const owner = about.user?.emailAddress ?? '(not reported)';
+        const admins = resolveAdminIdentity().emails;
+        const mismatch =
+          admins.length > 0 && !admins.includes(owner.trim().toLowerCase())
+            ? `\n    NOTE: sheets will be owned by ${owner}, but this installation's ` +
+              `administrator is ${admins.join(', ')}.\n` +
+              '          That works, but the sheets land in a different Drive than you may expect.'
+            : '';
+
+        return `drive reachable as ${owner}, ${used} of ${limit} used${mismatch}`;
       },
       remedy: (error) => {
         const said = reason(error);

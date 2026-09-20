@@ -191,11 +191,27 @@ logging in. The account page ensures the same thing when it loads, which is what
 covers an account whose sign-in ran while Google was down, and accounts created
 before this feature existed - a paced backfill at startup takes care of the rest.
 
-New sheets are **public by default**, meaning anyone with the link can *edit*
-them. The toggle on the account page withdraws that. Either way the server keeps
-its own access, because the file belongs to the service account rather than to a
-person - so job links, company names and descriptions still load after somebody
-goes private.
+**Who owns them, and who can open them.** Every sheet is created in the Drive of
+whichever Google account signed in with `npm run sheets:login` - the operator's,
+normally - and each account is invited to its own sheet as an **editor**, by
+email, without a notification mail.
+
+New sheets are **public by default**, meaning anyone with the link can edit them.
+The toggle on the account page withdraws exactly that one grant and nothing else:
+the owner's personal invitation stays, which is what still lets them open it. The
+order matters and is enforced - the invitation is confirmed *before* the link is
+taken away, and the request is refused outright if it cannot be, because
+withdrawing the link from somebody who never got an invitation locks them out of
+their own spreadsheet with no way back through the UI.
+
+Either way the server keeps its own access, since the file belongs to the account
+whose credentials it holds - so job links, company names and descriptions still
+load after somebody goes private.
+
+Nothing ties the credential to the app's administrator: sheets land in whichever
+Drive consented, which may not be the address `ADMIN_EMAILS` or `SMTP_USER`
+names. `npm run sheets:doctor` reports the owning account and says so when the
+two differ.
 
 **Who administers the installation.** Not whoever signs in first - on a server
 anybody can reach, that handed the keys to the quickest stranger. It is
