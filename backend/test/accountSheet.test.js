@@ -384,7 +384,7 @@ test('a sheet whose owner grant went missing is repaired on the next ensure', as
   // assertion would pass or fail for the wrong reason.
   let attempts = 0;
   let driveIsEnabled = false;
-  const { users, sheets, shares } = setup('grant-repair', {
+  const { users, sheets, shares, named } = setup('grant-repair', {
     async shareSpreadsheetWithEmail(spreadsheetId, email) {
       attempts += 1;
       if (!driveIsEnabled) throw new Error('Drive API has not been enabled for this project.');
@@ -404,9 +404,49 @@ test('a sheet whose owner grant went missing is repaired on the next ensure', as
   assert.equal(attempts, 2);
   assert.equal(shares.get(state.spreadsheetId), 'alice@example.com');
 
-  // And once it is there, it is not asked for again on every sign-in.
+  // And once it is there, it is not asked for again on every sign-in - not the
+  // share, and not even the cheaper "does it already have one?" check, which is
+  // itself a Drive call and was being spent on every sign-in.
+  const asked = named('hasPersonalGrant').length;
   await sheets.ensureAccountSheet(account);
   assert.equal(attempts, 2);
+  assert.equal(named('hasPersonalGrant').length, asked, 'Drive was asked again for a settled grant');
+});
+
+test('a repeat sign-in on a day already prepared costs no Google calls at all', async () => {
+  const { users, sheets, calls } = setup('warm-path-free');
+  const account = users.createUser({ email: 'alice@example.com' });
+
+  await sheets.ensureAccountSheet(account);
+
+  // The claim the module makes about itself, pinned. Everything the second
+  // sign-in needs - which sheet, which tab, whether the owner can open it - is
+  // already on the row, so the only thing left is the filesystem check for the
+  // key. A thousand users signing in at nine in the morning cost nothing.
+  calls.length = 0;
+  await sheets.ensureAccountSheet(users.getUserById(account.id));
+
+  assert.deepEqual(
+    calls.map((call) => call[0]),
+    ['isConfigured'],
+    `expected only the local key check, got ${JSON.stringify(calls.map((c) => c[0]))}`
+  );
+});
+
+test('going private still asks Drive every time, however settled the grant looks', async () => {
+  const { users, sheets, named } = setup('private-checks-live');
+  const account = users.createUser({ email: 'alice@example.com' });
+  await sheets.ensureAccountSheet(account);
+
+  // The one request that can lock somebody out of their own spreadsheet, so it
+  // is the one place a remembered answer is not good enough: the grant may have
+  // been revoked in Google's own UI since we wrote it down.
+  const before = named('hasPersonalGrant').length;
+  await sheets.setAccountSheetVisibility(users.getUserById(account.id), 'private');
+  assert.ok(
+    named('hasPersonalGrant').length > before,
+    'the private toggle must confirm access live, not from the stored flag'
+  );
 });
 
 test('going private is refused while the owner has no access of their own', async () => {

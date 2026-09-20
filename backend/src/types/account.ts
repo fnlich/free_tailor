@@ -25,6 +25,11 @@ export interface UserAccount {
   sheetTabDate?: string;
   /** The gid of that tab, for a link that opens the right day. */
   sheetTabGid?: string;
+  /**
+   * When the owner's own Drive grant was last confirmed. Absent means it never
+   * has been, which is what makes sign-in keep retrying it.
+   */
+  sheetSharedAt?: string;
 }
 
 /**
