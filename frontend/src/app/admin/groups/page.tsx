@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { groupsApi, profilesApi, Group, Profile } from '@/lib/api';
+import { RequiresPlan } from '@/components/auth/AuthGate';
 
-export default function GroupsPage() {
+function GroupsPageBody() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -224,5 +225,20 @@ export default function GroupsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Included from Premium upwards.
+ *
+ * The gate is on the plan alone, matching `requirePlan('premium')` on the
+ * routes: a page that rendered for somebody the API then refused would be a
+ * worse experience than this explanation.
+ */
+export default function GroupsPage() {
+  return (
+    <RequiresPlan minimum="premium" label="Premium">
+      <GroupsPageBody />
+    </RequiresPlan>
   );
 }

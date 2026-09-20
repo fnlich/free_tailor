@@ -149,6 +149,32 @@ being refused on the thirtieth after twenty-nine resumes already exist.
 A brand-new account starts at **0** and needs an administrator to grant it some.
 Set `CREDIT_SIGNUP_GRANT` to give an open installation a self-serve trial instead.
 
+### What each account can reach
+
+Not everything is for everybody, and the rule differs by section because the
+reasons differ. A **role** says who may change things the whole installation
+shares; a **plan** says what an individual account includes. They are separate
+checks and one is not a substitute for the other.
+
+| Section | Who | Why |
+|---|---|---|
+| Builder, Calendar, Jobs, Job Filter, Bid Assistant, Profiles | anybody signed in | their own work |
+| **Find the job** | anybody signed in | opens today's tab of their own job sheet in a new tab |
+| **Groups** | **Premium and above** | an entitlement, checked on the plan alone |
+| **Templates** (managing them) | **administrators** | a template is shared - editing one changes how everybody's resumes look. Everybody still *picks* a template when building |
+| **Test** | **administrators** | runs prompts directly and shows raw model output; a tool for whoever maintains the prompts |
+| **Settings** (all of it) | **administrators** | every page under it changes something shared |
+
+An entry nobody may use is not shown in the navigation, and the page behind it
+explains itself if the URL is typed - a blank screen reads as a broken link.
+**Hiding is not the protection**: every one of these is enforced by middleware on
+the routes, so an old tab or a hand-made request is refused just the same.
+
+One consequence worth knowing: because the group gate is on the plan alone, **an
+administrator on the default plan is refused Groups too**. Every account starts
+on the default plan, so the first administrator has to be moved up before they
+can use them.
+
 ### The job sheet
 
 Every account gets **one Google spreadsheet of its own**, and inside it **one tab

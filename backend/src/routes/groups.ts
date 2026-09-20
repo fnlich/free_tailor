@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requireUser } from '../middleware/auth';
+import { requirePlan, requireUser } from '../middleware/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { Group, CreateGroupDTO } from '../types/group';
 import { deleteGroup, getGroupFor, listGroupsFor, saveGroup } from '../database/groupRepository';
@@ -13,6 +13,16 @@ const router = Router();
  * machine and is not once profiles belong to people.
  */
 router.use(requireUser);
+
+/**
+ * And a plan that includes them.
+ *
+ * At the router, so reads are gated as well as writes: an account that may not
+ * use groups should not be told how many it would have had. The check is on the
+ * plan alone - an administrator who has not been moved off the default plan is
+ * refused here too, which is deliberate and documented on `requirePlan`.
+ */
+router.use(requirePlan('premium'));
 
 
 function normalizeProfileIds(input: unknown): string[] {

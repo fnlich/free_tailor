@@ -467,8 +467,7 @@ export interface AIModelRecord {
   updatedAt: string;
 }
 
-export type LinkedInPostedSince = 'past-24-hours' | 'past-week' | 'past-month';
-export type ScraperSource = 'linkedin' | 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
+export type ScraperSource = 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
 export type ScraperTimePosted = '24h' | '3d' | '7d' | '30d';
 export type ScraperJobType = 'full-time' | 'part-time' | 'contract' | 'internship' | 'temporary';
 
@@ -484,58 +483,7 @@ export interface ScraperSourceProviderCatalog {
   providers: ScraperProviderSummary[];
 }
 
-export interface LinkedInJobCriteria {
-  label: string;
-  value: string;
-}
-
-export interface LinkedInJob {
-  id: string;
-  title: string;
-  company: string;
-  jobId: string | null;
-  jobTitle: string | null;
-  companyName: string | null;
-  companyLogo: string | null;
-  companyWebsite: string | null;
-  location: string | null;
-  postedAtText: string;
-  postedAtIso: string | null;
-  link: string | null;
-  jobUrl: string;
-  applyUrl: string | null;
-  easyApply: boolean | null;
-  descriptionText: string | null;
-  postedAt: string | null;
-  externalApplyUrl: string | null;
-  applyText: string;
-  workplaceType: string;
-  employmentType: string | null;
-  experienceLevel: string | null;
-  seniorityLevel: string;
-  workplaceTypes: string[] | null;
-  jobFunction: string;
-  industries: string;
-  sector: string | null;
-  description: string;
-  insights: string[];
-  criteria: LinkedInJobCriteria[];
-}
-
-export interface LinkedInJobSearchResponse {
-  fetchedAt: string;
-  filters: {
-    keywords: string;
-    postedSince: LinkedInPostedSince;
-    location: string;
-    workplaceType: 'remote';
-    excludeEasyApply: true;
-    limit: number;
-  };
-  results: LinkedInJob[];
-}
-
-export interface LinkedInJobSheetExportSummary {
+export interface JobSheetExportSummary {
   spreadsheetId: string;
   spreadsheetTitle: string;
   selectedTab: string;
@@ -546,10 +494,6 @@ export interface LinkedInJobSheetExportSummary {
   unresolvedJobLinks: number;
   skippedCompanyDuplicates: number;
   beforeExportResultCount?: number;
-}
-
-export interface LinkedInJobSearchAndExportResponse extends LinkedInJobSearchResponse {
-  export: LinkedInJobSheetExportSummary;
 }
 
 export interface ScraperJob {
@@ -593,7 +537,7 @@ export interface ScraperRunResponse {
 }
 
 export interface ScraperExportResponse extends ScraperRunResponse {
-  export: LinkedInJobSheetExportSummary;
+  export: JobSheetExportSummary;
 }
 
 export interface GoogleSheetJobFilterResponse {
@@ -1339,29 +1283,6 @@ export type JobSheetDestination = {
 
 export const jobsApi = {
   getScraperProviders: () => apiFetch<ScraperSourceProviderCatalog[]>('/jobs/scrapers/providers'),
-
-  searchLinkedIn: (data: { keywords: string; postedSince: LinkedInPostedSince; limit?: number }) => {
-    const params = new URLSearchParams({
-      keywords: data.keywords,
-      postedSince: data.postedSince,
-    });
-
-    if (typeof data.limit === 'number') {
-      params.set('limit', String(data.limit));
-    }
-
-    return apiFetch<LinkedInJobSearchResponse>(`/jobs/linkedin?${params.toString()}`);
-  },
-
-  searchLinkedInAndExport: (data: JobSheetDestination & {
-    keywords: string;
-    postedSince: LinkedInPostedSince;
-    limit?: number;
-  }) =>
-    apiFetch<LinkedInJobSearchAndExportResponse>('/jobs/linkedin/search-and-export', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
 
   runScraper: (data: ScraperRunFilters & { source: ScraperSource; provider?: string }) =>
     apiFetch<ScraperRunResponse>('/jobs/scrapers/run', {

@@ -260,25 +260,6 @@ function buildUnifiedJob(job) {
     raw: job.raw,
   };
 }
-
-function normalizeLinkedInItem(item) {
-  return buildUnifiedJob({
-    id: firstNonEmpty(item.id, item.jobId, item.jobUrl, item.link, item.url),
-    title: firstNonEmpty(item.jobTitle, item.title),
-    company: firstNonEmpty(item.companyName, item.company, item.companyTitle),
-    location: toLocationString(item.location),
-    job_type: normalizeJobType(item.employmentType || item.contractType || item.workType),
-    salary_min: null,
-    salary_max: null,
-    equity: null,
-    posted_at: toPostedAtIso(item.publishedAt, item.postedAt, item.postedTime, item.postedDate, item.scrapedAt),
-    description: firstNonEmpty(item.descriptionText, item.description, item.descriptionHtml),
-    apply_url: firstNonEmpty(item.externalApplyLink, item.applyUrl, item.jobUrl, item.link, item.url),
-    source: 'linkedin',
-    raw: item,
-  });
-}
-
 function normalizeIndeedItem(item) {
   const jobType = Array.isArray(item.jobType) ? item.jobType[0] : item.jobType;
   const salary = item.salary && typeof item.salary === 'object' ? item.salary : {};
@@ -413,11 +394,6 @@ function normalizeHiringCafeItem(item) {
     raw: item,
   });
 }
-
-function normalizeLinkedInItems(items) {
-  return (items || []).map(normalizeLinkedInItem);
-}
-
 function normalizeIndeedItems(items) {
   return (items || [])
     .map(normalizeIndeedItem)
@@ -441,7 +417,6 @@ function normalizeHiringCafeItems(items) {
 }
 
 module.exports = {
-  normalizeLinkedInItems,
   normalizeIndeedItems,
   normalizeJobBoardItems,
   normalizeWellfoundItems,

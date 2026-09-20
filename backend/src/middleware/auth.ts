@@ -3,6 +3,8 @@ import type { NextFunction, Request, Response } from 'express';
 import { resolveSession } from '../database/userRepository';
 import type { UserAccount } from '../types/account';
 
+import { ACCOUNT_PLANS, planAtLeast, type AccountPlanId } from '../config/accountPlans';
+
 /**
  * Who is making this request.
  *
@@ -113,6 +115,35 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     return;
   }
   next();
+}
+
+/**
+ * Signed in AND on a plan at least this high, or 401/403.
+ *
+ * Deliberately NOT satisfied by being an administrator. An admin is a role -
+ * who may change shared settings - and a plan is an entitlement; conflating
+ * them would mean the answer to "may I use this" depended on two unrelated
+ * things. The consequence is real and worth knowing: every account starts on
+ * the default plan, so an administrator who has not been moved up is refused
+ * here like anybody else.
+ */
+export function requirePlan(minimum: AccountPlanId) {
+  return function planGuard(req: Request, res: Response, next: NextFunction): void {
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
+      return;
+    }
+    if (!planAtLeast(req.user.plan, minimum)) {
+      const needed = ACCOUNT_PLANS[minimum].label;
+      res.status(403).json({
+        error: `That part of this installation needs a ${needed} plan or higher.`,
+        code: 'plan-too-low',
+        requiredPlan: minimum,
+      });
+      return;
+    }
+    next();
+  };
 }
 
 /**
