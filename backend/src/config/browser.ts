@@ -257,6 +257,70 @@ export function describeMissingBrowser(deps: Pick<BrowserResolutionDeps, 'platfo
   ].join('\n');
 }
 
+/**
+ * Puppeteer's own download path, and the two shapes its API has had.
+ *
+ * `executablePath()` returns a STRING in puppeteer 24 and a PROMISE in 25. The
+ * change is invisible at runtime here - the promise resolves immediately,
+ * because the work behind it is path arithmetic - but it is a compile error
+ * against a signature that says `string`, and an install a major out of step
+ * with the lockfile then fails to build in a file nobody touched.
+ *
+ * Resolution stays synchronous because everything that reads it is: the health
+ * endpoint and the startup log both want an answer now, not a promise. So the
+ * promise is unwrapped ONCE, at boot, and remembered.
+ *
+ * `undefined` means "not asked yet"; `null` means "asked, and puppeteer has no
+ * download to offer" - a distinction that matters because the second is a real
+ * answer worth caching.
+ */
+let puppeteerPath: string | null | undefined;
+
+/** Typed as both shapes so this compiles against either puppeteer major. */
+function readPuppeteerPath(): string | Promise<string> | null {
+  try {
+    return puppeteer.executablePath() || null;
+  } catch {
+    // Thrown when puppeteer cannot work out a path at all, which is itself
+    // just another way of saying it has no download to offer.
+    return null;
+  }
+}
+
+function isThenable(value: unknown): value is Promise<string> {
+  return typeof (value as { then?: unknown } | null)?.then === 'function';
+}
+
+/**
+ * Unwraps whichever shape the reader returns. Exported for the tests, which is
+ * the only way to exercise the promise branch on a machine holding the other
+ * major.
+ */
+export async function resolvePuppeteerPath(
+  read: () => string | Promise<string> | null
+): Promise<string | null> {
+  try {
+    const value = read();
+    return (isThenable(value) ? await value : value) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Asks puppeteer where its download is, once, before anything needs to know.
+ *
+ * Called from the server's listen callback. Until it has run, a synchronous
+ * resolution simply skips puppeteer's own copy and falls through to an
+ * installed browser - so an early health check degrades rather than lying, and
+ * the cached resolution is discarded here if the answer turns out to differ.
+ */
+export async function warmPuppeteerExecutablePath(): Promise<void> {
+  const before = puppeteerPath;
+  puppeteerPath = await resolvePuppeteerPath(readPuppeteerPath);
+  if (before !== puppeteerPath) resetResolvedBrowser();
+}
+
 const defaultDeps: BrowserResolutionDeps = {
   platform: process.platform,
   env: process.env,
@@ -268,13 +332,17 @@ const defaultDeps: BrowserResolutionDeps = {
     }
   },
   puppeteerExecutablePath: () => {
-    try {
-      return puppeteer.executablePath() || null;
-    } catch {
-      // Thrown when puppeteer cannot work out a path at all, which is itself
-      // just another way of saying it has no download to offer.
+    if (puppeteerPath !== undefined) return puppeteerPath;
+
+    const value = readPuppeteerPath();
+    if (isThenable(value)) {
+      // Puppeteer 25. Nothing useful can be said synchronously, so say nothing
+      // and let the warm-up above fill it in; the fallbacks cover the gap.
       return null;
     }
+
+    puppeteerPath = value;
+    return value;
   },
 };
 
@@ -291,6 +359,12 @@ export function getResolvedBrowser(deps: BrowserResolutionDeps = defaultDeps): R
 
 /** Forgets the cached resolution. For tests, and after installing a browser. */
 export function resetResolvedBrowser(): void {
+  cached = undefined;
+}
+
+/** Forgets puppeteer's remembered path as well. Tests only. */
+export function resetPuppeteerPathForTests(): void {
+  puppeteerPath = undefined;
   cached = undefined;
 }
 
