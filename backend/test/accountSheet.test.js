@@ -918,3 +918,21 @@ test('the downloaded OAuth client is not a credential, and says which half it is
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the header is written to the tab Google actually minted, not to gid 0', async () => {
+  const { users, sheets, named } = setup('gid-carried');
+  const account = users.createUser({ email: 'alice@example.com' });
+
+  const state = await sheets.ensureAccountSheet(account);
+
+  // The contract the doctor broke: gid 0 is only the first tab's id while
+  // GOOGLE creates that tab and calls it Sheet1. Naming the tab at creation
+  // means Google mints a random id, and writing to 0 then fails with
+  // "No grid with id: 0" - which reads like a broken spreadsheet and is not.
+  const [, , formattedGid] = named('formatJobSheetTab')[0];
+  assert.equal(typeof formattedGid, 'number');
+  assert.notEqual(formattedGid, 0);
+
+  // And it is the id that came back from creating it, not any other number.
+  assert.match(state.todayTabUrl, new RegExp(`#gid=${formattedGid}$`));
+});

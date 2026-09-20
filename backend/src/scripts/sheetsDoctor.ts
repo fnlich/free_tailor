@@ -76,6 +76,7 @@ async function main(): Promise<void> {
   console.log('Google Sheets doctor\n');
 
   let spreadsheetId = '';
+  let firstTabGid = -1;
   let owner = '';
 
   const steps: Step[] = [
@@ -188,7 +189,11 @@ async function main(): Promise<void> {
       run: async () => {
         const created = await createSpreadsheet('Free Tailor - doctor check', '01/01/2000');
         spreadsheetId = created.spreadsheetId;
-        return `${created.spreadsheetUrl}`;
+        // Carried to the next step. It used to be assumed to be 0, which held
+        // only while Google made the first tab itself and called it `Sheet1`;
+        // naming the tab at creation means Google mints a random id for it.
+        firstTabGid = created.firstTabGid;
+        return `${created.spreadsheetUrl} (first tab gid ${firstTabGid})`;
       },
       remedy: () =>
         'This is the call that fails in your log. With the steps above green, the usual\n' +
@@ -198,10 +203,13 @@ async function main(): Promise<void> {
     {
       title: 'Write the job sheet header into it',
       run: async () => {
-        await formatJobSheetTab(spreadsheetId, 0);
+        await formatJobSheetTab(spreadsheetId, firstTabGid);
         return 'header written';
       },
-      remedy: () => 'The spreadsheet exists but cannot be written to, which should not happen.',
+      remedy: () =>
+        'The spreadsheet exists but cannot be written to, which should not happen when creating\n' +
+        '  it just worked. "No grid with id" here means this check sent the wrong tab id rather\n' +
+        '  than anything being wrong with your setup - report it.',
     },
   ];
 
