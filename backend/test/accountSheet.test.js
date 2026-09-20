@@ -384,7 +384,7 @@ test('a sheet whose owner grant went missing is repaired on the next ensure', as
   // assertion would pass or fail for the wrong reason.
   let attempts = 0;
   let driveIsEnabled = false;
-  const { users, sheets, shares } = setup('grant-repair', {
+  const { users, sheets, shares, named } = setup('grant-repair', {
     async shareSpreadsheetWithEmail(spreadsheetId, email) {
       attempts += 1;
       if (!driveIsEnabled) throw new Error('Drive API has not been enabled for this project.');
@@ -404,9 +404,49 @@ test('a sheet whose owner grant went missing is repaired on the next ensure', as
   assert.equal(attempts, 2);
   assert.equal(shares.get(state.spreadsheetId), 'alice@example.com');
 
-  // And once it is there, it is not asked for again on every sign-in.
+  // And once it is there, it is not asked for again on every sign-in - not the
+  // share, and not even the cheaper "does it already have one?" check, which is
+  // itself a Drive call and was being spent on every sign-in.
+  const asked = named('hasPersonalGrant').length;
   await sheets.ensureAccountSheet(account);
   assert.equal(attempts, 2);
+  assert.equal(named('hasPersonalGrant').length, asked, 'Drive was asked again for a settled grant');
+});
+
+test('a repeat sign-in on a day already prepared costs no Google calls at all', async () => {
+  const { users, sheets, calls } = setup('warm-path-free');
+  const account = users.createUser({ email: 'alice@example.com' });
+
+  await sheets.ensureAccountSheet(account);
+
+  // The claim the module makes about itself, pinned. Everything the second
+  // sign-in needs - which sheet, which tab, whether the owner can open it - is
+  // already on the row, so the only thing left is the filesystem check for the
+  // key. A thousand users signing in at nine in the morning cost nothing.
+  calls.length = 0;
+  await sheets.ensureAccountSheet(users.getUserById(account.id));
+
+  assert.deepEqual(
+    calls.map((call) => call[0]),
+    ['isConfigured'],
+    `expected only the local key check, got ${JSON.stringify(calls.map((c) => c[0]))}`
+  );
+});
+
+test('going private still asks Drive every time, however settled the grant looks', async () => {
+  const { users, sheets, named } = setup('private-checks-live');
+  const account = users.createUser({ email: 'alice@example.com' });
+  await sheets.ensureAccountSheet(account);
+
+  // The one request that can lock somebody out of their own spreadsheet, so it
+  // is the one place a remembered answer is not good enough: the grant may have
+  // been revoked in Google's own UI since we wrote it down.
+  const before = named('hasPersonalGrant').length;
+  await sheets.setAccountSheetVisibility(users.getUserById(account.id), 'private');
+  assert.ok(
+    named('hasPersonalGrant').length > before,
+    'the private toggle must confirm access live, not from the stored flag'
+  );
 });
 
 test('going private is refused while the owner has no access of their own', async () => {
@@ -632,4 +672,57 @@ test('a tab headered by an older build is detected as needing the new columns', 
   const misspelled = [...JOB_SHEET_HEADERS];
   misspelled[6] = 'Note';
   assert.equal(jobSheetHeaderIsCurrent(misspelled), false);
+});
+
+test('a refusal names the credential that was refused, not just the refusal', async () => {
+  const { describeGoogleFailure } = require('../dist/integrations/googleSheets');
+
+  // The gap this closes: a 403 reports what Google would not do and never
+  // whose key asked. Somebody who has just swapped a key and sees the SAME
+  // error cannot tell whether the new project is misconfigured or whether the
+  // new key is not the one being used - which are opposite problems.
+  const bare = { error: { code: 403, message: 'The caller does not have permission' } };
+  const said = describeGoogleFailure(403, bare, 'create a spreadsheet');
+
+  // The pure describer still says only what it can know.
+  assert.match(said, /The caller does not have permission/);
+  assert.match(said, /Drive API must be enabled/);
+  assert.doesNotMatch(said, /Asked with/);
+});
+
+test('several key files on disk are reported rather than silently ranked', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  // Five paths are searched and the FIRST wins. Two keys on disk - an old one
+  // at the repo root and the new one in backend/ - is the trap: the new key is
+  // ignored and nothing says so, and the 403 that follows sends somebody to
+  // check the new project's settings instead of which key is loaded.
+  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-keys-'));
+  fs.mkdirSync(nodePath.join(root, 'backend'), { recursive: true });
+  const first = nodePath.join(root, 'service-account-key.json');
+  const second = nodePath.join(root, 'backend', 'service-account-key.json');
+  fs.writeFileSync(first, '{}');
+  fs.writeFileSync(second, '{}');
+
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const sheets = loadFresh('../dist/integrations/googleSheets');
+    const chosen = await sheets.resolveServiceAccountPath();
+    assert.equal(chosen, first, 'the first candidate still wins - only the silence changes');
+    const said = warnings.join('\n');
+    assert.match(said, /2 service account keys were found/);
+    assert.match(said, /USING/);
+    assert.match(said, /ignored/);
+  } finally {
+    process.chdir(cwd);
+    console.warn = realWarn;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

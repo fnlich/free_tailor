@@ -31,11 +31,12 @@ type UserRow = {
   sheet_url: string | null;
   sheet_tab_date: string | null;
   sheet_tab_gid: string | null;
+  sheet_shared_at: string | null;
 };
 
 const USER_COLUMNS =
   'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
-  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid';
+  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at';
 
 function now(): string {
   return new Date().toISOString();
@@ -76,6 +77,7 @@ function toAccount(row: UserRow): UserAccount {
     ...(row.sheet_url ? { sheetUrl: row.sheet_url } : {}),
     ...(row.sheet_tab_date ? { sheetTabDate: row.sheet_tab_date } : {}),
     ...(row.sheet_tab_gid ? { sheetTabGid: row.sheet_tab_gid } : {}),
+    ...(row.sheet_shared_at ? { sheetSharedAt: row.sheet_shared_at } : {}),
   };
 }
 
@@ -213,6 +215,7 @@ export function createUser(input: CreateUserInput): UserAccount {
     sheet_url: null,
     sheet_tab_date: null,
     sheet_tab_gid: null,
+    sheet_shared_at: null,
   };
 
   getDb()
@@ -220,7 +223,7 @@ export function createUser(input: CreateUserInput): UserAccount {
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
                @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
-               @sheet_tab_gid)`
+               @sheet_tab_gid, @sheet_shared_at)`
     )
     .run(account);
 
@@ -349,6 +352,19 @@ export function getUserBySheetId(sheetId: string): UserAccount | null {
     .prepare(`SELECT ${USER_COLUMNS} FROM users WHERE sheet_id = ?`)
     .get(wanted) as UserRow | undefined;
   return row ? toAccount(row) : null;
+}
+
+/**
+ * Remembers that the owner holds their own grant on the spreadsheet.
+ *
+ * The point of storing it is to stop asking. Confirming the grant costs a Drive
+ * `permissions.list`, and doing that on every sign-in spends a per-minute quota
+ * on a question whose answer has not changed since the account was created.
+ */
+export function recordOwnerGrant(id: string, at: string): void {
+  getDb()
+    .prepare('UPDATE users SET sheet_shared_at = ?, updated_at = ? WHERE id = ?')
+    .run(at, now(), id);
 }
 
 /** Accounts from before this feature, in creation order, for the boot backfill. */

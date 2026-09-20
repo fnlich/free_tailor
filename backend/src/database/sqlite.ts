@@ -227,7 +227,8 @@ const SCHEMA = `
     sheet_id       TEXT,
     sheet_url      TEXT,
     sheet_tab_date TEXT,
-    sheet_tab_gid  TEXT
+    sheet_tab_gid  TEXT,
+    sheet_shared_at TEXT
   );
 
   /**
@@ -316,6 +317,10 @@ function addMissingColumns(db: Database.Database): void {
     // The gid of that tab, so the account page can link straight to the day
     // rather than to whichever tab Google decides to open first.
     { table: 'users', column: 'sheet_tab_gid', definition: 'TEXT' },
+    // When the owner's own Drive grant was confirmed. NULL means "not yet", and
+    // that is what makes sign-in retry it; once set, sign-in stops asking Drive
+    // about it at all.
+    { table: 'users', column: 'sheet_shared_at', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {

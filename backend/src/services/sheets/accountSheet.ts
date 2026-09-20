@@ -1,6 +1,9 @@
 import {
   addSheetTabWithHeaders,
   createSpreadsheet,
+  describeCredentialInUse,
+  getAccessToken,
+  SHEETS_SCOPE,
   formatJobSheetTab,
   getSpreadsheetVisibility,
   hasPersonalGrant,
@@ -15,6 +18,7 @@ import {
   getUserById,
   getUserBySheetId,
   listAccountsWithoutSheet,
+  recordOwnerGrant,
   recordAccountSheet,
   recordSheetTabDate,
 } from '../../database/userRepository';
@@ -142,8 +146,9 @@ export type EnsureOptions = {
    * Ask Google whether today's tab is really there, instead of trusting the
    * stored date.
    *
-   * Off by default, and deliberately off for sign-in: the stored date is what
-   * keeps a repeat sign-in free of network calls. But the sheet is one anybody
+   * Off by default, and deliberately off for sign-in: with the grant already
+   * confirmed, the stored date is the last thing between a repeat sign-in and
+   * zero network calls. But the sheet is one anybody
    * with the link may edit, so the tab can be renamed or deleted under us, and
    * a job route that then writes to a tab name Google does not have fails the
    * whole run. The job routes are already several calls deep, so one listing is
@@ -223,13 +228,29 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
     return { configured: true, todayTab };
   }
 
-  // Sharing is repaired here, not only at creation. The first run of a new
-  // install is exactly when it fails - the Drive API is usually not enabled yet
-  // - and a grant that was attempted once and lost is a person who cannot open
-  // their own spreadsheet, with nothing in the product that would ever retry.
-  await ensureOwnerAccess(spreadsheetId, current.email);
-
   const stored = getUserById(current.id);
+
+  // Repaired until it works, then never asked about again.
+  //
+  // Sharing is retried here rather than only at creation because the first run
+  // of a new install is exactly when it fails - the Drive API is usually not
+  // switched on yet - and a grant attempted once and lost is a person who
+  // cannot open their own spreadsheet, with nothing that would ever retry.
+  //
+  // But confirming it costs a Drive `permissions.list`, and doing that on every
+  // sign-in spends a per-minute quota asking a question whose answer has not
+  // changed since the account was made. So the answer is remembered. An install
+  // whose Drive API was off still repairs itself the moment it is switched on;
+  // it just stops paying for the guarantee afterwards.
+  //
+  // The cost of remembering: a grant revoked in Google's own UI later will not
+  // be noticed here. `setAccountSheetVisibility` still checks live before going
+  // private, which is the one request where a stale belief locks somebody out.
+  if (!stored?.sheetSharedAt) {
+    if (await ensureOwnerAccess(spreadsheetId, current.email)) {
+      recordOwnerGrant(current.id, new Date().toISOString());
+    }
+  }
   if (stored?.sheetTabDate !== todayTab || options.verifyTab) {
     // `created: false` means the tab was already in the spreadsheet while our
     // row had not caught up - the ordinary answer, not a failure.
@@ -413,6 +434,17 @@ export async function resolveAddressableTab(
 export async function backfillAccountSheets(pauseMs = 250): Promise<{ done: number; failed: number }> {
   if (process.env.SHEET_BACKFILL === 'off') return { done: 0, failed: 0 };
   if (!(await client.isConfigured())) return { done: 0, failed: 0 };
+
+  // Said BEFORE anything can fail, because the commonest cause of a refusal is
+  // a key that is not the one somebody just installed - and until this line
+  // existed there was no way to tell that apart from a misconfigured project.
+  try {
+    await getAccessToken(SHEETS_SCOPE);
+    const using = describeCredentialInUse();
+    if (using) console.log(`[sheets] Using ${using}.`);
+  } catch (error) {
+    console.warn('[sheets] Could not load the Google credentials.', error);
+  }
 
   const pending = listAccountsWithoutSheet();
   if (pending.length === 0) return { done: 0, failed: 0 };

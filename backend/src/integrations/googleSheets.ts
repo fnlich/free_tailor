@@ -42,6 +42,8 @@ type GoogleServiceAccountCredentials = {
   client_email?: string;
   private_key?: string;
   token_uri?: string;
+  /** Not used to authenticate - only to say WHICH project a refusal came from. */
+  project_id?: string;
 };
 
 type SpreadsheetMetadataResponse = {
@@ -445,6 +447,20 @@ type GoogleSheetsBatchUpdateValuesResponse = {
  */
 const cachedAccessTokens = new Map<string, CachedAccessToken>();
 
+let warnedAboutExtraKeys = false;
+
+/**
+ * Which credential the last load actually used, for error messages.
+ *
+ * Kept because a 403 says nothing about WHICH key was refused, and the single
+ * most common cause of one is a key that is not the one you just installed.
+ */
+let credentialSummary = '';
+
+export function describeCredentialInUse(): string {
+  return credentialSummary;
+}
+
 export class GoogleSheetsRequestError extends Error {
   statusCode: number;
 
@@ -482,10 +498,31 @@ export async function resolveServiceAccountPath(): Promise<string> {
     path.join(__dirname, '../../../service-account-key.json'),
   ].filter((value): value is string => Boolean(value));
 
+  const present: string[] = [];
   for (const candidate of candidates) {
-    if (await fileExists(candidate)) {
-      return candidate;
+    if (await fileExists(candidate)) present.push(candidate);
+  }
+
+  if (present.length > 0) {
+    /**
+     * More than one key on disk is a trap, and a quiet one.
+     *
+     * Five paths are searched and the FIRST wins. Somebody who replaces the key
+     * in `backend/` while an older one sits at the repo root - or who leaves
+     * GOOGLE_SERVICE_ACCOUNT_KEY_PATH pointing at the old file - gets the old
+     * credential with no sign that the new one was ignored. The failure that
+     * follows is a 403 about permissions, which sends them looking at the new
+     * project's API settings rather than at which key is in use.
+     */
+    if (present.length > 1 && !warnedAboutExtraKeys) {
+      warnedAboutExtraKeys = true;
+      console.warn(
+        `[sheets] ${present.length} service account keys were found and only the first is used.\n` +
+          present.map((file, index) => `         ${index === 0 ? 'USING  ' : 'ignored'} ${file}`).join('\n') +
+          '\n         Delete the ones you do not want, or set GOOGLE_SERVICE_ACCOUNT_KEY_PATH to be explicit.'
+      );
     }
+    return present[0];
   }
 
   throw new GoogleSheetsRequestError(
@@ -543,7 +580,9 @@ export async function isGoogleSheetsConfigured(): Promise<boolean> {
   }
 }
 
-async function loadServiceAccountCredentials(): Promise<Required<GoogleServiceAccountCredentials>> {
+type LoadedCredentials = Required<Pick<GoogleServiceAccountCredentials, 'client_email' | 'private_key' | 'token_uri'>>;
+
+async function loadServiceAccountCredentials(): Promise<LoadedCredentials> {
   const filePath = await resolveServiceAccountPath();
   const raw = await fs.readFile(filePath, 'utf8');
 
@@ -565,6 +604,10 @@ async function loadServiceAccountCredentials(): Promise<Required<GoogleServiceAc
     );
   }
 
+  credentialSummary =
+    `key ${filePath} (service account ${clientEmail}` +
+    `${parsed.project_id ? `, project ${parsed.project_id}` : ''})`;
+
   return {
     client_email: clientEmail,
     private_key: normalizePrivateKey(privateKey),
@@ -572,8 +615,21 @@ async function loadServiceAccountCredentials(): Promise<Required<GoogleServiceAc
   };
 }
 
+/**
+ * Names the credential on a refusal.
+ *
+ * A 403 reports what Google would not do, never whose key asked. When somebody
+ * has just replaced a key and the error has not changed, that is exactly the
+ * missing fact: the message either names the project they just set up, or it
+ * names the old one and the answer is that the new key is not the one in use.
+ */
+function whoAsked(status: number): string {
+  if (status !== 401 && status !== 403) return '';
+  return credentialSummary ? ` Asked with ${credentialSummary}.` : '';
+}
+
 function buildJwtAssertion(
-  credentials: Required<GoogleServiceAccountCredentials>,
+  credentials: LoadedCredentials,
   scope: string
 ): string {
   const now = Math.floor(Date.now() / 1000);
@@ -670,7 +726,7 @@ async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRet
         response.status,
         await readErrorBody(response),
         describeOperation(pathname, String(init?.method ?? 'GET'))
-      )
+      ) + whoAsked(response.status)
     );
   }
 
@@ -715,7 +771,7 @@ async function googleDriveFetch<T>(pathname: string, init?: RequestInit, hasRetr
         response.status,
         await readErrorBody(response),
         describeOperation(pathname, String(init?.method ?? 'GET'))
-      )
+      ) + whoAsked(response.status)
     );
   }
 
