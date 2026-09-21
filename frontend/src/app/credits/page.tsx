@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import AppTopNav from '@/components/AppTopNav';
 import CreditLedger from '@/components/CreditLedger';
 import PayForm from '@/components/credits/PayForm';
+import PayDialog from '@/components/credits/PayDialog';
 import { resolvePreferredTheme } from '@/lib/theme';
 import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
 import {
@@ -200,28 +201,6 @@ export default function BuyCreditsPage() {
                   Until then, an administrator can add credits to your account directly.
                 </p>
               </div>
-            ) : form ? (
-              <div className={CARD}>
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <h2 className="text-base font-semibold text-gray-900 dark:text-white">
-                    {form.credits} credits
-                  </h2>
-                  <span className="text-lg font-semibold text-gray-900 dark:text-white">
-                    {formatAmount(form.amountCents, form.currency)}
-                  </span>
-                </div>
-                <div className="mt-4">
-                  <PayForm
-                    publishableKey={options?.publishableKey ?? ''}
-                    clientSecret={form.clientSecret}
-                    credits={form.credits}
-                    amountCents={form.amountCents}
-                    currency={form.currency}
-                    dark={resolvePreferredTheme() === 'dark'}
-                    onCancel={() => setForm(null)}
-                  />
-                </div>
-              </div>
             ) : (
               <div className={CARD}>
                 <label htmlFor="credits" className={LABEL}>
@@ -305,6 +284,25 @@ export default function BuyCreditsPage() {
                 </ul>
               </div>
             )}
+
+            <PayDialog
+              open={form !== null}
+              title={form ? `Pay ${formatAmount(form.amountCents, form.currency)}` : 'Pay'}
+              subtitle={form ? `for ${form.credits} credits` : undefined}
+              onClose={() => setForm(null)}
+            >
+              {form && (
+                <PayForm
+                  publishableKey={options?.publishableKey ?? ''}
+                  clientSecret={form.clientSecret}
+                  credits={form.credits}
+                  amountCents={form.amountCents}
+                  currency={form.currency}
+                  dark={resolvePreferredTheme() === 'dark'}
+                  onCancel={() => setForm(null)}
+                />
+              )}
+            </PayDialog>
 
             <div className={CARD}>
               <h2 className="text-base font-semibold text-gray-900 dark:text-white">Credit history</h2>

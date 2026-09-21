@@ -47,12 +47,10 @@ const PANEL =
   'rounded-xl border border-gray-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900';
 
 function Inner({
-  credits,
   amountCents,
   currency,
   onCancel,
 }: {
-  credits: number;
   amountCents: number;
   currency: string;
   onCancel: () => void;
@@ -133,9 +131,6 @@ function Inner({
         >
           Cancel
         </button>
-        <span className="text-sm text-gray-500 dark:text-slate-400">
-          for {credits} credits
-        </span>
       </div>
 
       <p className="text-xs text-gray-500 dark:text-slate-400">
