@@ -9,6 +9,7 @@ import {
   STATE_LABELS,
   STATE_STYLES,
   type AdminPayment,
+  type HeldTransfer,
 } from '@/lib/payments';
 
 /**
@@ -381,6 +382,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
 
 function PaymentsBody() {
   const [payments, setPayments] = useState<AdminPayment[]>([]);
+  const [held, setHeld] = useState<HeldTransfer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -392,6 +394,16 @@ function PaymentsBody() {
     try {
       const response = await adminPaymentsApi.list();
       setPayments(response.payments);
+      /*
+       * Settled separately: a held transfer is the more urgent of the two and
+       * must not be hidden because the payment list failed to load, nor take
+       * the payment list down when it fails itself.
+       */
+      try {
+        setHeld((await adminPaymentsApi.held()).held);
+      } catch {
+        // An older backend has no such route. Nothing to show is correct.
+      }
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load payments.');
@@ -452,6 +464,56 @@ function PaymentsBody() {
           your provider&apos;s dashboard.
         </p>
       </div>
+
+      {/*
+        Above everything, because it is the only thing on this page that is
+        somebody's money sitting unclaimed.
+
+        A transfer lands here when it could not be attributed to exactly ONE
+        open order - the amount was off and either nothing or two things were
+        close enough. Nothing was credited and nothing was written off, which
+        is the only honest outcome when guessing would give one buyer's coin
+        to another buyer's order.
+      */}
+      {held.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+          <h2 className="text-base font-semibold text-red-700">
+            {held.length} payment{held.length === 1 ? '' : 's'} need attention
+          </h2>
+          <p className="mt-1 text-sm text-red-700">
+            Coin arrived that could not be matched to one order automatically. Nothing has been
+            credited and nothing has been lost. Check the transaction against the order, then
+            adjust the balance from the accounts page.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {held.map((entry) => (
+              <li key={entry.id} className="rounded-md border border-red-200 bg-white p-3 text-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="font-medium text-gray-900">{entry.asset}</span>
+                  <span className="text-xs text-gray-500">{formatDate(entry.at)}</span>
+                </div>
+                <p className="mt-1 text-gray-700">{entry.note}</p>
+                <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-gray-600 sm:grid-cols-2">
+                  <div>
+                    <dt className="inline font-medium">Expected: </dt>
+                    <dd className="inline font-mono">{entry.expected || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-medium">Received: </dt>
+                    <dd className="inline font-mono">{entry.received || '—'}</dd>
+                  </div>
+                  {entry.txid && (
+                    <div className="sm:col-span-2">
+                      <dt className="inline font-medium">Transaction: </dt>
+                      <dd className="inline break-all font-mono">{entry.txid}</dd>
+                    </div>
+                  )}
+                </dl>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <PricingCard onSaved={() => void load()} />
 

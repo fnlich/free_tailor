@@ -6,7 +6,14 @@ import {
   getUserById,
 } from '../../database/userRepository';
 import { getCardForUser, saveCard } from '../../database/savedCardRepository';
-import { isAssetId } from '../../config/chainAssets';
+import { ASSETS, isAssetId } from '../../config/chainAssets';
+import {
+  chainPaymentsReason,
+  isChainPaymentsConfigured,
+  readChainPaymentsConfig,
+} from '../../config/chainPayments';
+import { getInvoiceForPayment } from '../../database/chainInvoiceRepository';
+import { ChainInvoiceError, describeInvoice, openInvoice } from './chain/invoices';
 import {
   attachProviderRef,
   beginRefund,
@@ -60,7 +67,17 @@ export function publishableKey(env: NodeJS.ProcessEnv = process.env): string {
 
 export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAvailability[] {
   const card = stripe.isStripeConfigured(env);
-  const crypto = coinbase.isCoinbaseConfigured(env);
+  /*
+   * Either way of taking crypto counts, and the on-chain one is preferred.
+   *
+   * Coinbase Commerce is retired rather than removed: payments already made
+   * through it still read, its webhook still settles, and an installation
+   * configured only for it keeps working exactly as before. What changes is
+   * which one a NEW checkout gets. Changing the METHOD union instead would
+   * misread every row already in the table.
+   */
+  const onChain = isChainPaymentsConfigured(env);
+  const crypto = onChain || coinbase.isCoinbaseConfigured(env);
   return [
     {
       method: 'card',
@@ -77,14 +94,18 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
     },
     {
       method: 'crypto',
-      provider: 'coinbase',
+      provider: onChain ? 'chain' : 'coinbase',
       label: 'Crypto',
       available: crypto,
       ...(crypto
         ? {}
         : {
+            // The chain reason first, because that is the one an operator
+            // setting this up now is trying to satisfy. It names the variables
+            // rather than describing them, for the same reason.
             reason:
-              'Set COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto.',
+              `${chainPaymentsReason(env)} Or set COINBASE_COMMERCE_API_KEY and ` +
+              'COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto through Coinbase Commerce instead.',
           }),
     },
   ];
@@ -163,6 +184,14 @@ export type StartedCheckout = {
   clientSecret?: string;
   redirectUrl?: string;
   /**
+   * The deposit instructions, when the payment is on-chain.
+   *
+   * A fourth shape beside the three below, and the only one that asks the
+   * buyer to do something outside the browser entirely: send an exact amount
+   * to an address. There is nothing to confirm and nowhere to be sent.
+   */
+  invoice?: ReturnType<typeof describeInvoice>;
+  /**
    * Set when a saved card was charged off-session and there is nothing for the
    * browser to do but wait. Distinct from a client secret, which asks it to
    * confirm, and from a redirect, which sends it away.
@@ -235,6 +264,20 @@ export async function startCheckout(
   if (asset && !isAssetId(asset)) {
     throw new PaymentError('That coin is not one this server can take.');
   }
+
+  /*
+   * On-chain crypto needs to know WHICH coin. Coinbase does not.
+   *
+   * The difference is real rather than pedantic: an on-chain payment is an
+   * amount of one specific token sent to one specific address, and there is no
+   * sensible default. Coinbase's hosted page asks the buyer itself, which is
+   * why an asset stays optional there and why this check is conditional.
+   */
+  const chainConfigured = isChainPaymentsConfigured(env);
+  if (method === 'crypto' && chainConfigured && !asset) {
+    throw new PaymentError('Choose which coin to pay with.');
+  }
+  const chosenAsset = asset && isAssetId(asset) ? asset : null;
   if (cardId && method !== 'card') {
     throw new PaymentError('A saved card can only be used for a card payment.');
   }
@@ -392,6 +435,33 @@ export async function startCheckout(
         return { ref: session.id, clientSecret: session.client_secret ?? '', url: '' };
       }
 
+      /*
+       * On-chain when it is configured, Coinbase Commerce when it is not.
+       *
+       * The difference for the buyer is total: on-chain they are shown an
+       * address this operator controls and an exact amount, and the money
+       * never touches a processor. Coinbase remains for an installation that
+       * has not set up addresses, and for every row already paid through it.
+       */
+      if (chainConfigured && chosenAsset) {
+        const invoice = await openInvoice({
+          paymentId: payment.id,
+          userId: account.id,
+          assetId: chosenAsset,
+          amountCents: quote.amountCents,
+        });
+        /*
+         * The invoice id is the provider reference.
+         *
+         * There is no session and no charge at anybody's API, so the thing
+         * that identifies this payment on the provider's side is the row this
+         * server wrote. It keeps `provider_ref` meaning the same thing for
+         * every provider - "the object at the other end" - and it is what a
+         * reconciling administrator looks the payment up by.
+         */
+        return { ref: invoice.id, clientSecret: '', url: '', processing: false };
+      }
+
       const charge = await coinbase.createCharge({
         paymentId: payment.id,
         reference: payment.reference,
@@ -403,6 +473,21 @@ export async function startCheckout(
       });
       return { ref: charge.code, clientSecret: '', url: charge.hosted_url ?? '', processing: false };
     } catch (error) {
+      /*
+       * An invoice refusal is the caller's answer, not the provider's.
+       *
+       * "Somebody is already paying that exact amount" and "the price feed is
+       * not answering" are both things the buyer can act on, and neither is
+       * "the payment provider would not open a checkout page". Reporting them
+       * as a 502 would tell somebody to try later when the real advice is to
+       * try NOW with a different amount. The payment row is closed on the way
+       * past, because no invoice exists for it and nothing will ever pay it.
+       */
+      if (error instanceof ChainInvoiceError) {
+        markUnpaid(payment.id, 'failed', 'No invoice could be opened for this payment.');
+        throw new PaymentError(error.message, error.status);
+      }
+
       /*
        * The detail goes to the log, and a fixed sentence goes in the row.
        *
@@ -435,6 +520,12 @@ export async function startCheckout(
       );
     }
   })();
+
+  const invoice = getInvoiceForPayment(payment.id);
+  if (invoice) {
+    attachProviderRef(payment.id, opened.ref);
+    return { payment: getPayment(payment.id) ?? payment, invoice: describeInvoice(invoice) };
+  }
 
   if (!opened.clientSecret && !opened.url && !('processing' in opened && opened.processing)) {
     // The session may exist without anything the browser can use, so this
@@ -590,6 +681,94 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
         feeFixedCents: 0,
       });
     }
+  }
+
+  /*
+   * One row per coin, replacing the single "Cryptocurrency" row.
+   *
+   * A buyer paying on-chain is choosing a coin AND a network, not a category:
+   * USDT on Ethereum and USDT on TRON are different addresses, different fees
+   * and different confirmation times, and sending one to the other loses the
+   * money. So each is its own button, with its own limits row, and the
+   * method-level entry is dropped once there is anything to replace it with.
+   *
+   * An asset the operator asked for that cannot be served appears here too,
+   * unavailable and with the reason - the rule chainPayments.ts states for
+   * itself: a misconfiguration is something they need to SEE.
+   */
+  const chainConfig = readChainPaymentsConfig(env);
+  if (chainConfig.assets.length > 0) {
+    const coinTargets: PaymentTarget[] = [];
+
+    for (const enabled of chainConfig.assets) {
+      const asset = enabled.definition;
+      try {
+        const limits = await resolveLimits({ method: 'crypto', asset: asset.id });
+        const presets = await presetsFor({ method: 'crypto', asset: asset.id });
+        coinTargets.push({
+          id: asset.id,
+          method: 'crypto',
+          asset: asset.id,
+          chain: asset.chain,
+          label: asset.label,
+          symbol: asset.symbol,
+          mark: asset.id,
+          available: true,
+          minCredits: limits.minCredits,
+          maxCredits: limits.maxCredits,
+          minAmountCents: limits.minAmountCents,
+          maxAmountCents: limits.maxAmountCents,
+          presets,
+          custom: 'stepper',
+          feeBps: limits.feeBps,
+          feeFixedCents: limits.feeFixedCents,
+        });
+      } catch (error) {
+        coinTargets.push({
+          id: asset.id,
+          method: 'crypto',
+          asset: asset.id,
+          chain: asset.chain,
+          label: asset.label,
+          symbol: asset.symbol,
+          mark: asset.id,
+          available: false,
+          reason: error instanceof Error ? error.message : 'These limits cannot be resolved.',
+          minCredits: 0,
+          maxCredits: 0,
+          minAmountCents: 0,
+          maxAmountCents: 0,
+          presets: [],
+          custom: 'stepper',
+          feeBps: 0,
+          feeFixedCents: 0,
+        });
+      }
+    }
+
+    for (const problem of chainConfig.problems) {
+      const asset = ASSETS[problem.asset];
+      coinTargets.push({
+        id: problem.asset,
+        method: 'crypto',
+        asset: problem.asset,
+        ...(asset ? { chain: asset.chain, symbol: asset.symbol } : {}),
+        label: asset ? asset.label : problem.asset,
+        mark: problem.asset,
+        available: false,
+        reason: problem.reason,
+        minCredits: 0,
+        maxCredits: 0,
+        minAmountCents: 0,
+        maxAmountCents: 0,
+        presets: [],
+        custom: 'stepper',
+        feeBps: 0,
+        feeFixedCents: 0,
+      });
+    }
+
+    return [...targets.filter((target) => target.method !== 'crypto'), ...coinTargets];
   }
 
   return targets;

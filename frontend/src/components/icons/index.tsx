@@ -201,6 +201,13 @@ export const IconChevronRight = (p: IconProps) => (
   </Icon>
 );
 
+export const IconCopy = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="9" y="9" width="11.5" height="11.5" rx="2" />
+    <path d="M15 9V5.5a2 2 0 0 0-2-2H5.5a2 2 0 0 0-2 2V13a2 2 0 0 0 2 2H9" />
+  </Icon>
+);
+
 export const IconCheck = (p: IconProps) => (
   <Icon {...p}>
     <path d="m5 12.5 4.5 4.5L19 7.5" />
@@ -249,6 +256,7 @@ export const ICONS = {
   chevronRight: IconChevronRight,
   plus: IconPlus,
   check: IconCheck,
+  copy: IconCopy,
   trash: IconTrash,
 } as const;
 

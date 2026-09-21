@@ -6,7 +6,12 @@ import CryptoPanel from './CryptoPanel';
 import PolicyPanels from './PolicyPanels';
 import { LABEL, PANEL } from './chrome';
 import type { Order, Priced } from './order';
-import { formatAmount, type PaymentTarget, type SavedCard } from '@/lib/payments';
+import {
+  formatAmount,
+  type ChainInvoiceView,
+  type PaymentTarget,
+  type SavedCard,
+} from '@/lib/payments';
 
 /**
  * Step 3: exactly what is being bought, beside how to pay for it.
@@ -67,6 +72,7 @@ export default function OrderSummaryStep({
   priced,
   order,
   cards,
+  invoice,
   showNewCardForm,
   onUseNewCard,
   onUseSavedCards,
@@ -88,6 +94,8 @@ export default function OrderSummaryStep({
   priced: Priced;
   order: Order;
   cards: SavedCard[];
+  /** The live chain invoice, when this is a crypto payment. */
+  invoice: ChainInvoiceView | null;
   showNewCardForm: boolean;
   onUseNewCard: () => void;
   onUseSavedCards: () => void;
@@ -214,7 +222,13 @@ export default function OrderSummaryStep({
             onRetry={onRetry}
           />
         ) : (
-          <CryptoPanel order={order} target={target} onCancel={onBack} onRetry={onRetry} />
+          <CryptoPanel
+            order={order}
+            target={target}
+            invoice={invoice}
+            onCancel={onBack}
+            onRetry={onRetry}
+          />
         )}
       </div>
     </div>

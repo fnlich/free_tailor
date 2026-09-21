@@ -356,6 +356,20 @@ test('removing the last browser tells the line, instead of leaving it to time ou
   held.release();
 });
 
+/*
+ * The next two both wait on a wake, and the number they wait is NOT the claim.
+ *
+ * What is being asserted is that the queued caller is woken by B - by a rest
+ * ending, or by B being reported healthy - rather than sitting there until A
+ * is released. A tight deadline made that a race against the clock instead of
+ * a statement about the pool: both passed alone and both failed at 3003ms
+ * once enough other test files were running beside them, because the process
+ * was simply busy. A generous deadline tests the same thing and cannot be lost
+ * to a loaded machine; if the wake never comes, node:test's own timeout still
+ * fails the test.
+ */
+const WAKE_TIMEOUT_MS = 30_000;
+
 test('a browser coming back wakes the line rather than waiting for a release', async () => {
   // `pump` is driven by a release or a configuration change. Without a wake, a
   // browser whose rest ends while the site's healthy tabs are busy sits idle
@@ -366,7 +380,7 @@ test('a browser coming back wakes the line rather than waiting for a release', a
   assert.equal(onA.endpoint, A);
   pool.markUnreachable(B, 60);
 
-  const waiting = pool.acquire({ timeoutMs: 3_000 });
+  const waiting = pool.acquire({ timeoutMs: WAKE_TIMEOUT_MS });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(pool.queued, 1, 'it must queue while B is resting');
 
@@ -380,7 +394,7 @@ test('a browser reported healthy again wakes the line too', async () => {
   const pool = poolOf(A, B);
   const onA = await pool.acquire();
   pool.markUnreachable(B, 60_000);
-  const waiting = pool.acquire({ timeoutMs: 3_000 });
+  const waiting = pool.acquire({ timeoutMs: WAKE_TIMEOUT_MS });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(pool.queued, 1);
 

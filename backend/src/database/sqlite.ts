@@ -342,6 +342,31 @@ const SCHEMA = `
     ON chain_invoices (state, monitor_until);
 
   /**
+   * How far each chain has been read.
+   *
+   * Without this a restart has only two options, and both lose money: rescan
+   * from the beginning of the chain, which no public endpoint will serve, or
+   * start from the current tip, which silently skips every transfer that
+   * arrived while the process was down. Neither is recoverable afterwards,
+   * because the watcher's only record of having looked IS this number.
+   *
+   * HEIGHT is TEXT for the same reason amount_atomic is: it is written and
+   * compared as a decimal integer, and a block height is one number this code
+   * should not have to promise stays inside a double forever. (No backticks
+   * anywhere in this file - the whole schema is one template literal, and a
+   * backtick in a comment ends it.)
+   *
+   * It is written in the SAME transaction as whatever that height produced.
+   * Advancing the cursor first and recording the transfers afterwards is a
+   * crash away from a payment nobody will ever look for again.
+   */
+  CREATE TABLE IF NOT EXISTS chain_cursors (
+    chain      TEXT PRIMARY KEY,
+    height     TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  /**
    * Accounts.
    *
    * The EMAIL is the identity, not the Google subject id: the two sign-in paths

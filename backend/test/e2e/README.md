@@ -107,6 +107,13 @@ the order appearing when the new-card form is asked for; the form mounting or
 saying plainly that it could not; Escape closing; and nothing hanging off the
 side at 1440 or 390, in either theme. It screenshots each step.
 
+`buy-credits.js` also drives a whole on-chain payment: a coin per button with
+its network named, an address matching the configured one, a second buyer told
+to wait when they ask for an amount already reserved, a transfer announced
+below the confirmation depth reported as `seen` and crediting nothing, and the
+same transfer crediting once it is buried - with the fee coming out of the
+credits rather than the amount sent.
+
 `browser.js` — the same purchase with a mouse, now that the form is embedded:
 the buy page priced from the server; pressing Pay navigating NOWHERE and the
 dialog opening in place; the form either mounting or saying plainly that it
@@ -136,4 +143,19 @@ the internet can reach:
    balance does not move, the webhook endpoint is missing that event. Then use
    `4000 0025 0000 3155` as the saved card to exercise the branch where the
    bank demands authentication anyway and the browser has to finish it.
-7. Repeat 1-2 in the Coinbase Commerce sandbox.
+7. Repeat 1-2 in the Coinbase Commerce sandbox, if you use it.
+8. **One real payment per crypto asset, at the smallest amount your limits
+   allow.** This is the row that matters most on this list. No reader in this
+   repository has ever contacted a live chain, so every response shape is
+   pinned by tests against recorded bodies and confirmed by nothing else.
+   Check, for each asset: that the amount the buy page quotes is the amount
+   your wallet sends; that the payment moves to `seen` within a block or two;
+   and that it credits at the confirmation count `chainAssets.ts` names.
+9. **Send a deliberately wrong amount once**, a few percent short, and confirm
+   it either credits in proportion or appears in the *needs attention* list
+   under Admin -> Payments. Both are correct outcomes; silence is not.
+10. The decimals are keyed on `(chain, contract)` because USDT is 6 decimals on
+    Ethereum and **18** on BNB Chain - a factor of a trillion on a token with
+    the same ticker. If you enable `bsc:USDT`, test it separately from
+    `ethereum:USDT`. Getting that one wrong means a customer's money arrives
+    and is never credited.

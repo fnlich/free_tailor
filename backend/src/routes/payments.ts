@@ -16,6 +16,11 @@ import * as stripe from '../integrations/stripe';
 import { getPricingLimits, PriceError, quoteCredits } from '../services/payments/pricing';
 import { isAssetId } from '../config/chainAssets';
 import { getUserById } from '../database/userRepository';
+import {
+  getInvoiceForPayment,
+  listHeldInvoices,
+} from '../database/chainInvoiceRepository';
+import { describeInvoice, formatAtomic } from '../services/payments/chain/invoices';
 
 /**
  * Buying credits, and an administrator's view of what was bought.
@@ -155,6 +160,8 @@ router.post('/checkout', async (req: Request, res: Response) => {
       ...(started.clientSecret ? { clientSecret: started.clientSecret } : {}),
       ...(started.redirectUrl ? { redirectUrl: started.redirectUrl } : {}),
       ...(started.processing ? { processing: true } : {}),
+      // Where to send coin, and how much. Only for an on-chain payment.
+      ...(started.invoice ? { invoice: started.invoice } : {}),
     });
   } catch (error) {
     fail(res, error);
@@ -233,7 +240,16 @@ router.get('/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'That payment was not found.' });
     return;
   }
-  res.json({ payment });
+  /*
+   * The invoice rides along, so the deposit panel has one thing to poll.
+   *
+   * It is what changes while somebody is waiting: an amount arrives, then it
+   * gets deeper, then it is credited. The payment itself only moves once, at
+   * the very end, so a page watching only the payment would show nothing at
+   * all for the several minutes a chain takes.
+   */
+  const invoice = getInvoiceForPayment(payment.id);
+  res.json({ payment, ...(invoice ? { invoice: describeInvoice(invoice) } : {}) });
 });
 
 export default router;
@@ -258,6 +274,37 @@ adminPaymentsRouter.get('/', (_req: Request, res: Response) => {
       userEmail: getUserById(payment.userId)?.email ?? '',
     })),
   });
+});
+
+/**
+ * Money that arrived and could not be matched to an order.
+ *
+ * Held rather than credited or written off. The creation-time rule - refusing
+ * a taken amount instead of shifting it - makes this rare, because two open
+ * invoices on one asset now differ by dollars rather than by one atomic unit.
+ * Rare is not never: a wallet rounds, a withdrawal takes a fee, somebody types
+ * the figure by hand. When that money cannot be attributed to exactly one
+ * order, nothing moves and it ends up in this list.
+ *
+ * On this page rather than a page of its own, because this is where an
+ * administrator already comes to reconcile against the provider's own records,
+ * and a second place to check is a place nobody checks.
+ */
+adminPaymentsRouter.get('/held', (_req: Request, res: Response) => {
+  const held = listHeldInvoices().map((invoice) => ({
+    id: invoice.id,
+    paymentId: invoice.paymentId,
+    asset: invoice.asset,
+    chain: invoice.chain,
+    address: invoice.address,
+    expected: formatAtomic(invoice.amountAtomic, invoice.decimals),
+    received: invoice.seenAmount ? formatAtomic(invoice.seenAmount, invoice.decimals) : '',
+    txid: invoice.seenTxid,
+    /** Why it is here, in a sentence a person can act on. */
+    note: invoice.note,
+    at: invoice.updatedAt,
+  }));
+  res.json({ held });
 });
 
 adminPaymentsRouter.post('/:id/refund', async (req: Request, res: Response) => {
