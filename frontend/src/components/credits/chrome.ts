@@ -36,13 +36,27 @@ export const LABEL = 'text-xs font-medium uppercase tracking-wide text-subtle';
  *
  * `border-2` even when unselected, so selecting one changes a colour and never
  * a size - a chip that grows by 1px on selection nudges every chip after it.
+ *
+ * **`min-w-0` is load-bearing, and it is not the same `min-w-0` as the one
+ * inside the chip.** Every one of these sits in a `grid`, and a grid item's
+ * default `min-width` is `auto`, not `0` - so it refuses to shrink below the
+ * MIN-CONTENT width of whatever is inside it, and a long unbroken line pushes
+ * the chip straight out through the side of the dialog instead. `truncate` on
+ * an inner element does not save it: `white-space: nowrap` makes that inner
+ * text's min-content width the whole sentence, so it is the thing that causes
+ * the blow-out rather than the thing that prevents it, and the chip never gets
+ * narrow enough for the ellipsis to appear. A `min-w-0` on an inner span is
+ * powerless here too - the constraint is a level up, on the grid item itself.
+ * Measured on the crypto row with its setup instructions: a 398px track held a
+ * 1291px button whose right edge was 868px past the dialog.
  */
 export const CHOICE =
-  'rounded-xl border-2 border-line bg-surface p-3 text-left transition-colors ' +
+  'min-w-0 rounded-xl border-2 border-line bg-surface p-3 text-left transition-colors ' +
   'hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-55 ' +
   'disabled:hover:border-line';
 
-export const CHOICE_ON = 'rounded-xl border-2 border-accent bg-accent-soft p-3 text-left';
+export const CHOICE_ON =
+  'min-w-0 rounded-xl border-2 border-accent bg-accent-soft p-3 text-left';
 
 /** The one button on each step that moves the purchase forward. */
 export const PRIMARY =

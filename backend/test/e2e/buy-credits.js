@@ -710,6 +710,93 @@ async function main() {
       `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
     );
     await page.screenshot({ path: path.join(SHOTS, 'buy-3-summary-phone-dark.png') });
+
+    /*
+     * The state this installation never shows, and the one that broke.
+     *
+     * Every check above runs against a server that CAN take payments, so the
+     * unavailable branch of a choice - a method listed with the reason it is
+     * off - had never once been rendered by a test. It was also the longest
+     * string the dialog can be handed: setup instructions naming two
+     * environment variables, one of them thirty-two characters with nowhere a
+     * browser will break it. The row blew out to 1291px inside a 398px track
+     * and ran 868px past the side of the dialog.
+     *
+     * Forced here rather than by reconfiguring the server, because taking the
+     * keys out of .env would switch off every other check in this file.
+     */
+    console.log('\n=== A method that is switched off ===');
+    const LONG_REASON =
+      'Set CHAIN_ASSETS and the receiving addresses to take crypto payments. Or set ' +
+      'COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto ' +
+      'through Coinbase Commerce instead.';
+
+    await page.evaluateOnNewDocument((reason) => {
+      const real = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await real(...args);
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url ?? '';
+        if (!/\/payments\/methods/.test(url) || !response.ok) return response;
+        const body = await response.clone().json();
+        body.targets = (body.targets || []).map((target) =>
+          target.method === 'crypto' ? { ...target, available: false, reason } : target
+        );
+        body.methods = (body.methods || []).map((method) =>
+          method.id === 'crypto' ? { ...method, available: false, reason } : method
+        );
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+    }, LONG_REASON);
+
+    for (const viewport of [WIDE, PHONE]) {
+      await page.setViewport(viewport);
+      await openDialog(page);
+      dialog = await readDialog(page);
+      check(
+        `an unavailable method is listed with its reason at ${viewport.width}`,
+        /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 400)
+      );
+      check(
+        `and nothing hangs off the side at ${viewport.width}`,
+        dialog && dialog.overflow.past <= 1,
+        `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
+      );
+
+      /*
+       * Not merely inside the dialog - READABLE.
+       *
+       * `truncate` would keep the row inside the panel and still fail the
+       * operator, because the part naming the keys is at the END of the
+       * sentence and a one-line ellipsis eats exactly that. A clipped element
+       * has a scrollWidth wider than its clientWidth; a wrapped one does not.
+       */
+      const reason = await page.evaluate(() => {
+        const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
+          (element) =>
+            /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(element.textContent || '') &&
+            element.children.length === 0
+        );
+        if (!node) return null;
+        return {
+          clipped: node.scrollWidth > node.clientWidth + 1,
+          lines: Math.round(node.getBoundingClientRect().height / 16),
+          whiteSpace: getComputedStyle(node).whiteSpace,
+        };
+      });
+      check(
+        `the reason is wrapped rather than clipped at ${viewport.width}`,
+        reason && !reason.clipped && reason.lines > 1,
+        JSON.stringify(reason)
+      );
+      await page.screenshot({
+        path: path.join(SHOTS, `buy-1-unavailable-${viewport.width}.png`),
+      });
+      await page.keyboard.press('Escape');
+    }
   } finally {
     await browser.close();
   }

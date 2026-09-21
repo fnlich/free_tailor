@@ -68,7 +68,15 @@ function Choice({
   return (
     <button
       type="button"
-      className={`${CHOICE} flex items-center gap-3`}
+      className={`${CHOICE} flex gap-3 ${
+        /*
+         * Centred while the row is one or two lines, top-aligned once it is
+         * not. An unavailable row carries setup instructions that run to
+         * several lines in this dialog, and a mark centred against five lines
+         * of text sits opposite nothing.
+         */
+        target.available ? 'items-center' : 'items-start'
+      }`}
       disabled={!target.available}
       onClick={() => onChoose(target)}
       // The reason is on the element as well as in the text below it, so it
@@ -78,16 +86,27 @@ function Choice({
       <Mark target={target} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-semibold text-ink">{target.label}</span>
-        {(!target.available || showRange) && (
-          <span className="block truncate text-xs text-subtle">
-            {target.available
-              ? `${formatAmount(target.minAmountCents, currency)} – ${formatAmount(
-                  target.maxAmountCents,
-                  currency
-                )}`
-              : target.reason || 'Not available.'}
-          </span>
-        )}
+        {target.available
+          ? showRange && (
+              <span className="block truncate text-xs text-subtle">
+                {formatAmount(target.minAmountCents, currency)} &ndash;{' '}
+                {formatAmount(target.maxAmountCents, currency)}
+              </span>
+            )
+          : /*
+             * Wrapped, not truncated, and the difference matters.
+             *
+             * This is the only thing on screen telling an operator what to go
+             * and set, and the part that says which keys is at the END of the
+             * sentence - so one line with an ellipsis hides the whole point of
+             * showing it. `break-words` is for the keys themselves:
+             * COINBASE_COMMERCE_WEBHOOK_SECRET is one 32-character word with
+             * nowhere a browser will break it, and in this column it has to go
+             * somewhere.
+             */
+            <span className="block break-words text-xs text-subtle">
+              {target.reason || 'Not available.'}
+            </span>}
       </span>
       {target.available && <IconChevronRight className="h-4 w-4 shrink-0 text-subtle" />}
     </button>
