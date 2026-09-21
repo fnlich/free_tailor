@@ -60,6 +60,7 @@ const SETTINGS_ITEMS = [
   { href: '/admin/models', label: 'Models' },
   { href: '/admin/skills', label: 'Skill Library' },
   { href: '/admin/accounts', label: 'Accounts' },
+  { href: '/admin/payments', label: 'Payments' },
 ];
 
 function canSee(item: NavItem, isAdmin: boolean, plan: unknown): boolean {

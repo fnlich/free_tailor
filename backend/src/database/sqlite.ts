@@ -202,6 +202,130 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_order_items_order
     ON order_items (order_id, seq);
 
+  /*
+   * Money coming in, and what it bought.
+   *
+   * The ledger already records every credit that MOVES; this records the
+   * purchase behind the ones that arrive. They are separate on purpose: a
+   * ledger row is an accounting fact and must never be rewritten, while a
+   * payment has a lifecycle - pending, then paid or failed or expired, then
+   * perhaps refunded - and is updated as the provider reports it.
+   *
+   * unit_price_cents is stored per payment rather than looked up later. A
+   * receipt has to say what the price WAS, and an administrator changing the
+   * price must not rewrite what somebody already paid.
+   *
+   * UNIQUE (provider, provider_ref) is a guard, not a convenience: it is what
+   * stops two rows ever claiming the same Stripe session or Coinbase charge.
+   */
+  CREATE TABLE IF NOT EXISTS payments (
+    id               TEXT PRIMARY KEY,
+    reference        TEXT NOT NULL UNIQUE,
+    user_id          TEXT NOT NULL,
+    method           TEXT NOT NULL,
+    provider         TEXT NOT NULL,
+    provider_ref     TEXT,
+    credits          INTEGER NOT NULL,
+    amount_cents     INTEGER NOT NULL,
+    currency         TEXT NOT NULL,
+    unit_price_cents INTEGER NOT NULL,
+    state            TEXT NOT NULL,
+    failure          TEXT NOT NULL DEFAULT '',
+    credited_at      TEXT,
+    refunded_at      TEXT,
+    refunded_credits INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_payments_user
+    ON payments (user_id, created_at DESC);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_ref
+    ON payments (provider, provider_ref);
+
+  /*
+   * Every webhook this server accepted, and the outer half of paying once.
+   *
+   * A payment provider guarantees AT LEAST once, not exactly once: it retries
+   * until it gets a 2xx, and it will happily send an event twice for reasons of
+   * its own. UNIQUE (provider, event_id) is what makes the second delivery a
+   * no-op rather than a second helping of credits.
+   *
+   * The ledger's own idempotency_key is the inner half, and the two are not
+   * redundant: this one stops the work being done twice, that one stops the
+   * MONEY moving twice even if something ever gets past this.
+   *
+   * The payload is kept because when a payment is disputed months later, what
+   * the provider actually said is the only evidence there is.
+   */
+  CREATE TABLE IF NOT EXISTS payment_events (
+    id          TEXT PRIMARY KEY,
+    payment_id  TEXT,
+    provider    TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT '',
+    payload     TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_events_unique
+    ON payment_events (provider, event_id);
+
+  CREATE INDEX IF NOT EXISTS idx_payment_events_payment
+    ON payment_events (payment_id, received_at);
+
+  /**
+   * One crypto invoice: an address, an exact amount, and a deadline.
+   *
+   * Separate from the payment because the payment is provider-agnostic and this
+   * is entirely about chains. It hangs off payments.provider_ref, the same slot
+   * a Stripe session id occupies.
+   *
+   * AMOUNT_ATOMIC is a TEXT column holding a decimal integer, not an INTEGER
+   * column. An 18-decimal token amount exceeds what SQLite's 64-bit INTEGER can
+   * hold once the numbers get large, and a silently truncated amount is a
+   * payment that is never matched. Every comparison on it is string equality on
+   * a canonical decimal, which is exact.
+   *
+   * The UNIQUE index on (chain, asset, amount_atomic) WHERE reserved = 1 is the
+   * whole matching scheme. Buyers all send to ONE address per chain, so the
+   * amount is the only thing distinguishing them, and two invoices quoting the
+   * same amount would be two payments nobody can tell apart. The index is the
+   * decision - not an application check, which two concurrent checkouts would
+   * race straight past.
+   */
+  CREATE TABLE IF NOT EXISTS chain_invoices (
+    id             TEXT PRIMARY KEY,
+    payment_id     TEXT NOT NULL,
+    chain          TEXT NOT NULL,
+    asset          TEXT NOT NULL,
+    address        TEXT NOT NULL,
+    amount_atomic  TEXT NOT NULL,
+    decimals       INTEGER NOT NULL,
+    unit_price_usd TEXT NOT NULL DEFAULT '',
+    reserved       INTEGER NOT NULL DEFAULT 1,
+    quote_expires_at TEXT NOT NULL,
+    monitor_until  TEXT NOT NULL,
+    seen_txid      TEXT,
+    seen_amount    TEXT,
+    seen_at        TEXT,
+    confirmations  INTEGER NOT NULL DEFAULT 0,
+    state          TEXT NOT NULL DEFAULT 'waiting',
+    note           TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_invoices_slot
+    ON chain_invoices (chain, asset, amount_atomic) WHERE reserved = 1;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_invoices_payment
+    ON chain_invoices (payment_id);
+
+  CREATE INDEX IF NOT EXISTS idx_chain_invoices_open
+    ON chain_invoices (state, monitor_until);
+
   /**
    * Accounts.
    *

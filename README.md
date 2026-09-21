@@ -147,8 +147,95 @@ being refused on the thirtieth after twenty-nine resumes already exist.
   *held*, rather than hiding it and having the number appear to come back from
   nowhere.
 
-A brand-new account starts at **0** and needs an administrator to grant it some.
-Set `CREDIT_SIGNUP_GRANT` to give an open installation a self-serve trial instead.
+A brand-new account starts at **0**. Set `CREDIT_SIGNUP_GRANT` to give an open
+installation a self-serve trial, or let people buy their own.
+
+### Buying credits
+
+Two ways to pay, and **both work the same way underneath**: the browser goes to
+the provider's own hosted page, and this server credits the account only when a
+signed webhook arrives.
+
+| Method | Provider | Keys |
+|---|---|---|
+| Card | Stripe, embedded | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
+| Crypto | Coinbase Commerce | `COINBASE_COMMERCE_API_KEY`, `COINBASE_COMMERCE_WEBHOOK_SECRET` |
+
+A method is offered **only when every one of its keys is set**. A secret key
+without a webhook secret is an install that can take money and never hear that
+it did - every payment would sit pending with the money gone - and without the
+publishable key the form cannot mount in the browser at all, so the button would
+lead to an empty box. A half-configured method is not offered.
+
+The buy page lists what to set when NO method is configured at all. When one
+method works and another does not, the working one is simply the only button -
+which is the right behaviour for a customer and means an operator debugging a
+half-configured method should look at the server's startup log rather than the
+buy page.
+
+**The card form is on our own page**, not a redirect to Stripe: the Checkout
+Session is created with `ui_mode: 'elements'` and the buy page mounts Stripe's
+Payment Element with the `client_secret` it returns. The property that made the
+hosted page worth using is kept - **no card number reaches this server, or even
+the page's own JavaScript.** The form is an iframe served by Stripe and the
+details go straight to them; what this app holds is a client secret, which
+identifies a session and authorises nothing on its own.
+
+The session still carries a `return_url`, because some payment methods leave the
+page whatever we do: 3-D Secure and a stablecoin payment both hand the customer
+to another domain and have to land somewhere coming back. That somewhere is the
+page that waits for the webhook.
+
+**Only a verified webhook adds credits.** Not the browser arriving at the return
+page: that is a GET anybody can visit, so crediting there would be a free-credits
+button with an inconvenient URL. Confirming in the form does not decide anything
+either. The return page polls the payment until the webhook has landed, which is
+a second for a card and can be minutes for a chain payment.
+
+The card integration is pinned to Stripe API version `2026-03-25.dahlia` and
+sends it on every request. `ui_mode: 'elements'` exists only from that version -
+before it the same thing was called `custom` - and Stripe resolves a request at
+the ACCOUNT's pinned version unless a header says otherwise. Without the pin the
+integration would work on a new Stripe account and fail on an older one.
+
+**The browser sends a count of credits, never a price.** The server quotes from
+its own settings every time, so no request can set what it will be charged; the
+buy page displays that same number rather than working one out. The price and
+the purchase bounds are set under **Admin → Payments**, and each payment records
+the price it was made at, so changing it never rewrites a past receipt. One
+account may open twenty checkouts an hour; abandoning one is ordinary, but each
+costs a call to a payment provider, so a loop is refused with a 429 rather than
+run up somebody else's bill.
+
+**Paying twice is guarded three times**, because the failure it prevents is
+giving credits away: the provider's event id is UNIQUE in `payment_events`, the
+payment only moves out of `pending` once, and the ledger entry carries a
+deterministic `purchase:<id>` key. Any one would usually do.
+
+**Paying once and getting nothing is guarded too**, which is the mirror failure
+and the easier one to miss. Recording the event and adding the credits is a
+single transaction: if anything fails in between, the event row goes back with
+it, so the provider's retry is a first delivery rather than a duplicate the
+guards above would refuse. A webhook that reports an amount other than the one
+the payment was quoted at credits nothing and leaves the payment `pending` for
+somebody to look at, and a checkout that is created at the provider is never
+marked failed locally - somebody may still pay it.
+
+**Before taking real money**, `backend/test/e2e/` runs the whole purchase over
+HTTP and through a browser against a fake provider that signs its webhooks the
+way the real ones do - and its README lists the five things only a live Stripe
+test-mode run can prove. See that file.
+
+**Refunds** are on the admin payments page, for card payments. They report three
+numbers rather than a tick, and the reason is arithmetic: a balance may not go
+negative, so refunding somebody who has already spent what they bought returns
+all of their money and reverses only what is left. The page says how many
+credits were actually reversed and how many had already gone. A refund claims
+the payment - `paid` to `refunding` - before it calls the provider, so two tabs
+or two administrators cannot both report an outcome for one refund; the second
+is refused rather than told that nothing could be reversed. Crypto cannot be
+refunded automatically - a chain payment can only be sent back, not pulled - and
+the app says so rather than pretending.
 
 ### What each account can reach
 
@@ -161,6 +248,8 @@ checks and one is not a substitute for the other.
 |---|---|---|
 | Builder, Calendar, Jobs, Job Filter, Bid Assistant, Profiles | anybody signed in | their own work |
 | **Orders** | anybody signed in | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
+| **Buy credits** | anybody signed in | their own payments only, by the same 404 rule |
+| **Payments** (the list, and refunds) | **administrators** | reconciliation against the provider's dashboard, and the only button in the product that moves money outward |
 | **Find the job** | anybody signed in | opens today's tab of their own job sheet in a new tab |
 | **Groups** | **Premium and above** | an entitlement, checked on the plan alone |
 | **Templates** (managing them) | **administrators** | a template is shared - editing one changes how everybody's resumes look. Everybody still *picks* a template when building |
@@ -392,6 +481,8 @@ manual build and is unaffected.
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
 | Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir` |
+| Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
+| Payment provider keys | `.env` only, like every other key in this project |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
@@ -753,6 +844,9 @@ unique across the install, which settles all of it in one segment.
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
+| `COINBASE_COMMERCE_API_KEY` / `COINBASE_COMMERCE_WEBHOOK_SECRET` | Crypto through Coinbase Commerce, same rule. The webhook endpoint is `/api/payments/webhook/coinbase` |
+| `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Defaults to the first `FRONTEND_URL` |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
 | `ADMIN_EMAILS` | Who administers this installation. Wins over `SMTP_USER`; a comma-separated list may name several |
