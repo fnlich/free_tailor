@@ -12,20 +12,96 @@
   --border-strong: #c7d2fe;
   --text-muted: #4b5563;
   --text-subtle: #6b7280;
+
+  /*
+   * The app chrome - the top bar and the sidebar - and the canvas behind the
+   * pages. Separate from the --surface-* family on purpose: a card and the rail
+   * it sits next to are different materials, and giving them one variable is
+   * how they drift apart later when only one of them is meant to change.
+   */
+  --canvas: #f4f5f7;
+  --rail: #ffffff;
+  --rail-line: #e5e7eb;
+  --rail-ink: #475467;
+  --rail-ink-active: #1d4ed8;
+  --rail-hover: #f3f4f6;
+  --rail-active: #eef2ff;
+  --topbar: rgba(255, 255, 255, 0.92);
+  --line-subtle: #e5e7eb;
+  --accent: #2563eb;
+  --accent-soft: #eff4ff;
+  --accent-ink: #1d4ed8;
+
+  /*
+   * Measurements the shell owns. bid-assistant and the calendar read the bar
+   * height rather than repeating a number - which is what they used to do, in
+   * three places, disagreeing with each other by 12px.
+   */
+  --tl-topbar-h: 3.5rem;
+  --tl-sidebar-w: 15rem;
+  --tl-drawer-w: min(17rem, 82vw);
+
+  /*
+   * The stacking order, top to bottom: modals, app chrome, page furniture.
+   *
+   * The app chrome is FIXED, so anything meant to cover the window has to
+   * outrank it or the sidebar prints straight through a modal backdrop. That
+   * is what --layer-app-modal is for, and why every dialog in the app names it
+   * rather than the z-50 they each used to carry.
+   */
   --layer-page: 0;
   --layer-page-toolbar: 20;
   --layer-page-overlay: 200;
   --layer-floating-control: 400;
+  --layer-app-scrim: 940;
+  --layer-app-sidebar: 950;
   --layer-app-nav: 1000;
   --layer-app-nav-menu: 1100;
+  --layer-app-modal: 1200;
+  --layer-app-modal-menu: 1300;
   color-scheme: light;
 }
 
+/*
+ * Theme tokens, and why `inline` is load-bearing.
+ *
+ * `@theme inline` does NOT emit --color-surface into :root; it substitutes the
+ * declaration text straight into the utility, so `bg-surface` compiles to
+ * `background-color: var(--surface-secondary)` and re-resolves against whatever
+ * html.dark has set. One class, no `dark:` variant needed.
+ *
+ * That matters more than it looks, because of the block further down this file.
+ * The html.dark shim at the bottom is UNLAYERED while every Tailwind utility
+ * lives inside `@layer utilities`, and unlayered CSS beats layered CSS outright
+ * - not on specificity, on cascade layer, which nothing but !important can
+ * out-bid. So `class="bg-white dark:bg-slate-900"` resolves to the shim's
+ * colour and the dark: variant is simply ignored. These tokens sidestep it
+ * entirely: the shim names .bg-white and .bg-gray-50, it has never heard of
+ * .bg-surface.
+ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface-secondary);
+  --color-surface-soft: var(--surface-primary);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-strong: var(--surface-strong);
+
+  --color-line: var(--border-color);
+  --color-line-subtle: var(--line-subtle);
+  --color-line-strong: var(--border-strong);
+
+  --color-ink: var(--foreground);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
 }
 
 html.dark {
@@ -39,24 +115,34 @@ html.dark {
   --border-strong: #475a80;
   --text-muted: #c6d1e3;
   --text-subtle: #93a4bf;
+
+  --canvas: #070f1c;
+  --rail: #0b1524;
+  --rail-line: #1b2942;
+  --rail-ink: #9fb0c9;
+  --rail-ink-active: #bfdbfe;
+  --rail-hover: rgba(148, 163, 184, 0.1);
+  --rail-active: rgba(59, 130, 246, 0.16);
+  --topbar: rgba(11, 21, 36, 0.92);
+  --line-subtle: #1b2942;
+  --accent: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent-ink: #93c5fd;
   color-scheme: dark;
 }
 
+/*
+ * Flat, not gradient. The dashboard this is modelled on is a flat canvas with
+ * cards on it, and .tl-main paints --canvas over the whole content region
+ * anyway - so the two radial washes that used to live here only ever showed
+ * through on the sign-in screen, where they are not missed.
+ */
 body {
   min-height: 100vh;
   background: var(--background);
   color: var(--foreground);
-  background-image:
-    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(245, 247, 251, 0.92) 100%);
-  background-attachment: fixed;
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
   transition: background-color 180ms ease, color 180ms ease;
-}
-
-.app-top-nav {
-  z-index: var(--layer-app-nav);
-  isolation: isolate;
 }
 
 .app-top-nav-menu {
@@ -65,13 +151,6 @@ body {
 
 .app-theme-toggle {
   z-index: var(--layer-floating-control);
-}
-
-html.dark body {
-  background-image:
-    radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(99, 102, 241, 0.16), transparent 24%),
-    linear-gradient(180deg, rgba(7, 17, 31, 0.98) 0%, rgba(10, 20, 36, 0.98) 100%);
 }
 
 body,
@@ -315,4 +394,300 @@ html.dark .shadow-lg,
 html.dark .shadow-xl,
 html.dark .shadow-2xl {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+}
+
+/* ==========================================================================
+   The app shell.
+   ==========================================================================
+
+   Deliberately placed AFTER the html.dark shim above, and written as plain CSS
+   rather than utility classes. That is not a style preference - it is the only
+   arrangement that works.
+
+   The shim is unlayered; every Tailwind utility lives inside `@layer
+   utilities`; unlayered CSS wins over layered CSS outright. Three of its rules
+   are catch-alls rather than dark-mode fixes:
+
+     html.dark .border, .border-t, .border-r, .border-b, .border-l  -> forces
+       border-color on ANY element carrying the bare border WIDTH class
+     html.dark .shadow, .shadow-md, .shadow-lg, ...                 -> replaces
+       every shadow with one flat 24px drop
+     html.dark input, textarea, select                              -> restyles
+       every form control
+
+   So chrome written as `bg-white border shadow-sm dark:bg-slate-900` would come
+   out with the shim's colours in dark mode and there would be no way to tell
+   from the markup. Everything below uses .tl-* class names the shim has never
+   named, and reads the same custom properties it does.
+
+   Page CONTENT is not affected by any of this and keeps its existing utility
+   classes; eighteen pages carry no dark: variants at all and theme entirely
+   through that shim. It stays.                                             */
+
+/*
+ * display:contents so [data-drawer] can live on a real element for the CSS
+ * selector without that element becoming a layout box or, more importantly, a
+ * stacking context - which is what would trap the fixed children below.
+ */
+.tl-shell {
+  display: contents;
+}
+
+/*
+ * No `isolation: isolate` here, unlike the bar this replaces. That one property
+ * is the entire reason the old mobile menu had to createPortal into
+ * document.body at z-index 2147483000: it made the bar a stacking context its
+ * own dropdowns could not escape. Without it, ordinary z-indexes resolve
+ * against each other and the portal is unnecessary.
+ */
+.tl-topbar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: var(--layer-app-nav);
+  display: flex;
+  align-items: center;
+  height: var(--tl-topbar-h);
+  background: var(--topbar);
+  backdrop-filter: saturate(180%) blur(8px);
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+/* Width matched to the rail so the two vertical edges line up. */
+.tl-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex: 0 0 auto;
+  width: var(--tl-sidebar-w);
+  padding-inline: 1rem;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.tl-sidebar {
+  position: fixed;
+  top: var(--tl-topbar-h);
+  bottom: 0;
+  left: 0;
+  width: var(--tl-sidebar-w);
+  z-index: var(--layer-app-sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.75rem 0.5rem;
+  background: var(--rail);
+  border-right: 1px solid var(--rail-line);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tl-sidebar-divider {
+  margin: 0.5rem 0.375rem;
+  border-top: 1px solid var(--rail-line);
+}
+
+/* margin-top:auto is what pins the bottom group to the bottom. */
+.tl-sidebar-bottom {
+  margin-top: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rail-line);
+}
+
+.tl-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.5rem;
+  color: var(--rail-ink);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.tl-nav-item > svg {
+  flex: 0 0 auto;
+}
+
+.tl-nav-item:hover {
+  background: var(--rail-hover);
+  color: var(--foreground);
+}
+
+/* State on a data attribute rather than a className ternary: one source of
+   truth, and it reads in devtools. */
+.tl-nav-item[data-active='true'] {
+  background: var(--rail-active);
+  color: var(--rail-ink-active);
+  font-weight: 600;
+}
+
+.tl-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.25rem;
+  width: 2.25rem;
+  border-radius: 0.625rem;
+  color: var(--rail-ink);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.tl-icon-button:hover {
+  background: var(--rail-hover);
+  color: var(--foreground);
+}
+
+/*
+ * The drawer button, shown only below the breakpoint.
+ *
+ * This cannot be `md:hidden`. Everything in this block is unlayered and every
+ * Tailwind utility is inside `@layer utilities`, so `.tl-icon-button`'s own
+ * `display: inline-flex` beats the utility outright and the button stayed
+ * visible on desktop - the same trap this file warns about above, walked into
+ * from the other side.
+ */
+.tl-drawer-trigger {
+  display: inline-flex;
+}
+
+@media (min-width: 768px) {
+  .tl-drawer-trigger {
+    display: none;
+  }
+}
+
+.tl-credits {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 2.25rem;
+  padding-inline: 0.7rem;
+  border-radius: 9999px;
+  background: var(--rail-hover);
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tl-credits:hover {
+  background: var(--rail-active);
+}
+
+.tl-panel {
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  box-shadow: 0 18px 44px rgba(2, 6, 23, 0.18);
+}
+
+/* Starts below the bar, so the bar stays live while the drawer is open. */
+.tl-scrim {
+  position: fixed;
+  inset: var(--tl-topbar-h) 0 0 0;
+  z-index: var(--layer-app-scrim);
+  background: rgba(2, 6, 23, 0.45);
+}
+
+/*
+ * The shell contributes two offsets and nothing else - no max-width, no
+ * horizontal padding. Every page keeps its own `mx-auto max-w-* px-4` main, so
+ * all seven widths in use and both full-bleed pages are correct by
+ * construction and the page stays the one file that decides how wide it is.
+ */
+.tl-main {
+  padding-top: var(--tl-topbar-h);
+  padding-left: var(--tl-sidebar-w);
+  min-height: 100dvh;
+  background: var(--canvas);
+}
+
+/*
+ * For a page that genuinely wants to fill the window below the bar. Note this
+ * is NOT min-h-screen: inside a container already padded by --tl-topbar-h,
+ * 100vh overflows by exactly the height of the bar and every such page gets a
+ * permanent scrollbar.
+ */
+.tl-fill {
+  min-height: calc(100dvh - var(--tl-topbar-h));
+}
+
+.tl-subnav {
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+/*
+ * Scrolls sideways rather than wrapping. A wrapping pill row changes its own
+ * height, which would break the sticky offset that holds it under the bar.
+ */
+.tl-subnav-row {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0.625rem 0;
+}
+
+.tl-subnav-row::-webkit-scrollbar {
+  display: none;
+}
+
+.tl-subnav-item {
+  flex: 0 0 auto;
+  padding: 0.375rem 0.75rem;
+  border-radius: 9999px;
+  color: var(--text-subtle);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tl-subnav-item:hover {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+
+.tl-subnav-item[data-active='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+@media (max-width: 767.98px) {
+  .tl-brand {
+    width: auto;
+  }
+
+  .tl-main {
+    padding-left: 0;
+  }
+
+  .tl-sidebar {
+    width: var(--tl-drawer-w);
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+    box-shadow: 0 18px 48px rgba(2, 6, 23, 0.28);
+  }
+
+  .tl-shell[data-drawer='open'] .tl-sidebar {
+    transform: none;
+  }
+}
+
+@media (min-width: 768px) {
+  .tl-scrim {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-sidebar {
+    transition: none;
+  }
 }

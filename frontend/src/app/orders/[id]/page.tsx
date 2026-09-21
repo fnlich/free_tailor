@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import AppTopNav from '@/components/AppTopNav';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import {
   FILE_KIND_LABELS,
@@ -136,149 +135,140 @@ export default function OrderDetailPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-        <AppTopNav />
-        <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className={CARD}>
-            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-          </div>
-        </main>
-      </div>
+      <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className={CARD}>
+          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+        </div>
+      </main>
     );
   }
 
   if (!order) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-        <AppTopNav />
-        <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className={CARD}>
-            <p className="text-lg font-semibold text-gray-900 dark:text-white">Order not found</p>
-            <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
-              {error || 'It may have been removed, or it belongs to another account.'}
-            </p>
-            <Link
-              href="/orders"
-              className="mt-4 inline-block text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-            >
-              Back to orders
-            </Link>
-          </div>
-        </main>
-      </div>
+      <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className={CARD}>
+          <p className="text-lg font-semibold text-gray-900 dark:text-white">Order not found</p>
+          <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
+            {error || 'It may have been removed, or it belongs to another account.'}
+          </p>
+          <Link
+            href="/orders"
+            className="mt-4 inline-block text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+          >
+            Back to orders
+          </Link>
+        </div>
+      </main>
     );
   }
 
   const expired = order.state === 'expired';
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-      <AppTopNav />
-      <main className="mx-auto max-w-5xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-        <div>
-          <Link
-            href="/orders"
-            className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-          >
-            &larr; All orders
-          </Link>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-2xl font-semibold text-gray-900 dark:text-white">
-              {order.number}
-            </h1>
-            <OrderStatePill state={order.state} />
+    <main className="mx-auto max-w-5xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
+      <div>
+        <Link
+          href="/orders"
+          className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+        >
+          &larr; All orders
+        </Link>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <h1 className="font-mono text-2xl font-semibold text-gray-900 dark:text-white">
+            {order.number}
+          </h1>
+          <OrderStatePill state={order.state} />
+        </div>
+        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{order.label}</p>
+      </div>
+
+      {error && (
+        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+          {error}
+        </div>
+      )}
+
+      <div className={CARD}>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div>
+            <div className={LABEL}>Placed</div>
+            <div className={VALUE}>{formatDate(order.createdAt)}</div>
           </div>
-          <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{order.label}</p>
+          <div>
+            <div className={LABEL}>{expired ? 'Files deleted' : 'Files kept until'}</div>
+            <div className={VALUE}>{formatDate(expired ? order.purgedAt ?? order.expiresAt : order.expiresAt)}</div>
+          </div>
+          <div>
+            <div className={LABEL}>Resumes</div>
+            <div className={VALUE}>{order.counts.total}</div>
+          </div>
         </div>
 
-        {error && (
-          <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
-            {error}
-          </div>
-        )}
+        <OrderProgress counts={order.counts} className="mt-5" />
 
-        <div className={CARD}>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div>
-              <div className={LABEL}>Placed</div>
-              <div className={VALUE}>{formatDate(order.createdAt)}</div>
-            </div>
-            <div>
-              <div className={LABEL}>{expired ? 'Files deleted' : 'Files kept until'}</div>
-              <div className={VALUE}>{formatDate(expired ? order.purgedAt ?? order.expiresAt : order.expiresAt)}</div>
-            </div>
-            <div>
-              <div className={LABEL}>Resumes</div>
-              <div className={VALUE}>{order.counts.total}</div>
-            </div>
-          </div>
-
-          <OrderProgress counts={order.counts} className="mt-5" />
-
-          <div className="mt-5 flex flex-wrap gap-2">
-            {readyItems.length > 0 && !expired && (
-              <a
-                href={orderZipUrl(order.id)}
-                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-              >
-                Download all as .zip
-              </a>
-            )}
-            {downloadable.length > 0 && (
-              <a
-                href={orderZipUrl(
-                  order.id,
-                  downloadable.map((item) => item.id),
-                  readyItems.length
-                )}
-                className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-200"
-              >
-                Download {downloadable.length} selected as .zip
-              </a>
-            )}
-            {!expired && readyItems.length > 0 && (
-              <button
-                type="button"
-                onClick={selectAllReady}
-                className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
-              >
-                Select all ready
-              </button>
-            )}
-            {isOrderLive(order) && (
-              <button
-                type="button"
-                onClick={handleCancel}
-                disabled={cancelling}
-                className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-gray-400 dark:border-red-500/40 dark:bg-slate-800 dark:text-red-300"
-              >
-                {cancelling ? 'Cancelling...' : 'Cancel what is left'}
-              </button>
-            )}
-          </div>
-
-          {expired && (
-            <p className="mt-4 rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-700 dark:bg-slate-800 dark:text-slate-200">
-              The files for this order have been deleted. What it built is still listed below.
-            </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          {readyItems.length > 0 && !expired && (
+            <a
+              href={orderZipUrl(order.id)}
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+            >
+              Download all as .zip
+            </a>
+          )}
+          {downloadable.length > 0 && (
+            <a
+              href={orderZipUrl(
+                order.id,
+                downloadable.map((item) => item.id),
+                readyItems.length
+              )}
+              className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-200"
+            >
+              Download {downloadable.length} selected as .zip
+            </a>
+          )}
+          {!expired && readyItems.length > 0 && (
+            <button
+              type="button"
+              onClick={selectAllReady}
+              className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+            >
+              Select all ready
+            </button>
+          )}
+          {isOrderLive(order) && (
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-gray-400 dark:border-red-500/40 dark:bg-slate-800 dark:text-red-300"
+            >
+              {cancelling ? 'Cancelling...' : 'Cancel what is left'}
+            </button>
           )}
         </div>
 
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <ul className="divide-y divide-gray-200 dark:divide-slate-800">
-            {order.items.map((item) => (
-              <OrderItemRow
-                key={item.id}
-                orderId={order.id}
-                item={item}
-                selected={selected.has(item.id)}
-                onToggle={() => toggle(item.id)}
-              />
-            ))}
-          </ul>
-        </div>
-      </main>
-    </div>
+        {expired && (
+          <p className="mt-4 rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-700 dark:bg-slate-800 dark:text-slate-200">
+            The files for this order have been deleted. What it built is still listed below.
+          </p>
+        )}
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <ul className="divide-y divide-gray-200 dark:divide-slate-800">
+          {order.items.map((item) => (
+            <OrderItemRow
+              key={item.id}
+              orderId={order.id}
+              item={item}
+              selected={selected.has(item.id)}
+              onToggle={() => toggle(item.id)}
+            />
+          ))}
+        </ul>
+      </div>
+    </main>
   );
 }
 

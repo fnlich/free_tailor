@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
-import { requireAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import {
   extractAndSaveTemplate,
   getAllTemplates,
@@ -67,7 +67,15 @@ const uploadJson = multer({
 // Get all templates
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const includeDisabled = req.query.includeDisabled === 'true';
+    /*
+     * Only an administrator may ask for the disabled ones.
+     *
+     * Disabling a template is how an admin takes it out of circulation without
+     * deleting it - it is their staging state, not a thing the rest of the
+     * installation has an interest in. The gallery is open to everybody now,
+     * so this is where that line gets drawn rather than in the page.
+     */
+    const includeDisabled = req.query.includeDisabled === 'true' && isAdmin(req);
     const templates = await getAllTemplates();
     const filtered = includeDisabled
       ? templates

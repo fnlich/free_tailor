@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import AppTopNav from '@/components/AppTopNav';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import { isOrderLive, orderZipUrl, ordersApi, type Order } from '@/lib/orders';
 
@@ -91,84 +90,81 @@ export default function OrdersPage() {
   }, [load]);
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-      <AppTopNav />
-      <main className="mx-auto max-w-4xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">
-            Order status &amp; built resumes
-          </h1>
-          <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-            Every Google Sheet import is placed as an order. Files are kept for a few days, then
-            deleted automatically - download anything you want to keep.
+    <main className="mx-auto max-w-4xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">
+          Order status &amp; built resumes
+        </h1>
+        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+          Every Google Sheet import is placed as an order. Files are kept for a few days, then
+          deleted automatically - download anything you want to keep.
+        </p>
+      </div>
+
+      {error && (
+        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className={CARD}>
+          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+        </div>
+      ) : orders.length === 0 ? (
+        <div className={CARD}>
+          <p className="text-lg font-semibold text-gray-900 dark:text-white">No orders yet</p>
+          <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
+            Import jobs from your Google Sheet on the{' '}
+            <Link href="/" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
+              Builder
+            </Link>{' '}
+            and the resumes will appear here as they are built.
           </p>
         </div>
-
-        {error && (
-          <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
-            {error}
-          </div>
-        )}
-
-        {loading ? (
-          <div className={CARD}>
-            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-          </div>
-        ) : orders.length === 0 ? (
-          <div className={CARD}>
-            <p className="text-lg font-semibold text-gray-900 dark:text-white">No orders yet</p>
-            <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
-              Import jobs from your Google Sheet on the{' '}
-              <Link href="/" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
-                Builder
-              </Link>{' '}
-              and the resumes will appear here as they are built.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {orders.map((order) => (
-              <div key={order.id} className={CARD}>
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <div className={LABEL}>Order number</div>
-                    <Link
-                      href={`/orders/${order.id}`}
-                      className="mt-1 block font-mono text-sm font-semibold text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      {order.number}
-                    </Link>
-                    <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{order.label}</p>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                      Placed {formatDate(order.createdAt)} &middot; {describeExpiry(order)}
-                    </p>
-                  </div>
-                  <OrderStatePill state={order.state} />
-                </div>
-
-                <OrderProgress counts={order.counts} className="mt-4" />
-
-                <div className="mt-4 flex flex-wrap gap-2">
+      ) : (
+        <div className="space-y-4">
+          {orders.map((order) => (
+            <div key={order.id} className={CARD}>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className={LABEL}>Order number</div>
                   <Link
                     href={`/orders/${order.id}`}
-                    className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                    className="mt-1 block font-mono text-sm font-semibold text-blue-600 hover:underline dark:text-blue-400"
                   >
-                    View resumes
+                    {order.number}
                   </Link>
-                  {order.hasFiles && order.state !== 'expired' && (
-                    <a
-                      href={orderZipUrl(order.id)}
-                      className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-                    >
-                      Download all as .zip
-                    </a>
-                  )}
+                  <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{order.label}</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                    Placed {formatDate(order.createdAt)} &middot; {describeExpiry(order)}
+                  </p>
                 </div>
+                <OrderStatePill state={order.state} />
               </div>
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
+
+              <OrderProgress counts={order.counts} className="mt-4" />
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Link
+                  href={`/orders/${order.id}`}
+                  className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                >
+                  View resumes
+                </Link>
+                {order.hasFiles && order.state !== 'expired' && (
+                  <a
+                    href={orderZipUrl(order.id)}
+                    className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    Download all as .zip
+                  </a>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
   );
 }

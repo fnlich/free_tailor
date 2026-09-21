@@ -27,7 +27,7 @@ export default function AdminPage() {
   }, [router, isAdmin, loading]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-slate-950">
+    <div className="tl-fill flex items-center justify-center">
       <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600"></div>
     </div>
   );

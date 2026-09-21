@@ -1,7 +1,6 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import AppTopNav from '@/components/AppTopNav';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import {
@@ -450,582 +449,578 @@ export default function JobsPage() {
     searchMeta?.filters.keywords || searchMeta?.filters.startUrl || 'custom search';
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <AppTopNav />
-
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-        <section className="rounded-3xl border border-slate-200 bg-white/90 p-6 shadow-sm backdrop-blur sm:p-8">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-3xl space-y-4">
-              <div className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">
-                Job Scrapers
-              </div>
-              <div className="space-y-3">
-                <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-                  Run job scrapers one source at a time
-                </h1>
-                <p className="text-sm leading-7 text-gray-600 sm:text-base">
-                  LinkedIn now uses only `bebity/linkedin-jobs-scraper` with fixed location, proxy, publishedAt, and remote settings.
-                  The other categories remain available with their existing source-specific inputs.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {['Independent runs', 'Source-specific inputs', '5-minute scraper timeout', 'Google Sheets export'].map((label) => (
-                  <span
-                    key={label}
-                    className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
+    <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+      <section className="rounded-3xl border border-slate-200 bg-white/90 p-6 shadow-sm backdrop-blur sm:p-8">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl space-y-4">
+            <div className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">
+              Job Scrapers
             </div>
-
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
-              <div className="font-semibold text-gray-900">{selectedSource.badge}</div>
-              <div className="mt-1">{selectedSource.description}</div>
-              {selectedProvider && (
-                <div className="mt-2 text-xs text-gray-500">
-                  Provider: <span className="font-semibold text-gray-700">{selectedProvider.label}</span>
-                </div>
-              )}
+            <div className="space-y-3">
+              <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+                Run job scrapers one source at a time
+              </h1>
+              <p className="text-sm leading-7 text-gray-600 sm:text-base">
+                LinkedIn now uses only `bebity/linkedin-jobs-scraper` with fixed location, proxy, publishedAt, and remote settings.
+                The other categories remain available with their existing source-specific inputs.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {['Independent runs', 'Source-specific inputs', '5-minute scraper timeout', 'Google Sheets export'].map((label) => (
+                <span
+                  key={label}
+                  className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700"
+                >
+                  {label}
+                </span>
+              ))}
             </div>
           </div>
-        </section>
 
-        <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-          <form className="space-y-6" onSubmit={handleSubmit}>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+            <div className="font-semibold text-gray-900">{selectedSource.badge}</div>
+            <div className="mt-1">{selectedSource.description}</div>
+            {selectedProvider && (
+              <div className="mt-2 text-xs text-gray-500">
+                Provider: <span className="font-semibold text-gray-700">{selectedProvider.label}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+        <form className="space-y-6" onSubmit={handleSubmit}>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-gray-700">Category</span>
+              <select
+                value={source}
+                onChange={(event) => setSource(event.target.value as ScraperSource)}
+                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                disabled={isLoading}
+              >
+                {SCRAPER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-gray-700">Provider</span>
+              <select
+                value={selectedProviderId}
+                onChange={(event) =>
+                  setSelectedProviders((current) => ({
+                    ...current,
+                    [source]: event.target.value,
+                  }))
+                }
+                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                disabled={isLoading || !selectedSourceProviderCatalog || selectedSourceProviderCatalog.providers.length <= 1}
+              >
+                {(selectedSourceProviderCatalog?.providers ?? []).map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+              {selectedProvider && (
+                <div className="text-xs text-gray-500">{selectedProvider.description}</div>
+              )}
+            </label>
+
+            {isStartUrlOnlyScraper ? (
               <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Category</span>
-                <select
-                  value={source}
-                  onChange={(event) => setSource(event.target.value as ScraperSource)}
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                <span className="text-sm font-medium text-gray-700">Start URL</span>
+                <input
+                  type="url"
+                  value={startUrl}
+                  onChange={(event) => setStartUrl(event.target.value)}
+                  placeholder={isIndeedStartUrlOnlySource ? 'https://www.indeed.com/jobs/?q=...' : 'https://hiring.cafe/?searchState=...'}
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
                   disabled={isLoading}
-                >
-                  {SCRAPER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  required
+                />
+                <div className="text-xs text-gray-500">
+                  {isIndeedStartUrlOnlySource
+                    ? 'Indeed runs from a single Indeed URL. The backend sends the rest of the actor input as fixed values.'
+                    : '`Apify: memo23` runs from a single Hiring Cafe URL. The backend sends the rest of the actor input as fixed values.'}
+                </div>
               </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Provider</span>
-                <select
-                  value={selectedProviderId}
-                  onChange={(event) =>
-                    setSelectedProviders((current) => ({
-                      ...current,
-                      [source]: event.target.value,
-                    }))
-                  }
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading || !selectedSourceProviderCatalog || selectedSourceProviderCatalog.providers.length <= 1}
-                >
-                  {(selectedSourceProviderCatalog?.providers ?? []).map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.label}
-                    </option>
-                  ))}
-                </select>
-                {selectedProvider && (
-                  <div className="text-xs text-gray-500">{selectedProvider.description}</div>
-                )}
-              </label>
-
-              {isStartUrlOnlyScraper ? (
+            ) : (
+              <>
                 <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Start URL</span>
+                  <span className="text-sm font-medium text-gray-700">Keyword</span>
                   <input
-                    type="url"
-                    value={startUrl}
-                    onChange={(event) => setStartUrl(event.target.value)}
-                    placeholder={isIndeedStartUrlOnlySource ? 'https://www.indeed.com/jobs/?q=...' : 'https://hiring.cafe/?searchState=...'}
+                    type="text"
+                    value={keywords}
+                    onChange={(event) => setKeywords(event.target.value)}
+                    placeholder="software engineer, data analyst, product manager..."
                     className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
                     disabled={isLoading}
-                    required
                   />
-                  <div className="text-xs text-gray-500">
-                    {isIndeedStartUrlOnlySource
-                      ? 'Indeed runs from a single Indeed URL. The backend sends the rest of the actor input as fixed values.'
-                      : '`Apify: memo23` runs from a single Hiring Cafe URL. The backend sends the rest of the actor input as fixed values.'}
-                  </div>
                 </label>
-              ) : (
-                <>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Keyword</span>
-                    <input
-                      type="text"
-                      value={keywords}
-                      onChange={(event) => setKeywords(event.target.value)}
-                      placeholder="software engineer, data analyst, product manager..."
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
-                      disabled={isLoading}
-                    />
-                  </label>
 
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Location</span>
-                    <input
-                      type="text"
-                      value={location}
-                      onChange={(event) => setLocation(event.target.value)}
-                      placeholder="United States, Berlin, London..."
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
-                      disabled={isLoading}
-                    />
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Posted within</span>
-                    <select
-                      value={timePosted}
-                      onChange={(event) => setTimePosted(event.target.value as ScraperTimePosted)}
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                      disabled={isLoading}
-                    >
-                      {TIME_POSTED_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Job type</span>
-                    <select
-                      value={jobType}
-                      onChange={(event) => setJobType(event.target.value as ScraperJobType | '')}
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                      disabled={isLoading}
-                    >
-                      <option value="">Any supported type</option>
-                      {JOB_TYPE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-gray-700">Results</span>
-                    <select
-                      value={limit}
-                      onChange={(event) => setLimit(Number(event.target.value))}
-                      className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                      disabled={isLoading}
-                    >
-                      {availableLimitOptions.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                    {source === 'jobboard' && (
-                      <div className="text-xs text-amber-700">
-                        Job Board scraper supports up to 100 results per run.
-                      </div>
-                    )}
-                  </label>
-                </>
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              {!isStartUrlOnlyScraper && (
-                <label className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-gray-700">Location</span>
                   <input
-                    type="checkbox"
-                    checked={remoteOnly}
-                    onChange={(event) => setRemoteOnly(event.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                    type="text"
+                    value={location}
+                    onChange={(event) => setLocation(event.target.value)}
+                    placeholder="United States, Berlin, London..."
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
                     disabled={isLoading}
                   />
-                  Remote only
                 </label>
-              )}
 
-              <label
-                className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700"
-              >
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-gray-700">Posted within</span>
+                  <select
+                    value={timePosted}
+                    onChange={(event) => setTimePosted(event.target.value as ScraperTimePosted)}
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                    disabled={isLoading}
+                  >
+                    {TIME_POSTED_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-gray-700">Job type</span>
+                  <select
+                    value={jobType}
+                    onChange={(event) => setJobType(event.target.value as ScraperJobType | '')}
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                    disabled={isLoading}
+                  >
+                    <option value="">Any supported type</option>
+                    {JOB_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-gray-700">Results</span>
+                  <select
+                    value={limit}
+                    onChange={(event) => setLimit(Number(event.target.value))}
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                    disabled={isLoading}
+                  >
+                    {availableLimitOptions.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                  {source === 'jobboard' && (
+                    <div className="text-xs text-amber-700">
+                      Job Board scraper supports up to 100 results per run.
+                    </div>
+                  )}
+                </label>
+              </>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {!isStartUrlOnlyScraper && (
+              <label className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700">
                 <input
                   type="checkbox"
-                  checked={writeToGoogleSheet}
-                  onChange={(event) => setWriteToGoogleSheet(event.target.checked)}
+                  checked={remoteOnly}
+                  onChange={(event) => setRemoteOnly(event.target.checked)}
                   className="h-4 w-4 rounded border-gray-300 text-blue-600"
                   disabled={isLoading}
                 />
-                Write to Google Sheet
+                Remote only
+              </label>
+            )}
+
+            <label
+              className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700"
+            >
+              <input
+                type="checkbox"
+                checked={writeToGoogleSheet}
+                onChange={(event) => setWriteToGoogleSheet(event.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                disabled={isLoading}
+              />
+              Write to Google Sheet
+            </label>
+          </div>
+
+          <div className="rounded-3xl border border-gray-200 bg-gray-50 p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="text-base font-semibold text-gray-900">Google Sheets export</div>
+                <div className="mt-1 text-sm text-gray-600">
+                  Choose the spreadsheet, tab, columns, and start row. Duplicate jobs already present in the sheet
+                  are skipped before writing.
+                </div>
+              </div>
+            </div>
+
+            {/* Ordinary accounts have exactly one destination, so there is
+                nothing to choose. An administrator can still write into a
+                shared source they configured. */}
+            {isAdmin && (
+              <div className="mt-5 flex flex-wrap gap-2">
+                {(['mine', 'shared'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setExportTarget(option)}
+                    disabled={isLoading}
+                    className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                      exportTarget === option
+                        ? 'border-blue-500 bg-blue-600 text-white'
+                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {exportTarget === 'mine' ? (
+              <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
+                  <>
+                    Rows go to{' '}
+                    <a
+                      className="font-semibold underline"
+                      href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      your job sheet
+                    </a>
+                    , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
+                    Company, Job Title, Job Link and Job Description. New rows are added after the ones
+                    already there, and jobs already in the tab are skipped.
+                  </>
+                ) : (
+                  'Rows go to your own job sheet, on today\'s tab. Open the account page if you want to see it.'
+                )}
+              </div>
+            ) : (
+            <>
+            <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Google Sheet</span>
+                <select
+                  value={sheetExportForm.sheetId}
+                  onChange={(event) => {
+                    setSheetField('sheetId', event.target.value);
+                    setSheetField('tabName', '');
+                    setSheetTabs([]);
+                    setSheetTitle('');
+                  }}
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading}
+                >
+                  <option value="">
+                    {sheetSources.length ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
+                  </option>
+                  {sheetSources.map((sheetSource) => (
+                    <option key={sheetSource.id} value={sheetSource.sheetId}>
+                      {sheetSource.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Sheet tab</span>
+                <select
+                  value={sheetExportForm.tabName}
+                  onChange={(event) => setSheetField('tabName', event.target.value)}
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
+                >
+                  <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
+                  {sheetTabs.map((tab) => (
+                    <option key={tab.sheetId} value={tab.title}>
+                      {tab.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={handleLoadSheetTabs}
+                  disabled={isLoading || isLoadingTabs || !sheetExportForm.sheetId.trim()}
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400"
+                >
+                  {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
+                </button>
+              </div>
+            </div>
+
+            {sheetTitle && (
+              <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                Connected to <span className="font-semibold">{sheetTitle}</span>.
+              </div>
+            )}
+
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Company column</span>
+                <input
+                  type="text"
+                  value={sheetExportForm.companyNameCol}
+                  onChange={(event) => setSheetField('companyNameCol', event.target.value.toUpperCase())}
+                  placeholder="D"
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading}
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Job title column</span>
+                <input
+                  type="text"
+                  value={sheetExportForm.jobTitleCol}
+                  onChange={(event) => setSheetField('jobTitleCol', event.target.value.toUpperCase())}
+                  placeholder="E"
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading}
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Job link column</span>
+                <input
+                  type="text"
+                  value={sheetExportForm.jobLinkCol}
+                  onChange={(event) => setSheetField('jobLinkCol', event.target.value.toUpperCase())}
+                  placeholder="F"
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading}
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Description column</span>
+                <input
+                  type="text"
+                  value={sheetExportForm.jobDescriptionCol}
+                  onChange={(event) => setSheetField('jobDescriptionCol', event.target.value.toUpperCase())}
+                  placeholder="G"
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading}
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-gray-700">Start row</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={sheetExportForm.startRow}
+                  onChange={(event) => setSheetField('startRow', event.target.value)}
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                  disabled={isLoading}
+                />
               </label>
             </div>
+            </>
+            )}
+          </div>
 
-            <div className="rounded-3xl border border-gray-200 bg-gray-50 p-5">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <div className="text-base font-semibold text-gray-900">Google Sheets export</div>
-                  <div className="mt-1 text-sm text-gray-600">
-                    Choose the spreadsheet, tab, columns, and start row. Duplicate jobs already present in the sheet
-                    are skipped before writing.
-                  </div>
-                </div>
-              </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-blue-300"
+            >
+              {isLoading
+                ? writeToGoogleSheet
+                  ? `Running ${selectedSource.label} and writing to sheet...`
+                  : `Running ${selectedSource.label}...`
+                : writeToGoogleSheet
+                  ? `Run ${selectedSource.label} + Fill Sheet`
+                  : `Run ${selectedSource.label}`}
+            </button>
+          </div>
+        </form>
 
-              {/* Ordinary accounts have exactly one destination, so there is
-                  nothing to choose. An administrator can still write into a
-                  shared source they configured. */}
-              {isAdmin && (
-                <div className="mt-5 flex flex-wrap gap-2">
-                  {(['mine', 'shared'] as const).map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      onClick={() => setExportTarget(option)}
-                      disabled={isLoading}
-                      className={`rounded-xl border px-4 py-2 text-sm font-medium ${
-                        exportTarget === option
-                          ? 'border-blue-500 bg-blue-600 text-white'
-                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-                      }`}
-                    >
-                      {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
-                    </button>
-                  ))}
-                </div>
-              )}
+        {error && (
+          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
 
-              {exportTarget === 'mine' ? (
-                <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-                  {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
-                    <>
-                      Rows go to{' '}
-                      <a
-                        className="font-semibold underline"
-                        href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        your job sheet
-                      </a>
-                      , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
-                      Company, Job Title, Job Link and Job Description. New rows are added after the ones
-                      already there, and jobs already in the tab are skipped.
-                    </>
-                  ) : (
-                    'Rows go to your own job sheet, on today\'s tab. Open the account page if you want to see it.'
-                  )}
-                </div>
-              ) : (
-              <>
-              <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Google Sheet</span>
-                  <select
-                    value={sheetExportForm.sheetId}
-                    onChange={(event) => {
-                      setSheetField('sheetId', event.target.value);
-                      setSheetField('tabName', '');
-                      setSheetTabs([]);
-                      setSheetTitle('');
-                    }}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading}
-                  >
-                    <option value="">
-                      {sheetSources.length ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
-                    </option>
-                    {sheetSources.map((sheetSource) => (
-                      <option key={sheetSource.id} value={sheetSource.sheetId}>
-                        {sheetSource.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Sheet tab</span>
-                  <select
-                    value={sheetExportForm.tabName}
-                    onChange={(event) => setSheetField('tabName', event.target.value)}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
-                  >
-                    <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
-                    {sheetTabs.map((tab) => (
-                      <option key={tab.sheetId} value={tab.title}>
-                        {tab.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    onClick={handleLoadSheetTabs}
-                    disabled={isLoading || isLoadingTabs || !sheetExportForm.sheetId.trim()}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400"
-                  >
-                    {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
-                  </button>
-                </div>
-              </div>
-
-              {sheetTitle && (
-                <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                  Connected to <span className="font-semibold">{sheetTitle}</span>.
-                </div>
-              )}
-
-              <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Company column</span>
-                  <input
-                    type="text"
-                    value={sheetExportForm.companyNameCol}
-                    onChange={(event) => setSheetField('companyNameCol', event.target.value.toUpperCase())}
-                    placeholder="D"
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading}
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Job title column</span>
-                  <input
-                    type="text"
-                    value={sheetExportForm.jobTitleCol}
-                    onChange={(event) => setSheetField('jobTitleCol', event.target.value.toUpperCase())}
-                    placeholder="E"
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading}
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Job link column</span>
-                  <input
-                    type="text"
-                    value={sheetExportForm.jobLinkCol}
-                    onChange={(event) => setSheetField('jobLinkCol', event.target.value.toUpperCase())}
-                    placeholder="F"
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading}
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Description column</span>
-                  <input
-                    type="text"
-                    value={sheetExportForm.jobDescriptionCol}
-                    onChange={(event) => setSheetField('jobDescriptionCol', event.target.value.toUpperCase())}
-                    placeholder="G"
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading}
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Start row</span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={sheetExportForm.startRow}
-                    onChange={(event) => setSheetField('startRow', event.target.value)}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                    disabled={isLoading}
-                  />
-                </label>
-              </div>
-              </>
-              )}
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-blue-300"
-              >
-                {isLoading
-                  ? writeToGoogleSheet
-                    ? `Running ${selectedSource.label} and writing to sheet...`
-                    : `Running ${selectedSource.label}...`
-                  : writeToGoogleSheet
-                    ? `Run ${selectedSource.label} + Fill Sheet`
-                    : `Run ${selectedSource.label}`}
-              </button>
-            </div>
-          </form>
-
-          {error && (
-            <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {error}
-            </div>
-          )}
-
-          {searchMeta && !error && (
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+        {searchMeta && !error && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+            <span>
+              Found <span className="font-semibold text-gray-900">{results.length}</span> {formatSourceLabel(searchMeta.source)} job
+              {results.length === 1 ? '' : 's'} for <span className="font-semibold text-gray-900">{searchSummaryValue}</span> via{' '}
+              <span className="font-semibold text-gray-900">{searchMeta.providerLabel}</span>.
+            </span>
+            <span>Fetched {formatFetchedAt(searchMeta.fetchedAt)}</span>
+            {(searchMeta.filters.rawResultCount ?? 0) > 0 && (
               <span>
-                Found <span className="font-semibold text-gray-900">{results.length}</span> {formatSourceLabel(searchMeta.source)} job
-                {results.length === 1 ? '' : 's'} for <span className="font-semibold text-gray-900">{searchSummaryValue}</span> via{' '}
-                <span className="font-semibold text-gray-900">{searchMeta.providerLabel}</span>.
+                Raw {searchMeta.filters.rawResultCount}
+                {typeof searchMeta.filters.remoteFilteredCount === 'number' && searchMeta.filters.remoteFilteredCount > 0
+                  ? `, filtered out ${searchMeta.filters.remoteFilteredCount} by remote rules`
+                  : ''}
               </span>
-              <span>Fetched {formatFetchedAt(searchMeta.fetchedAt)}</span>
-              {(searchMeta.filters.rawResultCount ?? 0) > 0 && (
-                <span>
-                  Raw {searchMeta.filters.rawResultCount}
-                  {typeof searchMeta.filters.remoteFilteredCount === 'number' && searchMeta.filters.remoteFilteredCount > 0
-                    ? `, filtered out ${searchMeta.filters.remoteFilteredCount} by remote rules`
-                    : ''}
-                </span>
-              )}
-            </div>
-          )}
+            )}
+          </div>
+        )}
 
-          {exportMeta && !error && (
-            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
-              <div className="font-semibold text-emerald-900">
-                Wrote {exportMeta.rowsWritten} jobs to {exportMeta.spreadsheetTitle} / {exportMeta.selectedTab}
-              </div>
+        {exportMeta && !error && (
+          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
+            <div className="font-semibold text-emerald-900">
+              Wrote {exportMeta.rowsWritten} jobs to {exportMeta.spreadsheetTitle} / {exportMeta.selectedTab}
+            </div>
+            <div className="mt-1">
+              Rows {exportMeta.startRow} to {exportMeta.endRow}.
+            </div>
+            <div className="mt-1">
+              {exportMeta.unresolvedJobLinks === 0
+                ? 'Every exported row had a usable apply link.'
+                : `${exportMeta.unresolvedJobLinks} exported job-link cells were blank because no apply URL was available.`}
+            </div>
+            {typeof exportMeta.beforeExportResultCount === 'number' && (
               <div className="mt-1">
-                Rows {exportMeta.startRow} to {exportMeta.endRow}.
+                {exportMeta.beforeExportResultCount} job{exportMeta.beforeExportResultCount === 1 ? '' : 's'} remained after scraper filtering before sheet duplicate checks.
               </div>
-              <div className="mt-1">
-                {exportMeta.unresolvedJobLinks === 0
-                  ? 'Every exported row had a usable apply link.'
-                  : `${exportMeta.unresolvedJobLinks} exported job-link cells were blank because no apply URL was available.`}
-              </div>
-              {typeof exportMeta.beforeExportResultCount === 'number' && (
-                <div className="mt-1">
-                  {exportMeta.beforeExportResultCount} job{exportMeta.beforeExportResultCount === 1 ? '' : 's'} remained after scraper filtering before sheet duplicate checks.
-                </div>
-              )}
-              <div className="mt-1">
-                {exportMeta.skippedCompanyDuplicates === 0
-                  ? 'No jobs were skipped as duplicates.'
-                  : `Skipped ${exportMeta.skippedCompanyDuplicates} job${exportMeta.skippedCompanyDuplicates === 1 ? '' : 's'} because the same job already existed in the destination sheet or had already been queued in this run.`}
-              </div>
+            )}
+            <div className="mt-1">
+              {exportMeta.skippedCompanyDuplicates === 0
+                ? 'No jobs were skipped as duplicates.'
+                : `Skipped ${exportMeta.skippedCompanyDuplicates} job${exportMeta.skippedCompanyDuplicates === 1 ? '' : 's'} because the same job already existed in the destination sheet or had already been queued in this run.`}
             </div>
-          )}
-        </section>
+          </div>
+        )}
+      </section>
 
-        <section className="mt-6 space-y-4">
-          {isLoading && (
-            <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
-              <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-              <div className="mt-4 text-sm text-gray-600">
-                {writeToGoogleSheet
-                  ? `${selectedSource.label} is running on the backend and rows will be written to Google Sheets after filtering duplicate jobs.`
-                  : `${selectedSource.label} is running on the backend.`}
-              </div>
+      <section className="mt-6 space-y-4">
+        {isLoading && (
+          <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
+            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+            <div className="mt-4 text-sm text-gray-600">
+              {writeToGoogleSheet
+                ? `${selectedSource.label} is running on the backend and rows will be written to Google Sheets after filtering duplicate jobs.`
+                : `${selectedSource.label} is running on the backend.`}
             </div>
-          )}
+          </div>
+        )}
 
-          {!isLoading && searched && !error && results.length === 0 && (
-            <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
-              <div className="text-lg font-semibold text-gray-900">No jobs matched this run</div>
-              <div className="mt-2 text-sm text-gray-600">
-                Try a broader keyword, a wider time window, or a different scraper.
-              </div>
+        {!isLoading && searched && !error && results.length === 0 && (
+          <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
+            <div className="text-lg font-semibold text-gray-900">No jobs matched this run</div>
+            <div className="mt-2 text-sm text-gray-600">
+              Try a broader keyword, a wider time window, or a different scraper.
             </div>
-          )}
+          </div>
+        )}
 
-          {!isLoading &&
-            results.map((job) => {
-              const meta = getJobMeta(job);
-              const postedDate = formatPostedDate(job.posted_at);
-              const salaryRange = formatSalaryRange(job);
-              const nativeLink = getNativeJobLink(job);
+        {!isLoading &&
+          results.map((job) => {
+            const meta = getJobMeta(job);
+            const postedDate = formatPostedDate(job.posted_at);
+            const salaryRange = formatSalaryRange(job);
+            const nativeLink = getNativeJobLink(job);
 
-              return (
-                <article
-                  key={`${job.source}-${job.id}`}
-                  className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm transition hover:border-blue-200 hover:shadow-md"
-                >
-                  <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap gap-2">
-                          <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
-                            {formatSourceLabel(job.source)}
+            return (
+              <article
+                key={`${job.source}-${job.id}`}
+                className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm transition hover:border-blue-200 hover:shadow-md"
+              >
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
+                          {formatSourceLabel(job.source)}
+                        </span>
+                        {job.job_type && (
+                          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                            {job.job_type}
                           </span>
-                          {job.job_type && (
-                            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                              {job.job_type}
-                            </span>
-                          )}
-                          {job.equity && (
-                            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-                              Equity {job.equity}
-                            </span>
-                          )}
-                          {salaryRange && (
-                            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
-                              {salaryRange}
-                            </span>
-                          )}
-                        </div>
+                        )}
+                        {job.equity && (
+                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                            Equity {job.equity}
+                          </span>
+                        )}
+                        {salaryRange && (
+                          <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
+                            {salaryRange}
+                          </span>
+                        )}
+                      </div>
 
-                        <div>
-                          <h2 className="text-2xl font-semibold tracking-tight text-gray-900">{job.title}</h2>
-                          {meta.length > 0 && (
-                            <p className="mt-2 text-sm text-gray-600">{meta.join(' • ')}</p>
-                          )}
-                          {postedDate && (
-                            <p className="mt-1 text-xs uppercase tracking-[0.18em] text-gray-500">
-                              Posted date {postedDate}
-                            </p>
-                          )}
-                        </div>
+                      <div>
+                        <h2 className="text-2xl font-semibold tracking-tight text-gray-900">{job.title}</h2>
+                        {meta.length > 0 && (
+                          <p className="mt-2 text-sm text-gray-600">{meta.join(' • ')}</p>
+                        )}
+                        {postedDate && (
+                          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-gray-500">
+                            Posted date {postedDate}
+                          </p>
+                        )}
                       </div>
                     </div>
-
-                    <div className="flex shrink-0 flex-wrap gap-3">
-                      {job.apply_url ? (
-                        <a
-                          href={job.apply_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
-                        >
-                          Open apply link
-                        </a>
-                      ) : (
-                        <span className="rounded-xl bg-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-600">
-                          Apply link unavailable
-                        </span>
-                      )}
-                      {nativeLink && nativeLink !== job.apply_url && (
-                        <a
-                          href={nativeLink}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-                        >
-                          Open source listing
-                        </a>
-                      )}
-                    </div>
                   </div>
 
-                  {job.description && (
-                    <p className="mt-5 text-sm leading-7 text-gray-700">
-                      {truncateDescription(job.description)}
-                    </p>
-                  )}
-                </article>
-              );
-            })}
-        </section>
-      </main>
-    </div>
+                  <div className="flex shrink-0 flex-wrap gap-3">
+                    {job.apply_url ? (
+                      <a
+                        href={job.apply_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+                      >
+                        Open apply link
+                      </a>
+                    ) : (
+                      <span className="rounded-xl bg-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-600">
+                        Apply link unavailable
+                      </span>
+                    )}
+                    {nativeLink && nativeLink !== job.apply_url && (
+                      <a
+                        href={nativeLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                      >
+                        Open source listing
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {job.description && (
+                  <p className="mt-5 text-sm leading-7 text-gray-700">
+                    {truncateDescription(job.description)}
+                  </p>
+                )}
+              </article>
+            );
+          })}
+      </section>
+    </main>
   );
 }

@@ -372,6 +372,16 @@ export default function AskWindow({
         {content}
       </div>
     </div>,
-    document.body
+    /*
+     * Into this page, not into <body>.
+     *
+     * Every --bid-* custom property is declared on .bid-assistant-page, so a
+     * portal to document.body landed outside all of them: `z-index:
+     * var(--bid-layer-overlay)` resolved to nothing at all - which is `auto` -
+     * and the panel's colours fell back too. Now that the page no longer
+     * isolates itself, rendering inside it both fixes the variables and lets
+     * the dialog take the app's modal layer.
+     */
+    document.querySelector('.bid-assistant-page') ?? document.body
   );
 }

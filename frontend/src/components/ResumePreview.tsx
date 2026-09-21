@@ -26,7 +26,7 @@ export default function ResumePreview({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[var(--layer-app-modal)] bg-black/40 backdrop-blur-sm">
       <div className="absolute inset-4 bg-white rounded-xl shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b bg-gray-50">
           <div className="flex items-center gap-2">

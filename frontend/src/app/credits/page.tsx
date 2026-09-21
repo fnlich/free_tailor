@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import AppTopNav from '@/components/AppTopNav';
 import CreditLedger from '@/components/CreditLedger';
 import PayForm from '@/components/credits/PayForm';
 import PayDialog from '@/components/credits/PayDialog';
@@ -137,182 +136,179 @@ export default function BuyCreditsPage() {
   const anyMethod = options?.methods.some((entry) => entry.available) ?? false;
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-      <AppTopNav />
-      <main className="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Buy credits</h1>
-          <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-            One credit builds one resume. Previews are always free.
-          </p>
+    <main className="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Buy credits</h1>
+        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+          One credit builds one resume. Previews are always free.
+        </p>
+      </div>
+
+      {cancelled && (
+        <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+          That payment was cancelled. Nothing was charged.
         </div>
+      )}
 
-        {cancelled && (
-          <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
-            That payment was cancelled. Nothing was charged.
-          </div>
-        )}
+      {error && (
+        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+          {error}
+        </div>
+      )}
 
-        {error && (
-          <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
-            {error}
-          </div>
-        )}
-
-        {loading ? (
+      {loading ? (
+        <div className={CARD}>
+          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+        </div>
+      ) : (
+        <>
           <div className={CARD}>
-            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-          </div>
-        ) : (
-          <>
-            <div className={CARD}>
-              <div className={LABEL}>Your balance</div>
-              <div className="mt-1 text-3xl font-semibold text-gray-900 dark:text-white">
-                {status?.balance ?? 0}
-              </div>
-              {status && status.held > 0 && (
-                <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-                  {status.held} held by a run in progress.
-                </p>
-              )}
-              {status?.exempt && (
-                <p className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
-                  Administrators do not spend credits, so you do not need to buy any.
-                </p>
-              )}
+            <div className={LABEL}>Your balance</div>
+            <div className="mt-1 text-3xl font-semibold text-gray-900 dark:text-white">
+              {status?.balance ?? 0}
             </div>
+            {status && status.held > 0 && (
+              <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+                {status.held} held by a run in progress.
+              </p>
+            )}
+            {status?.exempt && (
+              <p className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
+                Administrators do not spend credits, so you do not need to buy any.
+              </p>
+            )}
+          </div>
 
-            {!anyMethod ? (
-              <div className={CARD}>
-                <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                  No payment method is set up
-                </p>
-                <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
-                  This installation cannot take payments yet. An administrator can turn one on:
-                </p>
-                <ul className="mt-3 space-y-1 text-sm text-gray-600 dark:text-slate-300">
-                  {options?.methods.map((entry) => (
-                    <li key={entry.method}>
-                      <span className="font-medium">{entry.label}</span> &mdash; {entry.reason}
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-3 text-sm text-gray-600 dark:text-slate-300">
-                  Until then, an administrator can add credits to your account directly.
-                </p>
-              </div>
-            ) : (
-              <div className={CARD}>
-                <label htmlFor="credits" className={LABEL}>
-                  How many credits
-                </label>
-                <div className="mt-2 flex flex-wrap items-end gap-4">
-                  <input
-                    id="credits"
-                    type="number"
-                    inputMode="numeric"
-                    min={options?.minCredits}
-                    max={options?.maxCredits}
-                    value={amount}
-                    onChange={(event) => setAmount(event.target.value)}
-                    className="w-40 rounded-lg border border-gray-300 px-4 py-2 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                  />
-                  <div>
-                    <div className={LABEL}>Total</div>
-                    <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
-                      {options && valid ? formatAmount(total, options.currency) : '—'}
-                    </div>
+          {!anyMethod ? (
+            <div className={CARD}>
+              <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                No payment method is set up
+              </p>
+              <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
+                This installation cannot take payments yet. An administrator can turn one on:
+              </p>
+              <ul className="mt-3 space-y-1 text-sm text-gray-600 dark:text-slate-300">
+                {options?.methods.map((entry) => (
+                  <li key={entry.method}>
+                    <span className="font-medium">{entry.label}</span> &mdash; {entry.reason}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-3 text-sm text-gray-600 dark:text-slate-300">
+                Until then, an administrator can add credits to your account directly.
+              </p>
+            </div>
+          ) : (
+            <div className={CARD}>
+              <label htmlFor="credits" className={LABEL}>
+                How many credits
+              </label>
+              <div className="mt-2 flex flex-wrap items-end gap-4">
+                <input
+                  id="credits"
+                  type="number"
+                  inputMode="numeric"
+                  min={options?.minCredits}
+                  max={options?.maxCredits}
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
+                  className="w-40 rounded-lg border border-gray-300 px-4 py-2 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+                <div>
+                  <div className={LABEL}>Total</div>
+                  <div className="mt-1 text-2xl font-semibold text-gray-900 dark:text-white">
+                    {options && valid ? formatAmount(total, options.currency) : '—'}
                   </div>
                 </div>
-
-                <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
-                  {options &&
-                    `${formatAmount(options.unitPriceCents, options.currency)} per credit. Between ${
-                      options.minCredits
-                    } and ${options.maxCredits} at a time.`}
-                </p>
-
-                <div className="mt-5 flex flex-wrap gap-3">
-                  {options?.methods
-                    .filter((entry) => entry.available)
-                    .map((entry) => (
-                      <button
-                        key={entry.method}
-                        type="button"
-                        onClick={() => void buy(entry.method)}
-                        disabled={!valid || sending !== null}
-                        className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
-                      >
-                        {sending === entry.method ? 'Preparing…' : `Pay by ${entry.label.toLowerCase()}`}
-                      </button>
-                    ))}
-                </div>
-
-                <p className="mt-3 text-xs text-gray-500 dark:text-slate-400">
-                  Card details are entered in a form served by Stripe, so this server never sees
-                  them. Your credits arrive once the payment is confirmed.
-                </p>
               </div>
-            )}
 
-            {payments.length > 0 && (
-              <div className={CARD}>
-                <h2 className="text-base font-semibold text-gray-900 dark:text-white">Your payments</h2>
-                <ul className="mt-3 divide-y divide-gray-200 dark:divide-slate-800">
-                  {payments.map((payment) => (
-                    <li key={payment.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                      <div>
-                        <Link
-                          href={`/credits/return?payment=${payment.id}`}
-                          className="font-mono text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-                        >
-                          {payment.reference}
-                        </Link>
-                        <p className="text-xs text-gray-500 dark:text-slate-400">
-                          {payment.credits} credits &middot;{' '}
-                          {formatAmount(payment.amountCents, payment.currency)} &middot;{' '}
-                          {formatDate(payment.createdAt)}
-                        </p>
-                      </div>
-                      <span
-                        className={`rounded-full px-3 py-1 text-xs font-semibold ${STATE_STYLES[payment.state]}`}
-                      >
-                        {STATE_LABELS[payment.state]}
-                      </span>
-                    </li>
+              <p className="mt-2 text-sm text-gray-500 dark:text-slate-400">
+                {options &&
+                  `${formatAmount(options.unitPriceCents, options.currency)} per credit. Between ${
+                    options.minCredits
+                  } and ${options.maxCredits} at a time.`}
+              </p>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                {options?.methods
+                  .filter((entry) => entry.available)
+                  .map((entry) => (
+                    <button
+                      key={entry.method}
+                      type="button"
+                      onClick={() => void buy(entry.method)}
+                      disabled={!valid || sending !== null}
+                      className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
+                    >
+                      {sending === entry.method ? 'Preparing…' : `Pay by ${entry.label.toLowerCase()}`}
+                    </button>
                   ))}
-                </ul>
               </div>
-            )}
 
-            <PayDialog
-              open={form !== null}
-              title={form ? `Pay ${formatAmount(form.amountCents, form.currency)}` : 'Pay'}
-              subtitle={form ? `for ${form.credits} credits` : undefined}
-              onClose={() => setForm(null)}
-            >
-              {form && (
-                <PayForm
-                  publishableKey={options?.publishableKey ?? ''}
-                  clientSecret={form.clientSecret}
-                  credits={form.credits}
-                  amountCents={form.amountCents}
-                  currency={form.currency}
-                  dark={resolvePreferredTheme() === 'dark'}
-                  onCancel={() => setForm(null)}
-                />
-              )}
-            </PayDialog>
-
-            <div className={CARD}>
-              <h2 className="text-base font-semibold text-gray-900 dark:text-white">Credit history</h2>
-              <div className="mt-3">
-                <CreditLedger entries={ledger} />
-              </div>
+              <p className="mt-3 text-xs text-gray-500 dark:text-slate-400">
+                Card details are entered in a form served by Stripe, so this server never sees
+                them. Your credits arrive once the payment is confirmed.
+              </p>
             </div>
-          </>
-        )}
-      </main>
-    </div>
+          )}
+
+          {payments.length > 0 && (
+            <div className={CARD}>
+              <h2 className="text-base font-semibold text-gray-900 dark:text-white">Your payments</h2>
+              <ul className="mt-3 divide-y divide-gray-200 dark:divide-slate-800">
+                {payments.map((payment) => (
+                  <li key={payment.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                    <div>
+                      <Link
+                        href={`/credits/return?payment=${payment.id}`}
+                        className="font-mono text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        {payment.reference}
+                      </Link>
+                      <p className="text-xs text-gray-500 dark:text-slate-400">
+                        {payment.credits} credits &middot;{' '}
+                        {formatAmount(payment.amountCents, payment.currency)} &middot;{' '}
+                        {formatDate(payment.createdAt)}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${STATE_STYLES[payment.state]}`}
+                    >
+                      {STATE_LABELS[payment.state]}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <PayDialog
+            open={form !== null}
+            title={form ? `Pay ${formatAmount(form.amountCents, form.currency)}` : 'Pay'}
+            subtitle={form ? `for ${form.credits} credits` : undefined}
+            onClose={() => setForm(null)}
+          >
+            {form && (
+              <PayForm
+                publishableKey={options?.publishableKey ?? ''}
+                clientSecret={form.clientSecret}
+                credits={form.credits}
+                amountCents={form.amountCents}
+                currency={form.currency}
+                dark={resolvePreferredTheme() === 'dark'}
+                onCancel={() => setForm(null)}
+              />
+            )}
+          </PayDialog>
+
+          <div className={CARD}>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">Credit history</h2>
+            <div className="mt-3">
+              <CreditLedger entries={ledger} />
+            </div>
+          </div>
+        </>
+      )}
+    </main>
   );
 }

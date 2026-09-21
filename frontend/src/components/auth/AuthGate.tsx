@@ -3,6 +3,7 @@
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
+import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/contexts/AuthContext';
 import { planAtLeast, type AccountPlanId } from '@/lib/plans';
 import SignInPanel from './SignInPanel';
@@ -18,10 +19,18 @@ import SignInPanel from './SignInPanel';
 /** Pages that render for a signed-out visitor. */
 const PUBLIC_PATHS = new Set<string>([]);
 
+/**
+ * The three signed-out screens carry their own theme control.
+ *
+ * The toggle lives in the top bar now, and the top bar is part of the
+ * signed-in shell - so without this, the one screen somebody sees before they
+ * have an account would be the only screen with no way to change the theme.
+ */
 function Centered({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 dark:bg-gray-900">
       {children}
+      <ThemeToggle />
     </div>
   );
 }
@@ -67,7 +76,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!signedIn) return <SignInPanel />;
+  if (!signedIn)
+    return (
+      <>
+        <SignInPanel />
+        <ThemeToggle />
+      </>
+    );
 
   return <>{children}</>;
 }

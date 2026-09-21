@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import ThemeToggle from "@/components/ThemeToggle";
+import AppShell from "@/components/shell/AppShell";
 import AuthGate from "@/components/auth/AuthGate";
 import { AuthProvider } from "@/contexts/AuthContext";
 import "./globals.css";
@@ -16,12 +16,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Tailored Resume Builder",
+  title: "Tailor",
   description: "Build ATS-optimized resumes tailored to job descriptions using AI",
   icons: {
-    icon: "/freebuilder-icon.svg",
-    shortcut: "/freebuilder-icon.svg",
-    apple: "/freebuilder-icon.svg",
+    icon: "/tailor-icon.svg",
+    shortcut: "/tailor-icon.svg",
+    apple: "/tailor-icon.svg",
   },
 };
 
@@ -85,14 +85,20 @@ export default function RootLayout({
       >
         {/*
           Wrapped here rather than in each layout, so a page added later is
-          behind the gate by default. The theme toggle stays outside it: it
-          reads no account data, and the sign-in page should honour the theme
-          too.
+          behind the gate by default.
+
+          AppShell sits INSIDE the gate: it is the signed-in chrome, and
+          AuthGate returns early for all three signed-out states, so the shell
+          is never constructed without an account. The theme toggle used to
+          hang off the end of this tree as a floating pill precisely so the
+          sign-in screen would honour the theme; it now lives in the top bar,
+          and AuthGate renders its own copy on the screens that have no bar.
         */}
         <AuthProvider>
-          <AuthGate>{children}</AuthGate>
+          <AuthGate>
+            <AppShell>{children}</AppShell>
+          </AuthGate>
         </AuthProvider>
-        <ThemeToggle />
       </body>
     </html>
   );

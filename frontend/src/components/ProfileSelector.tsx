@@ -35,9 +35,9 @@ export default function ProfileSelector({
       </select>
       {profiles.length === 0 && !isLoading && (
         <p className="mt-2 text-sm text-gray-700">
-          No profiles available. Create one in the{' '}
+          No profiles available. Create one under{' '}
           <a href="/admin/profiles" className="text-blue-600 hover:underline">
-            admin panel
+            Profile
           </a>
           .
         </p>

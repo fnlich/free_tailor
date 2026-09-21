@@ -3,12 +3,25 @@ import type { ThemeMode } from './api';
 export const THEME_STORAGE_KEY = 'tailor-theme';
 export const DEFAULT_THEME_STORAGE_KEY = 'tailor-default-theme';
 
+/**
+ * Announced whenever the theme actually changes on the document.
+ *
+ * This exists because `applyTheme` writes straight to <html>, behind React's
+ * back, and two pages call it on load to adopt the installation's configured
+ * default (app/page.tsx and app/test/page.tsx). That was invisible while the
+ * only control was a floating pill that re-read storage on mount; now the
+ * toggle sits in the top bar on every page, and without this event its icon
+ * would keep saying "light" while the page it is sitting on went dark.
+ */
+export const THEME_CHANGE_EVENT = 'tailor:theme-change';
+
 export function applyTheme(theme: ThemeMode): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   root.classList.toggle('dark', theme === 'dark');
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
+  window.dispatchEvent(new CustomEvent<ThemeMode>(THEME_CHANGE_EVENT, { detail: theme }));
 }
 
 function readStoredTheme(key: string): ThemeMode | null {

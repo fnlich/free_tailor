@@ -24,7 +24,6 @@ import {
   type BatchSnapshot,
   type SubmitBatchRequest,
 } from '@/lib/generationQueue';
-import AppTopNav from '@/components/AppTopNav';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
 import ProfileSelector from '@/components/ProfileSelector';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
@@ -1507,7 +1506,7 @@ export default function Home() {
 
   if (isLoadingData) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="tl-fill flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
           <p className="mt-4 text-gray-600">Loading...</p>
@@ -1517,9 +1516,7 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <AppTopNav />
-
+    <>
       {/* Main Content */}
       <main className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-6">Generate Resumes</h1>
@@ -1990,7 +1987,7 @@ export default function Home() {
         )}
 
         {builderMode === 'manual' && generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0 && activeMultiplePreview && (
-          <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[var(--layer-app-modal)] bg-black/40 backdrop-blur-sm">
             <div className="absolute inset-4 bg-white rounded-xl shadow-2xl flex flex-col">
               <div className="flex items-center justify-between px-6 py-4 border-b">
                 <div className="flex items-center gap-3">
@@ -2161,8 +2158,8 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="mt-auto py-6 text-center text-sm text-gray-500">
-        <p>Tailored Resume Builder - Powered by your Claude subscription, with OpenAI, Anthropic and DeepSeek as options</p>
+        <p>Tailor - Powered by your Claude subscription, with OpenAI, Anthropic and DeepSeek as options</p>
       </footer>
-    </div>
+    </>
   );
 }
