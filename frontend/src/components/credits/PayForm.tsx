@@ -60,9 +60,22 @@ function Inner({
   const [problem, setProblem] = useState('');
 
   if (state.type === 'loading') {
+    // The SECOND wait: the script is in, and this is Stripe's own handshake.
+    // It gets the same escape as the first - a spinner with nothing to press
+    // is the failure being designed out, and it does not matter which of the
+    // two waits somebody is stuck in.
     return (
       <div className={PANEL}>
         <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600" />
+        <div className="mt-3 text-center">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-sm font-medium text-gray-600 hover:underline dark:text-slate-300"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     );
   }
@@ -87,17 +100,36 @@ function Inner({
   const pay = async () => {
     setPaying(true);
     setProblem('');
-    /*
-     * Reached only when confirming fails IMMEDIATELY.
-     *
-     * Anything else - a card needing 3-D Secure, a stablecoin payment, any
-     * method that leaves the page - navigates the browser to the return_url set
-     * on the session, so there is no "success" branch to write here. The page
-     * that is waiting there polls until the webhook has landed.
-     */
-    const result = await state.checkout.confirm();
-    if (result.type === 'error') {
-      setProblem(result.error.message);
+    try {
+      /*
+       * Reached only when confirming fails IMMEDIATELY.
+       *
+       * Anything else - a card needing 3-D Secure, a stablecoin payment, any
+       * method that leaves the page - navigates the browser to the return_url
+       * set on the session, so there is no "success" branch to write here. The
+       * page waiting there polls until the webhook has landed.
+       */
+      const result = await state.checkout.confirm();
+      if (result.type === 'error') {
+        setProblem(result.error.message);
+        setPaying(false);
+      }
+      // Deliberately NOT re-enabling on the success path: the browser is on its
+      // way to the return_url, and a button that springs back to life during a
+      // navigation invites a second confirm.
+    } catch (error) {
+      /*
+       * A rejection, not a returned error - a dropped connection mid-confirm,
+       * or the SDK throwing. Without this the button stays "Paying…" and
+       * disabled, Cancel stays disabled with it, and the screen is frozen with
+       * nothing said. Whether the payment went through is then genuinely
+       * unknown, so the wording does not guess.
+       */
+      setProblem(
+        error instanceof Error && error.message
+          ? `${error.message} If you were charged, your credits will still arrive.`
+          : 'That payment could not be completed. If you were charged, your credits will still arrive.'
+      );
       setPaying(false);
     }
   };
@@ -165,28 +197,47 @@ export default function PayForm(props: {
    * to "still loading", and the customer watches a spinner for ever with
    * nothing to press. Owning the load means the failure can be said out loud.
    */
-  const [stripe, setStripe] = useState<Stripe | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  /*
+   * ONE value, not two booleans, and the timeout is a functional update.
+   *
+   * Written as `stripe` plus `unavailable` this had a bug that only appears
+   * with a working network, which is the worst kind: the give-up timer was
+   * armed on mount and cleared only by the effect's cleanup, and the cleanup
+   * never ran because its only dependency is a stable string. So fifteen
+   * seconds after a form loaded FINE it was torn down and replaced with
+   * "nothing was charged" - mid-typing, or worse, mid-confirm, where it is a
+   * lie that invites somebody to pay a second time.
+   *
+   * Clearing the timer on success would have fixed that instance. This shape
+   * fixes the class: there is one state, and the timeout's update reads it and
+   * declines to move anything that is no longer loading. A late timer cannot
+   * contradict a form that is already up, whatever else is forgotten.
+   */
+  const [load, setLoad] = useState<
+    { status: 'loading' } | { status: 'ready'; stripe: Stripe } | { status: 'failed' }
+  >({ status: 'loading' });
 
   useEffect(() => {
     let live = true;
-    const giveUp = setTimeout(() => {
-      if (live) setUnavailable(true);
-    }, SCRIPT_TIMEOUT_MS);
+    const settle = (next: { status: 'ready'; stripe: Stripe } | { status: 'failed' }) => {
+      if (live) setLoad((current) => (current.status === 'loading' ? next : current));
+    };
+
+    const giveUp = setTimeout(() => settle({ status: 'failed' }), SCRIPT_TIMEOUT_MS);
 
     stripeFor(publishableKey)
       .then((loaded) => {
-        if (!live) return;
+        clearTimeout(giveUp);
         // `null` is what loadStripe resolves to when there is no window to
         // load into; treat it the same as a failure rather than as success.
-        if (loaded) setStripe(loaded);
-        else setUnavailable(true);
+        settle(loaded ? { status: 'ready', stripe: loaded } : { status: 'failed' });
       })
       .catch(() => {
+        clearTimeout(giveUp);
         // Forget the rejected promise, or every later attempt replays the same
         // failure from cache and "Start again" can never actually start again.
         stripeByKey.delete(publishableKey);
-        if (live) setUnavailable(true);
+        settle({ status: 'failed' });
       });
 
     return () => {
@@ -195,7 +246,7 @@ export default function PayForm(props: {
     };
   }, [publishableKey]);
 
-  if (unavailable) {
+  if (load.status === 'failed') {
     return (
       <div className={PANEL}>
         <p className="text-sm font-semibold text-gray-900 dark:text-white">
@@ -216,7 +267,7 @@ export default function PayForm(props: {
     );
   }
 
-  if (!stripe) {
+  if (load.status === 'loading') {
     return (
       <div className={PANEL}>
         <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600" />
@@ -237,7 +288,7 @@ export default function PayForm(props: {
 
   return (
     <CheckoutElementsProvider
-      stripe={stripe}
+      stripe={load.stripe}
       options={{
         clientSecret,
         // Stripe renders in an iframe and cannot see the page's own CSS, so a

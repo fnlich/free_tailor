@@ -251,9 +251,25 @@ export async function startCheckout(
        * become a customer's view of a secret.
        */
       console.error(`[payments] ${payment.reference}: the provider refused to open a checkout.`, error);
-      markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
+
+      /*
+       * Closed only when the provider definitively said no.
+       *
+       * A transport failure - the connection dropped before an answer arrived -
+       * is NOT a refusal: the session may well exist at Stripe with this
+       * payment's id on it, and somebody may still pay it. Marking that failed
+       * would mean the webhook arrives, finds a row that is not pending, and
+       * credits nothing. Money taken, nothing given. So an unknown outcome
+       * leaves the payment pending and lets it expire on its own.
+       */
+      const unknown = error instanceof stripe.StripeError && error.transport;
+      if (!unknown) {
+        markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
+      }
       throw new PaymentError(
-        'The payment provider would not open a checkout page. Try again in a moment.',
+        unknown
+          ? 'Could not reach the payment provider. Nothing was charged - try again in a moment.'
+          : 'The payment provider would not open a checkout page. Try again in a moment.',
         502
       );
     }

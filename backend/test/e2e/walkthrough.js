@@ -116,14 +116,25 @@ async function main() {
   const balanceBeforePaying = (await call(buyerToken, '/credits')).body?.balance ?? 0;
   check('opening a checkout adds no credits', balanceBeforePaying === startBalance, `${balanceBeforePaying}`);
 
-  // The return page, visited BEFORE paying. This is the free-credits test:
-  // arriving at the success URL must not be what credits an account.
   const sessionId = checkout.body.clientSecret.replace(/_secret$/, '');
-  const peeked = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
+
+  /*
+   * The free-credits test, done properly.
+   *
+   * Arriving at the return page must not be what credits an account, so this
+   * actually FETCHES the return page and everything it polls, before paying.
+   * The previous version only re-read the payment and claimed to have visited
+   * the page, which proved nothing the line above it had not already proved.
+   */
+  const returnUrl = `${(process.env.PAYMENTS_RETURN_URL || 'http://localhost:3000').replace(/\/+$/, '')}` +
+    `/credits/return?payment=${encodeURIComponent(checkout.body.paymentId)}`;
+  const visited = await fetch(returnUrl).catch(() => null);
+  const polled = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
   check(
-    'visiting the return URL before paying credits nothing',
-    peeked.body?.payment?.state === 'pending' &&
-      (await call(buyerToken, '/credits')).body.balance === startBalance
+    'visiting the return page before paying credits nothing',
+    polled.body?.payment?.state === 'pending' &&
+      (await call(buyerToken, '/credits')).body.balance === startBalance,
+    `fetched ${returnUrl} -> ${visited ? visited.status : 'unreachable (frontend not running)'}`
   );
 
   // Now press Pay on the provider's page, which signs a webhook and sends it.

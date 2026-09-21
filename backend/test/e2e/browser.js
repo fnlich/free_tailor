@@ -159,7 +159,23 @@ async function main() {
   await page.getByRole('button', { name: /^Cancel$|^Start again$/ }).first().waitFor({ timeout: 25000 });
   await page.getByRole('button', { name: /^Cancel$|^Start again$/ }).first().click();
   await page.waitForSelector('#credits', { timeout: 10000 });
-  check('cancelling puts the amount field back, on the same page', page.url().startsWith(`${APP}/credits`), page.url());
+  /*
+   * Asserting the URL alone proved nothing - it was already `/credits` before
+   * the click and could not have changed, since the dialog never navigates.
+   * What cancelling has to do is put the CHOOSER back and take the dialog away.
+   */
+  const backOnTheForm = await page.locator('main').innerText();
+  check(
+    'cancelling puts the amount field back and closes the dialog',
+    (await page.locator('#credits').count()) === 1 &&
+      (await page.getByRole('dialog').count()) === 0 &&
+      /per credit/.test(backOnTheForm),
+    page.url()
+  );
+  check(
+    'and the amount that was typed is still there',
+    (await page.locator('#credits').inputValue()) === '10'
+  );
   await page.screenshot({ path: `${SHOTS}/5-cancelled.png` });
 
   console.log('\n=== The administrator ===');

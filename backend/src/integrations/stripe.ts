@@ -17,16 +17,45 @@ import crypto from 'crypto';
 
 const STRIPE_API_BASE = 'https://api.stripe.com/v1';
 
+/**
+ * The API version this integration is written against, sent on every request.
+ *
+ * Not optional, and not cosmetic. Stripe pins each ACCOUNT to an API version at
+ * its first call and never moves it, so a request with no `Stripe-Version`
+ * header is resolved at whatever version that account happens to sit on.
+ * `ui_mode: 'elements'` only exists from 2026-03-25.dahlia - before it the same
+ * thing was called `custom`, and that value was REMOVED in the same release. An
+ * account older than that would answer every checkout with a 400 on an enum
+ * value, which reads like a bug in this app rather than a version mismatch.
+ *
+ * Stripe's own advice for an integration that does not use their SDK, which
+ * this one does not: "update your API requests to include
+ * Stripe-Version: 2026-03-25.dahlia".
+ */
+const STRIPE_API_VERSION = '2026-03-25.dahlia';
+
 /** Stripe's tolerance for the timestamp in a webhook signature. */
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
 export class StripeError extends Error {
   readonly status: number;
 
-  constructor(message: string, status = 502) {
+  /**
+   * Whether the request never got an answer, as opposed to being refused.
+   *
+   * The difference decides whether a payment can be closed. Stripe saying
+   * "no" means no session exists and the payment is dead. A socket dropping
+   * means the session may well have been created and somebody may still pay
+   * it - closing that payment is how money gets taken for credits that are
+   * never granted.
+   */
+  readonly transport: boolean;
+
+  constructor(message: string, status = 502, transport = false) {
     super(message);
     this.name = 'StripeError';
     this.status = status;
+    this.transport = transport;
   }
 }
 
@@ -47,7 +76,28 @@ export function stripeWebhookSecret(env: NodeJS.ProcessEnv = process.env): strin
  * frontend.
  */
 export function stripePublishableKey(env: NodeJS.ProcessEnv = process.env): string {
-  return env.STRIPE_PUBLISHABLE_KEY?.trim() ?? '';
+  const key = env.STRIPE_PUBLISHABLE_KEY?.trim() ?? '';
+  if (!key) return '';
+
+  /*
+   * Checked, because this one value is deliberately broadcast.
+   *
+   * It is served to every browser that opens the buy page, which is fine for a
+   * publishable key and catastrophic for a secret one - and the two sit next to
+   * each other on the same dashboard page, under names a tired operator can
+   * confuse at midnight. A key in the wrong slot is refused rather than
+   * published, and the card method is then withheld exactly as it would be for
+   * a missing key.
+   */
+  if (!key.startsWith('pk_')) {
+    console.error(
+      '[payments] STRIPE_PUBLISHABLE_KEY does not look like a publishable key (it must begin ' +
+        '"pk_"). It was NOT used. If a secret key was pasted there, treat it as compromised and ' +
+        'roll it in the Stripe dashboard.'
+    );
+    return '';
+  }
+  return key;
 }
 
 /**
@@ -117,19 +167,43 @@ async function stripeFetch<T>(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${key}`,
     'Content-Type': 'application/x-www-form-urlencoded',
+    'Stripe-Version': STRIPE_API_VERSION,
   };
   // Stripe's own idempotency, separate from ours: it stops a retried request
   // creating a SECOND session or a second refund, which our database guard
   // cannot see because it happens before we hear anything back.
   if (init.idempotencyKey) headers['Idempotency-Key'] = init.idempotencyKey;
 
-  const response = await fetch(`${STRIPE_API_BASE}${path}`, {
-    method: init.method,
-    headers,
-    ...(init.body ? { body: formEncode(init.body).toString() } : {}),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${STRIPE_API_BASE}${path}`, {
+      method: init.method,
+      headers,
+      ...(init.body ? { body: formEncode(init.body).toString() } : {}),
+    });
+  } catch (error) {
+    // Never reached Stripe, or never heard back. Marked as transport so the
+    // caller does not treat "we do not know" as "it was refused".
+    throw new StripeError(
+      `Could not reach Stripe: ${error instanceof Error ? error.message : 'connection failed'}`,
+      502,
+      true
+    );
+  }
 
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    // The connection dropped while reading the answer. The session may exist.
+    throw new StripeError(
+      `Lost the connection to Stripe while reading its reply: ${
+        error instanceof Error ? error.message : 'read failed'
+      }`,
+      502,
+      true
+    );
+  }
   let parsed: unknown;
   try {
     parsed = text ? JSON.parse(text) : {};

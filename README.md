@@ -165,8 +165,13 @@ A method is offered **only when every one of its keys is set**. A secret key
 without a webhook secret is an install that can take money and never hear that
 it did - every payment would sit pending with the money gone - and without the
 publishable key the form cannot mount in the browser at all, so the button would
-lead to an empty box. A half-configured method is not offered, and the buy page
-says which variable is missing.
+lead to an empty box. A half-configured method is not offered.
+
+The buy page lists what to set when NO method is configured at all. When one
+method works and another does not, the working one is simply the only button -
+which is the right behaviour for a customer and means an operator debugging a
+half-configured method should look at the server's startup log rather than the
+buy page.
 
 **The card form is on our own page**, not a redirect to Stripe: the Checkout
 Session is created with `ui_mode: 'elements'` and the buy page mounts Stripe's
@@ -186,6 +191,12 @@ page: that is a GET anybody can visit, so crediting there would be a free-credit
 button with an inconvenient URL. Confirming in the form does not decide anything
 either. The return page polls the payment until the webhook has landed, which is
 a second for a card and can be minutes for a chain payment.
+
+The card integration is pinned to Stripe API version `2026-03-25.dahlia` and
+sends it on every request. `ui_mode: 'elements'` exists only from that version -
+before it the same thing was called `custom` - and Stripe resolves a request at
+the ACCOUNT's pinned version unless a header says otherwise. Without the pin the
+integration would work on a new Stripe account and fail on an older one.
 
 **The browser sends a count of credits, never a price.** The server quotes from
 its own settings every time, so no request can set what it will be charged; the
