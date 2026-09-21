@@ -238,6 +238,10 @@ export type CheckoutRequest = {
   customerEmail: string;
   /** Where Stripe sends the browser back to AFTER an attempt. See the note below. */
   returnUrl: string;
+  /** An existing Stripe customer, when this buyer has kept a card before. */
+  customer?: string;
+  /** Keep the card for later. Requires `customer`. */
+  saveCard?: boolean;
 };
 
 /**
@@ -269,12 +273,32 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
       ui_mode: 'elements',
       return_url: input.returnUrl,
       client_reference_id: input.paymentId,
-      customer_email: input.customerEmail,
+      /*
+       * A customer, or an email. Never both.
+       *
+       * Stripe refuses a session carrying `customer` and `customer_email`
+       * together, and the customer is the one that matters: it is what a saved
+       * card hangs off. Without one the checkout is a guest and stores nothing
+       * reusable, which is the right shape when nobody asked to keep the card.
+       */
+      ...(input.customer
+        ? { customer: input.customer }
+        : { customer_email: input.customerEmail }),
       metadata: { paymentId: input.paymentId, reference: input.reference },
-      // Repeated on the payment intent so a refund or a dispute opened from the
-      // Stripe dashboard still carries the reference somebody would quote.
+      /*
+       * Repeated on the payment intent so a refund or a dispute opened from the
+       * Stripe dashboard still carries the reference somebody would quote.
+       *
+       * `setup_future_usage` is what keeps the card, and it is set on the
+       * payment rather than through a separate SetupIntent on purpose: the
+       * buyer is making a payment anyway, so saving the method costs no extra
+       * round trip and no extra form - and the authentication happens with
+       * them present, which is what makes a later off-session charge eligible
+       * for an exemption.
+       */
       payment_intent_data: {
         metadata: { paymentId: input.paymentId, reference: input.reference },
+        ...(input.saveCard && input.customer ? { setup_future_usage: 'off_session' } : {}),
       },
       line_items: [
         {
@@ -292,6 +316,102 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
 
 export async function getCheckoutSession(sessionId: string): Promise<StripeSession> {
   return stripeFetch<StripeSession>(`/checkout/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export type StripeCustomer = { id: string };
+
+/** A customer to hang saved cards off. Created once per account, on first save. */
+export async function createCustomer(input: {
+  userId: string;
+  email: string;
+}): Promise<StripeCustomer> {
+  return stripeFetch<StripeCustomer>('/customers', {
+    method: 'POST',
+    // Keyed on the account, so two tabs racing produce one customer rather
+    // than two holding half of somebody's cards each.
+    idempotencyKey: `customer:${input.userId}`,
+    body: { email: input.email, metadata: { userId: input.userId } },
+  });
+}
+
+export type StripePaymentMethod = {
+  id: string;
+  card?: { brand?: string; last4?: string; exp_month?: number; exp_year?: number };
+};
+
+export type StripePaymentIntent = {
+  id: string;
+  status?: string;
+  client_secret?: string | null;
+  amount_received?: number;
+  currency?: string;
+  payment_method?: string | { id: string } | null;
+  /**
+   * Set to 'off_session' only when the buyer asked for the card to be kept.
+   *
+   * Stripe copies it from `payment_intent_data.setup_future_usage` on the
+   * session, so this is the buyer's own answer coming back from the provider -
+   * which makes it the thing to check before storing a card, rather than
+   * anything this server would have to remember for itself.
+   */
+  setup_future_usage?: string | null;
+};
+
+export async function getPaymentIntent(intentId: string): Promise<StripePaymentIntent> {
+  return stripeFetch<StripePaymentIntent>(`/payment_intents/${encodeURIComponent(intentId)}`);
+}
+
+export async function getPaymentMethod(methodId: string): Promise<StripePaymentMethod> {
+  return stripeFetch<StripePaymentMethod>(`/payment_methods/${encodeURIComponent(methodId)}`);
+}
+
+/** Forgets a card at Stripe. Called before the local row is removed. */
+export async function detachPaymentMethod(methodId: string): Promise<void> {
+  await stripeFetch(`/payment_methods/${encodeURIComponent(methodId)}/detach`, { method: 'POST' });
+}
+
+export type SavedCardCharge = {
+  paymentId: string;
+  reference: string;
+  amountCents: number;
+  currency: string;
+  customer: string;
+  paymentMethod: string;
+  returnUrl: string;
+};
+
+/**
+ * Charges a card the buyer has already kept, without them entering anything.
+ *
+ * `off_session: true` tells Stripe nobody is at the keyboard, which is what
+ * lets it apply the exemption earned when the card was first authenticated.
+ * It can still come back `requires_action` - a bank may insist - and the caller
+ * then hands the client secret to the browser, which is why this returns the
+ * whole intent rather than a boolean.
+ *
+ * `confirm: true` makes this one call rather than create-then-confirm. The
+ * idempotency key is the payment, so a retried request charges once.
+ */
+export async function chargeSavedCard(input: SavedCardCharge): Promise<StripePaymentIntent> {
+  return stripeFetch<StripePaymentIntent>('/payment_intents', {
+    method: 'POST',
+    idempotencyKey: `charge:${input.paymentId}`,
+    body: {
+      amount: input.amountCents,
+      currency: input.currency,
+      customer: input.customer,
+      payment_method: input.paymentMethod,
+      confirm: true,
+      off_session: true,
+      return_url: input.returnUrl,
+      description: input.reference,
+      metadata: {
+        paymentId: input.paymentId,
+        reference: input.reference,
+        flow: 'saved-card',
+      },
+    },
+  });
 }
 
 export async function refundPaymentIntent(paymentIntentId: string, paymentId: string): Promise<void> {

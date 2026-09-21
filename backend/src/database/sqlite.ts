@@ -234,6 +234,21 @@ const SCHEMA = `
     credited_at      TEXT,
     refunded_at      TEXT,
     refunded_credits INTEGER NOT NULL DEFAULT 0,
+    /*
+     * The fee taken, and what was actually credited.
+     *
+     * Both snapshotted for the same reason unit_price_cents is: a receipt has
+     * to say what happened, and an administrator changing a fee must not
+     * rewrite an order somebody already paid.
+     *
+     * credits_granted is distinct from credits because they answer different
+     * questions - credits is what was QUOTED, credits_granted is what the
+     * ledger actually received. They differ when a fee is taken, and again
+     * when a chain payment arrives for something other than the quoted
+     * amount. Measured, not assumed, exactly as refunded_credits is.
+     */
+    fee_cents        INTEGER NOT NULL DEFAULT 0,
+    credits_granted  INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
   );
@@ -327,6 +342,65 @@ const SCHEMA = `
     ON chain_invoices (state, monitor_until);
 
   /**
+   * How far each chain has been read.
+   *
+   * Without this a restart has only two options, and both lose money: rescan
+   * from the beginning of the chain, which no public endpoint will serve, or
+   * start from the current tip, which silently skips every transfer that
+   * arrived while the process was down. Neither is recoverable afterwards,
+   * because the watcher's only record of having looked IS this number.
+   *
+   * HEIGHT is TEXT for the same reason amount_atomic is: it is written and
+   * compared as a decimal integer, and a block height is one number this code
+   * should not have to promise stays inside a double forever. (No backticks
+   * anywhere in this file - the whole schema is one template literal, and a
+   * backtick in a comment ends it.)
+   *
+   * It is written in the SAME transaction as whatever that height produced.
+   * Advancing the cursor first and recording the transfers afterwards is a
+   * crash away from a payment nobody will ever look for again.
+   */
+  CREATE TABLE IF NOT EXISTS chain_cursors (
+    chain      TEXT PRIMARY KEY,
+    height     TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  /**
+   * Money that arrived on a chain and belongs to nobody identifiable.
+   *
+   * Its own table because it has no invoice to live on: the whole reason a
+   * transfer ends up here is that two open orders were equally close to it and
+   * neither could be credited without possibly robbing the other. The invoices
+   * are deliberately left alone - those buyers may still pay correctly - so
+   * the record of the unattributable money has to go somewhere of its own.
+   *
+   * Without this the settler said "held" to a caller that only logged it, the
+   * administrator's queue was permanently empty, and the promise made to the
+   * buyer on the payment screen - that we hold it and get in touch - was not
+   * true of anything the server actually did.
+   *
+   * The UNIQUE index is load-bearing in the same way the invoice slot index
+   * is: the watcher re-reads the same transfer on every tick, so without it
+   * one unclaimed payment would become a thousand rows.
+   */
+  CREATE TABLE IF NOT EXISTS chain_orphans (
+    id            TEXT PRIMARY KEY,
+    chain         TEXT NOT NULL,
+    asset         TEXT NOT NULL,
+    txid          TEXT NOT NULL,
+    amount_atomic TEXT NOT NULL,
+    decimals      INTEGER NOT NULL,
+    reason        TEXT NOT NULL DEFAULT '',
+    resolved_at   TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_orphans_tx
+    ON chain_orphans (chain, asset, txid);
+
+  /**
    * Accounts.
    *
    * The EMAIL is the identity, not the Google subject id: the two sign-in paths
@@ -386,6 +460,45 @@ const SCHEMA = `
    * schema is - and an account that is later deleted simply leaves its name
    * behind on the notice, which is the right outcome for a published thing.
    */
+  /*
+   * A card somebody chose to keep, and nothing that identifies it as money.
+   *
+   * There is no card number here and there never can be: the form is an iframe
+   * served by Stripe and the details go straight to them. What this table holds
+   * is a HANDLE - the payment-method id Stripe gave us - plus the brand, the
+   * last four digits and the expiry, which are the only things a person needs
+   * to recognise their own card in a list. The handle is useless without the
+   * secret key, which is not in the database either.
+   *
+   * detached_at is a soft delete rather than a DELETE, because a payment made
+   * with a card that has since been removed still has to be explainable. The
+   * row stops being offered the moment it is set.
+   *
+   * The UNIQUE index is on (provider, method_ref) rather than on the id: the
+   * same card entered twice at Stripe is the same payment method, and two rows
+   * for it would show a buyer their card twice and let them delete half of it.
+   */
+  CREATE TABLE IF NOT EXISTS saved_cards (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    provider     TEXT NOT NULL DEFAULT 'stripe',
+    customer_ref TEXT NOT NULL,
+    method_ref   TEXT NOT NULL,
+    brand        TEXT NOT NULL DEFAULT '',
+    last4        TEXT NOT NULL DEFAULT '',
+    exp_month    INTEGER NOT NULL DEFAULT 0,
+    exp_year     INTEGER NOT NULL DEFAULT 0,
+    detached_at  TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_cards_method
+    ON saved_cards (provider, method_ref);
+
+  CREATE INDEX IF NOT EXISTS idx_saved_cards_user
+    ON saved_cards (user_id, created_at DESC);
+
   CREATE TABLE IF NOT EXISTS notifications (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -460,7 +573,15 @@ const SCHEMA = `
      * notification here is an announcement to everybody and the only question
      * worth answering is "anything since I last looked".
      */
-    notifications_seen_at TEXT
+    notifications_seen_at TEXT,
+    /*
+     * The Stripe customer saved cards hang off, created on the first save.
+     *
+     * NULL means this account has never kept a card - not that it has never
+     * paid. A customer is only needed to store a payment method for reuse, and
+     * a guest checkout stores nothing.
+     */
+    stripe_customer_id TEXT
   );
 
   /**
@@ -553,6 +674,14 @@ function addMissingColumns(db: Database.Database): void {
     // that is what makes sign-in retry it; once set, sign-in stops asking Drive
     // about it at all.
     { table: 'users', column: 'sheet_shared_at', definition: 'TEXT' },
+    // The fee taken and the credits actually granted. Zero on every row
+    // written before they existed, which reads correctly: those payments took
+    // no fee, and `credits_granted || credits` covers the granted count.
+    // The Stripe customer this account's saved cards hang off. NULL until the
+    // first card is kept, which is also the only time one is created.
+    { table: 'users', column: 'stripe_customer_id', definition: 'TEXT' },
+    { table: 'payments', column: 'fee_cents', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'payments', column: 'credits_granted', definition: 'INTEGER NOT NULL DEFAULT 0' },
     // When this account last opened the notifications panel. NULL means never,
     // which is what every upgraded row starts as and is also correct: an
     // account that has never looked has not seen anything.

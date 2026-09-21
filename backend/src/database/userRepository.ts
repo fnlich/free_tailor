@@ -33,12 +33,13 @@ type UserRow = {
   sheet_tab_gid: string | null;
   sheet_shared_at: string | null;
   notifications_seen_at: string | null;
+  stripe_customer_id: string | null;
 };
 
 const USER_COLUMNS =
   'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
   'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at, ' +
-  'notifications_seen_at';
+  'notifications_seen_at, stripe_customer_id';
 
 function now(): string {
   return new Date().toISOString();
@@ -81,6 +82,47 @@ function toAccount(row: UserRow): UserAccount {
     ...(row.sheet_tab_gid ? { sheetTabGid: row.sheet_tab_gid } : {}),
     ...(row.sheet_shared_at ? { sheetSharedAt: row.sheet_shared_at } : {}),
   };
+}
+
+/**
+ * Claims the Stripe customer for this account, or reports who won.
+ *
+ * Conditional on the column still being empty, because two payments started in
+ * two tabs both create a customer at Stripe and both try to record one. The
+ * loser uses the winner's id and leaves an orphan customer behind at Stripe,
+ * which costs nothing and is preferable to two customers both holding half of
+ * somebody's saved cards.
+ */
+/**
+ * The Stripe customer this account's saved cards hang off, or ''.
+ *
+ * A read of its own rather than a field on `UserAccount`, and that is the
+ * point: `routes/auth.ts` and `routes/accounts.ts` both serialize an account
+ * by spreading it, so anything on that type is served to a browser - and an
+ * administrator's account list would have carried every customer's handle.
+ * It is not a secret (nothing can be done with it without the secret key,
+ * which is not in this database) but it is a handle at a third party with no
+ * business leaving this process, which is the same rule `GET /payments/cards`
+ * follows for the payment-method id beside it.
+ */
+export function getStripeCustomerId(userId: string): string {
+  const row = getDb()
+    .prepare('SELECT stripe_customer_id FROM users WHERE id = ?')
+    .get(userId) as { stripe_customer_id: string | null } | undefined;
+  return row?.stripe_customer_id || '';
+}
+
+export function claimStripeCustomer(userId: string, customerRef: string): string {
+  const db = getDb();
+  db.prepare(
+    `UPDATE users SET stripe_customer_id = @ref, updated_at = @at
+     WHERE id = @id AND (stripe_customer_id IS NULL OR stripe_customer_id = '')`
+  ).run({ id: userId, ref: customerRef, at: now() });
+
+  const row = db
+    .prepare('SELECT stripe_customer_id FROM users WHERE id = ?')
+    .get(userId) as { stripe_customer_id: string | null } | undefined;
+  return row?.stripe_customer_id || customerRef;
 }
 
 export function getUserById(id: string): UserAccount | null {
@@ -221,6 +263,8 @@ export function createUser(input: CreateUserInput): UserAccount {
     // Never looked, which is true and means the notices posted before this
     // account existed still read as new to it.
     notifications_seen_at: null,
+    // Created at Stripe only when a card is first kept.
+    stripe_customer_id: null,
   };
 
   getDb()
@@ -228,7 +272,8 @@ export function createUser(input: CreateUserInput): UserAccount {
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
                @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
-               @sheet_tab_gid, @sheet_shared_at, @notifications_seen_at)`
+               @sheet_tab_gid, @sheet_shared_at, @notifications_seen_at,
+               @stripe_customer_id)`
     )
     .run(account);
 

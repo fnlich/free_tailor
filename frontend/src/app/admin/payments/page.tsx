@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
-import { adminApi } from '@/lib/api';
+import { adminApi, type PaymentTargetLimits } from '@/lib/api';
 import {
   adminPaymentsApi,
   formatAmount,
   STATE_LABELS,
   STATE_STYLES,
   type AdminPayment,
+  type HeldTransfer,
 } from '@/lib/payments';
 
 /**
@@ -20,6 +21,164 @@ import {
 function formatDate(value: string): string {
   const at = new Date(value);
   return Number.isNaN(at.getTime()) ? value : at.toLocaleString();
+}
+
+/**
+ * One target's limits, while they are being edited.
+ *
+ * Strings, not numbers, and that is the point: an operator clearing a box to
+ * retype it produces "" for a moment, and a number-typed state turns that into
+ * NaN or - worse - silently into 0, which is a live setting that offers a
+ * purchase of nothing. Parsing happens once, on save, where a bad value can be
+ * reported instead of applied.
+ */
+type LimitDraft = {
+  target: string;
+  minCents: string;
+  maxCents: string;
+  feeBps: string;
+  feeFixedCents: string;
+  presetsCents: string;
+};
+
+function toDraft(row: PaymentTargetLimits): LimitDraft {
+  return {
+    target: row.target,
+    minCents: String(row.minCents),
+    maxCents: String(row.maxCents),
+    feeBps: String(row.feeBps),
+    feeFixedCents: String(row.feeFixedCents),
+    presetsCents: row.presetsCents.join(', '),
+  };
+}
+
+/** Whole numbers only, and a blank or a word becomes 0 for the server to refuse. */
+function wholeNumber(value: string): number {
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isInteger(parsed) ? parsed : 0;
+}
+
+function toRow(draft: LimitDraft): PaymentTargetLimits {
+  return {
+    target: draft.target.trim(),
+    minCents: wholeNumber(draft.minCents),
+    maxCents: wholeNumber(draft.maxCents),
+    feeBps: wholeNumber(draft.feeBps),
+    feeFixedCents: wholeNumber(draft.feeFixedCents),
+    /*
+     * Commas, spaces or both - an operator pasting a list should not have to
+     * guess the separator. Anything that is not a whole number is dropped
+     * here rather than sent as a zero, because a $0.00 button is a button
+     * that sells nothing and the server would only refuse the whole save.
+     */
+    presetsCents: draft.presetsCents
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map((part) => Number.parseInt(part, 10))
+      .filter((cents) => Number.isInteger(cents)),
+  };
+}
+
+function targetLabel(target: string): string {
+  if (target === 'card') return 'Card';
+  if (target === 'crypto') return 'Crypto — every coin';
+  return target;
+}
+
+/** Cents as dollars, for the hint under a pair of bounds. */
+function dollars(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+const LIMIT_FIELD = 'mt-1 w-full rounded-md border border-gray-300 px-3 py-2';
+
+function LimitFields({
+  draft,
+  onChange,
+  onRemove,
+}: {
+  draft: LimitDraft;
+  onChange: (next: LimitDraft) => void;
+  onRemove: () => void;
+}) {
+  const min = wholeNumber(draft.minCents);
+  const max = wholeNumber(draft.maxCents);
+  const feeBps = wholeNumber(draft.feeBps);
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-gray-900">{targetLabel(draft.target)}</h3>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-xs font-medium text-red-700 hover:underline"
+        >
+          Remove
+        </button>
+      </div>
+      <p className="mt-0.5 text-xs text-gray-500">
+        <span className="font-mono">{draft.target}</span> &middot; {dollars(min)} to{' '}
+        {dollars(max)}
+        {feeBps > 0 && ` · fee ${(feeBps / 100).toFixed(2)}%`}
+      </p>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-4">
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Smallest (cents)</span>
+          <input
+            type="number"
+            min={1}
+            value={draft.minCents}
+            onChange={(event) => onChange({ ...draft, minCents: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Largest (cents)</span>
+          <input
+            type="number"
+            min={1}
+            value={draft.maxCents}
+            onChange={(event) => onChange({ ...draft, maxCents: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Fee (basis points)</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.feeBps}
+            onChange={(event) => onChange({ ...draft, feeBps: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Fee (fixed cents)</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.feeFixedCents}
+            onChange={(event) => onChange({ ...draft, feeFixedCents: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+      </div>
+
+      <label className="mt-3 block text-sm">
+        <span className="font-medium text-gray-700">Preset buttons (cents)</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={draft.presetsCents}
+          onChange={(event) => onChange({ ...draft, presetsCents: event.target.value })}
+          className={LIMIT_FIELD}
+          placeholder="500, 1000, 2500"
+        />
+      </label>
+    </div>
+  );
 }
 
 /**
@@ -38,6 +197,8 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   const [price, setPrice] = useState('');
   const [minCredits, setMinCredits] = useState('');
   const [maxCredits, setMaxCredits] = useState('');
+  const [limits, setLimits] = useState<LimitDraft[]>([]);
+  const [newTarget, setNewTarget] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState('');
@@ -50,6 +211,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         setPrice(String(settings.creditPriceCents));
         setMinCredits(String(settings.creditMinCredits));
         setMaxCredits(String(settings.creditMaxCredits));
+        setLimits(settings.paymentLimits.map(toDraft));
       } catch {
         setProblem('Could not load the current pricing.');
       } finally {
@@ -67,6 +229,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         creditPriceCents: Number.parseInt(price, 10),
         creditMinCredits: Number.parseInt(minCredits, 10),
         creditMaxCredits: Number.parseInt(maxCredits, 10),
+        paymentLimits: limits.map(toRow),
       });
       setNote('Pricing saved. It applies to new purchases only.');
       onSaved();
@@ -120,6 +283,88 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         </label>
       </div>
 
+      <div className="mt-6 border-t border-gray-200 pt-5">
+        <h3 className="text-sm font-semibold text-gray-900">Limits per payment method</h3>
+        <p className="mt-1 text-sm text-gray-600">
+          In cents, and the tighter of the two wins: a row here can narrow a method but never
+          take it past the credit bounds above. A method with no row falls back to those bounds
+          with no fee and no preset buttons, so removing a row is a way of switching its limits
+          off rather than a way of switching the method off.
+        </p>
+        <p className="mt-1 text-sm text-gray-600">
+          A fee is taken <span className="font-medium">out of</span> the amount charged, not added
+          to it - the buyer pays what they chose and receives the credits the remainder buys. A
+          row naming a coin, such as <span className="font-mono">ethereum:USDT</span>, overrides
+          the <span className="font-mono">crypto</span> row for that coin alone.
+        </p>
+
+        <div className="mt-4 space-y-4">
+          {limits.map((draft, index) => (
+            <LimitFields
+              key={draft.target}
+              draft={draft}
+              onChange={(next) =>
+                setLimits((current) =>
+                  current.map((entry, position) => (position === index ? next : entry))
+                )
+              }
+              onRemove={() =>
+                setLimits((current) => current.filter((_, position) => position !== index))
+              }
+            />
+          ))}
+          {limits.length === 0 && (
+            <p className="text-sm text-gray-600">
+              No rows. Saving with none restores the built-in defaults rather than leaving every
+              method unbounded.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <label className="block text-sm">
+            <span className="font-medium text-gray-700">Add a target</span>
+            <input
+              type="text"
+              value={newTarget}
+              onChange={(event) => setNewTarget(event.target.value)}
+              placeholder="card, crypto, or ethereum:USDT"
+              className="mt-1 w-64 rounded-md border border-gray-300 px-3 py-2"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={
+              newTarget.trim() === '' ||
+              limits.some((entry) => entry.target === newTarget.trim())
+            }
+            onClick={() => {
+              setLimits((current) => [
+                ...current,
+                {
+                  target: newTarget.trim(),
+                  // The credit bounds above, in cents, so a new row starts
+                  // where the method already was rather than at zero.
+                  minCents: String(
+                    (Number.parseInt(minCredits, 10) || 0) * (Number.parseInt(price, 10) || 0)
+                  ),
+                  maxCents: String(
+                    (Number.parseInt(maxCredits, 10) || 0) * (Number.parseInt(price, 10) || 0)
+                  ),
+                  feeBps: '0',
+                  feeFixedCents: '0',
+                  presetsCents: '',
+                },
+              ]);
+              setNewTarget('');
+            }}
+            className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
       {problem && <p className="mt-3 text-sm text-red-700">{problem}</p>}
       {note && <p className="mt-3 text-sm text-green-700">{note}</p>}
 
@@ -129,7 +374,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         disabled={saving}
         className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-blue-400"
       >
-        {saving ? 'Saving…' : 'Save pricing'}
+        {saving ? 'Saving…' : 'Save pricing and limits'}
       </button>
     </div>
   );
@@ -137,17 +382,29 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
 
 function PaymentsBody() {
   const [payments, setPayments] = useState<AdminPayment[]>([]);
+  const [held, setHeld] = useState<HeldTransfer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [refunding, setRefunding] = useState('');
   const [confirming, setConfirming] = useState('');
   const [note, setNote] = useState('');
+  const [resolving, setResolving] = useState('');
 
   const load = useCallback(async () => {
     try {
       const response = await adminPaymentsApi.list();
       setPayments(response.payments);
+      /*
+       * Settled separately: a held transfer is the more urgent of the two and
+       * must not be hidden because the payment list failed to load, nor take
+       * the payment list down when it fails itself.
+       */
+      try {
+        setHeld((await adminPaymentsApi.held()).held);
+      } catch {
+        // An older backend has no such route. Nothing to show is correct.
+      }
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load payments.');
@@ -159,6 +416,27 @@ function PaymentsBody() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Marks an unattributable transfer as dealt with.
+   *
+   * Deliberately NOT a credit and NOT a refund: this server cannot know which
+   * of those the administrator did, only that they have finished. What it
+   * changes is the queue, so that a list of things needing a person stays a
+   * list of things needing a person.
+   */
+  const dismiss = async (entry: HeldTransfer) => {
+    setResolving(entry.id);
+    try {
+      await adminPaymentsApi.resolveHeld(entry.id);
+      setHeld((current) => current.filter((item) => item.id !== entry.id));
+      setMessage('Marked as dealt with.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not clear that item.');
+    } finally {
+      setResolving('');
+    }
+  };
 
   const refund = async (payment: AdminPayment) => {
     setRefunding(payment.id);
@@ -208,6 +486,79 @@ function PaymentsBody() {
           your provider&apos;s dashboard.
         </p>
       </div>
+
+      {/*
+        Above everything, because it is the only thing on this page that is
+        somebody's money sitting unclaimed.
+
+        A transfer lands here when it could not be attributed to exactly ONE
+        open order - the amount was off and either nothing or two things were
+        close enough. Nothing was credited and nothing was written off, which
+        is the only honest outcome when guessing would give one buyer's coin
+        to another buyer's order.
+      */}
+      {held.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+          <h2 className="text-base font-semibold text-red-700">
+            {held.length} payment{held.length === 1 ? ' needs' : 's need'} attention
+          </h2>
+          <p className="mt-1 text-sm text-red-700">
+            Coin arrived that could not be matched to one order automatically. Nothing has been
+            credited and nothing has been lost. Check the transaction against the order, then
+            adjust the balance from the accounts page.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {held.map((entry) => (
+              <li key={entry.id} className="rounded-md border border-red-200 bg-white p-3 text-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="font-medium text-gray-900">{entry.asset}</span>
+                  <span className="text-xs text-gray-500">{formatDate(entry.at)}</span>
+                </div>
+                <p className="mt-1 text-gray-700">{entry.note}</p>
+                <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-gray-600 sm:grid-cols-2">
+                  {/*
+                    Shown only when there is one. An unattributable transfer
+                    has no single order behind it, so an "Expected: —" row
+                    reads as a figure that went missing rather than as a
+                    question this entry does not have an answer to.
+                  */}
+                  {entry.expected && (
+                    <div>
+                      <dt className="inline font-medium">Expected: </dt>
+                      <dd className="inline font-mono">{entry.expected}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt className="inline font-medium">Received: </dt>
+                    <dd className="inline font-mono">{entry.received || '—'}</dd>
+                  </div>
+                  {entry.txid && (
+                    <div className="sm:col-span-2">
+                      <dt className="inline font-medium">Transaction: </dt>
+                      <dd className="inline break-all font-mono">{entry.txid}</dd>
+                    </div>
+                  )}
+                </dl>
+                {/*
+                  Only an unattributable transfer offers this. A held invoice
+                  belongs to a payment and keeps its place in that payment's
+                  history, so there is nothing here to dismiss.
+                */}
+                {entry.resolvable && (
+                  <button
+                    type="button"
+                    onClick={() => void dismiss(entry)}
+                    disabled={resolving === entry.id}
+                    className="mt-3 rounded-md border-2 border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                  >
+                    {resolving === entry.id ? 'Clearing…' : 'Mark as dealt with'}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <PricingCard onSaved={() => void load()} />
 

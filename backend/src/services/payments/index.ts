@@ -1,6 +1,19 @@
 import { applyAdjustment } from '../../database/creditRepository';
 import { getDb } from '../../database/sqlite';
-import { getUserById } from '../../database/userRepository';
+import {
+  claimStripeCustomer,
+  getStripeCustomerId,
+  getUserById,
+} from '../../database/userRepository';
+import { getCardForUser, saveCard } from '../../database/savedCardRepository';
+import { ASSETS, isAssetId } from '../../config/chainAssets';
+import {
+  chainPaymentsReason,
+  isChainPaymentsConfigured,
+  readChainPaymentsConfig,
+} from '../../config/chainPayments';
+import { getInvoiceForPayment } from '../../database/chainInvoiceRepository';
+import { ChainInvoiceError, describeInvoice, openInvoice } from './chain/invoices';
 import {
   attachProviderRef,
   beginRefund,
@@ -20,7 +33,7 @@ import {
 import type { UserAccount } from '../../types/account';
 import * as stripe from '../../integrations/stripe';
 import * as coinbase from '../../integrations/coinbaseCommerce';
-import { PriceError, quoteCredits } from './pricing';
+import { PriceError, quoteCredits, resolveLimits, presetsFor, type QuoteTarget } from './pricing';
 
 /**
  * Buying credits.
@@ -54,7 +67,17 @@ export function publishableKey(env: NodeJS.ProcessEnv = process.env): string {
 
 export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAvailability[] {
   const card = stripe.isStripeConfigured(env);
-  const crypto = coinbase.isCoinbaseConfigured(env);
+  /*
+   * Either way of taking crypto counts, and the on-chain one is preferred.
+   *
+   * Coinbase Commerce is retired rather than removed: payments already made
+   * through it still read, its webhook still settles, and an installation
+   * configured only for it keeps working exactly as before. What changes is
+   * which one a NEW checkout gets. Changing the METHOD union instead would
+   * misread every row already in the table.
+   */
+  const onChain = isChainPaymentsConfigured(env);
+  const crypto = onChain || coinbase.isCoinbaseConfigured(env);
   return [
     {
       method: 'card',
@@ -71,14 +94,18 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
     },
     {
       method: 'crypto',
-      provider: 'coinbase',
+      provider: onChain ? 'chain' : 'coinbase',
       label: 'Crypto',
       available: crypto,
       ...(crypto
         ? {}
         : {
+            // The chain reason first, because that is the one an operator
+            // setting this up now is trying to satisfy. It names the variables
+            // rather than describing them, for the same reason.
             reason:
-              'Set COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto.',
+              `${chainPaymentsReason(env)} Or set COINBASE_COMMERCE_API_KEY and ` +
+              'COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto through Coinbase Commerce instead.',
           }),
     },
   ];
@@ -114,17 +141,78 @@ export function returnBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * One thing a buyer can pay with, and what it may be paid in.
+ *
+ * A target is a method OR a single coin, because that is the granularity the
+ * buyer chooses at: "card" is one button, and each asset is another. The
+ * bounds and the presets travel with it so the page never has to work out
+ * which limits apply - or, worse, work out a price.
+ */
+export type PaymentTarget = {
+  id: string;
+  method: PaymentMethod;
+  asset?: string;
+  chain?: string;
+  label: string;
+  symbol?: string;
+  /** Which mark the page should draw. A key, not an image. */
+  mark: string;
+  available: boolean;
+  reason?: string;
+  minCredits: number;
+  maxCredits: number;
+  minAmountCents: number;
+  maxAmountCents: number;
+  presets: Array<{ credits: number; amountCents: number }>;
+  /** A slider for card, a whole-dollar stepper for a coin. */
+  custom: 'slider' | 'stepper';
+  feeBps: number;
+  feeFixedCents: number;
+};
+
+/**
  * What the browser needs to take the payment.
  *
- * Exactly one of these is set. `clientSecret` means the form is ours: the page
- * mounts Stripe's Payment Element with it and the customer never leaves. A
- * `redirectUrl` is the older shape, for a provider whose checkout is a page of
- * its own - the crypto path still works that way.
+ * Exactly one of the three is set. `clientSecret` means the form is ours: the
+ * page mounts Stripe's Payment Element with it and the customer never leaves.
+ * A `redirectUrl` is the older shape, for a provider whose checkout is a page
+ * of its own. `processing` means the charge has already been made against a
+ * card the buyer kept, and there is nothing to do but wait for the webhook.
  */
 export type StartedCheckout = {
   payment: Payment;
   clientSecret?: string;
   redirectUrl?: string;
+  /**
+   * The deposit instructions, when the payment is on-chain.
+   *
+   * A fourth shape beside the three below, and the only one that asks the
+   * buyer to do something outside the browser entirely: send an exact amount
+   * to an address. There is nothing to confirm and nowhere to be sent.
+   */
+  invoice?: ReturnType<typeof describeInvoice>;
+  /**
+   * Set when a saved card was charged off-session and there is nothing for the
+   * browser to do but wait. Distinct from a client secret, which asks it to
+   * confirm, and from a redirect, which sends it away.
+   */
+  processing?: boolean;
+};
+
+/**
+ * What the browser may ask for.
+ *
+ * `credits` is a COUNT and there is no amount here, which is the rule the
+ * whole pricing module exists to enforce. `asset` names a coin so its own
+ * limits apply; `cardId` charges a card this account has saved; `saveCard`
+ * asks to keep the one about to be entered.
+ */
+export type CheckoutRequest = {
+  method: unknown;
+  credits: unknown;
+  asset?: unknown;
+  cardId?: unknown;
+  saveCard?: unknown;
 };
 
 /** How many checkouts one account may open in an hour. */
@@ -142,12 +230,72 @@ const CHECKOUT_WINDOW_MS = 60 * 60 * 1000;
  */
 export async function startCheckout(
   account: UserAccount,
-  method: unknown,
-  requestedCredits: unknown,
+  request: CheckoutRequest,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<StartedCheckout> {
+  const { method, credits: requestedCredits } = request;
   if (method !== 'card' && method !== 'crypto') {
     throw new PaymentError('Choose a payment method.');
+  }
+
+  const asset = typeof request.asset === 'string' && request.asset.trim()
+    ? request.asset.trim()
+    : undefined;
+  const cardId = typeof request.cardId === 'string' && request.cardId.trim()
+    ? request.cardId.trim()
+    : undefined;
+  const saveCard = request.saveCard === true;
+
+  if (asset && method !== 'crypto') {
+    throw new PaymentError('A coin can only be chosen for a crypto payment.');
+  }
+  /*
+   * A coin this build has actually heard of, or none.
+   *
+   * `asset` comes from the request body and ends up choosing which limits row
+   * prices the sale. `isAssetId` is the closed list in `chainAssets.ts`, so an
+   * invented string - or a method's own name - cannot reach the pricing
+   * authority at all. The check is here, beside the other request validation,
+   * rather than inside the provider block below: a coin that does not exist is
+   * the caller's mistake, and reporting it as "the provider refused" would be
+   * a 502 and a failed payment row for a request that never should have been
+   * recorded.
+   */
+  if (asset && !isAssetId(asset)) {
+    throw new PaymentError('That coin is not one this server can take.');
+  }
+
+  /*
+   * On-chain crypto needs to know WHICH coin. Coinbase does not.
+   *
+   * The difference is real rather than pedantic: an on-chain payment is an
+   * amount of one specific token sent to one specific address, and there is no
+   * sensible default. Coinbase's hosted page asks the buyer itself, which is
+   * why an asset stays optional there and why this check is conditional.
+   */
+  const chainConfigured = isChainPaymentsConfigured(env);
+  if (method === 'crypto' && chainConfigured && !asset) {
+    throw new PaymentError('Choose which coin to pay with.');
+  }
+  const chosenAsset = asset && isAssetId(asset) ? asset : null;
+  if (cardId && method !== 'card') {
+    throw new PaymentError('A saved card can only be used for a card payment.');
+  }
+
+  /*
+   * The card is found HERE, not in the provider block below.
+   *
+   * That block converts everything it catches into a 502 and marks the payment
+   * failed, because everything it wraps is a call to Stripe. A card that is not
+   * this account's is a request error - 404 - and reporting it as "the provider
+   * would not open a checkout page" would be a lie told to the buyer and a
+   * failed payment row nobody asked for.
+   */
+  const savedCard = cardId ? getCardForUser(account.id, cardId) : null;
+  if (cardId && !savedCard) {
+    // 404 rather than 403: an id in a path must not confirm that somebody
+    // else's card exists.
+    throw new PaymentError('That saved card is not available.', 404);
   }
 
   const availability = describeMethods(env).find((entry) => entry.method === method);
@@ -177,18 +325,27 @@ export async function startCheckout(
     );
   }
 
-  // The browser sent a COUNT. The price is worked out here, from settings, and
-  // an `amount` in the request body is never read.
-  const quote = await quoteCredits(requestedCredits);
+  /*
+   * The browser sent a COUNT. The price is worked out here, from settings, and
+   * an `amount` in the request body is never read.
+   *
+   * The target is passed so the method's - or the coin's - own bounds and fee
+   * apply. Omitting it would silently price every purchase against the card
+   * row, which is the one mistake this parameter exists to make impossible.
+   */
+  const target: QuoteTarget = asset ? { method, asset } : { method };
+  const quote = await quoteCredits(requestedCredits, target);
 
   const payment = createPayment({
     userId: account.id,
     method,
     provider: availability.provider,
+    // `credits` is what will be granted; the charge is the gross.
     credits: quote.credits,
     amountCents: quote.amountCents,
     currency: quote.currency,
     unitPriceCents: quote.unitPriceCents,
+    feeCents: quote.feeCents,
   });
 
   const base = returnBaseUrl(env);
@@ -219,6 +376,51 @@ export async function startCheckout(
   const opened = await (async () => {
     try {
       if (method === 'card') {
+        /*
+         * Paying with a card already kept: no form, no client secret.
+         *
+         * The charge is made here and now, so what comes back is a payment
+         * intent rather than something for the browser to confirm. A bank can
+         * still demand authentication even off-session, and that is the one
+         * case where a client secret is handed over after all.
+         */
+        if (savedCard) {
+          const intent = await stripe.chargeSavedCard({
+            paymentId: payment.id,
+            reference: payment.reference,
+            amountCents: quote.amountCents,
+            currency: quote.currency,
+            customer: savedCard.customerRef,
+            paymentMethod: savedCard.methodRef,
+            returnUrl,
+          });
+
+          return {
+            ref: intent.id,
+            // Only when the bank insisted. Otherwise there is nothing to do
+            // but wait for the webhook, as with any other payment.
+            clientSecret: intent.status === 'requires_action' ? (intent.client_secret ?? '') : '',
+            url: '',
+            processing: intent.status !== 'requires_action',
+          };
+        }
+
+        /*
+         * A customer is created only when the buyer asked to keep the card.
+         *
+         * A guest checkout stores nothing reusable, which is the correct shape
+         * for somebody who did not ask - and it means an account that never
+         * saves a card never gets a customer record at Stripe at all.
+         */
+        let customer = getStripeCustomerId(account.id);
+        if (saveCard && !customer) {
+          const created = await stripe.createCustomer({
+            userId: account.id,
+            email: account.email,
+          });
+          customer = claimStripeCustomer(account.id, created.id);
+        }
+
         const session = await stripe.createCheckoutSession({
           paymentId: payment.id,
           reference: payment.reference,
@@ -227,8 +429,37 @@ export async function startCheckout(
           currency: quote.currency,
           customerEmail: account.email,
           returnUrl,
+          ...(customer ? { customer } : {}),
+          ...(saveCard && customer ? { saveCard: true } : {}),
         });
         return { ref: session.id, clientSecret: session.client_secret ?? '', url: '' };
+      }
+
+      /*
+       * On-chain when it is configured, Coinbase Commerce when it is not.
+       *
+       * The difference for the buyer is total: on-chain they are shown an
+       * address this operator controls and an exact amount, and the money
+       * never touches a processor. Coinbase remains for an installation that
+       * has not set up addresses, and for every row already paid through it.
+       */
+      if (chainConfigured && chosenAsset) {
+        const invoice = await openInvoice({
+          paymentId: payment.id,
+          userId: account.id,
+          assetId: chosenAsset,
+          amountCents: quote.amountCents,
+        });
+        /*
+         * The invoice id is the provider reference.
+         *
+         * There is no session and no charge at anybody's API, so the thing
+         * that identifies this payment on the provider's side is the row this
+         * server wrote. It keeps `provider_ref` meaning the same thing for
+         * every provider - "the object at the other end" - and it is what a
+         * reconciling administrator looks the payment up by.
+         */
+        return { ref: invoice.id, clientSecret: '', url: '', processing: false };
       }
 
       const charge = await coinbase.createCharge({
@@ -240,8 +471,23 @@ export async function startCheckout(
         redirectUrl: returnUrl,
         cancelUrl,
       });
-      return { ref: charge.code, clientSecret: '', url: charge.hosted_url ?? '' };
+      return { ref: charge.code, clientSecret: '', url: charge.hosted_url ?? '', processing: false };
     } catch (error) {
+      /*
+       * An invoice refusal is the caller's answer, not the provider's.
+       *
+       * "Somebody is already paying that exact amount" and "the price feed is
+       * not answering" are both things the buyer can act on, and neither is
+       * "the payment provider would not open a checkout page". Reporting them
+       * as a 502 would tell somebody to try later when the real advice is to
+       * try NOW with a different amount. The payment row is closed on the way
+       * past, because no invoice exists for it and nothing will ever pay it.
+       */
+      if (error instanceof ChainInvoiceError) {
+        markUnpaid(payment.id, 'failed', 'No invoice could be opened for this payment.');
+        throw new PaymentError(error.message, error.status);
+      }
+
       /*
        * The detail goes to the log, and a fixed sentence goes in the row.
        *
@@ -275,7 +521,13 @@ export async function startCheckout(
     }
   })();
 
-  if (!opened.clientSecret && !opened.url) {
+  const invoice = getInvoiceForPayment(payment.id);
+  if (invoice) {
+    attachProviderRef(payment.id, opened.ref);
+    return { payment: getPayment(payment.id) ?? payment, invoice: describeInvoice(invoice) };
+  }
+
+  if (!opened.clientSecret && !opened.url && !('processing' in opened && opened.processing)) {
     // The session may exist without anything the browser can use, so this
     // payment is NOT closed: see the note above. It simply cannot be paid.
     console.error(`[payments] ${payment.reference}: the provider returned nothing to pay with.`);
@@ -294,7 +546,232 @@ export async function startCheckout(
     payment: getPayment(payment.id) ?? payment,
     ...(opened.clientSecret ? { clientSecret: opened.clientSecret } : {}),
     ...(opened.url ? { redirectUrl: opened.url } : {}),
+    ...('processing' in opened && opened.processing ? { processing: true } : {}),
   };
+}
+
+/**
+ * Writes down the card a buyer just kept.
+ *
+ * Called AFTER the settling transaction has committed, never inside it: that
+ * transaction is synchronous by design and these are two network calls. Losing
+ * this row costs a convenience on the next purchase, so it never fails a
+ * webhook and never blocks the 200 - the money has already been accounted for
+ * by the time it runs.
+ */
+export async function recordSavedCardFromSession(payment: Payment): Promise<void> {
+  try {
+    if (payment.provider !== 'stripe' || !payment.providerRef) return;
+    const customerRef = getStripeCustomerId(payment.userId);
+    if (!customerRef) return;
+
+    const intentId = await (async () => {
+      if (payment.providerRef!.startsWith('pi_')) return payment.providerRef!;
+      const session = await stripe.getCheckoutSession(payment.providerRef!);
+      return typeof session.payment_intent === 'string'
+        ? session.payment_intent
+        : session.payment_intent?.id;
+    })();
+    if (!intentId) return;
+
+    const intent = await stripe.getPaymentIntent(intentId);
+
+    /*
+     * Only a card the buyer ASKED to keep.
+     *
+     * Without this the check above - "does this account have a customer" - is
+     * the whole gate, and it is the wrong question: an account that saved a
+     * card once has a customer for ever, so every later purchase would quietly
+     * store whatever card it was paid with, including one the buyer had just
+     * declined to save. `setup_future_usage` is set on the session only when
+     * they ticked the box, and Stripe hands it back on the intent, so it is
+     * their own answer being read rather than a flag this server kept.
+     *
+     * It is also what keeps an off-session charge from re-saving a card that
+     * is already saved: that intent carries no `setup_future_usage`, and the
+     * card it charged is in the table already.
+     */
+    if (!intent.setup_future_usage) return;
+
+    const methodId =
+      typeof intent.payment_method === 'string'
+        ? intent.payment_method
+        : intent.payment_method?.id;
+    if (!methodId) return;
+
+    const method = await stripe.getPaymentMethod(methodId);
+    if (!method.card) return;
+
+    saveCard({
+      userId: payment.userId,
+      customerRef,
+      methodRef: method.id,
+      brand: method.card.brand ?? '',
+      last4: method.card.last4 ?? '',
+      expMonth: method.card.exp_month ?? 0,
+      expYear: method.card.exp_year ?? 0,
+    });
+  } catch (error) {
+    console.warn(
+      `[payments] ${payment.reference}: the card could not be saved for reuse; the payment is unaffected.`,
+      error
+    );
+  }
+}
+
+/**
+ * Everything a buyer may choose between, with its own limits.
+ *
+ * A target whose limits cannot be resolved - a price so high that no whole
+ * number of credits fits inside the configured amounts - comes back
+ * unavailable with the reason, rather than being dropped. An operator has to
+ * be able to see a misconfiguration; a missing button is invisible.
+ */
+export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Promise<PaymentTarget[]> {
+  const methods = describeMethods(env);
+  const targets: PaymentTarget[] = [];
+
+  for (const entry of methods) {
+    /*
+     * The method's own label for a card, a clearer noun for the coins.
+     *
+     * "Card" would repeat the section heading the page puts above it and tell
+     * a buyer nothing; `describeMethods` already says "Credit or debit card",
+     * which is the question they are actually asking. Crypto's method label is
+     * the bare "Crypto", so the button that means EVERY coin says so instead -
+     * and once there is a row per asset, each one carries its own coin's name
+     * and this one is not shown at all.
+     */
+    const base = {
+      method: entry.method,
+      label: entry.method === 'card' ? entry.label : 'Cryptocurrency',
+      mark: entry.method === 'card' ? 'card' : 'crypto',
+      available: entry.available,
+      ...(entry.reason ? { reason: entry.reason } : {}),
+    };
+
+    try {
+      const limits = await resolveLimits({ method: entry.method });
+      const presets = await presetsFor({ method: entry.method });
+      targets.push({
+        ...base,
+        id: entry.method,
+        minCredits: limits.minCredits,
+        maxCredits: limits.maxCredits,
+        minAmountCents: limits.minAmountCents,
+        maxAmountCents: limits.maxAmountCents,
+        presets,
+        custom: entry.method === 'card' ? 'slider' : 'stepper',
+        feeBps: limits.feeBps,
+        feeFixedCents: limits.feeFixedCents,
+      });
+    } catch (error) {
+      targets.push({
+        ...base,
+        id: entry.method,
+        available: false,
+        reason: error instanceof Error ? error.message : 'These limits cannot be resolved.',
+        minCredits: 0,
+        maxCredits: 0,
+        minAmountCents: 0,
+        maxAmountCents: 0,
+        presets: [],
+        custom: entry.method === 'card' ? 'slider' : 'stepper',
+        feeBps: 0,
+        feeFixedCents: 0,
+      });
+    }
+  }
+
+  /*
+   * One row per coin, replacing the single "Cryptocurrency" row.
+   *
+   * A buyer paying on-chain is choosing a coin AND a network, not a category:
+   * USDT on Ethereum and USDT on TRON are different addresses, different fees
+   * and different confirmation times, and sending one to the other loses the
+   * money. So each is its own button, with its own limits row, and the
+   * method-level entry is dropped once there is anything to replace it with.
+   *
+   * An asset the operator asked for that cannot be served appears here too,
+   * unavailable and with the reason - the rule chainPayments.ts states for
+   * itself: a misconfiguration is something they need to SEE.
+   */
+  const chainConfig = readChainPaymentsConfig(env);
+  if (chainConfig.assets.length > 0) {
+    const coinTargets: PaymentTarget[] = [];
+
+    for (const enabled of chainConfig.assets) {
+      const asset = enabled.definition;
+      try {
+        const limits = await resolveLimits({ method: 'crypto', asset: asset.id });
+        const presets = await presetsFor({ method: 'crypto', asset: asset.id });
+        coinTargets.push({
+          id: asset.id,
+          method: 'crypto',
+          asset: asset.id,
+          chain: asset.chain,
+          label: asset.label,
+          symbol: asset.symbol,
+          mark: asset.id,
+          available: true,
+          minCredits: limits.minCredits,
+          maxCredits: limits.maxCredits,
+          minAmountCents: limits.minAmountCents,
+          maxAmountCents: limits.maxAmountCents,
+          presets,
+          custom: 'stepper',
+          feeBps: limits.feeBps,
+          feeFixedCents: limits.feeFixedCents,
+        });
+      } catch (error) {
+        coinTargets.push({
+          id: asset.id,
+          method: 'crypto',
+          asset: asset.id,
+          chain: asset.chain,
+          label: asset.label,
+          symbol: asset.symbol,
+          mark: asset.id,
+          available: false,
+          reason: error instanceof Error ? error.message : 'These limits cannot be resolved.',
+          minCredits: 0,
+          maxCredits: 0,
+          minAmountCents: 0,
+          maxAmountCents: 0,
+          presets: [],
+          custom: 'stepper',
+          feeBps: 0,
+          feeFixedCents: 0,
+        });
+      }
+    }
+
+    for (const problem of chainConfig.problems) {
+      const asset = ASSETS[problem.asset];
+      coinTargets.push({
+        id: problem.asset,
+        method: 'crypto',
+        asset: problem.asset,
+        ...(asset ? { chain: asset.chain, symbol: asset.symbol } : {}),
+        label: asset ? asset.label : problem.asset,
+        mark: problem.asset,
+        available: false,
+        reason: problem.reason,
+        minCredits: 0,
+        maxCredits: 0,
+        minAmountCents: 0,
+        maxAmountCents: 0,
+        presets: [],
+        custom: 'stepper',
+        feeBps: 0,
+        feeFixedCents: 0,
+      });
+    }
+
+    return [...targets.filter((target) => target.method !== 'crypto'), ...coinTargets];
+  }
+
+  return targets;
 }
 
 export type CreditOutcome = { credited: boolean; payment: Payment | null };
@@ -313,12 +790,28 @@ export type CreditOutcome = { credited: boolean; payment: Payment | null };
  * prevents is giving away credits, and the cost of the extra two is a comment
  * longer than the code.
  */
-export function creditPaid(paymentId: string): CreditOutcome {
+export function creditPaid(paymentId: string, grantedCredits?: number): CreditOutcome {
   const payment = getPayment(paymentId);
   if (!payment) return { credited: false, payment: null };
   if (payment.state !== 'pending') return { credited: false, payment };
 
-  if (!markPaid(payment.id)) {
+  /*
+   * What to credit, clamped to what was quoted.
+   *
+   * Omitted by every card caller, which is why the default is the quote and
+   * the card path is byte-for-byte what it always was. A chain payment passes
+   * a measured figure, and the clamp is the guard that matters there: crediting
+   * MORE than the order would sell credits at a price nobody quoted and could
+   * step straight past the method's own ceiling.
+   */
+  const granted = Math.max(0, Math.min(grantedCredits ?? payment.credits, payment.credits));
+  if (granted <= 0) {
+    // Nothing to credit is not a settlement. The caller holds the payment for
+    // somebody to look at rather than marking it paid for zero.
+    return { credited: false, payment };
+  }
+
+  if (!markPaid(payment.id, granted)) {
     return { credited: false, payment: getPayment(paymentId) };
   }
 
@@ -327,10 +820,10 @@ export function creditPaid(paymentId: string): CreditOutcome {
   // in the log saying credits were added when none were.
   const { applied } = applyAdjustment({
     userId: payment.userId,
-    delta: payment.credits,
+    delta: granted,
     reason: 'purchase',
     idempotencyKey: `purchase:${payment.id}`,
-    note: `${payment.reference} - ${payment.credits} credits`,
+    note: `${payment.reference} - ${granted} credits`,
   });
 
   return { credited: applied, payment: getPayment(paymentId) };
@@ -390,11 +883,25 @@ export async function refundPayment(
 
   try {
     if (payment.provider === 'stripe') {
-      const session = await stripe.getCheckoutSession(payment.providerRef);
-      const intent =
-        typeof session.payment_intent === 'string'
-          ? session.payment_intent
-          : session.payment_intent?.id;
+      /*
+       * Two shapes live in `provider_ref` now, and the prefix tells them apart.
+       *
+       * A checkout session (`cs_`) has to be read to find the payment intent
+       * behind it; a saved-card charge put the intent (`pi_`) there directly,
+       * and asking Stripe for a session by that id is a 404. Testing the prefix
+       * is inelegant, but it is Stripe's own namespacing and it cannot
+       * disagree with the value it describes - which a second column recording
+       * "what kind of reference this is" eventually would.
+       */
+      const reference = payment.providerRef;
+      const intent = reference.startsWith('pi_')
+        ? reference
+        : await (async () => {
+            const session = await stripe.getCheckoutSession(reference);
+            return typeof session.payment_intent === 'string'
+              ? session.payment_intent
+              : session.payment_intent?.id;
+          })();
       if (!intent) throw new PaymentError('Stripe has no payment to refund for that session.', 409);
       await stripe.refundPaymentIntent(intent, payment.id);
     } else {
@@ -423,10 +930,20 @@ export async function refundPayment(
    * to. Reading the balance either side gives the real figure without adding a
    * field to a function four other callers depend on.
    */
+  /*
+   * Reverse what was GRANTED, not what was quoted.
+   *
+   * The two differ whenever a fee was taken, and the `|| credits` covers every
+   * row written before the column existed - those took no fee, so the quote
+   * IS what was granted. Reversing the quote instead would take back credits
+   * the account never received.
+   */
+  const granted = payment.creditsGranted || payment.credits;
+
   const balanceBefore = getUserById(payment.userId)?.credits ?? 0;
   applyAdjustment({
     userId: payment.userId,
-    delta: -payment.credits,
+    delta: -granted,
     reason: 'purchase-refund',
     idempotencyKey: `purchase-refund:${payment.id}`,
     actorId,
@@ -445,9 +962,9 @@ export async function refundPayment(
 
   return {
     payment: getPayment(paymentId)!,
-    creditsSold: payment.credits,
+    creditsSold: granted,
     creditsReversed: reversed,
-    shortfall: payment.credits - reversed,
+    shortfall: granted - reversed,
   };
 }
 

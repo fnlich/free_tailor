@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m50s, 715 tests)
+npm test                       # backend node:test suite (~1m45s, 810 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -89,6 +89,15 @@ backend/src/
   routes/             # one file per /api/* area
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart)
+  services/payments/chain/
+                      # Non-custodial crypto. `rpc.ts` is the ONLY outbound
+                      #   seam (tests replace it by assignment); each reader
+                      #   under `readers/` exports a pure parser plus a
+                      #   fetcher, because this machine cannot reach a chain
+                      #   and a parser tangled up with its fetch could not be
+                      #   tested at all. Decimals come from config/chainAssets
+                      #   and nowhere else: USDT is 6 decimals on Ethereum and
+                      #   18 on BNB Chain.
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   static/             # seed prompts, skills, templates — defaults only
   test/               # node:test, ~70 files; fixtures/cli replays real streams
@@ -97,7 +106,16 @@ frontend/src/
   components/shell/   # The app shell - top bar, sidebar, settings sub-nav.
                       #   Mounted once in the root layout inside AuthGate;
                       #   pages render no navigation of their own.
-  components/icons/   # Hand-rolled inline SVG set (there is no icon library)
+  components/icons/   # Hand-rolled inline SVG set (there is no icon library).
+                      #   index.tsx is UI icons - one grid, one stroke, one
+                      #   colour, and the ROW decides it. marks.tsx is brand
+                      #   and asset marks, which are filled and multi-colour
+                      #   and never recoloured by a parent. Anything needing a
+                      #   fill belongs in marks.tsx.
+  components/credits/ # The three-step purchase dialog. order.ts holds the
+                      #   wizard reducer with no JSX in it; chrome.ts holds the
+                      #   shared class strings and the note on why none of them
+                      #   carries a `dark:` variant.
   components/, lib/   # UI and the API client
 ```
 
