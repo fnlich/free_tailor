@@ -28,6 +28,8 @@ export type PaymentOptions = {
   maxCredits: number;
   currency: string;
   methods: MethodAvailability[];
+  /** Stripe's publishable key, served by the API. Empty when cards are off. */
+  publishableKey: string;
 };
 
 export type Payment = {
@@ -52,13 +54,20 @@ export type Payment = {
 
 export type AdminPayment = Payment & { userEmail: string };
 
+/**
+ * Exactly one of `clientSecret` and `redirectUrl` is present.
+ *
+ * `clientSecret` means the form is ours and the customer stays on this site;
+ * `redirectUrl` means the provider hosts its own page and we send them there.
+ */
 export type StartedCheckout = {
   paymentId: string;
   reference: string;
   credits: number;
   amountCents: number;
   currency: string;
-  redirectUrl: string;
+  clientSecret?: string;
+  redirectUrl?: string;
 };
 
 export type RefundOutcome = {

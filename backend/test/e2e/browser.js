@@ -77,20 +77,66 @@ async function main() {
 
   await page.screenshot({ path: `${SHOTS}/1-buy-page.png` });
 
-  console.log('\n=== Checkout ===');
-  await Promise.all([page.waitForURL(/4242\/checkout\//, { timeout: 15000 }), cardButton.click()]);
-  check('the card button lands on the provider checkout', page.url().includes(':4242/checkout/'), page.url());
-  const reference = await page.locator('#reference').innerText();
-  check('the provider page quotes the order', /FT-PAY-/.test(reference), reference);
-  const providerCopy = await page.locator('.card').innerText();
-  check('for the amount the server quoted', /40 credits/.test(providerCopy) && /20\.00 USD/.test(providerCopy), providerCopy.replace(/\n/g, ' | '));
-  await page.screenshot({ path: `${SHOTS}/2-provider-checkout.png` });
+  console.log('\n=== The form stays on our page ===');
+  /*
+   * The point of the change, and the limit of what a fake can prove.
+   *
+   * The real Payment Element is an iframe served by Stripe and will not mount
+   * against a made-up publishable key, so this cannot type a card number
+   * offline - a live test-mode key is needed for that, and the README says so.
+   * What it CAN prove is the property the embedding was for: pressing Pay
+   * takes the customer nowhere. The URL does not change, the amount field is
+   * replaced by the payment panel in place, and the order is restated there.
+   */
+  await cardButton.click();
+  /*
+   * Either outcome is a pass; an endless spinner is not.
+   *
+   * With a real publishable key the form mounts. In a sandbox that cannot
+   * reach js.stripe.com it must SAY so rather than spin, which is the failure
+   * this waits on both halves of.
+   */
+  const mounted = page.locator('text=/go straight to them/');
+  const refused = page.locator('text=/The payment form could not be loaded/');
+  // Polled rather than raced: a locator that matches more than one node throws
+  // a strict-mode violation the instant it is awaited, and a race over two
+  // caught rejections would then resolve immediately and prove nothing.
+  let formShowed = false;
+  let saidSo = false;
+  for (let waited = 0; waited < 30000 && !formShowed && !saidSo; waited += 500) {
+    formShowed = (await mounted.count()) > 0;
+    saidSo = (await refused.count()) > 0;
+    if (!formShowed && !saidSo) await page.waitForTimeout(500);
+  }
+  check(
+    'the form either mounts or says plainly that it could not',
+    formShowed || saidSo,
+    formShowed ? 'mounted' : 'reported it could not load (no network to js.stripe.com here)'
+  );
+  check('pressing Pay does not navigate away', page.url().startsWith(`${APP}/credits`), page.url());
+  check('and no checkout page opened anywhere', !page.url().includes('4242'), page.url());
+
+  const panel = await page.locator('main').innerText();
+  check('the panel restates what is being bought', /40 credits/.test(panel) && /\$20\.00/.test(panel), panel.replace(/\n/g, ' | ').slice(0, 200));
+  check(
+    'and offers a way back out',
+    (await page.getByRole('button', { name: /^Cancel$/ }).count()) +
+      (await page.getByRole('button', { name: /^Start again$/ }).count()) >=
+      1
+  );
+  await page.screenshot({ path: `${SHOTS}/2-embedded-form.png` });
 
   console.log('\n=== Paying, and the return page ===');
-  await Promise.all([page.waitForURL(/\/credits\/return/, { timeout: 15000 }), page.click('#pay')]);
-  check('paying sends the browser back to the return page', page.url().includes('/credits/return?payment=pay_'), page.url());
+  // Driven from the provider's side, which is what a real card confirmation
+  // ends up doing: a signed webhook, server to server.
+  const mine = await (await fetch('http://127.0.0.1:3001/api/payments', {
+    headers: { authorization: `Bearer ${token}` },
+  })).json();
+  const started = mine.payments.find((p) => p.state === 'pending');
+  check('the checkout recorded a pending payment', Boolean(started), started?.reference);
+  await fetch(`http://127.0.0.1:4242/pay/${started.providerRef}`, { method: 'POST', redirect: 'manual' });
 
-  // The webhook is already in flight; the page polls until the server says paid.
+  await page.goto(`${APP}/credits/return?payment=${started.id}`, { waitUntil: 'networkidle' });
   await page.waitForSelector('text=Paid. Your credits are on your balance.', { timeout: 20000 });
   check('the return page reports the payment once the webhook has landed', true);
   const returnCopy = await page.locator('main').innerText();
@@ -107,12 +153,13 @@ async function main() {
   check('and the credit history says it was bought', /Bought/.test(history), history.replace(/\n/g, ' | ').slice(0, 160));
   await page.screenshot({ path: `${SHOTS}/4-after-paying.png` });
 
-  console.log('\n=== Cancelling a checkout ===');
+  console.log('\n=== Backing out of a payment ===');
   await page.fill('#credits', '10');
-  await Promise.all([page.waitForURL(/4242\/checkout\//, { timeout: 15000 }), page.getByRole('button', { name: /pay by crypto/i }).click()]);
-  await Promise.all([page.waitForURL(/\/credits\?cancelled=/, { timeout: 15000 }), page.click('#cancel')]);
-  await page.waitForSelector('text=That payment was cancelled. Nothing was charged.', { timeout: 10000 });
-  check('cancelling comes back with an honest notice', true, page.url());
+  await page.getByRole('button', { name: /pay by credit or debit card/i }).click();
+  await page.getByRole('button', { name: /^Cancel$|^Start again$/ }).first().waitFor({ timeout: 25000 });
+  await page.getByRole('button', { name: /^Cancel$|^Start again$/ }).first().click();
+  await page.waitForSelector('#credits', { timeout: 10000 });
+  check('cancelling puts the amount field back, on the same page', page.url().startsWith(`${APP}/credits`), page.url());
   await page.screenshot({ path: `${SHOTS}/5-cancelled.png` });
 
   console.log('\n=== The administrator ===');
@@ -138,7 +185,12 @@ async function main() {
   const finalBalance = await page.locator('text=Your balance').locator('..').innerText();
   check('and the buyer\'s balance comes back down', /\b0\b/.test(finalBalance), finalBalance.replace(/\n/g, ' | '));
 
-  check('no page threw an error along the way', problems.length === 0, problems.join(' | ').slice(0, 300));
+  // js.stripe.com is unreachable from this sandbox, and the page reporting that
+  // is the correct behaviour rather than a defect - so those are not counted.
+  const unexpected = problems.filter(
+    (p) => !/stripe\.com|Failed to load Stripe|ERR_CERT_AUTHORITY_INVALID/i.test(p)
+  );
+  check('no page threw an unexpected error along the way', unexpected.length === 0, unexpected.join(' | ').slice(0, 300));
 
   await browser.close();
   console.log(failures ? `\n${failures} check(s) failed` : '\nEvery browser check passed');

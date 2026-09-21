@@ -39,15 +39,48 @@ export function stripeWebhookSecret(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 /**
+ * The key the payment form in the browser needs.
+ *
+ * Safe to publish - that is what "publishable" means - and it is served to the
+ * page from the API rather than baked into the frontend bundle, so that every
+ * Stripe value lives in one .env and changing one does not mean rebuilding the
+ * frontend.
+ */
+export function stripePublishableKey(env: NodeJS.ProcessEnv = process.env): string {
+  return env.STRIPE_PUBLISHABLE_KEY?.trim() ?? '';
+}
+
+/**
  * Whether cards can be taken at all.
  *
- * Both halves are required, and that is not pedantry: a key without a webhook
- * secret is an install that can take money and can never hear that it did, so
- * every payment would sit pending for ever with the money gone. Refusing to
- * offer the method is much better than offering a broken one.
+ * All THREE are required, and that is not pedantry. A secret key without a
+ * webhook secret is an install that can take money and can never hear that it
+ * did, so every payment would sit pending for ever with the money gone. And
+ * without the publishable key the payment form cannot mount in the browser at
+ * all, so the button would lead to an empty box. Refusing to offer the method
+ * is much better than offering a broken one.
  */
+/**
+ * Whether an inbound webhook can be JUDGED - which is a smaller question.
+ *
+ * Deliberately NOT `isStripeConfigured`. Verifying a signature needs the
+ * webhook secret and nothing else: the publishable key mounts a form in a
+ * browser and the secret key calls the API, and neither has any part in
+ * deciding whether Stripe sent this request. Gating the webhook on all three
+ * would mean an operator who removed the publishable key started answering 503
+ * to Stripe, which retries for days and then disables the endpoint - taking
+ * with it the events that credit people who have already paid.
+ */
+export function canVerifyStripeWebhooks(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(stripeWebhookSecret(env));
+}
+
 export function isStripeConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(stripeSecretKey(env)) && Boolean(stripeWebhookSecret(env));
+  return (
+    Boolean(stripeSecretKey(env)) &&
+    Boolean(stripeWebhookSecret(env)) &&
+    Boolean(stripePublishableKey(env))
+  );
 }
 
 /**
@@ -113,6 +146,8 @@ async function stripeFetch<T>(
 
 export type StripeSession = {
   id: string;
+  /** Present in `elements` mode: what the browser initialises the form with. */
+  client_secret?: string;
   url?: string;
   payment_status?: string;
   payment_intent?: string | { id?: string };
@@ -127,12 +162,24 @@ export type CheckoutRequest = {
   amountCents: number;
   currency: string;
   customerEmail: string;
-  successUrl: string;
-  cancelUrl: string;
+  /** Where Stripe sends the browser back to AFTER an attempt. See the note below. */
+  returnUrl: string;
 };
 
 /**
- * One Checkout Session for one payment.
+ * One Checkout Session for one payment, in ELEMENTS mode.
+ *
+ * `ui_mode: 'elements'` is the difference between a payment form on our own
+ * page and a redirect to Stripe's. The session comes back with a
+ * `client_secret` instead of a `url`, the browser initialises the Payment
+ * Element with it, and the card details go straight from the iframe to Stripe -
+ * this server still never sees a card number, which is the property worth
+ * keeping from the hosted page.
+ *
+ * `return_url` replaces the success/cancel pair. It is NOT how a payment is
+ * confirmed - only a signed webhook does that - but some payment methods leave
+ * the page anyway: 3-D Secure and a stablecoin payment both bounce through
+ * somebody else's domain and have to land somewhere on the way back.
  *
  * The amount is sent as a single line item priced in the smallest currency
  * unit, which is what `unit_amount` means and why nothing here divides by a
@@ -145,8 +192,8 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
     idempotencyKey: `checkout:${input.paymentId}`,
     body: {
       mode: 'payment',
-      success_url: input.successUrl,
-      cancel_url: input.cancelUrl,
+      ui_mode: 'elements',
+      return_url: input.returnUrl,
       client_reference_id: input.paymentId,
       customer_email: input.customerEmail,
       metadata: { paymentId: input.paymentId, reference: input.reference },

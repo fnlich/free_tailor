@@ -38,6 +38,11 @@ export function coinbaseWebhookSecret(env: NodeJS.ProcessEnv = process.env): str
 }
 
 /** Both halves, for the reason given in `isStripeConfigured`. */
+/** As for Stripe: judging a webhook needs the webhook secret, and no more. */
+export function canVerifyCoinbaseWebhooks(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(coinbaseWebhookSecret(env));
+}
+
 export function isCoinbaseConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(coinbaseApiKey(env)) && Boolean(coinbaseWebhookSecret(env));
 }

@@ -70,6 +70,11 @@ async function main() {
   const crypto = methods.body?.methods?.find((m) => m.method === 'crypto');
   check('both methods are offered', Boolean(card?.available && crypto?.available), JSON.stringify(methods.body?.methods));
   check(
+    'the buy page is given a publishable key to mount the form with',
+    methods.body?.publishableKey === process.env.STRIPE_PUBLISHABLE_KEY,
+    `${methods.body?.publishableKey}`
+  );
+  check(
     'the price and bounds come from settings',
     methods.body?.unitPriceCents === 50 && methods.body?.minCredits === 10 && methods.body?.maxCredits === 5000,
     `${methods.body?.unitPriceCents}c, ${methods.body?.minCredits}-${methods.body?.maxCredits} ${methods.body?.currency}`
@@ -99,9 +104,11 @@ async function main() {
     body: JSON.stringify({ method: 'card', credits: 40 }),
   });
   check(
-    'a checkout returns a redirect to the provider',
-    checkout.status === 201 && typeof checkout.body?.redirectUrl === 'string',
-    `${checkout.body?.reference} -> ${checkout.body?.redirectUrl}`
+    'a checkout returns a client secret for a form on our own page',
+    checkout.status === 201 &&
+      typeof checkout.body?.clientSecret === 'string' &&
+      !checkout.body?.redirectUrl,
+    `${checkout.body?.reference} -> ${checkout.body?.clientSecret}`
   );
 
   const before = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
@@ -111,7 +118,7 @@ async function main() {
 
   // The return page, visited BEFORE paying. This is the free-credits test:
   // arriving at the success URL must not be what credits an account.
-  const sessionId = checkout.body.redirectUrl.split('/').pop();
+  const sessionId = checkout.body.clientSecret.replace(/_secret$/, '');
   const peeked = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
   check(
     'visiting the return URL before paying credits nothing',
@@ -158,7 +165,7 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ method: 'card', credits: 10 }),
   });
-  const abandonedId = abandoned.body.redirectUrl.split('/').pop();
+  const abandonedId = abandoned.body.clientSecret.replace(/_secret$/, '');
   await fetch(`${FAKE}/cancel/${abandonedId}`, { method: 'POST', redirect: 'manual' });
   const expired = await call(buyerToken, `/payments/${abandoned.body.paymentId}`);
   check('an expired checkout closes without crediting', expired.body?.payment?.state === 'expired', `state=${expired.body?.payment?.state}`);

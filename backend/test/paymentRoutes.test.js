@@ -28,11 +28,13 @@ async function serve({ withKeys = true, settings = {} } = {}) {
   if (withKeys) {
     process.env.STRIPE_SECRET_KEY = 'sk_test_key';
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
     process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
     process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
   } else {
     delete process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_WEBHOOK_SECRET;
+    delete process.env.STRIPE_PUBLISHABLE_KEY;
     delete process.env.COINBASE_COMMERCE_API_KEY;
     delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
   }
@@ -65,7 +67,7 @@ async function serve({ withKeys = true, settings = {} } = {}) {
   const created = [];
   stripe.createCheckoutSession = async (input) => {
     created.push(input);
-    return { id: `cs_test_${created.length}`, url: `https://checkout.example/${created.length}` };
+    return { id: `cs_test_${created.length}`, client_secret: `cs_test_${created.length}_secret` };
   };
   const coinbase = loadFresh('../dist/integrations/coinbaseCommerce');
   coinbase.createCharge = async (input) => {
@@ -357,6 +359,64 @@ test('an account cannot open unlimited checkouts', async () => {
     // And it is per account, not global: the limit must not lock everybody out.
     assert.equal((await server.checkout(server.bobToken, { method: 'card', credits: 20 })).status, 201);
   } finally {
+    server.close();
+  }
+});
+
+test('the payment form is ours: a checkout returns a client secret, not a redirect', async () => {
+  const server = await serve();
+  try {
+    const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+
+    /*
+     * The whole point of the embedded form: nothing sends the customer away.
+     * A client secret identifies a checkout session and authorises nothing on
+     * its own - it is what the Payment Element in the browser initialises with.
+     */
+    assert.match(body.clientSecret, /^cs_test_\d+_secret$/);
+    assert.equal(body.redirectUrl, undefined, 'nothing to redirect to');
+
+    // And the session was asked for in elements mode, with somewhere to come
+    // back to for the methods that DO leave the page (3-D Secure, stablecoins).
+    const asked = server.created[0];
+    assert.match(asked.returnUrl, /^https:\/\/app\.example\.com\/credits\/return\?payment=pay_/);
+    assert.equal(asked.successUrl, undefined, 'the hosted-page parameters are gone');
+  } finally {
+    server.close();
+  }
+});
+
+test('the buy page is given the publishable key it needs to mount the form', async () => {
+  const server = await serve();
+  try {
+    const methods = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
+    // Served rather than baked into the frontend build: publishable keys are
+    // safe to hand out, and this keeps every Stripe value in the one .env.
+    assert.equal(methods.publishableKey, 'pk_test_key');
+  } finally {
+    server.close();
+  }
+});
+
+test('without the publishable key the card method is withheld', async () => {
+  const server = await serve();
+  try {
+    // A secret key and a webhook secret are not enough now: with no publishable
+    // key the form cannot mount, so the button would lead to an empty box.
+    delete process.env.STRIPE_PUBLISHABLE_KEY;
+
+    const methods = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
+    const card = methods.methods.find((entry) => entry.method === 'card');
+    assert.equal(card.available, false);
+    assert.match(card.reason, /STRIPE_PUBLISHABLE_KEY/);
+    assert.equal(methods.publishableKey, '', 'and no half-configured key is handed out');
+
+    const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+    assert.equal(response.status, 503);
+  } finally {
+    process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
     server.close();
   }
 });

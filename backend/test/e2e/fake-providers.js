@@ -37,7 +37,15 @@ stripe.createCheckoutSession = async (input) => {
   const record = { ...input, id, provider: 'stripe' };
   byId.set(id, record);
   ledger.sessions.push(record);
-  return { id, url: `http://127.0.0.1:${FAKE_PORT}/checkout/${id}` };
+  /*
+   * Elements mode: a client secret, not a URL.
+   *
+   * The real Payment Element is an iframe served by Stripe and cannot be
+   * driven offline, so the hosted page below stands in for it. What it
+   * reproduces faithfully is the part that matters to this server: pressing
+   * Pay sends a SIGNED webhook, and the browser lands on the return_url.
+   */
+  return { id, client_secret: `${id}_secret`, url: `http://127.0.0.1:${FAKE_PORT}/checkout/${id}` };
 };
 
 stripe.getCheckoutSession = async (id) => {
@@ -179,8 +187,25 @@ http
     if (action === 'pay' || action === 'cancel') {
       const outcome = action === 'pay' ? 'paid' : 'expired';
       const result = await deliver(record, outcome);
-      const target = action === 'pay' ? record.successUrl || record.redirectUrl : record.cancelUrl;
+      const target =
+      action === 'pay'
+        ? record.returnUrl || record.successUrl || record.redirectUrl
+        : record.cancelUrl;
       console.log(`[fake-provider] ${action} ${record.reference} -> webhook ${result.status}`);
+
+      /*
+       * There is not always somewhere to go.
+       *
+       * With the form embedded, a Stripe session has no cancel URL at all -
+       * cancelling is simply not confirming, and the customer never left our
+       * page to begin with. The session still expires and still fires its
+       * webhook, which is the half that matters here.
+       */
+      if (!target) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ outcome, webhook: result.status }));
+        return;
+      }
       res.writeHead(303, { location: target });
       res.end();
       return;

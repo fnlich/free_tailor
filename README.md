@@ -158,20 +158,34 @@ signed webhook arrives.
 
 | Method | Provider | Keys |
 |---|---|---|
-| Card | Stripe Checkout | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` |
+| Card | Stripe, embedded | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | Crypto | Coinbase Commerce | `COINBASE_COMMERCE_API_KEY`, `COINBASE_COMMERCE_WEBHOOK_SECRET` |
 
-A method is offered **only when both of its keys are set**. A key without a
-webhook secret is an install that can take money and never hear that it did -
-every payment would sit pending with the money gone - so a half-configured
-method is not offered at all, and the buy page says which variable is missing.
+A method is offered **only when every one of its keys is set**. A secret key
+without a webhook secret is an install that can take money and never hear that
+it did - every payment would sit pending with the money gone - and without the
+publishable key the form cannot mount in the browser at all, so the button would
+lead to an empty box. A half-configured method is not offered, and the buy page
+says which variable is missing.
 
-**Only a verified webhook adds credits.** Not the browser returning to the
-success page: that is a GET anybody can visit, so crediting there would be a
-free-credits button with an inconvenient URL. The return page polls the payment
-until the webhook has landed, which is a second for a card and can be minutes
-for crypto, where the transaction has to confirm on the chain. Nothing on this
-server ever sees a card number.
+**The card form is on our own page**, not a redirect to Stripe: the Checkout
+Session is created with `ui_mode: 'elements'` and the buy page mounts Stripe's
+Payment Element with the `client_secret` it returns. The property that made the
+hosted page worth using is kept - **no card number reaches this server, or even
+the page's own JavaScript.** The form is an iframe served by Stripe and the
+details go straight to them; what this app holds is a client secret, which
+identifies a session and authorises nothing on its own.
+
+The session still carries a `return_url`, because some payment methods leave the
+page whatever we do: 3-D Secure and a stablecoin payment both hand the customer
+to another domain and have to land somewhere coming back. That somewhere is the
+page that waits for the webhook.
+
+**Only a verified webhook adds credits.** Not the browser arriving at the return
+page: that is a GET anybody can visit, so crediting there would be a free-credits
+button with an inconvenient URL. Confirming in the form does not decide anything
+either. The return page polls the payment until the webhook has landed, which is
+a second for a card and can be minutes for a chain payment.
 
 **The browser sends a count of credits, never a price.** The server quotes from
 its own settings every time, so no request can set what it will be charged; the
@@ -819,7 +833,7 @@ unique across the install, which settles all of it in one segment.
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
-| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe Checkout. Both are needed or the method is not offered. The webhook endpoint is `/api/payments/webhook/stripe` |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
 | `COINBASE_COMMERCE_API_KEY` / `COINBASE_COMMERCE_WEBHOOK_SECRET` | Crypto through Coinbase Commerce, same rule. The webhook endpoint is `/api/payments/webhook/coinbase` |
 | `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Defaults to the first `FRONTEND_URL` |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |

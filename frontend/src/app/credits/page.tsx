@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import AppTopNav from '@/components/AppTopNav';
 import CreditLedger from '@/components/CreditLedger';
+import PayForm from '@/components/credits/PayForm';
+import { resolvePreferredTheme } from '@/lib/theme';
 import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
 import {
   formatAmount,
@@ -37,6 +39,20 @@ export default function BuyCreditsPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState<MethodAvailability['method'] | null>(null);
   const [error, setError] = useState('');
+  /*
+   * The open payment form, once one has been started.
+   *
+   * Held here rather than on a separate route because the amount is chosen on
+   * this page and paying should not lose it: the form replaces the amount field
+   * in place, and cancelling puts it back. The pending payment it leaves behind
+   * is harmless - it is never credited, and it expires at the provider.
+   */
+  const [form, setForm] = useState<{
+    clientSecret: string;
+    credits: number;
+    amountCents: number;
+    currency: string;
+  } | null>(null);
 
   const latestRequest = useRef(0);
   const load = useCallback(async () => {
@@ -87,10 +103,30 @@ export default function BuyCreditsPage() {
     setError('');
     try {
       const started = await paymentsApi.checkout(method, credits);
-      // A full navigation, not a router push: the destination is the
-      // provider's own domain. `assign` rather than setting `href`, which the
-      // lint rule reads as mutating a value from outside the component.
-      window.location.assign(started.redirectUrl);
+
+      // The form is ours: mount it here and the customer never leaves.
+      if (started.clientSecret) {
+        setForm({
+          clientSecret: started.clientSecret,
+          credits: started.credits,
+          amountCents: started.amountCents,
+          currency: started.currency,
+        });
+        setSending(null);
+        return;
+      }
+
+      // A provider that hosts its own page. A full navigation, not a router
+      // push: the destination is somebody else's domain. `assign` rather than
+      // setting `href`, which the lint rule reads as mutating a value from
+      // outside the component.
+      if (started.redirectUrl) {
+        window.location.assign(started.redirectUrl);
+        return;
+      }
+
+      setError('That payment could not be started. Nothing was charged.');
+      setSending(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not start that payment.');
       setSending(null);
@@ -164,6 +200,28 @@ export default function BuyCreditsPage() {
                   Until then, an administrator can add credits to your account directly.
                 </p>
               </div>
+            ) : form ? (
+              <div className={CARD}>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+                    {form.credits} credits
+                  </h2>
+                  <span className="text-lg font-semibold text-gray-900 dark:text-white">
+                    {formatAmount(form.amountCents, form.currency)}
+                  </span>
+                </div>
+                <div className="mt-4">
+                  <PayForm
+                    publishableKey={options?.publishableKey ?? ''}
+                    clientSecret={form.clientSecret}
+                    credits={form.credits}
+                    amountCents={form.amountCents}
+                    currency={form.currency}
+                    dark={resolvePreferredTheme() === 'dark'}
+                    onCancel={() => setForm(null)}
+                  />
+                </div>
+              </div>
             ) : (
               <div className={CARD}>
                 <label htmlFor="credits" className={LABEL}>
@@ -206,14 +264,14 @@ export default function BuyCreditsPage() {
                         disabled={!valid || sending !== null}
                         className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
                       >
-                        {sending === entry.method ? 'Opening checkout…' : `Pay by ${entry.label.toLowerCase()}`}
+                        {sending === entry.method ? 'Preparing…' : `Pay by ${entry.label.toLowerCase()}`}
                       </button>
                     ))}
                 </div>
 
                 <p className="mt-3 text-xs text-gray-500 dark:text-slate-400">
-                  Payment is taken on the provider&apos;s own page. This server never sees your card
-                  details, and your credits arrive once the payment is confirmed.
+                  Card details are entered in a form served by Stripe, so this server never sees
+                  them. Your credits arrive once the payment is confirmed.
                 </p>
               </div>
             )}
