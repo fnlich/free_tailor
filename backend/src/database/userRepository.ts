@@ -32,11 +32,13 @@ type UserRow = {
   sheet_tab_date: string | null;
   sheet_tab_gid: string | null;
   sheet_shared_at: string | null;
+  notifications_seen_at: string | null;
 };
 
 const USER_COLUMNS =
   'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
-  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at';
+  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at, ' +
+  'notifications_seen_at';
 
 function now(): string {
   return new Date().toISOString();
@@ -216,6 +218,9 @@ export function createUser(input: CreateUserInput): UserAccount {
     sheet_tab_date: null,
     sheet_tab_gid: null,
     sheet_shared_at: null,
+    // Never looked, which is true and means the notices posted before this
+    // account existed still read as new to it.
+    notifications_seen_at: null,
   };
 
   getDb()
@@ -223,7 +228,7 @@ export function createUser(input: CreateUserInput): UserAccount {
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
                @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
-               @sheet_tab_gid, @sheet_shared_at)`
+               @sheet_tab_gid, @sheet_shared_at, @notifications_seen_at)`
     )
     .run(account);
 

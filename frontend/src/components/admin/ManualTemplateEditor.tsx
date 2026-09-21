@@ -411,7 +411,7 @@ export default function ManualTemplateEditor({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[var(--layer-app-modal)] p-4 overflow-y-auto">
       <div className="bg-white rounded-xl max-w-2xl w-full p-6 my-8 max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-bold">{initialTemplate ? 'Edit Manual Template' : 'Add Manual Template'}</h2>

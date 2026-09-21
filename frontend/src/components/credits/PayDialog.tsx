@@ -62,7 +62,7 @@ export default function PayDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm sm:items-center"
+      className="fixed inset-0 z-[var(--layer-app-modal)] flex items-start justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm sm:items-center"
       // The backdrop closes, but only when the backdrop itself was clicked:
       // without this check a drag that ends outside the panel closes the dialog
       // in the middle of filling in a card number.

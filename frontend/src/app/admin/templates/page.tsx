@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { templatesApi, Template, getApiOrigin } from '@/lib/api';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
-import { AdminOnly } from '@/components/auth/AuthGate';
+import { useAuth } from '@/contexts/AuthContext';
 
 /**
  * The preview document's own size, in CSS pixels: A4 at 96 DPI, the page
@@ -48,7 +48,7 @@ function TemplateViewModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/70 z-50 flex flex-col"
+      className="fixed inset-0 bg-black/70 z-[var(--layer-app-modal)] flex flex-col"
       role="dialog"
       aria-modal="true"
       aria-label={`${template.name} preview`}
@@ -119,7 +119,7 @@ function TemplateBasicEditModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[var(--layer-app-modal)] p-4">
       <div className="bg-white rounded-xl max-w-md w-full p-6">
         <h2 className="text-xl font-bold mb-4">Edit Template</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -156,6 +156,7 @@ function TemplateBasicEditModal({
 }
 
 function TemplatesPageBody() {
+  const { isAdmin } = useAuth();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -178,11 +179,18 @@ function TemplatesPageBody() {
 
   useEffect(() => {
     loadTemplates();
-  }, []);
+    // isAdmin decides whether disabled templates are asked for at all, so a
+    // reload is needed when it settles - it is false while the account is
+    // still loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
   const loadTemplates = async () => {
     try {
-      const data = await templatesApi.getAll({ includeDisabled: true });
+      // Disabled ones exist only as an administrator's staging state; to
+      // everybody else they are simply not templates. The server takes the
+      // same view, so this is a courtesy rather than the enforcement.
+      const data = await templatesApi.getAll({ includeDisabled: isAdmin });
       setTemplates(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load templates');
@@ -340,27 +348,38 @@ function TemplatesPageBody() {
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Resume Templates</h1>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setShowManualModal(true)}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium"
-          >
-            Add Manual Template
-          </button>
-          <button
-            onClick={() => setShowJsonUploadModal(true)}
-            className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium"
-          >
-            Upload JSON Template
-          </button>
-          <button
-            onClick={() => setShowUploadModal(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-          >
-            Upload PDF Template
-          </button>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Resume Templates</h1>
+          {!isAdmin && (
+            <p className="mt-1 text-sm text-gray-600">
+              Every template on this installation, with a full preview of each. They are shared by
+              everybody here, so only an administrator can add or change one - you pick the one you
+              want on your profile, or for a single run.
+            </p>
+          )}
         </div>
+        {isAdmin && (
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowManualModal(true)}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium"
+            >
+              Add Manual Template
+            </button>
+            <button
+              onClick={() => setShowJsonUploadModal(true)}
+              className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium"
+            >
+              Upload JSON Template
+            </button>
+            <button
+              onClick={() => setShowUploadModal(true)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+            >
+              Upload PDF Template
+            </button>
+          </div>
+        )}
       </div>
 
       {jsonUploadNotice && (
@@ -409,7 +428,7 @@ function TemplatesPageBody() {
 
       {/* Upload JSON Template Modal */}
       {showJsonUploadModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[var(--layer-app-modal)] p-4">
           <div className="bg-white rounded-xl max-w-md w-full p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold">Upload JSON Template</h2>
@@ -499,7 +518,7 @@ function TemplatesPageBody() {
       )}
 
       {showUploadModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[var(--layer-app-modal)] p-4">
           <div className="bg-white rounded-xl max-w-md w-full p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold">Upload PDF Template</h2>
@@ -655,28 +674,32 @@ function TemplatesPageBody() {
           </svg>
           <h3 className="mt-2 text-sm font-medium text-gray-900">No templates</h3>
           <p className="mt-1 text-sm text-gray-500">
-            Upload a PDF resume to extract its design as a template.
+            {isAdmin
+              ? 'Upload a PDF resume to extract its design as a template.'
+              : 'None are set up on this installation yet. Ask an administrator here to add one.'}
           </p>
-          <div className="mt-6 flex flex-wrap gap-2 justify-center">
-            <button
-              onClick={() => setShowManualModal(true)}
-              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-            >
-              Add Manual Template
-            </button>
-            <button
-              onClick={() => setShowJsonUploadModal(true)}
-              className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700"
-            >
-              Upload JSON Template
-            </button>
-            <button
-              onClick={() => setShowUploadModal(true)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              Upload PDF Template
-            </button>
-          </div>
+          {isAdmin && (
+            <div className="mt-6 flex flex-wrap gap-2 justify-center">
+              <button
+                onClick={() => setShowManualModal(true)}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+              >
+                Add Manual Template
+              </button>
+              <button
+                onClick={() => setShowJsonUploadModal(true)}
+                className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700"
+              >
+                Upload JSON Template
+              </button>
+              <button
+                onClick={() => setShowUploadModal(true)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                Upload PDF Template
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -752,29 +775,33 @@ function TemplatesPageBody() {
                   >
                     View
                   </button>
-                  <button
-                    onClick={() =>
-                      template.id.startsWith('m-')
-                        ? setEditingTemplate(template)
-                        : setEditingBasicTemplate(template)
-                    }
-                    className="px-3 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleToggleDisabled(template)}
-                    className="px-3 py-1 text-sm text-amber-700 hover:bg-amber-50 rounded"
-                  >
-                    {template.disabled ? 'Enable' : 'Disable'}
-                  </button>
-                  {!template.isBuiltIn && (
-                    <button
-                      onClick={() => handleDelete(template.id)}
-                      className="px-3 py-1 text-sm text-red-600 hover:bg-red-50 rounded"
-                    >
-                      Delete
-                    </button>
+                  {isAdmin && (
+                    <>
+                      <button
+                        onClick={() =>
+                          template.id.startsWith('m-')
+                            ? setEditingTemplate(template)
+                            : setEditingBasicTemplate(template)
+                        }
+                        className="px-3 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleToggleDisabled(template)}
+                        className="px-3 py-1 text-sm text-amber-700 hover:bg-amber-50 rounded"
+                      >
+                        {template.disabled ? 'Enable' : 'Disable'}
+                      </button>
+                      {!template.isBuiltIn && (
+                        <button
+                          onClick={() => handleDelete(template.id)}
+                          className="px-3 py-1 text-sm text-red-600 hover:bg-red-50 rounded"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -794,16 +821,18 @@ function TemplatesPageBody() {
 }
 
 /**
- * Administrator-only, and enforced on the API as well.
+ * Open to read, administrator-only to change.
  *
  * Templates are shared by the whole installation: one person editing a layout
- * changes what every other account's resumes come out looking like. Users still
- * PICK a template when building - that is a different surface, and open to all.
+ * changes what every other account's resumes come out looking like, so every
+ * write stays with the administrators. Looking at them is a different matter -
+ * somebody choosing a template for their profile needs to see what the choice
+ * actually produces, and a name in a dropdown does not tell them.
+ *
+ * The API already draws exactly this line (routes/templates.ts: `requireUser`
+ * on the router, `requireAdmin` on each write), so hiding the buttons here is
+ * the courtesy and the middleware is the enforcement.
  */
 export default function TemplatesPage() {
-  return (
-    <AdminOnly>
-      <TemplatesPageBody />
-    </AdminOnly>
-  );
+  return <TemplatesPageBody />;
 }

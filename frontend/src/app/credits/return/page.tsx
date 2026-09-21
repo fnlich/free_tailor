@@ -3,7 +3,6 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import AppTopNav from '@/components/AppTopNav';
 import {
   formatAmount,
   isPaymentPending,
@@ -194,20 +193,17 @@ function ReturnBody() {
 
 export default function PaymentReturnPage() {
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950">
-      <AppTopNav />
-      <main className="mx-auto max-w-2xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* `useSearchParams` needs a Suspense boundary to prerender. */}
-        <Suspense
-          fallback={
-            <div className={CARD}>
-              <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-            </div>
-          }
-        >
-          <ReturnBody />
-        </Suspense>
-      </main>
-    </div>
+    <main className="mx-auto max-w-2xl px-4 py-8 sm:px-6 lg:px-8">
+      {/* `useSearchParams` needs a Suspense boundary to prerender. */}
+      <Suspense
+        fallback={
+          <div className={CARD}>
+            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+          </div>
+        }
+      >
+        <ReturnBody />
+      </Suspense>
+    </main>
   );
 }

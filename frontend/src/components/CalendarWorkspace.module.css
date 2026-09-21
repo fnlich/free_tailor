@@ -438,7 +438,7 @@
 .modalBackdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--layer-app-modal);
   display: grid;
   place-items: center;
   background: rgba(2, 6, 23, 0.58);
@@ -673,67 +673,73 @@
   line-height: 1.4;
 }
 
-@media (prefers-color-scheme: dark) {
-  :global(html.dark) .legendItemActive {
-    background: rgba(30, 41, 59, 0.72);
-    color: #bfdbfe;
-  }
-
-  :global(html.dark) .pill {
-    background: rgba(148, 163, 184, 0.16);
-    color: #e2e8f0;
-  }
-
-  :global(html.dark) .metaLink {
-    color: #93c5fd;
-  }
-
-  :global(html.dark) .availabilityUserItemActive {
-    background: rgba(30, 41, 59, 0.72);
-    color: #bfdbfe;
-  }
-
-  :global(html.dark) .availabilityWindow {
-    background: rgba(30, 64, 175, 0.28);
-    color: #dbeafe;
-  }
-
-  :global(html.dark) .metaValue,
-  :global(html.dark) .panelTitle,
-  :global(html.dark) .toolbarTitle h2,
-  :global(html.dark) .dayCardHeader,
-  :global(html.dark) .agendaDayTitle,
-  :global(html.dark) .availabilityDayTitle,
-  :global(html.dark) .availabilityTextHeader,
-  :global(html.dark) .availabilityTextLine,
-  :global(html.dark) .jobLinkEventTitle,
-  :global(html.dark) .detailsHeading,
-  :global(html.dark) .detailsMeta strong {
-    color: #f8fafc;
-  }
-
-  :global(html.dark) .errorBanner {
-    background: rgba(69, 10, 10, 0.42);
-    color: #fecaca;
-  }
-
-  :global(html.dark) .isActive {
-    background: rgba(30, 64, 175, 0.3);
-    color: #dbeafe;
-  }
-
-  :global(html.dark) .modalBackdrop {
-    background: rgba(2, 6, 23, 0.72);
-  }
+/*
+ * Keyed on the app's theme alone.
+ *
+ * These used to sit inside `@media (prefers-color-scheme: dark)` as well as
+ * the html.dark selector, so somebody who switched the app to dark on a
+ * light machine got the base rules and none of these refinements - the one
+ * combination the toggle exists to allow.
+ */
+:global(html.dark) .legendItemActive {
+  background: rgba(30, 41, 59, 0.72);
+  color: #bfdbfe;
 }
 
-@media (max-width: 1200px) {
+:global(html.dark) .pill {
+  background: rgba(148, 163, 184, 0.16);
+  color: #e2e8f0;
+}
+
+:global(html.dark) .metaLink {
+  color: #93c5fd;
+}
+
+:global(html.dark) .availabilityUserItemActive {
+  background: rgba(30, 41, 59, 0.72);
+  color: #bfdbfe;
+}
+
+:global(html.dark) .availabilityWindow {
+  background: rgba(30, 64, 175, 0.28);
+  color: #dbeafe;
+}
+
+:global(html.dark) .metaValue,
+:global(html.dark) .panelTitle,
+:global(html.dark) .toolbarTitle h2,
+:global(html.dark) .dayCardHeader,
+:global(html.dark) .agendaDayTitle,
+:global(html.dark) .availabilityDayTitle,
+:global(html.dark) .availabilityTextHeader,
+:global(html.dark) .availabilityTextLine,
+:global(html.dark) .jobLinkEventTitle,
+:global(html.dark) .detailsHeading,
+:global(html.dark) .detailsMeta strong {
+  color: #f8fafc;
+}
+
+:global(html.dark) .errorBanner {
+  background: rgba(69, 10, 10, 0.42);
+  color: #fecaca;
+}
+
+:global(html.dark) .isActive {
+  background: rgba(30, 64, 175, 0.3);
+  color: #dbeafe;
+}
+
+:global(html.dark) .modalBackdrop {
+  background: rgba(2, 6, 23, 0.72);
+}
+
+@media (max-width: 1440px) {
   .appFrame {
     grid-template-columns: minmax(11rem, 12.5rem) minmax(0, 1fr);
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1220px) {
   .appFrame {
     grid-template-columns: 1fr;
   }
@@ -748,7 +754,7 @@
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 1000px) {
   .shareRow {
     grid-template-columns: 1fr;
   }

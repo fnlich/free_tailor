@@ -1,6 +1,6 @@
 <div align="center">
 
-# ✨ Tailored Resume Builder
+# ✨ Tailor
 
 **AI-powered resume and cover letter generation with ATS optimization**
 
@@ -15,7 +15,7 @@
 
 ## 📖 Overview
 
-Tailored Resume Builder is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
+Tailor is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
 
 By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **Claude subscription seat** through the local `claude` CLI is also offered, and needs only that the `claude` binary is installed and signed in on the machine running the server. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
 
@@ -237,6 +237,35 @@ is refused rather than told that nothing could be reversed. Crypto cannot be
 refunded automatically - a chain payment can only be sent back, not pulled - and
 the app says so rather than pretending.
 
+### Getting around
+
+One shell owns the navigation on every page: a top bar, and a sidebar down the
+left.
+
+**Top bar** - the brand, then on the right: your **credit balance** (press it to
+buy more), **Templates**, **notifications**, the **light/dark** switch, and your
+**account** - name, email, plan, credits and profile use, with account info,
+subscription and sign-out under it.
+
+**Sidebar** - your work at the top:
+
+| | |
+|---|---|
+| **Profile** | the resume profiles you build from |
+| **Groups** | batches of profiles, Premium and above |
+| **Build Resumes** | the builder |
+| **Orders** | what you ordered, and the files |
+
+then, under a divider, the job pages: **Job Search**, **Job Filter**, **Bid
+Assistant** and **Calendar**.
+
+Pinned to the bottom: **Find Jobs**, which opens today's tab of your own job
+sheet in a new tab; and for administrators, **Settings** and **Manage
+Accounts**. Settings is one entry covering the eight shared-configuration pages,
+which appear as a second row across the top once you are in it.
+
+Below 768px the sidebar becomes a drawer behind the menu button in the top bar.
+
 ### What each account can reach
 
 Not everything is for everybody, and the rule differs by section because the
@@ -246,13 +275,16 @@ checks and one is not a substitute for the other.
 
 | Section | Who | Why |
 |---|---|---|
-| Builder, Calendar, Jobs, Job Filter, Bid Assistant, Profiles | anybody signed in | their own work |
+| Build Resumes, Calendar, Job Search, Job Filter, Bid Assistant, Profile | anybody signed in | their own work |
 | **Orders** | anybody signed in | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
 | **Buy credits** | anybody signed in | their own payments only, by the same 404 rule |
 | **Payments** (the list, and refunds) | **administrators** | reconciliation against the provider's dashboard, and the only button in the product that moves money outward |
-| **Find the job** | anybody signed in | opens today's tab of their own job sheet in a new tab |
+| **Find Jobs** | ordinary users | opens today's tab of their own job sheet in a new tab. Not shown to administrators, who manage the installation rather than work a job sheet |
 | **Groups** | **Premium and above** | an entitlement, checked on the plan alone |
-| **Templates** (managing them) | **administrators** | a template is shared - editing one changes how everybody's resumes look. Everybody still *picks* a template when building |
+| **Templates** (looking at them) | anybody signed in | the gallery and the full-page preview of each, from the top bar. Choosing a template is no use without seeing what it produces |
+| **Templates** (adding, editing, disabling, deleting) | **administrators** | a template is shared - editing one changes how everybody's resumes look. A *disabled* template is an administrator's staging state and is not listed to anybody else |
+| **Notifications** (reading them) | anybody signed in | the bell in the top bar, with an unread dot until it is opened |
+| **Notifications** (posting them) | **administrators** | one notice goes to every account on the installation |
 | **Test** | **administrators** | runs prompts directly and shows raw model output; a tool for whoever maintains the prompts |
 | **Settings** (all of it) | **administrators** | every page under it changes something shared |
 
@@ -752,6 +784,8 @@ free_tailor/
 │   └── src/
 │       ├── app/            # Pages (/, /admin/*, /jobs, /bid-assistant, /calendar)
 │       ├── components/     # Reusable UI components
+│       │   ├── shell/      # The app shell: top bar, sidebar, settings sub-nav
+│       │   └── icons/      # The inline SVG icon set
 │       └── lib/            # API client
 └── generated/              # Default output location for resumes and cover letters
 ```
@@ -812,10 +846,11 @@ unique across the install, which settles all of it in one segment.
 | **Browser Chat (free)** | Register a debug port per browser here; registering saves immediately, because this list is what the providers and the launcher both read. It shows each platform as **Active** or **Not active** (active = the provider found a signed-in chat tab, which a port probe alone cannot tell from a signed-out one) and the ports registered, reachable, and showing the site. It does **not** start browsers - `npm run browser:debug` does. Unregistering forgets a browser here; it does not close a window |
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
 | **AI defaults per profile** | Each profile picks its own model and effort (`low`..`max`); the builder shows those defaults and can override either for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag: how much reasoning the model spends before answering |
-| **Templates** | Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
+| **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
+| **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | AI providers, models, output location, and live Claude subscription status (sign-in, usage window, in-flight calls). Each provider row shows what it reports right now; a metered provider's key comes from `.env`. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose |
+| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, models, output location, and live Claude subscription status (sign-in, usage window, in-flight calls). Each provider row shows what it reports right now; a metered provider's key comes from `.env`. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose |
 
 ---
 

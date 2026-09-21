@@ -5,8 +5,8 @@ command below on a clean checkout (Node 22, Linux).
 
 ## What this is
 
-Tailored Resume Builder: a Next.js 16 frontend and an Express + SQLite backend
-that generate tailored resumes and cover letters. Two npm workspaces that are
+Tailor: a Next.js 16 frontend and an Express + SQLite backend that generate
+tailored resumes and cover letters. Two npm workspaces that are
 not npm workspaces — `backend/` and `frontend/` each have their own
 `package.json` and lockfile, and the root `package.json` only orchestrates
 them. A single `.env` at the repository root feeds both sides.
@@ -39,6 +39,17 @@ Facts worth knowing before you build:
   `src/app/page.tsx` and `src/bid-assistant/App.jsx`, plus 2 warnings. Not a
   build gate: `next build` does not run ESLint. Do not treat a red lint as
   something your change caused without checking `git stash` first.
+- **Dark mode does not work the way it looks.** `globals.css` ends with a block
+  that remaps light utilities under `html.dark` (`html.dark .bg-white { ... }`).
+  That block is **unlayered** while every Tailwind utility sits in
+  `@layer utilities`, so it beats `dark:` variants outright — on
+  `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
+  ignored. Eighteen pages carry no `dark:` at all and theme entirely through
+  it, so it stays. New chrome uses the `@theme inline` tokens instead
+  (`bg-surface`, `border-line`, `text-muted`), which the shim never names, and
+  needs no `dark:` variant. Three of its rules are catch-alls rather than
+  dark-mode fixes — the bare `border` width class, every `shadow*`, and bare
+  `input`/`select`/`textarea` — so avoid those on anything new.
 - **`frontend`'s npm scripts go through `scripts/next.mjs`**, never `next`
   directly. That wrapper loads the root `.env` (Next only reads `.env` inside
   its own directory) and passes the port without POSIX shell syntax, which
@@ -83,6 +94,10 @@ backend/src/
   test/               # node:test, ~70 files; fixtures/cli replays real streams
 frontend/src/
   app/                # App Router pages: /, /admin/*, /jobs, /orders, /credits
+  components/shell/   # The app shell - top bar, sidebar, settings sub-nav.
+                      #   Mounted once in the root layout inside AuthGate;
+                      #   pages render no navigation of their own.
+  components/icons/   # Hand-rolled inline SVG set (there is no icon library)
   components/, lib/   # UI and the API client
 ```
 

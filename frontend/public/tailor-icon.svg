@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Tailor">
+  <defs>
+    <linearGradient id="tailorSurface" x1="8" x2="56" y1="7" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E3A8A"/>
+      <stop offset="0.55" stop-color="#15294F"/>
+      <stop offset="1" stop-color="#0B1020"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#tailorSurface)"/>
+  <!-- The document being tailored. -->
+  <path fill="#F8FAFC" d="M19 13h20l9 9v26a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V17a4 4 0 0 1 4-4Z"/>
+  <path fill="#60A5FA" d="M39 13v6a4 4 0 0 0 4 4h5l-9-10Z"/>
+  <path fill="#0F172A" fill-opacity=".14" d="M15 44h33v4a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4v-4Z"/>
+  <path fill="#1E293B" d="M22 26h16v3.5H22V26Zm0 8h11v3.5H22V34Z"/>
+  <!-- A needle and thread: the tailoring, not the building. -->
+  <path fill="none" stroke="#F59E0B" stroke-width="3.2" stroke-linecap="round" d="m49.5 30.5-12 12"/>
+  <path fill="none" stroke="#F59E0B" stroke-width="2.2" stroke-linecap="round" d="M37.5 42.5c-3.4 1-5.2 2.9-5.4 5.6"/>
+  <circle cx="50.4" cy="29.6" r="3" fill="#FBBF24"/>
+</svg>

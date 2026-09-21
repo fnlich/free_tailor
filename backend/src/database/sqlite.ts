@@ -372,6 +372,33 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_credit_ledger_ref  ON credit_ledger (ref_kind, ref_id);
 
   /**
+   * What an administrator has announced to everybody on this installation.
+   *
+   * Not addressed to anyone: there is no recipient column, because the thing
+   * being modelled is a notice board rather than a mailbox. Every signed-in
+   * account reads the same rows, and "have I seen these" is one timestamp on
+   * users rather than a row per account per notice - which would be a table
+   * that grows with the product of the two and answers no question this app
+   * asks.
+   *
+   * author_id is kept for the admin list, so somebody can see who posted a
+   * notice they disagree with. It is not a foreign key - nothing in this
+   * schema is - and an account that is later deleted simply leaves its name
+   * behind on the notice, which is the right outcome for a published thing.
+   */
+  CREATE TABLE IF NOT EXISTS notifications (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    author_id   TEXT NOT NULL DEFAULT '',
+    author_name TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications (created_at DESC);
+
+  /**
    * A run that has been charged and has not finished being accounted for.
    *
    * The refunded <= units invariant lives here rather than in the code that
@@ -422,7 +449,18 @@ const SCHEMA = `
     sheet_url      TEXT,
     sheet_tab_date TEXT,
     sheet_tab_gid  TEXT,
-    sheet_shared_at TEXT
+    sheet_shared_at TEXT,
+    /*
+     * When this account last opened the notifications panel. NULL means never,
+     * which is the correct starting state - a new account genuinely has not
+     * seen the announcements posted before it existed, and the alternative
+     * (stamping it at creation) would silently hide them.
+     *
+     * One timestamp rather than a read receipt per notification, because a
+     * notification here is an announcement to everybody and the only question
+     * worth answering is "anything since I last looked".
+     */
+    notifications_seen_at TEXT
   );
 
   /**
@@ -515,6 +553,10 @@ function addMissingColumns(db: Database.Database): void {
     // that is what makes sign-in retry it; once set, sign-in stops asking Drive
     // about it at all.
     { table: 'users', column: 'sheet_shared_at', definition: 'TEXT' },
+    // When this account last opened the notifications panel. NULL means never,
+    // which is what every upgraded row starts as and is also correct: an
+    // account that has never looked has not seen anything.
+    { table: 'users', column: 'notifications_seen_at', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {

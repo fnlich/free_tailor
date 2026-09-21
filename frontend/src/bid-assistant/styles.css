@@ -21,10 +21,17 @@
   --danger: #b42318;
   --danger-soft: #fef3f2;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+  /*
+   * Deliberately page-level, not the 10000/20000 this used to carry.  This
+   * toolbar sits inside the app's content column, below a fixed top bar and
+   * beside a fixed sidebar, so anything that outranks those paints over
+   * navigation.  The overlay aliases the app's modal tier so a dialog here
+   * behaves like a dialog anywhere else in the app.
+   */
   --bid-layer-base: 0;
-  --bid-layer-toolbar: 10000;
-  --bid-layer-toolbar-menu: 10001;
-  --bid-layer-overlay: 20000;
+  --bid-layer-toolbar: 10;
+  --bid-layer-toolbar-menu: 11;
+  --bid-layer-overlay: var(--layer-app-modal, 1200);
 }
 
 * {
@@ -33,9 +40,7 @@
 
 .bid-assistant-page {
   position: relative;
-  z-index: var(--layer-page, var(--bid-layer-base));
-  isolation: isolate;
-  min-height: calc(100vh - 57px);
+  min-height: calc(100dvh - var(--tl-topbar-h, 3.5rem));
   background:
     linear-gradient(180deg, rgba(16, 24, 40, 0.02), rgba(16, 24, 40, 0)),
     var(--bg);
@@ -57,7 +62,9 @@ a {
 }
 
 .app-shell {
-  height: calc(100vh - 57px);
+  height: calc(100dvh - var(--tl-topbar-h, 3.5rem));
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
@@ -157,9 +164,9 @@ a {
   color: #d0d5dd;
 }
 
-input,
-select,
-textarea {
+.bid-assistant-page input,
+.bid-assistant-page select,
+.bid-assistant-page textarea {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 0;
@@ -171,9 +178,9 @@ textarea {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-input:focus,
-select:focus,
-textarea:focus {
+.bid-assistant-page input:focus,
+.bid-assistant-page select:focus,
+.bid-assistant-page textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(23, 92, 211, 0.12);
 }
@@ -273,7 +280,7 @@ textarea:focus {
 
 .content-shell {
   display: flex;
-  height: calc(100vh - 69px);
+  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -957,6 +964,11 @@ textarea:focus {
   .app-shell {
     height: auto;
     overflow: visible;
+  }
+
+  /* The page scrolls now, and the app's own bar is fixed above this one. */
+  .top-bar {
+    top: var(--tl-topbar-h, 3.5rem);
   }
 
   .content-shell {

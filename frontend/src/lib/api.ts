@@ -40,8 +40,22 @@ export function getPreferredApiBase(): string {
   return getBrowserMatchedApiBase() ?? getCurrentApiBase();
 }
 
+/**
+ * The API's origin, for a URL the BROWSER will load rather than `apiFetch`.
+ *
+ * Prefers the host the page was loaded from, like `getPreferredApiBase` - and
+ * for the same reason, only more sharply. Its one caller is the template
+ * preview `<iframe>`, and an iframe carries the session COOKIE rather than the
+ * Authorization header. That cookie is scoped to the host somebody actually
+ * signed in on, so pointing the frame at the hostname baked into
+ * NEXT_PUBLIC_API_URL at build time sent it somewhere the cookie does not go:
+ * open the app on a LAN IP, and every preview rendered the API's
+ * "Sign in to do that" JSON instead of a resume.
+ *
+ * This used to read `getCurrentApiBase()`, which does not follow the page.
+ */
 export function getApiOrigin(): string {
-  return getCurrentApiBase().replace(/\/api$/, '');
+  return getPreferredApiBase().replace(/\/api$/, '');
 }
 
 /**
