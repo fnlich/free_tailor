@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
-import { adminApi } from '@/lib/api';
+import { adminApi, type PaymentTargetLimits } from '@/lib/api';
 import {
   adminPaymentsApi,
   formatAmount,
@@ -23,6 +23,164 @@ function formatDate(value: string): string {
 }
 
 /**
+ * One target's limits, while they are being edited.
+ *
+ * Strings, not numbers, and that is the point: an operator clearing a box to
+ * retype it produces "" for a moment, and a number-typed state turns that into
+ * NaN or - worse - silently into 0, which is a live setting that offers a
+ * purchase of nothing. Parsing happens once, on save, where a bad value can be
+ * reported instead of applied.
+ */
+type LimitDraft = {
+  target: string;
+  minCents: string;
+  maxCents: string;
+  feeBps: string;
+  feeFixedCents: string;
+  presetsCents: string;
+};
+
+function toDraft(row: PaymentTargetLimits): LimitDraft {
+  return {
+    target: row.target,
+    minCents: String(row.minCents),
+    maxCents: String(row.maxCents),
+    feeBps: String(row.feeBps),
+    feeFixedCents: String(row.feeFixedCents),
+    presetsCents: row.presetsCents.join(', '),
+  };
+}
+
+/** Whole numbers only, and a blank or a word becomes 0 for the server to refuse. */
+function wholeNumber(value: string): number {
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isInteger(parsed) ? parsed : 0;
+}
+
+function toRow(draft: LimitDraft): PaymentTargetLimits {
+  return {
+    target: draft.target.trim(),
+    minCents: wholeNumber(draft.minCents),
+    maxCents: wholeNumber(draft.maxCents),
+    feeBps: wholeNumber(draft.feeBps),
+    feeFixedCents: wholeNumber(draft.feeFixedCents),
+    /*
+     * Commas, spaces or both - an operator pasting a list should not have to
+     * guess the separator. Anything that is not a whole number is dropped
+     * here rather than sent as a zero, because a $0.00 button is a button
+     * that sells nothing and the server would only refuse the whole save.
+     */
+    presetsCents: draft.presetsCents
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map((part) => Number.parseInt(part, 10))
+      .filter((cents) => Number.isInteger(cents)),
+  };
+}
+
+function targetLabel(target: string): string {
+  if (target === 'card') return 'Card';
+  if (target === 'crypto') return 'Crypto — every coin';
+  return target;
+}
+
+/** Cents as dollars, for the hint under a pair of bounds. */
+function dollars(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+const LIMIT_FIELD = 'mt-1 w-full rounded-md border border-gray-300 px-3 py-2';
+
+function LimitFields({
+  draft,
+  onChange,
+  onRemove,
+}: {
+  draft: LimitDraft;
+  onChange: (next: LimitDraft) => void;
+  onRemove: () => void;
+}) {
+  const min = wholeNumber(draft.minCents);
+  const max = wholeNumber(draft.maxCents);
+  const feeBps = wholeNumber(draft.feeBps);
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-gray-900">{targetLabel(draft.target)}</h3>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-xs font-medium text-red-700 hover:underline"
+        >
+          Remove
+        </button>
+      </div>
+      <p className="mt-0.5 text-xs text-gray-500">
+        <span className="font-mono">{draft.target}</span> &middot; {dollars(min)} to{' '}
+        {dollars(max)}
+        {feeBps > 0 && ` · fee ${(feeBps / 100).toFixed(2)}%`}
+      </p>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-4">
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Smallest (cents)</span>
+          <input
+            type="number"
+            min={1}
+            value={draft.minCents}
+            onChange={(event) => onChange({ ...draft, minCents: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Largest (cents)</span>
+          <input
+            type="number"
+            min={1}
+            value={draft.maxCents}
+            onChange={(event) => onChange({ ...draft, maxCents: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Fee (basis points)</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.feeBps}
+            onChange={(event) => onChange({ ...draft, feeBps: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="font-medium text-gray-700">Fee (fixed cents)</span>
+          <input
+            type="number"
+            min={0}
+            value={draft.feeFixedCents}
+            onChange={(event) => onChange({ ...draft, feeFixedCents: event.target.value })}
+            className={LIMIT_FIELD}
+          />
+        </label>
+      </div>
+
+      <label className="mt-3 block text-sm">
+        <span className="font-medium text-gray-700">Preset buttons (cents)</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={draft.presetsCents}
+          onChange={(event) => onChange({ ...draft, presetsCents: event.target.value })}
+          className={LIMIT_FIELD}
+          placeholder="500, 1000, 2500"
+        />
+      </label>
+    </div>
+  );
+}
+
+/**
  * The price, set where the payments it governs are read.
  *
  * Not on the general settings page, and that is a judgement rather than
@@ -38,6 +196,8 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   const [price, setPrice] = useState('');
   const [minCredits, setMinCredits] = useState('');
   const [maxCredits, setMaxCredits] = useState('');
+  const [limits, setLimits] = useState<LimitDraft[]>([]);
+  const [newTarget, setNewTarget] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState('');
@@ -50,6 +210,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         setPrice(String(settings.creditPriceCents));
         setMinCredits(String(settings.creditMinCredits));
         setMaxCredits(String(settings.creditMaxCredits));
+        setLimits(settings.paymentLimits.map(toDraft));
       } catch {
         setProblem('Could not load the current pricing.');
       } finally {
@@ -67,6 +228,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         creditPriceCents: Number.parseInt(price, 10),
         creditMinCredits: Number.parseInt(minCredits, 10),
         creditMaxCredits: Number.parseInt(maxCredits, 10),
+        paymentLimits: limits.map(toRow),
       });
       setNote('Pricing saved. It applies to new purchases only.');
       onSaved();
@@ -120,6 +282,88 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         </label>
       </div>
 
+      <div className="mt-6 border-t border-gray-200 pt-5">
+        <h3 className="text-sm font-semibold text-gray-900">Limits per payment method</h3>
+        <p className="mt-1 text-sm text-gray-600">
+          In cents, and the tighter of the two wins: a row here can narrow a method but never
+          take it past the credit bounds above. A method with no row falls back to those bounds
+          with no fee and no preset buttons, so removing a row is a way of switching its limits
+          off rather than a way of switching the method off.
+        </p>
+        <p className="mt-1 text-sm text-gray-600">
+          A fee is taken <span className="font-medium">out of</span> the amount charged, not added
+          to it - the buyer pays what they chose and receives the credits the remainder buys. A
+          row naming a coin, such as <span className="font-mono">ethereum:USDT</span>, overrides
+          the <span className="font-mono">crypto</span> row for that coin alone.
+        </p>
+
+        <div className="mt-4 space-y-4">
+          {limits.map((draft, index) => (
+            <LimitFields
+              key={draft.target}
+              draft={draft}
+              onChange={(next) =>
+                setLimits((current) =>
+                  current.map((entry, position) => (position === index ? next : entry))
+                )
+              }
+              onRemove={() =>
+                setLimits((current) => current.filter((_, position) => position !== index))
+              }
+            />
+          ))}
+          {limits.length === 0 && (
+            <p className="text-sm text-gray-600">
+              No rows. Saving with none restores the built-in defaults rather than leaving every
+              method unbounded.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <label className="block text-sm">
+            <span className="font-medium text-gray-700">Add a target</span>
+            <input
+              type="text"
+              value={newTarget}
+              onChange={(event) => setNewTarget(event.target.value)}
+              placeholder="card, crypto, or ethereum:USDT"
+              className="mt-1 w-64 rounded-md border border-gray-300 px-3 py-2"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={
+              newTarget.trim() === '' ||
+              limits.some((entry) => entry.target === newTarget.trim())
+            }
+            onClick={() => {
+              setLimits((current) => [
+                ...current,
+                {
+                  target: newTarget.trim(),
+                  // The credit bounds above, in cents, so a new row starts
+                  // where the method already was rather than at zero.
+                  minCents: String(
+                    (Number.parseInt(minCredits, 10) || 0) * (Number.parseInt(price, 10) || 0)
+                  ),
+                  maxCents: String(
+                    (Number.parseInt(maxCredits, 10) || 0) * (Number.parseInt(price, 10) || 0)
+                  ),
+                  feeBps: '0',
+                  feeFixedCents: '0',
+                  presetsCents: '',
+                },
+              ]);
+              setNewTarget('');
+            }}
+            className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
       {problem && <p className="mt-3 text-sm text-red-700">{problem}</p>}
       {note && <p className="mt-3 text-sm text-green-700">{note}</p>}
 
@@ -129,7 +373,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         disabled={saving}
         className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-blue-400"
       >
-        {saving ? 'Saving…' : 'Save pricing'}
+        {saving ? 'Saving…' : 'Save pricing and limits'}
       </button>
     </div>
   );

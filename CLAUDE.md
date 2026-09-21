@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m50s, 715 tests)
+npm test                       # backend node:test suite (~1m40s, 757 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -97,7 +97,16 @@ frontend/src/
   components/shell/   # The app shell - top bar, sidebar, settings sub-nav.
                       #   Mounted once in the root layout inside AuthGate;
                       #   pages render no navigation of their own.
-  components/icons/   # Hand-rolled inline SVG set (there is no icon library)
+  components/icons/   # Hand-rolled inline SVG set (there is no icon library).
+                      #   index.tsx is UI icons - one grid, one stroke, one
+                      #   colour, and the ROW decides it. marks.tsx is brand
+                      #   and asset marks, which are filled and multi-colour
+                      #   and never recoloured by a parent. Anything needing a
+                      #   fill belongs in marks.tsx.
+  components/credits/ # The three-step purchase dialog. order.ts holds the
+                      #   wizard reducer with no JSX in it; chrome.ts holds the
+                      #   shared class strings and the note on why none of them
+                      #   carries a `dark:` variant.
   components/, lib/   # UI and the API client
 ```
 

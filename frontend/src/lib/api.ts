@@ -717,6 +717,52 @@ export interface AdminAppSettings extends PublicAppSettings {
   creditPriceCents: number;
   creditMinCredits: number;
   creditMaxCredits: number;
+  /**
+   * The bounds, the fee and the buttons, per thing a buyer can choose.
+   *
+   * Beside the credit bounds above rather than replacing them, because the two
+   * ask different questions: those are in CREDITS and cap what one purchase
+   * may be whatever it is paid with, these are in CENTS and belong to one
+   * method or one coin. The server takes the tighter of the pair, so a row
+   * here can narrow a method but never widen it past the credit bounds.
+   */
+  paymentLimits: PaymentTargetLimits[];
+}
+
+/**
+ * One row of per-target payment limits.
+ *
+ * `target` is `card`, `crypto`, or an asset id such as `ethereum:USDT`. A fee
+ * is basis points plus a fixed number of cents, and the presets are the dollar
+ * buttons step 2 of the purchase offers - stored in cents, converted to a
+ * credit count by the server at the price in force, and dropped if they fall
+ * outside the bounds on the same row.
+ */
+export interface PaymentTargetLimits {
+  target: string;
+  minCents: number;
+  maxCents: number;
+  feeBps: number;
+  feeFixedCents: number;
+  presetsCents: number[];
+}
+
+function normalizePaymentLimits(value: unknown): PaymentTargetLimits[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .map((entry) => ({
+      target: typeof entry.target === 'string' ? entry.target : '',
+      minCents: typeof entry.minCents === 'number' ? entry.minCents : 0,
+      maxCents: typeof entry.maxCents === 'number' ? entry.maxCents : 0,
+      feeBps: typeof entry.feeBps === 'number' ? entry.feeBps : 0,
+      feeFixedCents: typeof entry.feeFixedCents === 'number' ? entry.feeFixedCents : 0,
+      presetsCents: Array.isArray(entry.presetsCents)
+        ? entry.presetsCents.filter((cents): cents is number => typeof cents === 'number')
+        : [],
+    }))
+    .filter((entry) => entry.target !== '');
 }
 
 function normalizeGoogleSheetSources(value: unknown): GoogleSheetSource[] {
@@ -967,6 +1013,7 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     creditPriceCents: typeof source.creditPriceCents === 'number' ? source.creditPriceCents : 50,
     creditMinCredits: typeof source.creditMinCredits === 'number' ? source.creditMinCredits : 10,
     creditMaxCredits: typeof source.creditMaxCredits === 'number' ? source.creditMaxCredits : 5000,
+    paymentLimits: normalizePaymentLimits(source.paymentLimits),
   };
 }
 
@@ -976,6 +1023,7 @@ export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   creditPriceCents?: number;
   creditMinCredits?: number;
   creditMaxCredits?: number;
+  paymentLimits?: PaymentTargetLimits[];
 }
 
 /** One debug browser: which chat site it shows, and the port it listens on. */

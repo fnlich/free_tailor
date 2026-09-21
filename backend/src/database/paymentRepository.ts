@@ -16,7 +16,14 @@ import { formatSequenceDate, nextDailyReference } from './dailySequence';
  */
 
 export type PaymentMethod = 'card' | 'crypto';
-export type PaymentProvider = 'stripe' | 'coinbase';
+/**
+ * Who took the money.
+ *
+ * `coinbase` stays in the union although new crypto checkouts no longer use
+ * it: rows exist, they still have to read and render, and its webhook still
+ * has to be answered for an install part-way through the change.
+ */
+export type PaymentProvider = 'stripe' | 'coinbase' | 'chain';
 
 /**
  * Where a payment has got to.
@@ -51,6 +58,13 @@ export type Payment = {
   refundedAt?: string;
   /** How many credits a refund actually reversed. See the note on refunds. */
   refundedCredits: number;
+  /** The fee taken, at the rate in force when the payment was made. */
+  feeCents: number;
+  /**
+   * What the ledger actually received, as against `credits`, which is what was
+   * quoted. Zero until the payment is credited.
+   */
+  creditsGranted: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -71,13 +85,15 @@ type PaymentRow = {
   credited_at: string | null;
   refunded_at: string | null;
   refunded_credits: number;
+  fee_cents: number;
+  credits_granted: number;
   created_at: string;
   updated_at: string;
 };
 
 const PAYMENT_COLUMNS = `id, reference, user_id, method, provider, provider_ref, credits,
   amount_cents, currency, unit_price_cents, state, failure, credited_at, refunded_at,
-  refunded_credits, created_at, updated_at`;
+  refunded_credits, fee_cents, credits_granted, created_at, updated_at`;
 
 function now(): string {
   return new Date().toISOString();
@@ -100,6 +116,8 @@ function toPayment(row: PaymentRow): Payment {
     ...(row.credited_at ? { creditedAt: row.credited_at } : {}),
     ...(row.refunded_at ? { refundedAt: row.refunded_at } : {}),
     refundedCredits: row.refunded_credits ?? 0,
+    feeCents: row.fee_cents ?? 0,
+    creditsGranted: row.credits_granted ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -113,6 +131,7 @@ export type NewPayment = {
   amountCents: number;
   currency: string;
   unitPriceCents: number;
+  feeCents?: number;
 };
 
 /**
@@ -131,9 +150,9 @@ export function createPayment(input: NewPayment, at: Date = new Date()): Payment
     const id = `pay_${crypto.randomUUID()}`;
     db.prepare(
       `INSERT INTO payments (id, reference, user_id, method, provider, credits, amount_cents,
-                             currency, unit_price_cents, state, created_at, updated_at)
+                             currency, unit_price_cents, fee_cents, state, created_at, updated_at)
        VALUES (@id, @reference, @userId, @method, @provider, @credits, @amountCents,
-               @currency, @unitPriceCents, 'pending', @createdAt, @createdAt)`
+               @currency, @unitPriceCents, @feeCents, 'pending', @createdAt, @createdAt)`
     ).run({
       id,
       reference,
@@ -143,6 +162,7 @@ export function createPayment(input: NewPayment, at: Date = new Date()): Payment
       credits: input.credits,
       amountCents: input.amountCents,
       currency: input.currency,
+      feeCents: input.feeCents ?? 0,
       unitPriceCents: input.unitPriceCents,
       createdAt: timestamp,
     });
@@ -229,14 +249,23 @@ export function listAllPayments(limit = 200): Payment[] {
  * credit again. The ledger's idempotency key would catch it anyway; this
  * catches it one step earlier and without relying on that.
  */
-export function markPaid(paymentId: string): boolean {
+/**
+ * Marks a payment paid, and records what was credited for it.
+ *
+ * `grantedCredits` is written in the SAME conditional UPDATE, not a second
+ * statement: the guard is `state = 'pending'`, so only the first caller moves
+ * the row, and a granted count written separately could land against a row
+ * somebody else had already settled.
+ */
+export function markPaid(paymentId: string, grantedCredits: number): boolean {
   const timestamp = now();
   const result = getDb()
     .prepare(
-      `UPDATE payments SET state = 'paid', credited_at = @at, updated_at = @at, failure = ''
+      `UPDATE payments SET state = 'paid', credited_at = @at, updated_at = @at, failure = '',
+              credits_granted = @granted
        WHERE id = @id AND state = 'pending'`
     )
-    .run({ id: paymentId, at: timestamp });
+    .run({ id: paymentId, at: timestamp, granted: grantedCredits });
   return result.changes > 0;
 }
 

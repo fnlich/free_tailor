@@ -10,7 +10,7 @@ import { apiFetch } from './api';
  */
 
 export type PaymentMethod = 'card' | 'crypto';
-export type PaymentProvider = 'stripe' | 'coinbase';
+export type PaymentProvider = 'stripe' | 'coinbase' | 'chain';
 export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded';
 
 export type MethodAvailability = {
@@ -22,15 +22,65 @@ export type MethodAvailability = {
   reason?: string;
 };
 
+/**
+ * One thing a buyer can choose, with its own limits and buttons.
+ *
+ * The presets are COUNTS with the price the server would charge for each. A
+ * button that carried its own price would be a price the browser had decided,
+ * which is the one thing this whole module exists to prevent - so what is
+ * rendered on a $50 button is `formatAmount(preset.amountCents)`, a figure the
+ * server worked out.
+ */
+export type PaymentTarget = {
+  id: string;
+  method: PaymentMethod;
+  asset?: string;
+  chain?: string;
+  label: string;
+  symbol?: string;
+  /** Which mark to draw. A key into the marks registry, never a URL. */
+  mark: string;
+  available: boolean;
+  reason?: string;
+  minCredits: number;
+  maxCredits: number;
+  minAmountCents: number;
+  maxAmountCents: number;
+  presets: Array<{ credits: number; amountCents: number }>;
+  custom: 'slider' | 'stepper';
+  feeBps: number;
+  feeFixedCents: number;
+};
+
 export type PaymentOptions = {
   unitPriceCents: number;
   minCredits: number;
   maxCredits: number;
   currency: string;
   methods: MethodAvailability[];
+  /** Per method, and per coin. What the picker is built from. */
+  targets: PaymentTarget[];
   /** Stripe's publishable key, served by the API. Empty when cards are off. */
   publishableKey: string;
 };
+
+/** A card kept for reuse. No handle is served to the browser, only a label. */
+export type SavedCard = {
+  id: string;
+  brand: string;
+  last4: string;
+  expMonth: number;
+  expYear: number;
+  createdAt: string;
+};
+
+/** `Mastercard ending in 9729`, in the words the design uses. */
+export function describeCard(card: SavedCard): string {
+  const brand = card.brand
+    ? card.brand.charAt(0).toUpperCase() + card.brand.slice(1)
+    : 'Card';
+  return `${brand} ending in ${card.last4 || '****'}`;
+}
 
 export type Payment = {
   id: string;
@@ -43,6 +93,10 @@ export type Payment = {
   amountCents: number;
   currency: string;
   unitPriceCents: number;
+  /** The fee taken, at the rate in force when the payment was made. */
+  feeCents: number;
+  /** What the ledger received, as against `credits`, which was quoted. */
+  creditsGranted: number;
   state: PaymentState;
   failure: string;
   creditedAt?: string;
@@ -65,9 +119,37 @@ export type StartedCheckout = {
   reference: string;
   credits: number;
   amountCents: number;
+  feeCents?: number;
   currency: string;
+  /*
+   * Exactly one of the three. A secret asks the browser to confirm, a redirect
+   * sends it elsewhere, and `processing` means a card already kept has been
+   * charged and there is nothing to do but wait for the webhook.
+   */
   clientSecret?: string;
   redirectUrl?: string;
+  processing?: boolean;
+};
+
+/**
+ * What a purchase would cost, priced by the server and creating nothing.
+ *
+ * The order summary prints these figures before anybody has committed to
+ * anything. They come from `GET /payments/quote`, which runs the same pricing
+ * the checkout runs but records no payment and calls no provider - so a buyer
+ * reading the summary and then paying with a card they already saved does not
+ * leave an abandoned order behind for having looked.
+ */
+export type CreditQuote = {
+  /** What the account receives: the gross, less the fee, floored. */
+  credits: number;
+  /** What was asked for, before the fee. */
+  grossCredits: number;
+  unitPriceCents: number;
+  /** What is charged. A fee never inflates this. */
+  amountCents: number;
+  feeCents: number;
+  currency: string;
 };
 
 export type RefundOutcome = {
@@ -118,14 +200,39 @@ export function isPaymentPending(payment: Payment): boolean {
   return payment.state === 'pending';
 }
 
+/** What may be asked for. A count, never an amount. */
+export type CheckoutRequest = {
+  method: PaymentMethod;
+  credits: number;
+  /** Which coin, when the method is crypto. */
+  asset?: string;
+  /** Charge a card already kept, instead of showing the form. */
+  cardId?: string;
+  /** Keep the card about to be entered. */
+  saveCard?: boolean;
+};
+
 export const paymentsApi = {
   options: () => apiFetch<PaymentOptions>('/payments/methods'),
+  quote: (request: { method: PaymentMethod; credits: number; asset?: string }) => {
+    const query = new URLSearchParams({
+      method: request.method,
+      credits: String(request.credits),
+      ...(request.asset ? { asset: request.asset } : {}),
+    });
+    return apiFetch<CreditQuote>(`/payments/quote?${query.toString()}`);
+  },
   list: () => apiFetch<{ payments: Payment[] }>('/payments'),
   get: (id: string) => apiFetch<{ payment: Payment }>(`/payments/${id}`),
-  checkout: (method: PaymentMethod, credits: number) =>
+  checkout: (request: CheckoutRequest) =>
     apiFetch<StartedCheckout>('/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method, credits }),
+      body: JSON.stringify(request),
+    }),
+  cards: () => apiFetch<{ cards: SavedCard[] }>('/payments/cards'),
+  deleteCard: (id: string) =>
+    apiFetch<{ deleted: true }>(`/payments/cards/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
 };
 

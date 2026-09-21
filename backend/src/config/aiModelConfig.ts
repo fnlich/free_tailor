@@ -93,6 +93,22 @@ type AppSettings = {
   creditPriceCents: number;
   creditMinCredits: number;
   creditMaxCredits: number;
+  /**
+   * What each payment method, and optionally each coin, may be bought in.
+   *
+   * One flat list rather than a field per method, because the targets are not
+   * a fixed set: every asset an operator enables is another one. A row's
+   * `target` is a method (`card`, `crypto`) or a single asset
+   * (`ethereum:USDT`), and lookup is exact-asset first, then method, then the
+   * hard defaults - so per-coin limits are possible without demanding a row
+   * for every coin the operator is happy to treat like the rest.
+   *
+   * Bounds are in CENTS here and nowhere else in this file, because cents are
+   * what an operator thinks in ("between $2.50 and $100"). They become credit
+   * counts in services/payments/pricing.ts, which is the only place allowed to
+   * know the price.
+   */
+  paymentLimits: PaymentTargetLimits[];
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /**
@@ -207,6 +223,7 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
   creditPriceCents: number;
   creditMinCredits: number;
   creditMaxCredits: number;
+  paymentLimits: PaymentTargetLimits[];
 };
 
 export type AppSettingsUpdate = Partial<PublicAppSettings> & {
@@ -217,6 +234,7 @@ export type AppSettingsUpdate = Partial<PublicAppSettings> & {
   creditPriceCents?: number;
   creditMinCredits?: number;
   creditMaxCredits?: number;
+  paymentLimits?: PaymentTargetLimits[];
 };
 
 /**
@@ -232,6 +250,62 @@ export const DEFAULT_CREDIT_PRICE_CENTS = 50;
 export const DEFAULT_CREDIT_MIN = 10;
 export const DEFAULT_CREDIT_MAX = 5000;
 export const CREDIT_CURRENCY = 'usd';
+
+/**
+ * What one payment method - or one coin - may be bought in.
+ *
+ * `feeBps` is retained from the gross: the buyer is charged the amount they
+ * chose and credited the rest. It is basis points rather than a percentage
+ * because 2.2% is 220 and needs no decimal anywhere in the arithmetic.
+ */
+export type PaymentTargetLimits = {
+  /** A method (`card`, `crypto`) or one asset id (`ethereum:USDT`). */
+  target: string;
+  minCents: number;
+  maxCents: number;
+  /** Basis points of the gross retained as a fee. 0 for card. */
+  feeBps: number;
+  feeFixedCents: number;
+  /**
+   * The amounts to offer as buttons, in cents.
+   *
+   * An INTENTION, not a promise: what a buyer sees is worked out from these by
+   * `presetsFor`, which drops any that fall outside the bounds and rounds each
+   * to a whole number of credits. A preset can therefore never name a price
+   * the server would refuse to charge.
+   */
+  presetsCents: number[];
+};
+
+/**
+ * The defaults, which are the figures in the design this was built to.
+ *
+ * Card takes no fee and starts at $2.50; crypto starts at $50 because a chain
+ * payment costs the buyer a network fee whatever we do, and a $2.50 purchase
+ * that costs $4 to send is not a kindness.
+ */
+export const DEFAULT_PAYMENT_LIMITS: PaymentTargetLimits[] = [
+  {
+    target: 'card',
+    minCents: 250,
+    maxCents: 10_000,
+    feeBps: 0,
+    feeFixedCents: 0,
+    presetsCents: [250, 500, 1_000, 2_500, 5_000, 10_000],
+  },
+  {
+    target: 'crypto',
+    minCents: 5_000,
+    maxCents: 200_000,
+    feeBps: 220,
+    feeFixedCents: 0,
+    presetsCents: [5_000, 10_000, 15_000, 25_000, 50_000, 100_000],
+  },
+];
+
+/** A fee above this would be a fault, not a policy. */
+const MAX_FEE_BPS = 5_000;
+const MAX_AMOUNT_CENTS = 100_000_000;
 
 export const APP_SETTINGS_KEY = 'app-settings';
 
@@ -437,6 +511,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   creditPriceCents: DEFAULT_CREDIT_PRICE_CENTS,
   creditMinCredits: DEFAULT_CREDIT_MIN,
   creditMaxCredits: DEFAULT_CREDIT_MAX,
+  paymentLimits: DEFAULT_PAYMENT_LIMITS,
   aiModels: DEFAULT_MODEL_RECORDS,
   googleSheetsSources: [],
   browserChatEndpoints: defaultBrowserChatEndpoints(),
@@ -480,6 +555,111 @@ function getEnvironmentApiKey(provider: AIProvider): string {
 
 function normalizeGoogleSheetSourceName(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+/**
+ * The per-target purchase limits, checked field by field.
+ *
+ * `normalizeBoundedInteger` cannot reach inside an array, so every bound here
+ * is its own check - and the cross-field one matters most: a row whose minimum
+ * sits above its maximum refuses every purchase of that method, with a message
+ * pointing at the buyer's amount rather than at the setting that is wrong.
+ *
+ * A row naming no target, or a target already claimed, is dropped rather than
+ * merged. Two rows for `card` would make which one applies depend on array
+ * order, which is not a thing an operator can see or reason about.
+ */
+function normalizePaymentLimits(
+  input: unknown,
+  fallback: PaymentTargetLimits[],
+  strict = false
+): PaymentTargetLimits[] {
+  if (strict && typeof input !== 'undefined' && !Array.isArray(input)) {
+    throw new Error('Stored payment limits must be an array');
+  }
+
+  const rawEntries = Array.isArray(input) ? input : fallback;
+  const seenTargets = new Set<string>();
+
+  const rows = rawEntries
+    .map((entry, index) => {
+      const position = index + 1;
+      if (typeof entry !== 'object' || entry === null) {
+        if (strict) throw new Error(`Payment limit ${position} is invalid`);
+        return null;
+      }
+
+      const raw = entry as Partial<PaymentTargetLimits>;
+      const target = typeof raw.target === 'string' ? raw.target.trim() : '';
+      if (!target) {
+        if (strict) throw new Error(`Payment limit ${position} is missing a target`);
+        return null;
+      }
+      if (seenTargets.has(target)) {
+        if (strict) throw new Error(`Payment limit ${position} repeats the target ${target}`);
+        return null;
+      }
+      seenTargets.add(target);
+
+      const minCents = normalizeBoundedInteger(
+        raw.minCents, 1, 1, MAX_AMOUNT_CENTS, `${target} minCents`, strict
+      );
+      const maxCents = normalizeBoundedInteger(
+        raw.maxCents, MAX_AMOUNT_CENTS, 1, MAX_AMOUNT_CENTS, `${target} maxCents`, strict
+      );
+      if (minCents > maxCents) {
+        if (strict) {
+          throw new Error(`${target} minCents cannot be greater than maxCents`);
+        }
+        return null;
+      }
+
+      const feeBps = normalizeBoundedInteger(
+        raw.feeBps, 0, 0, MAX_FEE_BPS, `${target} feeBps`, strict
+      );
+      const feeFixedCents = normalizeBoundedInteger(
+        raw.feeFixedCents, 0, 0, MAX_AMOUNT_CENTS, `${target} feeFixedCents`, strict
+      );
+
+      /*
+       * Presets are sorted and deduped here, so the buttons come out in a
+       * sensible order whatever order they were saved in. They are NOT filtered
+       * against the bounds here - that happens in `presetsFor`, where the price
+       * is known, because a preset's validity depends on what a credit costs.
+       */
+      const presetSource = Array.isArray(raw.presetsCents) ? raw.presetsCents : [];
+      const presetsCents = [
+        ...new Set(
+          presetSource
+            .map((value) => (typeof value === 'number' ? value : Number.parseInt(String(value), 10)))
+            .filter((value) => Number.isInteger(value) && value > 0 && value <= MAX_AMOUNT_CENTS)
+        ),
+      ].sort((left, right) => left - right);
+
+      return { target, minCents, maxCents, feeBps, feeFixedCents, presetsCents };
+    })
+    .filter((entry): entry is PaymentTargetLimits => entry !== null);
+
+  /*
+   * Never empty, and an EXPLICIT empty list means the defaults.
+   *
+   * An empty list would otherwise mean "no bounds anywhere", so something has
+   * to stand in. Which something depends on what the caller actually said:
+   *
+   *   - nothing at all, or a stored value that is not an array - the settings
+   *     row is absent or corrupt, so keep what is already in force;
+   *   - an array that normalizes to nothing - somebody removed every row and
+   *     saved, which is a reset, and the defaults are what a reset restores.
+   *
+   * The difference matters because the administrator page offers Remove on
+   * each row and tells the operator that saving with none restores the
+   * defaults. Folding both cases into `fallback` made that sentence false:
+   * the update path passes the CURRENT settings as the fallback, so removing
+   * every row and saving quietly kept the rows that were just removed, with
+   * no error and no visible change.
+   */
+  if (rows.length > 0) return rows;
+  return Array.isArray(input) ? DEFAULT_PAYMENT_LIMITS.map((row) => ({ ...row })) : fallback;
 }
 
 function normalizeGoogleSheetsSources(input: unknown, fallback: GoogleSheetSource[], strict = false): GoogleSheetSource[] {
@@ -979,6 +1159,7 @@ function normalizeSettings(
     creditMaxCredits: normalizeBoundedInteger(
       source.creditMaxCredits, fallback.creditMaxCredits, 1, 1_000_000, 'creditMaxCredits', strict
     ),
+    paymentLimits: normalizePaymentLimits(source.paymentLimits, fallback.paymentLimits, strict),
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
@@ -1086,6 +1267,7 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     creditPriceCents: settings.creditPriceCents,
     creditMinCredits: settings.creditMinCredits,
     creditMaxCredits: settings.creditMaxCredits,
+    paymentLimits: settings.paymentLimits,
   };
 }
 
@@ -1241,6 +1423,29 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
   // refuse every amount, and the reason would be invisible from the page.
   if (next.creditMinCredits > next.creditMaxCredits) {
     throw new Error('creditMinCredits cannot be greater than creditMaxCredits');
+  }
+
+  /*
+   * The same check for the per-target rows, and it has to be here rather than
+   * only inside the normalizer.
+   *
+   * This path normalizes NON-strict, which drops a bad row and falls back to
+   * what was there before. For most fields that is the kind direction to fail
+   * in; here it would tell an operator their save succeeded while the limit
+   * they just typed was thrown away. So an inverted band is reported by name.
+   */
+  if (typeof input.paymentLimits !== 'undefined') {
+    for (const row of input.paymentLimits ?? []) {
+      if (!row || typeof row !== 'object') continue;
+      const { target, minCents, maxCents } = row;
+      if (
+        typeof minCents === 'number' &&
+        typeof maxCents === 'number' &&
+        minCents > maxCents
+      ) {
+        throw new Error(`${target || 'a payment limit'}: the smallest amount cannot be larger than the largest`);
+      }
+    }
   }
 
   const shouldValidateOutputDir =
@@ -1613,6 +1818,7 @@ export async function getCreditPricingSettings(): Promise<{
   creditPriceCents: number;
   creditMinCredits: number;
   creditMaxCredits: number;
+  paymentLimits: PaymentTargetLimits[];
   currency: string;
 }> {
   const settings = await readSettings();
@@ -1620,6 +1826,7 @@ export async function getCreditPricingSettings(): Promise<{
     creditPriceCents: settings.creditPriceCents,
     creditMinCredits: settings.creditMinCredits,
     creditMaxCredits: settings.creditMaxCredits,
+    paymentLimits: settings.paymentLimits,
     currency: CREDIT_CURRENCY,
   };
 }

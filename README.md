@@ -152,9 +152,34 @@ installation a self-serve trial, or let people buy their own.
 
 ### Buying credits
 
-Two ways to pay, and **both work the same way underneath**: the browser goes to
-the provider's own hosted page, and this server credits the account only when a
-signed webhook arrives.
+Two ways to pay, and **both work the same way underneath**: the server credits
+the account only when a signed webhook arrives, whatever happened in the browser.
+
+Buying is three steps, in a dialog: **which method** (a card, or a coin), then
+**how much** (six preset amounts, or a slider or stepper bounded by that
+method's own limits), then an **order summary** with the card form or the crypto
+hand-off beside it. The method is chosen first on purpose - the page it replaced
+put one Pay button per method next to the amount box, so the amount was typed
+before anybody knew which limits applied to it, and a card minimum and a crypto
+minimum that differ by a factor of twenty could only be discovered by being
+refused.
+
+The summary prices itself through `GET /api/payments/quote`, which runs the same
+pricing a checkout runs but **records nothing and calls no provider**. That
+matters for somebody paying with a card they have already saved: opening a real
+checkout to fill in the summary left an abandoned `pending` row in their own
+payment history for having looked, and spent two of the twenty checkouts an
+account may open in an hour on one purchase. An order is opened when the buyer
+asks for the card form, or presses Pay on a card they kept - not before.
+
+**A card can be kept for next time**, if the buyer ticks the box. What is stored
+here is the brand, the last four digits and the expiry; the card itself stays
+with the provider, behind a customer id this server never serves to a browser.
+Consent is read back from the provider rather than remembered locally - Stripe
+returns `setup_future_usage` on the payment intent, which is the buyer's own
+answer - so an account that saved a card once does not silently keep every card
+it pays with afterwards. Removing one detaches it at the provider too, and a
+settlement arriving later cannot bring it back.
 
 | Method | Provider | Keys |
 |---|---|---|
@@ -172,6 +197,119 @@ method works and another does not, the working one is simply the only button -
 which is the right behaviour for a customer and means an operator debugging a
 half-configured method should look at the server's startup log rather than the
 buy page.
+
+#### Setting it up from scratch
+
+Nothing below needs a company, a domain or a real card. Stripe's **test mode**
+is a full copy of the product with its own keys, and it is what you should build
+against - live keys are the last step, not the first.
+
+**1. Make a Stripe account.** <https://dashboard.stripe.com/register>. Skip the
+business questions; you only need them to go live.
+
+**2. Check you are in test mode.** There is a **Test mode** toggle at the top
+right of the dashboard. Every key and every payment you make while it is on is
+fake and free, and test data is completely separate from live data.
+
+**3. Copy the two API keys.** <https://dashboard.stripe.com/test/apikeys>
+
+| On the page | Goes in `.env` as | Looks like |
+|---|---|---|
+| Publishable key | `STRIPE_PUBLISHABLE_KEY` | `pk_test_51ABC...` |
+| Secret key (press *Reveal*) | `STRIPE_SECRET_KEY` | `sk_test_51ABC...` |
+
+**Copy both in one visit, from the same page.** The secret key creates the
+checkout session; the publishable key is what the browser then asks Stripe
+about. A pair from two different Stripe accounts - or one test key with one live
+key - produces `No such checkout.session` for a session that really does exist,
+and the error never mentions the key. If in doubt, re-copy both together.
+
+The secret key is a password: it can move money. The publishable key is not, and
+is meant to be in the browser - this server hands it to the page deliberately,
+so changing it needs no rebuild.
+
+**4. Get the webhook secret.** This is the one that is not on the keys page, and
+the one people skip. It matters more than the other two: **a webhook is the only
+thing in this application that adds credits to an account.** The browser saying
+"paid" adds nothing.
+
+On your own machine, with no domain and no HTTPS, use Stripe's CLI:
+
+```bash
+# https://docs.stripe.com/stripe-cli - or: brew install stripe/stripe-cli/stripe
+stripe login
+stripe listen --forward-to localhost:3001/api/payments/webhook/stripe
+```
+
+It prints `Your webhook signing secret is whsec_...`. That is
+`STRIPE_WEBHOOK_SECRET`. Leave it running while you test; every event Stripe
+generates is forwarded to your machine.
+
+On a deployed server, create the endpoint instead at
+<https://dashboard.stripe.com/test/webhooks> pointing at
+`https://your-server/api/payments/webhook/stripe`, and subscribe it to:
+
+```
+checkout.session.completed          a card payment succeeded
+checkout.session.async_payment_succeeded
+checkout.session.async_payment_failed
+checkout.session.expired            nobody paid; the payment is closed
+payment_intent.succeeded            a SAVED card was charged
+payment_intent.payment_failed
+payment_intent.canceled
+```
+
+The three `payment_intent.*` events are easy to miss and they are not optional:
+a saved card is charged off-session, which emits those and never emits
+`checkout.session.completed`. Without them a repeat purchase takes the money and
+credits nothing. `stripe listen` forwards everything, so this list only applies
+to an endpoint you create by hand.
+
+**5. Write them into `.env`** - the one at the repository root, which both
+halves read:
+
+```bash
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+**6. Restart the backend.** Keys are read at startup. It prints a readiness line
+per payment method; a method with a key missing says which one.
+
+**7. Buy something.** Open **Buy credits**, press the button, pick Card, pick an
+amount, and pay with Stripe's test card:
+
+| | |
+|---|---|
+| Number | `4242 4242 4242 4242` |
+| Expiry | any future date |
+| CVC | any 3 digits |
+| Postcode | any |
+
+`4000 0025 0000 3155` is the one that demands a 3-D Secure challenge, and
+`4000 0000 0000 9995` is declined for insufficient funds - both are worth trying
+once, because both are paths through this code that the happy path never
+exercises. The full list is at <https://docs.stripe.com/testing>.
+
+Your credits appear when the webhook lands, a second or two later - watch the
+`stripe listen` terminal and the backend log together. If the payment sits at
+*Waiting for payment*, the webhook is what to look at, not the form.
+
+**Crypto** works the same way with Coinbase Commerce: create an account at
+<https://commerce.coinbase.com>, take the API key from Settings, and create a
+webhook subscription pointing at
+`https://your-server/api/payments/webhook/coinbase` - the shared secret it shows
+is `COINBASE_COMMERCE_WEBHOOK_SECRET`. Coinbase Commerce has no local-forwarding
+CLI, so testing the crypto path needs a reachable URL (an `ngrok` tunnel is
+enough). Crypto is not offered at all until both of its keys are set, so you can
+leave it empty and ship cards alone.
+
+**Going live**, when you get there: switch the dashboard out of test mode, copy
+the `pk_live_`/`sk_live_` pair the same way, create a live webhook endpoint (its
+secret is different from the test one), and read
+`backend/test/e2e/README.md` - it lists the handful of things no script here can
+prove and that have to be checked by hand against real money.
 
 **The card form is on our own page**, not a redirect to Stripe: the Checkout
 Session is created with `ui_mode: 'elements'` and the buy page mounts Stripe's
@@ -895,6 +1033,11 @@ See `.env.example` for the full `AI_CLI_*` list.
 
 | Symptom | Cause and fix |
 |---------|---------------|
+| `The payment form could not be loaded. No such checkout.session: 'cs_test_...'` | `STRIPE_PUBLISHABLE_KEY` and `STRIPE_SECRET_KEY` are not from the same Stripe account, or not from the same mode. The secret key created that session; the publishable key is what the browser asks Stripe about it, and Stripe answers "no such session" because it is looking in the other account. Re-copy BOTH from <https://dashboard.stripe.com/test/apikeys> in one visit, with the **Test mode** toggle in the position you mean, and restart the backend. Both halves must be `*_test_*` or both `*_live_*`. (A session also expires after 24 hours, so an old tab left open reports the same thing - reload the buy page first if that is possible.) |
+| `The payment form could not be loaded. Stripe's script did not load.` | Different failure, despite the similar wording: `js.stripe.com` never arrived. A script blocker, an offline moment or a corporate proxy will do it. Nothing was charged and no card was entered. This is also what a sandbox with no outbound network shows, which is why `backend/test/e2e/buy-credits.js` accepts it as a pass - it asserts the form mounts **or says plainly that it could not**, because a spinner with nothing said is the failure being designed out. |
+| A card payment says *Waiting for payment* for ever, but Stripe's dashboard shows it succeeded | The webhook is not arriving, and the webhook is the only thing in this application that adds credits. Locally: is `stripe listen --forward-to localhost:3001/api/payments/webhook/stripe` still running, and is `STRIPE_WEBHOOK_SECRET` the `whsec_...` **that command** printed? It is a different secret from the dashboard endpoint's. Deployed: open the endpoint in the Stripe dashboard and read its delivery attempts - they show the response this server gave. A 400 there means the signature did not verify, which is the wrong secret; a 404 means the URL is wrong. |
+| Buying with a card works, but paying with a SAVED card takes the money and never credits it | The webhook endpoint is not subscribed to `payment_intent.succeeded`. A saved card is charged off-session, which emits `payment_intent.*` and never `checkout.session.completed` - so the card path works and the saved-card path silently does not. Add `payment_intent.succeeded`, `payment_intent.payment_failed` and `payment_intent.canceled` to the endpoint's events. `stripe listen` forwards everything, so this only bites an endpoint created by hand. |
+| The buy page says no payment method is set up, but the keys are in `.env` | A method is offered only when **every** one of its keys is set - for Stripe that is all three, including the webhook secret. The buy page lists which key each method is missing. Keys are read at startup, so a `.env` edited while the server was running has not been seen yet: restart the backend. |
 | The page cannot reach the API but the backend is clearly running | Look for `[cors] Refused origin ...` in the backend output. A browser reports a refused origin as an unreachable server, so the page cannot tell the two apart - the backend log is the only place the reason appears. It names the origin and the `FRONTEND_URL` value that allows it. |
 | `Cannot reach the backend at ...` naming a port you did not expect | `NEXT_PUBLIC_API_URL` and `PORT` disagree. They must name the same port when both point at this machine. Delete `NEXT_PUBLIC_API_URL` from `.env` to derive it from `PORT`, or set the two to match. The backend and the frontend build both print an `[env]` line when they disagree. |
 | `Cannot reach the backend at http://localhost:3001/api ...` in the UI | The frontend is running but nothing answered on the API port. The backend prints its own reason where it was started - the `backend` half of `npm run dev`, or its own terminal. Most often it exited at boot over the database directory or a native-module mismatch, both rows below. The two halves are independent: a crashed backend no longer takes the frontend down with it, so the page stays up to tell you. |

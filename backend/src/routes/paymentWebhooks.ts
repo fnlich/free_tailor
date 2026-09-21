@@ -11,6 +11,7 @@ import {
   verifyCoinbaseSignature,
 } from '../integrations/coinbaseCommerce';
 import {
+  recordSavedCardFromSession,
   settleWebhookEvent,
   type PaymentProvider,
   type WebhookOutcome,
@@ -47,6 +48,19 @@ import {
  * `isOriginAllowed` returns true when there is no `Origin` header, which a
  * server-to-server POST does not send.
  */
+
+/**
+ * The intent events a saved-card charge produces.
+ *
+ * `payment_intent.canceled` is here with the failures: an intent Stripe gave
+ * up on is a payment that will not arrive, and leaving it pending would keep a
+ * row waiting for a webhook that is never coming.
+ */
+const INTENT_TYPES = new Set([
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  'payment_intent.canceled',
+]);
 
 const router = Router();
 
@@ -128,8 +142,20 @@ function apply(event: Handled, rawBody: Buffer, res: Response): void {
   if (payment && event.outcome === 'paid') {
     console.log(
       `[payments] ${payment.reference}: ${event.type} -> ` +
-        (settlement.credited ? `${payment.credits} credits added` : 'already settled')
+        (settlement.credited ? `${payment.creditsGranted} credits added` : 'already settled')
     );
+
+    /*
+     * Now that the money is accounted for, see whether a card was kept.
+     *
+     * After the transaction, deliberately: it is synchronous by design and this
+     * is two network calls. Not awaited either - the provider is waiting for a
+     * 200 and this is a convenience for the buyer's next purchase, so it must
+     * never be able to delay or fail the acknowledgement.
+     */
+    if (settlement.credited) {
+      void recordSavedCardFromSession(payment);
+    }
   }
 
   acknowledge(res, 'handled');
@@ -179,6 +205,49 @@ router.post('/stripe', (req: Request, res: Response) => {
   const sessionId = typeof object.id === 'string' ? object.id : '';
   const metadata = (object.metadata ?? {}) as Record<string, string>;
   const type = event.type ?? '';
+
+  /*
+   * A payment intent, which is how a saved card reports itself.
+   *
+   * Charging a card off-session never produces a `checkout.session.completed`
+   * - there is no session - so these types are the only word we get for that
+   * flow, and `provider_ref` holds the `pi_` rather than a `cs_`.
+   *
+   * The rule that keeps the two flows apart: AN INTENT EVENT SETTLES ONLY BY
+   * PROVIDER REFERENCE, and its metadata hint is deliberately not passed.
+   * An ordinary embedded-checkout payment also emits `payment_intent.succeeded`
+   * for the same money, carrying `metadata.paymentId` (the session copies it
+   * onto the intent) but an id that is NOT in `provider_ref`. Passing the hint
+   * would let that event find the payment, be recorded as a second event, and
+   * put an "already settled" line in the log for every single card sale. With
+   * the hint withheld it resolves to no payment and is acknowledged as a
+   * stranger's event, which is what it is.
+   */
+  if (INTENT_TYPES.has(type)) {
+    if (!event.id) {
+      acknowledge(res, 'not an event this server acts on');
+      return;
+    }
+
+    apply(
+      {
+        provider: 'stripe',
+        eventId: event.id,
+        type,
+        providerRef: sessionId,
+        outcome: type === 'payment_intent.succeeded' ? 'paid' : 'failed',
+        // `amount_received` is what actually cleared, in the smallest currency
+        // unit - the comparable figure, where `amount` is only what was asked.
+        ...(typeof object.amount_received === 'number'
+          ? { paidAmountCents: object.amount_received }
+          : {}),
+        ...(typeof object.currency === 'string' ? { paidCurrency: object.currency } : {}),
+      },
+      rawBody,
+      res
+    );
+    return;
+  }
 
   const outcome: Handled['outcome'] =
     (type === 'checkout.session.completed' && object.payment_status === 'paid') ||

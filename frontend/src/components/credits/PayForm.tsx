@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { loadStripe, type Stripe } from '@stripe/stripe-js';
+import type { Stripe } from '@stripe/stripe-js';
 import {
   CheckoutElementsProvider,
   PaymentElement,
   useCheckoutElements,
 } from '@stripe/react-stripe-js/checkout';
 import { formatAmount } from '@/lib/payments';
+import { forgetStripe, stripeFor } from './stripeLoader';
 
 /**
  * The payment form, on our own page.
@@ -24,24 +25,6 @@ import { formatAmount } from '@/lib/payments';
  * successful confirm sends the customer to the page that waits for that
  * webhook, exactly as the redirect version did.
  */
-
-/**
- * Stripe objects are cached per publishable key.
- *
- * `loadStripe` injects a script tag, so calling it on every render would add
- * one per render. The key arrives from our API rather than a build-time
- * constant, so this cannot be a module-level constant the way Stripe's own
- * samples write it - but it can be a module-level cache, which has the same
- * effect.
- */
-const stripeByKey = new Map<string, Promise<Stripe | null>>();
-function stripeFor(publishableKey: string): Promise<Stripe | null> {
-  const existing = stripeByKey.get(publishableKey);
-  if (existing) return existing;
-  const created = loadStripe(publishableKey);
-  stripeByKey.set(publishableKey, created);
-  return created;
-}
 
 const PANEL =
   'rounded-xl border border-gray-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900';
@@ -236,7 +219,7 @@ export default function PayForm(props: {
         clearTimeout(giveUp);
         // Forget the rejected promise, or every later attempt replays the same
         // failure from cache and "Start again" can never actually start again.
-        stripeByKey.delete(publishableKey);
+        forgetStripe(publishableKey);
         settle({ status: 'failed' });
       });
 
