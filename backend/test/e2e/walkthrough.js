@@ -52,6 +52,9 @@ async function call(token, path, init = {}) {
 
 const stamp = Date.now().toString(36);
 
+/** The watcher's sweep answers before it has finished writing. */
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function main() {
   console.log('\n=== Accounts ===');
   const buyer = users.createUser({ email: `e2e-buyer-${stamp}@example.com` });
@@ -159,17 +162,100 @@ async function main() {
     `redirect=${replay.status} balance=${balanceAfterReplay}`
   );
 
+  /*
+   * Crypto, which no longer means a hosted page.
+   *
+   * This step used to POST `{ method: 'crypto' }` with no coin and follow the
+   * `redirectUrl` to Coinbase Commerce's fake. That shape is now a 400 by
+   * design: with a CHAIN_ADDRESS block configured the server takes coin into
+   * its own wallet, and which coin is no longer somebody else's page's
+   * question to ask. The step was left behind when the chain branch landed and
+   * read as a crash rather than a failure, which is the worse of the two.
+   */
   console.log('\n=== 5. Crypto ===');
-  const cryptoCheckout = await call(buyerToken, '/payments/checkout', {
+  const noCoin = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
     body: JSON.stringify({ method: 'crypto', credits: 15 }),
   });
-  check('a crypto checkout is created', cryptoCheckout.status === 201, `${cryptoCheckout.body?.reference}`);
-  const chargeCode = cryptoCheckout.body.redirectUrl.split('/').pop();
-  await fetch(`${FAKE}/pay/${chargeCode}`, { method: 'POST', redirect: 'manual' });
-  const cryptoPaid = await call(buyerToken, `/payments/${cryptoCheckout.body.paymentId}`);
-  const balanceWithCrypto = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-  check('a confirmed charge credits too', cryptoPaid.body?.payment?.state === 'paid' && balanceWithCrypto === balanceAfter + 15, `${balanceWithCrypto}`);
+  check(
+    'a crypto checkout with no coin named is refused',
+    noCoin.status === 400,
+    `status=${noCoin.status} ${JSON.stringify(noCoin.body)}`
+  );
+
+  /*
+   * The floor is read, not assumed: crypto carries its own minimum under
+   * Admin -> Payments and it is not the card one. On top of it a different
+   * amount every run, because an open invoice reserves its exact figure for
+   * twenty minutes - so a second run inside that window would ask for an
+   * amount the first is still holding, and be correctly refused.
+   */
+  const coin = (await call(buyerToken, '/payments/methods')).body?.targets?.find(
+    (target) => target.asset === 'ethereum:USDT'
+  );
+  check('the server offers USDT on Ethereum', Boolean(coin?.available), JSON.stringify(coin ?? null));
+  const cryptoCredits = (coin?.minCredits ?? 100) + (Math.floor(Date.now() / 1000) % 40);
+  const cryptoCheckout = await call(buyerToken, '/payments/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ method: 'crypto', credits: cryptoCredits, asset: 'ethereum:USDT' }),
+  });
+  check(
+    'a crypto checkout is created',
+    cryptoCheckout.status === 201,
+    `${cryptoCheckout.status} ${cryptoCheckout.body?.reference ?? JSON.stringify(cryptoCheckout.body)}`
+  );
+
+  const invoice = cryptoCheckout.body?.invoice;
+  check(
+    'it hands back our own address and an exact amount',
+    invoice?.address === process.env.CHAIN_EVM_ADDRESS && Boolean(invoice?.amountAtomic),
+    JSON.stringify(invoice)
+  );
+  check('and sends nobody to a hosted page', !cryptoCheckout.body?.redirectUrl, cryptoCheckout.body?.redirectUrl);
+
+  let balanceWithCrypto = balanceAfter;
+  if (invoice?.address) {
+    /*
+     * Announced at the tip and THEN buried, which is the only order that
+     * works. The cursor is persistent and the scan runs from it forward, so a
+     * transfer announced 30 blocks down is already behind the cursor and is
+     * never discovered - a mistake that looks exactly like a broken settler.
+     * One pass here; the shallow-then-buried sequence is walked in
+     * buy-credits.js and repeating it would prove nothing new.
+     */
+    await fetch(
+      `${FAKE}/chain/send?asset=ethereum%3AUSDT&to=${encodeURIComponent(invoice.address)}` +
+        `&amount=${invoice.amountAtomic}&depth=1&advance=30`,
+      { method: 'POST' }
+    );
+    await fetch(`${FAKE}/chain/sweep?chain=ethereum`, { method: 'POST' });
+    await wait(300);
+
+    const cryptoPaid = await call(buyerToken, `/payments/${cryptoCheckout.body.paymentId}`);
+    balanceWithCrypto = (await call(buyerToken, '/credits')).body?.balance ?? 0;
+    /*
+     * Against the payment's OWN figure, not the number of credits asked for.
+     *
+     * Crypto carries a fee here (220 bps under Admin -> Payments) and the fee
+     * comes out of the credits granted rather than being added to the price -
+     * so a buyer who asks for 117 pays for 117 and receives 114. Asserting
+     * `asked` would make the fee look like money going missing.
+     */
+    const granted = cryptoPaid.body?.payment?.creditsGranted ?? 0;
+    check(
+      'a confirmed transfer credits too',
+      cryptoPaid.body?.payment?.state === 'paid' &&
+        granted > 0 &&
+        granted <= cryptoCredits &&
+        balanceWithCrypto === balanceAfter + granted,
+      `state=${cryptoPaid.body?.payment?.state} balance=${balanceWithCrypto} ` +
+        `granted=${granted} of ${cryptoCredits} asked`
+    );
+  } else {
+    // A failed checkout is a failed check above, not a crash three lines
+    // later that hides every step after it.
+    check('a confirmed transfer credits too', false, 'no invoice to pay');
+  }
 
   console.log('\n=== 6. Cancelling ===');
   const abandoned = await call(buyerToken, '/payments/checkout', {
@@ -262,7 +348,20 @@ async function main() {
     askedFor?.amountCents === 2000 && askedFor?.credits === 40,
     `${askedFor?.credits} credits, ${askedFor?.amountCents}c`
   );
-  check('the refund reached the provider', fakeState.refunds.length === 1, JSON.stringify(fakeState.refunds));
+  /*
+   * This run's refund, not a count.
+   *
+   * The fake provider keeps its ledger for as long as the server is up, so a
+   * second walkthrough against the same process sees the first one's refund
+   * too. Counting made the check pass only on a cold start and fail on every
+   * rerun, which reads as a regression in the refund path rather than in the
+   * assertion.
+   */
+  check(
+    'the refund reached the provider',
+    fakeState.refunds.some((entry) => entry.paymentId === checkout.body.paymentId),
+    JSON.stringify(fakeState.refunds)
+  );
 
   console.log('\n=== 13. The stored event ===');
   const events = await call(adminToken, `/admin/payments`);

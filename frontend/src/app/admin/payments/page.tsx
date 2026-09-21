@@ -389,6 +389,7 @@ function PaymentsBody() {
   const [refunding, setRefunding] = useState('');
   const [confirming, setConfirming] = useState('');
   const [note, setNote] = useState('');
+  const [resolving, setResolving] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -415,6 +416,27 @@ function PaymentsBody() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Marks an unattributable transfer as dealt with.
+   *
+   * Deliberately NOT a credit and NOT a refund: this server cannot know which
+   * of those the administrator did, only that they have finished. What it
+   * changes is the queue, so that a list of things needing a person stays a
+   * list of things needing a person.
+   */
+  const dismiss = async (entry: HeldTransfer) => {
+    setResolving(entry.id);
+    try {
+      await adminPaymentsApi.resolveHeld(entry.id);
+      setHeld((current) => current.filter((item) => item.id !== entry.id));
+      setMessage('Marked as dealt with.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not clear that item.');
+    } finally {
+      setResolving('');
+    }
+  };
 
   const refund = async (payment: AdminPayment) => {
     setRefunding(payment.id);
@@ -478,7 +500,7 @@ function PaymentsBody() {
       {held.length > 0 && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4">
           <h2 className="text-base font-semibold text-red-700">
-            {held.length} payment{held.length === 1 ? '' : 's'} need attention
+            {held.length} payment{held.length === 1 ? ' needs' : 's need'} attention
           </h2>
           <p className="mt-1 text-sm text-red-700">
             Coin arrived that could not be matched to one order automatically. Nothing has been
@@ -494,10 +516,18 @@ function PaymentsBody() {
                 </div>
                 <p className="mt-1 text-gray-700">{entry.note}</p>
                 <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-gray-600 sm:grid-cols-2">
-                  <div>
-                    <dt className="inline font-medium">Expected: </dt>
-                    <dd className="inline font-mono">{entry.expected || '—'}</dd>
-                  </div>
+                  {/*
+                    Shown only when there is one. An unattributable transfer
+                    has no single order behind it, so an "Expected: —" row
+                    reads as a figure that went missing rather than as a
+                    question this entry does not have an answer to.
+                  */}
+                  {entry.expected && (
+                    <div>
+                      <dt className="inline font-medium">Expected: </dt>
+                      <dd className="inline font-mono">{entry.expected}</dd>
+                    </div>
+                  )}
                   <div>
                     <dt className="inline font-medium">Received: </dt>
                     <dd className="inline font-mono">{entry.received || '—'}</dd>
@@ -509,6 +539,21 @@ function PaymentsBody() {
                     </div>
                   )}
                 </dl>
+                {/*
+                  Only an unattributable transfer offers this. A held invoice
+                  belongs to a payment and keeps its place in that payment's
+                  history, so there is nothing here to dismiss.
+                */}
+                {entry.resolvable && (
+                  <button
+                    type="button"
+                    onClick={() => void dismiss(entry)}
+                    disabled={resolving === entry.id}
+                    className="mt-3 rounded-md border-2 border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                  >
+                    {resolving === entry.id ? 'Clearing…' : 'Mark as dealt with'}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

@@ -20,6 +20,7 @@ import {
   getInvoiceForPayment,
   listHeldInvoices,
 } from '../database/chainInvoiceRepository';
+import { listOpenOrphans, resolveOrphan } from '../database/chainOrphanRepository';
 import { describeInvoice, formatAtomic } from '../services/payments/chain/invoices';
 
 /**
@@ -291,6 +292,30 @@ adminPaymentsRouter.get('/', (_req: Request, res: Response) => {
  * and a second place to check is a place nobody checks.
  */
 adminPaymentsRouter.get('/held', (_req: Request, res: Response) => {
+  /*
+   * Two shapes of the same problem, in one list.
+   *
+   * A HELD INVOICE is money that can be attributed to an order but not
+   * credited - too little to buy a credit, or a payment row that has gone.
+   * An ORPHAN is money that could have been meant by two different orders, so
+   * it has no invoice at all. An administrator does not care about that
+   * distinction when deciding what to do, so they are served together.
+   */
+  const orphans = listOpenOrphans().map((orphan) => ({
+    id: orphan.id,
+    paymentId: '',
+    asset: orphan.asset,
+    chain: orphan.chain,
+    address: '',
+    expected: '',
+    received: formatAtomic(orphan.amountAtomic, orphan.decimals),
+    txid: orphan.txid,
+    note: orphan.reason,
+    at: orphan.createdAt,
+    /** Only an orphan can be dismissed; a held invoice is its own record. */
+    resolvable: true,
+  }));
+
   const held = listHeldInvoices().map((invoice) => ({
     id: invoice.id,
     paymentId: invoice.paymentId,
@@ -303,8 +328,27 @@ adminPaymentsRouter.get('/held', (_req: Request, res: Response) => {
     /** Why it is here, in a sentence a person can act on. */
     note: invoice.note,
     at: invoice.updatedAt,
+    resolvable: false,
   }));
-  res.json({ held });
+
+  res.json({ held: [...orphans, ...held].sort((left, right) => right.at.localeCompare(left.at)) });
+});
+
+/**
+ * Dismisses an unattributable transfer once a person has dealt with it.
+ *
+ * A queue that cannot be cleared is a queue nobody reads, and an administrator
+ * who has refunded the sender or credited the account by hand has genuinely
+ * finished with it. Only orphans can be dismissed - a held invoice is the
+ * payment's own record and stays.
+ */
+adminPaymentsRouter.post('/held/:id/resolve', (req: Request, res: Response) => {
+  const resolved = resolveOrphan(String(req.params.id ?? ''));
+  if (!resolved) {
+    res.status(404).json({ error: 'That is not an open item.' });
+    return;
+  }
+  res.json({ resolved: true });
 });
 
 adminPaymentsRouter.post('/:id/refund', async (req: Request, res: Response) => {

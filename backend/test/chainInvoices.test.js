@@ -122,11 +122,15 @@ async function serve({
 
   const alice = users.createUser({ email: 'alice@example.com' });
   const bob = users.createUser({ email: 'bob@example.com' });
+  // Named in ADMIN_EMAILS above, so this account is the administrator whose
+  // queue the unattributable money has to reach.
+  const boss = users.createUser({ email: 'boss@example.com' });
 
   const app = express();
   app.use(express.json());
   app.use(attachUser);
   app.use('/api/payments', routes.default);
+  app.use('/api/admin/payments', routes.adminPaymentsRouter);
   const server = app.listen(0);
   const port = server.address().port;
 
@@ -142,6 +146,7 @@ async function serve({
 
   const aliceToken = users.createSession(alice.id);
   const bobToken = users.createSession(bob.id);
+  const bossToken = users.createSession(boss.id);
 
   return {
     users,
@@ -153,12 +158,15 @@ async function serve({
     settle,
     alice,
     bob,
+    boss,
     aliceToken,
     bobToken,
+    bossToken,
     close: () => server.close(),
     call,
     checkout: (token, body) =>
       call(token, '/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
+    heldQueue: async () => (await call(bossToken, '/api/admin/payments/held')).json(),
   };
 }
 
@@ -310,6 +318,63 @@ test('a coin the operator has not switched on is refused, and says why', async (
     assert.match((await refused.json()).error, /not one of the coins/i);
     assert.equal(server.payments.listPaymentsForUser(server.alice.id).length, 1);
     assert.equal(server.payments.listPaymentsForUser(server.alice.id)[0].state, 'failed');
+  } finally {
+    server.close();
+  }
+});
+
+test("a chain's own coin is refused by name, and the tokens beside it still work", async () => {
+  /*
+   * The guard this pins is the difference between a misconfiguration and a
+   * money loss, and it was missing for a while.
+   *
+   * An EVM native transfer - plain ETH, plain BNB - emits no Transfer log, and
+   * a log is the only thing `readers/evm.ts` asks a node for. So an operator
+   * who listed `ethereum:ETH` got it accepted in full: offered to buyers, and
+   * quoted a real address and a real amount. Then the coin arrived, no reader
+   * ever saw it, and it was never credited and never even held for review.
+   * README and .env.example both promised the opposite.
+   */
+  const server = await serve({ assets: 'ethereum:USDT,ethereum:ETH,bsc:BNB' });
+  try {
+    for (const asset of ['ethereum:ETH', 'bsc:BNB']) {
+      const refused = await server.checkout(server.aliceToken, {
+        method: 'crypto',
+        credits: 100,
+        asset,
+      });
+      assert.equal(refused.status, 503);
+      const { error } = await refused.json();
+      // Named, not silently dropped: the operator asked for this explicitly,
+      // so they are told which coin and why, and what to take instead.
+      assert.match(error, /own coin/i);
+      assert.match(error, /emits no log/i);
+      assert.match(error, /USDT or USDC|Bitcoin/i);
+    }
+
+    // And the guard skips only the offending entry. A token on the very same
+    // chain is untouched, which is what `continue` rather than a throw buys.
+    const ok = await server.checkout(server.aliceToken, {
+      method: 'crypto',
+      credits: 100,
+      asset: 'ethereum:USDT',
+    });
+    assert.equal(ok.status, 201);
+  } finally {
+    server.close();
+  }
+});
+
+test("a chain's own coin is never offered as something to buy with", async () => {
+  const server = await serve({ assets: 'ethereum:USDT,ethereum:ETH,bsc:BNB' });
+  try {
+    const body = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
+    const available = body.targets.filter((target) => target.available).map((target) => target.id);
+    // Refusing the checkout is only half of it: a coin that cannot be watched
+    // must not appear as a row somebody can press in the first place.
+    assert.ok(available.includes('ethereum:USDT'), JSON.stringify(available));
+    assert.ok(!available.includes('ethereum:ETH'), JSON.stringify(available));
+    assert.ok(!available.includes('bsc:BNB'), JSON.stringify(available));
   } finally {
     server.close();
   }
@@ -493,6 +558,162 @@ test('a short payment with TWO candidates credits nothing and is held', async ()
     assert.match(outcome.reason, /0xambiguous/);
     assert.equal(server.users.getUserById(server.alice.id).credits, 0);
     assert.equal(server.users.getUserById(server.bob.id).credits, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('an ambiguous transfer is written down and reaches the administrator', async () => {
+  /*
+   * The half of "held" that was missing.
+   *
+   * The settler returned a `held` status to a caller that only logged it, so
+   * no record of the money existed anywhere: the administrator's queue was
+   * permanently empty and the line on the buyer's payment screen - that we
+   * hold it and get in touch - described nothing the server actually did.
+   * Saying money is held and not holding it is worse than either.
+   */
+  const server = await serve();
+  try {
+    const alice = await (
+      await server.checkout(server.aliceToken, { method: 'crypto', credits: 100, asset: 'ethereum:USDT' })
+    ).json();
+    const bob = await (
+      await server.checkout(server.bobToken, { method: 'crypto', credits: 101, asset: 'ethereum:USDT' })
+    ).json();
+
+    server.settle.settleTransfer({
+      chain: 'ethereum',
+      asset: 'ethereum:USDT',
+      txid: '0xunclaimed',
+      amountAtomic: '50250000',
+      height: 100,
+      confirmations: 12,
+    });
+
+    const { held } = await server.heldQueue();
+    assert.equal(held.length, 1, JSON.stringify(held));
+    assert.equal(held[0].txid, '0xunclaimed');
+    // The figure that actually arrived, as a person reads it - which is what
+    // they will compare against the two orders.
+    assert.equal(held[0].received, '50.25');
+    assert.equal(held[0].asset, 'ethereum:USDT');
+    assert.match(held[0].note, /2 open orders/);
+    // Dismissable, because this record has no payment of its own to live on.
+    assert.equal(held[0].resolvable, true);
+
+    /*
+     * And the two orders are left exactly as they were.
+     *
+     * Those buyers may still send the figure they were quoted, and cancelling
+     * them because a third party sent an odd amount would punish them for
+     * somebody else's mistake.
+     */
+    for (const opened of [alice, bob]) {
+      const invoice = server.chainInvoices.getInvoiceForPayment(opened.paymentId);
+      assert.equal(invoice.state, 'waiting');
+      assert.equal(invoice.reserved, true);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('the same unclaimed transfer seen on every tick is one row, not a thousand', async () => {
+  const server = await serve();
+  try {
+    await server.checkout(server.aliceToken, { method: 'crypto', credits: 100, asset: 'ethereum:USDT' });
+    await server.checkout(server.bobToken, { method: 'crypto', credits: 101, asset: 'ethereum:USDT' });
+
+    const transfer = {
+      chain: 'ethereum',
+      asset: 'ethereum:USDT',
+      txid: '0xoverandover',
+      amountAtomic: '50250000',
+      height: 100,
+      confirmations: 12,
+    };
+    // The watcher re-reads its window every tick, so this is the ordinary
+    // case rather than an unusual one.
+    for (let tick = 0; tick < 5; tick += 1) server.settle.settleTransfer(transfer);
+
+    assert.equal((await server.heldQueue()).held.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('an administrator can clear an item once, and only once', async () => {
+  const server = await serve();
+  try {
+    await server.checkout(server.aliceToken, { method: 'crypto', credits: 100, asset: 'ethereum:USDT' });
+    await server.checkout(server.bobToken, { method: 'crypto', credits: 101, asset: 'ethereum:USDT' });
+    server.settle.settleTransfer({
+      chain: 'ethereum',
+      asset: 'ethereum:USDT',
+      txid: '0xdealtwith',
+      amountAtomic: '50250000',
+      height: 100,
+      confirmations: 12,
+    });
+
+    const [entry] = (await server.heldQueue()).held;
+    const path = `/api/admin/payments/held/${entry.id}/resolve`;
+
+    // A queue that cannot be cleared is a queue nobody reads.
+    assert.equal((await server.call(server.bossToken, path, { method: 'POST' })).status, 200);
+    assert.equal((await server.heldQueue()).held.length, 0);
+    // Conditional on it still being open, so two administrators pressing at
+    // the same moment resolve it once.
+    assert.equal((await server.call(server.bossToken, path, { method: 'POST' })).status, 404);
+
+    // And it is admin-only, like everything else on this router.
+    assert.equal((await server.call(server.aliceToken, path, { method: 'POST' })).status, 403);
+  } finally {
+    server.close();
+  }
+});
+
+test('a transfer too small to buy one credit is held with its transaction on it', async () => {
+  // A dollar figure where one credit is the whole order, so a short payment
+  // rounds the credit away entirely.
+  const server = await serve({ settings: { creditPriceCents: 300 } });
+  try {
+    const opened = await (
+      await server.checkout(server.aliceToken, { method: 'crypto', credits: 1, asset: 'ethereum:USDT' })
+    ).json();
+    assert.equal(opened.invoice.amountAtomic, '3000000');
+
+    // 1% short of $3, inside the band - so it matches this order and only
+    // this one, and then buys nothing.
+    const outcome = server.settle.settleTransfer({
+      chain: 'ethereum',
+      asset: 'ethereum:USDT',
+      txid: '0xdust',
+      amountAtomic: '2970000',
+      height: 100,
+      confirmations: 12,
+    });
+
+    assert.equal(outcome.status, 'held');
+    assert.equal(server.users.getUserById(server.alice.id).credits, 0);
+
+    const { held } = await server.heldQueue();
+    assert.equal(held.length, 1, JSON.stringify(held));
+    /*
+     * The two facts an administrator needs, and the two the hold used to throw
+     * away: what arrived, and where to look it up. Holding straight from
+     * `waiting` left both blank, so the row read "Received: -" with no
+     * transaction on it.
+     */
+    assert.equal(held[0].received, '2.97');
+    assert.equal(held[0].txid, '0xdust');
+    assert.equal(held[0].expected, '3');
+    assert.equal(held[0].paymentId, opened.paymentId);
+    // Not dismissable: this one belongs to a payment and stays in its history.
+    assert.equal(held[0].resolvable, false);
+    // And the amount is free to be sold again.
+    assert.equal(server.chainInvoices.getInvoiceForPayment(opened.paymentId).reserved, false);
   } finally {
     server.close();
   }

@@ -138,6 +138,35 @@ export function readChainPaymentsConfig(
     }
 
     /*
+     * A native coin on an EVM chain cannot be watched, so it is not offered.
+     *
+     * The reader for Ethereum and BNB Chain finds transfers by asking for
+     * Transfer LOGS from a token contract. A native transfer - plain ETH,
+     * plain BNB - emits no log at all, so there is nothing to ask for; finding
+     * one means pulling whole block bodies, hundreds an hour, which is the
+     * first thing a free public node throttles. Bitcoin is native too and is
+     * fine, because its APIs index an address for you.
+     *
+     * This guard is the difference between a misconfiguration and a money
+     * loss, and it was missing. Without it `CHAIN_ASSETS=ethereum:ETH` was
+     * accepted in full: offered to buyers as available, quoted a real address
+     * and a real amount - and then `readers/evm.ts` returns nothing for an
+     * asset with no contract, so the coin that arrived was never seen, never
+     * credited and never even held for review. The documentation promised the
+     * opposite of what the code did.
+     */
+    if (definition.native && CHAINS[definition.chain].addressKind === 'evm') {
+      problems.push({
+        asset: entry,
+        reason:
+          `${definition.symbol} is ${CHAINS[definition.chain].label}'s own coin, and a native ` +
+          'transfer emits no log this server can watch for. Take a token on that chain ' +
+          'instead - USDT or USDC - or take Bitcoin.',
+      });
+      continue;
+    }
+
+    /*
      * TRON without a key is TRON that stops working under load rather than
      * one that never works, which is the more dangerous shape: it would take
      * money and miss it. TronGrid's free tier is keyless only for light use.

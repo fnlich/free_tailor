@@ -367,6 +367,40 @@ const SCHEMA = `
   );
 
   /**
+   * Money that arrived on a chain and belongs to nobody identifiable.
+   *
+   * Its own table because it has no invoice to live on: the whole reason a
+   * transfer ends up here is that two open orders were equally close to it and
+   * neither could be credited without possibly robbing the other. The invoices
+   * are deliberately left alone - those buyers may still pay correctly - so
+   * the record of the unattributable money has to go somewhere of its own.
+   *
+   * Without this the settler said "held" to a caller that only logged it, the
+   * administrator's queue was permanently empty, and the promise made to the
+   * buyer on the payment screen - that we hold it and get in touch - was not
+   * true of anything the server actually did.
+   *
+   * The UNIQUE index is load-bearing in the same way the invoice slot index
+   * is: the watcher re-reads the same transfer on every tick, so without it
+   * one unclaimed payment would become a thousand rows.
+   */
+  CREATE TABLE IF NOT EXISTS chain_orphans (
+    id            TEXT PRIMARY KEY,
+    chain         TEXT NOT NULL,
+    asset         TEXT NOT NULL,
+    txid          TEXT NOT NULL,
+    amount_atomic TEXT NOT NULL,
+    decimals      INTEGER NOT NULL,
+    reason        TEXT NOT NULL DEFAULT '',
+    resolved_at   TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_orphans_tx
+    ON chain_orphans (chain, asset, txid);
+
+  /**
    * Accounts.
    *
    * The EMAIL is the identity, not the Google subject id: the two sign-in paths

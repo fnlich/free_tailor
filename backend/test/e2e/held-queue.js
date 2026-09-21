@@ -1,0 +1,171 @@
+/*
+ * The administrator's "needs attention" queue, end to end in a browser.
+ *
+ * The settler refuses to guess which of two equally-close orders an odd
+ * amount was meant for. That refusal is only honest if somebody is told, so
+ * this walks the whole way: two orders open a dollar apart, a transfer lands
+ * between them, and an administrator sees it on the page they already use and
+ * can clear it once they have dealt with it.
+ */
+const puppeteer = require('puppeteer');
+const path = require('path');
+const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
+require(path.join(DIST, 'config', 'env'));
+const users = require(path.join(DIST, 'database', 'userRepository'));
+
+const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
+const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
+const FAKE = process.env.E2E_FAKE || 'http://127.0.0.1:4242';
+const SHOTS = process.env.E2E_SHOTS || __dirname;
+
+let failures = 0;
+function check(name, ok, detail = '') {
+  if (!ok) failures += 1;
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `\n        ${detail}` : ''}`);
+}
+
+async function call(token, p, init = {}) {
+  const r = await fetch(`${API}${p}`, {
+    ...init,
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+  });
+  const text = await r.text();
+  let body;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  return { status: r.status, body };
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  const stamp = Date.now().toString(36);
+  const one = users.createUser({ email: `held-a-${stamp}@example.com` });
+  const two = users.createUser({ email: `held-b-${stamp}@example.com` });
+  const admin = users.findOrCreateUser({ email: 'boss@example.com' }).account;
+  const oneToken = users.createSession(one.id);
+  const twoToken = users.createSession(two.id);
+  const adminToken = users.createSession(admin.id);
+
+  // A fresh pair of amounts every run, so an earlier run's reservations do
+  // not collide with this one's.
+  const base = 200 + (Math.floor(Date.now() / 1000) % 600);
+  const a = await call(oneToken, '/payments/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ method: 'crypto', credits: base, asset: 'ethereum:USDT' }),
+  });
+  const b = await call(twoToken, '/payments/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ method: 'crypto', credits: base + 2, asset: 'ethereum:USDT' }),
+  });
+  check('two orders open', a.status === 201 && b.status === 201, `${a.status}/${b.status}`);
+
+  // Exactly between them, so both are inside the band and neither can be
+  // credited without possibly robbing the other.
+  const lo = BigInt(a.body.invoice.amountAtomic);
+  const hi = BigInt(b.body.invoice.amountAtomic);
+  const between = (lo + hi) / 2n;
+  check('the two amounts differ', lo !== hi, `${lo} vs ${hi}`);
+
+  await fetch(
+    `${FAKE}/chain/send?asset=ethereum%3AUSDT&to=${encodeURIComponent(a.body.invoice.address)}` +
+      `&amount=${between}&depth=1&advance=30`,
+    { method: 'POST' }
+  );
+  await fetch(`${FAKE}/chain/sweep?chain=ethereum`, { method: 'POST' });
+  await wait(400);
+
+  const queue = await call(adminToken, '/admin/payments/held');
+  const mine = (queue.body?.held ?? []).filter((entry) => entry.resolvable);
+  check('the unclaimed transfer is in the queue', mine.length >= 1, JSON.stringify(queue.body?.held ?? []).slice(0, 400));
+
+  // Neither buyer was touched.
+  const stillOpen = await Promise.all([
+    call(oneToken, `/payments/${a.body.paymentId}`),
+    call(twoToken, `/payments/${b.body.paymentId}`),
+  ]);
+  check(
+    'both orders are left open and unpaid',
+    stillOpen.every((r) => r.body?.payment?.state === 'pending' && r.body?.invoice?.state === 'waiting'),
+    stillOpen.map((r) => `${r.body?.payment?.state}/${r.body?.invoice?.state}`).join(' ')
+  );
+
+  const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 900 });
+  await page.goto(`${APP}/`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate((v) => window.localStorage.setItem('adminToken', v), adminToken);
+  await page.setCookie({
+    name: 'ft_session', value: adminToken, domain: '127.0.0.1', path: '/', httpOnly: true, sameSite: 'Lax',
+  });
+  await page.goto(`${APP}/admin/payments`, { waitUntil: 'networkidle0' });
+  await wait(600);
+
+  const banner = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('h2')).some((n) => /need(s)? attention/i.test(n.textContent))
+  );
+  check('the page warns that something needs attention', banner);
+
+  const countButtons = () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('button')).filter((n) =>
+        /mark as dealt with/i.test(n.textContent)
+      ).length
+    );
+  const before = await countButtons();
+  check('and offers to clear it', before > 0, `${before} button(s)`);
+
+  await page.screenshot({ path: path.join(SHOTS, 'held-queue.png') });
+
+  /*
+   * Dark, because this card is built from the light utilities the unlayered
+   * `html.dark` shim remaps rather than from `dark:` variants - so the only
+   * way to know it works is to look.
+   */
+  await page.evaluate(() => window.localStorage.setItem('tailor-theme', 'dark'));
+  await page.reload({ waitUntil: 'networkidle0' });
+  await wait(600);
+  const darkCard = await page.evaluate(() => {
+    const heading = Array.from(document.querySelectorAll('h2')).find((n) =>
+      /need(s)? attention/i.test(n.textContent)
+    );
+    if (!heading) return null;
+    const card = heading.closest('div');
+    return {
+      card: getComputedStyle(card).backgroundColor,
+      body: getComputedStyle(document.body).backgroundColor,
+    };
+  });
+  check(
+    'the attention card is not a white box in dark mode',
+    Boolean(darkCard) && darkCard.card !== 'rgb(255, 255, 255)' && darkCard.card !== darkCard.body,
+    JSON.stringify(darkCard)
+  );
+  await page.screenshot({ path: path.join(SHOTS, 'held-queue-dark.png') });
+  await page.evaluate(() => window.localStorage.setItem('tailor-theme', 'light'));
+  await page.reload({ waitUntil: 'networkidle0' });
+  await wait(600);
+
+  if (before > 0) {
+    await page.evaluate(() => {
+      Array.from(document.querySelectorAll('button'))
+        .find((n) => /mark as dealt with/i.test(n.textContent))
+        .click();
+    });
+    await wait(900);
+    const left = await countButtons();
+    check('clearing it takes it off the list', left === before - 1, `${left} left, was ${before}`);
+    const after = await call(adminToken, '/admin/payments/held');
+    check(
+      'and it is gone from the server too',
+      (after.body?.held ?? []).length === (queue.body?.held ?? []).length - 1,
+      `${(after.body?.held ?? []).length} vs ${(queue.body?.held ?? []).length}`
+    );
+  }
+
+  await browser.close();
+
+  console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} failed.`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });

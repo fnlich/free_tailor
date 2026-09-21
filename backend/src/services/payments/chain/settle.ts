@@ -7,6 +7,7 @@ import {
   markInvoiceSeen,
   resetInvoiceToWaiting,
 } from '../../../database/chainInvoiceRepository';
+import { recordOrphan } from '../../../database/chainOrphanRepository';
 import { getPayment } from '../../../database/paymentRepository';
 import { getDb } from '../../../database/sqlite';
 import type { ChainInvoice, ChainTransfer } from '../../../types/chainInvoice';
@@ -104,6 +105,28 @@ export function creditsForShortfall(
 }
 
 /**
+ * Holds an invoice, recording WHAT arrived and in which transaction.
+ *
+ * The two calls have to be in this order and both have to happen. Marking it
+ * seen first is what puts the txid and the arrived amount on the row;
+ * `finishInvoice` then moves it to `held` (it accepts `seen` as well as
+ * `waiting`) and drops the reservation so the amount can be sold again.
+ *
+ * Holding without recording looked right and was useless: the administrator's
+ * queue reads the invoice's own `seen_txid` and `seen_amount`, so a row held
+ * straight from `waiting` reaches them as "Received: —" with no transaction to
+ * look up - which is precisely the two facts they need to act on it.
+ */
+function holdSeen(invoice: ChainInvoice, transfer: ChainTransfer, reason: string): void {
+  markInvoiceSeen(invoice.id, {
+    txid: transfer.txid,
+    amountAtomic: transfer.amountAtomic,
+    confirmations: transfer.confirmations,
+  });
+  finishInvoice(invoice.id, 'held', reason);
+}
+
+/**
  * Takes one transfer and decides what it means.
  *
  * Everything that changes the database happens inside a single transaction, so
@@ -141,14 +164,32 @@ export function settleTransfer(
          * tell afterwards which of them was wronged - so nothing moves, and a
          * person is told.
          */
-        return {
-          status: 'held',
-          invoice: null,
-          reason:
-            `${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol} arrived in ` +
-            `${transfer.txid} and ${candidates.length} open orders are within ${bps / 100}% of ` +
-            'it. It has not been credited to any of them.',
-        };
+        const reason =
+          `${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol} arrived in ` +
+          `${transfer.txid} and ${candidates.length} open orders are within ${bps / 100}% of ` +
+          'it. It has not been credited to any of them.';
+
+        /*
+         * Written down, and the open invoices left alone.
+         *
+         * Both halves matter. Writing it down is what makes the promise on the
+         * payment screen true - without a record the administrator's queue was
+         * empty and "we will hold it and contact you" described nothing the
+         * server did. Leaving the invoices open is the other half: those
+         * buyers may still send the exact figure they were quoted, and
+         * cancelling their orders because a third party sent an odd amount
+         * would punish them for somebody else's mistake.
+         */
+        recordOrphan({
+          chain: transfer.chain,
+          asset: transfer.asset,
+          txid: transfer.txid,
+          amountAtomic: transfer.amountAtomic,
+          decimals: asset.decimals,
+          reason,
+        });
+
+        return { status: 'held', invoice: null, reason };
       } else {
         // Nothing open is close to this. Very often it is not a payment for us
         // at all - somebody using the same address for something else - so
@@ -179,11 +220,19 @@ export function settleTransfer(
 
     const payment = getPayment(invoice.paymentId);
     if (!payment) {
-      return {
-        status: 'held',
-        invoice,
-        reason: `Invoice ${invoice.id} has no payment row, so nothing could be credited.`,
-      };
+      /*
+       * Recorded, not merely returned.
+       *
+       * Every one of these branches used to hand a `held` status back to a
+       * caller that only logged it, so no invoice ever actually reached the
+       * state - which left the administrator's "needs attention" queue
+       * permanently empty and made the buyer-facing promise ("we will hold it
+       * and contact you") untrue. Saying it is held and not holding it is the
+       * one outcome worse than either.
+       */
+      const reason = `Invoice ${invoice.id} has no payment row, so nothing could be credited.`;
+      holdSeen(invoice, transfer, reason);
+      return { status: 'held', invoice, reason };
     }
 
     const credits = shortPaid
@@ -191,13 +240,12 @@ export function settleTransfer(
       : payment.credits;
 
     if (credits <= 0) {
-      return {
-        status: 'held',
-        invoice,
-        reason:
-          `${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol} is too little ` +
-          `of ${formatAtomic(invoice.amountAtomic, asset.decimals)} to buy a whole credit.`,
-      };
+      const reason =
+        `${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol} arrived in ` +
+        `${transfer.txid} against ${formatAtomic(invoice.amountAtomic, asset.decimals)} owed - ` +
+        'too little to buy a whole credit, so it is held rather than taken for nothing.';
+      holdSeen(invoice, transfer, reason);
+      return { status: 'held', invoice, reason };
     }
 
     markInvoiceSeen(invoice.id, {
@@ -229,17 +277,6 @@ export function settleTransfer(
 
     return { status: 'credited', invoice, credits };
   })();
-}
-
-/**
- * Holds a transfer nobody could attribute, so an operator sees it.
- *
- * Separate from `settleTransfer` because the held case has no invoice to move:
- * the money arrived, nothing claimed it, and the record has to live somewhere
- * a person will look. The admin payments page reads this.
- */
-export function holdInvoice(invoice: ChainInvoice, reason: string): void {
-  finishInvoice(invoice.id, 'held', reason);
 }
 
 /**

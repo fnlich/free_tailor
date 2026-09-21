@@ -1,6 +1,6 @@
 # Buying credits, end to end
 
-The unit tests in `backend/test/*.test.js` prove each piece. These three files
+The unit tests in `backend/test/*.test.js` prove each piece. These files
 prove the pieces are joined up: a real server on a real port, the real routers,
 the real database, the real webhook mount, and a browser clicking the real
 pages.
@@ -61,14 +61,15 @@ node test/e2e/walkthrough.js
 
 # 4. The browser walkthroughs, with the frontend running too
 npm run start --prefix ../frontend
-node test/e2e/buy-credits.js      # the three-step purchase dialog; puppeteer
-node test/e2e/browser.js          # the OLD buy page; needs playwright, which may not be installed
+node test/e2e/buy-credits.js   # the three-step purchase dialog; puppeteer
+node test/e2e/held-queue.js    # the needs-attention queue; puppeteer
+node test/e2e/browser.js       # the OLD buy page; needs playwright, which may not be installed
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js` uses puppeteer, which the backend already installs for PDF
-rendering, so it runs anywhere this project does; `browser.js` needs playwright
-and will not run on a checkout without it.
+`buy-credits.js` and `held-queue.js` use puppeteer, which the backend already
+installs for PDF rendering, so they run anywhere this project does;
+`browser.js` needs playwright and will not run on a checkout without it.
 
 ## Sign-in is seeded, deliberately
 
@@ -80,15 +81,17 @@ scripts are testing.
 
 ## What they check
 
-`walkthrough.js` — 37 claims over HTTP: both methods offered with the price
+`walkthrough.js` — 41 claims over HTTP: both methods offered with the price
 from settings; a request carrying its own price priced by the server anyway;
 a checkout that credits nothing until the webhook lands; the return URL
-visited before paying crediting nothing; card and crypto both crediting on a
-signed event; a retried delivery crediting nothing further; a cancelled
-checkout closing without crediting; another account's payment answering 404;
-forged and unsigned webhooks refused; the admin list and a refund that reports
-what it reversed; the amount the provider was actually asked for; and an
-event payload that keeps the amount and drops the customer.
+visited before paying crediting nothing; a card crediting on a signed event
+and coin crediting on a confirmed transfer, with a crypto checkout that names
+no coin refused rather than sent to a hosted page; a retried delivery
+crediting nothing further; a cancelled checkout closing without crediting;
+another account's payment answering 404; forged and unsigned webhooks refused;
+the admin list and a refund that reports what it reversed; the amount the
+provider was actually asked for; and an event payload that keeps the amount
+and drops the customer.
 
 `buy-credits.js` — 50 claims over the three-step dialog, half of them through
 HTTP first because the browser half needs what they leave behind. Over HTTP:
@@ -113,6 +116,21 @@ to wait when they ask for an amount already reserved, a transfer announced
 below the confirmation depth reported as `seen` and crediting nothing, and the
 same transfer crediting once it is buried - with the fee coming out of the
 credits rather than the amount sent.
+
+`held-queue.js` — 8 claims over the one path the others cannot reach: two
+orders a dollar apart, a transfer landing exactly between them, and what
+happens next. That nothing is credited to a guess; that BOTH orders are left
+open and reserved, because those buyers may still pay the figure they were
+quoted and cancelling them would punish them for a third party's mistake; that
+the money is written down rather than merely logged; that it reaches the page
+an administrator already opens, in both themes; and that pressing **Mark as
+dealt with** clears it from the page and from the server.
+
+Worth knowing why it exists: the settler used to hand a `held` status back to a
+caller that only logged it, so the queue was permanently empty and the line on
+the buyer's screen - that we hold it and get in touch - described nothing the
+server did. A queue nobody can reach is indistinguishable from no queue, which
+is why this is a script and not a unit test.
 
 `browser.js` — the same purchase with a mouse, now that the form is embedded:
 the buy page priced from the server; pressing Pay navigating NOWHERE and the

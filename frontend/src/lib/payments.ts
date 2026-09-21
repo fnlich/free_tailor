@@ -289,11 +289,24 @@ export type HeldTransfer = {
   txid: string;
   note: string;
   at: string;
+  /**
+   * Whether this entry can be dismissed once a person has dealt with it.
+   *
+   * True only for an unattributable transfer, which is a record of its own and
+   * has nowhere else to live. A held INVOICE is false: it belongs to a payment
+   * and stays with it, so dismissing it would hide the payment's own history.
+   */
+  resolvable: boolean;
 };
 
 export const adminPaymentsApi = {
   list: () => apiFetch<{ payments: AdminPayment[] }>('/admin/payments'),
   held: () => apiFetch<{ held: HeldTransfer[] }>('/admin/payments/held'),
+  resolveHeld: (id: string) =>
+    apiFetch<{ resolved: true }>(
+      `/admin/payments/held/${encodeURIComponent(id)}/resolve`,
+      { method: 'POST' }
+    ),
   refund: (id: string, note: string) =>
     apiFetch<RefundOutcome>(`/admin/payments/${id}/refund`, {
       method: 'POST',
