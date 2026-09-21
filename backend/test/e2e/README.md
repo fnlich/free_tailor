@@ -16,11 +16,27 @@ bottom rather than something a script can arrange.
 replaces exactly four functions: `createCheckoutSession`, `getCheckoutSession`,
 `refundPaymentIntent` and `createCharge`. Everything else is the shipping code.
 
-It also serves a checkout page of its own on port 4242, because a redirect the
-browser cannot follow is not a test of anything. Pressing **Pay** there signs a
-webhook with the real HMAC scheme and posts it to the real endpoint, exactly as
-Stripe or Coinbase would; the server's own verifier decides whether to believe
+It replaces five exports in all - `createCheckoutSession`, `getCheckoutSession`,
+`refundPaymentIntent`, `createCharge` and `getCharge` - and serves a checkout
+page of its own on port 4242. Pressing **Pay** there
+signs a webhook with the real HMAC scheme and posts it to the real endpoint,
+exactly as Stripe would; the server's own verifier decides whether to believe
 it.
+
+### What a fake cannot do, now the form is embedded
+
+The card form is Stripe's Payment Element, an iframe served by js.stripe.com. It
+will not mount against a made-up publishable key, so **no script here can type a
+card number** - that needs a live test-mode key and a network. `browser.js` is
+honest about the boundary: it proves the part that the embedding was for (that
+pressing Pay navigates nowhere, and the amount field is replaced by the payment
+panel in place), then drives the payment to paid from the provider's side, which
+is what a real confirmation ends up doing anyway - a signed webhook, server to
+server.
+
+It also asserts the form either mounts **or says plainly that it could not**. A
+sandbox with no route to js.stripe.com must not leave a customer watching a
+spinner, and that assertion is what keeps it from regressing.
 
 ## Running it
 
@@ -29,6 +45,7 @@ it.
 #    keys are set, and the values never leave this machine.
 cat >> .env <<'EOF'
 STRIPE_SECRET_KEY=sk_test_e2e_not_a_real_key
+STRIPE_PUBLISHABLE_KEY=pk_test_e2e_not_a_real_key
 STRIPE_WEBHOOK_SECRET=whsec_e2e_local_secret
 COINBASE_COMMERCE_API_KEY=cb_test_e2e_not_a_real_key
 COINBASE_COMMERCE_WEBHOOK_SECRET=cb_whsec_e2e_local_secret
@@ -37,7 +54,7 @@ EOF
 
 # 2. The server, with the fake providers in front of it
 cd backend && npm run build
-node --require test/e2e/fake-providers.js dist/index.js
+node --require ./test/e2e/fake-providers.js dist/index.js
 
 # 3. The API walkthrough, in another terminal
 node test/e2e/walkthrough.js
@@ -59,7 +76,7 @@ scripts are testing.
 
 ## What they check
 
-`walkthrough.js` — 36 claims over HTTP: both methods offered with the price
+`walkthrough.js` — 37 claims over HTTP: both methods offered with the price
 from settings; a request carrying its own price priced by the server anyway;
 a checkout that credits nothing until the webhook lands; the return URL
 visited before paying crediting nothing; card and crypto both crediting on a
@@ -69,10 +86,12 @@ forged and unsigned webhooks refused; the admin list and a refund that reports
 what it reversed; the amount the provider was actually asked for; and an
 event payload that keeps the amount and drops the customer.
 
-`browser.js` — the same purchase with a mouse: the buy page priced from the
-server, the button reaching a checkout, the return page waiting for the
-webhook rather than congratulating on arrival, the balance and the ledger
-afterwards, a cancelled checkout, and an admin refunding from the UI.
+`browser.js` — the same purchase with a mouse, now that the form is embedded:
+the buy page priced from the server; pressing Pay navigating NOWHERE and the
+dialog opening in place; the form either mounting or saying plainly that it
+could not; the return page waiting for the webhook rather than congratulating
+on arrival; the balance and the ledger afterwards; backing out of a payment;
+and an admin refunding from the UI.
 
 ## The part a script cannot do
 

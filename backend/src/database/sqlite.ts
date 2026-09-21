@@ -276,6 +276,57 @@ const SCHEMA = `
     ON payment_events (payment_id, received_at);
 
   /**
+   * One crypto invoice: an address, an exact amount, and a deadline.
+   *
+   * Separate from the payment because the payment is provider-agnostic and this
+   * is entirely about chains. It hangs off payments.provider_ref, the same slot
+   * a Stripe session id occupies.
+   *
+   * AMOUNT_ATOMIC is a TEXT column holding a decimal integer, not an INTEGER
+   * column. An 18-decimal token amount exceeds what SQLite's 64-bit INTEGER can
+   * hold once the numbers get large, and a silently truncated amount is a
+   * payment that is never matched. Every comparison on it is string equality on
+   * a canonical decimal, which is exact.
+   *
+   * The UNIQUE index on (chain, asset, amount_atomic) WHERE reserved = 1 is the
+   * whole matching scheme. Buyers all send to ONE address per chain, so the
+   * amount is the only thing distinguishing them, and two invoices quoting the
+   * same amount would be two payments nobody can tell apart. The index is the
+   * decision - not an application check, which two concurrent checkouts would
+   * race straight past.
+   */
+  CREATE TABLE IF NOT EXISTS chain_invoices (
+    id             TEXT PRIMARY KEY,
+    payment_id     TEXT NOT NULL,
+    chain          TEXT NOT NULL,
+    asset          TEXT NOT NULL,
+    address        TEXT NOT NULL,
+    amount_atomic  TEXT NOT NULL,
+    decimals       INTEGER NOT NULL,
+    unit_price_usd TEXT NOT NULL DEFAULT '',
+    reserved       INTEGER NOT NULL DEFAULT 1,
+    quote_expires_at TEXT NOT NULL,
+    monitor_until  TEXT NOT NULL,
+    seen_txid      TEXT,
+    seen_amount    TEXT,
+    seen_at        TEXT,
+    confirmations  INTEGER NOT NULL DEFAULT 0,
+    state          TEXT NOT NULL DEFAULT 'waiting',
+    note           TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_invoices_slot
+    ON chain_invoices (chain, asset, amount_atomic) WHERE reserved = 1;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_invoices_payment
+    ON chain_invoices (payment_id);
+
+  CREATE INDEX IF NOT EXISTS idx_chain_invoices_open
+    ON chain_invoices (state, monitor_until);
+
+  /**
    * Accounts.
    *
    * The EMAIL is the identity, not the Google subject id: the two sign-in paths

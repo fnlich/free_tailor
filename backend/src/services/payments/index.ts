@@ -47,6 +47,11 @@ export type MethodAvailability = {
   reason?: string;
 };
 
+/** The publishable key the buy page needs, or '' when cards are not set up. */
+export function publishableKey(env: NodeJS.ProcessEnv = process.env): string {
+  return stripe.isStripeConfigured(env) ? stripe.stripePublishableKey(env) : '';
+}
+
 export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAvailability[] {
   const card = stripe.isStripeConfigured(env);
   const crypto = coinbase.isCoinbaseConfigured(env);
@@ -58,7 +63,11 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
       available: card,
       ...(card
         ? {}
-        : { reason: 'Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to take card payments.' }),
+        : {
+            reason:
+              'Set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PUBLISHABLE_KEY to take ' +
+              'card payments.',
+          }),
     },
     {
       method: 'crypto',
@@ -104,7 +113,19 @@ export function returnBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return `http://localhost:${port}`;
 }
 
-export type StartedCheckout = { payment: Payment; redirectUrl: string };
+/**
+ * What the browser needs to take the payment.
+ *
+ * Exactly one of these is set. `clientSecret` means the form is ours: the page
+ * mounts Stripe's Payment Element with it and the customer never leaves. A
+ * `redirectUrl` is the older shape, for a provider whose checkout is a page of
+ * its own - the crypto path still works that way.
+ */
+export type StartedCheckout = {
+  payment: Payment;
+  clientSecret?: string;
+  redirectUrl?: string;
+};
 
 /** How many checkouts one account may open in an hour. */
 const MAX_CHECKOUTS_PER_WINDOW = 20;
@@ -171,7 +192,16 @@ export async function startCheckout(
   });
 
   const base = returnBaseUrl(env);
-  const successUrl = `${base}/credits/return?payment=${encodeURIComponent(payment.id)}`;
+  /*
+   * Where a customer lands if the payment took them off our page.
+   *
+   * With the form embedded, most card payments never go anywhere - the element
+   * confirms in place. But 3-D Secure and stablecoin payments both hand the
+   * customer to somebody else's domain, and they have to come back somewhere.
+   * That somewhere is the page that polls for the webhook, which is the only
+   * thing that decides a payment either way.
+   */
+  const returnUrl = `${base}/credits/return?payment=${encodeURIComponent(payment.id)}`;
   const cancelUrl = `${base}/credits?cancelled=${encodeURIComponent(payment.id)}`;
 
   /*
@@ -196,10 +226,9 @@ export async function startCheckout(
           amountCents: quote.amountCents,
           currency: quote.currency,
           customerEmail: account.email,
-          successUrl,
-          cancelUrl,
+          returnUrl,
         });
-        return { ref: session.id, url: session.url ?? '' };
+        return { ref: session.id, clientSecret: session.client_secret ?? '', url: '' };
       }
 
       const charge = await coinbase.createCharge({
@@ -208,10 +237,10 @@ export async function startCheckout(
         credits: quote.credits,
         amountCents: quote.amountCents,
         currency: quote.currency,
-        redirectUrl: successUrl,
+        redirectUrl: returnUrl,
         cancelUrl,
       });
-      return { ref: charge.code, url: charge.hosted_url ?? '' };
+      return { ref: charge.code, clientSecret: '', url: charge.hosted_url ?? '' };
     } catch (error) {
       /*
        * The detail goes to the log, and a fixed sentence goes in the row.
@@ -222,19 +251,35 @@ export async function startCheckout(
        * become a customer's view of a secret.
        */
       console.error(`[payments] ${payment.reference}: the provider refused to open a checkout.`, error);
-      markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
+
+      /*
+       * Closed only when the provider definitively said no.
+       *
+       * A transport failure - the connection dropped before an answer arrived -
+       * is NOT a refusal: the session may well exist at Stripe with this
+       * payment's id on it, and somebody may still pay it. Marking that failed
+       * would mean the webhook arrives, finds a row that is not pending, and
+       * credits nothing. Money taken, nothing given. So an unknown outcome
+       * leaves the payment pending and lets it expire on its own.
+       */
+      const unknown = error instanceof stripe.StripeError && error.transport;
+      if (!unknown) {
+        markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
+      }
       throw new PaymentError(
-        'The payment provider would not open a checkout page. Try again in a moment.',
+        unknown
+          ? 'Could not reach the payment provider. Nothing was charged - try again in a moment.'
+          : 'The payment provider would not open a checkout page. Try again in a moment.',
         502
       );
     }
   })();
 
-  if (!opened.url) {
-    // A session may exist without a usable URL, so this payment is NOT closed:
-    // see the note above. It simply cannot be sent anywhere.
-    console.error(`[payments] ${payment.reference}: the provider returned no checkout URL.`);
-    throw new PaymentError('The payment provider did not return a checkout page.', 502);
+  if (!opened.clientSecret && !opened.url) {
+    // The session may exist without anything the browser can use, so this
+    // payment is NOT closed: see the note above. It simply cannot be paid.
+    console.error(`[payments] ${payment.reference}: the provider returned nothing to pay with.`);
+    throw new PaymentError('The payment provider did not return a way to pay.', 502);
   }
 
   if (opened.ref && !attachProviderRef(payment.id, opened.ref)) {
@@ -245,7 +290,11 @@ export async function startCheckout(
     );
   }
 
-  return { payment: getPayment(payment.id) ?? payment, redirectUrl: opened.url };
+  return {
+    payment: getPayment(payment.id) ?? payment,
+    ...(opened.clientSecret ? { clientSecret: opened.clientSecret } : {}),
+    ...(opened.url ? { redirectUrl: opened.url } : {}),
+  };
 }
 
 export type CreditOutcome = { credited: boolean; payment: Payment | null };

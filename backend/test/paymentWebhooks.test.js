@@ -511,3 +511,26 @@ test('the stored event keeps the payment and drops the person', async () => {
     server.close();
   }
 });
+
+test('a webhook is still judged when the publishable key is missing', async () => {
+  const server = await serve();
+  try {
+    /*
+     * The publishable key mounts a form in a browser. It has no part in
+     * deciding whether Stripe sent this request, so its absence must not turn
+     * the webhook into a 503 - Stripe retries a failing endpoint for days and
+     * then disables it, and the events it stops delivering are the ones that
+     * credit people who have already paid.
+     */
+    delete process.env.STRIPE_PUBLISHABLE_KEY;
+
+    const payment = pendingPayment(server, { credits: 25 });
+    const body = stripeEvent(payment, { id: 'evt_no_pk' });
+    const response = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+
+    assert.equal(response.status, 200);
+    assert.equal(server.balance(), 25, 'the payment was still credited');
+  } finally {
+    server.close();
+  }
+});

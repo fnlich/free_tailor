@@ -143,13 +143,26 @@ function ReturnBody() {
           <div className="mt-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
             <p className="font-semibold">Waiting for the payment to be confirmed.</p>
             <p className="mt-1">
+              {/*
+                Careful not to promise. Landing here proves only that a browser
+                followed a redirect - somebody who started a 3-D Secure step and
+                abandoned it arrives at exactly this page, in exactly this
+                state, and telling them their credits are on the way would be
+                false. So the sentence is conditional, and the two-minute note
+                below says what to do when it stays that way.
+              */}
               {payment.method === 'crypto'
-                ? 'A crypto payment has to be confirmed on the chain, which usually takes a few minutes. You can close this page - your credits will be added either way.'
-                : 'This usually takes a second or two. You can close this page - your credits will be added either way.'}
+                ? 'A chain payment has to confirm, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
+                : 'This usually takes a second or two. If the payment went through, your credits will be added even if you close this page.'}
             </p>
             {waitedTooLong && (
               <p className="mt-2">
-                Still waiting. If you were charged and this does not clear shortly, quote{' '}
+                Still waiting. If you did not finish paying - closing the card&apos;s
+                confirmation step will do it - nothing was charged and you can{' '}
+                <Link href="/credits" className="font-semibold underline">
+                  start again
+                </Link>
+                . If you were charged and this does not clear shortly, quote{' '}
                 <span className="font-mono font-semibold">{payment.reference}</span> to an
                 administrator.
               </p>

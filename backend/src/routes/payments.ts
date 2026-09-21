@@ -5,6 +5,7 @@ import {
   describeMethods,
   getPayment,
   PaymentError,
+  publishableKey,
   refundPayment,
   startCheckout,
 } from '../services/payments';
@@ -51,6 +52,16 @@ router.get('/methods', async (_req: Request, res: Response) => {
     res.json({
       ...limits,
       methods: describeMethods(),
+      /*
+       * Served, not baked in.
+       *
+       * The payment form in the browser needs this key, and it is safe to hand
+       * out - that is what "publishable" means. Serving it keeps every Stripe
+       * value in the one .env the server reads, instead of a NEXT_PUBLIC_
+       * variable that has to be present at FRONTEND BUILD time and needs a
+       * rebuild to change.
+       */
+      publishableKey: publishableKey(),
     });
   } catch (error) {
     fail(res, error);
@@ -67,7 +78,10 @@ router.post('/checkout', async (req: Request, res: Response) => {
       credits: started.payment.credits,
       amountCents: started.payment.amountCents,
       currency: started.payment.currency,
-      redirectUrl: started.redirectUrl,
+      // One or the other: a secret to mount our own form with, or somewhere to
+      // send the browser. Never a price - the page displays what it was quoted.
+      ...(started.clientSecret ? { clientSecret: started.clientSecret } : {}),
+      ...(started.redirectUrl ? { redirectUrl: started.redirectUrl } : {}),
     });
   } catch (error) {
     fail(res, error);

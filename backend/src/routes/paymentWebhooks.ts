@@ -1,13 +1,13 @@
 import { Router, type Request, type Response } from 'express';
 
 import {
-  isStripeConfigured,
+  canVerifyStripeWebhooks,
   stripeWebhookSecret,
   verifyStripeSignature,
 } from '../integrations/stripe';
 import {
+  canVerifyCoinbaseWebhooks,
   coinbaseWebhookSecret,
-  isCoinbaseConfigured,
   verifyCoinbaseSignature,
 } from '../integrations/coinbaseCommerce';
 import {
@@ -144,7 +144,10 @@ function apply(event: Handled, rawBody: Buffer, res: Response): void {
  * they bought.
  */
 router.post('/stripe', (req: Request, res: Response) => {
-  if (!isStripeConfigured()) {
+  // Only the webhook secret, not the whole card configuration: see the note on
+  // canVerifyStripeWebhooks. An endpoint that 503s is an endpoint Stripe stops
+  // delivering to, and the events it stops delivering credit paying customers.
+  if (!canVerifyStripeWebhooks()) {
     res.status(503).json({ error: 'Card payments are not configured on this server.' });
     return;
   }
@@ -220,7 +223,7 @@ router.post('/stripe', (req: Request, res: Response) => {
  * for a payment that can still be reorganised away.
  */
 router.post('/coinbase', (req: Request, res: Response) => {
-  if (!isCoinbaseConfigured()) {
+  if (!canVerifyCoinbaseWebhooks()) {
     res.status(503).json({ error: 'Crypto payments are not configured on this server.' });
     return;
   }
