@@ -142,6 +142,19 @@ async function readDialog(page) {
         });
         return { past: worst, culprit, viewport };
       })(),
+      /*
+       * And the panel against ITSELF, which is a different question.
+       *
+       * The measurement above asks whether anything left the SCREEN. This one
+       * asks whether anything left the DIALOG, and at a desktop width those
+       * are hundreds of pixels apart: a 448px panel centred at 1440 has
+       * roughly 496px of room on its right before a row that has escaped it
+       * reaches the window edge. A row can therefore be painting over the page
+       * outside its own dialog while the viewport check still reads zero -
+       * which is exactly what the switched-off crypto row did, and why that
+       * bug survived a check named "nothing hangs off the side".
+       */
+      panel: { scrollWidth: dialog.scrollWidth, clientWidth: dialog.clientWidth },
     };
   });
 }
@@ -614,6 +627,35 @@ async function main() {
 
     console.log('\n=== Crypto: the deposit panel ===');
     await openDialog(page);
+
+    /*
+     * The network is READABLE, not merely present.
+     *
+     * USDT exists on all three chains this server takes, so the network is the
+     * only thing distinguishing one of these buttons from another - and
+     * sending USDT on the wrong chain loses it. The coin grid used to go
+     * two-up whenever there was more than one coin, which inside step 1's
+     * 446px panel left a 103px text column: "USDT on Ethereum" needs 125px, so
+     * it rendered as "USDT on Ethe..." beside "USDT on BNB ...", and every
+     * limit line as "$50.00 - $2,000...". The label is the last string in this
+     * dialog that may be shortened.
+     */
+    const clippedRows = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      const rows = Array.from(dialog.querySelectorAll('button')).filter((button) =>
+        /\bon\b|Bitcoin/.test(button.textContent || '')
+      );
+      return rows
+        .flatMap((button) => Array.from(button.querySelectorAll('span > span')))
+        .filter((line) => line.scrollWidth > line.clientWidth + 1)
+        .map((line) => line.textContent.trim());
+    });
+    check(
+      'no coin has its network or its limits clipped',
+      clippedRows.length === 0,
+      `clipped: ${clippedRows.join(' | ')}`
+    );
+
     // A coin, not a category: each is its own button with its network named.
     await clickText(page, '[role="dialog"] button', 'USDT on Ethereum');
     await wait(250);
@@ -716,14 +758,23 @@ async function main() {
      *
      * Every check above runs against a server that CAN take payments, so the
      * unavailable branch of a choice - a method listed with the reason it is
-     * off - had never once been rendered by a test. It was also the longest
-     * string the dialog can be handed: setup instructions naming two
+     * off - had never once been rendered by a test. It is also handed the
+     * longest string the dialog can receive: setup instructions naming two
      * environment variables, one of them thirty-two characters with nowhere a
      * browser will break it. The row blew out to 1291px inside a 398px track
      * and ran 868px past the side of the dialog.
      *
      * Forced here rather than by reconfiguring the server, because taking the
      * keys out of .env would switch off every other check in this file.
+     *
+     * BOTH SHAPES, and the difference is the whole reason this is a loop.
+     * With no coins configured the server sends ONE method-level crypto row,
+     * which lands in a single-column grid - that is the shape in the bug
+     * report. With coins configured but switched off it sends a row per coin,
+     * which goes two-up at `sm`. The first overflows the viewport at 1440; the
+     * second only overflows the PANEL there, and a check watching the window
+     * alone passes it. Testing one shape and not the other is how this got
+     * shipped in the first place.
      */
     console.log('\n=== A method that is switched off ===');
     const LONG_REASON =
@@ -731,18 +782,59 @@ async function main() {
       'COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto ' +
       'through Coinbase Commerce instead.';
 
+    /*
+     * Installed ONCE, and the shape read from localStorage rather than closed
+     * over. `evaluateOnNewDocument` accumulates - calling it per iteration
+     * would leave every earlier patch in place, each wrapping the last - and
+     * localStorage survives the navigation `openDialog` performs, being the
+     * same origin.
+     */
     await page.evaluateOnNewDocument((reason) => {
       const real = window.fetch;
       window.fetch = async (...args) => {
         const response = await real(...args);
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url ?? '';
         if (!/\/payments\/methods/.test(url) || !response.ok) return response;
+
+        let shape = 'coins';
+        try {
+          shape = window.localStorage.getItem('e2e-methods-shape') || 'coins';
+        } catch {
+          /* A blocked store means the default, which is a real shape too. */
+        }
+
         const body = await response.clone().json();
-        body.targets = (body.targets || []).map((target) =>
-          target.method === 'crypto' ? { ...target, available: false, reason } : target
-        );
+        const off = (target) => ({ ...target, available: false, reason });
+
+        if (shape === 'method') {
+          // No coins configured at all: one method-level row, as the server
+          // sends when the CHAIN_ block is empty and Coinbase has no keys.
+          body.targets = (body.targets || [])
+            .filter((target) => target.method !== 'crypto')
+            .concat([
+              off({
+                id: 'crypto',
+                method: 'crypto',
+                mark: 'crypto',
+                label: 'Cryptocurrency',
+                minCredits: 0,
+                maxCredits: 0,
+                minAmountCents: 0,
+                maxAmountCents: 0,
+                presets: [],
+                custom: 'stepper',
+                feeBps: 0,
+                feeFixedCents: 0,
+              }),
+            ]);
+        } else {
+          body.targets = (body.targets || []).map((target) =>
+            target.method === 'crypto' ? off(target) : target
+          );
+        }
+
         body.methods = (body.methods || []).map((method) =>
-          method.id === 'crypto' ? { ...method, available: false, reason } : method
+          method.id === 'crypto' ? off(method) : method
         );
         return new Response(JSON.stringify(body), {
           status: 200,
@@ -751,51 +843,65 @@ async function main() {
       };
     }, LONG_REASON);
 
-    for (const viewport of [WIDE, PHONE]) {
-      await page.setViewport(viewport);
-      await openDialog(page);
-      dialog = await readDialog(page);
-      check(
-        `an unavailable method is listed with its reason at ${viewport.width}`,
-        /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 400)
-      );
-      check(
-        `and nothing hangs off the side at ${viewport.width}`,
-        dialog && dialog.overflow.past <= 1,
-        `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
-      );
+    for (const shape of ['method', 'coins']) {
+      for (const viewport of [WIDE, PHONE]) {
+        const where = `${shape} at ${viewport.width}`;
+        await page.setViewport(viewport);
+        await page.evaluate((value) => window.localStorage.setItem('e2e-methods-shape', value), shape);
+        await openDialog(page);
+        dialog = await readDialog(page);
 
-      /*
-       * Not merely inside the dialog - READABLE.
-       *
-       * `truncate` would keep the row inside the panel and still fail the
-       * operator, because the part naming the keys is at the END of the
-       * sentence and a one-line ellipsis eats exactly that. A clipped element
-       * has a scrollWidth wider than its clientWidth; a wrapped one does not.
-       */
-      const reason = await page.evaluate(() => {
-        const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
-          (element) =>
-            /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(element.textContent || '') &&
-            element.children.length === 0
+        check(
+          `an unavailable method is listed with its reason, ${where}`,
+          /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(dialog?.text ?? ''),
+          dialog?.text?.slice(0, 400)
         );
-        if (!node) return null;
-        return {
-          clipped: node.scrollWidth > node.clientWidth + 1,
-          lines: Math.round(node.getBoundingClientRect().height / 16),
-          whiteSpace: getComputedStyle(node).whiteSpace,
-        };
-      });
-      check(
-        `the reason is wrapped rather than clipped at ${viewport.width}`,
-        reason && !reason.clipped && reason.lines > 1,
-        JSON.stringify(reason)
-      );
-      await page.screenshot({
-        path: path.join(SHOTS, `buy-1-unavailable-${viewport.width}.png`),
-      });
-      await page.keyboard.press('Escape');
+        check(
+          `nothing leaves the dialog, ${where}`,
+          dialog && dialog.panel.scrollWidth <= dialog.panel.clientWidth + 1,
+          `panel scrollWidth ${dialog?.panel.scrollWidth} vs clientWidth ${dialog?.panel.clientWidth}`
+        );
+        check(
+          `and nothing leaves the screen, ${where}`,
+          dialog && dialog.overflow.past <= 1,
+          `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
+        );
+
+        /*
+         * Not merely inside the dialog - READABLE.
+         *
+         * `truncate` would keep the row inside the panel and still fail the
+         * operator, because the part naming the keys is at the END of the
+         * sentence and a one-line ellipsis eats exactly that. Asking whether
+         * the element is clipped is not enough on its own: in the broken
+         * state the BUTTON grew instead, so the text was not overflowing
+         * itself and read as unclipped. The line count is what actually
+         * distinguishes wrapped from nowrap.
+         */
+        const reason = await page.evaluate(() => {
+          const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
+            (element) =>
+              /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(element.textContent || '') &&
+              element.children.length === 0
+          );
+          if (!node) return null;
+          return {
+            clipped: node.scrollWidth > node.clientWidth + 1,
+            lines: Math.round(node.getBoundingClientRect().height / 16),
+            whiteSpace: getComputedStyle(node).whiteSpace,
+          };
+        });
+        check(
+          `the reason is wrapped rather than clipped, ${where}`,
+          reason && !reason.clipped && reason.lines > 1 && reason.whiteSpace !== 'nowrap',
+          JSON.stringify(reason)
+        );
+
+        await page.screenshot({
+          path: path.join(SHOTS, `buy-1-unavailable-${shape}-${viewport.width}.png`),
+        });
+        await page.keyboard.press('Escape');
+      }
     }
   } finally {
     await browser.close();

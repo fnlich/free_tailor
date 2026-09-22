@@ -604,7 +604,15 @@ function PaymentsBody() {
                       {payment.providerRef && (
                         <>
                           {' '}
-                          &middot; <span className="font-mono">{payment.providerRef}</span>
+                          {/*
+                            `break-all`, as the transaction id above already
+                            has. Both are opaque provider identifiers with no
+                            break opportunity - a Stripe session id runs to 66
+                            characters - and this was the only one of the two
+                            that could be clipped by its card.
+                          */}
+                          &middot;{' '}
+                          <span className="break-all font-mono">{payment.providerRef}</span>
                         </>
                       )}
                     </p>

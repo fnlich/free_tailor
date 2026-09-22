@@ -261,7 +261,17 @@ export default function SignInPanel() {
         )}
 
         {notice && !error && (
-          <p className="mt-4 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:bg-blue-900/30 dark:text-blue-100">
+          /*
+           * `break-words`, because this sentence has an email address in it.
+           *
+           * The server answers "A six-digit code is on its way to <address>",
+           * and an address is one unbreakable word to a browser - neither `.`
+           * nor `@` is a break opportunity. Without this, an ordinary
+           * work address runs out of the notice, out of the card, and on a
+           * phone off the side of the window, taking the page's horizontal
+           * scroll with it. It starts going wrong at 39 characters.
+           */
+          <p className="mt-4 break-words rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:bg-blue-900/30 dark:text-blue-100">
             {notice}
           </p>
         )}

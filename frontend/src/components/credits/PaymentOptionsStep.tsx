@@ -156,10 +156,27 @@ export default function PaymentOptionsStep({
             <Range targets={coins} currency={currency} />
           </h3>
           {/*
-            One column until there is more than one coin to choose between -
-            a two-column grid holding a single button leaves a hole beside it.
+            One column, at every width, and the reason is the label.
+
+            This was two-up whenever there was more than one coin, which looked
+            tidy and cut the one string that must never be cut. Step 1 is
+            always the narrow panel - BuyCreditsDialog passes `md` for every
+            step but the summary - so the grid is inside 446px whatever the
+            viewport is, and two-up means a 195px chip with a 103px text
+            column. Measured at 1440, that clipped FIVE of the six rows:
+            "USDT on Ethereum" needs 125px and "USDC on BNB Chain" 134px, so
+            they rendered as "USDT on Ethe..." and "USDC on BNB...", and every
+            limit line rendered as "$50.00 - $2,000..." against 114px needed.
+
+            Which is the worst possible thing to shorten. The network decides
+            which address the money goes to and USDT exists on all three of
+            these chains, so a buyer choosing between "USDT on Ethe..." and
+            "USDT on BNB ..." is being asked to distinguish them by the part
+            that got cut - and sending USDT on the wrong chain loses it.
+            `sm:` cannot rescue this, because the container never grows with
+            the viewport.
           */}
-          <div className={`mt-2 grid gap-2 ${coins.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+          <div className="mt-2 grid gap-2">
             {coins.map((target) => (
               <Choice
                 key={target.id}

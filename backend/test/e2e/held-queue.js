@@ -37,6 +37,12 @@ async function call(token, p, init = {}) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Finish and report without ever having opened a browser. */
+async function browserless() {
+  console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} failed.`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
 async function main() {
   const stamp = Date.now().toString(36);
   const one = users.createUser({ email: `held-a-${stamp}@example.com` });
@@ -57,7 +63,27 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ method: 'crypto', credits: base + 2, asset: 'ethereum:USDT' }),
   });
-  check('two orders open', a.status === 201 && b.status === 201, `${a.status}/${b.status}`);
+  check(
+    'two orders open',
+    a.status === 201 && b.status === 201,
+    `${a.status}/${b.status} ${JSON.stringify(a.body?.error ?? b.body?.error ?? '')}`
+  );
+
+  /*
+   * Reported, not crashed.
+   *
+   * A checkout can legitimately be refused here - two runs inside the same
+   * twenty-minute window can ask for an amount the first is still holding,
+   * which is the reservation rule working. Reaching straight into the invoice
+   * turned that into a TypeError that killed the script and took every check
+   * below it with it, so the one interesting failure looked like a broken
+   * harness.
+   */
+  if (!a.body?.invoice || !b.body?.invoice) {
+    check('the two amounts differ', false, 'no invoices to compare');
+    await browserless();
+    return;
+  }
 
   // Exactly between them, so both are inside the band and neither can be
   // credited without possibly robbing the other.

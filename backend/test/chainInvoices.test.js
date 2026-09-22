@@ -41,6 +41,8 @@ async function serve({
   assets = 'ethereum:USDT,bsc:USDT,bitcoin:BTC',
   tronKey = true,
   btcPrice = 64_231.55,
+  /** The older custodial provider, which changes what an empty chain config shows. */
+  coinbase = false,
 } = {}) {
   const { dbDir } = useTempStorage(`chain-${Math.random().toString(36).slice(2)}`);
   useAdminEmails('boss@example.com');
@@ -61,8 +63,13 @@ async function serve({
     delete process.env.TRONGRID_API_KEY;
   }
   process.env.CHAIN_RATE_SPREAD_PERCENT = '0';
-  delete process.env.COINBASE_COMMERCE_API_KEY;
-  delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
+  if (coinbase) {
+    process.env.COINBASE_COMMERCE_API_KEY = 'cb-test-key';
+    process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb-test-secret';
+  } else {
+    delete process.env.COINBASE_COMMERCE_API_KEY;
+    delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
+  }
   delete process.env.CHAIN_TOLERANCE_BPS;
 
   // Before anything reads settings: the settings module caches what it sees.
@@ -375,6 +382,46 @@ test("a chain's own coin is never offered as something to buy with", async () =>
     assert.ok(available.includes('ethereum:USDT'), JSON.stringify(available));
     assert.ok(!available.includes('ethereum:ETH'), JSON.stringify(available));
     assert.ok(!available.includes('bsc:BNB'), JSON.stringify(available));
+  } finally {
+    server.close();
+  }
+});
+
+test('a refused coin is still named when Coinbase Commerce is taking the crypto', async () => {
+  /*
+   * The guard is only worth having if the operator is told, and whether they
+   * were told used to depend on something unrelated.
+   *
+   * The problem rows were built only when at least one asset was enabled, so
+   * an operator who listed nothing but coins this server refuses got named
+   * problems that were then discarded. Without Coinbase keys the method-level
+   * row carried the joined reason and they found out. WITH them that row is
+   * available and carries no reason, so the refusal was silent: a working
+   * Crypto button, every payment quietly going through a processor, and no
+   * hint that the wallet they had configured was being ignored - while
+   * .env.example promised it would "tell you it cannot serve it rather than
+   * silently ignoring you".
+   */
+  const server = await serve({ assets: 'ethereum:ETH,bsc:BNB', coinbase: true });
+  try {
+    const body = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
+    const byId = Object.fromEntries(body.targets.map((target) => [target.id, target]));
+
+    // Named, both of them, each with its own reason.
+    for (const id of ['ethereum:ETH', 'bsc:BNB']) {
+      assert.ok(byId[id], `${id} is missing from ${JSON.stringify(Object.keys(byId))}`);
+      assert.equal(byId[id].available, false);
+      assert.match(byId[id].reason, /own coin/i);
+    }
+
+    /*
+     * And the method-level row survives, available, because Coinbase can
+     * genuinely take the payment - it is also the only button that can start
+     * that checkout, since the chain path is taken only when an asset comes
+     * with the request.
+     */
+    assert.ok(byId.crypto, JSON.stringify(Object.keys(byId)));
+    assert.equal(byId.crypto.available, true);
   } finally {
     server.close();
   }

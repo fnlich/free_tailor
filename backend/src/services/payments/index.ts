@@ -697,7 +697,7 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
    * itself: a misconfiguration is something they need to SEE.
    */
   const chainConfig = readChainPaymentsConfig(env);
-  if (chainConfig.assets.length > 0) {
+  {
     const coinTargets: PaymentTarget[] = [];
 
     for (const enabled of chainConfig.assets) {
@@ -768,10 +768,32 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
       });
     }
 
+    if (coinTargets.length === 0) return targets;
+
+    /*
+     * The method-level crypto row is replaced only when a coin can ACTUALLY be
+     * paid with, and that distinction was a hole.
+     *
+     * These rows used to be built only when at least one asset was enabled. So
+     * an operator who listed nothing but coins this server refuses - the two
+     * EVM natives, say - produced named problems that were then thrown away,
+     * and what they saw depended entirely on whether Coinbase Commerce
+     * happened to be configured. Without it the method-level row carried the
+     * joined reason and they were told. WITH it that row is available and
+     * carries no reason at all, so the refusal was silent: a working Crypto
+     * button, every payment going through a processor, and no hint that the
+     * wallet they had configured was being ignored. `.env.example` promises
+     * the opposite in as many words.
+     *
+     * So the problem rows are emitted either way, and the method-level row
+     * stays when no coin is payable - it is the only button that can start a
+     * Coinbase checkout, because the chain path is taken only when an `asset`
+     * comes with the request.
+     */
+    if (chainConfig.assets.length === 0) return [...targets, ...coinTargets];
+
     return [...targets.filter((target) => target.method !== 'crypto'), ...coinTargets];
   }
-
-  return targets;
 }
 
 export type CreditOutcome = { credited: boolean; payment: Payment | null };

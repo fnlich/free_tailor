@@ -21,7 +21,17 @@ import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
 const CARD =
   'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
 const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400';
-const VALUE = 'mt-1 text-sm text-gray-900 dark:text-white';
+/*
+ * `break-words`, for the one value here that is an unbreakable word.
+ *
+ * Every other row is short - a role, a date - but the email row is the
+ * reader's own address, and an address has no break opportunity in it. In a
+ * grid cell that means it pushes the cell wider instead of wrapping, and on a
+ * phone it scrolls the whole page sideways. Wrapped rather than truncated
+ * because this is somebody's own address on their own account page: it should
+ * stay readable and selectable, not end in an ellipsis.
+ */
+const VALUE = 'mt-1 break-words text-sm text-gray-900 dark:text-white';
 
 function formatDate(value?: string): string {
   if (!value) return 'Never';
