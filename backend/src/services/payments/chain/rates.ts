@@ -147,11 +147,3 @@ export async function rateFor(
   );
 }
 
-/** Convenience for callers holding an id rather than a definition. */
-export async function rateForAsset(
-  assetId: AssetId,
-  env: NodeJS.ProcessEnv = process.env,
-  at: Date = new Date()
-): Promise<Rate> {
-  return rateFor(ASSETS[assetId], env, at);
-}

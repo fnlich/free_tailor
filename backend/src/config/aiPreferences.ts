@@ -35,7 +35,6 @@ export type AiPreferences = {
 };
 
 /** The label shown wherever a layer inherits rather than chooses. */
-export const INHERIT_VALUE = '';
 
 /** Keeps only values this build understands; anything else inherits. */
 export function normalizeAiPreferences(raw: unknown): AiPreferences {

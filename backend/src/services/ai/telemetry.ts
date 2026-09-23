@@ -99,7 +99,6 @@ export function recordFailure(callSite: string, provider: AIProvider, model: str
 }
 
 /** Serialisable form of a usage row, for the admin health endpoint. */
-export type UsageRow = Omit<CallSiteUsage, 'resolvedModels'> & { resolvedModels: string[] };
 
 export type UsageSnapshot = {
   entries: CallSiteUsage[];

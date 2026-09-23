@@ -50,7 +50,3 @@ export function deleteGroup(id: string): boolean {
   return groups.delete(id);
 }
 
-/** @deprecated Use `listGroupsFor` with the request's viewer. */
-export function listGroups(): Group[] {
-  return groups.list();
-}

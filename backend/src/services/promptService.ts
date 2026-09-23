@@ -1233,31 +1233,6 @@ export async function renderPrompt(
   return renderedContent;
 }
 
-export async function renderPromptByExactId(
-  id: string,
-  values: Record<string, string>
-): Promise<string> {
-  const prompt = await getPromptRecordByIdExact(id);
-  if (!prompt) {
-    throw new Error(`Prompt "${id}" not found`);
-  }
-
-  if (prompt.validation.unknownVariables.length > 0) {
-    throw new Error(
-      `Prompt "${prompt.id}" contains unknown variables: ${prompt.validation.unknownVariables.join(', ')}`
-    );
-  }
-
-  const { renderedContent, missingVariables } = renderPromptText(prompt.content, values);
-  if (missingVariables.length > 0) {
-    throw new Error(
-      `Prompt "${prompt.id}" is missing runtime values for: ${missingVariables.join(', ')}`
-    );
-  }
-
-  return renderedContent;
-}
-
 export async function renderPromptSegments(
   id: string,
   values: Record<string, string>

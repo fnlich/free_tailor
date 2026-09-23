@@ -60,6 +60,17 @@ export default function AccountMenu() {
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         aria-haspopup="menu"
+        /*
+         * Its own name, because otherwise it often has none.
+         *
+         * The name beside the avatar is `hidden sm:inline` and an avatar image
+         * is `alt=""`, so below 640px this button announces nothing at all to
+         * a screen reader - it is the only control in the bar without a name.
+         * The label is also what makes it visible to the shell walkthrough's
+         * order check, which reads controls by title or aria-label; without
+         * one, the account was simply missing from the row it checks.
+         */
+        aria-label={`Account: ${account.name || account.email}`}
         className="flex items-center gap-2 rounded-full py-1 pl-1 pr-3 text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:text-slate-200 dark:hover:bg-slate-800"
       >
         {account.picture ? (

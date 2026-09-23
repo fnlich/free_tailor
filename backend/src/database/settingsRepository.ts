@@ -38,6 +38,3 @@ export function setSetting(key: string, value: unknown): void {
     .run({ key, value: JSON.stringify(value), updated_at: new Date().toISOString() });
 }
 
-export function deleteSetting(key: string): void {
-  getDb().prepare('DELETE FROM app_settings WHERE key = ?').run(key);
-}

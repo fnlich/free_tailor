@@ -403,7 +403,6 @@ export function createSpawnRunner(): CliRunner {
  * job description reaching another profile's resume - a correctness and privacy
  * defect that a few hundred milliseconds of saved boot cannot buy.
  */
-export const WARM_POOL_REJECTED = true;
 
 export function ensureCliWorkdir(dir: string): string {
   fs.mkdirSync(dir, { recursive: true });

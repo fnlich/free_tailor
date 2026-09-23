@@ -398,16 +398,3 @@ export function recordEventOnce(event: PaymentEvent): boolean {
     throw error;
   }
 }
-
-export function listEventsForPayment(paymentId: string): Array<{
-  eventId: string;
-  type: string;
-  receivedAt: string;
-}> {
-  return getDb()
-    .prepare(
-      `SELECT event_id AS eventId, type, received_at AS receivedAt
-       FROM payment_events WHERE payment_id = ? ORDER BY received_at ASC`
-    )
-    .all(paymentId) as Array<{ eventId: string; type: string; receivedAt: string }>;
-}

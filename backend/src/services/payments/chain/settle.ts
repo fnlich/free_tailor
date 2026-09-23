@@ -292,21 +292,3 @@ export function forgetSeenTransfer(invoice: ChainInvoice): void {
     `The transfer ${invoice.seenTxid} is no longer on the chain. Still waiting.`
   );
 }
-
-/** Exported for the watcher's log line and for tests. */
-export function toleranceFor(env: NodeJS.ProcessEnv = process.env): number {
-  return toleranceBps(env);
-}
-
-/** The env var that widens or narrows the band, for documentation. */
-export const TOLERANCE_ENV = 'CHAIN_TOLERANCE_BPS';
-
-/** Kept so the readers and the settler agree about what "enough" means. */
-export function confirmationsRequired(chainId: keyof typeof CHAINS): number {
-  return CHAINS[chainId].confirmations;
-}
-
-/** Re-exported so callers need not reach past this module for the config. */
-export function settlementConfig(env: NodeJS.ProcessEnv = process.env) {
-  return readChainPaymentsConfig(env);
-}

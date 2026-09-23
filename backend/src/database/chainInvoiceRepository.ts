@@ -225,17 +225,6 @@ export function listOpenInvoices(chain: ChainId, asset: AssetId): ChainInvoice[]
   return rows.map(toInvoice);
 }
 
-/** Every asset with something open on it, so a quiet chain costs no requests. */
-export function listAssetsWithOpenInvoices(chain: ChainId): AssetId[] {
-  const rows = getDb()
-    .prepare(
-      `SELECT DISTINCT asset FROM chain_invoices
-       WHERE chain = ? AND state IN ('waiting', 'seen')`
-    )
-    .all(chain) as Array<{ asset: string }>;
-  return rows.map((row) => row.asset as AssetId);
-}
-
 /**
  * Records that a transfer has been seen, without crediting anything.
  *

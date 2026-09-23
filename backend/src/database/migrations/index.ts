@@ -45,9 +45,6 @@ function writeVersion(db: Database.Database, version: number): void {
   ).run(VERSION_KEY, String(version), new Date().toISOString());
 }
 
-/** The version a fully migrated database is at. */
-export const CURRENT_SCHEMA_VERSION = CREDIT_LEDGER_SCHEMA_VERSION;
-
 function describe(report: MigrationReport): string {
   const parts: string[] = [];
   if (report.settingsRewritten) parts.push('settings rewritten');

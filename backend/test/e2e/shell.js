@@ -140,9 +140,12 @@ async function inspectTopBar(page) {
       .sort((left, right) => left.left - right.left)
       .map((entry) => entry.name);
 
-    return { viewport, past: worst, culprit, controls, group: (group?.className || '').toString().slice(0, 40) };
+    return { viewport, past: worst, culprit, controls };
   });
 }
+
+/** A pause, for the ticks React needs to mount or unmount a panel. */
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** What the shell looks like from inside the page. */
 async function inspect(page) {
@@ -363,19 +366,81 @@ async function main() {
         `${bar?.past}px past ${bar?.viewport}: ${bar?.culprit}`
       );
 
-      // Templates last, after the account. Names come from title/aria-label,
-      // so this reads the same thing a screen reader would.
+      /*
+       * The whole row, not just its two ends.
+       *
+       * Checking only that Templates came last could not see the account at
+       * all: that control carried neither a title nor an aria-label, so it was
+       * missing from this list entirely, and Templates sitting between the
+       * theme toggle and the account would still have matched. Naming the
+       * account button closed the blind spot; asserting the full sequence is
+       * what makes this check say what its name claims.
+       *
+       * Names come from title or aria-label, so this reads what a screen
+       * reader would - folded to one word each, because two of them carry a
+       * person's name or a state that changes with the theme.
+       */
       const order = (bar?.controls ?? []).join(' < ');
+      const shape = (bar?.controls ?? [])
+        .map((name) => {
+          if (/^Credits/.test(name)) return 'Credits';
+          if (/^Notifications/.test(name)) return 'Notifications';
+          if (/(mode|theme)$/i.test(name)) return 'Theme';
+          if (/^Account/.test(name)) return 'Account';
+          return name;
+        })
+        .join(' < ');
       check(
-        `top bar ${label}: Templates is last`,
-        /Templates$/.test(order),
+        `top bar ${label}: the row reads Credits, Notifications, Theme, Account, Templates`,
+        shape === 'Credits < Notifications < Theme < Account < Templates',
         order
       );
-      check(
-        `top bar ${label}: credits come first`,
-        /^Credits/.test(order),
-        order
-      );
+
+      /*
+       * And the menus it opens stay on the screen.
+       *
+       * Both hang off a trigger near the right edge and are right-aligned to
+       * it, so on a phone their left edge used to fall outside the viewport -
+       * the notifications panel started at -74px at 390 and -112 at 320, with
+       * the heading rendering as "ions". Nothing above could see it: this
+       * function measures the bar's own children with both menus shut, and the
+       * page-level check reads `documentElement.scrollWidth`, which never
+       * registers overflow to the LEFT at all.
+       */
+      for (const [name, selector] of [
+        ['notifications', '.tl-topbar button[aria-label^="Notifications"]'],
+        ['account', '.tl-topbar button[aria-label^="Account"]'],
+      ]) {
+        // Opened and measured in two steps: the panel is mounted by a state
+        // change, so it is not in the DOM in the same tick as the click.
+        const opened = await page.evaluate((sel) => {
+          const trigger = document.querySelector(sel);
+          if (!trigger) return false;
+          trigger.click();
+          return true;
+        }, selector);
+        await wait(300);
+        const box = opened
+          ? await page.evaluate(() => {
+              const panel = document.querySelector('.app-top-nav-menu');
+              if (!panel) return { missing: 'panel' };
+              const rect = panel.getBoundingClientRect();
+              return {
+                left: Math.round(rect.left),
+                right: Math.round(rect.right),
+                viewport: window.innerWidth,
+              };
+            })
+          : { missing: 'trigger' };
+        check(
+          `top bar ${label}: the ${name} menu opens on the screen`,
+          box && !box.missing && box.left >= 0 && box.right <= box.viewport,
+          JSON.stringify(box)
+        );
+        await page.keyboard.press('Escape');
+        await page.evaluate(() => document.body.click());
+        await wait(200);
+      }
     }
     await page.setViewport(PHONE);
 

@@ -153,14 +153,6 @@ export function countAdmins(): number {
   return row.n;
 }
 
-/** The earliest admin, which is who orphaned rows are handed to on migration. */
-export function getFirstAdmin(): UserAccount | null {
-  const row = getDb()
-    .prepare(`SELECT ${USER_COLUMNS} FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1`)
-    .get() as UserRow | undefined;
-  return row ? toAccount(row) : null;
-}
-
 export type CreateUserInput = {
   email: string;
   name?: string;
@@ -632,6 +624,3 @@ export function lastCodeSentAt(email: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function pruneExpiredLoginCodes(): number {
-  return getDb().prepare('DELETE FROM login_codes WHERE expires_at <= ?').run(now()).changes;
-}

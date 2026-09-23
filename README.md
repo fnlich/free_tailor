@@ -453,9 +453,10 @@ One shell owns the navigation on every page: a top bar, and a sidebar down the
 left.
 
 **Top bar** - the brand, then on the right: your **credit balance** (press it to
-buy more), **Templates**, **notifications**, the **light/dark** switch, and your
-**account** - name, email, plan, credits and profile use, with account info,
-subscription and sign-out under it.
+buy more), **notifications**, the **light/dark** switch, and your **account** -
+name, email, plan, credits and profile use, with account info, subscription and
+sign-out under it - and **Templates** last, because everything before it acts on
+the session you are in and that one navigates away.
 
 **Sidebar** - your work at the top:
 

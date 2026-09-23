@@ -67,15 +67,3 @@ export function advanceCursor(chain: ChainId, height: number): void {
        updated_at = @at`
   ).run({ chain, height: String(height), at: now() });
 }
-
-/** Every cursor, for an operator asking how far behind a chain is. */
-export function listCursors(): Array<{ chain: ChainId; height: number; updatedAt: string }> {
-  const rows = getDb()
-    .prepare('SELECT chain, height, updated_at FROM chain_cursors ORDER BY chain')
-    .all() as Array<{ chain: string; height: string; updated_at: string }>;
-  return rows.map((row) => ({
-    chain: row.chain as ChainId,
-    height: Number.parseInt(row.height, 10) || 0,
-    updatedAt: row.updated_at,
-  }));
-}

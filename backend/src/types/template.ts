@@ -32,11 +32,6 @@ export interface Template {
   isBuiltIn?: boolean;
 }
 
-export interface CreateTemplateDTO {
-  name: string;
-  description?: string;
-}
-
 export interface JobAnalysis {
   jobMeta: {
     title: string;

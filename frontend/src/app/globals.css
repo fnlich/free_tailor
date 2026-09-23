@@ -695,6 +695,50 @@ html.dark .shadow-2xl {
     flex: none;
   }
 
+  /*
+   * And the menus the bar opens hang off the VIEWPORT, not off their trigger.
+   *
+   * Both are `absolute right-0` inside a wrapper the width of the little
+   * button that opened them, so their right edge is pinned to that button and
+   * their left edge falls wherever 320px happens to land. Near the right of a
+   * phone there is simply no room to the left, so the panel starts off the
+   * screen: measured with the bell open, left was -112 at 320px, -104 at 360
+   * and -74 at 390, which rendered the heading as "ions" and every notice with
+   * its first few words cut off.
+   *
+   * And off the screen is all it is. `.tl-topbar` is `position: fixed`, so
+   * none of that is reachable by scrolling - the same failure as the bar's own
+   * 6px above, at the other end and costing rather more.
+   *
+   * It predates moving Templates to the end of the row, which made it 40px
+   * worse by shifting both triggers left by a button and a gap. Fixed here
+   * rather than by putting Templates back, because a panel wider than the room
+   * left of its trigger was always going to do this.
+   *
+   * Pinning BOTH edges is the fix; a max-width is not. The notifications panel
+   * already carries `max-w-[calc(100vw-2rem)]`, which correctly says "never
+   * wider than the screen" and still lets `right-0` place that width off the
+   * left. Below the breakpoint the panels span the viewport instead, gutter to
+   * gutter, which is the ordinary shape for a phone menu anyway.
+   */
+  .app-top-nav-menu {
+    position: fixed;
+    /*
+     * `top` has to be said out loud. Going from `absolute` to `fixed` throws
+     * away the `top-full` anchor the panel had against its trigger, and an
+     * unset `top` on a fixed box resolves to its static position - which is
+     * wherever it would have sat in normal flow, not under the bar. So it is
+     * measured from the bar's own height, plus the same 0.5rem the `mt-2` was
+     * giving it.
+     */
+    top: calc(var(--tl-topbar-h) + 0.5rem);
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-width: none;
+  }
+
+
   .tl-main {
     padding-left: 0;
   }

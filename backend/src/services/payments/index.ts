@@ -1192,11 +1192,6 @@ export function settleWebhookEvent(event: WebhookEvent): Settlement {
   })();
 }
 
-/** Looks a payment up the way a webhook refers to it: by provider reference. */
-export function findByProviderRef(provider: PaymentProvider, providerRef: string): Payment | null {
-  return getPaymentByProviderRef(provider, providerRef);
-}
-
 export {
   PriceError,
   recordEventOnce,

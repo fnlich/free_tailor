@@ -1791,11 +1791,6 @@ export async function getAIModelSettings(): Promise<AIModelSettings> {
   return { providersEnabled: { ...settings.providersEnabled } };
 }
 
-export async function updateAIModelSettings(input: Partial<AIModelSettings>): Promise<AIModelSettings> {
-  const updated = await updateAppSettings(input);
-  return { providersEnabled: { ...updated.providersEnabled } };
-}
-
 /**
  * The API key for a metered provider, from the environment.
  *
