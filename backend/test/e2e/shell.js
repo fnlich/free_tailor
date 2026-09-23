@@ -91,6 +91,59 @@ async function setTheme(page, theme) {
   }, theme);
 }
 
+/**
+ * The top bar's own geometry and the order of its controls.
+ *
+ * Separate from `inspect` because the question is different, and because the
+ * metric there cannot answer it. `documentElement.scrollWidth` is what catches
+ * a page that grew a horizontal scrollbar - but `.tl-topbar` is
+ * `position: fixed`, so anything hanging off its end does not extend the
+ * document at all. The bar overflowed by 6px at 390 for as long as that check
+ * has existed, and it passed every time, because the 6px is not scrollable -
+ * it is simply off the screen, where nobody can reach it.
+ */
+async function inspectTopBar(page) {
+  return page.evaluate(() => {
+    const bar = document.querySelector('.tl-topbar');
+    if (!bar) return null;
+    const viewport = window.innerWidth;
+
+    let worst = 0;
+    let culprit = '';
+    for (const node of bar.querySelectorAll('*')) {
+      const box = node.getBoundingClientRect();
+      if (box.width === 0) continue;
+      const past = Math.round(box.right - viewport);
+      if (past > worst) {
+        worst = past;
+        culprit = `${node.tagName}.${(node.className || '').toString().slice(0, 48)}`;
+      }
+    }
+
+    /*
+     * Read by position rather than by DOM order, so the check describes what
+     * somebody sees. A flex row can be reordered in CSS without the markup
+     * moving, and the spec is about the row.
+     */
+    const group = bar.lastElementChild;
+    const controls = Array.from(
+      (group || bar).querySelectorAll('a[title], button[aria-label], button[title], .tl-credits')
+    )
+      .map((node) => ({
+        name:
+          node.getAttribute('title') ||
+          node.getAttribute('aria-label') ||
+          (node.classList.contains('tl-credits') ? 'Credits' : ''),
+        left: node.getBoundingClientRect().left,
+      }))
+      .filter((entry) => entry.name)
+      .sort((left, right) => left.left - right.left)
+      .map((entry) => entry.name);
+
+    return { viewport, past: worst, culprit, controls, group: (group?.className || '').toString().slice(0, 40) };
+  });
+}
+
 /** What the shell looks like from inside the page. */
 async function inspect(page) {
   return page.evaluate(() => {
@@ -291,6 +344,40 @@ async function main() {
     const phone = await visit(page, '/', 'user phone', { expectRail: false, compact: true });
     check('phone: content is not offset by a rail that is not there', phone.railWidth <= 280);
     await page.screenshot({ path: `${SHOTS}/shell-3-phone-closed.png` });
+
+    /*
+     * The top bar, at both widths.
+     *
+     * The order is the one the navigation spec asked for: the things that act
+     * on the session you are in, then the one that navigates away.
+     */
+    for (const [label, viewport] of [['wide', WIDE], ['phone', PHONE]]) {
+      await page.setViewport(viewport);
+      await page.goto(`${APP}/orders`, { waitUntil: 'networkidle0' });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const bar = await inspectTopBar(page);
+
+      check(
+        `top bar ${label}: nothing hangs off the end`,
+        bar && bar.past <= 0,
+        `${bar?.past}px past ${bar?.viewport}: ${bar?.culprit}`
+      );
+
+      // Templates last, after the account. Names come from title/aria-label,
+      // so this reads the same thing a screen reader would.
+      const order = (bar?.controls ?? []).join(' < ');
+      check(
+        `top bar ${label}: Templates is last`,
+        /Templates$/.test(order),
+        order
+      );
+      check(
+        `top bar ${label}: credits come first`,
+        /^Credits/.test(order),
+        order
+      );
+    }
+    await page.setViewport(PHONE);
 
     const opened = await page.evaluate(() => {
       const trigger = document.querySelector('.tl-topbar button[aria-controls="app-sidebar"]');

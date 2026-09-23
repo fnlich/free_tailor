@@ -198,6 +198,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   const [minCredits, setMinCredits] = useState('');
   const [maxCredits, setMaxCredits] = useState('');
   const [limits, setLimits] = useState<LimitDraft[]>([]);
+  const [require3ds, setRequire3ds] = useState(false);
   const [newTarget, setNewTarget] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -212,6 +213,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         setMinCredits(String(settings.creditMinCredits));
         setMaxCredits(String(settings.creditMaxCredits));
         setLimits(settings.paymentLimits.map(toDraft));
+        setRequire3ds(settings.requireThreeDSecure);
       } catch {
         setProblem('Could not load the current pricing.');
       } finally {
@@ -230,6 +232,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         creditMinCredits: Number.parseInt(minCredits, 10),
         creditMaxCredits: Number.parseInt(maxCredits, 10),
         paymentLimits: limits.map(toRow),
+        requireThreeDSecure: require3ds,
       });
       setNote('Pricing saved. It applies to new purchases only.');
       onSaved();
@@ -280,6 +283,33 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
             onChange={(event) => setMaxCredits(event.target.value)}
             className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
           />
+        </label>
+      </div>
+
+      <div className="mt-6 border-t border-gray-200 pt-5">
+        <h3 className="text-sm font-semibold text-gray-900">Card security</h3>
+        <label className="mt-3 flex items-start gap-3 text-sm">
+          <input
+            type="checkbox"
+            checked={require3ds}
+            onChange={(event) => setRequire3ds(event.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0"
+          />
+          <span className="min-w-0">
+            <span className="font-medium text-gray-700">
+              Always ask the cardholder&apos;s bank to authenticate
+            </span>
+            <span className="mt-1 block text-gray-600">
+              Off, your payment provider decides when to challenge somebody, using its own risk
+              rules. On, every card payment asks the bank &ndash; which is what moves
+              responsibility for a disputed payment from you to the bank that issued the card.
+            </span>
+            <span className="mt-1 block text-gray-600">
+              It is not free: a challenge is a step a buyer can fail or give up on, and a card
+              somebody has kept stops charging in one tap, because they have to confirm each
+              time. That trade is yours to make, which is why this is a switch.
+            </span>
+          </span>
         </label>
       </div>
 

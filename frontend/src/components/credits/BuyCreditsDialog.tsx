@@ -397,6 +397,7 @@ export default function BuyCreditsDialog({
           onUseNewCard={() => setWantsNewCard(true)}
           onUseSavedCards={() => setWantsNewCard(false)}
           publishableKey={options.publishableKey}
+          requireThreeDSecure={options.requireThreeDSecure}
           dark={theme === 'dark'}
           saveCard={saveCard}
           onSaveCard={setSaveCard}

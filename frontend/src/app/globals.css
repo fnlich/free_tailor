@@ -660,8 +660,39 @@ html.dark .shadow-2xl {
 }
 
 @media (max-width: 767.98px) {
+  /*
+   * Below the breakpoint the brand is what gives way, and it has to be
+   * something.
+   *
+   * The bar is a flex row with the brand at one end and the controls at the
+   * other, and both were refusing to shrink: this rule set `width: auto` but
+   * left `flex: 0 0 auto`, while the control group is `shrink-0` and genuinely
+   * min-content-locked - `.tl-credits` is `white-space: nowrap` and every
+   * `.tl-icon-button` is a fixed 2.25rem box. So once the two sums passed the
+   * viewport the bar simply overflowed, by a measured 6px at 390. And because
+   * `.tl-topbar` is `position: fixed`, that 6px is not scrollable - it is off
+   * the screen and unreachable.
+   *
+   * The brand is the right thing to sacrifice: its inner link already carries
+   * `min-w-0` and its wordmark `truncate`, so it shrinks by shortening
+   * "Tailor" rather than by pushing anything out. `min-width: 0` is required
+   * as well as `flex-shrink`, or the automatic minimum floors it again at its
+   * content width and nothing moves.
+   */
   .tl-brand {
     width: auto;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  /*
+   * But never the drawer button. It is a flex child of the brand, and its
+   * automatic minimum resolves to the 20px glyph rather than the 36px box -
+   * so without this the thing that opens the navigation is what quietly gets
+   * squeezed first.
+   */
+  .tl-brand .tl-drawer-trigger {
+    flex: none;
   }
 
   .tl-main {

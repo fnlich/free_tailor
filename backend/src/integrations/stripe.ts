@@ -242,6 +242,8 @@ export type CheckoutRequest = {
   customer?: string;
   /** Keep the card for later. Requires `customer`. */
   saveCard?: boolean;
+  /** Ask the bank to authenticate, rather than letting Stripe decide. */
+  requireThreeDSecure?: boolean;
 };
 
 /**
@@ -300,6 +302,16 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
         metadata: { paymentId: input.paymentId, reference: input.reference },
         ...(input.saveCard && input.customer ? { setup_future_usage: 'off_session' } : {}),
       },
+      /*
+       * At the SESSION level, not inside `payment_intent_data` above.
+       *
+       * Worth saying because the eye goes to `payment_intent_data` - that is
+       * where `setup_future_usage` lives, and both read like properties of the
+       * intent. A Checkout Session takes `payment_method_options` itself, and
+       * putting it in the wrong place is not an error: Stripe accepts the
+       * request and silently does not require authentication.
+       */
+      ...(input.requireThreeDSecure ? { payment_method_options: THREE_D_SECURE_REQUIRED } : {}),
       line_items: [
         {
           quantity: 1,
@@ -370,6 +382,24 @@ export async function detachPaymentMethod(methodId: string): Promise<void> {
   await stripeFetch(`/payment_methods/${encodeURIComponent(methodId)}/detach`, { method: 'POST' });
 }
 
+/**
+ * What to send when the operator has asked for every card to be authenticated.
+ *
+ * `'any'` asks for 3-D Secure wherever the card's network supports it, rather
+ * than leaving Stripe to apply its own risk rules (`'automatic'`, the default
+ * when this is absent). It is the setting that moves chargeback liability to
+ * the issuing bank.
+ *
+ * NOT `'challenge'`, which is the stricter value and forces an interactive
+ * challenge even where a frictionless check would have authenticated the
+ * cardholder anyway. That is more friction for the same liability shift, so it
+ * is left as something an operator can ask for later rather than the default
+ * reading of "require 3-D Secure".
+ *
+ * Resolved at the pinned API version above, like every other request here.
+ */
+const THREE_D_SECURE_REQUIRED = { card: { request_three_d_secure: 'any' } } as const;
+
 export type SavedCardCharge = {
   paymentId: string;
   reference: string;
@@ -378,6 +408,8 @@ export type SavedCardCharge = {
   customer: string;
   paymentMethod: string;
   returnUrl: string;
+  /** Ask the bank to authenticate. Changes the shape of the call - see below. */
+  requireThreeDSecure?: boolean;
 };
 
 /**
@@ -389,8 +421,23 @@ export type SavedCardCharge = {
  * then hands the client secret to the browser, which is why this returns the
  * whole intent rather than a boolean.
  *
+ * **When 3-D Secure is required, that exemption is given up on purpose, and
+ * `off_session` goes with it.** The two cannot both be sent: asking for a
+ * challenge while declaring that nobody is present is a contradiction, and
+ * Stripe resolves it by failing the intent with `authentication_required`
+ * rather than by showing anybody a challenge. Dropping `off_session` says the
+ * true thing instead - the buyer IS present, they just pressed Pay now - so
+ * the challenge comes back as `requires_action` and the browser finishes it
+ * through the path that already exists for a bank that insists.
+ *
+ * The cost is real and belongs to the operator who turned the setting on: a
+ * kept card stops being one tap.
+ *
  * `confirm: true` makes this one call rather than create-then-confirm. The
- * idempotency key is the payment, so a retried request charges once.
+ * idempotency key is the payment, so a retried request charges once - note
+ * that Stripe refuses a reused key whose body differs, so a payment retried
+ * across a change to this setting errors rather than quietly charging under
+ * the old shape. That is the safer direction and the message says so.
  */
 export async function chargeSavedCard(input: SavedCardCharge): Promise<StripePaymentIntent> {
   return stripeFetch<StripePaymentIntent>('/payment_intents', {
@@ -402,7 +449,9 @@ export async function chargeSavedCard(input: SavedCardCharge): Promise<StripePay
       customer: input.customer,
       payment_method: input.paymentMethod,
       confirm: true,
-      off_session: true,
+      ...(input.requireThreeDSecure
+        ? { payment_method_options: THREE_D_SECURE_REQUIRED }
+        : { off_session: true }),
       return_url: input.returnUrl,
       description: input.reference,
       metadata: {

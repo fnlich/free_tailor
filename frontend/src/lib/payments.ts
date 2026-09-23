@@ -62,6 +62,13 @@ export type PaymentOptions = {
   targets: PaymentTarget[];
   /** Stripe's publishable key, served by the API. Empty when cards are off. */
   publishableKey: string;
+  /**
+   * Whether the operator has asked for every card payment to be authenticated.
+   *
+   * Only so the card step can warn before the bank's challenge appears, and
+   * so a kept card does not promise one tap when it now takes two.
+   */
+  requireThreeDSecure: boolean;
 };
 
 /** A card kept for reuse. No handle is served to the browser, only a label. */

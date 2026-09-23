@@ -98,10 +98,6 @@ function toColumnLetters(columnNumber: number): string {
   return letters;
 }
 
-function getJobSheetLink(job: { externalApplyUrl?: string }): string {
-  return job.externalApplyUrl || '';
-}
-
 function normalizeCompanyName(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -451,14 +447,6 @@ function shouldSkipExistingFilterRow(input: {
   }
 
   return false;
-}
-
-function requireNonEmptyString(fieldName: string, value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new GoogleSheetsRequestError(400, `${fieldName} is required.`);
-  }
-
-  return value.trim();
 }
 
 function toPositiveInteger(fieldName: string, value: unknown): number {

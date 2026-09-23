@@ -35,7 +35,7 @@ import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillH
 import { Profile } from '../types/profile';
 import { getProfileFor, listProfilesFor, type Viewer } from '../database/profileRepository';
 import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
-import { AIProvider, GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
+import { GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
 
 const router = Router();
 /**

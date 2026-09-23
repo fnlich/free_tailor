@@ -727,6 +727,15 @@ export interface AdminAppSettings extends PublicAppSettings {
    * here can narrow a method but never widen it past the credit bounds.
    */
   paymentLimits: PaymentTargetLimits[];
+  /**
+   * Ask the cardholder's bank to authenticate every card payment.
+   *
+   * Off by default. On, it is Stripe's `request_three_d_secure` rather than
+   * Stripe's own risk rules deciding, which is what moves chargeback liability
+   * to the issuing bank - and what makes a kept card need a confirmation
+   * instead of charging in one tap.
+   */
+  requireThreeDSecure: boolean;
 }
 
 /**
@@ -1014,6 +1023,7 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     creditMinCredits: typeof source.creditMinCredits === 'number' ? source.creditMinCredits : 10,
     creditMaxCredits: typeof source.creditMaxCredits === 'number' ? source.creditMaxCredits : 5000,
     paymentLimits: normalizePaymentLimits(source.paymentLimits),
+    requireThreeDSecure: source.requireThreeDSecure === true,
   };
 }
 
@@ -1024,6 +1034,7 @@ export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   creditMinCredits?: number;
   creditMaxCredits?: number;
   paymentLimits?: PaymentTargetLimits[];
+  requireThreeDSecure?: boolean;
 }
 
 /** One debug browser: which chat site it shows, and the port it listens on. */

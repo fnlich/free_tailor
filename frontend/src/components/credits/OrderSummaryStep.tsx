@@ -77,6 +77,7 @@ export default function OrderSummaryStep({
   onUseNewCard,
   onUseSavedCards,
   publishableKey,
+  requireThreeDSecure,
   dark,
   saveCard,
   onSaveCard,
@@ -100,6 +101,7 @@ export default function OrderSummaryStep({
   onUseNewCard: () => void;
   onUseSavedCards: () => void;
   publishableKey: string;
+  requireThreeDSecure: boolean;
   dark: boolean;
   saveCard: boolean;
   onSaveCard: (save: boolean) => void;
@@ -212,6 +214,7 @@ export default function OrderSummaryStep({
             onUseNewCard={onUseNewCard}
             onUseSavedCards={onUseSavedCards}
             publishableKey={publishableKey}
+            requireThreeDSecure={requireThreeDSecure}
             dark={dark}
             saveCard={saveCard}
             onSaveCard={onSaveCard}

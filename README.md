@@ -402,7 +402,17 @@ integration would work on a new Stripe account and fail on an older one.
 its own settings every time, so no request can set what it will be charged; the
 buy page displays that same number rather than working one out. The price and
 the purchase bounds are set under **Admin → Payments**, and each payment records
-the price it was made at, so changing it never rewrites a past receipt. One
+the price it was made at, so changing it never rewrites a past receipt.
+
+**3-D Secure is a switch, not a default.** Under Admin → Payments, *Always ask
+the cardholder's bank to authenticate* sets Stripe's `request_three_d_secure`
+instead of leaving Stripe's own risk rules to decide. Turning it on is what
+moves responsibility for a disputed payment to the bank that issued the card,
+and it costs two things worth knowing in advance: a challenge is a step a buyer
+can fail or abandon, and a card somebody has kept stops charging in one tap.
+That second one is not a side effect but the only correct reading - a challenge
+needs somebody present, so the charge is made on-session rather than claiming
+nobody is at the keyboard, which Stripe would otherwise refuse outright. One
 account may open twenty checkouts an hour; abandoning one is ordinary, but each
 costs a call to a payment provider, so a loop is refused with a 429 rather than
 run up somebody else's bill.
@@ -1107,6 +1117,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 |---------|---------------|
 | The buy page offers no coins although `CHAIN_ASSETS` is set | Every asset was rejected, and the backend said which at startup - look for `[chain] ... is not available:` in its output. The usual causes are an address that fails its checksum (the message names the variable), a `tron:*` asset with no `TRONGRID_API_KEY`, and `ethereum:ETH` or `bsc:BNB`, which this build deliberately does not watch. The buy page shows the same reasons per coin. |
 | A crypto buyer is told *somebody is already paying that exact amount* | Working as intended, and it should be rare. Two open orders must never quote the same figure, because the amount is the only thing telling two payments apart - so the second buyer waits a moment or picks a different amount rather than being given a near-identical one. It happens most on a quiet installation where two people pick the same preset within twenty minutes. |
+| Every card payment suddenly asks the buyer to confirm with their bank | *Always ask the cardholder's bank to authenticate* is on under **Admin → Payments**. That is what it does - it asks on every payment rather than only when the provider's own rules call for it. Turn it off to go back to letting Stripe decide, and note that doing so also gives up the shift of chargeback liability to the issuing bank |
+| A saved card used to charge in one tap and now needs a confirmation | The same setting. A challenge needs somebody present, so a kept card can no longer be charged off-session - the exemption it earned when it was first authenticated is given up deliberately. There is no way to have both; it is the trade the switch exists to make |
 | Coin arrived but the buyer was not credited | Look under **Admin → Payments**; if it could not be matched it is in the *needs attention* list at the top with the transaction id. A payment is credited automatically only when it matches an open order exactly, or when exactly one open order is within `CHAIN_TOLERANCE_BPS` of it. Otherwise nothing moves - by design, because guessing would credit one buyer's coin to another buyer's order. Widening the band makes this *more* likely, not less. |
 | A chain shows `starting from block N` at every restart | The scan cursor is not being kept. It lives in `chain_cursors`, one row per chain, written in the same transaction as the invoices that height produced - so this means the table is missing or the database is being recreated, not that the watcher is confused. A first run on a new installation prints it exactly once, on purpose: transfers sent before that block were never watched for. |
 | The watcher logs `this sweep could not complete; it will run again` | A public endpoint refused, lagged or timed out. Not fatal and not a payment failure: the next tick tries the next endpoint in the list. "We could not look" and "nothing arrived" are deliberately different - only the clock ever expires an order. If it never stops, put your own node first in `CHAIN_ETH_RPC_URLS` and friends. |

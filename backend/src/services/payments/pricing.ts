@@ -75,6 +75,18 @@ export async function getPricingLimits(): Promise<PricingLimits> {
 }
 
 /**
+ * Whether the operator has asked for every card payment to be authenticated.
+ *
+ * Its own accessor rather than a field on `PricingLimits`, because it is not a
+ * price or a bound and folding it in there would make that type mean "whatever
+ * the buy page happens to need". Payments reads its settings through this
+ * module, so this keeps that one door.
+ */
+export async function requireThreeDSecure(): Promise<boolean> {
+  return (await getCreditPricingSettings()).requireThreeDSecure;
+}
+
+/**
  * The names a row can carry that are METHODS rather than coins.
  *
  * One column holds both namespaces, and half of what goes looking in it

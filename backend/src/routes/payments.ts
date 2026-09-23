@@ -13,7 +13,12 @@ import {
 import { listAllPayments, listPaymentsForUser } from '../database/paymentRepository';
 import { detachCard, getCardForUser, listCardsForUser } from '../database/savedCardRepository';
 import * as stripe from '../integrations/stripe';
-import { getPricingLimits, PriceError, quoteCredits } from '../services/payments/pricing';
+import {
+  getPricingLimits,
+  PriceError,
+  quoteCredits,
+  requireThreeDSecure,
+} from '../services/payments/pricing';
 import { isAssetId } from '../config/chainAssets';
 import { getUserById } from '../database/userRepository';
 import {
@@ -70,6 +75,15 @@ router.get('/methods', async (_req: Request, res: Response) => {
        * that has not been reloaded.
        */
       targets: await describeTargets(),
+      /*
+       * So the card step can warn before the challenge appears.
+       *
+       * Served here rather than in public settings, for the same reason the
+       * price is: this is the one response the buy page already asks for, and
+       * a second place to read payment facts from is a second place to get
+       * them out of step.
+       */
+      requireThreeDSecure: await requireThreeDSecure(),
       /*
        * Served, not baked in.
        *

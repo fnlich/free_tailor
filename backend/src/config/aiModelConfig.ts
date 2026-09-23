@@ -109,6 +109,21 @@ type AppSettings = {
    * know the price.
    */
   paymentLimits: PaymentTargetLimits[];
+  /**
+   * Force the cardholder's bank to authenticate every card payment.
+   *
+   * Off by default, because turning it on changes what every buyer sees and
+   * no existing install asked for it. On, it sets Stripe's
+   * `request_three_d_secure` rather than leaving Stripe to decide, which is
+   * what moves chargeback liability to the issuing bank.
+   *
+   * It costs something, and the cost is the point of the setting rather than
+   * a flaw in it: a challenge is a step the buyer can fail or abandon, and a
+   * card kept for later stops charging in one tap. An operator weighing fraud
+   * against conversion is the only one who can make that trade, which is why
+   * this is a setting and not a constant.
+   */
+  requireThreeDSecure: boolean;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /**
@@ -224,6 +239,7 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
   creditMinCredits: number;
   creditMaxCredits: number;
   paymentLimits: PaymentTargetLimits[];
+  requireThreeDSecure: boolean;
 };
 
 export type AppSettingsUpdate = Partial<PublicAppSettings> & {
@@ -235,6 +251,7 @@ export type AppSettingsUpdate = Partial<PublicAppSettings> & {
   creditMinCredits?: number;
   creditMaxCredits?: number;
   paymentLimits?: PaymentTargetLimits[];
+  requireThreeDSecure?: boolean;
 };
 
 /**
@@ -512,6 +529,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   creditMinCredits: DEFAULT_CREDIT_MIN,
   creditMaxCredits: DEFAULT_CREDIT_MAX,
   paymentLimits: DEFAULT_PAYMENT_LIMITS,
+  requireThreeDSecure: false,
   aiModels: DEFAULT_MODEL_RECORDS,
   googleSheetsSources: [],
   browserChatEndpoints: defaultBrowserChatEndpoints(),
@@ -1160,6 +1178,11 @@ function normalizeSettings(
       source.creditMaxCredits, fallback.creditMaxCredits, 1, 1_000_000, 'creditMaxCredits', strict
     ),
     paymentLimits: normalizePaymentLimits(source.paymentLimits, fallback.paymentLimits, strict),
+    requireThreeDSecure: typeof source.requireThreeDSecure === 'boolean'
+      ? source.requireThreeDSecure
+      : strict && hasOwnProperty(source, 'requireThreeDSecure')
+        ? (() => { throw new Error('requireThreeDSecure must be a boolean'); })()
+      : fallback.requireThreeDSecure,
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
@@ -1268,6 +1291,7 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     creditMinCredits: settings.creditMinCredits,
     creditMaxCredits: settings.creditMaxCredits,
     paymentLimits: settings.paymentLimits,
+    requireThreeDSecure: settings.requireThreeDSecure,
   };
 }
 
@@ -1363,29 +1387,6 @@ export async function getPublicAppSettings(): Promise<PublicAppSettingsWithDeriv
 
 export async function getAdminAppSettings(): Promise<AdminAppSettings> {
   return toAdminSettings(await readSettings());
-}
-
-/**
- * A field an operator typed, checked rather than corrected.
- *
- * `normalizeSettings` clamps out-of-range numbers, which is right when reading
- * a stored file - a settings row that will not load takes the whole app down.
- * It is wrong here. Somebody typed 80 into a port box; silently saving 1024 and
- * starting a browser on it is the same class of bug as parsing "9222; rm -rf /"
- * as 9222, and it is worse for being invisible. Say what was wrong instead.
- */
-function assertInRange(
-  value: unknown,
-  min: number,
-  max: number,
-  field: string
-): void {
-  if (typeof value === 'undefined') return;
-  const raw = typeof value === 'number' ? String(value) : String(value ?? '').trim();
-  const parsed = /^-?\d+$/.test(raw) ? Number.parseInt(raw, 10) : Number.NaN;
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw new Error(`${field} must be a whole number between ${min} and ${max}`);
-  }
 }
 
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
@@ -1819,6 +1820,7 @@ export async function getCreditPricingSettings(): Promise<{
   creditMinCredits: number;
   creditMaxCredits: number;
   paymentLimits: PaymentTargetLimits[];
+  requireThreeDSecure: boolean;
   currency: string;
 }> {
   const settings = await readSettings();
@@ -1827,6 +1829,7 @@ export async function getCreditPricingSettings(): Promise<{
     creditMinCredits: settings.creditMinCredits,
     creditMaxCredits: settings.creditMaxCredits,
     paymentLimits: settings.paymentLimits,
+    requireThreeDSecure: settings.requireThreeDSecure,
     currency: CREDIT_CURRENCY,
   };
 }

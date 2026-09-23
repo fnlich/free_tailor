@@ -36,6 +36,7 @@ export default function CardPanel({
   onUseNewCard,
   onUseSavedCards,
   publishableKey,
+  requireThreeDSecure,
   dark,
   saveCard,
   onSaveCard,
@@ -52,6 +53,8 @@ export default function CardPanel({
   onUseNewCard: () => void;
   onUseSavedCards: () => void;
   publishableKey: string;
+  /** Warn before the challenge, rather than surprising somebody with it. */
+  requireThreeDSecure: boolean;
   dark: boolean;
   saveCard: boolean;
   onSaveCard: (save: boolean) => void;
@@ -101,6 +104,18 @@ export default function CardPanel({
               </div>
             ))}
           </div>
+          {/*
+            Said here, beside the button it changes, rather than once at the
+            top of the dialog. A kept card is the one place this setting
+            contradicts what somebody already expects - they saved it to skip
+            exactly this - so the warning belongs where the expectation is.
+          */}
+          {requireThreeDSecure && (
+            <p className="mt-2 text-xs text-subtle">
+              Your bank will ask you to confirm this payment, so paying with a saved card takes
+              one extra step.
+            </p>
+          )}
           <p className="mt-2 text-xs text-subtle">
             Removing a card here also removes it at the payment provider. Payments already made
             with it are not affected.

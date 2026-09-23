@@ -33,7 +33,14 @@ import {
 import type { UserAccount } from '../../types/account';
 import * as stripe from '../../integrations/stripe';
 import * as coinbase from '../../integrations/coinbaseCommerce';
-import { PriceError, quoteCredits, resolveLimits, presetsFor, type QuoteTarget } from './pricing';
+import {
+  PriceError,
+  quoteCredits,
+  requireThreeDSecure,
+  resolveLimits,
+  presetsFor,
+  type QuoteTarget,
+} from './pricing';
 
 /**
  * Buying credits.
@@ -377,12 +384,22 @@ export async function startCheckout(
     try {
       if (method === 'card') {
         /*
+         * Read once for both branches below, because the two card paths have
+         * to agree: it would be a strange installation where a new card is
+         * authenticated and a kept one is not.
+         */
+        const authenticate = await requireThreeDSecure();
+
+        /*
          * Paying with a card already kept: no form, no client secret.
          *
          * The charge is made here and now, so what comes back is a payment
          * intent rather than something for the browser to confirm. A bank can
          * still demand authentication even off-session, and that is the one
-         * case where a client secret is handed over after all.
+         * case where a client secret is handed over after all - and when the
+         * operator requires 3-D Secure it stops being the exception and
+         * becomes what always happens, because the charge is then made
+         * on-session on purpose.
          */
         if (savedCard) {
           const intent = await stripe.chargeSavedCard({
@@ -393,6 +410,7 @@ export async function startCheckout(
             customer: savedCard.customerRef,
             paymentMethod: savedCard.methodRef,
             returnUrl,
+            ...(authenticate ? { requireThreeDSecure: true } : {}),
           });
 
           return {
@@ -431,6 +449,7 @@ export async function startCheckout(
           returnUrl,
           ...(customer ? { customer } : {}),
           ...(saveCard && customer ? { saveCard: true } : {}),
+          ...(authenticate ? { requireThreeDSecure: true } : {}),
         });
         return { ref: session.id, clientSecret: session.client_secret ?? '', url: '' };
       }
