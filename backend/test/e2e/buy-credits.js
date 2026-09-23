@@ -1085,6 +1085,206 @@ async function main() {
         await page.keyboard.press('Escape');
       }
     }
+
+    /* ================================ the page's own two history columns */
+
+    /*
+     * Enough rows to page, made through the API rather than the dialog.
+     *
+     * The account already has a payment or two from the checks above; this
+     * tops it up past the smallest page size so the controls are on screen at
+     * all. They are abandoned checkouts, which is exactly the state most rows
+     * in a real payment history are in.
+     */
+    for (let index = 0; index < 8; index += 1) {
+      await call(token, '/payments/checkout', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'card', credits: cardTarget?.minCredits ?? 10 }),
+      });
+    }
+
+    console.log('\n=== The credits page: two columns, paged ===');
+    await page.setViewport(WIDE);
+    await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await wait(900);
+
+    const headings = () =>
+      page.evaluate(() =>
+        Array.from(document.querySelectorAll('main h2')).map((node) => ({
+          text: node.textContent.trim(),
+          left: Math.round(node.getBoundingClientRect().left),
+          top: Math.round(node.getBoundingClientRect().top),
+        }))
+      );
+
+    const wide = await headings();
+    const payHeading = wide.find((entry) => entry.text === 'Payment history');
+    const creditHeading = wide.find((entry) => entry.text === 'Credit history');
+    check(
+      'both histories are on the page, and named as a pair',
+      Boolean(payHeading && creditHeading),
+      JSON.stringify(wide)
+    );
+    /*
+     * Side by side, measured rather than assumed from the class name.
+     *
+     * `lg:grid-cols-2` in the markup proves nothing about what rendered: the
+     * page's own max-width has to grow at the same breakpoint or the two
+     * columns are 370px each inside a 768px well, and a Tailwind config change
+     * would take the layout apart silently.
+     */
+    check(
+      'at 1440 they are side by side, not stacked',
+      payHeading && creditHeading &&
+        creditHeading.left > payHeading.left &&
+        Math.abs(creditHeading.top - payHeading.top) < 40,
+      JSON.stringify([payHeading, creditHeading])
+    );
+
+    /*
+     * And NOT at 1024, which is the decision most likely to be undone.
+     *
+     * `lg` is the obvious breakpoint and it is the wrong one here: the rail
+     * takes 240px of the window, so a 1024px screen leaves a 784px well and
+     * two 347px columns - narrow enough that every payment row wraps its
+     * status pill onto a second line. The split is worth having at `xl` and
+     * not before, and this is what says so.
+     */
+    await page.setViewport({ width: 1024, height: 900 });
+    await wait(600);
+    const medium = await headings();
+    const mediumPay = medium.find((entry) => entry.text === 'Payment history');
+    const mediumCredit = medium.find((entry) => entry.text === 'Credit history');
+    check(
+      'at 1024 they are still stacked, because two columns there are too narrow',
+      mediumPay && mediumCredit && mediumCredit.top > mediumPay.top,
+      JSON.stringify([mediumPay, mediumCredit])
+    );
+    await page.setViewport(WIDE);
+    await wait(600);
+
+    const overflow = await page.evaluate(() => ({
+      past: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+      viewport: window.innerWidth,
+    }));
+    check('nothing hangs off the side of the credits page at 1440', overflow.past <= 1,
+      JSON.stringify(overflow));
+    await page.screenshot({ path: path.join(SHOTS, 'credits-1-wide.png'), fullPage: false });
+
+    /*
+     * The count sentence, which is the whole point of the exercise: a list
+     * that shows the newest few and says nothing about the rest is a window
+     * that looks like a history.
+     */
+    const readPager = () =>
+      page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('main h2')).map((h) => h.parentElement);
+        return cards.map((card) => ({
+          heading: card.querySelector('h2')?.textContent.trim() ?? '',
+          rows: card.querySelectorAll('ul > li').length,
+          count: Array.from(card.querySelectorAll('p'))
+            .map((p) => p.textContent.trim())
+            .find((text) => /\d+.\d+ of \d+/.test(text)) ?? '',
+          size: card.querySelector('select')?.value ?? '',
+        }));
+      });
+
+    const opened = (await readPager()).find((card) => card.heading === 'Payment history');
+    check(
+      'the payment list opens on five rows and says how many there are',
+      opened && opened.rows === 5 && opened.size === '5' && /of \d+ payments/.test(opened.count),
+      JSON.stringify(opened)
+    );
+
+    // Older, then the rows must actually be different ones.
+    const firstReference = await page.evaluate(
+      () => document.querySelector('main ul > li a')?.textContent.trim() ?? ''
+    );
+    await clickText(page, 'main button', 'Older');
+    await wait(700);
+    const afterOlder = await page.evaluate(
+      () => document.querySelector('main ul > li a')?.textContent.trim() ?? ''
+    );
+    check(
+      'Older shows a different page of payments',
+      firstReference && afterOlder && firstReference !== afterOlder,
+      `${firstReference} -> ${afterOlder}`
+    );
+
+    await clickText(page, 'main button', 'Newer');
+    await wait(700);
+    const backAgain = await page.evaluate(
+      () => document.querySelector('main ul > li a')?.textContent.trim() ?? ''
+    );
+    check('and Newer comes back to the first one', backAgain === firstReference,
+      `${backAgain} vs ${firstReference}`);
+
+    // The size selector, which is the other half of what was asked for.
+    await page.select('main select', '20');
+    await wait(700);
+    const grown = (await readPager()).find((card) => card.heading === 'Payment history');
+    check(
+      'choosing 20 rows shows more of them',
+      grown && grown.rows > 5,
+      JSON.stringify(grown)
+    );
+
+    /*
+     * Stacked on a phone, and still not overflowing.
+     *
+     * Measured against the WINDOW as well as the document: `.tl-topbar` is
+     * `position: fixed`, so `documentElement.scrollWidth` cannot see anything
+     * that escapes through it - the trap that let two overflow bugs through
+     * checks named "nothing hangs off the side".
+     */
+    await page.setViewport(PHONE);
+    await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await wait(900);
+    const narrow = await headings();
+    const narrowPay = narrow.find((entry) => entry.text === 'Payment history');
+    const narrowCredit = narrow.find((entry) => entry.text === 'Credit history');
+    check(
+      'at 390 the two columns stack',
+      narrowPay && narrowCredit && narrowCredit.top > narrowPay.top &&
+        Math.abs(narrowCredit.left - narrowPay.left) < 2,
+      JSON.stringify([narrowPay, narrowCredit])
+    );
+    const narrowOverflow = await page.evaluate(() => ({
+      past: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+      widest: Math.max(
+        0,
+        ...Array.from(document.querySelectorAll('main *')).map(
+          (node) => Math.round(node.getBoundingClientRect().right) - window.innerWidth
+        )
+      ),
+      viewport: window.innerWidth,
+    }));
+    check(
+      'nothing hangs off the side of the credits page at 390',
+      narrowOverflow.past <= 1 && narrowOverflow.widest <= 1,
+      JSON.stringify(narrowOverflow)
+    );
+    await page.screenshot({ path: path.join(SHOTS, 'credits-2-phone.png') });
+
+    // And in the dark, where the select is the control most likely to come out
+    // unreadable: the shim restyles bare selects and nothing else here does.
+    await page.evaluate(() => window.localStorage.setItem('tailor-theme', 'dark'));
+    await page.setViewport(WIDE);
+    await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await wait(900);
+    const darkSelect = await page.evaluate(() => {
+      const node = document.querySelector('main select');
+      if (!node) return null;
+      const style = getComputedStyle(node);
+      return { background: style.backgroundColor, color: style.color };
+    });
+    check(
+      'the page-size control is not white-on-white in dark mode',
+      darkSelect && darkSelect.background !== 'rgb(255, 255, 255)' &&
+        darkSelect.color !== 'rgb(255, 255, 255)',
+      JSON.stringify(darkSelect)
+    );
+    await page.screenshot({ path: path.join(SHOTS, 'credits-3-wide-dark.png') });
   } finally {
     await browser.close();
   }

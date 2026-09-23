@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 
 import { requireUser } from '../middleware/auth';
-import { getLedger, getStatus, CREDITS_PER_RESUME } from '../services/credits';
+import { countLedger, getLedger, getStatus, CREDITS_PER_RESUME } from '../services/credits';
+import { readPage } from './paging';
 
 /**
  * An account's own balance and the rows behind it.
@@ -30,10 +31,19 @@ router.get('/', (req: Request, res: Response) => {
  * which is behind the admin check.
  */
 router.get('/ledger', (req: Request, res: Response) => {
-  const limit = Number.parseInt(String(req.query.limit ?? '100'), 10);
+  /*
+   * Paged, because this list grows by a row per generation run.
+   *
+   * `total` is the point of it: without one the credits page could not tell a
+   * short last page from a full one, and described whatever it had been given
+   * as the account's credit history.
+   */
+  const { limit, offset } = readPage(req, 100, 100);
   res.json({
     balance: req.user!.credits,
-    entries: getLedger(req.user!.id, Number.isFinite(limit) ? limit : 100),
+    entries: getLedger(req.user!.id, limit, offset),
+    total: countLedger(req.user!.id),
+    offset,
   });
 });
 

@@ -284,6 +284,31 @@ async function main() {
       `saw: ${shell.navLabels.join(', ')}`
     );
 
+    /*
+     * The way to the page where money is spent.
+     *
+     * It was reachable only from the coin pill in the top bar, which is a
+     * balance you can press rather than a door somebody goes looking for. Last
+     * in the main group, beside Orders, because noticing you are out of credits
+     * is something that happens on an order.
+     */
+    const creditsShell = await visit(page, '/credits', 'user');
+    check(
+      'user: Credits is in the rail, last in the main group',
+      creditsShell.navLabels.includes('Credits'),
+      `saw: ${creditsShell.navLabels.join(', ')}`
+    );
+    check(
+      'user: and it is the row that lights up on /credits',
+      creditsShell.activeLabels.length === 1 && creditsShell.activeLabels[0] === 'Credits',
+      `lit: ${creditsShell.activeLabels.join(', ')}`
+    );
+    check(
+      'user: Credits sits after Orders',
+      creditsShell.navLabels.indexOf('Credits') === creditsShell.navLabels.indexOf('Orders') + 1,
+      `saw: ${creditsShell.navLabels.join(', ')}`
+    );
+
     // The prefix collision that a vertical rail makes obvious.
     const filter = await visit(page, '/jobs/filter', 'user');
     check(
@@ -502,6 +527,15 @@ async function main() {
       adminShell.navLabels.includes('Settings') &&
         adminShell.navLabels.includes('Manage Accounts') &&
         !adminShell.navLabels.includes('Find Jobs'),
+      `saw: ${adminShell.navLabels.join(', ')}`
+    );
+
+    // Administrators too. They do not spend credits, and the page says so
+    // itself - a row they can see and a page that explains beats a missing row
+    // and a balance they cannot account for.
+    check(
+      'admin: Credits is in the rail as well',
+      adminShell.navLabels.includes('Credits'),
       `saw: ${adminShell.navLabels.join(', ')}`
     );
 

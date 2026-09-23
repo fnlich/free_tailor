@@ -261,7 +261,17 @@ export const paymentsApi = {
     });
     return apiFetch<CreditQuote>(`/payments/quote?${query.toString()}`);
   },
-  list: () => apiFetch<{ payments: Payment[] }>('/payments'),
+  /**
+   * A page of this account's own payments.
+   *
+   * `total` is what lets the page say how many it is not showing. The
+   * parameters are optional at the API, so an older tab that sends neither
+   * keeps getting the newest 50 exactly as it did.
+   */
+  list: (offset = 0, limit = 0) =>
+    apiFetch<{ payments: Payment[]; total: number; offset: number }>(
+      `/payments?offset=${offset}${limit ? `&limit=${limit}` : ''}`
+    ),
   get: (id: string) =>
     apiFetch<{ payment: Payment; invoice?: ChainInvoiceView }>(`/payments/${id}`),
   checkout: (request: CheckoutRequest) =>

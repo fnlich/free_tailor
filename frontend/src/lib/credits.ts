@@ -49,12 +49,17 @@ export type CreditStatus = {
 export type CreditLedgerResponse = {
   balance: number;
   entries: LedgerEntry[];
+  /** How many movements there are altogether, so a page can say what it hides. */
+  total: number;
+  offset: number;
 };
 
 export const creditsApi = {
   status: () => apiFetch<CreditStatus>('/credits'),
-  ledger: (limit?: number) =>
-    apiFetch<CreditLedgerResponse>(`/credits/ledger${limit ? `?limit=${limit}` : ''}`),
+  ledger: (limit?: number, offset = 0) =>
+    apiFetch<CreditLedgerResponse>(
+      `/credits/ledger?offset=${offset}${limit ? `&limit=${limit}` : ''}`
+    ),
 };
 
 /**

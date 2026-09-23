@@ -12,9 +12,11 @@ import {
 } from '../services/payments';
 import {
   countAllPayments,
+  countPaymentsForUser,
   listAllPayments,
   listPaymentsForUser,
 } from '../database/paymentRepository';
+import { readPage } from './paging';
 import { detachCard, getCardForUser, listCardsForUser } from '../database/savedCardRepository';
 import * as stripe from '../integrations/stripe';
 import {
@@ -242,8 +244,24 @@ router.delete('/cards/:id', async (req: Request<{ id: string }>, res: Response) 
   }
 });
 
+/**
+ * This account's own payments, a page at a time.
+ *
+ * It used to answer with the newest fifty and say nothing about the rest,
+ * which made it a window rather than a history: every row here links to the
+ * order's own page, so a payment past the cap was an order its buyer could not
+ * open. `total` is what lets the page say how many it is not showing.
+ *
+ * Both parameters are optional and the defaults are the old behaviour, so a
+ * browser tab loaded before this shipped keeps working unchanged.
+ */
 router.get('/', (req: Request, res: Response) => {
-  res.json({ payments: listPaymentsForUser(req.user!.id) });
+  const { limit, offset } = readPage(req, 50, 100);
+  res.json({
+    payments: listPaymentsForUser(req.user!.id, limit, offset),
+    total: countPaymentsForUser(req.user!.id),
+    offset,
+  });
 });
 
 /**

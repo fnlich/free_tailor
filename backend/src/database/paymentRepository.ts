@@ -229,14 +229,34 @@ export function getPaymentByProviderRef(provider: PaymentProvider, providerRef: 
   return row ? toPayment(row) : null;
 }
 
-export function listPaymentsForUser(userId: string, limit = 50): Payment[] {
+/**
+ * A page of one account's payments, newest first.
+ *
+ * The offset is what makes this a history rather than a window onto the newest
+ * fifty. Each row on the credits page links to the order's own page, so a row
+ * the list cannot reach is an order its buyer cannot open.
+ *
+ * The `rowid` tiebreak is load-bearing for the same reason it is in
+ * `listAllPayments` below: `created_at` is a second-resolution string, so
+ * without it two payments made in the same second can swap places between two
+ * requests, and one of them is returned on neither page.
+ */
+export function listPaymentsForUser(userId: string, limit = 50, offset = 0): Payment[] {
   const rows = getDb()
     .prepare(
       `SELECT ${PAYMENT_COLUMNS} FROM payments
-       WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`
+       WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
     )
-    .all(userId, limit) as PaymentRow[];
+    .all(userId, limit, offset) as PaymentRow[];
   return rows.map(toPayment);
+}
+
+/** How many that account has, so a page can say what it is not showing. */
+export function countPaymentsForUser(userId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS total FROM payments WHERE user_id = ?')
+    .get(userId) as { total: number };
+  return row.total;
 }
 
 /** Every payment, newest first. The administrator's reconciliation view. */
