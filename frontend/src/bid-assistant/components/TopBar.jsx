@@ -3,7 +3,7 @@ import {
   DEFAULT_PROMPT_TEMPLATE,
   PROMPT_TOKENS
 } from '../lib/promptTemplate.js';
-import { getBidAssistantApiUrl } from '../lib/apiBase.js';
+import { bidAssistantFetch } from '../lib/apiBase.js';
 
 // Returns the empty form state for creating a new Google Sheet source.
 function createEmptySheetForm() {
@@ -177,7 +177,7 @@ export default function TopBar({
         setIsLoadingTabs(true);
         setTabsError('');
 
-        const response = await fetch(getBidAssistantApiUrl(`/api/google-sheets/${activeSheetId}/tabs`));
+        const response = await bidAssistantFetch(`/api/google-sheets/${activeSheetId}/tabs`);
         const data = await response.json();
 
         if (!response.ok) {
@@ -298,7 +298,7 @@ export default function TopBar({
       const requestMethod = profileEditorMode === 'edit' && activeProfile?.id ? 'PUT' : 'POST';
       const requestUrl = requestMethod === 'PUT' ? `/api/profiles/${activeProfile.id}` : '/api/profiles';
 
-      const response = await fetch(getBidAssistantApiUrl(requestUrl), {
+      const response = await bidAssistantFetch(requestUrl, {
         method: requestMethod,
         headers: {
           'Content-Type': 'application/json'
@@ -336,7 +336,7 @@ export default function TopBar({
       setProfileMessage('');
       setProfileError('');
 
-      const response = await fetch(getBidAssistantApiUrl(`/api/profiles/${profileId}`), {
+      const response = await bidAssistantFetch(`/api/profiles/${profileId}`, {
         method: 'DELETE'
       });
 
@@ -370,7 +370,7 @@ export default function TopBar({
       const requestMethod = sheetForm.id ? 'PUT' : 'POST';
       const requestUrl = sheetForm.id ? `/api/google-sheets/${sheetForm.id}` : '/api/google-sheets';
 
-      const response = await fetch(getBidAssistantApiUrl(requestUrl), {
+      const response = await bidAssistantFetch(requestUrl, {
         method: requestMethod,
         headers: {
           'Content-Type': 'application/json'
@@ -410,7 +410,7 @@ export default function TopBar({
       setFormMessage('');
       setFormError('');
 
-      const response = await fetch(getBidAssistantApiUrl(`/api/google-sheets/${sheetId}`), {
+      const response = await bidAssistantFetch(`/api/google-sheets/${sheetId}`, {
         method: 'DELETE'
       });
 
@@ -445,7 +445,7 @@ export default function TopBar({
       setImportMessage('');
       setImportError('');
 
-      const response = await fetch(getBidAssistantApiUrl(`/api/google-sheets/${activeSheetId}/import`), {
+      const response = await bidAssistantFetch(`/api/google-sheets/${activeSheetId}/import`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

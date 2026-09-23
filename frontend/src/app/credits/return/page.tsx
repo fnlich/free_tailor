@@ -3,12 +3,14 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import ChainDepositCard, { ExactAmountNote } from '@/components/credits/ChainDepositCard';
 import {
   formatAmount,
   isPaymentPending,
   paymentsApi,
   STATE_LABELS,
   STATE_STYLES,
+  type ChainInvoiceView,
   type Payment,
 } from '@/lib/payments';
 
@@ -33,6 +35,16 @@ function ReturnBody() {
   const paymentId = search?.get('payment') ?? '';
 
   const [payment, setPayment] = useState<Payment | null>(null);
+  /*
+   * Kept, where it used to be thrown away.
+   *
+   * `paymentsApi.get` has always returned the invoice beside the payment and
+   * this page destructured only the payment - so the one route a buyer can
+   * navigate to for a waiting crypto order showed a dollar figure and nothing
+   * they could act on. The address and the exact amount existed solely inside
+   * the purchase modal, and closing it lost them for good.
+   */
+  const [invoice, setInvoice] = useState<ChainInvoiceView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [waitedTooLong, setWaitedTooLong] = useState(false);
@@ -53,6 +65,7 @@ function ReturnBody() {
       const response = await paymentsApi.get(paymentId);
       if (token !== latestRequest.current) return;
       setPayment(response.payment);
+      setInvoice(response.invoice ?? null);
       setError('');
     } catch (err) {
       if (token !== latestRequest.current) return;
@@ -141,6 +154,25 @@ function ReturnBody() {
         {waiting && (
           <div className="mt-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
             <p className="font-semibold">Waiting for the payment to be confirmed.</p>
+
+            {/*
+              For a coin payment, what they still have to DO - not just that we
+              are waiting. Shown while the invoice can still be paid; once it
+              is credited or held there is nothing to send and the card would
+              be an instruction to make a second payment.
+            */}
+            {invoice && (invoice.state === 'waiting' || invoice.state === 'seen') && (
+              <div className="mt-4 space-y-3 text-left">
+                <ChainDepositCard invoice={invoice} reference={payment.reference} />
+                <ExactAmountNote />
+                {invoice.state === 'seen' && (
+                  <p className="text-xs text-subtle">
+                    {invoice.paid} {invoice.symbol} has arrived and is confirming &mdash;{' '}
+                    {invoice.confirmations} of {invoice.confirmationsNeeded}. Nothing more to send.
+                  </p>
+                )}
+              </div>
+            )}
             <p className="mt-1">
               {/*
                 Careful not to promise. Landing here proves only that a browser

@@ -202,7 +202,19 @@ export default function BuyCreditsPage() {
             remember to dispatch on the second purchase.
           */}
           {buying && options && (
-            <BuyCreditsDialog options={options} onClose={() => setBuying(false)} />
+            <BuyCreditsDialog
+              options={options}
+              onClose={() => {
+                setBuying(false);
+                /*
+                 * The page's own panels, which the auth refresh does not
+                 * cover: YOUR BALANCE and the credit history are loaded here
+                 * once on mount, so after a chain payment they kept showing
+                 * the pre-purchase figures until a full reload.
+                 */
+                void load();
+              }}
+            />
           )}
         </>
       )}

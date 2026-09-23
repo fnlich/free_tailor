@@ -307,7 +307,11 @@ export type HeldTransfer = {
 };
 
 export const adminPaymentsApi = {
-  list: () => apiFetch<{ payments: AdminPayment[] }>('/admin/payments'),
+  /** One page of payments, newest first. `offset` fetches the next lot. */
+  list: (offset = 0) =>
+    apiFetch<{ payments: AdminPayment[]; total: number; offset: number }>(
+      `/admin/payments?offset=${offset}`
+    ),
   held: () => apiFetch<{ held: HeldTransfer[] }>('/admin/payments/held'),
   resolveHeld: (id: string) =>
     apiFetch<{ resolved: true }>(

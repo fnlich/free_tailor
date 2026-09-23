@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { getBidAssistantApiUrl } from '../lib/apiBase.js';
+import { bidAssistantFetch } from '../lib/apiBase.js';
 
 // Returns the search text used to filter visible jobs.
 function matchesSearch(job, searchText) {
@@ -148,7 +148,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
         date: filterDate
       });
 
-      const response = await fetch(getBidAssistantApiUrl(`/api/jobs/copy-links?${query.toString()}`));
+      const response = await bidAssistantFetch(`/api/jobs/copy-links?${query.toString()}`);
       const data = await response.json();
 
       if (!response.ok) {

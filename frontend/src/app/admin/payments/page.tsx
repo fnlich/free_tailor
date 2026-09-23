@@ -420,11 +420,15 @@ function PaymentsBody() {
   const [confirming, setConfirming] = useState('');
   const [note, setNote] = useState('');
   const [resolving, setResolving] = useState('');
+  /** How many exist, against how many are on screen. */
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const response = await adminPaymentsApi.list();
       setPayments(response.payments);
+      setTotal(response.total ?? response.payments.length);
       /*
        * Settled separately: a held transfer is the more urgent of the two and
        * must not be hidden because the payment list failed to load, nor take
@@ -446,6 +450,28 @@ function PaymentsBody() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * The next page, appended rather than swapped in.
+   *
+   * Refunds are driven from a row here, so a payment this page cannot show is
+   * a payment nobody can refund - and it used to stop at the newest 200 with
+   * no control, no count and no hint that anything was missing. On an install
+   * with 377 payments that hid 66 refundable ones.
+   */
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const response = await adminPaymentsApi.list(payments.length);
+      setPayments((current) => [...current, ...response.payments]);
+      if (typeof response.total === 'number') setTotal(response.total);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load older payments.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   /**
    * Marks an unattributable transfer as dealt with.
@@ -514,6 +540,9 @@ function PaymentsBody() {
         <p className="mt-1 text-sm text-gray-600">
           Every credit purchase on this installation. Quote the reference when reconciling against
           your provider&apos;s dashboard.
+          {total > payments.length && (
+            <> Showing the newest {payments.length} of {total}.</>
+          )}
         </p>
       </div>
 
@@ -723,6 +752,22 @@ function PaymentsBody() {
               </li>
             ))}
           </ul>
+          {/*
+            The way past the first page. Shown only while there is more, so a
+            small installation never sees a button that would do nothing.
+          */}
+          {payments.length < total && (
+            <div className="border-t border-gray-200 p-4 text-center">
+              <button
+                type="button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+              >
+                {loadingMore ? 'Loading…' : `Show older payments (${total - payments.length} more)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

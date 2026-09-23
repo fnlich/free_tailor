@@ -1,8 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { CoinMark } from '@/components/icons/marks';
-import { IconCheck, IconCopy } from '@/components/icons';
+import ChainDepositCard, { ExactAmountNote } from './ChainDepositCard';
 import { LABEL, PANEL, PRIMARY, QUIET } from './chrome';
 import type { Order } from './order';
 import { formatAmount, type ChainInvoiceView, type PaymentTarget } from '@/lib/payments';
@@ -29,82 +27,6 @@ import { formatAmount, type ChainInvoiceView, type PaymentTarget } from '@/lib/p
 /** How often to ask. Slow enough to be polite, fast enough to feel live. */
 const POLL_MS = 8_000;
 
-function useCountdown(expiresAt: string): { label: string; expired: boolean } {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const remaining = new Date(expiresAt).getTime() - now;
-  if (!Number.isFinite(remaining) || remaining <= 0) return { label: '0:00', expired: true };
-  const minutes = Math.floor(remaining / 60_000);
-  const seconds = Math.floor((remaining % 60_000) / 1_000);
-  return { label: `${minutes}:${String(seconds).padStart(2, '0')}`, expired: false };
-}
-
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = useCallback(() => {
-    void (async () => {
-      try {
-        await navigator.clipboard.writeText(value);
-        setCopied(true);
-      } catch {
-        /*
-         * Clipboard access is refused more often than people expect - an
-         * insecure origin, a permissions policy, an older browser. Saying
-         * nothing is fine here ONLY because the address is on screen and
-         * selectable: the copy button is a convenience, not the way to get it.
-         */
-      }
-    })();
-  }, [value]);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2_000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  return (
-    <button
-      type="button"
-      onClick={copy}
-      aria-label={`Copy the ${label}`}
-      className="tl-icon-button shrink-0 border border-line"
-    >
-      {copied ? <IconCheck className="h-4 w-4" /> : <IconCopy className="h-4 w-4" />}
-    </button>
-  );
-}
-
-function Field({
-  caption,
-  value,
-  mono,
-  hint,
-}: {
-  caption: string;
-  value: string;
-  mono?: boolean;
-  hint?: string;
-}) {
-  return (
-    <div className="min-w-0 flex-1">
-      <div className={LABEL}>{caption}</div>
-      <div
-        className={`mt-1 break-all text-sm font-medium text-ink ${mono ? 'font-mono' : ''}`}
-      >
-        {value}
-      </div>
-      {hint && <div className="mt-0.5 text-xs text-subtle">{hint}</div>}
-    </div>
-  );
-}
-
 export default function CryptoPanel({
   order,
   target,
@@ -119,8 +41,6 @@ export default function CryptoPanel({
   onCancel: () => void;
   onRetry: () => void;
 }) {
-  const countdown = useCountdown(invoice?.expiresAt ?? '');
-
   if (order.status === 'none' || order.status === 'starting') {
     return (
       <div className={PANEL}>
@@ -221,46 +141,7 @@ export default function CryptoPanel({
 
   return (
     <div className="space-y-3">
-      <div className={PANEL}>
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <CoinMark assetId={invoice.asset} symbol={invoice.symbol} className="h-7 w-7" />
-            <div>
-              <p className="text-sm font-semibold text-ink">{invoice.assetLabel}</p>
-              <p className="text-xs text-subtle">
-                Order <span className="font-mono">{started.reference}</span>
-              </p>
-            </div>
-          </div>
-          {!done && (
-            <div className="text-right">
-              <div className={LABEL}>Expires in</div>
-              <div
-                className={`text-lg font-semibold tabular-nums ${
-                  countdown.expired ? 'text-red-700' : 'text-ink'
-                }`}
-              >
-                {countdown.label}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-4 flex items-start gap-2 border-t border-line pt-4">
-          <Field
-            caption="Send exactly"
-            value={`${invoice.amount} ${invoice.symbol}`}
-            mono
-            hint={`On ${invoice.chainLabel}, and no other network.`}
-          />
-          <CopyButton value={invoice.amount} label="amount" />
-        </div>
-
-        <div className="mt-4 flex items-start gap-2 border-t border-line pt-4">
-          <Field caption={`${invoice.chainLabel} address`} value={invoice.address} mono />
-          <CopyButton value={invoice.address} label="address" />
-        </div>
-      </div>
+      <ChainDepositCard invoice={invoice} reference={started.reference} />
 
       {/*
         What is happening, in the buyer's terms. `seen` exists precisely so
@@ -305,13 +186,7 @@ export default function CryptoPanel({
         )}
       </div>
 
-      {!done && (
-        <p className="text-xs text-subtle">
-          Send the exact amount above. It is how this payment is recognised, because every buyer
-          sends to the same address — so an amount that has been rounded by a wallet, or reduced by
-          a withdrawal fee, has to be matched by hand.
-        </p>
-      )}
+      {!done && <ExactAmountNote />}
     </div>
   );
 }

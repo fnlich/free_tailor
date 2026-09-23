@@ -232,13 +232,34 @@ export function listPaymentsForUser(userId: string, limit = 50): Payment[] {
 }
 
 /** Every payment, newest first. The administrator's reconciliation view. */
-export function listAllPayments(limit = 200): Payment[] {
+/**
+ * A page of every payment, newest first.
+ *
+ * The offset is what makes the list reachable past its first page, and the
+ * reason it had to exist: refunds are driven from a ROW on the admin page, so
+ * a payment the page cannot show is a payment nobody can refund. With 377
+ * payments on one install, 66 paid ones sat past the cap with no button
+ * anywhere in the product - while the page introduced itself as "every credit
+ * purchase on this installation".
+ *
+ * `rowid` breaks the tie on `created_at`, which is a second-resolution string:
+ * without it two payments made in the same second could swap places between
+ * pages and one of them would never be returned.
+ */
+export function listAllPayments(limit = 200, offset = 0): Payment[] {
   const rows = getDb()
     .prepare(
-      `SELECT ${PAYMENT_COLUMNS} FROM payments ORDER BY created_at DESC, rowid DESC LIMIT ?`
+      `SELECT ${PAYMENT_COLUMNS} FROM payments
+       ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
     )
-    .all(limit) as PaymentRow[];
+    .all(limit, offset) as PaymentRow[];
   return rows.map(toPayment);
+}
+
+/** How many there are in total, so a page can say what it is not showing. */
+export function countAllPayments(): number {
+  const row = getDb().prepare('SELECT COUNT(*) AS total FROM payments').get() as { total: number };
+  return row.total;
 }
 
 /**

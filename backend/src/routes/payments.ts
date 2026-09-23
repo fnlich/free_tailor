@@ -10,7 +10,11 @@ import {
   startCheckout,
   describeTargets,
 } from '../services/payments';
-import { listAllPayments, listPaymentsForUser } from '../database/paymentRepository';
+import {
+  countAllPayments,
+  listAllPayments,
+  listPaymentsForUser,
+} from '../database/paymentRepository';
 import { detachCard, getCardForUser, listCardsForUser } from '../database/savedCardRepository';
 import * as stripe from '../integrations/stripe';
 import {
@@ -279,8 +283,21 @@ export default router;
 export const adminPaymentsRouter = Router();
 adminPaymentsRouter.use(requireAdmin);
 
-adminPaymentsRouter.get('/', (_req: Request, res: Response) => {
-  const payments = listAllPayments();
+/** How many rows one request returns. The page asks again for the next lot. */
+const ADMIN_PAGE_SIZE = 200;
+
+adminPaymentsRouter.get('/', (req: Request, res: Response) => {
+  /*
+   * Clamped, because the offset arrives from a query string.
+   *
+   * A negative offset is a SQL error rather than a refusal, and a NaN silently
+   * becomes the first page again - which would make the page loop on itself
+   * fetching the same rows for ever.
+   */
+  const asked = Number.parseInt(String(req.query.offset ?? '0'), 10);
+  const offset = Number.isFinite(asked) && asked > 0 ? asked : 0;
+
+  const payments = listAllPayments(ADMIN_PAGE_SIZE, offset);
   // The list is for reconciliation, so it needs to say WHO - and an email is
   // what an operator has in front of them when somebody writes in.
   res.json({
@@ -288,6 +305,15 @@ adminPaymentsRouter.get('/', (_req: Request, res: Response) => {
       ...payment,
       userEmail: getUserById(payment.userId)?.email ?? '',
     })),
+    /*
+     * So the page knows there is more, and can say so.
+     *
+     * Without this it had no way to tell a short last page from a full one,
+     * and described whatever it had as "every credit purchase on this
+     * installation" - which was wrong by 177 rows, 66 of them refundable.
+     */
+    total: countAllPayments(),
+    offset,
   });
 });
 

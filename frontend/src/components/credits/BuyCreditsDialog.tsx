@@ -10,6 +10,7 @@ import { PRIMARY, QUIET } from './chrome';
 import { FIRST_STEP, wizardReducer, type Order, type Priced } from './order';
 import { stripeFor } from './stripeLoader';
 import { useTheme } from '@/lib/useTheme';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   formatAmount,
   paymentsApi,
@@ -50,6 +51,7 @@ export default function BuyCreditsDialog({
   // The live theme, so Stripe's iframe follows a toggle made while this is
   // open - it cannot see the page's CSS and has to be told.
   const { theme } = useTheme();
+  const { refresh } = useAuth();
 
   const [step, dispatch] = useReducer(wizardReducer, FIRST_STEP);
   const [priced, setPriced] = useState<{ key: string; state: Priced } | null>(null);
@@ -207,7 +209,23 @@ export default function BuyCreditsDialog({
     const poll = async () => {
       try {
         const result = await paymentsApi.get(paymentId);
-        if (live && result.invoice) setInvoice(result.invoice);
+        if (!live || !result.invoice) return;
+        setInvoice(result.invoice);
+        /*
+         * Tell the rest of the app the balance moved.
+         *
+         * A chain payment is credited by the watcher, server-side, with no
+         * navigation and no webhook the browser ever sees - so nothing else
+         * had any reason to re-read the account. The panel announced "Paid and
+         * credited" while the top-bar pill, the balance panel and the credit
+         * history all still showed the pre-purchase figure, and only a full
+         * reload fixed it: client-side navigation did not, because the auth
+         * context fetches on mount and the root layout never unmounts.
+         *
+         * `watching` goes false on this state, so the effect tears down right
+         * after and this fires once.
+         */
+        if (result.invoice.state === 'credited') void refresh();
       } catch {
         // A poll that fails changes nothing on screen and is tried again. The
         // buyer's money is on the chain either way.
@@ -219,7 +237,7 @@ export default function BuyCreditsDialog({
       live = false;
       clearInterval(timer);
     };
-  }, [paymentId, watching]);
+  }, [paymentId, watching, refresh]);
 
   /** Drop the order and the price so both are asked for again. */
   const retry = useCallback(() => {

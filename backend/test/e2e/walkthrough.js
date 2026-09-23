@@ -334,10 +334,25 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ note: 'spent already' }),
   });
+  /*
+   * And says where the coin actually is.
+   *
+   * This asserted the word "coinbase" for every crypto payment, which was the
+   * old message and the wrong place for an ON-CHAIN one: no processor ever
+   * held that money, so an operator sent to Coinbase Commerce would be
+   * searching an account the payment never touched. It is in the wallet whose
+   * address they configured.
+   */
   check(
     'a crypto refund says plainly that it cannot be done automatically',
-    shortRefund.status === 409 && /coinbase/i.test(shortRefund.body?.error ?? ''),
+    shortRefund.status === 409 && /cannot be refunded automatically/i.test(shortRefund.body?.error ?? ''),
     `${shortRefund.status}: ${shortRefund.body?.error}`
+  );
+  check(
+    'and points at the wallet rather than at a processor',
+    /wallet you configured/i.test(shortRefund.body?.error ?? '') &&
+      !/coinbase/i.test(shortRefund.body?.error ?? ''),
+    shortRefund.body?.error
   );
 
   console.log('\n=== 12. What the provider was actually asked for ===');

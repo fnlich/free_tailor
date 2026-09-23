@@ -3,14 +3,14 @@ import TopBar from './components/TopBar.jsx';
 import JobList from './components/JobList.jsx';
 import JobDetail from './components/JobDetail.jsx';
 import AskWindow from './components/AskWindow.jsx';
-import { getBidAssistantApiUrl } from './lib/apiBase.js';
+import { bidAssistantFetch } from './lib/apiBase.js';
 import { DEFAULT_PROMPT_TEMPLATE } from './lib/promptTemplate.js';
 
 const selectedProfileStorageKey = 'selected-profile-id';
 
 // Fetches JSON from the backend and throws on request failure.
 async function fetchJson(url, options = {}) {
-  const response = await fetch(getBidAssistantApiUrl(url), options);
+  const response = await bidAssistantFetch(url, options);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => null);
