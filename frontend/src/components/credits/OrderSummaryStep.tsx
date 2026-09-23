@@ -202,7 +202,7 @@ export default function OrderSummaryStep({
           </div>
         )}
 
-        <PolicyPanels method={target.method} />
+        <PolicyPanels method={target.method} asset={target.asset} />
       </div>
 
       <div>

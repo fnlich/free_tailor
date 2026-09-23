@@ -6,6 +6,14 @@
  * this walks the whole way: two orders open a dollar apart, a transfer lands
  * between them, and an administrator sees it on the page they already use and
  * can clear it once they have dealt with it.
+ *
+ * THIS WALKS THE RETIRED ON-CHAIN PATH, and it is the only script that does.
+ * A server taking crypto through Cryptomus cannot open a chain invoice at all,
+ * so there is nothing here to walk: unset CRYPTOMUS_MERCHANT_ID and
+ * CRYPTOMUS_PAYMENT_API_KEY and restart the server to run it. It stops with a
+ * message rather than failing, because "this installation is configured the
+ * other way" is not a defect, and a wall of red would train somebody to ignore
+ * it. It goes when the machinery it tests goes.
  */
 const puppeteer = require('puppeteer');
 const path = require('path');
@@ -45,6 +53,30 @@ async function browserless() {
 
 async function main() {
   const stamp = Date.now().toString(36);
+  /*
+   * Ask the server which way it takes crypto, before creating anything.
+   *
+   * Signed in, because `/payments/methods` is not public - and as an account
+   * of its own rather than the admin below, so a skipped run leaves no trace.
+   */
+  const probeToken = users.createSession(
+    users.createUser({ email: `held-probe-${stamp}@example.com` }).id
+  );
+  const offered = await call(probeToken, '/payments/methods');
+  if (offered.status !== 200) {
+    console.log(`The API answered ${offered.status}. Start the server first.`);
+    process.exit(1);
+  }
+  const provider = (offered.body?.methods ?? []).find((entry) => entry.method === 'crypto')?.provider;
+  if (provider !== 'chain') {
+    console.log(
+      `\nSkipped: this server takes crypto through ${provider ?? 'nothing'}, not the on-chain ` +
+        'watcher this script walks.\nUnset CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY, ' +
+        'restart the server, and run it again.'
+    );
+    process.exit(0);
+  }
+
   const one = users.createUser({ email: `held-a-${stamp}@example.com` });
   const two = users.createUser({ email: `held-b-${stamp}@example.com` });
   const admin = users.findOrCreateUser({ email: 'boss@example.com' }).account;

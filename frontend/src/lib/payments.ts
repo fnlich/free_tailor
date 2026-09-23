@@ -10,7 +10,7 @@ import { apiFetch } from './api';
  */
 
 export type PaymentMethod = 'card' | 'crypto';
-export type PaymentProvider = 'stripe' | 'coinbase' | 'chain';
+export type PaymentProvider = 'stripe' | 'coinbase' | 'chain' | 'cryptomus';
 export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded';
 
 export type MethodAvailability = {

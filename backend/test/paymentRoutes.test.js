@@ -31,6 +31,8 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
     process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
     process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
+    delete process.env.CRYPTOMUS_MERCHANT_ID;
+    delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   } else {
     delete process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_WEBHOOK_SECRET;

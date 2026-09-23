@@ -33,6 +33,12 @@ async function serve({ settings = {} } = {}) {
   process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
   process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
   process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
+  // Not set, deliberately: these pin the behaviour of an installation that has
+  // NOT moved to Cryptomus, which is the claim that the move changed nothing
+  // for anybody who did not opt in. A developer with CRYPTOMUS_* in their root
+  // .env would otherwise silently test the other path.
+  delete process.env.CRYPTOMUS_MERCHANT_ID;
+  delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
 
   // Before anything reads settings: the settings module caches what it sees.

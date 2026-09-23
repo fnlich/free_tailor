@@ -26,6 +26,8 @@ const { loadFresh, useTempStorage } = require('./helpers');
 
 const STRIPE_SECRET = 'whsec_test_secret';
 const COINBASE_SECRET = 'coinbase_test_secret';
+const CRYPTOMUS_MERCHANT = 'merchant-uuid';
+const CRYPTOMUS_KEY = 'cryptomus_test_key';
 
 function signStripe(rawBody, secret = STRIPE_SECRET, timestamp = Math.floor(Date.now() / 1000)) {
   const signature = crypto
@@ -39,12 +41,32 @@ function signCoinbase(rawBody, secret = COINBASE_SECRET) {
   return crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
 }
 
+/**
+ * A Cryptomus callback, signed the way Cryptomus signs one.
+ *
+ * The signature goes INSIDE the body, so this builds the payload, signs the
+ * serialization of it, and then puts the result back in - which is the whole
+ * asymmetry the handler has to cope with. Written out here rather than reusing
+ * the module's own helper so that a change to the formula fails a test instead
+ * of agreeing with itself.
+ */
+function cryptomusBody(fields, key = CRYPTOMUS_KEY) {
+  const json = JSON.stringify(fields);
+  const sign = crypto
+    .createHash('md5')
+    .update(Buffer.from(json, 'utf8').toString('base64') + key)
+    .digest('hex');
+  return JSON.stringify({ ...fields, sign });
+}
+
 async function serve() {
   useTempStorage(`payment-webhooks-${Math.random().toString(36).slice(2)}`);
   process.env.STRIPE_SECRET_KEY = 'sk_test_key';
   process.env.STRIPE_WEBHOOK_SECRET = STRIPE_SECRET;
   process.env.COINBASE_COMMERCE_API_KEY = 'cb_test_key';
   process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = COINBASE_SECRET;
+  process.env.CRYPTOMUS_MERCHANT_ID = CRYPTOMUS_MERCHANT;
+  process.env.CRYPTOMUS_PAYMENT_API_KEY = CRYPTOMUS_KEY;
 
   const express = require('express');
 
@@ -346,6 +368,230 @@ test('a Coinbase event signed with the wrong secret is refused', async () => {
     });
     assert.equal(response.status, 400);
     assert.equal(server.balance(), 0);
+  } finally {
+    server.close();
+  }
+});
+
+/* ------------------------------------------------------------- Cryptomus */
+
+/** As `startCheckout` leaves one: the uuid is the reference, the id the hint. */
+function cryptomusPayment(server, credits = 40) {
+  return pendingPayment(server, { provider: 'cryptomus', providerRef: 'inv-uuid-1', credits });
+}
+
+test('a paid Cryptomus invoice credits, and one still confirming does not', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const fields = (status) => ({
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      amount: (payment.amountCents / 100).toFixed(2),
+      payment_amount: '19.97',
+      currency: 'USD',
+      status,
+    });
+
+    // Seen on the network and not yet confirmed. Crediting here would hand out
+    // credits for a transfer Cryptomus can still fail.
+    await server.post('/cryptomus', cryptomusBody(fields('check')));
+    assert.equal(server.balance(), 0);
+
+    const response = await server.post('/cryptomus', cryptomusBody(fields('paid')));
+    assert.equal(response.status, 200);
+    assert.equal(server.balance(), 40);
+    assert.equal(server.payments.getPayment(payment.id).state, 'paid');
+  } finally {
+    server.close();
+  }
+});
+
+test('an overpaid Cryptomus invoice credits what was quoted, once', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const body = cryptomusBody({
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      // The buyer sent more coin than they had to. `amount` is still the
+      // invoice, which is why it is the field the handler compares.
+      amount: (payment.amountCents / 100).toFixed(2),
+      payment_amount: '999.00',
+      currency: 'USD',
+      status: 'paid_over',
+    });
+
+    assert.equal((await server.post('/cryptomus', body)).status, 200);
+    assert.equal(server.balance(), 40);
+  } finally {
+    server.close();
+  }
+});
+
+test('Cryptomus retrying the same status credits only once', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const body = cryptomusBody({
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      amount: (payment.amountCents / 100).toFixed(2),
+      currency: 'USD',
+      status: 'paid',
+    });
+
+    /*
+     * The claim that matters, and the one the synthetic event id exists for.
+     *
+     * Cryptomus sends no event id at all, so the handler builds one from the
+     * invoice and the status. Retries - which Cryptomus sends until it gets a
+     * 2xx - are byte-identical, so they land on the same UNIQUE row and stop.
+     */
+    assert.equal((await server.post('/cryptomus', body)).status, 200);
+    assert.equal((await server.post('/cryptomus', body)).status, 200);
+    assert.equal(server.balance(), 40);
+  } finally {
+    server.close();
+  }
+});
+
+test('a short Cryptomus payment closes the order rather than crediting it', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const body = cryptomusBody({
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      amount: (payment.amountCents / 100).toFixed(2),
+      currency: 'USD',
+      status: 'wrong_amount',
+    });
+
+    assert.equal((await server.post('/cryptomus', body)).status, 200);
+    assert.equal(server.balance(), 0);
+    const closed = server.payments.getPayment(payment.id);
+    assert.equal(closed.state, 'failed');
+    // The buyer reads this. It must not be the provider's own vocabulary.
+    assert.doesNotMatch(closed.failure, /wrong_amount/);
+  } finally {
+    server.close();
+  }
+});
+
+test('a later Cryptomus status is a new event, not a replay of the first', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const fields = (status) => ({
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      amount: (payment.amountCents / 100).toFixed(2),
+      currency: 'USD',
+      status,
+    });
+
+    /*
+     * Why the event id is `<uuid>:<status>` and not the uuid.
+     *
+     * Cryptomus sends several callbacks over one invoice's life and sends no
+     * event id of its own, so the id has to be built here. Keyed on the uuid
+     * alone, everything after the FIRST callback would be swallowed as a
+     * replay - an underpayment the buyer then topped up would be recorded as
+     * `wrong_amount` and nothing else, and the `paid` that followed would
+     * leave no trace for whoever has to work out what happened.
+     */
+    const short = await server.post('/cryptomus', cryptomusBody(fields('wrong_amount')));
+    assert.equal((await short.json()).note, 'handled');
+
+    const paid = await server.post('/cryptomus', cryptomusBody(fields('paid')));
+    assert.equal(paid.status, 200);
+    assert.equal((await paid.json()).note, 'handled', 'the second status was taken as a replay');
+
+    // And a genuine retry of that second status still is one.
+    const again = await server.post('/cryptomus', cryptomusBody(fields('paid')));
+    assert.equal((await again.json()).note, 'already handled');
+  } finally {
+    server.close();
+  }
+});
+
+test('a Cryptomus body whose amount was edited after signing is refused', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const signed = JSON.parse(
+      cryptomusBody({
+        type: 'payment',
+        uuid: payment.providerRef,
+        order_id: payment.id,
+        amount: '1.00',
+        currency: 'USD',
+        status: 'paid',
+      })
+    );
+    // The signature is over the body MINUS `sign`, so moving a figure inside
+    // it has to fail - this is the whole security property of that scheme.
+    signed.amount = '9999.00';
+
+    const response = await server.post('/cryptomus', JSON.stringify(signed));
+    assert.equal(response.status, 400);
+    assert.equal(server.balance(), 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('a Cryptomus body signed with the wrong key, or not at all, is refused', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const fields = {
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      amount: (payment.amountCents / 100).toFixed(2),
+      currency: 'USD',
+      status: 'paid',
+    };
+
+    const wrong = await server.post('/cryptomus', cryptomusBody(fields, 'not-the-key'));
+    assert.equal(wrong.status, 400);
+
+    // No `sign` field at all - the shape an attacker who has read the docs but
+    // not the key would send.
+    const unsigned = await server.post('/cryptomus', JSON.stringify(fields));
+    assert.equal(unsigned.status, 400);
+
+    assert.equal(server.balance(), 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('a Cryptomus invoice reporting a different amount is held, not credited', async () => {
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const body = cryptomusBody({
+      type: 'payment',
+      uuid: payment.providerRef,
+      order_id: payment.id,
+      // Correctly signed and genuinely from Cryptomus - and not what was
+      // quoted. The payment stays pending for somebody to look at.
+      amount: '1.00',
+      currency: 'USD',
+      status: 'paid',
+    });
+
+    assert.equal((await server.post('/cryptomus', body)).status, 200);
+    assert.equal(server.balance(), 0);
+    assert.equal(server.payments.getPayment(payment.id).state, 'pending');
   } finally {
     server.close();
   }

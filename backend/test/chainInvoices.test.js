@@ -70,6 +70,10 @@ async function serve({
     delete process.env.COINBASE_COMMERCE_API_KEY;
     delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
   }
+  // The chain path is reached only when Cryptomus is NOT configured, so every
+  // test in this file depends on it being unset.
+  delete process.env.CRYPTOMUS_MERCHANT_ID;
+  delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   delete process.env.CHAIN_TOLERANCE_BPS;
 
   // Before anything reads settings: the settings module caches what it sees.

@@ -82,12 +82,13 @@ export default function CryptoPanel({
   const { started } = order;
 
   /*
-   * The older shape: a provider that hosts its own page.
+   * A provider that hosts its own page, which is now the ordinary case.
    *
-   * Kept because an installation with no receiving addresses configured still
-   * takes crypto through Coinbase Commerce, and every payment already made
-   * that way still has to read. It is not what a new checkout gets when the
-   * chain side is set up.
+   * Cryptomus works this way, and so did Coinbase Commerce before it: the
+   * buyer picks the coin and the network on the provider's page, at the
+   * provider's rates, and this application never sees an address. The branch
+   * below it - a deposit card with an exact amount - is the retired on-chain
+   * path, kept because invoices opened that way are still out there waiting.
    */
   if (!invoice && started.redirectUrl) {
     return (

@@ -11,6 +11,13 @@ import {
   verifyCoinbaseSignature,
 } from '../integrations/coinbaseCommerce';
 import {
+  canVerifyCryptomusWebhooks,
+  cryptomusPaymentKey,
+  verifyWebhookSign,
+  FAILED_STATUSES,
+  PAID_STATUSES,
+} from '../integrations/cryptomus';
+import {
   recordSavedCardFromSession,
   settleWebhookEvent,
   type PaymentProvider,
@@ -32,6 +39,15 @@ import {
  *     router is mounted with `express.raw` AHEAD of the app-wide JSON parser in
  *     index.ts. Re-serializing a parsed body gives a string that is usually
  *     identical to what was signed, and "usually" is not a security property.
+ *
+ *     Cryptomus is the exception, and it is the provider's design rather than
+ *     a corner cut here: it puts its signature INSIDE the JSON as a `sign`
+ *     field, so there is no way to check it without parsing first and
+ *     re-serializing what is left. That is confined to `verifyWebhookSign` in
+ *     `integrations/cryptomus.ts`, which explains what makes it survivable and
+ *     names the one way it is known to break. Nothing below acts on a
+ *     Cryptomus body until that function has returned ok, and the payload
+ *     recorded is still the raw bytes.
  *
  *  2. **Once.** A provider guarantees at-least-once delivery and retries until
  *     it gets a 2xx. `recordEventOnce` turns the second delivery into a no-op
@@ -365,6 +381,94 @@ router.post('/coinbase', (req: Request, res: Response) => {
       outcome,
       ...(Number.isFinite(paidCents) ? { paidAmountCents: paidCents } : {}),
       ...(local && typeof local.currency === 'string' ? { paidCurrency: local.currency } : {}),
+    },
+    rawBody,
+    res
+  );
+});
+
+/**
+ * Cryptomus.
+ *
+ * Two things here are unlike the handlers above, and both are the provider's:
+ *
+ *  1. **The signature is in the body**, not a header - see the note on rule 1.
+ *  2. **There is no event id.** Every other provider sends an opaque id that
+ *     `recordEventOnce` dedupes on; Cryptomus sends none at all. So one is
+ *     built from the invoice and the status it is reporting. That is exactly
+ *     the right granularity: a retry of the same status - and Cryptomus retries
+ *     until it gets a 2xx - collapses onto the row already written, while the
+ *     genuine progression from `check` to `paid` is two different events and
+ *     gets recorded as two. A random id would defeat the UNIQUE index that is
+ *     the only thing standing between a retry and double credit; the uuid
+ *     alone would swallow the `paid` that follows a `check`.
+ */
+router.post('/cryptomus', (req: Request, res: Response) => {
+  if (!canVerifyCryptomusWebhooks()) {
+    res.status(503).json({ error: 'Crypto payments are not configured on this server.' });
+    return;
+  }
+
+  const rawBody = rawBodyOf(req);
+  if (!rawBody) {
+    console.error('[payments] The Cryptomus webhook did not receive a raw body; check the route mount.');
+    res.status(400).json({ error: 'Expected a raw body.' });
+    return;
+  }
+
+  const verified = verifyWebhookSign(rawBody, cryptomusPaymentKey());
+  if (!verified.ok || !verified.body) {
+    // 400 rather than 200, as for Stripe: a signature that does not check out
+    // means the key here and the key there disagree, and EVERY event is being
+    // dropped. That is worth a retry and worth seeing in Cryptomus's own log.
+    console.warn('[payments] A Cryptomus webhook failed signature verification and was refused.');
+    res.status(400).json({ error: 'Signature verification failed.' });
+    return;
+  }
+
+  const body = verified.body;
+  const uuid = typeof body.uuid === 'string' ? body.uuid : '';
+  const status = typeof body.status === 'string' ? body.status : '';
+
+  const outcome: Handled['outcome'] = PAID_STATUSES.has(status)
+    ? 'paid'
+    : FAILED_STATUSES.has(status)
+      ? 'failed'
+      : 'ignore';
+
+  if (outcome === 'ignore' || !uuid || !status) {
+    // `check`, `process`, `confirm_check` - the money is on its way and is not
+    // credited until it has arrived. Acknowledged so it is not retried.
+    acknowledge(res, 'not an event this server acts on');
+    return;
+  }
+
+  /*
+   * `amount`, deliberately - not `payment_amount`.
+   *
+   * `amount` is the invoice in the merchant's own currency, which is the
+   * figure the payment row stores in minor units and the only one comparable
+   * to it. `payment_amount` is denominated in whichever coin the buyer chose,
+   * so comparing it to a dollar total would reject every correct payment.
+   * Rounded rather than truncated, for the reason the Coinbase handler gives.
+   */
+  const paidCents =
+    typeof body.amount === 'string' && body.amount.trim() !== ''
+      ? Math.round(Number.parseFloat(body.amount) * 100)
+      : Number.NaN;
+
+  apply(
+    {
+      provider: 'cryptomus',
+      eventId: `${uuid}:${status}`,
+      type: `payment.${status}`,
+      providerRef: uuid,
+      ...(typeof body.order_id === 'string' && body.order_id
+        ? { paymentIdHint: body.order_id }
+        : {}),
+      outcome,
+      ...(Number.isFinite(paidCents) ? { paidAmountCents: paidCents } : {}),
+      ...(typeof body.currency === 'string' ? { paidCurrency: body.currency } : {}),
     },
     rawBody,
     res

@@ -183,6 +183,17 @@ async function main() {
   const cardTarget = targets.find((t) => t.method === 'card');
   const cryptoTarget = targets.find((t) => t.method === 'crypto');
   const unit = options.body?.unitPriceCents ?? 0;
+  /*
+   * Which of the three crypto paths this installation is actually running.
+   *
+   * Cryptomus when it is configured, otherwise the retired on-chain watcher,
+   * otherwise the retired Coinbase one. Read, never assumed: both retired
+   * paths still run in the field until they are deleted, and a walkthrough
+   * that hard-coded the new shape would call a working old install broken.
+   */
+  const cryptoProvider =
+    (options.body?.methods ?? []).find((entry) => entry.method === 'crypto')?.provider ?? 'none';
+  console.log(`    (crypto is being taken through ${cryptoProvider})`);
 
   check('a card target is offered', Boolean(cardTarget?.available), JSON.stringify(cardTarget));
   check('a crypto target is offered', Boolean(cryptoTarget?.available), JSON.stringify(cryptoTarget));
@@ -207,17 +218,26 @@ async function main() {
   );
 
   console.log('\n=== A coin the server has never heard of ===');
-  for (const bogus of ['card', 'crypto', 'ethereum:DOGE', '../card', '']) {
+  /*
+   * The empty string is the one that depends on who is taking the money.
+   *
+   * On-chain, a payment is an amount of one specific token sent to one
+   * specific address and there is no sensible default, so "no coin" is a
+   * refusal. On a hosted page the buyer picks the coin over there, so no coin
+   * is the ordinary case - and a stale tab that still has coin buttons on it
+   * must not have its purchase failed for pressing one. An INVENTED coin is
+   * refused either way: it would otherwise reach the pricing authority.
+   */
+  const invented = ['card', 'crypto', 'ethereum:DOGE', '../card'];
+  for (const bogus of cryptoProvider === 'chain' ? [...invented, ''] : invented) {
     const refused = await call(token, '/payments/checkout', {
       method: 'POST',
       body: JSON.stringify({ method: 'crypto', credits: 200, asset: bogus }),
     });
     /*
-     * Everything here is refused, including the empty string - and that last
-     * one is a CHANGE, not an oversight. An on-chain payment is an amount of
-     * one specific token sent to one specific address, so there is no sensible
-     * default coin. Coinbase's hosted page asked the buyer itself, which is
-     * why this used to be allowed.
+     * A 400, not a 503 and not a 201: `isAssetId` is a closed list, checked
+     * beside the other request validation rather than inside the provider
+     * block, so an invented coin never becomes a failed payment row.
      */
     check(
       `asset "${bogus}" is refused`,
@@ -343,9 +363,70 @@ async function main() {
     check('the account was credited exactly once', after === before + credits, `${before} -> ${after}`);
   }
 
-  /* ============================================== 1b. a payment on a chain */
-  console.log('\n=== Crypto, in the operator’s own wallet ===');
+  /* ================================================= 1b. a crypto payment */
   const coinTargets = targets.filter((target) => target.method === 'crypto' && target.asset);
+
+  if (cryptoProvider === 'cryptomus') {
+    console.log('\n=== Crypto, through Cryptomus ===');
+    check(
+      'crypto is one choice rather than a row per coin',
+      coinTargets.length === 0 && Boolean(cryptoTarget?.available),
+      JSON.stringify(targets.map((target) => target.id))
+    );
+
+    const want = cryptoTarget?.presets?.[0]?.credits ?? cryptoTarget?.minCredits ?? 100;
+    const before = (await call(token, '/credits')).body?.balance ?? 0;
+    const opened = await call(token, '/payments/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'crypto', credits: want }),
+    });
+    check('a crypto checkout opens', opened.status === 201, `status=${opened.status} ${JSON.stringify(opened.body)}`);
+    check(
+      'and hands back a URL rather than an address',
+      Boolean(opened.body?.redirectUrl) && !opened.body?.invoice,
+      `${opened.body?.redirectUrl} invoice=${JSON.stringify(opened.body?.invoice ?? null)}`
+    );
+
+    const invoiceId = String(opened.body?.redirectUrl ?? '').split('/').pop();
+    if (invoiceId) {
+      /*
+       * Paid from the provider's side, which posts a callback signed the way
+       * Cryptomus signs one - the signature inside the body - to the real
+       * endpoint. The server's own verifier decides whether to believe it, so
+       * this exercises the shipping code rather than a stub of it.
+       */
+      await fetch(`${FAKE}/pay/${invoiceId}`, { method: 'POST', redirect: 'manual' });
+      await wait(500);
+
+      const paid = await call(token, `/payments/${opened.body.paymentId}`);
+      check('a signed callback credits it', paid.body?.payment?.state === 'paid',
+        JSON.stringify(paid.body?.payment));
+      const granted = paid.body?.payment?.creditsGranted ?? 0;
+      check(
+        'the fee comes out of the credits, not out of the amount sent',
+        granted > 0 && granted < want,
+        `granted ${granted} against ${want} requested`
+      );
+      check(
+        'the account was credited exactly what it bought',
+        ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
+        `${before} + ${granted}`
+      );
+
+      // Cryptomus retries until it gets a 2xx, so this is ordinary traffic.
+      await fetch(`${FAKE}/replay/${invoiceId}`, { method: 'POST' });
+      await wait(300);
+      check(
+        'and a retried callback credits nothing further',
+        ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
+        `${before} + ${granted}`
+      );
+    } else {
+      check('a signed callback credits it', false, 'no invoice to pay');
+    }
+  } else {
+
+  console.log('\n=== Crypto, in the operator’s own wallet ===');
   check(
     'each enabled coin is its own choice, with its network named',
     coinTargets.length >= 2,
@@ -478,6 +559,7 @@ async function main() {
     );
   } else {
     check('ethereum:USDT is configured for this walkthrough', false, 'set CHAIN_ASSETS in .env');
+  }
   }
 
   /* ======================================================== 2. the browser */
@@ -668,6 +750,92 @@ async function main() {
       `clipped: ${clippedRows.join(' | ')}`
     );
 
+    /*
+     * Which crypto shape this installation renders, read rather than assumed.
+     *
+     * With Cryptomus configured there is ONE button - the coin and the network
+     * are chosen on Cryptomus's own page, from Cryptomus's own list, so a coin
+     * button here would offer a choice this application cannot honour. With
+     * the retired on-chain path configured instead there is a button per coin
+     * and a deposit address to show. Both are real configurations today, and a
+     * script that hard-coded either would report the other as broken.
+     */
+    const onChainShape = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[role="dialog"] button')).some((button) =>
+        /USDT on |BTC on |Bitcoin/.test(button.textContent || '')
+      )
+    );
+
+    if (!onChainShape) {
+      const cryptoButtons = await page.$$eval('[role="dialog"] button', (nodes) =>
+        nodes.map((node) => node.textContent.trim()).filter((text) => /crypto/i.test(text))
+      );
+      check(
+        'crypto is one button, not a row per coin',
+        cryptoButtons.length === 1,
+        cryptoButtons.join(' | ')
+      );
+
+      await clickText(page, '[role="dialog"] button', 'Cryptocurrency');
+      await wait(250);
+      await clickText(page, '[role="dialog"] button', 'Continue');
+      await wait(2000);
+      dialog = await readDialog(page);
+
+      check(
+        'the crypto column is the hand-off, not a refusal',
+        !/Try again/i.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 400)
+      );
+      /*
+       * It says whose page comes next, before sending anybody there.
+       *
+       * A buyer about to leave for a domain that is not this one has to be
+       * told, and told that the coin is chosen over there - otherwise the
+       * missing coin buttons read as a feature that went away.
+       */
+      check(
+        'and says the next page belongs to the provider',
+        /next page is the payment provider/i.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 700)
+      );
+      check(
+        'and names the amount before the hand-off',
+        /\$\d/.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 700)
+      );
+      const continueButton = await page.$$eval('[role="dialog"] button', (nodes) =>
+        nodes.map((node) => node.textContent.trim()).filter((text) => /Continue to payment/i.test(text))
+      );
+      check('and offers the way there', continueButton.length === 1, continueButton.join(' | '));
+
+      /*
+       * The red panel must not still be reading from the on-chain script.
+       *
+       * "Send the exact amount shown, on the network named" is true only where
+       * this server quoted a figure against an address it owns. Here the buyer
+       * has been shown neither, and will not be until the next page - so that
+       * sentence tells them to check something they do not have, about a rule
+       * nothing on this path enforces. PolicyPanels exists on the premise that
+       * every line in it is something the server actually does; this is the
+       * check that keeps that true when the provider changes underneath it.
+       */
+      check(
+        'the policy panel does not promise the on-chain exact-amount scheme',
+        !/Send the exact amount shown/i.test(dialog?.text ?? '') &&
+          !/every buyer sends to the same address/i.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 1200)
+      );
+      check(
+        'and says instead where the coin and the amount are chosen',
+        /provider\u2019s own page|provider's own page/i.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 1200)
+      );
+
+      await page.screenshot({ path: path.join(SHOTS, 'buy-3-crypto.png') });
+      await page.keyboard.press('Escape');
+    } else {
+
     // A coin, not a category: each is its own button with its network named.
     await clickText(page, '[role="dialog"] button', 'USDT on Ethereum');
     await wait(250);
@@ -732,6 +900,7 @@ async function main() {
     );
     await page.screenshot({ path: path.join(SHOTS, 'buy-3-crypto.png') });
     await page.keyboard.press('Escape');
+    }
 
     console.log('\n=== Dark, and a phone ===');
     await page.evaluate(() => window.localStorage.setItem('tailor-theme', 'dark'));
@@ -790,9 +959,10 @@ async function main() {
      */
     console.log('\n=== A method that is switched off ===');
     const LONG_REASON =
-      'Set CHAIN_ASSETS and the receiving addresses to take crypto payments. Or set ' +
-      'COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto ' +
-      'through Coinbase Commerce instead.';
+      'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through ' +
+      'Cryptomus. Set CHAIN_ASSETS and the receiving addresses to take crypto payments. ' +
+      'Or set COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET for Coinbase ' +
+      'Commerce. Both of those are retired and will be removed.';
 
     /*
      * Installed ONCE, and the shape read from localStorage rather than closed

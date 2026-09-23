@@ -717,9 +717,11 @@ function PaymentsBody() {
                       */}
                       {payment.provider === 'chain'
                         ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured, then adjust the balance from the accounts page. Pressing this will reverse the credits only.'
-                        : payment.provider === 'coinbase'
-                          ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account, then adjust the balance from the accounts page.'
-                          : `The money goes back through ${payment.provider}.`}{' '}
+                        : payment.provider === 'cryptomus'
+                          ? 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard, then adjust the balance from the accounts page.'
+                          : payment.provider === 'coinbase'
+                            ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account, then adjust the balance from the accounts page.'
+                            : `The money goes back through ${payment.provider}.`}{' '}
                       Credits already spent cannot be reversed - a balance never goes below zero -
                       and this will say how many were.
                     </p>

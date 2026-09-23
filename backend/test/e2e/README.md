@@ -16,12 +16,13 @@ bottom rather than something a script can arrange.
 replaces exactly four functions: `createCheckoutSession`, `getCheckoutSession`,
 `refundPaymentIntent` and `createCharge`. Everything else is the shipping code.
 
-It replaces five exports in all - `createCheckoutSession`, `getCheckoutSession`,
-`refundPaymentIntent`, `createCharge` and `getCharge` - and serves a checkout
-page of its own on port 4242. Pressing **Pay** there
-signs a webhook with the real HMAC scheme and posts it to the real endpoint,
-exactly as Stripe would; the server's own verifier decides whether to believe
-it.
+It replaces six exports in all - `createCheckoutSession`, `getCheckoutSession`,
+`refundPaymentIntent`, `createCharge`, `getCharge` and Cryptomus's
+`createInvoice` - and serves a checkout page of its own on port 4242. Pressing
+**Pay** there signs a webhook with the real scheme and posts it to the real
+endpoint, exactly as the provider would; the server's own verifier decides
+whether to believe it. For Cryptomus that means the signature goes INSIDE the
+body, which is the one thing about it that is genuinely unlike the others.
 
 ### What a fake cannot do, now the form is embedded
 
@@ -49,6 +50,8 @@ STRIPE_PUBLISHABLE_KEY=pk_test_e2e_not_a_real_key
 STRIPE_WEBHOOK_SECRET=whsec_e2e_local_secret
 COINBASE_COMMERCE_API_KEY=cb_test_e2e_not_a_real_key
 COINBASE_COMMERCE_WEBHOOK_SECRET=cb_whsec_e2e_local_secret
+CRYPTOMUS_MERCHANT_ID=e2e-merchant-not-a-real-id
+CRYPTOMUS_PAYMENT_API_KEY=e2e_cryptomus_local_key
 ADMIN_EMAILS=boss@example.com
 EOF
 
@@ -139,6 +142,17 @@ could not; the return page waiting for the webhook rather than congratulating
 on arrival; the balance and the ledger afterwards; backing out of a payment;
 and an admin refunding from the UI.
 
+### Two of these walk a retired path
+
+`held-queue.js` drives the on-chain watcher and nothing else, and the crypto
+half of `walkthrough.js` and `buy-credits.js` runs whichever provider the
+server is actually offering - they ask `/payments/methods` rather than
+assuming. So with `CRYPTOMUS_*` set they walk the hosted-invoice flow, and
+`held-queue.js` prints a line saying it has nothing to do and exits 0. To
+exercise the retired path, comment those two variables out of `.env`, restart
+the backend, and run them again; both configurations pass today and both are
+worth a run while the old machinery is still here. It goes when that does.
+
 ## The part a script cannot do
 
 Before taking real money, do this once against Stripe test mode on a machine
@@ -161,18 +175,58 @@ the internet can reach:
    balance does not move, the webhook endpoint is missing that event. Then use
    `4000 0025 0000 3155` as the saved card to exercise the branch where the
    bank demands authentication anyway and the browser has to finish it.
-7. Repeat 1-2 in the Coinbase Commerce sandbox, if you use it.
-8. **One real payment per crypto asset, at the smallest amount your limits
-   allow.** This is the row that matters most on this list. No reader in this
+7. **Cryptomus, every step below.** This is the row that matters most on this
+   list, and it is not optional: **no call in this repository has ever reached
+   Cryptomus.** It was built on a machine that cannot resolve
+   `api.cryptomus.com`, so the endpoint path, the header names, the field
+   names, the signature formula and the status vocabulary all come from the
+   published reference and are pinned only by tests against a stubbed socket.
+   Those tests prove the shape does not change by accident. They cannot prove
+   it was ever right.
+
+   a. Put a real merchant id and payment API key in `.env`, restart, and
+      confirm the **Crypto** button is offered.
+
+   b. Open one invoice for the smallest amount your limits allow, and compare
+      the request this server logged against Cryptomus's current API reference
+      - path, header names, field names, and how `sign` is computed. A wrong
+      guess here is a 4xx with nothing in it that says which guess was wrong.
+
+   c. Pay it. Confirm the callback arrives, verifies, and credits. If it is
+      refused with *Signature verification failed*, the first thing to try is
+      JSON escaping: Cryptomus signs the serialized body, PHP escapes `/` as
+      `\/` by default and JavaScript does not, and callback bodies carry URLs.
+      One line, in `verifyWebhookSign`.
+
+   d. Re-send that same callback. It must credit **nothing** the second time -
+      Cryptomus retries until it gets a 2xx, so this is ordinary traffic and
+      not an attack.
+
+   e. Underpay one invoice and let another expire. Neither may credit, and
+      neither may sit silent: check the payment's own page and the backend log.
+
+   f. Confirm the statuses Cryptomus actually sends match the three sets in
+      `integrations/cryptomus.ts`. A status that belongs in `PAID_STATUSES` and
+      is not there is a customer who paid and got nothing; one in there that
+      should not be is credits given away.
+
+   g. If anything sits in front of this server, allow Cryptomus's callback
+      addresses through. The signature is the only authentication this endpoint
+      has, and it is the only one it needs - but an endpoint nothing can reach
+      credits nobody.
+
+8. Repeat 1-2 in the Coinbase Commerce sandbox, if you are still running it.
+9. *Retired path, only if you are running it.* **One real payment per crypto
+   asset, at the smallest amount your limits allow.** No reader in this
    repository has ever contacted a live chain, so every response shape is
    pinned by tests against recorded bodies and confirmed by nothing else.
    Check, for each asset: that the amount the buy page quotes is the amount
    your wallet sends; that the payment moves to `seen` within a block or two;
    and that it credits at the confirmation count `chainAssets.ts` names.
-9. **Send a deliberately wrong amount once**, a few percent short, and confirm
+10. *Retired path.* **Send a deliberately wrong amount once**, a few percent short, and confirm
    it either credits in proportion or appears in the *needs attention* list
    under Admin -> Payments. Both are correct outcomes; silence is not.
-10. The decimals are keyed on `(chain, contract)` because USDT is 6 decimals on
+11. *Retired path.* The decimals are keyed on `(chain, contract)` because USDT is 6 decimals on
     Ethereum and **18** on BNB Chain - a factor of a trillion on a token with
     the same ticker. If you enable `bsc:USDT`, test it separately from
     `ethereum:USDT`. Getting that one wrong means a customer's money arrives

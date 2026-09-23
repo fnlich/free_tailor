@@ -193,28 +193,53 @@ test('a provider that refuses the refund changes nothing locally', async () => {
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid', 'and it can be tried again');
 });
 
-test('a crypto payment says plainly that it cannot be refunded automatically', async () => {
-  const context = await setup();
-  const payment = context.paymentsDb.createPayment({
-    userId: context.buyer.id,
-    method: 'crypto',
-    provider: 'coinbase',
-    credits: 60,
-    amountCents: 3000,
-    currency: 'usd',
-    unitPriceCents: 50,
-  });
-  context.paymentsDb.attachProviderRef(payment.id, 'CODE1');
-  context.payments.creditPaid(payment.id);
+/*
+ * Crypto cannot be pulled back, only sent back - and the message has to say
+ * WHERE FROM, which is different for each of the three providers that have
+ * taken crypto here.
+ *
+ * All three are tested because `PaymentProvider` is not switched on
+ * exhaustively anywhere in this codebase: a new member does not fail to
+ * compile, it falls into whichever branch happens to be last. That is how this
+ * message once told every on-chain payment to look in a Coinbase Commerce
+ * account the coin had never passed through, and it is why the retired rows -
+ * which still exist, and still get refunded - are pinned here rather than
+ * assumed to have gone away with the code that created them.
+ */
+const CRYPTO_REFUND_ADVICE = [
+  ['cryptomus', 'inv-uuid-1', /Cryptomus merchant dashboard/],
+  ['coinbase', 'CODE1', /Coinbase Commerce account/],
+  ['chain', 'cinv_1', /wallet you configured in CHAIN_\*_ADDRESS/],
+];
 
-  // A chain payment cannot be pulled back, only sent back. Pretending
-  // otherwise would be the worst possible answer here.
-  await assert.rejects(
-    () => context.payments.refundPayment(payment.id, context.admin.id),
-    /cannot be refunded automatically/i
-  );
-  assert.equal(context.balance(), 60, 'and nothing is reversed on a promise');
-});
+for (const [provider, providerRef, advice] of CRYPTO_REFUND_ADVICE) {
+  test(`a ${provider} payment says plainly where to send the money back from`, async () => {
+    const context = await setup();
+    const payment = context.paymentsDb.createPayment({
+      userId: context.buyer.id,
+      method: 'crypto',
+      provider,
+      credits: 60,
+      amountCents: 3000,
+      currency: 'usd',
+      unitPriceCents: 50,
+    });
+    context.paymentsDb.attachProviderRef(payment.id, providerRef);
+    context.payments.creditPaid(payment.id);
+
+    // Pretending it can be pulled back would be the worst possible answer, and
+    // naming the wrong place to go and look is the second worst.
+    await assert.rejects(
+      () => context.payments.refundPayment(payment.id, context.admin.id),
+      (error) => {
+        assert.match(error.message, /cannot be refunded automatically|nobody is holding it/i);
+        assert.match(error.message, advice);
+        return true;
+      }
+    );
+    assert.equal(context.balance(), 60, 'and nothing is reversed on a promise');
+  });
+}
 
 test('two refunds of the same payment at once: one refunds, the other is refused', async () => {
   const context = await setup();

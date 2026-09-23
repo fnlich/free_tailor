@@ -184,8 +184,14 @@ settlement arriving later cannot bring it back.
 | Method | Provider | Keys |
 |---|---|---|
 | Card | Stripe, embedded | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
-| Crypto | **your own wallet**, watched by this server | `CHAIN_ASSETS` and an address per chain |
-| Crypto | Coinbase Commerce, if you would rather not | `COINBASE_COMMERCE_API_KEY`, `COINBASE_COMMERCE_WEBHOOK_SECRET` |
+| Crypto | **Cryptomus**, hosted invoice page | `CRYPTOMUS_MERCHANT_ID`, `CRYPTOMUS_PAYMENT_API_KEY` |
+| Crypto | *retired* - your own wallet, watched by this server | `CHAIN_ASSETS` and an address per chain |
+| Crypto | *retired* - Coinbase Commerce | `COINBASE_COMMERCE_API_KEY`, `COINBASE_COMMERCE_WEBHOOK_SECRET` |
+
+The two retired rows still work: payments made through them read, settle and
+refund exactly as before, and an installation running one of them keeps running
+it. They are simply not what a **new** purchase gets once Cryptomus is
+configured, and they will be removed. Do not set one up from scratch.
 
 A method is offered **only when every one of its keys is set**. A secret key
 without a webhook secret is an install that can take money and never hear that
@@ -297,14 +303,26 @@ Your credits appear when the webhook lands, a second or two later - watch the
 `stripe listen` terminal and the backend log together. If the payment sits at
 *Waiting for payment*, the webhook is what to look at, not the form.
 
-**Crypto** works the same way with Coinbase Commerce: create an account at
-<https://commerce.coinbase.com>, take the API key from Settings, and create a
-webhook subscription pointing at
-`https://your-server/api/payments/webhook/coinbase` - the shared secret it shows
-is `COINBASE_COMMERCE_WEBHOOK_SECRET`. Coinbase Commerce has no local-forwarding
-CLI, so testing the crypto path needs a reachable URL (an `ngrok` tunnel is
-enough). Crypto is not offered at all until both of its keys are set, so you can
-leave it empty and ship cards alone.
+**Crypto** works the same way with Cryptomus: create a merchant account at
+<https://cryptomus.com>, copy the **merchant id** from the dashboard and the
+**payment API key** from the same account's API settings, and set the two
+`CRYPTOMUS_*` variables. That second value does double duty - it signs the
+requests this server makes *and* is the secret every incoming callback is
+verified against - so there is no separate webhook secret to go looking for.
+
+Point Cryptomus at `https://your-server/api/payments/webhook/cryptomus`, either
+in its dashboard or by setting `CRYPTOMUS_CALLBACK_URL`. There is no
+local-forwarding CLI, so testing the crypto path needs a reachable URL (an
+`ngrok` tunnel is enough). Crypto is not offered at all until both keys are set,
+so you can leave them empty and ship cards alone.
+
+> **Nothing in this repository has ever called Cryptomus.** It was built on a
+> machine that cannot reach `api.cryptomus.com`, so the request shape, the
+> signature formula and the status vocabulary come from the published reference
+> and are pinned by tests against a stubbed socket
+> (`backend/test/cryptomus.test.js`). That catches a regression; it cannot prove
+> the shape is right. `backend/test/e2e/README.md` lists the handful of checks
+> to run against a real merchant account before taking money - do them.
 
 **Going live**, when you get there: switch the dashboard out of test mode, copy
 the `pk_live_`/`sk_live_` pair the same way, create a live webhook endpoint (its
@@ -312,9 +330,14 @@ secret is different from the test one), and read
 `backend/test/e2e/README.md` - it lists the handful of things no script here can
 prove and that have to be checked by hand against real money.
 
-#### Taking crypto in your own wallet
+#### Taking crypto in your own wallet (retired)
 
-The crypto half is **non-custodial**: coin arrives at an address you hold the
+> Kept because installations are running it and invoices opened this way are
+> still out there waiting to be paid. New checkouts go to Cryptomus whenever
+> `CRYPTOMUS_*` is set, and this machinery will be removed once nothing is in
+> flight. Read this section to operate an existing install, not to start one.
+
+The non-custodial path: coin arrives at an address you hold the
 keys to, no processor is involved, and nobody takes a percentage. What that
 costs is that this server has to watch the chains itself, and that the amounts
 have to be exact.
@@ -1095,7 +1118,9 @@ unique across the install, which settles all of it in one segment.
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
-| `CHAIN_ASSETS` | Which coins to take, comma-separated, from `ethereum:USDT`, `ethereum:USDC`, `bsc:USDT`, `bsc:USDC`, `tron:USDT`, `bitcoin:BTC`. Anything else - including `ethereum:ETH` and `bsc:BNB`, which need whole block bodies scanned - is reported as a problem rather than ignored |
+| `CRYPTOMUS_MERCHANT_ID` / `CRYPTOMUS_PAYMENT_API_KEY` | Crypto through Cryptomus, on its hosted invoice page. Both are needed or the method is not offered. The payment API key does double duty: it signs outgoing requests **and** is what every incoming callback is verified against, so there is no separate webhook secret. The endpoint is `/api/payments/webhook/cryptomus` |
+| `CRYPTOMUS_CALLBACK_URL` | Optional. Sends the callback address per invoice instead of relying on the one set in the Cryptomus dashboard. Must be this server's API, reachable from the internet. Left empty the field is omitted entirely - sending it blank would override the dashboard with nothing |
+| `CHAIN_ASSETS` | *Retired.* Which coins to take, comma-separated, from `ethereum:USDT`, `ethereum:USDC`, `bsc:USDT`, `bsc:USDC`, `tron:USDT`, `bitcoin:BTC`. Anything else - including `ethereum:ETH` and `bsc:BNB`, which need whole block bodies scanned - is reported as a problem rather than ignored |
 | `CHAIN_EVM_ADDRESS` / `CHAIN_TRON_ADDRESS` / `CHAIN_BTC_ADDRESS` | Where the coin goes. One per chain; Ethereum and BNB Chain share the EVM one. Validated at boot, so a mistyped address fails there instead of collecting payments nobody watches for. Use an address you hold the keys to, not an exchange deposit address |
 | `TRONGRID_API_KEY` | Free, and TRON is not offered without it: the keyless tier rate-limits to something one busy minute exhausts, and its failure is a watcher that quietly stops looking |
 | `COINGECKO_DEMO_API_KEY` | Optional. Only Bitcoin among the six needs a price at all - the stablecoins are their own rate - and the free tier works without a key |
@@ -1105,7 +1130,7 @@ unique across the install, which settles all of it in one segment.
 | `CHAIN_RATE_SPREAD_PERCENT` | Protects against the price moving between the quote and the transfer landing. **Not** a fee - that is `paymentLimits` under Admin → Payments |
 | `CHAIN_TOLERANCE_BPS` | How far from the quoted amount still counts as the same order. Widening it does not make more payments credit: money moves only when exactly ONE open order is inside the band, so a wider band makes holding more likely, not less |
 | `CHAIN_MAX_OPEN_INVOICES_PER_USER` | How many amounts one account may hold at once. Each takes a slot from a finite set |
-| `COINBASE_COMMERCE_API_KEY` / `COINBASE_COMMERCE_WEBHOOK_SECRET` | Crypto through Coinbase Commerce instead, if you would rather not hold coin yourself. Used only when the `CHAIN_*` block is not configured; payments already made through it keep working either way. The webhook endpoint is `/api/payments/webhook/coinbase` |
+| `COINBASE_COMMERCE_API_KEY` / `COINBASE_COMMERCE_WEBHOOK_SECRET` | *Retired.* Crypto through Coinbase Commerce. Used only when neither `CRYPTOMUS_*` nor the `CHAIN_*` block is configured; payments already made through it keep working either way. The webhook endpoint is `/api/payments/webhook/coinbase` |
 | `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Defaults to the first `FRONTEND_URL` |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
@@ -1120,6 +1145,10 @@ See `.env.example` for the full `AI_CLI_*` list.
 
 | Symptom | Cause and fix |
 |---------|---------------|
+| The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and read the buy page's own reason under the greyed-out button: it names which key is missing. |
+| Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
+| A Cryptomus invoice was paid but nothing was credited | Read the backend log for that payment's reference. *"the provider reported N against M"* means the amount did not match what was quoted - the payment is deliberately left pending for a person rather than credited to a guess. *"already handled"* on every attempt means the callback was recorded before; the credits either landed or the row is not pending. Nothing at all means the callback never arrived: check the address set in the Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL`, points at **this server's API** - `/api/payments/webhook/cryptomus` - and not at the frontend. |
+| A crypto buyer sees a coin list on Cryptomus that does not match this app's buttons | Expected. With Cryptomus configured the buy page shows a single **Cryptocurrency** button on purpose, because the coin and the network are chosen on Cryptomus's page from Cryptomus's list. The per-coin buttons belong to the retired on-chain path and appear only when `CRYPTOMUS_*` is unset. |
 | The buy page offers no coins although `CHAIN_ASSETS` is set | Every asset was rejected, and the backend said which at startup - look for `[chain] ... is not available:` in its output. The usual causes are an address that fails its checksum (the message names the variable), a `tron:*` asset with no `TRONGRID_API_KEY`, and `ethereum:ETH` or `bsc:BNB`, which this build deliberately does not watch. The buy page shows the same reasons per coin. |
 | A crypto buyer is told *somebody is already paying that exact amount* | Working as intended, and it should be rare. Two open orders must never quote the same figure, because the amount is the only thing telling two payments apart - so the second buyer waits a moment or picks a different amount rather than being given a near-identical one. It happens most on a quiet installation where two people pick the same preset within twenty minutes. |
 | Every card payment suddenly asks the buyer to confirm with their bank | *Always ask the cardholder's bank to authenticate* is on under **Admin → Payments**. That is what it does - it asks on every payment rather than only when the provider's own rules call for it. Turn it off to go back to letting Stripe decide, and note that doing so also gives up the shift of chargeback liability to the issuing bank |

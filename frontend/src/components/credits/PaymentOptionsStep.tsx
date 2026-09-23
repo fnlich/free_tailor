@@ -100,8 +100,8 @@ function Choice({
              * and set, and the part that says which keys is at the END of the
              * sentence - so one line with an ellipsis hides the whole point of
              * showing it. `break-words` is for the keys themselves:
-             * COINBASE_COMMERCE_WEBHOOK_SECRET is one 32-character word with
-             * nowhere a browser will break it, and in this column it has to go
+             * CRYPTOMUS_PAYMENT_API_KEY is one long word with nowhere a
+             * browser will break it, and in this column it has to go
              * somewhere.
              */
             <span className="block break-words text-xs text-subtle">

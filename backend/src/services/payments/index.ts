@@ -33,6 +33,7 @@ import {
 import type { UserAccount } from '../../types/account';
 import * as stripe from '../../integrations/stripe';
 import * as coinbase from '../../integrations/coinbaseCommerce';
+import * as cryptomus from '../../integrations/cryptomus';
 import {
   PriceError,
   quoteCredits,
@@ -75,16 +76,23 @@ export function publishableKey(env: NodeJS.ProcessEnv = process.env): string {
 export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAvailability[] {
   const card = stripe.isStripeConfigured(env);
   /*
-   * Either way of taking crypto counts, and the on-chain one is preferred.
+   * Any of the three ways of taking crypto counts, and Cryptomus wins.
    *
-   * Coinbase Commerce is retired rather than removed: payments already made
-   * through it still read, its webhook still settles, and an installation
-   * configured only for it keeps working exactly as before. What changes is
-   * which one a NEW checkout gets. Changing the METHOD union instead would
-   * misread every row already in the table.
+   * The other two are retired rather than removed: payments already made
+   * through them still read, their webhooks still settle, and an installation
+   * configured only for one of them keeps working exactly as it did. What
+   * changes is which one a NEW checkout gets. Changing the METHOD union
+   * instead would misread every row already in the table.
+   *
+   * Stated once here and applied everywhere else in this file: Cryptomus when
+   * it is configured, otherwise on-chain, otherwise Coinbase. An installation
+   * that has not set CRYPTOMUS_* behaves exactly as it did before Cryptomus
+   * existed, which is what makes this change safe to ship ahead of deleting
+   * the machinery it replaces.
    */
+  const viaCryptomus = cryptomus.isCryptomusConfigured(env);
   const onChain = isChainPaymentsConfigured(env);
-  const crypto = onChain || coinbase.isCoinbaseConfigured(env);
+  const crypto = viaCryptomus || onChain || coinbase.isCoinbaseConfigured(env);
   return [
     {
       method: 'card',
@@ -101,18 +109,22 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
     },
     {
       method: 'crypto',
-      provider: onChain ? 'chain' : 'coinbase',
+      provider: viaCryptomus ? 'cryptomus' : onChain ? 'chain' : 'coinbase',
       label: 'Crypto',
       available: crypto,
       ...(crypto
         ? {}
         : {
-            // The chain reason first, because that is the one an operator
+            // The Cryptomus reason first, because that is the one an operator
             // setting this up now is trying to satisfy. It names the variables
-            // rather than describing them, for the same reason.
+            // rather than describing them, for the same reason. The other two
+            // follow as what they are: paths that still work and are on their
+            // way out.
             reason:
-              `${chainPaymentsReason(env)} Or set COINBASE_COMMERCE_API_KEY and ` +
-              'COINBASE_COMMERCE_WEBHOOK_SECRET to take crypto through Coinbase Commerce instead.',
+              'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through ' +
+              `Cryptomus. ${chainPaymentsReason(env)} Or set COINBASE_COMMERCE_API_KEY and ` +
+              'COINBASE_COMMERCE_WEBHOOK_SECRET for Coinbase Commerce. Both of those are ' +
+              'retired and will be removed.',
           }),
     },
   ];
@@ -273,14 +285,20 @@ export async function startCheckout(
   }
 
   /*
-   * On-chain crypto needs to know WHICH coin. Coinbase does not.
+   * On-chain crypto needs to know WHICH coin. A hosted page does not.
    *
    * The difference is real rather than pedantic: an on-chain payment is an
    * amount of one specific token sent to one specific address, and there is no
-   * sensible default. Coinbase's hosted page asks the buyer itself, which is
-   * why an asset stays optional there and why this check is conditional.
+   * sensible default. Cryptomus and Coinbase both ask the buyer on their own
+   * page, which is why an asset stays optional there and why this check is
+   * conditional.
+   *
+   * An `asset` that arrives when Cryptomus is in charge is IGNORED rather than
+   * refused: a tab opened before the switch still has coin buttons on it, and
+   * the buyer pressing one meant "crypto", not "fail my purchase".
    */
-  const chainConfigured = isChainPaymentsConfigured(env);
+  const viaCryptomus = cryptomus.isCryptomusConfigured(env);
+  const chainConfigured = !viaCryptomus && isChainPaymentsConfigured(env);
   if (method === 'crypto' && chainConfigured && !asset) {
     throw new PaymentError('Choose which coin to pay with.');
   }
@@ -455,6 +473,27 @@ export async function startCheckout(
       }
 
       /*
+       * Cryptomus first, then on-chain, then Coinbase - the precedence
+       * `describeMethods` states.
+       *
+       * The hosted invoice is the same shape as a Coinbase charge and returns
+       * the same three fields, which is why the browser needs nothing new: a
+       * URL to send the buyer to, and a signed webhook to settle on.
+       */
+      if (viaCryptomus) {
+        const invoice = await cryptomus.createInvoice({
+          paymentId: payment.id,
+          reference: payment.reference,
+          credits: quote.credits,
+          amountCents: quote.amountCents,
+          currency: quote.currency,
+          returnUrl,
+          cancelUrl,
+        });
+        return { ref: invoice.uuid, clientSecret: '', url: invoice.url, processing: false };
+      }
+
+      /*
        * On-chain when it is configured, Coinbase Commerce when it is not.
        *
        * The difference for the buyer is total: on-chain they are shown an
@@ -527,7 +566,9 @@ export async function startCheckout(
        * credits nothing. Money taken, nothing given. So an unknown outcome
        * leaves the payment pending and lets it expire on its own.
        */
-      const unknown = error instanceof stripe.StripeError && error.transport;
+      const unknown =
+        (error instanceof stripe.StripeError && error.transport) ||
+        (error instanceof cryptomus.CryptomusError && error.transport);
       if (!unknown) {
         markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
       }
@@ -715,6 +756,20 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
    * unavailable and with the reason - the rule chainPayments.ts states for
    * itself: a misconfiguration is something they need to SEE.
    */
+  /*
+   * A hosted invoice is ONE button, and the coin rows would be a lie.
+   *
+   * Cryptomus asks the buyer which coin on its own page, at its own rates,
+   * across a list this server does not hold. A row per coin here would let
+   * somebody choose USDT-on-TRON from this application and then be shown a
+   * different list on the next page - a choice that was never honoured. So
+   * when Cryptomus is in charge the method-level "Cryptocurrency" row stands,
+   * and the per-coin block below is skipped entirely, problem rows included:
+   * a CHAIN_ASSETS that is being ignored is not a misconfiguration to report,
+   * it is a setting that no longer applies.
+   */
+  if (cryptomus.isCryptomusConfigured(env)) return targets;
+
   const chainConfig = readChainPaymentsConfig(env);
   {
     const coinTargets: PaymentTarget[] = [];
@@ -955,13 +1010,21 @@ export async function refundPayment(
        * that no processor holds the money, so an operator following this
        * message would go looking in an account the coin never passed through.
        * It is in the wallet whose address they configured.
+       *
+       * Three providers now, and this is one of exactly three places in the
+       * codebase that says something different per provider. `PaymentProvider`
+       * is not switched on exhaustively anywhere, so a fourth would fall into
+       * the last branch and be told to look in the wrong place all over again.
        */
       throw new PaymentError(
         payment.provider === 'chain'
           ? 'An on-chain payment cannot be refunded automatically - nobody is holding it to ' +
               'send back. Return the coin from the wallet you configured in CHAIN_*_ADDRESS, ' +
               'then adjust the balance from the accounts page.'
-          : 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
+          : payment.provider === 'cryptomus'
+            ? 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
+              'Cryptomus merchant dashboard, then adjust the balance from the accounts page.'
+            : 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
               'Coinbase Commerce account, then adjust the balance from the accounts page.',
         409
       );

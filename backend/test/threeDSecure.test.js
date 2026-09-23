@@ -139,6 +139,8 @@ async function serve({ requireThreeDSecure = false } = {}) {
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
   delete process.env.COINBASE_COMMERCE_API_KEY;
   delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
+  delete process.env.CRYPTOMUS_MERCHANT_ID;
+  delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   delete process.env.CHAIN_ASSETS;
 
   // Before anything reads settings: the settings module caches what it sees.

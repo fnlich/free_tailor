@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m45s, 824 tests)
+npm test                       # backend node:test suite (~1m45s, 854 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -90,7 +90,11 @@ backend/src/
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart)
   services/payments/chain/
-                      # Non-custodial crypto. `rpc.ts` is the ONLY outbound
+                      # RETIRED non-custodial crypto. New checkouts go to
+                      #   Cryptomus (integrations/cryptomus.ts) whenever
+                      #   CRYPTOMUS_* is set; this is kept because invoices
+                      #   opened here are still out there, and goes once
+                      #   nothing is in flight. `rpc.ts` is the ONLY outbound
                       #   seam (tests replace it by assignment); each reader
                       #   under `readers/` exports a pure parser plus a
                       #   fetcher, because this machine cannot reach a chain
@@ -118,6 +122,14 @@ frontend/src/
                       #   carries a `dark:` variant.
   components/, lib/   # UI and the API client
 ```
+
+Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
+hosted invoice page. Nothing in this repository has ever called it - this
+machine cannot reach `api.cryptomus.com`, the same way it cannot reach a
+blockchain RPC - so the request shape is pinned by tests against a stubbed
+socket and the README says so out loud. Its webhook signature arrives INSIDE
+the JSON body, which inverts `paymentWebhooks.ts`'s "verify before reading"
+rule; that exception is confined to `verifyWebhookSign` and explained there.
 
 All dynamic data lives in SQLite. `backend/static` holds seeds only — a running
 install reads its prompts, skills and templates from the database.

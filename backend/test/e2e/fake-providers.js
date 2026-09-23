@@ -21,6 +21,7 @@ const path = require('path');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 const stripe = require(path.join(DIST, 'integrations', 'stripe.js'));
 const coinbase = require(path.join(DIST, 'integrations', 'coinbaseCommerce.js'));
+const cryptomus = require(path.join(DIST, 'integrations', 'cryptomus.js'));
 
 const FAKE_PORT = Number(process.env.FAKE_PROVIDER_PORT || 4242);
 const BACKEND = `http://127.0.0.1:${process.env.PORT || 3001}`;
@@ -176,6 +177,23 @@ coinbase.createCharge = async (input) => {
 };
 
 coinbase.getCharge = async (code) => ({ code, timeline: [] });
+
+/*
+ * Cryptomus, which is what a crypto checkout actually opens now.
+ *
+ * The same hosted page as everything else, because the shape is the same: a
+ * URL to send the browser to, and a signed callback that settles. What it adds
+ * is the one thing about Cryptomus that is genuinely different - the signature
+ * travels INSIDE the body - so the real verifier in the server is exercised
+ * rather than a stub of it.
+ */
+cryptomus.createInvoice = async (input) => {
+  const uuid = nextId('inv');
+  const record = { ...input, id: uuid, provider: 'cryptomus' };
+  byId.set(uuid, record);
+  ledger.charges.push(record);
+  return { uuid, order_id: input.paymentId, url: `http://127.0.0.1:${FAKE_PORT}/checkout/${uuid}` };
+};
 
 /* ----------------------------------------------------------- the chains */
 
@@ -422,6 +440,36 @@ function stripeEvent(record, type) {
   });
 }
 
+/**
+ * A Cryptomus callback, signed the way Cryptomus signs one.
+ *
+ * `sign` is computed over the serialization of everything ELSE and then added
+ * to it, so this builds the body twice on purpose - which is exactly the shape
+ * the server has to unpick to verify it.
+ */
+function cryptomusBody(record, status) {
+  const fields = {
+    type: 'payment',
+    uuid: record.id,
+    order_id: record.paymentId,
+    amount: (record.amountCents / 100).toFixed(2),
+    payment_amount: (record.amountCents / 100).toFixed(2),
+    currency: record.currency.toUpperCase(),
+    status,
+    is_final: true,
+    // A real callback carries more than this. The extra field is here so the
+    // signature is over something the server does not read, proving it signs
+    // the whole body rather than the fields it happens to care about.
+    additional_data: record.reference,
+  };
+  const json = JSON.stringify(fields);
+  const sign = crypto
+    .createHash('md5')
+    .update(Buffer.from(json, 'utf8').toString('base64') + (process.env.CRYPTOMUS_PAYMENT_API_KEY || ''))
+    .digest('hex');
+  return JSON.stringify({ ...fields, sign });
+}
+
 function coinbaseEvent(record, type) {
   return JSON.stringify({
     event: {
@@ -437,6 +485,21 @@ function coinbaseEvent(record, type) {
 }
 
 async function deliver(record, outcome, replayBody = null) {
+  if (record.provider === 'cryptomus') {
+    const status = outcome === 'paid' ? 'paid' : 'cancel';
+    const body = replayBody ?? cryptomusBody(record, status);
+    record.lastBody = body;
+    const url = `${BACKEND}/api/payments/webhook/cryptomus`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    const text = await response.text();
+    ledger.webhooks.push({ url, status: response.status, body: text, type: `payment.${status}` });
+    return { status: response.status, text };
+  }
+
   const isStripe = record.provider === 'stripe';
   // A saved-card charge is an intent, and intents have their own event names.
   const isIntent = record.kind === 'intent';
