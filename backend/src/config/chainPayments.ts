@@ -196,7 +196,7 @@ export function readChainPaymentsConfig(
     coingeckoKey: env.COINGECKO_DEMO_API_KEY?.trim() ?? '',
     pollSeconds: number(env.CHAIN_POLL_INTERVAL_SECONDS, 30, 10, 600),
     bitcoinPollSeconds: number(env.BTC_POLL_INTERVAL_SECONDS, 60, 15, 900),
-    quoteTtlSeconds: number(env.CHAIN_QUOTE_TTL_SECONDS, 900, 120, 3600),
+    quoteTtlSeconds: number(env.CHAIN_QUOTE_TTL_SECONDS, 1_200, 120, 3600),
     monitorWindowHours: number(env.CHAIN_MONITOR_WINDOW_HOURS, 24, 1, 168),
     creditLatePayments: (env.CHAIN_CREDIT_LATE_PAYMENTS ?? 'true').trim() !== 'false',
     spreadPercent: number(env.CHAIN_RATE_SPREAD_PERCENT, 1, 0, 10),

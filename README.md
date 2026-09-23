@@ -386,11 +386,15 @@ page whatever we do: 3-D Secure and a stablecoin payment both hand the customer
 to another domain and have to land somewhere coming back. That somewhere is the
 page that waits for the webhook.
 
-**Only a verified webhook adds credits.** Not the browser arriving at the return
-page: that is a GET anybody can visit, so crediting there would be a free-credits
-button with an inconvenient URL. Confirming in the form does not decide anything
-either. The return page polls the payment until the webhook has landed, which is
-a second for a card and can be minutes for a chain payment.
+**Nothing the browser does adds credits.** Arriving at the return page is a GET
+anybody can visit, so crediting there would be a free-credits button with an
+inconvenient URL; confirming in the payment form does not decide anything
+either. Only the server credits, and it has exactly two ways to learn that
+money moved: a **webhook it has verified** (a card, or Coinbase Commerce), or
+its **own read of a chain** (a coin payment into your own wallet, where there
+is no processor to send a webhook at all - the watcher sees the transfer and
+credits it). The return page polls the payment until one of those has happened,
+which is a second for a card and can be minutes for a chain.
 
 The card integration is pinned to Stripe API version `2026-03-25.dahlia` and
 sends it on every request. `ui_mode: 'elements'` exists only from that version -

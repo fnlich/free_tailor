@@ -140,7 +140,26 @@ async function inspectTopBar(page) {
       .sort((left, right) => left.left - right.left)
       .map((entry) => entry.name);
 
-    return { viewport, past: worst, culprit, controls };
+    const wordmark = bar.querySelector('.tl-brand span');
+    return {
+      viewport,
+      past: worst,
+      culprit,
+      controls,
+      /*
+       * The product name, and whether all of it is there.
+       *
+       * The spec for this bar begins "Top Left: brand and logo and
+       * name(Tailor)", and the first fix for the bar's overflow spent exactly
+       * that: letting the brand shrink rendered the wordmark as "Tai..." at
+       * 390 and as nothing at all once the credit balance ran to six figures.
+       * The app says its own name in one place, so this is the one string in
+       * the bar that may not be shortened to make room.
+       */
+      brand: wordmark
+        ? { text: wordmark.textContent.trim(), whole: wordmark.scrollWidth <= wordmark.clientWidth + 1 }
+        : null,
+    };
   });
 }
 
@@ -364,6 +383,11 @@ async function main() {
         `top bar ${label}: nothing hangs off the end`,
         bar && bar.past <= 0,
         `${bar?.past}px past ${bar?.viewport}: ${bar?.culprit}`
+      );
+      check(
+        `top bar ${label}: the name Tailor is there in full`,
+        bar?.brand?.text === 'Tailor' && bar.brand.whole,
+        JSON.stringify(bar?.brand)
       );
 
       /*

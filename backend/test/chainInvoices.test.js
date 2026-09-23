@@ -246,7 +246,10 @@ test('a payment of the Ethereum figure against a BNB invoice credits nothing', a
       confirmations: 30,
     });
 
-    assert.equal(outcome.status, 'ignored', 'a trillionth of the price must not settle the order');
+    // Held rather than credited: a trillionth of the price must not settle the
+    // order. It is written down, because money that arrived at our address
+    // and matched nothing is exactly what an administrator has to see.
+    assert.equal(outcome.status, 'held', 'a trillionth of the price must not settle the order');
     assert.equal(server.payments.getPayment(opened.paymentId).state, 'pending');
     assert.equal(server.users.getUserById(server.alice.id).credits, 0);
   } finally {
@@ -766,6 +769,82 @@ test('a transfer too small to buy one credit is held with its transaction on it'
   }
 });
 
+test('money that matches nothing is written down, not written off', async () => {
+  /*
+   * The case the "ignored" branch used to swallow, and the worst one.
+   *
+   * A buyer short by more than the band is the ordinary shape of this: an
+   * exchange withdrawal fee alone can take several percent, and a quote that
+   * expired before the transfer landed does the same. Their coin arrived at
+   * our address, and the settler wrote NOTHING - no credit, no hold, no
+   * orphan, not even a log line - while the cursor advanced past the block so
+   * it could never be read again. Meanwhile the README, the troubleshooting
+   * table and the policy text on the buyer's own payment screen all promised
+   * it was held and listed for an administrator.
+   *
+   * The old justification was that an unmatched transfer is usually not for
+   * us at all, somebody reusing the address. That much is true, and it is why
+   * an orphan can be dismissed rather than why it should never be written:
+   * a queue with a few strangers' transfers in it can be cleared, and money
+   * nobody can see cannot be given back.
+   */
+  const server = await serve();
+  try {
+    const opened = await (
+      await server.checkout(server.aliceToken, { method: 'crypto', credits: 100, asset: 'ethereum:USDT' })
+    ).json();
+
+    // $40 against a $50 order: 20% short, far outside the 2% band.
+    const outcome = server.settle.settleTransfer({
+      chain: 'ethereum',
+      asset: 'ethereum:USDT',
+      txid: '0xstranded',
+      amountAtomic: '40000000',
+      height: 100,
+      confirmations: 12,
+    });
+
+    // Still not credited to a guess - that rule does not change.
+    assert.equal(outcome.status, 'held');
+    assert.equal(server.users.getUserById(server.alice.id).credits, 0);
+    assert.equal(server.payments.getPayment(opened.paymentId).state, 'pending');
+
+    // But it is on the administrator's list, with the two facts they need.
+    const { held } = await server.heldQueue();
+    const mine = held.find((entry) => entry.txid === '0xstranded');
+    assert.ok(mine, JSON.stringify(held));
+    assert.equal(mine.received, '40');
+    assert.equal(mine.resolvable, true);
+    assert.match(mine.note, /no open order/i);
+
+    // And the buyer's own order is untouched: they may still pay it properly.
+    assert.equal(server.chainInvoices.getInvoiceForPayment(opened.paymentId).state, 'waiting');
+  } finally {
+    server.close();
+  }
+});
+
+test('the same unmatched transfer on every sweep is still one row', async () => {
+  const server = await serve();
+  try {
+    await server.checkout(server.aliceToken, { method: 'crypto', credits: 100, asset: 'ethereum:USDT' });
+    const transfer = {
+      chain: 'ethereum',
+      asset: 'ethereum:USDT',
+      txid: '0xstrangerstill',
+      amountAtomic: '12345678',
+      height: 100,
+      confirmations: 12,
+    };
+    for (let tick = 0; tick < 4; tick += 1) server.settle.settleTransfer(transfer);
+
+    const rows = (await server.heldQueue()).held.filter((entry) => entry.txid === '0xstrangerstill');
+    assert.equal(rows.length, 1, JSON.stringify(rows));
+  } finally {
+    server.close();
+  }
+});
+
 test('a payment outside the band credits nothing at all', async () => {
   const server = await serve();
   try {
@@ -781,8 +860,11 @@ test('a payment outside the band credits nothing at all', async () => {
       confirmations: 12,
     });
 
-    assert.equal(outcome.status, 'ignored');
+    // Nothing credited - twenty percent short buys nothing - but not lost
+    // either. The buyer who sent it is the likeliest owner of this money.
+    assert.equal(outcome.status, 'held');
     assert.equal(server.users.getUserById(server.alice.id).credits, 0);
+    assert.ok((await server.heldQueue()).held.some((entry) => entry.txid === '0xwayshort'));
   } finally {
     server.close();
   }
@@ -813,27 +895,6 @@ test('an exact match wins even when another order is inside the band', async () 
     assert.equal(server.users.getUserById(server.alice.id).credits, 100);
     assert.equal(server.users.getUserById(server.bob.id).credits, 0);
     assert.equal(server.payments.getPayment(alice.paymentId).state, 'paid');
-  } finally {
-    server.close();
-  }
-});
-
-test('money that matches nothing open is ignored rather than held', async () => {
-  const server = await serve();
-  try {
-    // Very often this is not a payment for us at all - somebody using the
-    // same address for something else. Holding every one of those would fill
-    // an operator's queue with things that need no attention.
-    const outcome = server.settle.settleTransfer({
-      chain: 'ethereum',
-      asset: 'ethereum:USDT',
-      txid: '0xstranger',
-      amountAtomic: '12345678',
-      height: 100,
-      confirmations: 12,
-    });
-
-    assert.equal(outcome.status, 'ignored');
   } finally {
     server.close();
   }

@@ -363,7 +363,19 @@ async function main() {
      * collision guard working, which is asserted deliberately a few lines
      * below with the SAME amount. Here the point is to be a different buyer.
      */
-    const credits = coin.minCredits + (Math.floor(Date.now() / 1000) % 40);
+    /*
+     * A wide span, because a reservation lasts a DAY here.
+     *
+     * An open invoice holds its exact amount until its monitor window closes,
+     * and that window is the quote's twenty minutes plus
+     * CHAIN_MONITOR_WINDOW_HOURS - twenty-four by default, so that a transfer
+     * sent late is still credited. Against a forty-value span that made a
+     * second run inside the same day collide almost every time, and a
+     * collision here is a 409 the script reads as the deposit view failing to
+     * open. One thousand values keeps the run well inside maxCredits and makes
+     * the clash rare rather than routine.
+     */
+    const credits = coin.minCredits + (Math.floor(Date.now() / 1000) % 1_000);
     const started = await call(token, '/payments/checkout', {
       method: 'POST',
       body: JSON.stringify({ method: 'crypto', credits, asset: coin.asset }),

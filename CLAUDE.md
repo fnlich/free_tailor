@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m45s, 821 tests)
+npm test                       # backend node:test suite (~1m45s, 822 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 

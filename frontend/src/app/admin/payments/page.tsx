@@ -680,8 +680,19 @@ function PaymentsBody() {
                       {payment.userEmail || 'this account'}?
                     </p>
                     <p className="mt-1 text-sm text-red-800">
-                      The money goes back through {payment.provider}. Credits already spent cannot be
-                      reversed - a balance never goes below zero - and this will say how many were.
+                      {/*
+                        Said BEFORE the button, because for crypto the answer
+                        is "not by us". The old copy promised "the money goes
+                        back through chain" and the server then refused the
+                        request outright, which is a worse way to find out.
+                      */}
+                      {payment.provider === 'chain'
+                        ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured, then adjust the balance from the accounts page. Pressing this will reverse the credits only.'
+                        : payment.provider === 'coinbase'
+                          ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account, then adjust the balance from the accounts page.'
+                          : `The money goes back through ${payment.provider}.`}{' '}
+                      Credits already spent cannot be reversed - a balance never goes below zero -
+                      and this will say how many were.
                     </p>
                     <input
                       type="text"

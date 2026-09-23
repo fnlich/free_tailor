@@ -661,28 +661,66 @@ html.dark .shadow-2xl {
 
 @media (max-width: 767.98px) {
   /*
-   * Below the breakpoint the brand is what gives way, and it has to be
-   * something.
+   * Below the breakpoint the CREDIT PILL is what gives way, and the brand is
+   * what does not.
    *
    * The bar is a flex row with the brand at one end and the controls at the
-   * other, and both were refusing to shrink: this rule set `width: auto` but
-   * left `flex: 0 0 auto`, while the control group is `shrink-0` and genuinely
+   * other, and both used to refuse to shrink: this rule set `width: auto` but
+   * left `flex: 0 0 auto`, while the control group is `shrink-0` and
    * min-content-locked - `.tl-credits` is `white-space: nowrap` and every
    * `.tl-icon-button` is a fixed 2.25rem box. So once the two sums passed the
-   * viewport the bar simply overflowed, by a measured 6px at 390. And because
-   * `.tl-topbar` is `position: fixed`, that 6px is not scrollable - it is off
-   * the screen and unreachable.
+   * viewport the bar overflowed, by a measured 6px at 390, and because
+   * `.tl-topbar` is `position: fixed` that 6px was off the screen rather than
+   * scrollable.
    *
-   * The brand is the right thing to sacrifice: its inner link already carries
-   * `min-w-0` and its wordmark `truncate`, so it shrinks by shortening
-   * "Tailor" rather than by pushing anything out. `min-width: 0` is required
-   * as well as `flex-shrink`, or the automatic minimum floors it again at its
-   * content width and nothing moves.
+   * Letting the BRAND give way fixed the overflow and broke something else.
+   * The spec for this bar starts "Top Left: brand and logo and name(Tailor)",
+   * and a shrinking brand spends the name first: measured at 390 the wordmark
+   * rendered as "Tai...", at 360 as a bare ellipsis, and once the balance ran
+   * to six figures the product name was gone from the bar entirely. The app
+   * has nowhere else that says what it is called.
+   *
+   * The credit figure can afford what the name cannot. It is one tap from
+   * being read in full on /credits, it is the one control here whose width
+   * depends on data rather than on a glyph, and a clipped number still shows
+   * its leading digits - which is the part somebody glances at. So the brand
+   * is pinned and the pill is allowed to lose its tail.
    */
   .tl-brand {
     width: auto;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
+  }
+
+  /*
+   * The group has to be allowed to shrink at all before anything inside it
+   * can: it is `shrink-0` in the markup, which is right above the breakpoint
+   * where there is room for every control at its natural width.
+   */
+  .tl-topbar > .ml-auto {
     min-width: 0;
+    flex-shrink: 1;
+  }
+
+  .tl-credits {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /*
+   * The coin stays; only the number gives way.
+   *
+   * Without pinning the icon the pill collapsed to a bare empty capsule at
+   * 320 - a rounded rectangle with nothing in it, which is worse than showing
+   * less. Kept, it degrades to an icon that still says what the control is
+   * and still opens /credits, which is where the exact figure lives anyway.
+   */
+  .tl-credits > svg {
+    flex: none;
+  }
+
+  .tl-credits span {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /*

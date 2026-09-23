@@ -77,7 +77,15 @@ export default function CardPanel({
               <div key={card.id} className={`${CHOICE} flex items-center gap-3`}>
                 <MarkCardBrand brand={card.brand} className="h-5 w-8 shrink-0" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-ink">
+                  {/*
+                    Wrapped, not truncated. "Visa ending in 4242" needs 130px
+                    and this column is 102px at 390, so `truncate` cut 28px -
+                    which lands before the digits, every time, whatever they
+                    are. Two saved cards then read identically as "Visa ending
+                    in..." above the Pay now button that charges one of them.
+                    The digits are the only thing telling the two apart.
+                  */}
+                  <span className="block text-sm font-medium text-ink">
                     {describeCard(card)}
                   </span>
                   <span className="block text-xs text-subtle">
@@ -88,7 +96,7 @@ export default function CardPanel({
                   type="button"
                   onClick={() => onPayWithCard(card.id)}
                   disabled={busyCardId !== null}
-                  className={`${PRIMARY} px-3 py-1.5`}
+                  className={`${PRIMARY} shrink-0 px-3 py-1.5`}
                 >
                   {busyCardId === card.id ? 'Charging…' : 'Pay now'}
                 </button>

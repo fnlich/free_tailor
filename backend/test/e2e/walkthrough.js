@@ -194,7 +194,7 @@ async function main() {
     (target) => target.asset === 'ethereum:USDT'
   );
   check('the server offers USDT on Ethereum', Boolean(coin?.available), JSON.stringify(coin ?? null));
-  const cryptoCredits = (coin?.minCredits ?? 100) + (Math.floor(Date.now() / 1000) % 40);
+  const cryptoCredits = (coin?.minCredits ?? 100) + (Math.floor(Date.now() / 1000) % 1_000);
   const cryptoCheckout = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
     body: JSON.stringify({ method: 'crypto', credits: cryptoCredits, asset: 'ethereum:USDT' }),

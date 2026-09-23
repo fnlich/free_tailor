@@ -53,7 +53,6 @@ import { formatAtomic } from './invoices';
 const DEFAULT_TOLERANCE_BPS = 200;
 
 export type SettlementOutcome =
-  | { status: 'ignored'; reason: string }
   | { status: 'seen'; invoice: ChainInvoice }
   | { status: 'credited'; invoice: ChainInvoice; credits: number }
   | { status: 'held'; invoice: ChainInvoice | null; reason: string };
@@ -155,31 +154,43 @@ export function settleTransfer(
       if (candidates.length === 1) {
         invoice = candidates[0];
         shortPaid = true;
-      } else if (candidates.length > 1) {
+      } else {
         /*
-         * The case this whole design exists to refuse.
+         * Money we cannot attribute, in both of the ways that happens.
          *
-         * Two orders could equally have meant this money. Guessing would give
-         * one buyer's coin to another buyer's order, and there is no way to
-         * tell afterwards which of them was wronged - so nothing moves, and a
-         * person is told.
+         * TWO OR MORE candidates is the case this whole design exists to
+         * refuse: either order could have meant it, guessing would give one
+         * buyer's coin to another's order, and there is no way to tell
+         * afterwards which of them was wronged.
+         *
+         * NONE is the one that used to be swallowed, and it was the worse of
+         * the two. It returned `ignored` and wrote nothing - no credit, no
+         * hold, no record, not even a log line - while the scan cursor moved
+         * past the block, so the transfer could never be read again. The
+         * reasoning was that an unmatched transfer is usually not for us at
+         * all, somebody reusing the address; that is true, and it is an
+         * argument for being able to DISMISS one, not for never writing it
+         * down. A buyer short by more than the band is the same shape on the
+         * chain, and an exchange withdrawal fee alone can put them there. Their
+         * money arrived at our address and vanished from the system, while the
+         * README and the policy text on their own payment screen both promised
+         * it was held for somebody to look at.
+         *
+         * So both are written down now, and the open invoices are left alone
+         * either way: those buyers may still send the exact figure they were
+         * quoted, and cancelling an order because a third party sent an odd
+         * amount would punish them for somebody else's mistake.
          */
+        const arrived = `${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol}`;
         const reason =
-          `${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol} arrived in ` +
-          `${transfer.txid} and ${candidates.length} open orders are within ${bps / 100}% of ` +
-          'it. It has not been credited to any of them.';
+          candidates.length > 1
+            ? `${arrived} arrived in ${transfer.txid} and ${candidates.length} open orders are ` +
+              `within ${bps / 100}% of it. It has not been credited to any of them.`
+            : `${arrived} arrived in ${transfer.txid} and no open order is within ` +
+              `${bps / 100}% of it - so it is either a payment that fell short by more than ` +
+              'that, one whose quote had already expired, or coin sent to this address for ' +
+              'something else entirely. It has not been credited.';
 
-        /*
-         * Written down, and the open invoices left alone.
-         *
-         * Both halves matter. Writing it down is what makes the promise on the
-         * payment screen true - without a record the administrator's queue was
-         * empty and "we will hold it and contact you" described nothing the
-         * server did. Leaving the invoices open is the other half: those
-         * buyers may still send the exact figure they were quoted, and
-         * cancelling their orders because a third party sent an odd amount
-         * would punish them for somebody else's mistake.
-         */
         recordOrphan({
           chain: transfer.chain,
           asset: transfer.asset,
@@ -190,14 +201,6 @@ export function settleTransfer(
         });
 
         return { status: 'held', invoice: null, reason };
-      } else {
-        // Nothing open is close to this. Very often it is not a payment for us
-        // at all - somebody using the same address for something else - so
-        // this is quiet rather than alarming.
-        return {
-          status: 'ignored',
-          reason: `No open order matches ${formatAtomic(transfer.amountAtomic, asset.decimals)} ${asset.symbol}.`,
-        };
       }
     }
 

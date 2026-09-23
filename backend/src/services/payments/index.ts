@@ -946,12 +946,23 @@ export async function refundPayment(
       if (!intent) throw new PaymentError('Stripe has no payment to refund for that session.', 409);
       await stripe.refundPaymentIntent(intent, payment.id);
     } else {
-      // Coinbase Commerce has no refund API: a chain payment cannot be pulled
-      // back, only sent back. Saying so is the only honest answer - the operator
-      // returns the funds themselves and this records that they did.
+      /*
+       * Crypto cannot be pulled back, only sent back - and WHERE FROM depends
+       * on which kind it was, which this used to get wrong.
+       *
+       * It named Coinbase Commerce for every crypto payment. For an on-chain
+       * one that is the wrong place entirely: the whole point of that path is
+       * that no processor holds the money, so an operator following this
+       * message would go looking in an account the coin never passed through.
+       * It is in the wallet whose address they configured.
+       */
       throw new PaymentError(
-        'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
-          'Coinbase Commerce account, then adjust the balance from the accounts page.',
+        payment.provider === 'chain'
+          ? 'An on-chain payment cannot be refunded automatically - nobody is holding it to ' +
+              'send back. Return the coin from the wallet you configured in CHAIN_*_ADDRESS, ' +
+              'then adjust the balance from the accounts page.'
+          : 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
+              'Coinbase Commerce account, then adjust the balance from the accounts page.',
         409
       );
     }
