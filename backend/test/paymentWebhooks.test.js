@@ -420,6 +420,113 @@ test('a short Cryptomus payment closes the order rather than crediting it', asyn
     assert.equal(closed.state, 'failed');
     // The buyer reads this. It must not be the provider's own vocabulary.
     assert.doesNotMatch(closed.failure, /wrong_amount/);
+
+    /*
+     * And it must not claim nothing left their wallet.
+     *
+     * This is the one failure where money DID move: coin arrived and was too
+     * little. The general sentence is "it did not go through and you were not
+     * charged", the return page prints exactly what is here, and for this
+     * status that is a flat falsehood at the worst possible moment - so this
+     * status has a sentence of its own.
+     */
+    assert.doesNotMatch(closed.failure, /were not charged/i, closed.failure);
+    assert.match(closed.failure, /less arrived/i, closed.failure);
+    assert.match(closed.failure, /at the payment provider/i, 'and say where the coin is');
+  } finally {
+    server.close();
+  }
+});
+
+test('a Cryptomus amount sent as a number is compared, not skipped', async () => {
+  /*
+   * The amount check used to be opt-in without meaning to be.
+   *
+   * It ran only when `amount` arrived as a STRING, which is what the published
+   * reference says and what every fixture here sends - but nothing in this
+   * repository has ever spoken to Cryptomus, so that is a reading rather than
+   * an observation. A signed callback sending `19.97` instead of `"19.97"`
+   * skipped the comparison entirely and credited the full order, and in the log
+   * that is indistinguishable from the amounts agreeing.
+   */
+  const server = await serve();
+  try {
+    const short = cryptomusPayment(server);
+    assert.equal(
+      (
+        await server.post(
+          '/cryptomus',
+          cryptomusBody({
+            type: 'payment',
+            uuid: short.providerRef,
+            order_id: short.id,
+            // A number, and the wrong one: $5 against a $20 invoice.
+            amount: 5,
+            currency: 'USD',
+            status: 'paid',
+          })
+        )
+      ).status,
+      200
+    );
+    assert.equal(server.balance(), 0, 'a number that disagrees is a mismatch, not a pass');
+    assert.equal(server.payments.getPayment(short.id).state, 'pending', 'held for a person');
+  } finally {
+    server.close();
+  }
+
+  const second = await serve();
+  try {
+    const right = cryptomusPayment(second);
+    assert.equal(
+      (
+        await second.post(
+          '/cryptomus',
+          cryptomusBody({
+            type: 'payment',
+            uuid: right.providerRef,
+            order_id: right.id,
+            amount: right.amountCents / 100,
+            currency: 'USD',
+            status: 'paid',
+          })
+        )
+      ).status,
+      200
+    );
+    assert.equal(second.balance(), 40, 'and a number that agrees settles');
+  } finally {
+    second.close();
+  }
+});
+
+test('a paid Cryptomus callback with no amount at all is held, not credited', async () => {
+  /*
+   * Fail closed, because the alternative is to credit on the strength of a
+   * signature alone. A valid signature proves who sent the callback; it says
+   * nothing about how much arrived, and this provider's body shape is asserted
+   * rather than observed. No comparable figure means somebody has to look.
+   */
+  const server = await serve();
+  try {
+    const payment = cryptomusPayment(server);
+    const response = await server.post(
+      '/cryptomus',
+      cryptomusBody({
+        type: 'payment',
+        uuid: payment.providerRef,
+        order_id: payment.id,
+        currency: 'USD',
+        status: 'paid',
+      })
+    );
+
+    // 200, because a retry will not carry an amount either - the event is
+    // recorded and the row is left for a person.
+    assert.equal(response.status, 200);
+    assert.match((await response.json()).note, /amount/i);
+    assert.equal(server.balance(), 0);
+    assert.equal(server.payments.getPayment(payment.id).state, 'pending');
   } finally {
     server.close();
   }

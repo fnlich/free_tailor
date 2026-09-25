@@ -192,7 +192,18 @@ function ReturnBody() {
             <p className="font-semibold">
               {payment.state === 'expired' ? 'That checkout expired.' : 'That payment did not go through.'}
             </p>
-            <p className="mt-1">You were not charged. {payment.failure}</p>
+            {/*
+              The server's own sentence, or nothing but the reassurance.
+
+              This used to read "You were not charged." and then the sentence,
+              which put a flat contradiction on the page for the one failure
+              where money DID move: a crypto payment that arrived short is
+              closed as failed, and the coin is at the provider. Every sentence
+              the server writes now says what happened to the money itself, so
+              printing it alone is both shorter and true. The fallback covers a
+              row closed before those sentences existed.
+            */}
+            <p className="mt-1">{payment.failure || 'You were not charged.'}</p>
             <Link href="/credits" className="mt-2 inline-block font-semibold underline">
               Try again
             </Link>

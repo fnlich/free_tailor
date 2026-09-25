@@ -51,11 +51,41 @@ export class StripeError extends Error {
    */
   readonly transport: boolean;
 
-  constructor(message: string, status = 502, transport = false) {
+  /**
+   * Stripe's own machine-readable reason, when it gave one.
+   *
+   * `error.message` is written for a human and Stripe rewords it; `error.code`
+   * is the thing to branch on. The one branch that needs it today is
+   * `authentication_required`, which is how a bank demanding a challenge
+   * arrives on an off-session charge - as a REFUSAL, not as an intent with
+   * `requires_action` on it. Without the code that lands in the same catch as
+   * a misconfigured key and gets the same message.
+   */
+  readonly code: string;
+
+  /**
+   * The intent the refusal was about, when the body named one.
+   *
+   * Stripe returns the whole `payment_intent` object on a failed confirm, and
+   * that id is the only thing that makes the attempt attributable: the charge
+   * exists at Stripe whether or not this server ever heard a usable answer.
+   * Recording it means a later webhook about that intent finds the payment
+   * instead of resolving to nobody.
+   */
+  readonly paymentIntentId: string;
+
+  constructor(
+    message: string,
+    status = 502,
+    transport = false,
+    detail: { code?: string; paymentIntentId?: string } = {}
+  ) {
     super(message);
     this.name = 'StripeError';
     this.status = status;
     this.transport = transport;
+    this.code = detail.code ?? '';
+    this.paymentIntentId = detail.paymentIntentId ?? '';
   }
 }
 
@@ -212,8 +242,32 @@ async function stripeFetch<T>(
   }
 
   if (!response.ok) {
-    const detail = (parsed as { error?: { message?: string } })?.error?.message;
-    throw new StripeError(detail || `Stripe refused the request (HTTP ${response.status}).`);
+    /*
+     * The code and the intent id are kept, and nothing else is.
+     *
+     * A Stripe error body quotes back what it was sent, including the tail of
+     * the key it was sent with, so it must not become a customer's error
+     * message - the caller replaces `message` for exactly that reason. These
+     * two fields are safe and are the two a caller can act on: `code` says
+     * WHAT was refused, and `payment_intent.id` says which charge it was
+     * about, which is the difference between an attempt that can be traced
+     * and one that cannot.
+     */
+    const body = parsed as {
+      error?: { message?: string; code?: string; payment_intent?: { id?: string } };
+    };
+    const failure = body?.error;
+    throw new StripeError(
+      failure?.message || `Stripe refused the request (HTTP ${response.status}).`,
+      502,
+      false,
+      {
+        ...(typeof failure?.code === 'string' ? { code: failure.code } : {}),
+        ...(typeof failure?.payment_intent?.id === 'string'
+          ? { paymentIntentId: failure.payment_intent.id }
+          : {}),
+      }
+    );
   }
   return parsed as T;
 }
@@ -417,9 +471,20 @@ export type SavedCardCharge = {
  *
  * `off_session: true` tells Stripe nobody is at the keyboard, which is what
  * lets it apply the exemption earned when the card was first authenticated.
- * It can still come back `requires_action` - a bank may insist - and the caller
- * then hands the client secret to the browser, which is why this returns the
- * whole intent rather than a boolean.
+ *
+ * **A bank that insists anyway does NOT come back as an intent with
+ * `requires_action` on it.** This said so for a while and it was wrong: an
+ * off-session confirm that needs a challenge is REFUSED, with HTTP 402 and
+ * `error.code = 'authentication_required'`, because the whole point of
+ * `off_session` is the declaration that there is nobody there to challenge.
+ * So that answer arrives as a thrown `StripeError`, which is why the error
+ * carries `code` and the refused intent's id - see `startCheckout`, which
+ * turns it into a sentence about the bank rather than about this server.
+ *
+ * `requires_action` on a returned intent is therefore reachable only through
+ * the branch below that drops `off_session`, and the caller hands the client
+ * secret to the browser there - which is why this returns the whole intent
+ * rather than a boolean.
  *
  * **When 3-D Secure is required, that exemption is given up on purpose, and
  * `off_session` goes with it.** The two cannot both be sent: asking for a

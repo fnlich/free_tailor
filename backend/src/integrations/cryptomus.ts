@@ -244,8 +244,12 @@ export type CryptomusWebhook = {
   uuid?: string;
   order_id?: string;
   status?: string;
-  amount?: string;
-  payment_amount?: string;
+  /**
+   * A decimal string in the documented shape, and a number if the reference is
+   * wrong about that. Both are read - see the note in `paymentWebhooks.ts`.
+   */
+  amount?: string | number;
+  payment_amount?: string | number;
   currency?: string;
   is_final?: boolean;
   sign?: string;
@@ -302,14 +306,25 @@ export function verifyWebhookSign(
 /**
  * The statuses worth acting on.
  *
- * `paid_over` is a buyer who sent MORE than the invoice; it is still paid, and
- * the amount check downstream clamps what gets credited to what was quoted.
+ * `paid_over` is a buyer who sent MORE than the invoice, and it is still paid.
+ * Nothing clamps what gets credited, and this said so for a while: the clamp
+ * `creditPaid` used to carry went with the on-chain settler, and the webhook
+ * does not trim a disagreeing amount either - it REFUSES it and holds the
+ * payment. What makes `paid_over` safe is the field that gets compared:
+ * `amount` is the invoice, which an overpayment does not change, while the
+ * larger figure arrives as `payment_amount` and is never read. See the note in
+ * `paymentWebhooks.ts` about which of the two is comparable.
+ *
  * `wrong_amount` is the opposite - not enough arrived - and it closes the
- * payment rather than crediting a short one.
+ * payment rather than crediting a short one. It gets its own sentence below,
+ * because "it did not go through" is not what happened: the coin left the
+ * buyer's wallet and is at the provider.
  *
  * Everything else is a stage on the way, not an outcome. `check` and `process`
  * mean the money is somewhere between the buyer and confirmation, and crediting
- * there would hand out credits for a transfer that can still fail.
+ * there would hand out credits for a transfer that can still fail. So are
+ * `wrong_amount_waiting`, `refund_process` and `refund_paid`: acknowledged,
+ * recorded as events, and acted on by nobody here.
  */
 export const PAID_STATUSES: ReadonlySet<string> = new Set(['paid', 'paid_over']);
 export const FAILED_STATUSES: ReadonlySet<string> = new Set([
@@ -318,3 +333,26 @@ export const FAILED_STATUSES: ReadonlySet<string> = new Set([
   'cancel',
   'wrong_amount',
 ]);
+
+/**
+ * What to tell the buyer about a failure, where the general answer is wrong.
+ *
+ * The return page prints this sentence, and above it the page used to say
+ * flatly "You were not charged" - which for `wrong_amount` is false and
+ * unhelpful at the same moment. Something left their wallet; it was less than
+ * the invoice; nothing was credited; and nobody here can send it back, because
+ * a `failed` payment is not refundable through this application at all. Saying
+ * so is the least this can do, and it is also the sentence that tells an
+ * operator where to look.
+ *
+ * Empty for every other status, which means the general sentence stands.
+ */
+export function failureFor(status: string): string {
+  if (status === 'wrong_amount') {
+    return (
+      'Less arrived than the invoice asked for, so nothing was credited. The coin that was sent ' +
+      'is at the payment provider - contact support with this reference to sort it out.'
+    );
+  }
+  return '';
+}

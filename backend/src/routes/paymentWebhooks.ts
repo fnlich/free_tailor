@@ -9,6 +9,7 @@ import {
   canVerifyCryptomusWebhooks,
   cryptomusPaymentKey,
   verifyWebhookSign,
+  failureFor,
   FAILED_STATUSES,
   PAID_STATUSES,
 } from '../integrations/cryptomus';
@@ -106,6 +107,8 @@ type Handled = {
   outcome: WebhookOutcome;
   paidAmountCents?: number;
   paidCurrency?: string;
+  mustMatchAmount?: boolean;
+  failure?: string;
 };
 
 /**
@@ -131,6 +134,8 @@ function apply(event: Handled, rawBody: Buffer, res: Response): void {
       ? { paidAmountCents: event.paidAmountCents }
       : {}),
     ...(event.paidCurrency ? { paidCurrency: event.paidCurrency } : {}),
+    ...(event.mustMatchAmount ? { mustMatchAmount: true } : {}),
+    ...(event.failure ? { failure: event.failure } : {}),
     payload: rawBody.toString('utf8'),
   });
 
@@ -224,15 +229,31 @@ router.post('/stripe', (req: Request, res: Response) => {
    * - there is no session - so these types are the only word we get for that
    * flow, and `provider_ref` holds the `pi_` rather than a `cs_`.
    *
-   * The rule that keeps the two flows apart: AN INTENT EVENT SETTLES ONLY BY
-   * PROVIDER REFERENCE, and its metadata hint is deliberately not passed.
-   * An ordinary embedded-checkout payment also emits `payment_intent.succeeded`
-   * for the same money, carrying `metadata.paymentId` (the session copies it
-   * onto the intent) but an id that is NOT in `provider_ref`. Passing the hint
-   * would let that event find the payment, be recorded as a second event, and
-   * put an "already settled" line in the log for every single card sale. With
-   * the hint withheld it resolves to no payment and is acknowledged as a
-   * stranger's event, which is what it is.
+   * The rule that keeps the two flows apart: AN INTENT EVENT SETTLES BY
+   * PROVIDER REFERENCE, EXCEPT FOR THE FLOW THAT HAS NO SESSION.
+   *
+   * An ordinary embedded-checkout payment also emits
+   * `payment_intent.succeeded` for the same money, carrying
+   * `metadata.paymentId` (the session copies it onto the intent) but an id
+   * that is NOT in `provider_ref`. Passing its hint would let that event find
+   * the payment, be recorded as a second event, and put an "already settled"
+   * line in the log for every single card sale. So the hint is withheld there
+   * and the event is acknowledged as a stranger's, which is what it is.
+   *
+   * **The saved-card flow cannot afford that.** Its money moves inside the
+   * confirm call, and `provider_ref` is written only after that call returns -
+   * so a dropped socket, or an answer with nothing usable in it, leaves a
+   * charge that happened and a row with no reference on it. With no hint that
+   * row is unreachable for ever: the webhook credits nobody, and the payment
+   * cannot even be refunded, because a refund needs a `paid` row with a
+   * reference. Money taken, nothing given, nothing to give back.
+   *
+   * `metadata.flow` is what tells the two apart, and it is set at the only
+   * place that can know - `chargeSavedCard` writes `flow: 'saved-card'`, and
+   * the checkout session writes no `flow` at all. So the hint rides along for
+   * exactly the flow that has no other route to its row, and `settleWebhookEvent`
+   * records the reference when it settles that way, which is what makes the
+   * payment refundable afterwards.
    */
   if (INTENT_TYPES.has(type)) {
     if (!event.id) {
@@ -246,6 +267,9 @@ router.post('/stripe', (req: Request, res: Response) => {
         eventId: event.id,
         type,
         providerRef: sessionId,
+        ...(metadata.flow === 'saved-card' && metadata.paymentId
+          ? { paymentIdHint: metadata.paymentId }
+          : {}),
         outcome: type === 'payment_intent.succeeded' ? 'paid' : 'failed',
         // `amount_received` is what actually cleared, in the smallest currency
         // unit - the comparable figure, where `amount` is only what was asked.
@@ -360,11 +384,25 @@ router.post('/cryptomus', (req: Request, res: Response) => {
    * so comparing it to a dollar total would reject every correct payment.
    * Rounded rather than truncated, because 12.50 is not exactly representable
    * and truncating it rejects a payment that was exactly right.
+   *
+   * A NUMBER is accepted as well as a string, and a missing one is held.
+   *
+   * Cryptomus documents `amount` as a decimal string and that is what the
+   * fixtures send, but nothing here has ever spoken to Cryptomus - so the type
+   * of that field is a reading of the reference, not an observation. Reading
+   * only strings meant a body that sent `12.5` instead of `"12.50"` skipped
+   * the amount comparison entirely and credited the order in full, which is
+   * the most expensive way for a documentation guess to be wrong. Both shapes
+   * parse, and `mustMatchAmount` below turns "no usable amount" into a held
+   * payment rather than a credited one.
    */
+  const rawAmount = body.amount;
   const paidCents =
-    typeof body.amount === 'string' && body.amount.trim() !== ''
-      ? Math.round(Number.parseFloat(body.amount) * 100)
-      : Number.NaN;
+    typeof rawAmount === 'number' && Number.isFinite(rawAmount)
+      ? Math.round(rawAmount * 100)
+      : typeof rawAmount === 'string' && rawAmount.trim() !== ''
+        ? Math.round(Number.parseFloat(rawAmount) * 100)
+        : Number.NaN;
 
   apply(
     {
@@ -376,6 +414,18 @@ router.post('/cryptomus', (req: Request, res: Response) => {
         ? { paymentIdHint: body.order_id }
         : {}),
       outcome,
+      /*
+       * The one provider that must NOT be credited without an amount.
+       *
+       * Stripe's own events always carry theirs and are observed to; this
+       * body's shape is taken from a document. So a `paid` callback with
+       * nothing comparable on it holds the payment for a person instead of
+       * crediting the full order on the strength of the signature alone.
+       */
+      mustMatchAmount: true,
+      // Empty for every status but `wrong_amount`, and an empty one leaves the
+      // general sentence in place - see `failureFor`.
+      ...(failureFor(status) ? { failure: failureFor(status) } : {}),
       ...(Number.isFinite(paidCents) ? { paidAmountCents: paidCents } : {}),
       ...(typeof body.currency === 'string' ? { paidCurrency: body.currency } : {}),
     },

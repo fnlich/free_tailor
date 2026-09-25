@@ -350,6 +350,15 @@ export async function startCheckout(
    * that is not `pending`, and credits nothing: money taken, nothing given.
    * So the catch that closes a payment wraps the provider call and nothing
    * else.
+   *
+   * **Nearly nothing else, and the catch no longer takes that on trust.** This
+   * block also wraps a settings read and two lines of customer bookkeeping, so
+   * a broken database or an unreadable settings row came out as "the payment
+   * provider would not open a checkout page" - a 502 blaming Stripe for
+   * something on this side of the wire, which is the worst possible thing to
+   * hand an operator at the moment their own storage is failing. The catch now
+   * asks WHO said no: only the two provider error types are a provider's
+   * answer, and anything else is reported as ours.
    */
   const opened = await (async () => {
     try {
@@ -456,6 +465,34 @@ export async function startCheckout(
       console.error(`[payments] ${payment.reference}: the provider refused to open a checkout.`, error);
 
       /*
+       * A refusal that named an intent still tells us which charge it was.
+       *
+       * Stripe returns the whole `payment_intent` on a failed confirm, and
+       * that attempt exists at Stripe whether this ends as failed or pending.
+       * Recording it here means an event about that intent later finds this
+       * payment instead of resolving to nobody - and it is the only chance to
+       * record it, because nothing below this line runs.
+       *
+       * Guarded, because `(provider, provider_ref)` is UNIQUE and this is the
+       * one attach whose value comes from a failure rather than from a call
+       * this server made: an intent id already on another row would throw a
+       * constraint error from inside a catch block, which would throw away the
+       * sentence below and leave the payment open. Recording the reference is
+       * worth having and is not worth that.
+       */
+      if (error instanceof stripe.StripeError && error.paymentIntentId) {
+        try {
+          attachProviderRef(payment.id, error.paymentIntentId);
+        } catch (clash) {
+          console.warn(
+            `[payments] ${payment.reference}: could not record the refused intent ` +
+              `${error.paymentIntentId}.`,
+            clash
+          );
+        }
+      }
+
+      /*
        * Closed only when the provider definitively said no.
        *
        * A transport failure - the connection dropped before an answer arrived -
@@ -468,31 +505,92 @@ export async function startCheckout(
       const unknown =
         (error instanceof stripe.StripeError && error.transport) ||
         (error instanceof cryptomus.CryptomusError && error.transport);
+
+      /*
+       * The bank asking for the buyer, which is not a broken integration.
+       *
+       * A card on file is charged off-session, and an issuer may still insist
+       * on a challenge - in which case Stripe REFUSES with
+       * `authentication_required` rather than handing back an intent to
+       * finish. Without this branch that answer is indistinguishable from a
+       * misconfigured key: the buyer is told "the payment provider would not
+       * open a checkout page" about their own bank, and has nothing to act on.
+       * Nothing was charged either way, so the payment closes as it would for
+       * any other refusal - only the sentence changes, and the sentence is the
+       * whole of what the buyer gets.
+       */
+      const authenticationNeeded =
+        error instanceof stripe.StripeError && error.code === 'authentication_required';
+      const bankWantsYou =
+        'Your bank wants to authenticate this payment, which a saved card cannot do on its own, so ' +
+        'nothing was charged. Pay with the card form instead, or ask the operator to turn on 3-D ' +
+        'Secure for kept cards.';
+
+      /*
+       * Whose failure this was, which decides what everybody is told.
+       *
+       * The block above is nearly all provider calls and used to be assumed to
+       * be entirely provider calls - but it also reads the 3-D Secure setting
+       * and records a Stripe customer id, so a failing settings row or a
+       * locked database arrived here as a 502 about Stripe. Nothing on this
+       * side of the wire can have moved money (every line that could is a
+       * provider call, and those throw their own types), so the payment still
+       * closes; only the sentence changes, and it stops sending an operator to
+       * their provider's status page over their own storage.
+       */
+      const providerAnswered =
+        error instanceof stripe.StripeError || error instanceof cryptomus.CryptomusError;
+      const ourFault = 'This server could not start that payment. Nothing was charged.';
+
       if (!unknown) {
-        markUnpaid(payment.id, 'failed', 'The payment provider would not open a checkout page.');
+        markUnpaid(
+          payment.id,
+          'failed',
+          !providerAnswered
+            ? ourFault
+            : authenticationNeeded
+              ? bankWantsYou
+              : 'The payment provider would not open a checkout page.'
+        );
       }
       throw new PaymentError(
         unknown
           ? 'Could not reach the payment provider. Nothing was charged - try again in a moment.'
-          : 'The payment provider would not open a checkout page. Try again in a moment.',
-        502
+          : !providerAnswered
+            ? ourFault
+            : authenticationNeeded
+              ? bankWantsYou
+              : 'The payment provider would not open a checkout page. Try again in a moment.',
+        // 402 for a bank that wants the buyer: nothing is broken and they are
+        // the one who can act. 500 when it was us, because 502 says the trouble
+        // is upstream and it is not.
+        authenticationNeeded ? 402 : providerAnswered ? 502 : 500
       );
     }
   })();
 
-  if (!opened.clientSecret && !opened.url && !('processing' in opened && opened.processing)) {
-    // The session may exist without anything the browser can use, so this
-    // payment is NOT closed: see the note above. It simply cannot be paid.
-    console.error(`[payments] ${payment.reference}: the provider returned nothing to pay with.`);
-    throw new PaymentError('The payment provider did not return a way to pay.', 502);
-  }
-
+  /*
+   * The reference is recorded BEFORE anything can refuse to go on.
+   *
+   * It used to be the other way round, and the guard below threw first: a
+   * saved-card charge that came back with an intent and nothing usable on it
+   * had already moved the money, and discarding `opened.ref` on the way out
+   * left the row with no reference and the webhook with nothing to find. The
+   * order matters and nothing else about these two blocks does.
+   */
   if (opened.ref && !attachProviderRef(payment.id, opened.ref)) {
     // Not fatal, and not silent. A reference that will not attach means one is
     // already there, which is the only case the condition refuses.
     console.warn(
       `[payments] ${payment.reference}: a provider reference was already recorded; keeping it.`
     );
+  }
+
+  if (!opened.clientSecret && !opened.url && !('processing' in opened && opened.processing)) {
+    // The session may exist without anything the browser can use, so this
+    // payment is NOT closed: see the note above. It simply cannot be paid.
+    console.error(`[payments] ${payment.reference}: the provider returned nothing to pay with.`);
+    throw new PaymentError('The payment provider did not return a way to pay.', 502);
   }
 
   return {
@@ -786,8 +884,12 @@ export async function refundPayment(
        *
        * Three providers now, and this is one of exactly three places in the
        * codebase that says something different per provider. `PaymentProvider`
-       * is not switched on exhaustively anywhere, so a fourth would fall into
-       * the last branch and be told to look in the wrong place all over again.
+       * is not switched on exhaustively anywhere, so **every member is named
+       * and the fallback names none of them**. It used to end on Coinbase,
+       * which made "a provider this build does not know" and "Coinbase" the
+       * same answer - and the admin page's own copy ended on Cryptomus, so the
+       * two halves already disagreed about that case. Saying "wherever it was
+       * taken" is less helpful and cannot be wrong.
        */
       throw new PaymentError(
         payment.provider === 'chain'
@@ -797,15 +899,46 @@ export async function refundPayment(
           : payment.provider === 'cryptomus'
             ? 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
               'Cryptomus merchant dashboard, then adjust the balance from the accounts page.'
-            : 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
-              'Coinbase Commerce account, then adjust the balance from the accounts page.',
+            : payment.provider === 'coinbase'
+              ? 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
+                'Coinbase Commerce account, then adjust the balance from the accounts page.'
+              : 'Crypto payments cannot be refunded automatically. Send the funds back from ' +
+                'wherever this payment was taken, then adjust the balance from the accounts page.',
         409
       );
     }
   } catch (error) {
-    // The money did not move, so the claim goes back and the button works
-    // again. Leaving it claimed would strand a refundable payment.
+    /*
+     * The claim goes back either way; what is SAID depends on whether we know.
+     *
+     * Releasing is right in both cases - leaving it claimed strands a
+     * refundable payment behind a state nothing clears - and pressing Refund
+     * again is safe, because `refundPaymentIntent` sends
+     * `Idempotency-Key: refund:<paymentId>` and Stripe will not create a
+     * second refund for it.
+     *
+     * But this said "the money did not move" unconditionally, and for a
+     * dropped socket that is a guess in the wrong direction: the refund may
+     * well have been created, and the credits have NOT been reversed, because
+     * that happens after this block. Money returned, credits kept, and an
+     * operator told nothing happened. `StripeError.transport` is exactly the
+     * distinction `startCheckout` already makes, and the answer is the same:
+     * say the outcome is unknown, and say what to do about it.
+     */
     releaseRefund(payment.id);
+    if (error instanceof stripe.StripeError && error.transport) {
+      console.error(
+        `[payments] ${payment.reference}: the refund call to Stripe did not answer. ` +
+          'It may or may not have been created; no credits were reversed.',
+        error
+      );
+      throw new PaymentError(
+        'Could not confirm the refund with Stripe, so nothing was reversed here. The refund may ' +
+          'have gone through - press Refund again, which cannot refund twice, or check the ' +
+          'payment in the Stripe dashboard first.',
+        502
+      );
+    }
     throw error;
   }
 
@@ -869,6 +1002,20 @@ export type WebhookEvent = {
   /** What the provider says was actually paid, when the event says. */
   paidAmountCents?: number;
   paidCurrency?: string;
+  /**
+   * Whether a `paid` event with NO amount on it should be held rather than
+   * credited. See the comparison in `settleWebhookEvent`.
+   */
+  mustMatchAmount?: boolean;
+  /**
+   * What to tell the buyer, when the generic sentence would be wrong.
+   *
+   * Most failures are "it did not go through", which is both true and all
+   * anybody needs. A few are not: money that arrived and was too little is not
+   * money that never left. The provider's own module writes this, because it is
+   * the only place that knows which status it was.
+   */
+  failure?: string;
 };
 
 export type Settlement = {
@@ -990,6 +1137,25 @@ export function settleWebhookEvent(event: WebhookEvent): Settlement {
     if (!payment) return { status: 'unknown', payment: null, credited: false };
 
     /*
+     * Found by hint, with no reference on the row: record the reference now.
+     *
+     * This is the repair half of the saved-card rule in `paymentWebhooks.ts`.
+     * That flow charges the card inside the confirm call and writes
+     * `provider_ref` afterwards, so an interrupted attempt leaves a row the
+     * hint can still find and a reference nobody wrote. Crediting it and
+     * leaving the reference blank would settle the money and still leave the
+     * payment unrefundable, because `refundPayment` needs one - so the fix is
+     * to take the reference from the event that found it.
+     *
+     * `attachProviderRef` only writes into an empty column, so a row that
+     * already carries a reference is never overwritten by an event that
+     * reached it some other way.
+     */
+    if (!byRef && !payment.providerRef && event.providerRef) {
+      attachProviderRef(payment.id, event.providerRef);
+    }
+
+    /*
      * What was paid has to be what was quoted.
      *
      * Nothing today can make these disagree - the amount is set server-side on
@@ -998,7 +1164,21 @@ export function settleWebhookEvent(event: WebhookEvent): Settlement {
      * who turns on promotion codes, or a crypto charge settled short, would
      * otherwise credit the full order for a smaller payment. The payment is
      * left `pending` rather than failed, because somebody has to look at it.
+     *
+     * **`mustMatchAmount` is what stops the check being skippable.** Without
+     * it the comparison ran only when an amount happened to be present, so a
+     * signed event with the field missing - or sent as a number where this
+     * expected a string - credited the full order and looked exactly like
+     * agreement in the log. A provider whose body shape is asserted rather
+     * than observed sets this, and then no amount means held, not credited.
      */
+    if (event.outcome === 'paid' && event.mustMatchAmount && typeof event.paidAmountCents !== 'number') {
+      console.error(
+        `[payments] ${payment.reference}: a paid event arrived with no amount on it. Nothing was ` +
+          'credited - the event is recorded and the payment is still pending.'
+      );
+      return { status: 'mismatch', payment, credited: false };
+    }
     if (event.outcome === 'paid' && typeof event.paidAmountCents === 'number') {
       const currencyDiffers =
         typeof event.paidCurrency === 'string' &&
@@ -1029,9 +1209,10 @@ export function settleWebhookEvent(event: WebhookEvent): Settlement {
       markUnpaid(
         payment.id,
         event.outcome,
-        event.outcome === 'expired'
-          ? 'That checkout expired before it was paid.'
-          : 'The payment did not go through at the provider.'
+        event.failure ||
+          (event.outcome === 'expired'
+            ? 'That checkout expired before it was paid, and you were not charged.'
+            : 'The payment did not go through at the provider, and you were not charged.')
       );
       return { status: 'handled', payment: getPayment(payment.id), credited: false };
     }

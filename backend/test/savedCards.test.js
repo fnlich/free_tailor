@@ -22,8 +22,15 @@ const { useTempStorage, useAdminEmails, loadFresh, writeSettingRaw } = require('
  * means TWO id spaces in one column, and an ordinary embedded-checkout payment
  * ALSO emits a `payment_intent.succeeded` carrying `metadata.paymentId` - so
  * if the intent branch trusted that hint it would find every card payment
- * twice. It settles by provider reference only, and that is what these tests
- * pin.
+ * twice.
+ *
+ * It settles by provider reference, EXCEPT for the flow that has no session,
+ * and both halves of that are pinned here. Withholding the hint from every
+ * intent was the first answer and it was half right: it stopped the double
+ * event, and it left the saved-card flow with a single route to its own row -
+ * so an interrupted charge became money taken for credits that could never be
+ * granted, on a payment that could not even be refunded. `metadata.flow`, set
+ * by `chargeSavedCard` and by nothing else, is what tells the two apart.
  */
 
 const PRICE_CENTS = 50;
@@ -641,6 +648,210 @@ test('a card is NOT stored when the buyer did not, even once they have a custome
     const kept = server.cards.listCardsForUser(server.alice.id);
     assert.equal(kept.length, 1, 'still just the one she asked to keep');
     assert.equal(server.users.getUserById(server.alice.id).credits, 20, 'both purchases credited');
+  } finally {
+    server.close();
+  }
+});
+
+/* ------------------------------ when the answer to a charge is lost */
+
+/*
+ * The one flow whose money moves before anything is written down.
+ *
+ * `chargeSavedCard` sends `confirm: true`, so the charge happens inside that
+ * call; `provider_ref` is written after it returns. Everything else here has a
+ * second route to its row - a session event carries `metadata.paymentId`, a
+ * Cryptomus callback carries `order_id` - and for a while this one did not, on
+ * purpose, because passing an intent's hint unconditionally finds every
+ * embedded-checkout payment twice.
+ *
+ * `metadata.flow` is what tells them apart, and these three tests are why it
+ * has to: without the hint, an interrupted saved-card charge is money taken
+ * for credits that can never be granted and a payment that cannot even be
+ * refunded, because a refund needs a paid row with a reference on it.
+ */
+
+test('a saved-card charge whose answer was lost is still settled by its intent event', async () => {
+  const server = await serve();
+  try {
+    const card = server.cards.saveCard({
+      userId: server.alice.id,
+      customerRef: 'cus_alice',
+      methodRef: 'pm_alice_1',
+    });
+
+    // The charge goes through at Stripe and the reply never arrives. This is
+    // the real shape of the failure: a transport error, which `startCheckout`
+    // correctly refuses to treat as a refusal.
+    server.calls.stripe.chargeSavedCard = async (input) => {
+      server.calls.charges.push(input);
+      throw new server.calls.stripe.StripeError(
+        'Lost the connection to Stripe while reading its reply: socket hang up',
+        502,
+        true
+      );
+    };
+
+    const lost = await server.checkout(server.aliceToken, {
+      method: 'card',
+      credits: 40,
+      cardId: card.id,
+    });
+    assert.equal(lost.status, 502);
+
+    const [row] = server.payments.listPaymentsForUser(server.alice.id, 10, 0);
+    assert.equal(row.state, 'pending', 'an unknown outcome is not a refusal');
+    assert.ok(!row.providerRef, 'and there is nothing to find it by');
+
+    // Stripe's own word about the charge that did happen.
+    const event = {
+      id: 'evt_lost_1',
+      type: 'payment_intent.succeeded',
+      data: {
+        object: {
+          id: 'pi_saved_recovered',
+          amount_received: 40 * PRICE_CENTS,
+          currency: 'usd',
+          metadata: { paymentId: row.id, flow: 'saved-card' },
+        },
+      },
+    };
+    assert.equal((await server.deliver(event)).status, 200);
+
+    const settled = server.payments.getPayment(row.id);
+    assert.equal(settled.state, 'paid', 'the hint found it');
+    assert.equal(server.users.getUserById(server.alice.id).credits, 40);
+    assert.equal(
+      settled.providerRef,
+      'pi_saved_recovered',
+      'and the reference was recorded, so it can still be refunded'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('a charge with nothing usable on it still records what it was', async () => {
+  const server = await serve();
+  try {
+    const card = server.cards.saveCard({
+      userId: server.alice.id,
+      customerRef: 'cus_alice',
+      methodRef: 'pm_alice_1',
+    });
+
+    /*
+     * An intent that needs authentication and carries no client secret.
+     *
+     * There is then nothing for the browser to do and the checkout is refused -
+     * correctly - but the reference has to be written first. It used to be
+     * written after that refusal, which is to say never, and the intent it
+     * discarded is the one the webhook would have quoted.
+     */
+    server.calls.stripe.chargeSavedCard = async () => ({
+      id: 'pi_saved_stuck',
+      status: 'requires_action',
+      client_secret: null,
+    });
+
+    const refused = await server.checkout(server.aliceToken, {
+      method: 'card',
+      credits: 40,
+      cardId: card.id,
+    });
+    assert.equal(refused.status, 502);
+
+    const [row] = server.payments.listPaymentsForUser(server.alice.id, 10, 0);
+    assert.equal(row.providerRef, 'pi_saved_stuck', 'recorded before anything refused to go on');
+    assert.equal(row.state, 'pending', 'and not closed, because the charge may yet be finished');
+  } finally {
+    server.close();
+  }
+});
+
+test('a bank that wants the buyer is reported as that, not as a broken provider', async () => {
+  const server = await serve();
+  try {
+    const card = server.cards.saveCard({
+      userId: server.alice.id,
+      customerRef: 'cus_alice',
+      methodRef: 'pm_alice_1',
+    });
+
+    /*
+     * How an off-session challenge actually arrives.
+     *
+     * Not as an intent with `requires_action` on it - that was documented here
+     * for a while and is wrong. Stripe answers 402 with
+     * `error.code = 'authentication_required'`, because `off_session` declares
+     * there is nobody there to challenge. Without the code that lands in the
+     * same catch as a misconfigured key, and the buyer is told "the payment
+     * provider would not open a checkout page" about their own bank.
+     */
+    server.calls.stripe.chargeSavedCard = async () => {
+      throw new server.calls.stripe.StripeError(
+        'This payment requires authentication to proceed.',
+        502,
+        false,
+        { code: 'authentication_required', paymentIntentId: 'pi_needs_auth' }
+      );
+    };
+
+    const response = await server.checkout(server.aliceToken, {
+      method: 'card',
+      credits: 40,
+      cardId: card.id,
+    });
+    assert.equal(response.status, 402, 'nothing is broken, so this is not a 502');
+    const body = await response.json();
+    assert.match(body.error, /bank wants to authenticate/i, body.error);
+    assert.match(body.error, /nothing was charged/i);
+    assert.doesNotMatch(body.error, /would not open a checkout page/i);
+
+    const [row] = server.payments.listPaymentsForUser(server.alice.id, 10, 0);
+    assert.equal(row.state, 'failed', 'no money moved, so the payment closes');
+    assert.match(row.failure, /bank wants to authenticate/i, 'and the return page says so too');
+    assert.equal(row.providerRef, 'pi_needs_auth', 'the refused attempt is still traceable');
+  } finally {
+    server.close();
+  }
+});
+
+test('a settings failure is reported as ours, not as the provider refusing', async () => {
+  /*
+   * The block whose catch closes a payment is nearly all provider calls, and
+   * used to be ASSUMED to be entirely provider calls. It also reads the 3-D
+   * Secure setting and records a Stripe customer id, so a settings row that
+   * will not parse, or a locked database, came out as a 502 saying "the payment
+   * provider would not open a checkout page" - sending an operator to Stripe's
+   * status page at the moment their own storage is failing.
+   *
+   * Nothing on this side of the wire can have moved money, so the payment still
+   * closes. Only who is blamed changes.
+   */
+  const server = await serve();
+  try {
+    const pricing = require('../dist/services/payments/pricing');
+    const real = pricing.requireThreeDSecure;
+    pricing.requireThreeDSecure = async () => {
+      throw new Error('SQLITE_BUSY: database is locked');
+    };
+
+    try {
+      const response = await server.checkout(server.aliceToken, { method: 'card', credits: 40 });
+      assert.equal(response.status, 500, '502 says the trouble is upstream, and it is not');
+      const body = await response.json();
+      assert.match(body.error, /this server could not start that payment/i, body.error);
+      assert.match(body.error, /nothing was charged/i);
+      assert.doesNotMatch(body.error, /provider/i, 'the provider never heard about this');
+
+      const [row] = server.payments.listPaymentsForUser(server.alice.id, 10, 0);
+      assert.equal(row.state, 'failed', 'no money moved, so it closes');
+      assert.match(row.failure, /this server could not start that payment/i);
+      assert.equal(server.calls.sessions.length, 0, 'and Stripe was never called');
+    } finally {
+      pricing.requireThreeDSecure = real;
+    }
   } finally {
     server.close();
   }
