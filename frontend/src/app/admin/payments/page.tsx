@@ -9,7 +9,6 @@ import {
   STATE_LABELS,
   STATE_STYLES,
   type AdminPayment,
-  type HeldTransfer,
 } from '@/lib/payments';
 
 /**
@@ -323,9 +322,10 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         </p>
         <p className="mt-1 text-sm text-gray-600">
           A fee is taken <span className="font-medium">out of</span> the amount charged, not added
-          to it - the buyer pays what they chose and receives the credits the remainder buys. A
-          row naming a coin, such as <span className="font-mono">ethereum:USDT</span>, overrides
-          the <span className="font-mono">crypto</span> row for that coin alone.
+          to it - the buyer pays what they chose and receives the credits the remainder buys.
+          There are two methods to name here, <span className="font-mono">card</span> and{' '}
+          <span className="font-mono">crypto</span>; a row naming a coin is left over from when
+          this app chose the coin itself and no longer applies to anything.
         </p>
 
         <div className="mt-4 space-y-4">
@@ -412,14 +412,12 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
 
 function PaymentsBody() {
   const [payments, setPayments] = useState<AdminPayment[]>([]);
-  const [held, setHeld] = useState<HeldTransfer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [refunding, setRefunding] = useState('');
   const [confirming, setConfirming] = useState('');
   const [note, setNote] = useState('');
-  const [resolving, setResolving] = useState('');
   /** How many exist, against how many are on screen. */
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -429,16 +427,6 @@ function PaymentsBody() {
       const response = await adminPaymentsApi.list();
       setPayments(response.payments);
       setTotal(response.total ?? response.payments.length);
-      /*
-       * Settled separately: a held transfer is the more urgent of the two and
-       * must not be hidden because the payment list failed to load, nor take
-       * the payment list down when it fails itself.
-       */
-      try {
-        setHeld((await adminPaymentsApi.held()).held);
-      } catch {
-        // An older backend has no such route. Nothing to show is correct.
-      }
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load payments.');
@@ -470,27 +458,6 @@ function PaymentsBody() {
       setError(err instanceof Error ? err.message : 'Could not load older payments.');
     } finally {
       setLoadingMore(false);
-    }
-  };
-
-  /**
-   * Marks an unattributable transfer as dealt with.
-   *
-   * Deliberately NOT a credit and NOT a refund: this server cannot know which
-   * of those the administrator did, only that they have finished. What it
-   * changes is the queue, so that a list of things needing a person stays a
-   * list of things needing a person.
-   */
-  const dismiss = async (entry: HeldTransfer) => {
-    setResolving(entry.id);
-    try {
-      await adminPaymentsApi.resolveHeld(entry.id);
-      setHeld((current) => current.filter((item) => item.id !== entry.id));
-      setMessage('Marked as dealt with.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not clear that item.');
-    } finally {
-      setResolving('');
     }
   };
 
@@ -545,79 +512,6 @@ function PaymentsBody() {
           )}
         </p>
       </div>
-
-      {/*
-        Above everything, because it is the only thing on this page that is
-        somebody's money sitting unclaimed.
-
-        A transfer lands here when it could not be attributed to exactly ONE
-        open order - the amount was off and either nothing or two things were
-        close enough. Nothing was credited and nothing was written off, which
-        is the only honest outcome when guessing would give one buyer's coin
-        to another buyer's order.
-      */}
-      {held.length > 0 && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-          <h2 className="text-base font-semibold text-red-700">
-            {held.length} payment{held.length === 1 ? ' needs' : 's need'} attention
-          </h2>
-          <p className="mt-1 text-sm text-red-700">
-            Coin arrived that could not be matched to one order automatically. Nothing has been
-            credited and nothing has been lost. Check the transaction against the order, then
-            adjust the balance from the accounts page.
-          </p>
-          <ul className="mt-3 space-y-2">
-            {held.map((entry) => (
-              <li key={entry.id} className="rounded-md border border-red-200 bg-white p-3 text-sm">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span className="font-medium text-gray-900">{entry.asset}</span>
-                  <span className="text-xs text-gray-500">{formatDate(entry.at)}</span>
-                </div>
-                <p className="mt-1 text-gray-700">{entry.note}</p>
-                <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-gray-600 sm:grid-cols-2">
-                  {/*
-                    Shown only when there is one. An unattributable transfer
-                    has no single order behind it, so an "Expected: —" row
-                    reads as a figure that went missing rather than as a
-                    question this entry does not have an answer to.
-                  */}
-                  {entry.expected && (
-                    <div>
-                      <dt className="inline font-medium">Expected: </dt>
-                      <dd className="inline font-mono">{entry.expected}</dd>
-                    </div>
-                  )}
-                  <div>
-                    <dt className="inline font-medium">Received: </dt>
-                    <dd className="inline font-mono">{entry.received || '—'}</dd>
-                  </div>
-                  {entry.txid && (
-                    <div className="sm:col-span-2">
-                      <dt className="inline font-medium">Transaction: </dt>
-                      <dd className="inline break-all font-mono">{entry.txid}</dd>
-                    </div>
-                  )}
-                </dl>
-                {/*
-                  Only an unattributable transfer offers this. A held invoice
-                  belongs to a payment and keeps its place in that payment's
-                  history, so there is nothing here to dismiss.
-                */}
-                {entry.resolvable && (
-                  <button
-                    type="button"
-                    onClick={() => void dismiss(entry)}
-                    disabled={resolving === entry.id}
-                    className="mt-3 rounded-md border-2 border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
-                  >
-                    {resolving === entry.id ? 'Clearing…' : 'Mark as dealt with'}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       <PricingCard onSaved={() => void load()} />
 
@@ -711,19 +605,32 @@ function PaymentsBody() {
                     <p className="mt-1 text-sm text-red-800">
                       {/*
                         Said BEFORE the button, because for crypto the answer
-                        is "not by us". The old copy promised "the money goes
-                        back through chain" and the server then refused the
-                        request outright, which is a worse way to find out.
+                        is "not by us" - and pressing it does NOTHING.
+                        `refundPayment` answers 409 for every crypto provider
+                        before touching the balance, so the old chain line
+                        ("pressing this will reverse the credits only") was a
+                        promise the server refuses. The old copy before that
+                        said "the money goes back through chain" and let the
+                        administrator discover the refusal by pressing, which
+                        is a worse way to find out than reading it here.
                       */}
-                      {payment.provider === 'chain'
-                        ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured, then adjust the balance from the accounts page. Pressing this will reverse the credits only.'
-                        : payment.provider === 'cryptomus'
-                          ? 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard, then adjust the balance from the accounts page.'
-                          : payment.provider === 'coinbase'
-                            ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account, then adjust the balance from the accounts page.'
-                            : `The money goes back through ${payment.provider}.`}{' '}
-                      Credits already spent cannot be reversed - a balance never goes below zero -
-                      and this will say how many were.
+                      {payment.method === 'crypto' ? (
+                        <>
+                          {payment.provider === 'chain'
+                            ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured.'
+                            : payment.provider === 'coinbase'
+                              ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account.'
+                              : 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard.'}{' '}
+                          Then adjust the balance from the accounts page. Pressing this reverses
+                          nothing and will say so.
+                        </>
+                      ) : (
+                        <>
+                          The money goes back through {payment.provider}. Credits already spent
+                          cannot be reversed - a balance never goes below zero - and this will say
+                          how many were.
+                        </>
+                      )}
                     </p>
                     <input
                       type="text"

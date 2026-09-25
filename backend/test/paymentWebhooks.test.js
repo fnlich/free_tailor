@@ -25,7 +25,6 @@ const { loadFresh, useTempStorage } = require('./helpers');
  */
 
 const STRIPE_SECRET = 'whsec_test_secret';
-const COINBASE_SECRET = 'coinbase_test_secret';
 const CRYPTOMUS_MERCHANT = 'merchant-uuid';
 const CRYPTOMUS_KEY = 'cryptomus_test_key';
 
@@ -35,10 +34,6 @@ function signStripe(rawBody, secret = STRIPE_SECRET, timestamp = Math.floor(Date
     .update(`${timestamp}.${rawBody}`)
     .digest('hex');
   return `t=${timestamp},v1=${signature}`;
-}
-
-function signCoinbase(rawBody, secret = COINBASE_SECRET) {
-  return crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
 }
 
 /**
@@ -63,8 +58,6 @@ async function serve() {
   useTempStorage(`payment-webhooks-${Math.random().toString(36).slice(2)}`);
   process.env.STRIPE_SECRET_KEY = 'sk_test_key';
   process.env.STRIPE_WEBHOOK_SECRET = STRIPE_SECRET;
-  process.env.COINBASE_COMMERCE_API_KEY = 'cb_test_key';
-  process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = COINBASE_SECRET;
   process.env.CRYPTOMUS_MERCHANT_ID = CRYPTOMUS_MERCHANT;
   process.env.CRYPTOMUS_PAYMENT_API_KEY = CRYPTOMUS_KEY;
 
@@ -322,57 +315,6 @@ test('a completed session that is not actually paid credits nothing', async () =
   }
 });
 
-test('a confirmed Coinbase charge credits, and a pending one does not', async () => {
-  const server = await serve();
-  try {
-    const payment = pendingPayment(server, { provider: 'coinbase', providerRef: 'CHARGE1', credits: 40 });
-
-    const charge = (type, id) =>
-      JSON.stringify({
-        event: {
-          id,
-          type,
-          data: { code: payment.providerRef, metadata: { paymentId: payment.id } },
-        },
-      });
-
-    // On the chain but unconfirmed. Crediting here hands out credits for a
-    // transaction that can still be reorganised away.
-    const pending = charge('charge:pending', 'cb_1');
-    await server.post('/coinbase', pending, { 'x-cc-webhook-signature': signCoinbase(pending) });
-    assert.equal(server.balance(), 0);
-
-    const confirmed = charge('charge:confirmed', 'cb_2');
-    const response = await server.post('/coinbase', confirmed, {
-      'x-cc-webhook-signature': signCoinbase(confirmed),
-    });
-
-    assert.equal(response.status, 200);
-    assert.equal(server.balance(), 40);
-    assert.equal(server.payments.getPayment(payment.id).state, 'paid');
-  } finally {
-    server.close();
-  }
-});
-
-test('a Coinbase event signed with the wrong secret is refused', async () => {
-  const server = await serve();
-  try {
-    const payment = pendingPayment(server, { provider: 'coinbase', providerRef: 'CHARGE2' });
-    const body = JSON.stringify({
-      event: { id: 'cb_bad', type: 'charge:confirmed', data: { code: payment.providerRef } },
-    });
-
-    const response = await server.post('/coinbase', body, {
-      'x-cc-webhook-signature': signCoinbase(body, 'not-the-secret'),
-    });
-    assert.equal(response.status, 400);
-    assert.equal(server.balance(), 0);
-  } finally {
-    server.close();
-  }
-});
-
 /* ------------------------------------------------------------- Cryptomus */
 
 /** As `startCheckout` leaves one: the uuid is the reference, the id the hint. */
@@ -600,17 +542,26 @@ test('a Cryptomus invoice reporting a different amount is held, not credited', a
 test("one provider's event cannot settle another provider's payment", async () => {
   const server = await serve();
   try {
-    // Same reference string, two providers. The lookup is scoped by provider,
-    // so a Coinbase charge code that happens to match a Stripe session id must
-    // not credit the Stripe payment.
+    /*
+     * Same reference string, two providers.
+     *
+     * The lookup is scoped by provider, so a Cryptomus invoice uuid that
+     * happens to match a Stripe session id must not credit the Stripe payment.
+     * The `paymentIdHint` is sent too, and is the sharper half of the test:
+     * `settleWebhookEvent` re-checks the provider on a hinted id precisely so
+     * that naming somebody else's payment cannot settle it.
+     */
     const card = pendingPayment(server, { provider: 'stripe', providerRef: 'SHARED', credits: 100 });
-    const body = JSON.stringify({
-      event: { id: 'cb_cross', type: 'charge:confirmed', data: { code: 'SHARED', metadata: { paymentId: card.id } } },
+    const body = cryptomusBody({
+      type: 'payment',
+      uuid: 'SHARED',
+      order_id: card.id,
+      amount: (card.amountCents / 100).toFixed(2),
+      currency: 'USD',
+      status: 'paid',
     });
 
-    const response = await server.post('/coinbase', body, {
-      'x-cc-webhook-signature': signCoinbase(body),
-    });
+    const response = await server.post('/cryptomus', body);
 
     assert.equal(response.status, 200);
     assert.equal(server.balance(), 0, 'the card payment was left alone');

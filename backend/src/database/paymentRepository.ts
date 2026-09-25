@@ -19,11 +19,12 @@ export type PaymentMethod = 'card' | 'crypto';
 /**
  * Who took the money.
  *
- * `coinbase` and `chain` stay in the union although new crypto checkouts use
- * neither: rows exist, they still have to read and render, and their webhooks
- * still have to be answered for an install part-way through the change.
- * Narrowing this union is what misreads history - a row does not stop having
- * been paid on-chain because the code that watched the chain was deleted.
+ * `coinbase` and `chain` stay in the union although both paths are DELETED -
+ * no code here can open one, and neither webhook is answered any more. Their
+ * rows still exist, still have to read and render, and still have to refund
+ * with the right advice about where that money actually is. Narrowing this
+ * union is what misreads history: a row does not stop having been paid
+ * on-chain because the code that watched the chain was deleted.
  *
  * Nothing in this codebase switches exhaustively on this type, so ADDING a
  * member is not a compile error. A new provider has to be carried by hand to

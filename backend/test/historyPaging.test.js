@@ -55,7 +55,6 @@ async function serve() {
   loadFresh('../dist/config/aiModelConfig');
   const credits = loadFresh('../dist/services/credits');
   loadFresh('../dist/integrations/stripe');
-  loadFresh('../dist/integrations/coinbaseCommerce');
   loadFresh('../dist/integrations/cryptomus');
   loadFresh('../dist/services/payments/pricing');
   loadFresh('../dist/services/payments');

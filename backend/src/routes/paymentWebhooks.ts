@@ -6,11 +6,6 @@ import {
   verifyStripeSignature,
 } from '../integrations/stripe';
 import {
-  canVerifyCoinbaseWebhooks,
-  coinbaseWebhookSecret,
-  verifyCoinbaseSignature,
-} from '../integrations/coinbaseCommerce';
-import {
   canVerifyCryptomusWebhooks,
   cryptomusPaymentKey,
   verifyWebhookSign,
@@ -301,93 +296,6 @@ router.post('/stripe', (req: Request, res: Response) => {
 });
 
 /**
- * Coinbase Commerce.
- *
- * `charge:confirmed`, and only that. `charge:pending` means the transaction is
- * on the chain and not yet confirmed - crediting there would hand out credits
- * for a payment that can still be reorganised away.
- */
-router.post('/coinbase', (req: Request, res: Response) => {
-  if (!canVerifyCoinbaseWebhooks()) {
-    res.status(503).json({ error: 'Crypto payments are not configured on this server.' });
-    return;
-  }
-
-  const rawBody = rawBodyOf(req);
-  if (!rawBody) {
-    console.error('[payments] The Coinbase webhook did not receive a raw body; check the route mount.');
-    res.status(400).json({ error: 'Expected a raw body.' });
-    return;
-  }
-
-  if (
-    !verifyCoinbaseSignature(
-      rawBody,
-      headerValue(req, 'x-cc-webhook-signature'),
-      coinbaseWebhookSecret()
-    )
-  ) {
-    console.warn('[payments] A Coinbase webhook failed signature verification and was refused.');
-    res.status(400).json({ error: 'Signature verification failed.' });
-    return;
-  }
-
-  let body: { event?: { id?: string; type?: string; data?: Record<string, unknown> } };
-  try {
-    body = JSON.parse(rawBody.toString('utf8'));
-  } catch {
-    acknowledge(res, 'unreadable body');
-    return;
-  }
-
-  const event = body.event ?? {};
-  const charge = (event.data ?? {}) as Record<string, unknown>;
-  const code = typeof charge.code === 'string' ? charge.code : '';
-  const metadata = (charge.metadata ?? {}) as Record<string, string>;
-  const type = event.type ?? '';
-
-  const outcome: Handled['outcome'] =
-    type === 'charge:confirmed'
-      ? 'paid'
-      : type === 'charge:failed'
-        ? 'failed'
-        : type === 'charge:expired'
-          ? 'expired'
-          : 'ignore';
-
-  if (outcome === 'ignore' || !event.id) {
-    acknowledge(res, 'not an event this server acts on');
-    return;
-  }
-
-  const local = ((charge.pricing ?? {}) as Record<string, unknown>).local as
-    | { amount?: string; currency?: string }
-    | undefined;
-  // Coinbase quotes a decimal string in the local currency ("12.50"), not
-  // minor units, so this is the one place a conversion happens - rounded, not
-  // truncated, because 12.50 is not exactly representable.
-  const paidCents =
-    local && typeof local.amount === 'string' && local.amount.trim() !== ''
-      ? Math.round(Number.parseFloat(local.amount) * 100)
-      : Number.NaN;
-
-  apply(
-    {
-      provider: 'coinbase',
-      eventId: String(event.id),
-      type,
-      providerRef: code,
-      ...(metadata.paymentId ? { paymentIdHint: metadata.paymentId } : {}),
-      outcome,
-      ...(Number.isFinite(paidCents) ? { paidAmountCents: paidCents } : {}),
-      ...(local && typeof local.currency === 'string' ? { paidCurrency: local.currency } : {}),
-    },
-    rawBody,
-    res
-  );
-});
-
-/**
  * Cryptomus.
  *
  * Two things here are unlike the handlers above, and both are the provider's:
@@ -450,7 +358,8 @@ router.post('/cryptomus', (req: Request, res: Response) => {
    * figure the payment row stores in minor units and the only one comparable
    * to it. `payment_amount` is denominated in whichever coin the buyer chose,
    * so comparing it to a dollar total would reject every correct payment.
-   * Rounded rather than truncated, for the reason the Coinbase handler gives.
+   * Rounded rather than truncated, because 12.50 is not exactly representable
+   * and truncating it rejects a payment that was exactly right.
    */
   const paidCents =
     typeof body.amount === 'string' && body.amount.trim() !== ''

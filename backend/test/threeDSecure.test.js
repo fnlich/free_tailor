@@ -137,8 +137,6 @@ async function serve({ requireThreeDSecure = false } = {}) {
   process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
   process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
-  delete process.env.COINBASE_COMMERCE_API_KEY;
-  delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
   delete process.env.CRYPTOMUS_MERCHANT_ID;
   delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   delete process.env.CHAIN_ASSETS;
@@ -175,7 +173,6 @@ async function serve({ requireThreeDSecure = false } = {}) {
     calls.charges.push(input);
     return { id: 'pi_saved_1', status: 'succeeded' };
   };
-  loadFresh('../dist/integrations/coinbaseCommerce');
 
   loadFresh('../dist/services/payments/pricing');
   loadFresh('../dist/services/payments');

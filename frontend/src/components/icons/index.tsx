@@ -16,8 +16,8 @@ import type { ReactNode, SVGProps } from 'react';
  * Those four rules are also the boundary of this file. A brand mark - a card
  * network, a coin - cannot obey them: it is filled, it is multi-colour, and its
  * colours are not the row's to choose. Bitcoin is orange wherever it appears,
- * and USDT and USDC are told apart by their green and their blue and by nothing
- * else. Pushing them through the wrapper above would either break the
+ * and Tether's green is the only thing that says which coin it is. Pushing
+ * them through the wrapper above would either break the
  * single-colour promise for all twenty icons here or produce outlines nobody
  * recognises, so they live in `./marks.tsx` instead. Anything new that needs a
  * fill belongs there and not here.

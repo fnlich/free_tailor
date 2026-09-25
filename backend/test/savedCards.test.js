@@ -41,8 +41,6 @@ async function serve() {
   process.env.STRIPE_SECRET_KEY = 'sk_test_key';
   process.env.STRIPE_WEBHOOK_SECRET = STRIPE_SECRET;
   process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
-  delete process.env.COINBASE_COMMERCE_API_KEY;
-  delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
   delete process.env.CRYPTOMUS_MERCHANT_ID;
   delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';

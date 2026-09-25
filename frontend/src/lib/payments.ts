@@ -34,10 +34,7 @@ export type MethodAvailability = {
 export type PaymentTarget = {
   id: string;
   method: PaymentMethod;
-  asset?: string;
-  chain?: string;
   label: string;
-  symbol?: string;
   /** Which mark to draw. A key into the marks registry, never a URL. */
   mark: string;
   available: boolean;
@@ -136,8 +133,6 @@ export type StartedCheckout = {
   clientSecret?: string;
   redirectUrl?: string;
   processing?: boolean;
-  /** Deposit instructions, when the payment is on-chain. A fourth shape. */
-  invoice?: ChainInvoiceView;
 };
 
 /**
@@ -159,36 +154,6 @@ export type CreditQuote = {
   amountCents: number;
   feeCents: number;
   currency: string;
-};
-
-/**
- * Where to send coin, how much, and how far along it is.
- *
- * Everything on this is the server's, including the amount - which is not a
- * price converted in the browser but the exact figure the server quoted, at
- * the rate it recorded, rounded onto that asset's own lattice. Recomputing it
- * here would produce a number a buyer could send that no invoice matches.
- */
-export type ChainInvoiceView = {
-  asset: string;
-  assetLabel: string;
-  symbol: string;
-  chain: string;
-  chainLabel: string;
-  address: string;
-  /** The figure to send, as a buyer reads it: "50", "0.00078622". */
-  amount: string;
-  /** The same figure in the asset's smallest unit. Shown to nobody. */
-  amountAtomic: string;
-  decimals: number;
-  /** What has arrived so far, when anything has. */
-  paid: string;
-  confirmations: number;
-  confirmationsNeeded: number;
-  state: 'waiting' | 'seen' | 'credited' | 'held' | 'expired';
-  /** When the quoted rate stops being honoured. The countdown ends here. */
-  expiresAt: string;
-  txid?: string;
 };
 
 export type RefundOutcome = {
@@ -273,7 +238,7 @@ export const paymentsApi = {
       `/payments?offset=${offset}${limit ? `&limit=${limit}` : ''}`
     ),
   get: (id: string) =>
-    apiFetch<{ payment: Payment; invoice?: ChainInvoiceView }>(`/payments/${id}`),
+    apiFetch<{ payment: Payment }>(`/payments/${id}`),
   checkout: (request: CheckoutRequest) =>
     apiFetch<StartedCheckout>('/payments/checkout', {
       method: 'POST',
@@ -286,47 +251,11 @@ export const paymentsApi = {
     }),
 };
 
-/**
- * A transfer that arrived and could not be matched to exactly one order.
- *
- * Nothing has moved and nothing is lost. It is here because a person has to
- * decide what it was, and because money sitting unclaimed is precisely the
- * thing nobody notices in a log.
- */
-export type HeldTransfer = {
-  id: string;
-  paymentId: string;
-  asset: string;
-  chain: string;
-  address: string;
-  /** What the order asked for, as a buyer reads it. */
-  expected: string;
-  /** What actually arrived, when that is known. */
-  received: string;
-  txid: string;
-  note: string;
-  at: string;
-  /**
-   * Whether this entry can be dismissed once a person has dealt with it.
-   *
-   * True only for an unattributable transfer, which is a record of its own and
-   * has nowhere else to live. A held INVOICE is false: it belongs to a payment
-   * and stays with it, so dismissing it would hide the payment's own history.
-   */
-  resolvable: boolean;
-};
-
 export const adminPaymentsApi = {
   /** One page of payments, newest first. `offset` fetches the next lot. */
   list: (offset = 0) =>
     apiFetch<{ payments: AdminPayment[]; total: number; offset: number }>(
       `/admin/payments?offset=${offset}`
-    ),
-  held: () => apiFetch<{ held: HeldTransfer[] }>('/admin/payments/held'),
-  resolveHeld: (id: string) =>
-    apiFetch<{ resolved: true }>(
-      `/admin/payments/held/${encodeURIComponent(id)}/resolve`,
-      { method: 'POST' }
     ),
   refund: (id: string, note: string) =>
     apiFetch<RefundOutcome>(`/admin/payments/${id}/refund`, {

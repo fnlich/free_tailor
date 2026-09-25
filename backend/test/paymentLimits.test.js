@@ -31,14 +31,8 @@ async function serve({ settings = {} } = {}) {
   process.env.STRIPE_SECRET_KEY = 'sk_test_key';
   process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
   process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
-  process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
-  process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
-  // Not set, deliberately: these pin the behaviour of an installation that has
-  // NOT moved to Cryptomus, which is the claim that the move changed nothing
-  // for anybody who did not opt in. A developer with CRYPTOMUS_* in their root
-  // .env would otherwise silently test the other path.
-  delete process.env.CRYPTOMUS_MERCHANT_ID;
-  delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
+  process.env.CRYPTOMUS_MERCHANT_ID = 'merchant-uuid';
+  process.env.CRYPTOMUS_PAYMENT_API_KEY = 'payment-api-key';
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
 
   // Before anything reads settings: the settings module caches what it sees.
@@ -66,10 +60,14 @@ async function serve({ settings = {} } = {}) {
     created.push(input);
     return { id: `cs_test_${created.length}`, client_secret: `cs_test_${created.length}_secret` };
   };
-  const coinbase = loadFresh('../dist/integrations/coinbaseCommerce');
-  coinbase.createCharge = async (input) => {
+  const cryptomus = loadFresh('../dist/integrations/cryptomus');
+  cryptomus.createInvoice = async (input) => {
     created.push(input);
-    return { id: 'ch_1', code: `CODE${created.length}`, hosted_url: 'https://commerce.example/1' };
+    return {
+      uuid: `inv-${created.length}`,
+      order_id: input.paymentId,
+      url: `https://pay.cryptomus.com/inv-${created.length}`,
+    };
   };
 
   const pricing = loadFresh('../dist/services/payments/pricing');
@@ -146,53 +144,6 @@ test('each method is judged by its own ceiling', async () => {
 
     // Crypto's ceiling is $2000, so the same amount is fine there.
     assert.equal((await server.checkout({ method: 'crypto', credits: 201 })).status, 201);
-  } finally {
-    server.close();
-  }
-});
-
-test('a row for one coin overrides the row for its method', async () => {
-  const server = await serve({
-    settings: {
-      paymentLimits: [
-        { target: 'card', minCents: 250, maxCents: 10_000, feeBps: 0, feeFixedCents: 0, presetsCents: [] },
-        { target: 'crypto', minCents: 5_000, maxCents: 200_000, feeBps: 220, feeFixedCents: 0, presetsCents: [] },
-        // One coin, deliberately cheaper to start with than crypto generally.
-        { target: 'ethereum:USDC', minCents: 1_000, maxCents: 200_000, feeBps: 0, feeFixedCents: 0, presetsCents: [] },
-      ],
-    },
-  });
-  try {
-    // 20 credits is $10: under the crypto floor of $50, at the USDC floor.
-    const generic = await server.checkout({ method: 'crypto', credits: 20 });
-    assert.equal(generic.status, 400, 'the method row still applies to a coin with no row');
-
-    const overridden = await server.checkout({
-      method: 'crypto',
-      credits: 20,
-      asset: 'ethereum:USDC',
-    });
-    assert.equal(overridden.status, 201, 'the coin\'s own row is what applies');
-
-    // And its fee row is used too: USDC is fee-free where crypto is not.
-    const body = await overridden.json();
-    assert.equal(body.feeCents, 0, 'the coin\'s own fee, not the method\'s');
-  } finally {
-    server.close();
-  }
-});
-
-test('a coin can only be named for a crypto payment', async () => {
-  const server = await serve();
-  try {
-    const wrong = await server.checkout({
-      method: 'card',
-      credits: 10,
-      asset: 'ethereum:USDC',
-    });
-    assert.equal(wrong.status, 400);
-    assert.match((await wrong.json()).error, /coin can only be chosen for a crypto payment/i);
-    assert.equal(server.payments.listPaymentsForUser(server.alice.id).length, 0, 'nothing recorded');
   } finally {
     server.close();
   }
@@ -363,37 +314,23 @@ test('an amount in the request body is still ignored, whatever it is called', as
 });
 
 /*
- * The asset is a string from the request, and it chooses which row prices the
- * sale. Two tests, because there are two locks and either alone would do.
+ * The asset is no longer something a REQUEST can carry - the buyer chooses the
+ * coin on the provider's own page - but `paymentLimits` can still hold a row
+ * keyed on one, and an installation may have had such a row saved before the
+ * coins went away. So the pricing authority still resolves them, and these are
+ * what stop that turning into a way to be priced off the wrong row.
  */
-
-test('a coin this build has never heard of is refused, and records nothing', async () => {
-  const server = await serve();
-  try {
-    for (const bogus of ['card', 'crypto', 'ethereum:DOGE', 'CARD', 'bitcoin:btc']) {
-      const refused = await server.checkout({ method: 'crypto', credits: 200, asset: bogus });
-      assert.equal(refused.status, 400, `asset ${bogus} was not refused`);
-      assert.match((await refused.json()).error, /not one this server can take/i);
-    }
-
-    // Refused BEFORE anything is recorded: a coin that does not exist is the
-    // caller's mistake, not a payment that failed at a provider.
-    assert.equal(server.payments.listPaymentsForUser(server.alice.id).length, 0);
-    assert.equal(server.created.length, 0);
-  } finally {
-    server.close();
-  }
-});
 
 test('an asset can never be priced off a method’s row', async () => {
   /*
-   * The pricing authority on its own, with the route's validation bypassed.
+   * The pricing authority on its own.
    *
-   * `startCheckout` refuses an unknown asset, so a request cannot reach this -
-   * but `rowFor` is what decides what a purchase costs, and anything calling
-   * it later by any route has to get the same answer. Without the guard,
-   * `{ method: 'crypto', asset: 'card' }` resolves the CARD row: a $2.50 floor
-   * where the operator set $50, and no fee where they set one.
+   * No request carries an asset any more, so `rowFor`'s own guard is the only
+   * lock left rather than the second of two - and `rowFor` is what decides
+   * what a purchase costs, so anything reaching it by any later route has to
+   * get the same answer. Without the guard, `{ method: 'crypto', asset:
+   * 'card' }` resolves the CARD row: a $2.50 floor where the operator set
+   * $50, and no fee where they set one.
    */
   const server = await serve({
     settings: {
@@ -497,14 +434,18 @@ test('a quote is judged by the same limits a checkout is', async () => {
     assert.equal(refused.status, 400);
     assert.match((await refused.json()).error, /smallest purchase is 100 credits/i);
 
-    // And the same coin validation, so a quote cannot be priced off a row a
-    // checkout would refuse to use.
-    const bogus = await server.call(
+    /*
+     * An `asset` in the query is not read at all now, so it cannot steer the
+     * price. Sent here anyway, naming the CARD row, because that was the
+     * spoof the old validation existed to stop: if it were still read, this
+     * would be priced off a $2.50 floor and answer 200.
+     */
+    const ignored = await server.call(
       server.aliceToken,
-      '/api/payments/quote?method=crypto&credits=200&asset=card'
+      '/api/payments/quote?method=crypto&credits=5&asset=card'
     );
-    assert.equal(bogus.status, 400);
-    assert.match((await bogus.json()).error, /not one this server can take/i);
+    assert.equal(ignored.status, 400);
+    assert.match((await ignored.json()).error, /smallest purchase is 100 credits/i);
   } finally {
     server.close();
   }

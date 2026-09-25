@@ -10,15 +10,12 @@ import { PRIMARY, QUIET } from './chrome';
 import { FIRST_STEP, wizardReducer, type Order, type Priced } from './order';
 import { stripeFor } from './stripeLoader';
 import { useTheme } from '@/lib/useTheme';
-import { useAuth } from '@/contexts/AuthContext';
 import {
   formatAmount,
   paymentsApi,
-  type ChainInvoiceView,
   type PaymentOptions,
   type SavedCard,
 } from '@/lib/payments';
-import { CHAIN_POLL_MS } from './CryptoPanel';
 
 /**
  * Buying credits, in three steps: what to pay with, how much, then what for.
@@ -51,7 +48,6 @@ export default function BuyCreditsDialog({
   // The live theme, so Stripe's iframe follows a toggle made while this is
   // open - it cannot see the page's CSS and has to be told.
   const { theme } = useTheme();
-  const { refresh } = useAuth();
 
   const [step, dispatch] = useReducer(wizardReducer, FIRST_STEP);
   const [priced, setPriced] = useState<{ key: string; state: Priced } | null>(null);
@@ -70,7 +66,6 @@ export default function BuyCreditsDialog({
    */
   const [wantsNewCard, setWantsNewCard] = useState<boolean | null>(null);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
-  const [invoice, setInvoice] = useState<ChainInvoiceView | null>(null);
   const [error, setError] = useState('');
 
   const cardsAvailable = options.targets.some(
@@ -113,7 +108,6 @@ export default function BuyCreditsDialog({
         const quote = await paymentsApi.quote({
           method: chosen.method,
           credits,
-          ...(chosen.asset ? { asset: chosen.asset } : {}),
         });
         setPriced({ key: summaryKey, state: { status: 'ready', quote } });
       } catch (err) {
@@ -169,12 +163,10 @@ export default function BuyCreditsDialog({
         const started = await paymentsApi.checkout({
           method: chosen.method,
           credits,
-          ...(chosen.asset ? { asset: chosen.asset } : {}),
           ...(chosen.method === 'card' && saveCard ? { saveCard: true } : {}),
         });
         if (token !== startToken.current) return;
         setOrder({ key: orderKey, order: { status: 'ready', started } });
-        setInvoice(started.invoice ?? null);
       } catch (err) {
         if (token !== startToken.current) return;
         setOrder({
@@ -188,62 +180,10 @@ export default function BuyCreditsDialog({
     })();
   }, [step, orderKey, order, saveCard]);
 
-  /*
-   * While a chain payment is open, the INVOICE is what changes.
-   *
-   * The payment itself moves once, at the very end, so a page watching only
-   * the payment shows nothing at all for the several minutes a chain takes.
-   * The invoice goes waiting -> seen -> credited, with a confirmation count in
-   * between, and that is what somebody staring at the screen needs to see.
-   *
-   * Stops as soon as there is nothing left to wait for, so a finished order
-   * does not keep a timer alive behind a dialog nobody has closed.
-   */
-  const paymentId = order?.order.status === 'ready' ? order.order.started.paymentId : null;
-  const watching = invoice !== null && (invoice.state === 'waiting' || invoice.state === 'seen');
-
-  useEffect(() => {
-    if (!paymentId || !watching) return;
-
-    let live = true;
-    const poll = async () => {
-      try {
-        const result = await paymentsApi.get(paymentId);
-        if (!live || !result.invoice) return;
-        setInvoice(result.invoice);
-        /*
-         * Tell the rest of the app the balance moved.
-         *
-         * A chain payment is credited by the watcher, server-side, with no
-         * navigation and no webhook the browser ever sees - so nothing else
-         * had any reason to re-read the account. The panel announced "Paid and
-         * credited" while the top-bar pill, the balance panel and the credit
-         * history all still showed the pre-purchase figure, and only a full
-         * reload fixed it: client-side navigation did not, because the auth
-         * context fetches on mount and the root layout never unmounts.
-         *
-         * `watching` goes false on this state, so the effect tears down right
-         * after and this fires once.
-         */
-        if (result.invoice.state === 'credited') void refresh();
-      } catch {
-        // A poll that fails changes nothing on screen and is tried again. The
-        // buyer's money is on the chain either way.
-      }
-    };
-
-    const timer = setInterval(() => void poll(), CHAIN_POLL_MS);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [paymentId, watching, refresh]);
-
   /** Drop the order and the price so both are asked for again. */
   const retry = useCallback(() => {
     setOrder(null);
     setPriced(null);
-    setInvoice(null);
     setError('');
   }, []);
 
@@ -420,7 +360,6 @@ export default function BuyCreditsDialog({
           saveCard={saveCard}
           onSaveCard={setSaveCard}
           busyCardId={busyCardId}
-          invoice={invoice}
           onPayWithCard={(cardId) => void payWithCard(cardId)}
           onDeleteCard={(cardId) => void deleteCard(cardId)}
           onBack={() => dispatch({ type: 'back' })}

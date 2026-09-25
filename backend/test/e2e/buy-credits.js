@@ -183,18 +183,6 @@ async function main() {
   const cardTarget = targets.find((t) => t.method === 'card');
   const cryptoTarget = targets.find((t) => t.method === 'crypto');
   const unit = options.body?.unitPriceCents ?? 0;
-  /*
-   * Which of the three crypto paths this installation is actually running.
-   *
-   * Cryptomus when it is configured, otherwise the retired on-chain watcher,
-   * otherwise the retired Coinbase one. Read, never assumed: both retired
-   * paths still run in the field until they are deleted, and a walkthrough
-   * that hard-coded the new shape would call a working old install broken.
-   */
-  const cryptoProvider =
-    (options.body?.methods ?? []).find((entry) => entry.method === 'crypto')?.provider ?? 'none';
-  console.log(`    (crypto is being taken through ${cryptoProvider})`);
-
   check('a card target is offered', Boolean(cardTarget?.available), JSON.stringify(cardTarget));
   check('a crypto target is offered', Boolean(cryptoTarget?.available), JSON.stringify(cryptoTarget));
   check(
@@ -217,32 +205,34 @@ async function main() {
     JSON.stringify(targets.map((t) => ({ id: t.id, presets: t.presets })))
   );
 
-  console.log('\n=== A coin the server has never heard of ===');
+  console.log('\n=== A coin named by a stale tab ===');
   /*
-   * The empty string is the one that depends on who is taking the money.
+   * Not refused - ignored.
    *
-   * On-chain, a payment is an amount of one specific token sent to one
-   * specific address and there is no sensible default, so "no coin" is a
-   * refusal. On a hosted page the buyer picks the coin over there, so no coin
-   * is the ordinary case - and a stale tab that still has coin buttons on it
-   * must not have its purchase failed for pressing one. An INVENTED coin is
-   * refused either way: it would otherwise reach the pricing authority.
+   * This used to be a closed list of coins, checked before anything was
+   * recorded, because the asset chose which limits row priced the sale. Now
+   * the coin is chosen on the provider's own page and nothing here can honour
+   * one, so the field is simply not read. A buyer whose dialog predates the
+   * change still has coin buttons on it, and pressing one meant "crypto".
+   *
+   * The thing still worth proving is that it cannot steer the PRICE: `card`
+   * is sent among them because that was exactly the spoof the old validation
+   * existed to stop - a crypto purchase priced off the card row's floor.
    */
-  const invented = ['card', 'crypto', 'ethereum:DOGE', '../card'];
-  for (const bogus of cryptoProvider === 'chain' ? [...invented, ''] : invented) {
-    const refused = await call(token, '/payments/checkout', {
+  for (const stale of ['ethereum:USDT', 'card', 'ethereum:DOGE', '../card']) {
+    const ignored = await call(token, '/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method: 'crypto', credits: 200, asset: bogus }),
+      body: JSON.stringify({ method: 'crypto', credits: 200, asset: stale }),
     });
-    /*
-     * A 400, not a 503 and not a 201: `isAssetId` is a closed list, checked
-     * beside the other request validation rather than inside the provider
-     * block, so an invented coin never becomes a failed payment row.
-     */
     check(
-      `asset "${bogus}" is refused`,
-      refused.status === 400,
-      `status=${refused.status} ${JSON.stringify(refused.body)}`
+      `asset "${stale}" is ignored, not refused`,
+      ignored.status === 201,
+      `status=${ignored.status} ${JSON.stringify(ignored.body)}`
+    );
+    check(
+      `and "${stale}" did not change the price`,
+      ignored.body?.amountCents === 200 * unit,
+      `${ignored.body?.amountCents} for 200 at ${unit}c`
     );
   }
 
@@ -364,202 +354,63 @@ async function main() {
   }
 
   /* ================================================= 1b. a crypto payment */
-  const coinTargets = targets.filter((target) => target.method === 'crypto' && target.asset);
-
-  if (cryptoProvider === 'cryptomus') {
-    console.log('\n=== Crypto, through Cryptomus ===');
-    check(
-      'crypto is one choice rather than a row per coin',
-      coinTargets.length === 0 && Boolean(cryptoTarget?.available),
-      JSON.stringify(targets.map((target) => target.id))
-    );
-
-    const want = cryptoTarget?.presets?.[0]?.credits ?? cryptoTarget?.minCredits ?? 100;
-    const before = (await call(token, '/credits')).body?.balance ?? 0;
-    const opened = await call(token, '/payments/checkout', {
-      method: 'POST',
-      body: JSON.stringify({ method: 'crypto', credits: want }),
-    });
-    check('a crypto checkout opens', opened.status === 201, `status=${opened.status} ${JSON.stringify(opened.body)}`);
-    check(
-      'and hands back a URL rather than an address',
-      Boolean(opened.body?.redirectUrl) && !opened.body?.invoice,
-      `${opened.body?.redirectUrl} invoice=${JSON.stringify(opened.body?.invoice ?? null)}`
-    );
-
-    const invoiceId = String(opened.body?.redirectUrl ?? '').split('/').pop();
-    if (invoiceId) {
-      /*
-       * Paid from the provider's side, which posts a callback signed the way
-       * Cryptomus signs one - the signature inside the body - to the real
-       * endpoint. The server's own verifier decides whether to believe it, so
-       * this exercises the shipping code rather than a stub of it.
-       */
-      await fetch(`${FAKE}/pay/${invoiceId}`, { method: 'POST', redirect: 'manual' });
-      await wait(500);
-
-      const paid = await call(token, `/payments/${opened.body.paymentId}`);
-      check('a signed callback credits it', paid.body?.payment?.state === 'paid',
-        JSON.stringify(paid.body?.payment));
-      const granted = paid.body?.payment?.creditsGranted ?? 0;
-      check(
-        'the fee comes out of the credits, not out of the amount sent',
-        granted > 0 && granted < want,
-        `granted ${granted} against ${want} requested`
-      );
-      check(
-        'the account was credited exactly what it bought',
-        ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
-        `${before} + ${granted}`
-      );
-
-      // Cryptomus retries until it gets a 2xx, so this is ordinary traffic.
-      await fetch(`${FAKE}/replay/${invoiceId}`, { method: 'POST' });
-      await wait(300);
-      check(
-        'and a retried callback credits nothing further',
-        ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
-        `${before} + ${granted}`
-      );
-    } else {
-      check('a signed callback credits it', false, 'no invoice to pay');
-    }
-  } else {
-
-  console.log('\n=== Crypto, in the operator’s own wallet ===');
+  console.log('\n=== Crypto, through Cryptomus ===');
   check(
-    'each enabled coin is its own choice, with its network named',
-    coinTargets.length >= 2,
+    'crypto is one choice rather than a row per coin',
+    targets.filter((target) => target.method === 'crypto' && target.asset).length === 0 &&
+      Boolean(cryptoTarget?.available),
     JSON.stringify(targets.map((target) => target.id))
   );
 
-  const coin = coinTargets.find((target) => target.asset === 'ethereum:USDT');
-  if (coin) {
+  const want = cryptoTarget?.presets?.[0]?.credits ?? cryptoTarget?.minCredits ?? 100;
+  const before = (await call(token, '/credits')).body?.balance ?? 0;
+  const opened = await call(token, '/payments/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ method: 'crypto', credits: want }),
+  });
+  check('a crypto checkout opens', opened.status === 201, `status=${opened.status} ${JSON.stringify(opened.body)}`);
+  check(
+    'and hands back a URL rather than an address',
+    Boolean(opened.body?.redirectUrl) && !opened.body?.invoice,
+    `${opened.body?.redirectUrl} invoice=${JSON.stringify(opened.body?.invoice ?? null)}`
+  );
+
+  const invoiceId = String(opened.body?.redirectUrl ?? '').split('/').pop();
+  if (invoiceId) {
     /*
-     * A different amount on every run, and not for tidiness.
-     *
-     * An open invoice reserves its exact amount for twenty minutes, so the
-     * second run of this script within that window asks for an amount the
-     * first run is still holding - and is correctly refused. That is the
-     * collision guard working, which is asserted deliberately a few lines
-     * below with the SAME amount. Here the point is to be a different buyer.
+     * Paid from the provider's side, which posts a callback signed the way
+     * Cryptomus signs one - the signature inside the body - to the real
+     * endpoint. The server's own verifier decides whether to believe it, so
+     * this exercises the shipping code rather than a stub of it.
      */
-    /*
-     * A wide span, because a reservation lasts a DAY here.
-     *
-     * An open invoice holds its exact amount until its monitor window closes,
-     * and that window is the quote's twenty minutes plus
-     * CHAIN_MONITOR_WINDOW_HOURS - twenty-four by default, so that a transfer
-     * sent late is still credited. Against a forty-value span that made a
-     * second run inside the same day collide almost every time, and a
-     * collision here is a 409 the script reads as the deposit view failing to
-     * open. One thousand values keeps the run well inside maxCredits and makes
-     * the clash rare rather than routine.
-     */
-    const credits = coin.minCredits + (Math.floor(Date.now() / 1000) % 1_000);
-    const started = await call(token, '/payments/checkout', {
-      method: 'POST',
-      body: JSON.stringify({ method: 'crypto', credits, asset: coin.asset }),
-    });
-    check('an on-chain checkout opens', started.status === 201, JSON.stringify(started.body));
+    await fetch(`${FAKE}/pay/${invoiceId}`, { method: 'POST', redirect: 'manual' });
+    await wait(500);
 
-    const invoice = started.body?.invoice;
-    check('it hands back an address and an exact amount', Boolean(invoice?.address && invoice?.amount), JSON.stringify(invoice));
-    check(
-      'the address is the one the operator configured',
-      invoice?.address === process.env.CHAIN_EVM_ADDRESS,
-      `${invoice?.address} vs ${process.env.CHAIN_EVM_ADDRESS}`
-    );
-    check('nothing is sent to a hosted page', !started.body?.redirectUrl, started.body?.redirectUrl);
-
-    /*
-     * The same amount is refused to a second buyer rather than nudged.
-     *
-     * Two open orders one atomic unit apart are two orders a wrong-amount
-     * payment could equally have meant, which is the ambiguity the whole
-     * settlement design refuses to have.
-     */
-    const clash = await call(otherToken, '/payments/checkout', {
-      method: 'POST',
-      body: JSON.stringify({ method: 'crypto', credits, asset: coin.asset }),
-    });
-    check(
-      'a second buyer asking for the same amount is told to wait',
-      clash.status === 409,
-      `status=${clash.status} ${JSON.stringify(clash.body)}`
-    );
-
-    console.log('\n=== The watcher sees it, then credits it ===');
-    const before = (await call(token, '/credits')).body?.balance ?? 0;
-
-    // Announce the transfer just below the confirmation depth, so the SEEN
-    // state is exercised rather than skipped.
-    await fetch(
-      `${FAKE}/chain/send?asset=${encodeURIComponent(coin.asset)}` +
-        `&to=${encodeURIComponent(invoice.address)}&amount=${invoice.amountAtomic}&depth=3`,
-      { method: 'POST' }
-    );
-    // One watcher pass, on demand: the real interval is thirty seconds and
-    // this calls the same function the timer calls.
-    await fetch(`${FAKE}/chain/sweep?chain=ethereum`, { method: 'POST' });
-    await wait(300);
-
-    const seen = await call(token, `/payments/${started.body.paymentId}`);
-    check(
-      'a transfer that is not deep enough is seen, not credited',
-      seen.body?.invoice?.state === 'seen',
-      JSON.stringify(seen.body?.invoice)
-    );
-    check(
-      'and it says how deep it is',
-      (seen.body?.invoice?.confirmations ?? 0) > 0 &&
-        seen.body.invoice.confirmations < seen.body.invoice.confirmationsNeeded,
-      JSON.stringify(seen.body?.invoice)
-    );
-    check(
-      'nothing has been credited yet',
-      ((await call(token, '/credits')).body?.balance ?? 0) === before,
-      'a shallow transfer must not credit'
-    );
-
-    // Now bury it under the confirmation depth and sweep again.
-    await fetch(`${FAKE}/chain/advance?chain=ethereum&blocks=30`, { method: 'POST' });
-    await fetch(`${FAKE}/chain/sweep?chain=ethereum`, { method: 'POST' });
-    await wait(300);
-
-    const settled = await call(token, `/payments/${started.body.paymentId}`);
-    check(
-      'once it is deep enough the payment is paid',
-      settled.body?.payment?.state === 'paid',
-      JSON.stringify(settled.body?.payment)
-    );
-    check(
-      'and the invoice is credited',
-      settled.body?.invoice?.state === 'credited',
-      JSON.stringify(settled.body?.invoice)
-    );
-    /*
-     * What was GRANTED, not what was asked for.
-     *
-     * The crypto limits row carries a 2.2% fee by default, and a fee comes out
-     * of the credits rather than being added to the charge - so 100 credits'
-     * worth of coin credits 97. Asserting the requested figure here would be
-     * asserting that the fee does not work.
-     */
-    const granted = started.body.credits;
+    const paid = await call(token, `/payments/${opened.body.paymentId}`);
+    check('a signed callback credits it', paid.body?.payment?.state === 'paid',
+      JSON.stringify(paid.body?.payment));
+    const granted = paid.body?.payment?.creditsGranted ?? 0;
     check(
       'the fee comes out of the credits, not out of the amount sent',
-      granted < credits,
-      `granted ${granted} against ${credits} requested`
+      granted > 0 && granted < want,
+      `granted ${granted} against ${want} requested`
     );
     check(
       'the account was credited exactly what it bought',
       ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
-      `${before} + ${granted} !== ${(await call(token, '/credits')).body?.balance}`
+      `${before} + ${granted}`
+    );
+
+    // Cryptomus retries until it gets a 2xx, so this is ordinary traffic.
+    await fetch(`${FAKE}/replay/${invoiceId}`, { method: 'POST' });
+    await wait(300);
+    check(
+      'and a retried callback credits nothing further',
+      ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
+      `${before} + ${granted}`
     );
   } else {
-    check('ethereum:USDT is configured for this walkthrough', false, 'set CHAIN_ASSETS in .env');
-  }
+    check('a signed callback credits it', false, 'no invoice to pay');
   }
 
   /* ======================================================== 2. the browser */
@@ -719,188 +570,158 @@ async function main() {
     await wait(250);
     check('Escape closes the dialog', (await readDialog(page)) === null);
 
-    console.log('\n=== Crypto: the deposit panel ===');
+    /*
+     * The return page tells the rest of the app the balance moved.
+     *
+     * The case this exists for is narrow, and getting the test wrong is easy.
+     * A buyer who arrives ALREADY PAID proves nothing: landing here is a full
+     * navigation, so AuthContext mounts and fetches and the pill is right
+     * whatever this page does. (Written that way first, it passed with the
+     * refresh removed.)
+     *
+     * What the refresh is for is arriving while the payment is still PENDING -
+     * which is the ordinary case, because the buyer is redirected back the
+     * moment they pay and the callback is still in flight. The page polls, the
+     * payment flips to paid, and NOTHING else has any reason to re-read the
+     * account: the webhook was server-to-server, there is no navigation, and
+     * the root layout never unmounts. So the page would say the credits
+     * arrived while the pill above it still showed the old figure.
+     */
+    console.log('\n=== The return page moves the top-bar balance ===');
+    const beforeReturn = (await call(token, '/credits')).body?.balance ?? 0;
+    const pending = await call(token, '/payments/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'crypto', credits: cryptoTarget?.minCredits ?? 100 }),
+    });
+    const pendingInvoice = String(pending.body?.redirectUrl ?? '').split('/').pop();
+
+    // Land FIRST, unpaid, exactly as the redirect does.
+    await page.goto(`${APP}/credits/return?payment=${pending.body.paymentId}`, {
+      waitUntil: 'networkidle2',
+    });
+    await wait(800);
+    const pillBefore = await page.evaluate(
+      () => document.querySelector('.tl-credits')?.textContent.trim() ?? ''
+    );
+
+    // Then pay it, with the page still open and polling.
+    await fetch(`${FAKE}/pay/${pendingInvoice}`, { method: 'POST', redirect: 'manual' });
+    await wait(4000);
+
+    const afterReturn = (await call(token, '/credits')).body?.balance ?? 0;
+    const pillAfter = await page.evaluate(
+      () => document.querySelector('.tl-credits')?.textContent.trim() ?? ''
+    );
+    check(
+      'the top-bar pill follows a payment that credits while the page is open',
+      afterReturn > beforeReturn && pillAfter.includes(String(afterReturn)),
+      `pill "${pillBefore}" -> "${pillAfter}", balance ${beforeReturn} -> ${afterReturn}`
+    );
+
+    console.log('\n=== Crypto: the hand-off ===');
     await openDialog(page);
 
     /*
-     * The network is READABLE, not merely present.
+     * No option row has its LABEL clipped.
      *
-     * USDT exists on all three chains this server takes, so the network is the
-     * only thing distinguishing one of these buttons from another - and
-     * sending USDT on the wrong chain loses it. The coin grid used to go
-     * two-up whenever there was more than one coin, which inside step 1's
-     * 446px panel left a 103px text column: "USDT on Ethereum" needs 125px, so
-     * it rendered as "USDT on Ethe..." beside "USDT on BNB ...", and every
-     * limit line as "$50.00 - $2,000...". The label is the last string in this
-     * dialog that may be shortened.
+     * The label is the one string inside these buttons that can clip: it
+     * carries `truncate`, so an overflow shows as an ellipsis rather than as
+     * a wrap, and nothing else in the button is nowrap. The per-row limit line
+     * that used to sit under it is gone - the range lives in the section
+     * heading now - so this measures less than it did, and says so.
+     *
+     * It measured more when there was a row per coin: "USDT on Ethereum"
+     * needed 125px against a 103px column in a two-up grid, and the part that
+     * got cut was the network, which decides where the money goes.
      */
     const clippedRows = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]');
-      const rows = Array.from(dialog.querySelectorAll('button')).filter((button) =>
-        /\bon\b|Bitcoin/.test(button.textContent || '')
-      );
-      return rows
+      return Array.from(dialog.querySelectorAll('button'))
         .flatMap((button) => Array.from(button.querySelectorAll('span > span')))
         .filter((line) => line.scrollWidth > line.clientWidth + 1)
         .map((line) => line.textContent.trim());
     });
     check(
-      'no coin has its network or its limits clipped',
+      'no option row has its label clipped',
       clippedRows.length === 0,
       `clipped: ${clippedRows.join(' | ')}`
     );
 
     /*
-     * Which crypto shape this installation renders, read rather than assumed.
+     * ONE crypto button, and no coin buttons at all.
      *
-     * With Cryptomus configured there is ONE button - the coin and the network
-     * are chosen on Cryptomus's own page, from Cryptomus's own list, so a coin
-     * button here would offer a choice this application cannot honour. With
-     * the retired on-chain path configured instead there is a button per coin
-     * and a deposit address to show. Both are real configurations today, and a
-     * script that hard-coded either would report the other as broken.
+     * There was a button per coin while this application chose the token and
+     * the network itself. Cryptomus asks on its own page, so a coin picked
+     * here would be a choice nothing could honour - and the buyer would be
+     * shown a different list on the next page.
      */
-    const onChainShape = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('[role="dialog"] button')).some((button) =>
-        /USDT on |BTC on |Bitcoin/.test(button.textContent || '')
-      )
+    const cryptoButtons = await page.$$eval('[role="dialog"] button', (nodes) =>
+      nodes.map((node) => node.textContent.trim()).filter((text) => /crypto/i.test(text))
+    );
+    check(
+      'crypto is one button, not a row per coin',
+      cryptoButtons.length === 1,
+      cryptoButtons.join(' | ')
     );
 
-    if (!onChainShape) {
-      const cryptoButtons = await page.$$eval('[role="dialog"] button', (nodes) =>
-        nodes.map((node) => node.textContent.trim()).filter((text) => /crypto/i.test(text))
-      );
-      check(
-        'crypto is one button, not a row per coin',
-        cryptoButtons.length === 1,
-        cryptoButtons.join(' | ')
-      );
-
-      await clickText(page, '[role="dialog"] button', 'Cryptocurrency');
-      await wait(250);
-      await clickText(page, '[role="dialog"] button', 'Continue');
-      await wait(2000);
-      dialog = await readDialog(page);
-
-      check(
-        'the crypto column is the hand-off, not a refusal',
-        !/Try again/i.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 400)
-      );
-      /*
-       * It says whose page comes next, before sending anybody there.
-       *
-       * A buyer about to leave for a domain that is not this one has to be
-       * told, and told that the coin is chosen over there - otherwise the
-       * missing coin buttons read as a feature that went away.
-       */
-      check(
-        'and says the next page belongs to the provider',
-        /next page is the payment provider/i.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 700)
-      );
-      check(
-        'and names the amount before the hand-off',
-        /\$\d/.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 700)
-      );
-      const continueButton = await page.$$eval('[role="dialog"] button', (nodes) =>
-        nodes.map((node) => node.textContent.trim()).filter((text) => /Continue to payment/i.test(text))
-      );
-      check('and offers the way there', continueButton.length === 1, continueButton.join(' | '));
-
-      /*
-       * The red panel must not still be reading from the on-chain script.
-       *
-       * "Send the exact amount shown, on the network named" is true only where
-       * this server quoted a figure against an address it owns. Here the buyer
-       * has been shown neither, and will not be until the next page - so that
-       * sentence tells them to check something they do not have, about a rule
-       * nothing on this path enforces. PolicyPanels exists on the premise that
-       * every line in it is something the server actually does; this is the
-       * check that keeps that true when the provider changes underneath it.
-       */
-      check(
-        'the policy panel does not promise the on-chain exact-amount scheme',
-        !/Send the exact amount shown/i.test(dialog?.text ?? '') &&
-          !/every buyer sends to the same address/i.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 1200)
-      );
-      check(
-        'and says instead where the coin and the amount are chosen',
-        /provider\u2019s own page|provider's own page/i.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 1200)
-      );
-
-      await page.screenshot({ path: path.join(SHOTS, 'buy-3-crypto.png') });
-      await page.keyboard.press('Escape');
-    } else {
-
-    // A coin, not a category: each is its own button with its network named.
-    await clickText(page, '[role="dialog"] button', 'USDT on Ethereum');
+    await clickText(page, '[role="dialog"] button', 'Cryptocurrency');
     await wait(250);
-
-    /*
-     * A per-run amount here too, for the same reason as above: an open invoice
-     * reserves its exact figure for twenty minutes, and the API half of this
-     * script has already taken one. Typed into the box rather than clicked on
-     * a preset, because a preset is a fixed dollar amount and two runs would
-     * ask for the same one.
-     */
-    await page.evaluate((count) => {
-      const field = document.querySelector('[role="dialog"] input[type="number"]');
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      ).set;
-      setter.call(field, String(count));
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-    }, 140 + (Math.floor(Date.now() / 1000) % 50));
-    await wait(250);
-
     await clickText(page, '[role="dialog"] button', 'Continue');
     await wait(2000);
     dialog = await readDialog(page);
+
     check(
-      'the crypto column is the deposit view, not a refusal',
+      'the crypto column is the hand-off, not a refusal',
       !/Try again/i.test(dialog?.text ?? ''),
       dialog?.text?.slice(0, 400)
     );
+    /*
+     * It says whose page comes next, before sending anybody there.
+     *
+     * A buyer about to leave for a domain that is not this one has to be
+     * told, and told that the coin is chosen over there - otherwise the
+     * missing coin buttons read as a feature that went away.
+     */
+    check(
+      'and says the next page belongs to the provider',
+      /next page is the payment provider/i.test(dialog?.text ?? ''),
+      dialog?.text?.slice(0, 700)
+    );
+    check(
+      'and names the amount before the hand-off',
+      /\$\d/.test(dialog?.text ?? ''),
+      dialog?.text?.slice(0, 700)
+    );
+    const continueButton = await page.$$eval('[role="dialog"] button', (nodes) =>
+      nodes.map((node) => node.textContent.trim()).filter((text) => /Continue to payment/i.test(text))
+    );
+    check('and offers the way there', continueButton.length === 1, continueButton.join(' | '));
 
+    /*
+     * The red panel must not still be reading from the on-chain script.
+     *
+     * "Send the exact amount shown, on the network named" is true only where
+     * this server quoted a figure against an address it owns. Here the buyer
+     * has been shown neither, and will not be until the next page - so that
+     * sentence tells them to check something they do not have, about a rule
+     * nothing on this path enforces. PolicyPanels exists on the premise that
+     * every line in it is something the server actually does; this is the
+     * check that keeps that true when the provider changes underneath it.
+     */
     check(
-      'the panel shows the address the operator configured',
-      (dialog?.text ?? '').includes(process.env.CHAIN_EVM_ADDRESS ?? 'no address'),
-      dialog?.text?.slice(0, 700)
+      'the policy panel does not promise the on-chain exact-amount scheme',
+      !/Send the exact amount shown/i.test(dialog?.text ?? '') &&
+        !/every buyer sends to the same address/i.test(dialog?.text ?? ''),
+      dialog?.text?.slice(0, 1200)
     );
     check(
-      'and an exact amount to send, with the network named',
-      /Send exactly/i.test(dialog?.text ?? '') && /on Ethereum, and no other network/i.test(dialog?.text ?? ''),
-      dialog?.text?.slice(0, 700)
-    );
-    check(
-      'and a countdown that is running',
-      /Expires in/i.test(dialog?.text ?? '') && /\d+:\d\d/.test(dialog?.text ?? ''),
-      dialog?.text?.slice(0, 700)
-    );
-    check(
-      'and says why the amount has to be exact',
-      /every buyer sends to the same address/i.test(dialog?.text ?? ''),
-      dialog?.text?.slice(0, 900)
+      'and says instead where the coin and the amount are chosen',
+      /provider\u2019s own page|provider's own page/i.test(dialog?.text ?? ''),
+      dialog?.text?.slice(0, 1200)
     );
 
-    // Two copy buttons: the amount and the address. Both are conveniences -
-    // the values are on screen and selectable either way.
-    const copyButtons = await page.$$eval('[role="dialog"] button[aria-label^="Copy"]', (nodes) =>
-      nodes.map((node) => node.getAttribute('aria-label'))
-    );
-    check(
-      'both the amount and the address can be copied',
-      copyButtons.length === 2,
-      copyButtons.join(' | ')
-    );
     await page.screenshot({ path: path.join(SHOTS, 'buy-3-crypto.png') });
     await page.keyboard.press('Escape');
-    }
 
     console.log('\n=== Dark, and a phone ===');
     await page.evaluate(() => window.localStorage.setItem('tailor-theme', 'dark'));
@@ -948,21 +769,21 @@ async function main() {
      * Forced here rather than by reconfiguring the server, because taking the
      * keys out of .env would switch off every other check in this file.
      *
-     * BOTH SHAPES, and the difference is the whole reason this is a loop.
-     * With no coins configured the server sends ONE method-level crypto row,
-     * which lands in a single-column grid - that is the shape in the bug
-     * report. With coins configured but switched off it sends a row per coin,
-     * which goes two-up at `sm`. The first overflows the viewport at 1440; the
-     * second only overflows the PANEL there, and a check watching the window
-     * alone passes it. Testing one shape and not the other is how this got
-     * shipped in the first place.
+     * Measured against the PANEL as well as the window, which is the half
+     * that catches it. A 448px panel centred at 1440 has roughly 496px of room
+     * on its right before a row that has escaped it reaches the window edge -
+     * so a row can be painting over the page outside its own dialog while a
+     * viewport check still reads zero. There were two shapes to test while the
+     * server could send a row per coin; there is one now.
      */
     console.log('\n=== A method that is switched off ===');
+    // The server's own sentence, which is the longest string this dialog can
+    // be handed and contains the longest unbreakable word in it.
     const LONG_REASON =
       'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through ' +
-      'Cryptomus. Set CHAIN_ASSETS and the receiving addresses to take crypto payments. ' +
-      'Or set COINBASE_COMMERCE_API_KEY and COINBASE_COMMERCE_WEBHOOK_SECRET for Coinbase ' +
-      'Commerce. Both of those are retired and will be removed.';
+      'Cryptomus. The CHAIN_* and COINBASE_COMMERCE_* settings no longer do anything - ' +
+      'payments already made through them still read and still refund, but no new one ' +
+      'can be started.';
 
     /*
      * Installed ONCE, and the shape read from localStorage rather than closed
@@ -978,43 +799,11 @@ async function main() {
         const url = typeof args[0] === 'string' ? args[0] : args[0]?.url ?? '';
         if (!/\/payments\/methods/.test(url) || !response.ok) return response;
 
-        let shape = 'coins';
-        try {
-          shape = window.localStorage.getItem('e2e-methods-shape') || 'coins';
-        } catch {
-          /* A blocked store means the default, which is a real shape too. */
-        }
-
         const body = await response.clone().json();
         const off = (target) => ({ ...target, available: false, reason });
-
-        if (shape === 'method') {
-          // No coins configured at all: one method-level row, as the server
-          // sends when the CHAIN_ block is empty and Coinbase has no keys.
-          body.targets = (body.targets || [])
-            .filter((target) => target.method !== 'crypto')
-            .concat([
-              off({
-                id: 'crypto',
-                method: 'crypto',
-                mark: 'crypto',
-                label: 'Cryptocurrency',
-                minCredits: 0,
-                maxCredits: 0,
-                minAmountCents: 0,
-                maxAmountCents: 0,
-                presets: [],
-                custom: 'stepper',
-                feeBps: 0,
-                feeFixedCents: 0,
-              }),
-            ]);
-        } else {
-          body.targets = (body.targets || []).map((target) =>
-            target.method === 'crypto' ? off(target) : target
-          );
-        }
-
+        body.targets = (body.targets || []).map((target) =>
+          target.method === 'crypto' ? off(target) : target
+        );
         body.methods = (body.methods || []).map((method) =>
           method.id === 'crypto' ? off(method) : method
         );
@@ -1025,65 +814,62 @@ async function main() {
       };
     }, LONG_REASON);
 
-    for (const shape of ['method', 'coins']) {
-      for (const viewport of [WIDE, PHONE]) {
-        const where = `${shape} at ${viewport.width}`;
-        await page.setViewport(viewport);
-        await page.evaluate((value) => window.localStorage.setItem('e2e-methods-shape', value), shape);
-        await openDialog(page);
-        dialog = await readDialog(page);
+    for (const viewport of [WIDE, PHONE]) {
+      const where = `at ${viewport.width}`;
+      await page.setViewport(viewport);
+      await openDialog(page);
+      dialog = await readDialog(page);
 
-        check(
-          `an unavailable method is listed with its reason, ${where}`,
-          /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(dialog?.text ?? ''),
-          dialog?.text?.slice(0, 400)
-        );
-        check(
-          `nothing leaves the dialog, ${where}`,
-          dialog && dialog.panel.scrollWidth <= dialog.panel.clientWidth + 1,
-          `panel scrollWidth ${dialog?.panel.scrollWidth} vs clientWidth ${dialog?.panel.clientWidth}`
-        );
-        check(
-          `and nothing leaves the screen, ${where}`,
-          dialog && dialog.overflow.past <= 1,
-          `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
-        );
+      check(
+        `an unavailable method is listed with its reason, ${where}`,
+        /CRYPTOMUS_PAYMENT_API_KEY/.test(dialog?.text ?? ''),
+        dialog?.text?.slice(0, 400)
+      );
+      check(
+        `nothing leaves the dialog, ${where}`,
+        dialog && dialog.panel.scrollWidth <= dialog.panel.clientWidth + 1,
+        `panel scrollWidth ${dialog?.panel.scrollWidth} vs clientWidth ${dialog?.panel.clientWidth}`
+      );
+      check(
+        `and nothing leaves the screen, ${where}`,
+        dialog && dialog.overflow.past <= 1,
+        `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
+      );
 
-        /*
-         * Not merely inside the dialog - READABLE.
-         *
-         * `truncate` would keep the row inside the panel and still fail the
-         * operator, because the part naming the keys is at the END of the
-         * sentence and a one-line ellipsis eats exactly that. Asking whether
-         * the element is clipped is not enough on its own: in the broken
-         * state the BUTTON grew instead, so the text was not overflowing
-         * itself and read as unclipped. The line count is what actually
-         * distinguishes wrapped from nowrap.
-         */
-        const reason = await page.evaluate(() => {
-          const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
-            (element) =>
-              /COINBASE_COMMERCE_WEBHOOK_SECRET/.test(element.textContent || '') &&
-              element.children.length === 0
-          );
-          if (!node) return null;
-          return {
-            clipped: node.scrollWidth > node.clientWidth + 1,
-            lines: Math.round(node.getBoundingClientRect().height / 16),
-            whiteSpace: getComputedStyle(node).whiteSpace,
-          };
-        });
-        check(
-          `the reason is wrapped rather than clipped, ${where}`,
-          reason && !reason.clipped && reason.lines > 1 && reason.whiteSpace !== 'nowrap',
-          JSON.stringify(reason)
+      /*
+       * Not merely inside the dialog - READABLE.
+       *
+       * `truncate` would keep the row inside the panel and still fail the
+       * operator, because the part naming the keys is at the END of the
+       * sentence and a one-line ellipsis eats exactly that. Asking whether
+       * the element is clipped is not enough on its own: in the broken
+       * state the BUTTON grew instead, so the text was not overflowing
+       * itself and read as unclipped. The line count is what actually
+       * distinguishes wrapped from nowrap.
+       */
+      const reason = await page.evaluate(() => {
+        const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
+          (element) =>
+            /CRYPTOMUS_PAYMENT_API_KEY/.test(element.textContent || '') &&
+            element.children.length === 0
         );
+        if (!node) return null;
+        return {
+          clipped: node.scrollWidth > node.clientWidth + 1,
+          lines: Math.round(node.getBoundingClientRect().height / 16),
+          whiteSpace: getComputedStyle(node).whiteSpace,
+        };
+      });
+      check(
+        `the reason is wrapped rather than clipped, ${where}`,
+        reason && !reason.clipped && reason.lines > 1 && reason.whiteSpace !== 'nowrap',
+        JSON.stringify(reason)
+      );
 
-        await page.screenshot({
-          path: path.join(SHOTS, `buy-1-unavailable-${shape}-${viewport.width}.png`),
-        });
-        await page.keyboard.press('Escape');
-      }
+      await page.screenshot({
+        path: path.join(SHOTS, `buy-1-unavailable-${viewport.width}.png`),
+      });
+      await page.keyboard.press('Escape');
     }
 
     /* ================================ the page's own two history columns */

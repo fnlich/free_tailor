@@ -1,4 +1,4 @@
-import type { ComponentType, SVGProps } from 'react';
+import type { SVGProps } from 'react';
 
 /**
  * Brand and asset marks: card networks, and the coins.
@@ -9,9 +9,9 @@ import type { ComponentType, SVGProps } from 'react';
  * rules are the whole reason a set of icons reads as a set.
  *
  * A brand mark cannot obey any of them. A Visa wordmark is filled, a Bitcoin
- * disc is orange whatever colour the row it sits in happens to be, and USDT and
- * USDC are told apart by their green and their blue and by nothing else. Push
- * them through the shared wrapper and either the twenty icons that promise a
+ * disc is orange whatever colour the row it sits in happens to be, and Tether's
+ * green is the only thing that says which coin it is. Push them through the
+ * shared wrapper and either the twenty icons that promise a
  * single stroke colour stop keeping that promise, or the marks come out as
  * outlines nobody recognises.
  *
@@ -125,19 +125,6 @@ export const CoinEthereum = (p: MarkProps) => (
   </Coin>
 );
 
-export const CoinUsdc = (p: MarkProps) => (
-  <Coin {...p} fill="#2775CA" label="USD Coin">
-    <path
-      fill="#fff"
-      d="M12 4.6a7.4 7.4 0 1 0 0 14.8 7.4 7.4 0 0 0 0-14.8zm0 13.3a5.9 5.9 0 1 1 0-11.8 5.9 5.9 0 0 1 0 11.8z"
-    />
-    <path
-      fill="#fff"
-      d="M12.7 11.4c-1.1-.3-1.4-.5-1.4-1 0-.4.4-.7 1-.7.6 0 1 .2 1.1.7h1.2c-.1-.9-.7-1.5-1.6-1.6V8h-1v.8c-1 .1-1.7.8-1.7 1.7 0 1.1.7 1.5 1.9 1.8 1 .2 1.3.5 1.3 1s-.4.8-1.1.8c-.8 0-1.1-.3-1.2-.8H9.9c.1 1 .8 1.6 1.9 1.7v.8h1v-.8c1.1-.1 1.8-.8 1.8-1.8 0-1.1-.7-1.5-1.9-1.8z"
-    />
-  </Coin>
-);
-
 /** Tether. Its network is named beside it in the UI, never inside the mark. */
 export const CoinTether = (p: MarkProps) => (
   <Coin {...p} fill="#26A17B" label="Tether">
@@ -146,28 +133,6 @@ export const CoinTether = (p: MarkProps) => (
       d="M13.2 11.9v-1.6h3.4V8H7.4v2.3h3.4v1.6c-2.8.1-4.9.7-4.9 1.4s2.1 1.3 4.9 1.4v4h2.4v-4c2.8-.1 4.9-.7 4.9-1.4s-2.1-1.3-4.9-1.4zm0 2.4v0c-.1 0-.5.1-1.2.1-.6 0-1 0-1.2-.1v0c-2.4-.1-4.2-.5-4.2-1s1.8-.9 4.2-1v1.7c.2 0 .6 0 1.2 0 .7 0 1.1 0 1.2 0v-1.7c2.4.1 4.2.5 4.2 1s-1.8.9-4.2 1z"
     />
   </Coin>
-);
-
-/** For an asset with no mark of its own: the symbol on a neutral disc. */
-export const CoinGeneric = ({
-  className = 'h-5 w-5',
-  symbol = '?',
-  ...rest
-}: MarkProps & { symbol?: string }) => (
-  <svg viewBox="0 0 24 24" role="img" aria-label={symbol} className={className} {...rest}>
-    <circle cx="12" cy="12" r="12" fill="#64748B" />
-    <text
-      x="12"
-      y="16"
-      textAnchor="middle"
-      fontSize="9"
-      fontWeight="700"
-      fill="#fff"
-      fontFamily="system-ui, sans-serif"
-    >
-      {symbol.slice(0, 3)}
-    </text>
-  </svg>
 );
 
 /* ----------------------------------------------------------- family marks */
@@ -190,11 +155,10 @@ export const MarkCardTrio = ({ className = 'h-5' }: { className?: string }) => (
 /**
  * Several coins, for the one button that means "crypto".
  *
- * A FAMILY mark, and only for the method-level entry: it says "more than one
- * coin" and nothing about which. Once the server offers a row per asset, each
- * row carries its own coin from `CoinMark` and this is not used for it -
- * a per-asset button showing three coins would be a button lying about what it
- * does.
+ * A FAMILY mark: it says "more than one coin" and nothing about which, which is
+ * exactly right now that the coin is chosen on the provider's own page. There
+ * was briefly a per-asset mark beside it, for the months this application asked
+ * which token and which network itself.
  */
 export const MarkCoinTrio = ({ className = 'h-5' }: { className?: string }) => (
   <span className={`inline-flex items-center ${className}`}>
@@ -203,52 +167,3 @@ export const MarkCoinTrio = ({ className = 'h-5' }: { className?: string }) => (
     <CoinTether className="-ml-1.5 h-5 w-5" />
   </span>
 );
-
-/**
- * Which mark belongs to which asset.
- *
- * Keyed on the asset id the server sends, so the page never parses a symbol out
- * of a label. Both Tethers share one mark because they ARE one token - the
- * difference is the network, and the network is named in the row's text where
- * it can be read, rather than hidden in a glyph.
- */
-export const COIN_MARKS: Record<string, ComponentType<MarkProps>> = {
-  'bitcoin:BTC': CoinBitcoin,
-  'ethereum:ETH': CoinEthereum,
-  'ethereum:USDC': CoinUsdc,
-  'ethereum:USDT': CoinTether,
-  'tron:USDT': CoinTether,
-  'bsc:USDT': CoinTether,
-  'bsc:USDC': CoinUsdc,
-};
-
-/**
- * The mark for an asset, always something.
- *
- * A COMPONENT rather than a `markForAsset(id)` that hands one back, which is
- * what this was first written as. Returning a component means creating one
- * during the caller's render: React then sees a different component type on
- * every render, unmounts the old one and mounts the new, and any state it held
- * is lost. These marks hold none, so it did no visible harm - but the rule
- * catching it is right, and a lookup plus a fallback is simpler anyway.
- *
- * An operator may enable an asset this file has never heard of, and a hole
- * where a coin should be reads as a broken page. The fallback draws its symbol
- * on a neutral disc, which is legible and honest.
- */
-export function CoinMark({
-  assetId,
-  symbol = '',
-  className = 'h-5 w-5',
-  ...rest
-}: MarkProps & { assetId?: string; symbol?: string }) {
-  const Known = assetId ? COIN_MARKS[assetId] : undefined;
-  if (Known) return <Known className={className} {...rest} />;
-  return (
-    <CoinGeneric
-      className={className}
-      symbol={symbol || assetId?.split(':')[1] || '?'}
-      {...rest}
-    />
-  );
-}

@@ -26,14 +26,10 @@
  *   - crypto is not refundable automatically: the same function says so and
  *     answers 409.
  *
- * The same rule is why crypto has TWO sets of lines rather than one. Sending an
- * exact amount to an address, and having a payment that missed it held for a
- * person to look at, are things the RETIRED on-chain path does; a hosted
- * provider quotes and matches on its own page and this server never sees an
- * address. Showing the on-chain sentences to a buyer about to leave for a
- * hosted page would be telling them to check a number they have not been given
- * yet, on a network they have not chosen yet - a rule nothing here enforces,
- * which is the exact failure this file's whole premise is against.
+ * Crypto briefly had two sets of lines, because the on-chain path asked the
+ * buyer to send an exact amount to an address and this one does not. That path
+ * is gone; what is left is the hosted set, which is the only one that was ever
+ * true of a provider whose page quotes and matches on its own.
  */
 
 const TONES = {
@@ -74,22 +70,7 @@ function Panel({
   );
 }
 
-export default function PolicyPanels({
-  method,
-  /**
-   * The coin, when the buyer chose one HERE.
-   *
-   * Present only on the retired on-chain path: that is the one where this
-   * server quotes an exact figure against an address it owns. A hosted
-   * provider - Cryptomus, and Coinbase before it - asks on its own page, so
-   * the target carries no asset and the exact-amount lines do not apply.
-   */
-  asset,
-}: {
-  method: 'card' | 'crypto';
-  asset?: string;
-}) {
-  const ownWallet = method === 'crypto' && Boolean(asset);
+export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) {
   return (
     <div className="space-y-3">
       <Panel
@@ -103,30 +84,18 @@ export default function PolicyPanels({
       />
       <Panel
         tone="warn"
-        title={
-          method === 'card'
-            ? 'Refunds'
-            : ownWallet
-              ? 'Refunds, and getting the amount right'
-              : 'Refunds, and paying on the next page'
-        }
+        title={method === 'card' ? 'Refunds' : 'Refunds, and paying on the next page'}
         points={
           method === 'card'
             ? [
                 'An administrator can refund a card payment. Refunding reverses the credits that are still unspent; credits already spent cannot be taken back, and the difference is reported rather than quietly ignored.',
                 'This server never sees your card number. The card form is served by the payment provider and your details go straight to them.',
               ]
-            : ownWallet
-              ? [
-                  'A crypto payment cannot be refunded automatically - coin can only be sent back by hand, by an administrator. Check the amount and the network before you send anything.',
-                  'Send the exact amount shown, on the network named. A payment on a different network cannot be recovered by anyone, including us.',
-                  'If the amount differs from the one shown, we credit what arrived wherever we can safely tell which order it belongs to. Where we cannot, the payment is held and somebody contacts you - it is never silently credited and never written off.',
-                ]
-              : [
-                  'A crypto payment cannot be refunded automatically - coin can only be sent back by hand, by an administrator.',
-                  'You pay on the payment provider\u2019s own page, not this one. The coin, the network and the amount to send are all chosen and shown there, at their rates.',
-                  'Credits are added when the provider confirms the payment, which for crypto can take several minutes. This order stays open until they do, and you can close this window without losing it.',
-                ]
+            : [
+                'A crypto payment cannot be refunded automatically - coin can only be sent back by hand, by an administrator.',
+                'You pay on the payment provider\u2019s own page, not this one. The coin, the network and the amount to send are all chosen and shown there, at their rates.',
+                'Credits are added when the provider confirms the payment, which for crypto can take several minutes. This order stays open until they do, and you can close this window without losing it.',
+              ]
         }
       />
     </div>

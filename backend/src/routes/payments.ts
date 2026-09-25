@@ -25,14 +25,7 @@ import {
   quoteCredits,
   requireThreeDSecure,
 } from '../services/payments/pricing';
-import { isAssetId } from '../config/chainAssets';
 import { getUserById } from '../database/userRepository';
-import {
-  getInvoiceForPayment,
-  listHeldInvoices,
-} from '../database/chainInvoiceRepository';
-import { listOpenOrphans, resolveOrphan } from '../database/chainOrphanRepository';
-import { describeInvoice, formatAtomic } from '../services/payments/chain/invoices';
 
 /**
  * Buying credits, and an administrator's view of what was bought.
@@ -130,14 +123,9 @@ router.get('/quote', async (req: Request, res: Response) => {
     if (method !== 'card' && method !== 'crypto') {
       throw new PaymentError('Choose a payment method.');
     }
-    const asset = typeof req.query.asset === 'string' && req.query.asset.trim()
-      ? req.query.asset.trim()
-      : undefined;
-    if (asset && !isAssetId(asset)) {
-      throw new PaymentError('That coin is not one this server can take.');
-    }
-
-    const quote = await quoteCredits(req.query.credits, asset ? { method, asset } : { method });
+    // No coin is named here. The buyer chooses it on the provider's own page,
+    // so an `asset` in the query could not change the price and is not read.
+    const quote = await quoteCredits(req.query.credits, { method });
     res.json({
       credits: quote.credits,
       grossCredits: quote.grossCredits,
@@ -154,17 +142,17 @@ router.get('/quote', async (req: Request, res: Response) => {
 router.post('/checkout', async (req: Request, res: Response) => {
   try {
     /*
-     * Five keys, read one at a time, and never an amount.
+     * Four keys, read one at a time, and never an amount.
      *
      * Spreading `req.body` into the service would let a future field arrive
      * without anybody deciding it should, which is how a request ends up able
-     * to set its own price. Each one is named here or it does not exist.
+     * to set its own price. Each one is named here or it does not exist -
+     * which is why a stale tab still sending `asset` is simply not read.
      */
     const body = (req.body ?? {}) as Record<string, unknown>;
     const started = await startCheckout(req.user!, {
       method: body.method,
       credits: body.credits,
-      asset: body.asset,
       cardId: body.cardId,
       saveCard: body.saveCard,
     });
@@ -181,8 +169,6 @@ router.post('/checkout', async (req: Request, res: Response) => {
       ...(started.clientSecret ? { clientSecret: started.clientSecret } : {}),
       ...(started.redirectUrl ? { redirectUrl: started.redirectUrl } : {}),
       ...(started.processing ? { processing: true } : {}),
-      // Where to send coin, and how much. Only for an on-chain payment.
-      ...(started.invoice ? { invoice: started.invoice } : {}),
     });
   } catch (error) {
     fail(res, error);
@@ -277,16 +263,7 @@ router.get('/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'That payment was not found.' });
     return;
   }
-  /*
-   * The invoice rides along, so the deposit panel has one thing to poll.
-   *
-   * It is what changes while somebody is waiting: an amount arrives, then it
-   * gets deeper, then it is credited. The payment itself only moves once, at
-   * the very end, so a page watching only the payment would show nothing at
-   * all for the several minutes a chain takes.
-   */
-  const invoice = getInvoiceForPayment(payment.id);
-  res.json({ payment, ...(invoice ? { invoice: describeInvoice(invoice) } : {}) });
+  res.json({ payment });
 });
 
 export default router;
@@ -333,80 +310,6 @@ adminPaymentsRouter.get('/', (req: Request, res: Response) => {
     total: countAllPayments(),
     offset,
   });
-});
-
-/**
- * Money that arrived and could not be matched to an order.
- *
- * Held rather than credited or written off. The creation-time rule - refusing
- * a taken amount instead of shifting it - makes this rare, because two open
- * invoices on one asset now differ by dollars rather than by one atomic unit.
- * Rare is not never: a wallet rounds, a withdrawal takes a fee, somebody types
- * the figure by hand. When that money cannot be attributed to exactly one
- * order, nothing moves and it ends up in this list.
- *
- * On this page rather than a page of its own, because this is where an
- * administrator already comes to reconcile against the provider's own records,
- * and a second place to check is a place nobody checks.
- */
-adminPaymentsRouter.get('/held', (_req: Request, res: Response) => {
-  /*
-   * Two shapes of the same problem, in one list.
-   *
-   * A HELD INVOICE is money that can be attributed to an order but not
-   * credited - too little to buy a credit, or a payment row that has gone.
-   * An ORPHAN is money that could have been meant by two different orders, so
-   * it has no invoice at all. An administrator does not care about that
-   * distinction when deciding what to do, so they are served together.
-   */
-  const orphans = listOpenOrphans().map((orphan) => ({
-    id: orphan.id,
-    paymentId: '',
-    asset: orphan.asset,
-    chain: orphan.chain,
-    address: '',
-    expected: '',
-    received: formatAtomic(orphan.amountAtomic, orphan.decimals),
-    txid: orphan.txid,
-    note: orphan.reason,
-    at: orphan.createdAt,
-    /** Only an orphan can be dismissed; a held invoice is its own record. */
-    resolvable: true,
-  }));
-
-  const held = listHeldInvoices().map((invoice) => ({
-    id: invoice.id,
-    paymentId: invoice.paymentId,
-    asset: invoice.asset,
-    chain: invoice.chain,
-    address: invoice.address,
-    expected: formatAtomic(invoice.amountAtomic, invoice.decimals),
-    received: invoice.seenAmount ? formatAtomic(invoice.seenAmount, invoice.decimals) : '',
-    txid: invoice.seenTxid,
-    /** Why it is here, in a sentence a person can act on. */
-    note: invoice.note,
-    at: invoice.updatedAt,
-    resolvable: false,
-  }));
-
-  res.json({ held: [...orphans, ...held].sort((left, right) => right.at.localeCompare(left.at)) });
-});
-
-/**
- * Dismisses an unattributable transfer once a person has dealt with it.
- *
- * A queue that cannot be cleared is a queue nobody reads, and an administrator
- * who has refunded the sender or credited the account by hand has genuinely
- * finished with it. Only orphans can be dismissed - a held invoice is the
- * payment's own record and stays.
- */
-adminPaymentsRouter.post('/held/:id/resolve', (req: Request, res: Response) => {
-  const resolved = resolveOrphan(String(req.params.id ?? ''));
-  if (!resolved) {
-    res.status(404).json({ error: 'That is not an open item.' });
-    return;
-  }
-  res.json({ resolved: true });
 });
 
 adminPaymentsRouter.post('/:id/refund', async (req: Request, res: Response) => {

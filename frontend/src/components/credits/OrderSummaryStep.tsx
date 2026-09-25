@@ -1,6 +1,6 @@
 'use client';
 
-import { MarkCardTrio, MarkCoinTrio, CoinMark } from '@/components/icons/marks';
+import { MarkCardTrio, MarkCoinTrio } from '@/components/icons/marks';
 import CardPanel from './CardPanel';
 import CryptoPanel from './CryptoPanel';
 import PolicyPanels from './PolicyPanels';
@@ -8,7 +8,6 @@ import { LABEL, PANEL } from './chrome';
 import type { Order, Priced } from './order';
 import {
   formatAmount,
-  type ChainInvoiceView,
   type PaymentTarget,
   type SavedCard,
 } from '@/lib/payments';
@@ -59,9 +58,10 @@ function Row({
 }
 
 function Mark({ target }: { target: PaymentTarget }) {
-  if (target.mark === 'card') return <MarkCardTrio />;
-  if (target.mark === 'crypto') return <MarkCoinTrio />;
-  return <CoinMark assetId={target.asset} symbol={target.symbol} className="h-6 w-6" />;
+  // Two marks, because there are two buttons. There was a per-coin one until
+  // the on-chain path went: the coin is chosen on the provider's page now, and
+  // the trio is the honest picture of "some cryptocurrency, decided later".
+  return target.mark === 'card' ? <MarkCardTrio /> : <MarkCoinTrio />;
 }
 
 export default function OrderSummaryStep({
@@ -72,7 +72,6 @@ export default function OrderSummaryStep({
   priced,
   order,
   cards,
-  invoice,
   showNewCardForm,
   onUseNewCard,
   onUseSavedCards,
@@ -95,8 +94,6 @@ export default function OrderSummaryStep({
   priced: Priced;
   order: Order;
   cards: SavedCard[];
-  /** The live chain invoice, when this is a crypto payment. */
-  invoice: ChainInvoiceView | null;
   showNewCardForm: boolean;
   onUseNewCard: () => void;
   onUseSavedCards: () => void;
@@ -202,7 +199,7 @@ export default function OrderSummaryStep({
           </div>
         )}
 
-        <PolicyPanels method={target.method} asset={target.asset} />
+        <PolicyPanels method={target.method} />
       </div>
 
       <div>
@@ -225,13 +222,7 @@ export default function OrderSummaryStep({
             onRetry={onRetry}
           />
         ) : (
-          <CryptoPanel
-            order={order}
-            target={target}
-            invoice={invoice}
-            onCancel={onBack}
-            onRetry={onRetry}
-          />
+          <CryptoPanel order={order} target={target} onCancel={onBack} onRetry={onRetry} />
         )}
       </div>
     </div>

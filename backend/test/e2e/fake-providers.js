@@ -1,5 +1,5 @@
 /*
- * A stand-in for Stripe and Coinbase Commerce, loaded into the real server.
+ * A stand-in for Stripe and Cryptomus, loaded into the real server.
  *
  * Run as `node --require ./fake-providers.js dist/index.js`, so this file is
  * evaluated before the app requires its integration modules and replaces every
@@ -20,7 +20,6 @@ const path = require('path');
 
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 const stripe = require(path.join(DIST, 'integrations', 'stripe.js'));
-const coinbase = require(path.join(DIST, 'integrations', 'coinbaseCommerce.js'));
 const cryptomus = require(path.join(DIST, 'integrations', 'cryptomus.js'));
 
 const FAKE_PORT = Number(process.env.FAKE_PROVIDER_PORT || 4242);
@@ -35,7 +34,6 @@ const ledger = {
   intents: [],
   customers: [],
   detached: [],
-  transfers: [],
 };
 const byId = new Map();
 
@@ -168,15 +166,7 @@ stripe.chargeSavedCard = async (input) => {
   return { id, status: 'succeeded', amount_received: input.amountCents, currency: input.currency };
 };
 
-coinbase.createCharge = async (input) => {
-  const code = nextId('CHG');
-  const record = { ...input, id: code, provider: 'coinbase' };
-  byId.set(code, record);
-  ledger.charges.push(record);
-  return { code, hosted_url: `http://127.0.0.1:${FAKE_PORT}/checkout/${code}` };
-};
 
-coinbase.getCharge = async (code) => ({ code, timeline: [] });
 
 /*
  * Cryptomus, which is what a crypto checkout actually opens now.
@@ -194,201 +184,6 @@ cryptomus.createInvoice = async (input) => {
   ledger.charges.push(record);
   return { uuid, order_id: input.paymentId, url: `http://127.0.0.1:${FAKE_PORT}/checkout/${uuid}` };
 };
-
-/* ----------------------------------------------------------- the chains */
-
-/*
- * A stand-in for four blockchains, and the one part of this file that could
- * not have been written any other way.
- *
- * The machine this was developed on cannot reach a single chain endpoint - the
- * egress policy refuses every one of them - so there is no "point it at a
- * testnet" option. What there is instead is this: the chain RPC seam replaced
- * with functions that serve from a small in-memory ledger, and an HTTP route
- * below that lets a test say "this transfer just landed".
- *
- * It is faithful about the things that have bitten this code:
- *   - an ERC-20 transfer is a LOG with the amount in `data` and the recipient
- *     as a 32-byte topic, not a field called `amount`;
- *   - TRON answers decimal strings from a REST index, not hex from an RPC;
- *   - Bitcoin answers an address history whose outputs must be summed;
- *   - and a transfer starts at zero confirmations and gets deeper, so the
- *     seen-then-credited path is exercised rather than skipped.
- */
-
-const chainRpc = require(path.join(DIST, 'services', 'payments', 'chain', 'rpc.js'));
-const { ASSETS, TRANSFER_TOPIC } = require(path.join(DIST, 'config', 'chainAssets.js'));
-const watcher = require(path.join(DIST, 'services', 'payments', 'chain', 'watcher.js'));
-
-/** Transfers a test has announced, per chain. */
-const chainLedger = { ethereum: [], bsc: [], tron: [], bitcoin: [] };
-/**
- * The current block height per chain, which a test can advance.
- *
- * Seeded ABOVE whatever the database already remembers having read, because a
- * fake chain's tip resets on every restart while the real cursor is persisted
- * - and a cursor ahead of the tip means the watcher correctly reads nothing,
- * for ever. That is right in production (a tip only grows, so it means the
- * endpoint is on the wrong network) and merely annoying here.
- */
-const chainTips = { ethereum: 21_000_000, bsc: 44_000_000, tron: 66_000_000, bitcoin: 870_000 };
-
-/*
- * Raised past the stored cursor the first time each chain is asked about.
- *
- * LAZILY, and that is the whole point: this file is loaded by `node --require`
- * before the app has even resolved its database directory, so reading the
- * cursor at load time reads nothing (or creates an empty database in the wrong
- * place). By the time a tip is actually wanted, the app is up.
- */
-const seeded = new Set();
-
-function tipFor(chain) {
-  if (!seeded.has(chain)) {
-    seeded.add(chain);
-    try {
-      const cursors = require(path.join(DIST, 'database', 'chainCursorRepository.js'));
-      const stored = cursors.getCursor(chain);
-      if (typeof stored === 'number' && stored >= chainTips[chain]) {
-        chainTips[chain] = stored + 100;
-        console.log(`[fake-provider] ${chain} tip raised to ${chainTips[chain]} past a stored cursor.`);
-      }
-    } catch {
-      // No database yet, which is the ordinary first run.
-    }
-  }
-  return chainTips[chain];
-}
-
-function topicFor(address) {
-  return `0x${String(address).toLowerCase().replace(/^0x/, '').padStart(64, '0')}`;
-}
-
-function hex(value) {
-  return `0x${BigInt(value).toString(16)}`;
-}
-
-chainRpc.rpcCall = async (endpoints, method, params) => {
-  // Which EVM chain is being asked is decided by the endpoint list, exactly as
-  // it is in production - the BNB routing lives in the reader, not here.
-  const chain = String(endpoints[0] ?? '').includes('bsc') ? 'bsc' : 'ethereum';
-
-  if (method === 'eth_chainId') return chain === 'bsc' ? '0x38' : '0x1';
-  if (method === 'eth_blockNumber') return hex(tipFor(chain));
-
-  if (method === 'eth_getLogs') {
-    const filter = params[0] ?? {};
-    const from = Number.parseInt(filter.fromBlock ?? '0x0', 16);
-    const to = Number.parseInt(filter.toBlock ?? '0x0', 16);
-    return chainLedger[chain]
-      .filter((entry) => entry.height >= from && entry.height <= to)
-      .filter((entry) => entry.contract.toLowerCase() === String(filter.address).toLowerCase())
-      .map((entry) => ({
-        address: entry.contract,
-        topics: [TRANSFER_TOPIC, topicFor('0x00000000000000000000000000000000000000ff'), topicFor(entry.to)],
-        data: `0x${BigInt(entry.amountAtomic).toString(16).padStart(64, '0')}`,
-        blockNumber: hex(entry.height),
-        transactionHash: entry.txid,
-        removed: false,
-      }));
-  }
-
-  if (method === 'eth_getTransactionReceipt') {
-    const found = chainLedger[chain].find((entry) => entry.txid === params[0]);
-    return found ? { blockNumber: hex(found.height), status: '0x1' } : null;
-  }
-
-  throw new Error(`the fake chain does not serve ${method}`);
-};
-
-chainRpc.getJson = async (endpoints, requestPath) => {
-  if (requestPath.startsWith('/simple/price')) {
-    // A plausible, fixed price. Fixed so a test can do the arithmetic itself.
-    return { bitcoin: { usd: 50_000 }, ethereum: { usd: 3_000 }, binancecoin: { usd: 600 } };
-  }
-
-  if (requestPath === '/blocks/tip/height') return tipFor('bitcoin');
-
-  const history = requestPath.match(/^\/address\/([^/]+)\/txs$/);
-  if (history) {
-    const address = decodeURIComponent(history[1]);
-    return chainLedger.bitcoin
-      .filter((entry) => entry.to === address)
-      .map((entry) => ({
-        txid: entry.txid,
-        status: { confirmed: true, block_height: entry.height },
-        vout: [
-          { scriptpubkey_address: address, value: Number(entry.amountAtomic) },
-          // Change going back to the sender, which must not be counted.
-          { scriptpubkey_address: 'bc1qchangeaddressxxxxxxxxxxxxxxxxxxxxxxx', value: 123_456 },
-        ],
-      }));
-  }
-
-  const tx = requestPath.match(/^\/tx\/([^/]+)$/);
-  if (tx) {
-    const found = chainLedger.bitcoin.find((entry) => entry.txid === decodeURIComponent(tx[1]));
-    return found
-      ? { status: { confirmed: true, block_height: found.height } }
-      : { status: { confirmed: false } };
-  }
-
-  const trc20 = requestPath.match(/^\/v1\/accounts\/([^/]+)\/transactions\/trc20/);
-  if (trc20) {
-    const address = decodeURIComponent(trc20[1]);
-    return {
-      data: chainLedger.tron
-        .filter((entry) => entry.to === address)
-        .map((entry) => ({
-          transaction_id: entry.txid,
-          token_info: { address: entry.contract, decimals: 6, symbol: 'USDT' },
-          to: address,
-          value: String(entry.amountAtomic),
-        })),
-    };
-  }
-
-  throw new Error(`the fake chain does not serve GET ${requestPath}`);
-};
-
-chainRpc.postJson = async (endpoints, requestPath, body) => {
-  if (requestPath === '/wallet/getnowblock') {
-    return { block_header: { raw_data: { number: tipFor('tron') } } };
-  }
-  if (requestPath === '/wallet/gettransactioninfobyid') {
-    const found = chainLedger.tron.find((entry) => entry.txid === body.value);
-    return found ? { blockNumber: found.height } : {};
-  }
-  throw new Error(`the fake chain does not serve POST ${requestPath}`);
-};
-
-/**
- * Announces a transfer, as if somebody had just sent coin.
- *
- * `depth` is how many confirmations it should already have, so a test can put
- * one just below the threshold to exercise `seen` and then deepen it.
- */
-function announceTransfer({ asset, to, amountAtomic, txid, depth = 0 }) {
-  const definition = ASSETS[asset];
-  if (!definition) throw new Error(`no such asset ${asset}`);
-  const chain = definition.chain;
-  const height = tipFor(chain) - Math.max(0, depth - 1);
-
-  chainLedger[chain].push({
-    txid: txid || `0xfake${Math.random().toString(16).slice(2, 10)}`,
-    to,
-    amountAtomic: String(amountAtomic),
-    contract: definition.contract ?? '',
-    height,
-  });
-  ledger.transfers.push({ asset, to, amountAtomic: String(amountAtomic), depth });
-  return chainLedger[chain][chainLedger[chain].length - 1];
-}
-
-/** Moves a chain forward, which deepens everything already on it. */
-function advanceChain(chain, blocks) {
-  chainTips[chain] = tipFor(chain) + blocks;
-}
 
 /* ------------------------------------------------------- the hosted page */
 
@@ -470,20 +265,6 @@ function cryptomusBody(record, status) {
   return JSON.stringify({ ...fields, sign });
 }
 
-function coinbaseEvent(record, type) {
-  return JSON.stringify({
-    event: {
-      id: nextId('cbevt'),
-      type,
-      data: {
-        code: record.id,
-        pricing: { local: { amount: (record.amountCents / 100).toFixed(2), currency: record.currency.toUpperCase() } },
-        metadata: { paymentId: record.paymentId, reference: record.reference },
-      },
-    },
-  });
-}
-
 async function deliver(record, outcome, replayBody = null) {
   if (record.provider === 'cryptomus') {
     const status = outcome === 'paid' ? 'paid' : 'cancel';
@@ -500,47 +281,41 @@ async function deliver(record, outcome, replayBody = null) {
     return { status: response.status, text };
   }
 
-  const isStripe = record.provider === 'stripe';
-  // A saved-card charge is an intent, and intents have their own event names.
+  /*
+   * Stripe, which is the only other provider there is.
+   *
+   * A saved-card charge is an INTENT, and intents have their own event names -
+   * a fake that emitted a session event for one would hide the whole reason
+   * the webhook router has two branches.
+   */
   const isIntent = record.kind === 'intent';
-  const type = isStripe
-    ? isIntent
-      ? outcome === 'paid'
-        ? 'payment_intent.succeeded'
-        : 'payment_intent.payment_failed'
-      : outcome === 'paid'
-        ? 'checkout.session.completed'
-        : 'checkout.session.expired'
+  const type = isIntent
+    ? outcome === 'paid'
+      ? 'payment_intent.succeeded'
+      : 'payment_intent.payment_failed'
     : outcome === 'paid'
-      ? 'charge:confirmed'
-      : 'charge:expired';
+      ? 'checkout.session.completed'
+      : 'checkout.session.expired';
 
   const body =
-    replayBody ??
-    (isStripe
-      ? isIntent
-        ? stripeIntentEvent(record, type)
-        : stripeEvent(record, type)
-      : coinbaseEvent(record, type));
+    replayBody ?? (isIntent ? stripeIntentEvent(record, type) : stripeEvent(record, type));
   record.lastBody = body;
-  const headers = { 'content-type': 'application/json' };
 
-  if (isStripe) {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = crypto
-      .createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET || '')
-      .update(`${timestamp}.${body}`)
-      .digest('hex');
-    headers['stripe-signature'] = `t=${timestamp},v1=${signature}`;
-  } else {
-    headers['x-cc-webhook-signature'] = crypto
-      .createHmac('sha256', process.env.COINBASE_COMMERCE_WEBHOOK_SECRET || '')
-      .update(body)
-      .digest('hex');
-  }
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = crypto
+    .createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET || '')
+    .update(`${timestamp}.${body}`)
+    .digest('hex');
 
-  const url = `${BACKEND}/api/payments/webhook/${isStripe ? 'stripe' : 'coinbase'}`;
-  const response = await fetch(url, { method: 'POST', headers, body });
+  const url = `${BACKEND}/api/payments/webhook/stripe`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'stripe-signature': `t=${timestamp},v1=${signature}`,
+    },
+    body,
+  });
   const text = await response.text();
   ledger.webhooks.push({ url, status: response.status, body: text, type });
   return { status: response.status, text };
@@ -573,65 +348,6 @@ http
       return;
     }
 
-    /*
-     * `POST /chain/send?asset=..&to=..&amount=..&depth=..`
-     *
-     * How a test says "somebody just sent coin". There is no other way to do
-     * it: this machine cannot reach a chain, so the only transfers that exist
-     * are the ones a test announces.
-     */
-    /*
-     * `POST /chain/advance?chain=ethereum&blocks=30` - bury what is on it.
-     * `POST /chain/sweep?chain=ethereum`             - run one watcher pass.
-     *
-     * The sweep trigger exists because the watcher's real interval is thirty
-     * seconds and a walkthrough that waited for it twice would take a minute
-     * to prove something that happens instantly. It calls the SAME function
-     * the timer calls - nothing about the settlement path is bypassed, only
-     * the waiting.
-     */
-    if (action === 'chain' && (id === 'advance' || id === 'sweep')) {
-      const query = new URL(req.url, 'http://127.0.0.1').searchParams;
-      const chain = query.get('chain') ?? 'ethereum';
-      try {
-        if (id === 'advance') {
-          advanceChain(chain, Number.parseInt(query.get('blocks') ?? '1', 10));
-          res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ chain, tip: tipFor(chain) }));
-          return;
-        }
-        const credited = await watcher.sweepChain(chain);
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ chain, credited }));
-      } catch (error) {
-        res.writeHead(500, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
-      }
-      return;
-    }
-
-    if (action === 'chain') {
-      const query = new URL(req.url, 'http://127.0.0.1').searchParams;
-      try {
-        const sent = announceTransfer({
-          asset: query.get('asset'),
-          to: query.get('to'),
-          amountAtomic: query.get('amount'),
-          depth: Number.parseInt(query.get('depth') ?? '0', 10),
-        });
-        const blocks = Number.parseInt(query.get('advance') ?? '0', 10);
-        if (Number.isFinite(blocks) && blocks > 0) {
-          advanceChain(ASSETS[query.get('asset')].chain, blocks);
-        }
-        console.log(`[fake-provider] ${query.get('asset')} ${query.get('amount')} -> ${sent.txid}`);
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(sent));
-      } catch (error) {
-        res.writeHead(400, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
-      }
-      return;
-    }
     if (!record) {
       res.writeHead(404, { 'content-type': 'text/plain' });
       res.end('no such checkout');
@@ -685,4 +401,4 @@ http
     console.log(`[fake-provider] listening on http://127.0.0.1:${FAKE_PORT}`);
   });
 
-module.exports = { ledger, announceTransfer, advanceChain };
+module.exports = { ledger };

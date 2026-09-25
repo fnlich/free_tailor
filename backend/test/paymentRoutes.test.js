@@ -29,16 +29,14 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     process.env.STRIPE_SECRET_KEY = 'sk_test_key';
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
     process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
-    process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
-    process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
-    delete process.env.CRYPTOMUS_MERCHANT_ID;
-    delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
+    process.env.CRYPTOMUS_MERCHANT_ID = 'merchant-uuid';
+    process.env.CRYPTOMUS_PAYMENT_API_KEY = 'payment-api-key';
   } else {
     delete process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_WEBHOOK_SECRET;
     delete process.env.STRIPE_PUBLISHABLE_KEY;
-    delete process.env.COINBASE_COMMERCE_API_KEY;
-    delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
+    delete process.env.CRYPTOMUS_MERCHANT_ID;
+    delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   }
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
 
@@ -71,10 +69,14 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     created.push(input);
     return { id: `cs_test_${created.length}`, client_secret: `cs_test_${created.length}_secret` };
   };
-  const coinbase = loadFresh('../dist/integrations/coinbaseCommerce');
-  coinbase.createCharge = async (input) => {
+  const cryptomus = loadFresh('../dist/integrations/cryptomus');
+  cryptomus.createInvoice = async (input) => {
     created.push(input);
-    return { id: 'ch_1', code: `CODE${created.length}`, hosted_url: 'https://commerce.example/1' };
+    return {
+      uuid: `inv-${created.length}`,
+      order_id: input.paymentId,
+      url: `https://pay.cryptomus.com/inv-${created.length}`,
+    };
   };
 
   loadFresh('../dist/services/payments/pricing');

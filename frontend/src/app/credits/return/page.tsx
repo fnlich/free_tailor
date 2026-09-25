@@ -3,14 +3,13 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import ChainDepositCard, { ExactAmountNote } from '@/components/credits/ChainDepositCard';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   formatAmount,
   isPaymentPending,
   paymentsApi,
   STATE_LABELS,
   STATE_STYLES,
-  type ChainInvoiceView,
   type Payment,
 } from '@/lib/payments';
 
@@ -27,24 +26,15 @@ const CARD =
  * So it polls the payment until the server says it was paid.
  *
  * Usually that is over before the redirect finishes. For crypto it can be
- * minutes, because a chain payment has to confirm - which is why the waiting
- * copy says so rather than spinning silently.
+ * minutes, because the network has to confirm the transfer - which is why the
+ * waiting copy says so rather than spinning silently.
  */
 function ReturnBody() {
   const search = useSearchParams();
   const paymentId = search?.get('payment') ?? '';
+  const { refresh } = useAuth();
 
   const [payment, setPayment] = useState<Payment | null>(null);
-  /*
-   * Kept, where it used to be thrown away.
-   *
-   * `paymentsApi.get` has always returned the invoice beside the payment and
-   * this page destructured only the payment - so the one route a buyer can
-   * navigate to for a waiting crypto order showed a dollar figure and nothing
-   * they could act on. The address and the exact amount existed solely inside
-   * the purchase modal, and closing it lost them for good.
-   */
-  const [invoice, setInvoice] = useState<ChainInvoiceView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [waitedTooLong, setWaitedTooLong] = useState(false);
@@ -65,15 +55,29 @@ function ReturnBody() {
       const response = await paymentsApi.get(paymentId);
       if (token !== latestRequest.current) return;
       setPayment(response.payment);
-      setInvoice(response.invoice ?? null);
       setError('');
+      /*
+       * Tell the rest of the app the balance moved.
+       *
+       * Nothing else has any reason to re-read the account: the webhook that
+       * credited it is server-to-server and the browser never saw it, and
+       * client-side navigation away from here does not help because the auth
+       * context fetches on mount and the root layout never unmounts. Without
+       * this the page says "credits added" while the top-bar pill, the balance
+       * panel and the credit history all still show the pre-purchase figure
+       * until a full reload.
+       *
+       * `isPaymentPending` goes false on this state, so the poll below stops
+       * right after and this fires once.
+       */
+      if (response.payment.state === 'paid') void refresh();
     } catch (err) {
       if (token !== latestRequest.current) return;
       setError(err instanceof Error ? err.message : 'Could not find that payment.');
     } finally {
       if (token === latestRequest.current) setLoading(false);
     }
-  }, [paymentId]);
+  }, [paymentId, refresh]);
 
   useEffect(() => {
     void load();
@@ -155,24 +159,6 @@ function ReturnBody() {
           <div className="mt-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
             <p className="font-semibold">Waiting for the payment to be confirmed.</p>
 
-            {/*
-              For a coin payment, what they still have to DO - not just that we
-              are waiting. Shown while the invoice can still be paid; once it
-              is credited or held there is nothing to send and the card would
-              be an instruction to make a second payment.
-            */}
-            {invoice && (invoice.state === 'waiting' || invoice.state === 'seen') && (
-              <div className="mt-4 space-y-3 text-left">
-                <ChainDepositCard invoice={invoice} reference={payment.reference} />
-                <ExactAmountNote />
-                {invoice.state === 'seen' && (
-                  <p className="text-xs text-subtle">
-                    {invoice.paid} {invoice.symbol} has arrived and is confirming &mdash;{' '}
-                    {invoice.confirmations} of {invoice.confirmationsNeeded}. Nothing more to send.
-                  </p>
-                )}
-              </div>
-            )}
             <p className="mt-1">
               {/*
                 Careful not to promise. Landing here proves only that a browser
@@ -183,7 +169,7 @@ function ReturnBody() {
                 below says what to do when it stays that way.
               */}
               {payment.method === 'crypto'
-                ? 'A chain payment has to confirm, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
+                ? 'A crypto payment has to be confirmed by the network, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
                 : 'This usually takes a second or two. If the payment went through, your credits will be added even if you close this page.'}
             </p>
             {waitedTooLong && (

@@ -5,26 +5,31 @@ const express = require('express');
 const { loadFresh, useTempStorage, useAdminEmails, writeSettingRaw } = require('./helpers');
 
 /**
- * Which provider a NEW crypto checkout gets, and what an old one still does.
+ * The one crypto path, and what became of the two it replaced.
  *
- * Three ways of taking crypto exist in this codebase at once - Cryptomus, the
- * on-chain watcher, and Coinbase Commerce - and only the first is offered. The
- * other two are retired rather than removed, because an invoice quoted
- * yesterday is still out there and a row paid last month still has to read.
+ * There were three at once for a while: Cryptomus, the on-chain watcher, and
+ * Coinbase Commerce. The other two have been deleted - nothing was in flight
+ * through either, so there was nothing left for them to settle - and these
+ * tests are what says so out loud rather than leaving it to a reader to infer
+ * from an absence.
  *
- * So the rule is one line, and these tests are that line from both sides:
+ * Two claims, and the second is the one worth writing tests for:
  *
- *   Cryptomus when it is configured, otherwise on-chain, otherwise Coinbase.
+ *  1. with Cryptomus configured, a crypto checkout opens a hosted invoice;
+ *  2. with it NOT configured, crypto is refused - it does not quietly fall
+ *     through to a provider that no longer exists, and `CHAIN_ASSETS` or
+ *     `COINBASE_COMMERCE_*` left behind in somebody's `.env` do not bring one
+ *     back. That is the shape a real installation is in the day this deploys.
  *
- * The second half is the one worth writing tests for. "Nothing changed for an
- * installation that did not opt in" is the claim that makes this safe to ship
- * before the machinery it replaces is deleted, and it is a claim about code
- * that is NOT exercised by any test of the new path.
+ * And a third, about the past rather than the present: a payment ROW that was
+ * made through one of the deleted paths still reads and still refunds. Its
+ * provider is still in the union, and deleting the code that created it must
+ * not have made it unreadable.
  */
 
 const PRICE_CENTS = 50;
 
-async function serve({ cryptomus = true, chain = false, coinbase = false } = {}) {
+async function serve({ cryptomus = true, legacyEnv = false } = {}) {
   const { dbDir } = useTempStorage(`cryptomus-checkout-${Math.random().toString(36).slice(2)}`);
   useAdminEmails('boss@example.com');
 
@@ -40,17 +45,22 @@ async function serve({ cryptomus = true, chain = false, coinbase = false } = {})
     delete process.env.CRYPTOMUS_MERCHANT_ID;
     delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   }
-  if (coinbase) {
+  /*
+   * The variables of the two deleted paths, set or not.
+   *
+   * `legacyEnv` is not leftover scaffolding: it is the state of a real
+   * installation's `.env` the day this ships, and the thing worth proving is
+   * that these now do NOTHING. A fallback that half survived would be a Crypto
+   * button with nothing behind it.
+   */
+  if (legacyEnv) {
     process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
     process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
-  } else {
-    delete process.env.COINBASE_COMMERCE_API_KEY;
-    delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
-  }
-  if (chain) {
     process.env.CHAIN_ASSETS = 'ethereum:USDT';
     process.env.CHAIN_EVM_ADDRESS = '0x1111111111111111111111111111111111111111';
   } else {
+    delete process.env.COINBASE_COMMERCE_API_KEY;
+    delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
     delete process.env.CHAIN_ASSETS;
     delete process.env.CHAIN_EVM_ADDRESS;
   }
@@ -75,13 +85,7 @@ async function serve({ cryptomus = true, chain = false, coinbase = false } = {})
   const stripe = loadFresh('../dist/integrations/stripe');
   stripe.createCheckoutSession = async () => ({ id: 'cs_1', client_secret: 'cs_1_secret' });
 
-  /*
-   * All three provider seams replaced, including the two that should never be
-   * called. A test that only stubs the expected one proves nothing when the
-   * precedence is wrong: the real call would just fail, and "it threw" is not
-   * "it chose the other provider".
-   */
-  const calls = { cryptomus: [], coinbase: [] };
+  const calls = { cryptomus: [] };
   const cryptomusModule = loadFresh('../dist/integrations/cryptomus');
   cryptomusModule.createInvoice = async (input) => {
     calls.cryptomus.push(input);
@@ -90,11 +94,6 @@ async function serve({ cryptomus = true, chain = false, coinbase = false } = {})
       order_id: input.paymentId,
       url: `https://pay.cryptomus.com/inv-${calls.cryptomus.length}`,
     };
-  };
-  const coinbaseModule = loadFresh('../dist/integrations/coinbaseCommerce');
-  coinbaseModule.createCharge = async (input) => {
-    calls.coinbase.push(input);
-    return { id: 'ch_1', code: 'CODE1', hosted_url: 'https://commerce.example/1' };
   };
 
   loadFresh('../dist/services/payments/pricing');
@@ -125,6 +124,7 @@ async function serve({ cryptomus = true, chain = false, coinbase = false } = {})
   return {
     calls,
     payments,
+    alice,
     close: () => server.close(),
     call,
     checkout: (body) => call('/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
@@ -141,13 +141,13 @@ test('a crypto checkout opens a Cryptomus invoice and sends the buyer to it', as
     const body = await response.json();
     assert.equal(response.status, 201, JSON.stringify(body));
 
-    // The redirect shape: a URL, no client secret. Exactly what the hosted
-    // branch of CryptoPanel already renders, which is why it needed no work.
+    // The redirect shape: a URL, no client secret, and no deposit address -
+    // the buyer pays on Cryptomus's page, not on one of ours.
     assert.equal(body.redirectUrl, 'https://pay.cryptomus.com/inv-1');
     assert.equal(body.clientSecret ?? '', '');
+    assert.equal(body.invoice, undefined);
 
     assert.equal(server.calls.cryptomus.length, 1);
-    assert.equal(server.calls.coinbase.length, 0);
     // $50 for 100 credits at 50c, and the invoice is priced from settings.
     assert.equal(server.calls.cryptomus[0].amountCents, 5_000);
 
@@ -160,113 +160,131 @@ test('a crypto checkout opens a Cryptomus invoice and sends the buyer to it', as
   }
 });
 
-test('Cryptomus wins over both of the paths it replaces', async () => {
-  const server = await serve({ cryptomus: true, chain: true, coinbase: true });
-  try {
-    const methods = await server.methods();
-    const crypto = methods.methods.find((entry) => entry.method === 'crypto');
-    assert.equal(crypto.provider, 'cryptomus');
-    assert.equal(crypto.available, true);
-
-    assert.equal((await server.checkout({ method: 'crypto', credits: 100 })).status, 201);
-    assert.equal(server.calls.cryptomus.length, 1);
-    assert.equal(server.calls.coinbase.length, 0);
-  } finally {
-    server.close();
-  }
-});
-
-test('a coin chosen in a stale tab is ignored rather than refused', async () => {
-  /*
-   * A buyer who had the dialog open across the switch still has coin buttons
-   * on screen, and pressing one means "crypto" - not "fail my purchase". The
-   * asset is still VALIDATED, because an unknown one would otherwise reach the
-   * pricing authority; it is simply not acted on.
-   */
-  const server = await serve({ chain: true });
-  try {
-    const good = await server.checkout({ method: 'crypto', credits: 100, asset: 'ethereum:USDT' });
-    assert.equal(good.status, 201);
-    assert.equal(server.calls.cryptomus.length, 1);
-
-    const invented = await server.checkout({ method: 'crypto', credits: 100, asset: 'ethereum:DOGE' });
-    assert.equal(invented.status, 400);
-  } finally {
-    server.close();
-  }
-});
-
 test('the buy page offers one crypto button, not a row per coin', async () => {
-  const server = await serve({ chain: true });
+  const server = await serve({ legacyEnv: true });
   try {
     const { targets } = await server.methods();
     const crypto = targets.filter((target) => target.method === 'crypto');
     /*
-     * One row, and it is the method-level one. Coin rows would offer a choice
-     * Cryptomus never sees: it asks on its own page, from its own list, and a
-     * buyer who picked USDT-on-TRON here would simply not be given it.
+     * One row, even with CHAIN_ASSETS still set.
+     *
+     * There was a row per coin while this application chose the token and the
+     * network itself. Cryptomus asks on its own page, from its own list, so a
+     * coin picked here would be a choice nothing could honour.
      */
     assert.equal(crypto.length, 1);
     assert.equal(crypto[0].id, 'crypto');
     assert.equal(crypto[0].mark, 'crypto');
     assert.equal(crypto[0].available, true);
+    // And no coin fields ride along on it any more.
+    assert.equal(crypto[0].asset, undefined);
+    assert.equal(crypto[0].chain, undefined);
   } finally {
     server.close();
   }
 });
 
-test('with nothing configured, the reason names Cryptomus first', async () => {
+test('a coin named by a stale tab is ignored rather than refused', async () => {
+  /*
+   * A buyer who had the dialog open across the switch still has coin buttons
+   * on screen, and pressing one meant "crypto" - not "fail my purchase".
+   * Nothing validates a coin any more because nothing could honour one, so
+   * the field is simply not read: not refused, and not acted on either.
+   */
+  const server = await serve();
+  try {
+    for (const asset of ['ethereum:USDT', 'ethereum:DOGE', 'card', '../card']) {
+      const response = await server.checkout({ method: 'crypto', credits: 100, asset });
+      assert.equal(response.status, 201, `${asset}: ${JSON.stringify(await response.json())}`);
+    }
+    assert.equal(server.calls.cryptomus.length, 4);
+    // Priced off the crypto row every time - an asset cannot reach the pricing
+    // authority, which is what the old closed list was guarding.
+    for (const call of server.calls.cryptomus) {
+      assert.equal(call.amountCents, 5_000);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+/* --------------------------------- with nothing configured to take crypto */
+
+test('crypto is refused, not quietly handed to a provider that is gone', async () => {
   const server = await serve({ cryptomus: false });
   try {
     const methods = await server.methods();
     const crypto = methods.methods.find((entry) => entry.method === 'crypto');
     assert.equal(crypto.available, false);
-    // The operator reading this is setting up today, so the variables they
-    // should go and set come before the two that are on their way out.
-    assert.match(crypto.reason, /^Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY/);
-    assert.match(crypto.reason, /retired/);
+    assert.equal(crypto.provider, 'cryptomus', 'there is no other provider to name');
 
     const refused = await server.checkout({ method: 'crypto', credits: 100 });
     assert.equal(refused.status, 503);
-  } finally {
-    server.close();
-  }
-});
-
-/* --------------------------------------- and nothing changed for anyone else */
-
-test('an installation still on Coinbase keeps getting Coinbase', async () => {
-  const server = await serve({ cryptomus: false, coinbase: true });
-  try {
-    const methods = await server.methods();
-    assert.equal(methods.methods.find((entry) => entry.method === 'crypto').provider, 'coinbase');
-
-    const response = await server.checkout({ method: 'crypto', credits: 100 });
-    assert.equal(response.status, 201);
-    assert.equal(server.calls.coinbase.length, 1);
     assert.equal(server.calls.cryptomus.length, 0);
-    assert.equal((await response.json()).redirectUrl, 'https://commerce.example/1');
   } finally {
     server.close();
   }
 });
 
-test('an installation still on-chain keeps its coin rows and its coin question', async () => {
-  const server = await serve({ cryptomus: false, chain: true });
+test('and the deleted paths cannot be brought back by their old variables', async () => {
+  /*
+   * The state a real installation is in the day this deploys: `CHAIN_ASSETS`,
+   * a wallet address and a Coinbase key pair all still sitting in `.env`.
+   *
+   * Every one of them is inert. Half a fallback would be worse than none - a
+   * Crypto button that opens a checkout nothing can settle takes somebody's
+   * money and grants nothing.
+   */
+  const server = await serve({ cryptomus: false, legacyEnv: true });
   try {
     const methods = await server.methods();
-    assert.equal(methods.methods.find((entry) => entry.method === 'crypto').provider, 'chain');
+    const crypto = methods.methods.find((entry) => entry.method === 'crypto');
+    assert.equal(crypto.available, false, 'an old variable revived a deleted path');
+    assert.equal((await server.checkout({ method: 'crypto', credits: 100 })).status, 503);
 
-    const { targets } = await server.methods();
-    const coins = targets.filter((target) => target.method === 'crypto');
-    assert.equal(coins.length, 1);
-    assert.equal(coins[0].id, 'ethereum:USDT', 'the per-coin row, not the method row');
+    // And the operator is told which variables are dead rather than being left
+    // to work out what broke the ones they had configured.
+    assert.match(crypto.reason, /^Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY/);
+    assert.match(crypto.reason, /CHAIN_\* and COINBASE_COMMERCE_\* settings no longer do anything/);
 
-    // And the coin is still compulsory there, because an on-chain payment is
-    // one token at one address and there is no default worth guessing.
-    const noCoin = await server.checkout({ method: 'crypto', credits: 100 });
-    assert.equal(noCoin.status, 400);
-    assert.match((await noCoin.json()).error, /which coin/i);
+    // Cards are untouched by any of this.
+    assert.equal(methods.methods.find((entry) => entry.method === 'card').available, true);
+  } finally {
+    server.close();
+  }
+});
+
+/* ------------------------------------------- and what those paths left behind */
+
+test('a payment made on-chain still reads back after the watcher was deleted', async () => {
+  /*
+   * The whole reason `chain` and `coinbase` stay in `PaymentProvider`.
+   *
+   * A row does not stop having been paid on-chain because the code that
+   * watched the chain was deleted. Constructed directly, because there is no
+   * longer any way to create one - which is exactly the point.
+   */
+  const server = await serve();
+  try {
+    for (const provider of ['chain', 'coinbase']) {
+      const old = server.payments.createPayment({
+        userId: server.alice.id,
+        method: 'crypto',
+        provider,
+        credits: 60,
+        amountCents: 3_000,
+        currency: 'usd',
+        unitPriceCents: 50,
+      });
+
+      const response = await server.call(`/api/payments/${old.id}`);
+      assert.equal(response.status, 200, provider);
+      const body = await response.json();
+      assert.equal(body.payment.provider, provider);
+      assert.equal(body.payment.credits, 60);
+      // No invoice rides along any more, and its absence is not an error.
+      assert.equal(body.invoice, undefined);
+    }
   } finally {
     server.close();
   }

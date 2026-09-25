@@ -185,13 +185,14 @@ settlement arriving later cannot bring it back.
 |---|---|---|
 | Card | Stripe, embedded | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | Crypto | **Cryptomus**, hosted invoice page | `CRYPTOMUS_MERCHANT_ID`, `CRYPTOMUS_PAYMENT_API_KEY` |
-| Crypto | *retired* - your own wallet, watched by this server | `CHAIN_ASSETS` and an address per chain |
-| Crypto | *retired* - Coinbase Commerce | `COINBASE_COMMERCE_API_KEY`, `COINBASE_COMMERCE_WEBHOOK_SECRET` |
 
-The two retired rows still work: payments made through them read, settle and
-refund exactly as before, and an installation running one of them keeps running
-it. They are simply not what a **new** purchase gets once Cryptomus is
-configured, and they will be removed. Do not set one up from scratch.
+Crypto was taken two other ways before this one: into a wallet you held the
+keys to, watched by this server across four blockchains, and through Coinbase
+Commerce. Both have been **deleted**. Payments already made through either
+still read, still render and still refund - `chain` and `coinbase` remain in
+the provider union and an old row does not stop having been paid because the
+code that took it is gone - but `CHAIN_*` and `COINBASE_COMMERCE_*` no longer
+do anything, and no new payment can be started through either.
 
 A method is offered **only when every one of its keys is set**. A secret key
 without a webhook secret is an install that can take money and never hear that
@@ -330,72 +331,6 @@ secret is different from the test one), and read
 `backend/test/e2e/README.md` - it lists the handful of things no script here can
 prove and that have to be checked by hand against real money.
 
-#### Taking crypto in your own wallet (retired)
-
-> Kept because installations are running it and invoices opened this way are
-> still out there waiting to be paid. New checkouts go to Cryptomus whenever
-> `CRYPTOMUS_*` is set, and this machinery will be removed once nothing is in
-> flight. Read this section to operate an existing install, not to start one.
-
-The non-custodial path: coin arrives at an address you hold the
-keys to, no processor is involved, and nobody takes a percentage. What that
-costs is that this server has to watch the chains itself, and that the amounts
-have to be exact.
-
-Six assets can be watched: `ethereum:USDT`, `ethereum:USDC`, `bsc:USDT`,
-`bsc:USDC`, `tron:USDT` and `bitcoin:BTC`. Set `CHAIN_ASSETS` to the ones you
-want, give each chain a receiving address, and restart:
-
-```bash
-CHAIN_ASSETS=ethereum:USDT,bitcoin:BTC
-CHAIN_EVM_ADDRESS=0x...        # Ethereum and BNB Chain share one
-CHAIN_BTC_ADDRESS=bc1...
-TRONGRID_API_KEY=...           # free, and required before TRON is offered
-```
-
-Addresses are validated at boot - EIP-55 capitalisation, base58check, bech32
-and bech32m - so a mistyped one fails loudly rather than quietly collecting
-payments nobody is watching for. An asset you list that cannot be served is
-reported by name at startup and shown unavailable on the buy page, because a
-misconfiguration you cannot see is the expensive kind.
-
-**How a payment is recognised, and why the amount is exact.** Every buyer sends
-to the same address, so the amount is the only thing telling two payments
-apart. A buyer is quoted a precise figure - `49.982431 USDT`, not `50` - and
-that figure is reserved for them until they pay or the quote expires. If
-somebody else is already paying that exact amount, the second buyer is asked to
-try again rather than being given a near-identical figure: two open orders one
-atomic unit apart are two orders that a wrong-amount payment could equally have
-meant, and this server will not guess between them.
-
-When money arrives that does not match exactly, it is credited in proportion
-**only if exactly one open order is within 2% of it**. Otherwise it is held and
-listed under Admin → Payments for you to look at. Nothing is ever credited to a
-guess and nothing is ever written off.
-
-**Two natives are deliberately missing.** `ethereum:ETH` and `bsc:BNB` are real
-asset ids this build knows and will not watch. A token transfer announces
-itself with a log that can be asked for precisely; a native transfer does not,
-so finding one means pulling whole block bodies - some three hundred an hour on
-Ethereum, each a large document - which is the first thing a free public node
-throttles. Bitcoin is native too and is fine, because its APIs index an address
-for you.
-
-**Expect slower crediting than a processor gives.** The default endpoints are
-free public ones, and they lag, rate-limit and occasionally answer from a stale
-fork. The watcher tries each endpoint in a list before giving up on a tick, and
-a tick that fails changes nothing - "we could not look" and "nothing arrived"
-are different facts, and only the clock ever expires an order.
-
-**Before you offer any of this to a real buyer, send one real payment per
-asset**, of the smallest amount your limits allow. No reader in this repository
-has ever contacted a live chain - the machine it was written on cannot reach
-one - so every response shape here is pinned by tests against recorded bodies
-and confirmed by nothing else. The decimals in particular are keyed on
-`(chain, contract)` because USDT is 6 decimals on Ethereum and **18** on BNB
-Chain, a factor of a trillion on a token with the same ticker; getting one
-wrong means a customer's money arrives and is never credited.
-
 **The card form is on our own page**, not a redirect to Stripe: the Checkout
 Session is created with `ui_mode: 'elements'` and the buy page mounts Stripe's
 Payment Element with the `client_secret` it returns. The property that made the
@@ -405,19 +340,18 @@ details go straight to them; what this app holds is a client secret, which
 identifies a session and authorises nothing on its own.
 
 The session still carries a `return_url`, because some payment methods leave the
-page whatever we do: 3-D Secure and a stablecoin payment both hand the customer
-to another domain and have to land somewhere coming back. That somewhere is the
-page that waits for the webhook.
+page whatever we do: 3-D Secure hands the customer to their bank's domain and
+they have to land somewhere coming back. That somewhere is the page that waits
+for the webhook, and it is where a crypto buyer returns from Cryptomus too.
 
 **Nothing the browser does adds credits.** Arriving at the return page is a GET
 anybody can visit, so crediting there would be a free-credits button with an
 inconvenient URL; confirming in the payment form does not decide anything
 either. Only the server credits, and it has exactly two ways to learn that
-money moved: a **webhook it has verified** (a card, or Coinbase Commerce), or
-its **own read of a chain** (a coin payment into your own wallet, where there
-is no processor to send a webhook at all - the watcher sees the transfer and
-credits it). The return page polls the payment until one of those has happened,
-which is a second for a card and can be minutes for a chain.
+money moved: a **webhook it has verified**, from Stripe or from Cryptomus. The
+return page polls the payment until one has arrived, which is a second or two
+for a card and can be minutes for crypto, because the network has to confirm
+the transfer before Cryptomus will call it paid.
 
 The card integration is pinned to Stripe API version `2026-03-25.dahlia` and
 sends it on every request. `ui_mode: 'elements'` exists only from that version -
@@ -471,7 +405,7 @@ credits were actually reversed and how many had already gone. A refund claims
 the payment - `paid` to `refunding` - before it calls the provider, so two tabs
 or two administrators cannot both report an outcome for one refund; the second
 is refused rather than told that nothing could be reversed. Crypto cannot be
-refunded automatically - a chain payment can only be sent back, not pulled - and
+refunded automatically - crypto can only be sent back, not pulled - and
 the app says so rather than pretending.
 
 ### Getting around
@@ -1120,17 +1054,6 @@ unique across the install, which settles all of it in one segment.
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
 | `CRYPTOMUS_MERCHANT_ID` / `CRYPTOMUS_PAYMENT_API_KEY` | Crypto through Cryptomus, on its hosted invoice page. Both are needed or the method is not offered. The payment API key does double duty: it signs outgoing requests **and** is what every incoming callback is verified against, so there is no separate webhook secret. The endpoint is `/api/payments/webhook/cryptomus` |
 | `CRYPTOMUS_CALLBACK_URL` | Optional. Sends the callback address per invoice instead of relying on the one set in the Cryptomus dashboard. Must be this server's API, reachable from the internet. Left empty the field is omitted entirely - sending it blank would override the dashboard with nothing |
-| `CHAIN_ASSETS` | *Retired.* Which coins to take, comma-separated, from `ethereum:USDT`, `ethereum:USDC`, `bsc:USDT`, `bsc:USDC`, `tron:USDT`, `bitcoin:BTC`. Anything else - including `ethereum:ETH` and `bsc:BNB`, which need whole block bodies scanned - is reported as a problem rather than ignored |
-| `CHAIN_EVM_ADDRESS` / `CHAIN_TRON_ADDRESS` / `CHAIN_BTC_ADDRESS` | Where the coin goes. One per chain; Ethereum and BNB Chain share the EVM one. Validated at boot, so a mistyped address fails there instead of collecting payments nobody watches for. Use an address you hold the keys to, not an exchange deposit address |
-| `TRONGRID_API_KEY` | Free, and TRON is not offered without it: the keyless tier rate-limits to something one busy minute exhausts, and its failure is a watcher that quietly stops looking |
-| `COINGECKO_DEMO_API_KEY` | Optional. Only Bitcoin among the six needs a price at all - the stablecoins are their own rate - and the free tier works without a key |
-| `CHAIN_*_RPC_URLS` / `CHAIN_*_API_URLS` | Endpoints, tried in order. The defaults are free public ones and behave like it. BNB Chain needs two lists because its nodes split by method: one set refuses `eth_getLogs`, the other refuses old receipts |
-| `CHAIN_QUOTE_TTL_SECONDS` | How long a quoted amount is honoured, and the buyer's countdown. 1200 (20 minutes) |
-| `CHAIN_MONITOR_WINDOW_HOURS` / `CHAIN_CREDIT_LATE_PAYMENTS` | How long the watcher keeps looking after the quote expires. Deliberately longer: a transfer sent in the last second still has to confirm, and Bitcoin's two confirmations are twenty minutes on their own |
-| `CHAIN_RATE_SPREAD_PERCENT` | Protects against the price moving between the quote and the transfer landing. **Not** a fee - that is `paymentLimits` under Admin → Payments |
-| `CHAIN_TOLERANCE_BPS` | How far from the quoted amount still counts as the same order. Widening it does not make more payments credit: money moves only when exactly ONE open order is inside the band, so a wider band makes holding more likely, not less |
-| `CHAIN_MAX_OPEN_INVOICES_PER_USER` | How many amounts one account may hold at once. Each takes a slot from a finite set |
-| `COINBASE_COMMERCE_API_KEY` / `COINBASE_COMMERCE_WEBHOOK_SECRET` | *Retired.* Crypto through Coinbase Commerce. Used only when neither `CRYPTOMUS_*` nor the `CHAIN_*` block is configured; payments already made through it keep working either way. The webhook endpoint is `/api/payments/webhook/coinbase` |
 | `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Defaults to the first `FRONTEND_URL` |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
@@ -1145,17 +1068,12 @@ See `.env.example` for the full `AI_CLI_*` list.
 
 | Symptom | Cause and fix |
 |---------|---------------|
+| Coin arrived on the retired on-chain path and was never credited | The watcher and the admin queue that showed these are gone, but the records are not. An unattributable transfer, or one that arrived against an order it could not be credited to, is still in the database: `SELECT * FROM chain_orphans WHERE resolved_at IS NULL;` and `SELECT * FROM chain_invoices WHERE state = 'held';` against your `DB_DIR`. Each row carries the transaction id, the amount and why it was held. Settle it by hand and adjust the balance from the accounts page - nothing in the app will surface it for you any more. |
 | The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and read the buy page's own reason under the greyed-out button: it names which key is missing. |
 | Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
 | A Cryptomus invoice was paid but nothing was credited | Read the backend log for that payment's reference. *"the provider reported N against M"* means the amount did not match what was quoted - the payment is deliberately left pending for a person rather than credited to a guess. *"already handled"* on every attempt means the callback was recorded before; the credits either landed or the row is not pending. Nothing at all means the callback never arrived: check the address set in the Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL`, points at **this server's API** - `/api/payments/webhook/cryptomus` - and not at the frontend. |
-| A crypto buyer sees a coin list on Cryptomus that does not match this app's buttons | Expected. With Cryptomus configured the buy page shows a single **Cryptocurrency** button on purpose, because the coin and the network are chosen on Cryptomus's page from Cryptomus's list. The per-coin buttons belong to the retired on-chain path and appear only when `CRYPTOMUS_*` is unset. |
-| The buy page offers no coins although `CHAIN_ASSETS` is set | Every asset was rejected, and the backend said which at startup - look for `[chain] ... is not available:` in its output. The usual causes are an address that fails its checksum (the message names the variable), a `tron:*` asset with no `TRONGRID_API_KEY`, and `ethereum:ETH` or `bsc:BNB`, which this build deliberately does not watch. The buy page shows the same reasons per coin. |
-| A crypto buyer is told *somebody is already paying that exact amount* | Working as intended, and it should be rare. Two open orders must never quote the same figure, because the amount is the only thing telling two payments apart - so the second buyer waits a moment or picks a different amount rather than being given a near-identical one. It happens most on a quiet installation where two people pick the same preset within twenty minutes. |
 | Every card payment suddenly asks the buyer to confirm with their bank | *Always ask the cardholder's bank to authenticate* is on under **Admin → Payments**. That is what it does - it asks on every payment rather than only when the provider's own rules call for it. Turn it off to go back to letting Stripe decide, and note that doing so also gives up the shift of chargeback liability to the issuing bank |
 | A saved card used to charge in one tap and now needs a confirmation | The same setting. A challenge needs somebody present, so a kept card can no longer be charged off-session - the exemption it earned when it was first authenticated is given up deliberately. There is no way to have both; it is the trade the switch exists to make |
-| Coin arrived but the buyer was not credited | Look under **Admin → Payments**; if it could not be matched it is in the *needs attention* list at the top with the transaction id. A payment is credited automatically only when it matches an open order exactly, or when exactly one open order is within `CHAIN_TOLERANCE_BPS` of it. Otherwise nothing moves - by design, because guessing would credit one buyer's coin to another buyer's order. Widening the band makes this *more* likely, not less. |
-| A chain shows `starting from block N` at every restart | The scan cursor is not being kept. It lives in `chain_cursors`, one row per chain, written in the same transaction as the invoices that height produced - so this means the table is missing or the database is being recreated, not that the watcher is confused. A first run on a new installation prints it exactly once, on purpose: transfers sent before that block were never watched for. |
-| The watcher logs `this sweep could not complete; it will run again` | A public endpoint refused, lagged or timed out. Not fatal and not a payment failure: the next tick tries the next endpoint in the list. "We could not look" and "nothing arrived" are deliberately different - only the clock ever expires an order. If it never stops, put your own node first in `CHAIN_ETH_RPC_URLS` and friends. |
 | `The payment form could not be loaded. No such checkout.session: 'cs_test_...'` | `STRIPE_PUBLISHABLE_KEY` and `STRIPE_SECRET_KEY` are not from the same Stripe account, or not from the same mode. The secret key created that session; the publishable key is what the browser asks Stripe about it, and Stripe answers "no such session" because it is looking in the other account. Re-copy BOTH from <https://dashboard.stripe.com/test/apikeys> in one visit, with the **Test mode** toggle in the position you mean, and restart the backend. Both halves must be `*_test_*` or both `*_live_*`. (A session also expires after 24 hours, so an old tab left open reports the same thing - reload the buy page first if that is possible.) |
 | `The payment form could not be loaded. Stripe's script did not load.` | Different failure, despite the similar wording: `js.stripe.com` never arrived. A script blocker, an offline moment or a corporate proxy will do it. Nothing was charged and no card was entered. This is also what a sandbox with no outbound network shows, which is why `backend/test/e2e/buy-credits.js` accepts it as a pass - it asserts the form mounts **or says plainly that it could not**, because a spinner with nothing said is the failure being designed out. |
 | A card payment says *Waiting for payment* for ever, but Stripe's dashboard shows it succeeded | The webhook is not arriving, and the webhook is the only thing in this application that adds credits. Locally: is `stripe listen --forward-to localhost:3001/api/payments/webhook/stripe` still running, and is `STRIPE_WEBHOOK_SECRET` the `whsec_...` **that command** printed? It is a different secret from the dashboard endpoint's. Deployed: open the endpoint in the Stripe dashboard and read its delivery attempts - they show the response this server gave. A 400 there means the signature did not verify, which is the wrong secret; a 404 means the URL is wrong. |

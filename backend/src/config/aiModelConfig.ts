@@ -297,9 +297,9 @@ export type PaymentTargetLimits = {
 /**
  * The defaults, which are the figures in the design this was built to.
  *
- * Card takes no fee and starts at $2.50; crypto starts at $50 because a chain
- * payment costs the buyer a network fee whatever we do, and a $2.50 purchase
- * that costs $4 to send is not a kindness.
+ * Card takes no fee and starts at $2.50; crypto starts at $50 because sending
+ * coin costs the buyer a network fee whatever we do, and a $2.50 purchase that
+ * costs $4 to send is not a kindness.
  */
 export const DEFAULT_PAYMENT_LIMITS: PaymentTargetLimits[] = [
   {

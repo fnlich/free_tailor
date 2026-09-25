@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m45s, 864 tests)
+npm test                       # backend node:test suite (~1m40s, 803 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -89,19 +89,6 @@ backend/src/
   routes/             # one file per /api/* area
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart)
-  services/payments/chain/
-                      # RETIRED non-custodial crypto. New checkouts go to
-                      #   Cryptomus (integrations/cryptomus.ts) whenever
-                      #   CRYPTOMUS_* is set; this is kept because invoices
-                      #   opened here are still out there, and goes once
-                      #   nothing is in flight. `rpc.ts` is the ONLY outbound
-                      #   seam (tests replace it by assignment); each reader
-                      #   under `readers/` exports a pure parser plus a
-                      #   fetcher, because this machine cannot reach a chain
-                      #   and a parser tangled up with its fetch could not be
-                      #   tested at all. Decimals come from config/chainAssets
-                      #   and nowhere else: USDT is 6 decimals on Ethereum and
-                      #   18 on BNB Chain.
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   static/             # seed prompts, skills, templates — defaults only
   test/               # node:test, ~70 files; fixtures/cli replays real streams
@@ -124,12 +111,20 @@ frontend/src/
 ```
 
 Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
-hosted invoice page. Nothing in this repository has ever called it - this
-machine cannot reach `api.cryptomus.com`, the same way it cannot reach a
-blockchain RPC - so the request shape is pinned by tests against a stubbed
-socket and the README says so out loud. Its webhook signature arrives INSIDE
-the JSON body, which inverts `paymentWebhooks.ts`'s "verify before reading"
-rule; that exception is confined to `verifyWebhookSign` and explained there.
+hosted invoice page, and that is the only crypto path. Nothing in this
+repository has ever called it - this machine cannot reach `api.cryptomus.com` -
+so the request shape is pinned by tests against a stubbed socket and the README
+says so out loud. Its webhook signature arrives INSIDE the JSON body, which
+inverts `paymentWebhooks.ts`'s "verify before reading" rule; that exception is
+confined to `verifyWebhookSign` and explained there.
+
+Two earlier crypto paths were deleted once nothing was in flight through them:
+a non-custodial watcher reading four blockchains, and Coinbase Commerce.
+**`'chain'` and `'coinbase'` stay in `PaymentProvider`** so their rows still
+read and still refund with the right advice, and `chain_invoices`,
+`chain_cursors` and `chain_orphans` are left in any database that has them -
+the `CREATE TABLE` statements are gone from `database/sqlite.ts`, the tables
+are not dropped.
 
 All dynamic data lives in SQLite. `backend/static` holds seeds only — a running
 install reads its prompts, skills and templates from the database.

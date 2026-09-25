@@ -111,8 +111,10 @@ function rowFor(rows: PaymentTargetLimits[], target?: QuoteTarget): PaymentTarge
    * one step from a request that can choose its own price, which is the thing
    * this module exists to make impossible.
    *
-   * `startCheckout` also refuses an asset this build does not know, so this is
-   * the second of two locks rather than the only one. It is here as well as
+   * This is the ONLY lock now. `startCheckout` used to refuse an asset this
+   * build did not know, before the coins went away and the request stopped
+   * carrying one at all - so a stored row keyed on a coin can still be
+   * resolved here, but nothing can ask for one by name. It is here as well as
    * there because this function is the pricing authority: anything that calls
    * it later, by any route, gets the same answer.
    */
