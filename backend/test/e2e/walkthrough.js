@@ -52,7 +52,7 @@ async function call(token, path, init = {}) {
 
 const stamp = Date.now().toString(36);
 
-/** The watcher's sweep answers before it has finished writing. */
+/** A signed callback is delivered and settled on a tick of its own. */
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {

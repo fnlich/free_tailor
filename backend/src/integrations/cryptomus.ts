@@ -4,7 +4,8 @@ import { timingSafeEquals } from './stripe';
 /**
  * Cryptomus, which is how this server takes crypto.
  *
- * The same shape as `stripe.ts` and the Coinbase module it replaces: open a
+ * The same shape as `stripe.ts`, and the shape the Coinbase module it
+ * replaced also had: open a
  * hosted invoice, hand the browser a URL, and wait for a signed webhook to say
  * it was paid. Everything that makes crypto hard - exchange rates, which coin,
  * confirmation depth, underpayments, dust - happens on Cryptomus's side of that
@@ -14,9 +15,9 @@ import { timingSafeEquals } from './stripe';
  * both are Cryptomus's design rather than a choice made here:
  *
  *  1. **One key does both jobs.** `CRYPTOMUS_PAYMENT_API_KEY` signs outbound
- *     requests AND verifies inbound webhooks. Stripe and Coinbase keep those
- *     separate, which is what lets an installation stop offering a method while
- *     still settling what is already out there. That lever does not exist here:
+ *     requests AND verifies inbound webhooks. Stripe keeps those separate,
+ *     which is what lets an installation stop offering a method while still
+ *     settling what is already out there. That lever does not exist here:
  *     see `canVerifyCryptomusWebhooks`.
  *
  *  2. **The webhook signature travels INSIDE the JSON body**, as a `sign`
@@ -93,12 +94,11 @@ export function isCryptomusConfigured(env: NodeJS.ProcessEnv = process.env): boo
  * Deliberately the same predicate as `isCryptomusConfigured`, and that is the
  * point worth reading.
  *
- * Stripe and Coinbase both split this, because judging a webhook needs only the
- * webhook secret: an installation that had stopped offering the method could
- * still settle the payments already in flight, and the webhook endpoint answers
- * 503 only when it genuinely cannot judge anything. Cryptomus signs webhooks
- * with the same key it authenticates requests with, so there is nothing to
- * split. It is a wrapper rather than a re-use of the other name so that the
+ * Stripe splits this, because judging a webhook needs only the webhook secret:
+ * an installation that had stopped offering the method could still settle the
+ * payments already in flight, and the webhook endpoint answers 503 only when it
+ * genuinely cannot judge anything. Cryptomus signs webhooks with the same key
+ * it authenticates requests with, so there is nothing to split. It is a wrapper rather than a re-use of the other name so that the
  * webhook route reads like its siblings and the asymmetry is stated once, here,
  * instead of being discovered at the call site.
  */

@@ -125,7 +125,13 @@ export const CoinEthereum = (p: MarkProps) => (
   </Coin>
 );
 
-/** Tether. Its network is named beside it in the UI, never inside the mark. */
+/**
+ * Tether, one of the three the crypto button's trio is drawn from.
+ *
+ * It had a row of its own once, with its network named beside it - the mark
+ * never carried the network, because a glyph cannot be read and getting it
+ * wrong loses the money.
+ */
 export const CoinTether = (p: MarkProps) => (
   <Coin {...p} fill="#26A17B" label="Tether">
     <path

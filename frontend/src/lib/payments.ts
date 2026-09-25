@@ -55,7 +55,7 @@ export type PaymentOptions = {
   maxCredits: number;
   currency: string;
   methods: MethodAvailability[];
-  /** Per method, and per coin. What the picker is built from. */
+  /** One per method. What the picker is built from. */
   targets: PaymentTarget[];
   /** Stripe's publishable key, served by the API. Empty when cards are off. */
   publishableKey: string;

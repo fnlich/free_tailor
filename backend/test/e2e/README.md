@@ -95,11 +95,11 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 50 claims over the three-step dialog, half of them through
-HTTP first because the browser half needs what they leave behind. Over HTTP:
-each method judged by its own bounds and presets that fall inside them; an
-`asset` from a stale tab ignored rather than refused, and unable to change the
-price; a purchase that asks to keep the card keeping it,
+`buy-credits.js` — 88 claims over the three-step dialog and the credits page,
+a third of them through HTTP first because the browser half needs what they
+leave behind. Over HTTP: each method judged by its own bounds and presets that
+fall inside them; an `asset` from a stale tab ignored rather than refused, and
+unable to change the price; a purchase that asks to keep the card keeping it,
 and one that does not, not - even for an account that already has a customer;
 a saved card that is the owner's alone to charge or delete, and answering 404
 to anybody else; and an off-session charge settling through

@@ -32,8 +32,10 @@ function Range({ targets, currency }: { targets: PaymentTarget[]; currency: stri
   /*
    * The widest range the section can actually serve.
    *
-   * Taken across the AVAILABLE targets only: a coin that is switched off has
-   * bounds of zero, and folding those in would advertise a $0.00 minimum.
+   * Taken across the AVAILABLE targets only, because an unavailable one has
+   * bounds of zero and folding those in would advertise a $0.00 minimum. Each
+   * section holds one row now, so it is that row's range or nothing - it was a
+   * genuine span back when a section could hold six coins with six floors.
    */
   const live = targets.filter((target) => target.available);
   if (live.length === 0) return null;

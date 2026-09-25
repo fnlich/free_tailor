@@ -155,10 +155,11 @@ export function returnBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * One thing a buyer can pay with, and what it may be paid in.
  *
- * A target is a method OR a single coin, because that is the granularity the
- * buyer chooses at: "card" is one button, and each asset is another. The
- * bounds and the presets travel with it so the page never has to work out
- * which limits apply - or, worse, work out a price.
+ * One per METHOD, which is the granularity the buyer chooses at: one card
+ * button and one crypto button. It was a method OR a single coin while an
+ * on-chain payment meant picking a token and a network here. The bounds and
+ * the presets travel with it so the page never has to work out which limits
+ * apply - or, worse, work out a price.
  */
 export type PaymentTarget = {
   id: string;
@@ -204,9 +205,12 @@ export type StartedCheckout = {
  * What the browser may ask for.
  *
  * `credits` is a COUNT and there is no amount here, which is the rule the
- * whole pricing module exists to enforce. `asset` names a coin so its own
- * limits apply; `cardId` charges a card this account has saved; `saveCard`
- * asks to keep the one about to be entered.
+ * whole pricing module exists to enforce. `cardId` charges a card this account
+ * has saved; `saveCard` asks to keep the one about to be entered.
+ *
+ * There was an `asset` too, naming a coin so its own limits applied. Nothing
+ * can honour one now, so it is not in the type and `startCheckout` does not
+ * read it - a stale tab that still sends one gets an ordinary crypto checkout.
  */
 export type CheckoutRequest = {
   method: unknown;

@@ -267,11 +267,11 @@ test('both halves are needed, and they are the same halves for webhooks', () => 
   /*
    * The asymmetry worth knowing about.
    *
-   * Stripe and Coinbase can verify a webhook with only the webhook secret, so
-   * an installation can stop OFFERING a method and still settle what is
-   * already out there. Cryptomus signs callbacks with the key it authenticates
-   * requests with, so there is no such state: unconfigure it and the endpoint
-   * starts answering 503 to money that has already been sent.
+   * Stripe can verify a webhook with only the webhook secret, so an
+   * installation can stop OFFERING cards and still settle what is already out
+   * there. Cryptomus signs callbacks with the key it authenticates requests
+   * with, so there is no such state: unconfigure it and the endpoint starts
+   * answering 503 to money that has already been sent.
    */
   assert.equal(cryptomus.canVerifyCryptomusWebhooks(both), true);
   assert.equal(cryptomus.canVerifyCryptomusWebhooks({ CRYPTOMUS_PAYMENT_API_KEY: KEY }), false);

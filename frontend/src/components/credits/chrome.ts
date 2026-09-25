@@ -32,7 +32,7 @@ export const PANEL = 'rounded-xl border border-line bg-surface p-4';
 export const LABEL = 'text-xs font-medium uppercase tracking-wide text-subtle';
 
 /**
- * A choice: a payment method, a coin, a preset amount, a saved card.
+ * A choice: a payment method, a preset amount, a saved card.
  *
  * `border-2` even when unselected, so selecting one changes a colour and never
  * a size - a chip that grows by 1px on selection nudges every chip after it.
