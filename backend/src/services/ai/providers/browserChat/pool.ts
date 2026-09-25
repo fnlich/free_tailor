@@ -166,12 +166,42 @@ export class TabPool {
     // a browser coming back while its site's healthy tabs are busy would sit
     // idle behind a queue until one of THOSE freed - callers waiting on a
     // browser that was ready for them.
+    this.scheduleWake(endpoint, forMs);
+  }
+
+  /**
+   * Arms the timer that wakes the line when one browser's rest ends.
+   *
+   * **It re-arms itself if it fires too early, and that is the whole reason
+   * this is a method rather than four lines inline.** A timer set for `forMs`
+   * is not a promise that `forMs` has elapsed by the clock this pool reads:
+   * Node fires a timer when its own loop gets round to it, which can be a
+   * fraction before `Date.now()` has moved the full distance. `isDown` then
+   * still says the browser is resting, `pump` finds nothing free, and the
+   * timer has already been dropped from the map - so NOTHING looks again. The
+   * queued callers wait out their own deadline and fail with "no tab became
+   * free", about a browser that came back milliseconds after they started
+   * waiting. It is rare and it is not theoretical: it is what made the two
+   * wake tests in `tabPool.test.js` fail roughly one run in five.
+   *
+   * Re-arming for the remainder makes the wake a statement about the clock
+   * instead of about the event loop. The floor of 1ms is the other half: a
+   * zero-delay timer can fire in the same millisecond it was set.
+   */
+  private scheduleWake(endpoint: string, forMs: number): void {
     const existing = this.wakeTimers.get(endpoint);
     if (existing) clearTimeout(existing);
+
     const timer = setTimeout(() => {
       this.wakeTimers.delete(endpoint);
+      const until = this.downUntil.get(endpoint);
+      if (typeof until === 'number' && this.now() < until) {
+        this.scheduleWake(endpoint, until - this.now());
+        return;
+      }
       this.pump();
-    }, Math.max(0, forMs));
+    }, Math.max(1, forMs));
+
     // Unref'd: this only ever makes an existing wait shorter, so it must not be
     // a reason for the process to stay alive.
     timer.unref?.();
@@ -305,12 +335,27 @@ export class TabPool {
 
       options.signal?.addEventListener('abort', onAbort, { once: true });
 
-      // `pump` resolves through this, so the cleanup above runs on the happy
-      // path too - otherwise a served call leaves its abort listener attached
-      // to a signal that outlives it.
+      /*
+       * Both of these go through `cleanup`, because both are called from
+       * OUTSIDE this closure.
+       *
+       * `pump` resolves through `waiter.resolve`, and `setEndpoints` rejects
+       * through `waiter.reject` when the last browser is removed. Neither can
+       * reach `settle`, so without the wrappers a served or refused call leaves
+       * its abort listener attached to a signal that outlives it - and leaves
+       * its timeout timer armed. That timer is deliberately not unref'd, so an
+       * abandoned one holds the event loop open for the whole of the caller's
+       * deadline: removing the last browser used to keep this process alive for
+       * another sixty seconds with nothing left to wait for, which is a minute
+       * on every run of the test file that does it.
+       */
       waiter.resolve = (granted: string) => {
         cleanup();
         resolve(granted);
+      };
+      waiter.reject = (error: Error) => {
+        cleanup();
+        reject(error);
       };
     });
 
