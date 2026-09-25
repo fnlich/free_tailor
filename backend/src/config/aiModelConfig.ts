@@ -94,14 +94,19 @@ type AppSettings = {
   creditMinCredits: number;
   creditMaxCredits: number;
   /**
-   * What each payment method, and optionally each coin, may be bought in.
+   * What each payment method may be bought in.
    *
-   * One flat list rather than a field per method, because the targets are not
-   * a fixed set: every asset an operator enables is another one. A row's
-   * `target` is a method (`card`, `crypto`) or a single asset
-   * (`ethereum:USDT`), and lookup is exact-asset first, then method, then the
-   * hard defaults - so per-coin limits are possible without demanding a row
-   * for every coin the operator is happy to treat like the rest.
+   * One flat list rather than a field per method, because the targets were not
+   * a fixed set while this application chose the coin itself: every asset an
+   * operator enabled was another possible row. They ARE a fixed set now -
+   * `card` and `crypto` - because the coin is chosen on the provider's own page
+   * from the provider's own list, and nothing can ask to be priced as one.
+   *
+   * A stored row naming a coin (`ethereum:USDT`) is therefore a record from
+   * before that, and it is kept rather than dropped: the normalizer accepts it,
+   * the admin page renders it and writes it back, and a settings save does not
+   * quietly discard somebody's configuration. Nothing prices off it any more.
+   * `pricing.ts` says the same thing from the resolving end.
    *
    * Bounds are in CENTS here and nowhere else in this file, because cents are
    * what an operator thinks in ("between $2.50 and $100"). They become credit
@@ -276,7 +281,10 @@ export const CREDIT_CURRENCY = 'usd';
  * because 2.2% is 220 and needs no decimal anywhere in the arithmetic.
  */
 export type PaymentTargetLimits = {
-  /** A method (`card`, `crypto`) or one asset id (`ethereum:USDT`). */
+  /**
+   * `card` or `crypto`. A stored row naming a coin id still reads and still
+   * round-trips - see the note on `paymentLimits` - but nothing resolves one.
+   */
   target: string;
   minCents: number;
   maxCents: number;

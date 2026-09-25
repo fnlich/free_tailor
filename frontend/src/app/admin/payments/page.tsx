@@ -352,13 +352,20 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         </div>
 
         <div className="mt-4 flex flex-wrap items-end gap-3">
+          {/*
+            `card or crypto`, and not the coin id this suggested for three
+            commits after the coins were deleted. Two paragraphs above, this page
+            already tells the operator that a row naming a coin applies to
+            nothing - and then invited them to type one, and saved it without a
+            word.
+          */}
           <label className="block text-sm">
             <span className="font-medium text-gray-700">Add a target</span>
             <input
               type="text"
               value={newTarget}
               onChange={(event) => setNewTarget(event.target.value)}
-              placeholder="card, crypto, or ethereum:USDT"
+              placeholder="card or crypto"
               className="mt-1 w-64 rounded-md border border-gray-300 px-3 py-2"
             />
           </label>

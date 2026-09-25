@@ -147,7 +147,10 @@ async function main() {
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
   const balanceAfter = await page.locator('text=Your balance').locator('..').innerText();
   check('the balance has the credits on it', /\b40\b/.test(balanceAfter), balanceAfter.replace(/\n/g, ' | '));
-  const paymentsList = await page.locator('text=Your payments').locator('..').innerText();
+  // 'Payment history' since the credits page was reworked; this said 'Your
+  // payments' for three commits after the heading changed, and the script needs
+  // playwright so nothing here ever ran to find out.
+  const paymentsList = await page.locator('text=Payment history').locator('..').innerText();
   check('the payment is listed as paid', /FT-PAY-/.test(paymentsList) && /Paid/.test(paymentsList), paymentsList.replace(/\n/g, ' | ').slice(0, 160));
   const history = await page.locator('text=Credit history').locator('..').innerText();
   check('and the credit history says it was bought', /Bought/.test(history), history.replace(/\n/g, ' | ').slice(0, 160));

@@ -56,6 +56,16 @@ export default function Paginator({
    * Nothing to say when everything fits in the smallest page anybody could
    * choose. A size selector and two dead buttons under a three-row list is
    * furniture, and this page already has plenty.
+   *
+   * Compared against the SMALLEST size rather than the current one, on purpose:
+   * with Rows set to 100 and forty rows the count sentence is still worth
+   * having, even though both buttons are dead. The state that would make this
+   * wrong is unmounting while `offset > 0`, which strands somebody on an empty
+   * list with no controls to get back - and it needs `total` to FALL. Nothing
+   * in `backend/src` deletes a payment or a ledger row, so it cannot; a
+   * retention or purge path for either is the change that would make this
+   * condition a dead end, and would need `offset === 0 && total <= pageSize`
+   * instead.
    */
   if (total <= PAGE_SIZES[0]) return null;
 

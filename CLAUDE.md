@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m40s, 803 tests)
+npm test                       # backend node:test suite (~1m5s, 812 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -146,7 +146,7 @@ runner, and storage tests point `DB_DIR` and `TAILOR_STATIC_DIR` at temp dirs.
 
 ## Conventions from the history
 
-122 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
+140 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
 The pattern in nearly every feature arc is a feature commit followed by one or
 more "fix what the adversarial review found" commits, so expect review passes
 to be part of the work rather than an afterthought.

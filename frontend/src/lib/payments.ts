@@ -113,10 +113,16 @@ export type Payment = {
 export type AdminPayment = Payment & { userEmail: string };
 
 /**
- * Exactly one of `clientSecret` and `redirectUrl` is present.
+ * One of `clientSecret` and `redirectUrl`, and sometimes neither.
  *
  * `clientSecret` means the form is ours and the customer stays on this site;
  * `redirectUrl` means the provider hosts its own page and we send them there.
+ * Neither is the third case - a card already on file, charged before this
+ * answer was written - and the server says `processing` about it. Nothing here
+ * reads that: the saved-card path goes straight to the page that waits for the
+ * webhook, which is where `processing` would have sent it anyway. It is left on
+ * the type because the server's own guard turns on it, and because reading
+ * "neither of those two, and that is fine" off a missing field is worse.
  */
 export type StartedCheckout = {
   paymentId: string;
@@ -208,8 +214,13 @@ export function isPaymentPending(payment: Payment): boolean {
 export type CheckoutRequest = {
   method: PaymentMethod;
   credits: number;
-  /** Which coin, when the method is crypto. */
-  asset?: string;
+  /*
+   * There was an `asset` here, naming a coin. It went when the coins did: the
+   * server removed it from both request surfaces on the grounds that a
+   * parameter accepted and ignored is worse than one that is gone, and then
+   * this side kept sending it for three commits. Cryptomus asks for the coin on
+   * its own page, from its own list.
+   */
   /** Charge a card already kept, instead of showing the form. */
   cardId?: string;
   /** Keep the card about to be entered. */
@@ -218,11 +229,10 @@ export type CheckoutRequest = {
 
 export const paymentsApi = {
   options: () => apiFetch<PaymentOptions>('/payments/methods'),
-  quote: (request: { method: PaymentMethod; credits: number; asset?: string }) => {
+  quote: (request: { method: PaymentMethod; credits: number }) => {
     const query = new URLSearchParams({
       method: request.method,
       credits: String(request.credits),
-      ...(request.asset ? { asset: request.asset } : {}),
     });
     return apiFetch<CreditQuote>(`/payments/quote?${query.toString()}`);
   },

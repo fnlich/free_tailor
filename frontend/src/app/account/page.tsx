@@ -66,7 +66,9 @@ export default function AccountPage() {
     void (async () => {
       const [status, entries] = await Promise.allSettled([
         creditsApi.status(),
-        creditsApi.ledger(50),
+        // (offset, limit): the newest fifty. This read `ledger(50)` while the
+        // arguments were the other way round.
+        creditsApi.ledger(0, 50),
       ]);
       if (status.status === 'fulfilled') setCredits(status.value);
       if (entries.status === 'fulfilled') setLedger(entries.value.entries);

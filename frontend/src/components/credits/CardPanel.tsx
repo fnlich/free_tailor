@@ -194,16 +194,16 @@ export default function CardPanel({
                 </div>
               )}
 
-              {order.status === 'ready' && order.started.processing && (
-                <div className={PANEL}>
-                  <p className="text-sm font-semibold text-ink">Your card is being charged.</p>
-                  <p className="mt-1 text-sm text-muted">
-                    Nothing more to do here. Your credits arrive as soon as the provider confirms
-                    it, usually within a minute.
-                  </p>
-                </div>
-              )}
+              {/*
+                There was a "your card is being charged" panel here, for a
+                `processing` order, and nothing could ever reach it.
 
+                `processing` is only ever true of a card already on file, and an
+                order is opened only for the card FORM and for crypto - a kept
+                card goes through `payWithCard`, which navigates straight to the
+                page that waits for the webhook. So this drew the same waiting
+                state, one screen earlier, for a case that never arrives there.
+              */}
               {order.status === 'ready' && order.started.clientSecret && (
                 <PayForm
                   publishableKey={publishableKey}

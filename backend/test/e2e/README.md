@@ -95,7 +95,7 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 88 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 92 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
 leave behind. Over HTTP: each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
@@ -110,14 +110,22 @@ AT the ceiling and saying so; Back preserving the amount; the summary pricing
 itself without opening a checkout, so looking at it costs the buyer nothing;
 the order appearing when the new-card form is asked for; the form mounting or
 saying plainly that it could not; Escape closing; and nothing hanging off the
-side at 1440 or 390, in either theme. It screenshots each step.
+side at 1440 or 390, in either theme. On the credits page: two columns wide and
+stacked narrow, both histories opening on five rows and saying how many there
+are, Older and Newer moving between real pages, and a page whose request FAILS
+keeping its rows while the count sentence still describes them - a failed press
+used to leave rows 1-5 under "6-10 of 12". It screenshots each step.
 
 `buy-credits.js` also drives a whole crypto payment through the fake Cryptomus:
 one button rather than a row per coin, the hand-off panel naming whose page
 comes next, a callback signed the way Cryptomus signs one, and a retried
 callback crediting nothing further.
 
-`browser.js` — the same purchase with a mouse, now that the form is embedded:
+`browser.js` — needs playwright, so it does NOT run on a checkout without it,
+and that is how its `Your payments` selector survived three commits past the
+heading being renamed to *Payment history*. Read the page for the current
+wording before trusting a locator in here. The same purchase with a mouse, now
+that the form is embedded:
 the buy page priced from the server; pressing Pay navigating NOWHERE and the
 dialog opening in place; the form either mounting or saying plainly that it
 could not; the return page waiting for the webhook rather than congratulating

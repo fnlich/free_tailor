@@ -56,7 +56,16 @@ export type CreditLedgerResponse = {
 
 export const creditsApi = {
   status: () => apiFetch<CreditStatus>('/credits'),
-  ledger: (limit?: number, offset = 0) =>
+  /**
+   * A page of this account's movements.
+   *
+   * `(offset, limit)`, the same way round as `paymentsApi.list`. It used to be
+   * `(limit, offset)`, and the credits page calls both one after the other -
+   * two functions that look alike and mean the opposite is a transposition
+   * nothing would catch, because five rows at offset five and five rows with a
+   * page size of five are indistinguishable at the default.
+   */
+  ledger: (offset = 0, limit?: number) =>
     apiFetch<CreditLedgerResponse>(
       `/credits/ledger?offset=${offset}${limit ? `&limit=${limit}` : ''}`
     ),

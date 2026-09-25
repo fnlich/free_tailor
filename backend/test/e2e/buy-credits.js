@@ -357,7 +357,10 @@ async function main() {
   console.log('\n=== Crypto, through Cryptomus ===');
   check(
     'crypto is one choice rather than a row per coin',
-    targets.filter((target) => target.method === 'crypto' && target.asset).length === 0 &&
+    // A COUNT, because the `target.asset` this used to filter on no longer
+    // exists on either side - so that half of the condition was always true and
+    // only the `available` conjunct could ever have failed.
+    targets.filter((target) => target.method === 'crypto').length === 1 &&
       Boolean(cryptoTarget?.available),
     JSON.stringify(targets.map((target) => target.id))
   );
@@ -971,7 +974,11 @@ async function main() {
           count: Array.from(card.querySelectorAll('p'))
             .map((p) => p.textContent.trim())
             .find((text) => /\d+.\d+ of \d+/.test(text)) ?? '',
+          notice: Array.from(card.querySelectorAll('p'))
+            .map((p) => p.textContent.trim())
+            .find((text) => /could not be loaded/i.test(text)) ?? '',
           size: card.querySelector('select')?.value ?? '',
+          first: card.querySelector('ul > li a')?.textContent.trim() ?? '',
         }));
       });
 
@@ -1014,6 +1021,77 @@ async function main() {
       grown && grown.rows > 5,
       JSON.stringify(grown)
     );
+
+    /*
+     * A page that fails, and the sentence that must not lie about it.
+     *
+     * A failed page deliberately keeps the rows that are already on screen - a
+     * failed page is not an empty history. But the offset had already moved,
+     * and the count sentence was drawn from THAT: pressing Older over a dropped
+     * connection left rows 1-20 under "21-40 of N", with both buttons live off
+     * an offset no row corresponded to and nothing on the page saying anything
+     * had gone wrong. The sentence is drawn from the server's own offset now,
+     * so it describes the rows it came with.
+     */
+    /*
+     * Back to five rows first, because Older has to be LIVE for this to test
+     * anything. At twenty rows of nineteen payments it is disabled, the click
+     * goes nowhere, no request is made, and the two checks below pass by
+     * describing a list that was never asked to move - which is how this test
+     * read on its first run.
+     */
+    await page.select('main select', '5');
+    await wait(700);
+    const beforeFailure = (await readPager()).find((card) => card.heading === 'Payment history');
+    check(
+      'the failed-page check starts with Older actually available',
+      beforeFailure && beforeFailure.rows === 5 && /of (\d+)/.exec(beforeFailure.count)?.[1] > 5,
+      JSON.stringify(beforeFailure)
+    );
+    /*
+     * EVERY matching request fails while the flag is up, not just the first.
+     *
+     * `apiFetch` tries a list of candidate API bases and moves to the next one
+     * whenever a fetch REJECTS - which is the whole point of that loop. Failing
+     * one request only sent the page to the second base, where it succeeded, and
+     * the checks below then described a page that had loaded perfectly well.
+     */
+    await page.evaluate(() => {
+      const real = window.fetch;
+      window.__failPages = true;
+      window.fetch = async (...args) => {
+        const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
+        if (window.__failPages && /\/payments\?offset=/.test(url)) {
+          throw new Error('the connection dropped');
+        }
+        return real(...args);
+      };
+    });
+    await clickText(page, 'main button', 'Older');
+    await wait(1200);
+    const failed = (await readPager()).find((card) => card.heading === 'Payment history');
+    await page.evaluate(() => {
+      window.__failPages = false;
+    });
+    check(
+      'a page that could not be loaded keeps its rows',
+      failed && failed.rows === beforeFailure.rows && failed.first === beforeFailure.first,
+      JSON.stringify({ beforeFailure, failed })
+    );
+    check(
+      'and the count still describes the rows that are on screen',
+      failed && failed.count === beforeFailure.count,
+      `${beforeFailure?.count} -> ${failed?.count}`
+    );
+    check(
+      'and says so rather than looking like nothing happened',
+      Boolean(failed?.notice),
+      JSON.stringify(failed)
+    );
+
+    // Back to a working page, so the checks below start from a known state.
+    await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await wait(900);
 
     /*
      * Stacked on a phone, and still not overflowing.

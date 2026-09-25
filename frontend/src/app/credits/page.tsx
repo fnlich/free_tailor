@@ -53,13 +53,28 @@ export default function BuyCreditsPage() {
    * payment options and blanked the balance - the one number somebody came
    * here for - while a provider call it does not need went out over the wire.
    */
+  /*
+   * `page` is what was ASKED FOR; `shown` is what the rows on screen are.
+   *
+   * They are usually the same and the difference is the whole point of keeping
+   * two. A page request that fails leaves the rows alone on purpose - see the
+   * loaders below - but the request state has already moved, and the paginator
+   * used to be fed from that: a failed press of Older left rows 1-5 on screen
+   * under "6-10 of 12 payments", with Newer and Older enabled off an offset no
+   * row corresponded to. `shown` is set from the server's own `offset`, so the
+   * sentence under a list always describes the list.
+   */
   const [payments, setPayments] = useState<Payment[]>([]);
   const [paymentPage, setPaymentPage] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
+  const [paymentShown, setPaymentShown] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
   const [paymentTotal, setPaymentTotal] = useState(0);
+  const [paymentFailed, setPaymentFailed] = useState(false);
 
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [ledgerPage, setLedgerPage] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
+  const [ledgerShown, setLedgerShown] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
   const [ledgerTotal, setLedgerTotal] = useState(0);
+  const [ledgerFailed, setLedgerFailed] = useState(false);
 
   /*
    * One guard token per list, not one for the page.
@@ -79,26 +94,44 @@ export default function BuyCreditsPage() {
       const response = await paymentsApi.list(page.offset, page.pageSize);
       if (token !== latestPayments.current) return;
       setPayments(response.payments);
+      // The server's own offset, not the one that was asked for. They agree
+      // unless it clamped something, and its answer is the one that describes
+      // the rows it sent.
+      setPaymentShown({
+        offset: typeof response.offset === 'number' ? response.offset : page.offset,
+        pageSize: page.pageSize,
+      });
+      setPaymentFailed(false);
       // Guarded, so an older server that does not send it cannot zero the
       // count and take the controls off the screen.
       if (typeof response.total === 'number') setPaymentTotal(response.total);
     } catch {
       /*
-       * Left as it was, deliberately. A failed page is not an empty history,
-       * and replacing the rows with nothing would say it was.
+       * The rows are left as they were, deliberately: a failed page is not an
+       * empty history, and replacing them with nothing would say it was. What
+       * is NOT left alone is the claim that a press did something - `shown`
+       * still describes these rows, and the line below says why they did not
+       * move.
        */
+      if (token === latestPayments.current) setPaymentFailed(true);
     }
   }, []);
 
   const loadLedger = useCallback(async (page: PageState) => {
     const token = ++latestLedger.current;
     try {
-      const response = await creditsApi.ledger(page.pageSize, page.offset);
+      const response = await creditsApi.ledger(page.offset, page.pageSize);
       if (token !== latestLedger.current) return;
       setLedger(response.entries);
+      setLedgerShown({
+        offset: typeof response.offset === 'number' ? response.offset : page.offset,
+        pageSize: page.pageSize,
+      });
+      setLedgerFailed(false);
       if (typeof response.total === 'number') setLedgerTotal(response.total);
     } catch {
       /* As above. */
+      if (token === latestLedger.current) setLedgerFailed(true);
     }
   }, []);
 
@@ -279,10 +312,15 @@ export default function BuyCreditsPage() {
                 ))}
               </ul>
               )}
+              {paymentFailed && (
+                <p className="mt-3 text-xs text-amber-700 dark:text-amber-300" role="status">
+                  That page could not be loaded, so these are the rows from before.
+                </p>
+              )}
               <Paginator
                 total={paymentTotal}
-                offset={paymentPage.offset}
-                pageSize={paymentPage.pageSize}
+                offset={paymentShown.offset}
+                pageSize={paymentShown.pageSize}
                 noun="payments"
                 onChange={setPaymentPage}
               />
@@ -293,10 +331,15 @@ export default function BuyCreditsPage() {
               <div className="mt-3">
                 <CreditLedger entries={ledger} />
               </div>
+              {ledgerFailed && (
+                <p className="mt-3 text-xs text-amber-700 dark:text-amber-300" role="status">
+                  That page could not be loaded, so these are the rows from before.
+                </p>
+              )}
               <Paginator
                 total={ledgerTotal}
-                offset={ledgerPage.offset}
-                pageSize={ledgerPage.pageSize}
+                offset={ledgerShown.offset}
+                pageSize={ledgerShown.pageSize}
                 noun="movements"
                 onChange={setLedgerPage}
               />
@@ -317,8 +360,8 @@ export default function BuyCreditsPage() {
                 /*
                  * The page's own panels, which the auth refresh does not
                  * cover: YOUR BALANCE and the credit history are loaded here
-                 * once on mount, so after a chain payment they kept showing
-                 * the pre-purchase figures until a full reload.
+                 * once on mount, so after a purchase they kept showing the
+                 * pre-purchase figures until a full reload.
                  *
                  * Back to the first page of both, not a refresh in place. The
                  * row a buyer wants to see is the one they just made, and it

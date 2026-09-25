@@ -184,11 +184,17 @@ async function main() {
    * The coin and the network are chosen on Cryptomus's page, from Cryptomus's
    * list, so a per-coin row here would offer a choice nothing could honour.
    */
-  const coinRows = (methodsBody?.targets ?? []).filter(
-    (target) => target.method === 'crypto' && target.asset
-  );
-  check('and as one button rather than a row per coin', coinRows.length === 0,
-    JSON.stringify(coinRows.map((row) => row.id)));
+  /*
+   * Counted, not filtered on a field that no longer exists.
+   *
+   * This asked for crypto targets carrying an `asset`, and `PaymentTarget` lost
+   * that field when the coins went away - so the filter was always empty and
+   * the check could not fail however many crypto rows the server sent. The
+   * claim is that there is exactly ONE, which is a thing a count can say.
+   */
+  const cryptoRows = (methodsBody?.targets ?? []).filter((target) => target.method === 'crypto');
+  check('and as one button rather than a row per coin', cryptoRows.length === 1,
+    JSON.stringify(cryptoRows.map((row) => row.id)));
 
   const cryptoRow = (methodsBody?.targets ?? []).find((target) => target.id === 'crypto');
   const cryptoCredits = cryptoRow?.minCredits ?? 100;

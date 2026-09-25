@@ -193,6 +193,12 @@ async function cryptomusFetch<T>(path: string, body: unknown): Promise<T> {
   return envelope.result;
 }
 
+/**
+ * Only `uuid` and `url` are read - the reference to store and the page to send
+ * the buyer to. The other two are declared because they are what an invoice
+ * reply contains, and a type that describes half of an answer is a type the
+ * next reader has to go and check.
+ */
 export type CryptomusInvoice = {
   uuid: string;
   order_id: string;
@@ -251,6 +257,12 @@ export type CryptomusWebhook = {
   amount?: string | number;
   payment_amount?: string | number;
   currency?: string;
+  /**
+   * Cryptomus's own "this status will not change again", and deliberately not
+   * read: `PAID_STATUSES` and `FAILED_STATUSES` decide what is final here, and
+   * a provider flag that disagreed with them would be the wrong authority on
+   * whether to hand out credits.
+   */
   is_final?: boolean;
   sign?: string;
 };
