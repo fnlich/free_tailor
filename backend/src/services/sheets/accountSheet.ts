@@ -60,6 +60,17 @@ export type AccountSheetState = {
  */
 export type SheetsClient = {
   isConfigured(): Promise<boolean>;
+  /**
+   * Proves the credential is accepted, before anything is attempted with it.
+   *
+   * On the seam rather than imported directly, which the other eight already
+   * were, because the backfill now STOPS when this throws - and a check that
+   * reached past the seam would fail every test that drives the allocation
+   * against a fake, while the fake's own calls carried on working. Configured
+   * and accepted are different questions: `isConfigured` asks whether a
+   * credential exists, this asks whether Google will take it.
+   */
+  checkCredential(): Promise<void>;
   createSpreadsheet(title: string, firstTabTitle: string): Promise<CreatedSpreadsheet>;
   formatJobSheetTab(spreadsheetId: string, gid: number): Promise<void>;
   addSheetTabWithHeaders(spreadsheetId: string, title: string): Promise<EnsuredTab>;
@@ -71,6 +82,9 @@ export type SheetsClient = {
 
 const realClient: SheetsClient = {
   isConfigured: isGoogleSheetsConfigured,
+  checkCredential: async () => {
+    await getAccessToken(SHEETS_SCOPE);
+  },
   createSpreadsheet: (title, firstTabTitle) => createSpreadsheet(title, firstTabTitle),
   formatJobSheetTab: (spreadsheetId, gid) => formatJobSheetTab(spreadsheetId, gid),
   addSheetTabWithHeaders: (spreadsheetId, title) => addSheetTabWithHeaders(spreadsheetId, title),
@@ -431,18 +445,37 @@ export async function backfillAccountSheets(pauseMs = 250): Promise<{ done: numb
   if (process.env.SHEET_BACKFILL === 'off') return { done: 0, failed: 0 };
   if (!(await client.isConfigured())) return { done: 0, failed: 0 };
 
-  // Said BEFORE anything can fail, because the commonest cause of a refusal is
-  // a key that is not the one somebody just installed - and until this line
-  // existed there was no way to tell that apart from a misconfigured project.
+  const pending = listAccountsWithoutSheet();
+
+  /*
+   * The credential is checked FIRST, and a refusal ends the backfill.
+   *
+   * Said before anything else because the commonest cause of a failure here is a
+   * key that is not the one somebody just installed, and that is indistinguishable
+   * from a misconfigured project once the per-account errors start arriving.
+   *
+   * It RETURNS rather than falling through, which it used not to. Every account
+   * below needs this same token, so a credential Google refused - an expired
+   * consent, a deleted service account - fails all of them for one reason, and
+   * the loop would report it once per account with a 250ms pause between. Two
+   * hundred sheet-less accounts meant fifty seconds of startup spent failing and
+   * two hundred and one warnings for a single dead token. One line an operator
+   * can act on is worth more than all of them.
+   */
   try {
-    await getAccessToken(SHEETS_SCOPE);
+    await client.checkCredential();
     const using = describeCredentialInUse();
     if (using) console.log(`[sheets] Using ${using}.`);
   } catch (error) {
-    console.warn('[sheets] Could not load the Google credentials.', error);
+    console.warn(
+      '[sheets] Could not load the Google credentials, so no spreadsheet can be allocated ' +
+        `(${pending.length} account(s) waiting). Run "npm run sheets:doctor" in backend/ to see ` +
+        'which step is broken.',
+      error
+    );
+    return { done: 0, failed: pending.length };
   }
 
-  const pending = listAccountsWithoutSheet();
   if (pending.length === 0) return { done: 0, failed: 0 };
 
   console.log(`[sheets] Allocating spreadsheets for ${pending.length} account(s) from before this build.`);

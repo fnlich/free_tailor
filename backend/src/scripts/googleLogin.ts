@@ -64,6 +64,19 @@ async function exists(file: string): Promise<boolean> {
  * Accepts the file exactly as downloaded - the console wraps the id and secret
  * in an `installed` or `web` object depending on the client type, and making
  * somebody unwrap that by hand is a step that can only go wrong.
+ *
+ * A file that ALREADY has a `refresh_token` is the last resort rather than
+ * skipped, and that ordering is the whole point. `google-oauth-credentials.json`
+ * carries the client id and secret next to the token, so when the token has
+ * expired - which is what happens every seven days while the consent screen is
+ * in Testing - it is simultaneously the file that needs replacing and the only
+ * place the client lives. Skipping it outright meant the recovery this script
+ * exists for could not run: an install that had tidied away the downloaded
+ * `client_secret*.json` got "No OAuth client file found" and a four-step
+ * instruction to mint a client it already had.
+ *
+ * Preferring a client-only file first keeps the original intent - a fresh
+ * download wins - without turning the tidy case into a dead end.
  */
 async function loadClient(): Promise<{ clientId: string; clientSecret: string; from: string }> {
   const explicit = argValue('--client');
@@ -83,13 +96,12 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
           .map((name) => path.join(process.cwd(), name)),
       ];
 
+  /** A client found inside an already-consented file, used only if nothing else has one. */
+  let alreadyConsented: { clientId: string; clientSecret: string; from: string } | null = null;
+
   for (const candidate of candidates) {
     if (!(await exists(candidate))) continue;
     const parsed = JSON.parse(await fs.readFile(candidate, 'utf8')) as ClientSecretFile;
-
-    // Already finished - nothing to do, and re-running would only replace a
-    // working consent with an identical one.
-    if (parsed.refresh_token) continue;
 
     /**
      * A Web application client cannot complete this flow.
@@ -115,7 +127,23 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
     const block = parsed.installed ?? parsed.web ?? parsed;
     const clientId = block.client_id?.trim();
     const clientSecret = block.client_secret?.trim();
-    if (clientId && clientSecret) return { clientId, clientSecret, from: candidate };
+    if (!clientId || !clientSecret) continue;
+
+    if (parsed.refresh_token) {
+      // Held, not returned: a file without a token is a fresh download and wins.
+      alreadyConsented ??= { clientId, clientSecret, from: candidate };
+      continue;
+    }
+    return { clientId, clientSecret, from: candidate };
+  }
+
+  if (alreadyConsented) {
+    console.log(
+      `Re-using the OAuth client already in ${alreadyConsented.from}.\n` +
+        'That file holds a consent too. Signing in again replaces it with a fresh one;\n' +
+        'the old refresh token stays valid at Google until you revoke it.\n'
+    );
+    return alreadyConsented;
   }
 
   throw new Error(
@@ -126,7 +154,10 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
       '  2. APIs & Services -> Credentials -> CREATE CREDENTIALS -> OAuth client ID.\n' +
       '     Application type: Desktop app. Create, then DOWNLOAD JSON.\n' +
       '  3. Put that file in backend/ (any name starting with client_secret is found\n' +
-      '     automatically), or pass it: npm run sheets:login -- --client path\\to\\file.json\n'
+      '     automatically), or pass it: npm run sheets:login -- --client path\\to\\file.json\n\n' +
+      `If you have signed in here before, ${OUTPUT_FILE} holds the client id and secret\n` +
+      'and this script will re-use them - so seeing this message means that file is gone\n' +
+      'or unreadable too.\n'
   );
 }
 
