@@ -372,13 +372,6 @@ export async function apiFetch<T>(
  */
 export type PromptCategoryId = 'extracting' | 'building' | 'other';
 
-export type PromptCategory = {
-  id: PromptCategoryId;
-  label: string;
-  description: string;
-  order: number;
-};
-
 export type AIProvider =
   | 'claude-cli'
   | 'claude'
@@ -427,10 +420,6 @@ export function getAIProviderLabel(provider: AIProvider): string {
   return Object.prototype.hasOwnProperty.call(PROVIDER_META, provider)
     ? PROVIDER_META[provider].label
     : provider;
-}
-
-export function providerRequiresApiKey(provider: AIProvider): boolean {
-  return PROVIDER_META[provider]?.requiresApiKey ?? true;
 }
 
 /** Provider ids an older release wrote, and what they mean now. */
@@ -694,8 +683,6 @@ export interface PublicAppSettings {
   /** Which providers honour effort at all. */
   providerTuning: ProviderTuningSupport[];
 }
-
-export type AIModelSettings = PublicAppSettings;
 
 export interface AdminAppSettings extends PublicAppSettings {
   outputBaseDir: string;
@@ -1721,8 +1708,6 @@ export interface TailoredContent {
   skills: string[];
   hardSkills: string[];
   softSkills: string[];
-  requiredSkills?: string[];
-  preferredSkills?: string[];
   strengths: TailoredStrength[];
   unconfirmedHardSkills?: string[];
   unconfirmedSoftSkills?: string[];

@@ -334,16 +334,3 @@ export async function quoteCredits(requested: unknown, target?: QuoteTarget): Pr
     target: limits.target,
   };
 }
-
-/** `$12.50`, for a log line or a page. Money is never formatted by hand. */
-export function formatAmount(amountCents: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: currency.toUpperCase(),
-    }).format(amountCents / 100);
-  } catch {
-    // An unknown currency code should not take a page down over a label.
-    return `${(amountCents / 100).toFixed(2)} ${currency.toUpperCase()}`;
-  }
-}

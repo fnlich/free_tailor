@@ -185,7 +185,6 @@ module.exports = {
   useAdminEmails,
   makeFakeCliRunner,
   readCliFixture,
-  makeTempDataDir,
   readDocument,
   readJson,
   readSettingRaw,

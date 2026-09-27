@@ -10,14 +10,6 @@ export const DEFAULT_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4
  */
 export const DEFAULT_CLAUDE_CLI_MODEL = process.env.AI_CLI_MODEL || 'sonnet';
 
-export type AIModelOption = {
-  id: string;
-  label: string;
-  provider: AIProvider;
-  modelName: string;
-  description: string;
-};
-
 export function normalizePromptModelSelection(
   provider: unknown,
   modelName: unknown

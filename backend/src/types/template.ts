@@ -119,9 +119,6 @@ export interface TailoredContent {
   softSkills: string[];
   unconfirmedSoftSkills: string[];
   unconfirmedHardSkills: string[];
-  // Optional fields from job analysis merged into tailored content
-  requiredSkills?: string[];
-  preferredSkills?: string[];
   strengths: TailoredStrength[];
   /** Cover letter body content without the greeting or sign-off */
   coverLetter?: string;

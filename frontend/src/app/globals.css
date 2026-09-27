@@ -80,19 +80,13 @@
  * .bg-surface.
  */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  --color-canvas: var(--canvas);
   --color-surface: var(--surface-secondary);
-  --color-surface-soft: var(--surface-primary);
   --color-surface-muted: var(--surface-muted);
-  --color-surface-strong: var(--surface-strong);
 
   --color-line: var(--border-color);
-  --color-line-subtle: var(--line-subtle);
   --color-line-strong: var(--border-strong);
 
   --color-ink: var(--foreground);
@@ -101,7 +95,6 @@
 
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
-  --color-accent-ink: var(--accent-ink);
 }
 
 html.dark {
@@ -775,7 +768,6 @@ html.dark .shadow-2xl {
     width: auto;
     max-width: none;
   }
-
 
   .tl-main {
     padding-left: 0;

@@ -1,7 +1,6 @@
 'use strict';
 
 const { runIndeedScraper } = require('./indeed');
-const { runIndeedBorderlineScraper } = require('./indeedBorderline');
 const { runJobBoardScraper } = require('./jobboard');
 const { runWellfoundScraper } = require('./wellfound');
 const { runLeverScraper } = require('./lever');
@@ -12,7 +11,6 @@ const { deduplicate } = require('./deduplicate');
 
 module.exports = {
   runIndeedScraper,
-  runIndeedBorderlineScraper,
   runJobBoardScraper,
   runWellfoundScraper,
   runLeverScraper,

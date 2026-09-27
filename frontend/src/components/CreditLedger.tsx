@@ -1,6 +1,7 @@
 'use client';
 
 import { describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credits';
+import { formatDate } from '@/lib/format';
 
 /**
  * Where a balance came from.
@@ -9,11 +10,6 @@ import { describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credi
  * written in the same millisecond tie on `createdAt`, and a history whose order
  * is ambiguous is not a history.
  */
-
-function formatWhen(value: string): string {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
-}
 
 export default function CreditLedger({ entries }: { entries: LedgerEntry[] }) {
   if (entries.length === 0) {
@@ -37,7 +33,7 @@ export default function CreditLedger({ entries }: { entries: LedgerEntry[] }) {
               <p className="mt-0.5 truncate text-xs text-gray-500 dark:text-slate-400">{entry.note}</p>
             )}
             <p className="mt-0.5 text-xs text-gray-400 dark:text-slate-500">
-              {formatWhen(entry.createdAt)}
+              {formatDate(entry.createdAt)}
             </p>
           </div>
           <div className="shrink-0 text-right">
