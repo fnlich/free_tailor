@@ -7,7 +7,11 @@ import {
   GoogleSheetsRequestError,
   updateGoogleSheetsRow,
 } from '../integrations/googleSheets';
-import { JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW } from '../integrations/googleSheets';
+import {
+  JOB_SHEET_COLUMNS,
+  JOB_SHEET_FIRST_DATA_ROW,
+  toColumnLetters,
+} from '../integrations/googleSheets';
 import { SheetAccessError } from '../services/sheets/accountSheet';
 import {
   resolveAppendRow,
@@ -84,19 +88,6 @@ const BROAD_SOFTWARE_EXCLUDED_PATTERNS = [
   /\bentry[- ]level\b/i,
   /\bno prior experience required\b/i,
 ];
-
-function toColumnLetters(columnNumber: number): string {
-  let current = columnNumber;
-  let letters = '';
-
-  while (current > 0) {
-    const remainder = (current - 1) % 26;
-    letters = String.fromCharCode(65 + remainder) + letters;
-    current = Math.floor((current - 1) / 26);
-  }
-
-  return letters;
-}
 
 function normalizeCompanyName(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();

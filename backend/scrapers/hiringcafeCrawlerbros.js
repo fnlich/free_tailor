@@ -1,40 +1,15 @@
 'use strict';
 
-const { ApifyClient } = require('apify-client');
+const { getApifyClient, getAllDatasetItems } = require('./apify');
 const { mapFiltersForHiringCafeCrawlerbros } = require('./filters');
 const { normalizeHiringCafeItems } = require('./normalize');
 
 const ACTOR_ID = 'crawlerbros/hiring-cafe-scraper';
 const ACTOR_NAME = 'Hiring Cafe scraper (CrawlerBros)';
 const RUN_TIMEOUT_SECS = 300;
-const DATASET_PAGE_SIZE = 1000;
-
-function getApifyClient() {
-  const token = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
-  if (!token) {
-    throw new Error('APIFY_API_TOKEN is required to run the Hiring Cafe scraper.');
-  }
-
-  return new ApifyClient({ token });
-}
-
-async function getAllDatasetItems(datasetClient) {
-  const items = [];
-
-  for (let offset = 0; ; offset += DATASET_PAGE_SIZE) {
-    const page = await datasetClient.listItems({ limit: DATASET_PAGE_SIZE, offset });
-    items.push(...page.items);
-
-    if (page.items.length < DATASET_PAGE_SIZE) {
-      break;
-    }
-  }
-
-  return items;
-}
 
 async function runHiringCafeCrawlerbrosScraper(filters) {
-  const client = getApifyClient();
+  const client = getApifyClient(ACTOR_NAME);
   const actorInput = mapFiltersForHiringCafeCrawlerbros(filters || {});
   const finishedRun = await client.actor(ACTOR_ID).call(actorInput, { timeout: RUN_TIMEOUT_SECS });
 
