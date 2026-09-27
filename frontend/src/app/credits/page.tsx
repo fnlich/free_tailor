@@ -22,11 +22,9 @@ import { CARD, LABEL } from '@/components/pageChrome';
 /**
  * The balance, what has been bought, and a button that opens the purchase.
  *
- * The amount used to be typed here, with one Pay button per method beside it -
- * so the method was chosen last, and the limits that apply to it could only be
- * discovered by being refused. Buying now happens in a dialog that asks for
- * the method first, and this page is what it always should have been: the
- * account's own record.
+ * Buying happens in a dialog that asks for the method FIRST, so the limits that
+ * apply to it are known before an amount is typed. This page is the account's
+ * own record and nothing else.
  */
 export default function BuyCreditsPage() {
   const search = useSearchParams();
@@ -39,23 +37,19 @@ export default function BuyCreditsPage() {
   const [buying, setBuying] = useState(false);
 
   /*
-   * The two histories page themselves, and they do it separately.
-   *
-   * One loader for all four requests is what this page used to have, and with
-   * paging it would mean pressing Older on the payment list re-fetched the
-   * payment options and blanked the balance - the one number somebody came
-   * here for - while a provider call it does not need went out over the wire.
+   * The two histories page themselves, and they do it SEPARATELY. One loader
+   * for all four requests would mean pressing Older on the payment list
+   * refetched the payment options and blanked the balance - the one number
+   * somebody came here for.
    */
   /*
    * `page` is what was ASKED FOR; `shown` is what the rows on screen are.
    *
-   * They are usually the same and the difference is the whole point of keeping
-   * two. A page request that fails leaves the rows alone on purpose - see the
-   * loaders below - but the request state has already moved, and the paginator
-   * used to be fed from that: a failed press of Older left rows 1-5 on screen
-   * under "6-10 of 12 payments", with Newer and Older enabled off an offset no
-   * row corresponded to. `shown` is set from the server's own `offset`, so the
-   * sentence under a list always describes the list.
+   * A page request that fails leaves the rows alone on purpose - see the
+   * loaders below - but the request state has already moved. Feeding the
+   * paginator from THAT puts rows 1-5 on screen under "6-10 of 12 payments",
+   * with both buttons live off an offset no row corresponds to. `shown` comes
+   * from the server's own `offset`, so the sentence always describes the list.
    */
   const [payments, setPayments] = useState<Payment[]>([]);
   const [paymentPage, setPaymentPage] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });

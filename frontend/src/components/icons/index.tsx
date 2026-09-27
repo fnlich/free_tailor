@@ -6,8 +6,8 @@ import type { ReactNode, SVGProps } from 'react';
  * Twenty icons is under the size where a dependency pays for itself, and this
  * project has five runtime packages and no UI library at all - adding one costs
  * every contributor an install step on a checkout that already needs a native
- * rebuild and a Chrome download. There were also nineteen hand-written inline
- * <svg> across seven files before this existed; those can move here over time.
+ * rebuild and a Chrome download. Eighteen hand-written inline <svg> remain
+ * across six other files; those can move here over time.
  *
  * All of them share one grid and one stroke weight, which is the whole reason a
  * set reads as a set: 24x24, 1.75 stroke, round caps and joins, no fills.

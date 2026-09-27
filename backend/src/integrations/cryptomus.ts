@@ -319,13 +319,12 @@ export function verifyWebhookSign(
  * The statuses worth acting on.
  *
  * `paid_over` is a buyer who sent MORE than the invoice, and it is still paid.
- * Nothing clamps what gets credited, and this said so for a while: the clamp
- * `creditPaid` used to carry went with the on-chain settler, and the webhook
- * does not trim a disagreeing amount either - it REFUSES it and holds the
- * payment. What makes `paid_over` safe is the field that gets compared:
- * `amount` is the invoice, which an overpayment does not change, while the
- * larger figure arrives as `payment_amount` and is never read. See the note in
- * `paymentWebhooks.ts` about which of the two is comparable.
+ * **Nothing clamps what gets credited** - the webhook REFUSES a disagreeing
+ * amount and holds the payment rather than trimming it. What makes `paid_over`
+ * safe is the field that gets compared: `amount` is the invoice, which an
+ * overpayment does not change, while the larger figure arrives as
+ * `payment_amount` and is never read. See the note in `paymentWebhooks.ts`
+ * about which of the two is comparable.
  *
  * `wrong_amount` is the opposite - not enough arrived - and it closes the
  * payment rather than crediting a short one. It gets its own sentence below,
@@ -349,13 +348,12 @@ export const FAILED_STATUSES: ReadonlySet<string> = new Set([
 /**
  * What to tell the buyer about a failure, where the general answer is wrong.
  *
- * The return page prints this sentence, and above it the page used to say
- * flatly "You were not charged" - which for `wrong_amount` is false and
- * unhelpful at the same moment. Something left their wallet; it was less than
- * the invoice; nothing was credited; and nobody here can send it back, because
- * a `failed` payment is not refundable through this application at all. Saying
- * so is the least this can do, and it is also the sentence that tells an
- * operator where to look.
+ * The return page prints this sentence in place of its own "You were not
+ * charged", which for `wrong_amount` would be false: something left the
+ * buyer's wallet, it was less than the invoice, nothing was credited, and
+ * nobody here can send it back, because a `failed` payment is not refundable
+ * through this application at all. The sentence is also what tells an operator
+ * where to look.
  *
  * Empty for every other status, which means the general sentence stands.
  */

@@ -162,9 +162,7 @@ export const MarkCardTrio = ({ className = 'h-5' }: { className?: string }) => (
  * Several coins, for the one button that means "crypto".
  *
  * A FAMILY mark: it says "more than one coin" and nothing about which, which is
- * exactly right now that the coin is chosen on the provider's own page. There
- * was briefly a per-asset mark beside it, for the months this application asked
- * which token and which network itself.
+ * exactly right, because the coin is chosen on the provider's own page.
  */
 export const MarkCoinTrio = ({ className = 'h-5' }: { className?: string }) => (
   <span className={`inline-flex items-center ${className}`}>

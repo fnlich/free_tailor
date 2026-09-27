@@ -50,9 +50,8 @@ export function getPreferredApiBase(): string {
  * signed in on, so pointing the frame at the hostname baked into
  * NEXT_PUBLIC_API_URL at build time sent it somewhere the cookie does not go:
  * open the app on a LAN IP, and every preview rendered the API's
- * "Sign in to do that" JSON instead of a resume.
- *
- * This used to read `getCurrentApiBase()`, which does not follow the page.
+ * "Sign in to do that" JSON instead of a resume. `getCurrentApiBase()` does
+ * not follow the page and is the wrong one to reach for here.
  */
 export function getApiOrigin(): string {
   return getPreferredApiBase().replace(/\/api$/, '');
@@ -880,9 +879,9 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
     .map((entry) => ({
       id: typeof entry.id === 'string' ? entry.id : '',
       name: typeof entry.name === 'string' ? entry.name : '',
-      // Coerced, not whitelisted: this used to rewrite anything it did
-      // not recognise to 'openai', so a model row for a newer provider
-      // displayed, filtered and default-gated as OpenAI.
+      // Coerced, not whitelisted. Rewriting an unrecognised provider to
+      // 'openai' makes a model row for a newer one display, filter and
+      // default-gate as OpenAI.
       provider: coerceProvider(entry.provider) ?? 'claude-cli',
       modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
       description: typeof entry.description === 'string' ? entry.description : '',

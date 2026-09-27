@@ -104,14 +104,9 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
         ? {}
         : {
             /*
-             * It names the variables rather than describing them, and it names
-             * the ones that are GONE too.
-             *
-             * An operator arriving here has a `.env` with `CHAIN_ASSETS` and a
-             * wallet address in it, and a Crypto button that no longer works.
-             * "Set CRYPTOMUS_*" on its own would read as a second option
-             * rather than the only one, and they would go looking for what
-             * broke the first.
+             * The dead variables are named on purpose. An operator reading this
+             * still has `CHAIN_ASSETS` and a wallet address in `.env`, and needs
+             * telling they are inert rather than left hunting for what broke.
              */
             reason:
               'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through ' +
@@ -342,23 +337,15 @@ export async function startCheckout(
   /*
    * Only a refusal BY THE PROVIDER closes the payment.
    *
-   * The distinction matters more than it looks. If the checkout page was
-   * created and something after it throws - a socket dropped while reading the
-   * response, a database write - then a live session exists at the provider
-   * with this payment's id on it, and somebody may still pay it. Marking it
-   * `failed` here would mean the webhook for that payment arrives, finds a row
-   * that is not `pending`, and credits nothing: money taken, nothing given.
-   * So the catch that closes a payment wraps the provider call and nothing
-   * else.
+   * If the checkout page was created and something after it throws, a live
+   * session exists at the provider with this payment's id on it and somebody
+   * may still pay it. Marking that `failed` means the webhook arrives, finds a
+   * row that is not `pending`, and credits nothing: money taken, nothing given.
    *
-   * **Nearly nothing else, and the catch no longer takes that on trust.** This
-   * block also wraps a settings read and two lines of customer bookkeeping, so
-   * a broken database or an unreadable settings row came out as "the payment
-   * provider would not open a checkout page" - a 502 blaming Stripe for
-   * something on this side of the wire, which is the worst possible thing to
-   * hand an operator at the moment their own storage is failing. The catch now
-   * asks WHO said no: only the two provider error types are a provider's
-   * answer, and anything else is reported as ours.
+   * So the catch below wraps provider calls, and it asks WHO said no rather
+   * than assuming - a settings read and two lines of customer bookkeeping are
+   * inside it too, and a locked database must not be reported as Stripe
+   * refusing.
    */
   const opened = await (async () => {
     try {
@@ -529,14 +516,9 @@ export async function startCheckout(
       /*
        * Whose failure this was, which decides what everybody is told.
        *
-       * The block above is nearly all provider calls and used to be assumed to
-       * be entirely provider calls - but it also reads the 3-D Secure setting
-       * and records a Stripe customer id, so a failing settings row or a
-       * locked database arrived here as a 502 about Stripe. Nothing on this
-       * side of the wire can have moved money (every line that could is a
-       * provider call, and those throw their own types), so the payment still
-       * closes; only the sentence changes, and it stops sending an operator to
-       * their provider's status page over their own storage.
+       * Nothing on this side of the wire can have moved money - every line that
+       * could is a provider call, and those throw their own error types - so the
+       * payment closes either way and only the sentence changes.
        */
       const providerAnswered =
         error instanceof stripe.StripeError || error instanceof cryptomus.CryptomusError;
@@ -570,13 +552,9 @@ export async function startCheckout(
   })();
 
   /*
-   * The reference is recorded BEFORE anything can refuse to go on.
-   *
-   * It used to be the other way round, and the guard below threw first: a
-   * saved-card charge that came back with an intent and nothing usable on it
-   * had already moved the money, and discarding `opened.ref` on the way out
-   * left the row with no reference and the webhook with nothing to find. The
-   * order matters and nothing else about these two blocks does.
+   * Before the guard below, not after: a saved-card charge has already moved the
+   * money by this point, and a refusal that discards `opened.ref` leaves the row
+   * with no reference for the webhook to find.
    */
   if (opened.ref && !attachProviderRef(payment.id, opened.ref)) {
     // Not fatal, and not silent. A reference that will not attach means one is
@@ -762,14 +740,10 @@ export function creditPaid(paymentId: string): CreditOutcome {
   if (payment.state !== 'pending') return { credited: false, payment };
 
   /*
-   * What was quoted, and only that.
-   *
-   * This took an optional measured figure and clamped it to the quote, for
-   * the one caller that had one: the chain settler credited what had actually
-   * arrived, which could be less. Every provider left settles for the amount
-   * it was asked for or not at all - the webhook's own amount check refuses a
-   * payment that disagrees before this is reached - so there is nothing to
-   * clamp and one caller, passing nothing.
+   * What was quoted, and only that. Nothing clamps a measured figure down to it:
+   * every provider settles for the amount it was asked for or not at all, and
+   * the webhook's own amount check refuses a disagreement before this is
+   * reached.
    */
   const granted = payment.credits;
   if (granted <= 0) {
@@ -873,23 +847,17 @@ export async function refundPayment(
       await stripe.refundPaymentIntent(intent, payment.id);
     } else {
       /*
-       * Crypto cannot be pulled back, only sent back - and WHERE FROM depends
-       * on which kind it was, which this used to get wrong.
+       * Crypto cannot be pulled back, only sent back - and WHERE FROM depends on
+       * which kind it was. An on-chain payment is in the wallet whose address
+       * the operator configured, because no processor ever held it; sending them
+       * to a processor's dashboard sends them to an account the coin never
+       * passed through.
        *
-       * It named Coinbase Commerce for every crypto payment. For an on-chain
-       * one that is the wrong place entirely: the whole point of that path is
-       * that no processor holds the money, so an operator following this
-       * message would go looking in an account the coin never passed through.
-       * It is in the wallet whose address they configured.
-       *
-       * Three providers now, and this is one of exactly three places in the
-       * codebase that says something different per provider. `PaymentProvider`
-       * is not switched on exhaustively anywhere, so **every member is named
-       * and the fallback names none of them**. It used to end on Coinbase,
-       * which made "a provider this build does not know" and "Coinbase" the
-       * same answer - and the admin page's own copy ended on Cryptomus, so the
-       * two halves already disagreed about that case. Saying "wherever it was
-       * taken" is less helpful and cannot be wrong.
+       * One of exactly three places that says something different per provider,
+       * and `PaymentProvider` is switched on exhaustively nowhere - so **every
+       * member is named and the fallback names none of them**. A provider this
+       * build has not heard of gets "wherever this payment was taken", which is
+       * less helpful and cannot be wrong.
        */
       throw new PaymentError(
         payment.provider === 'chain'

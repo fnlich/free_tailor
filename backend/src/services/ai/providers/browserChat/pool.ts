@@ -336,18 +336,13 @@ export class TabPool {
       options.signal?.addEventListener('abort', onAbort, { once: true });
 
       /*
-       * Both of these go through `cleanup`, because both are called from
-       * OUTSIDE this closure.
-       *
-       * `pump` resolves through `waiter.resolve`, and `setEndpoints` rejects
-       * through `waiter.reject` when the last browser is removed. Neither can
-       * reach `settle`, so without the wrappers a served or refused call leaves
-       * its abort listener attached to a signal that outlives it - and leaves
-       * its timeout timer armed. That timer is deliberately not unref'd, so an
-       * abandoned one holds the event loop open for the whole of the caller's
-       * deadline: removing the last browser used to keep this process alive for
-       * another sixty seconds with nothing left to wait for, which is a minute
-       * on every run of the test file that does it.
+       * Both go through `cleanup`, because both are called from OUTSIDE this
+       * closure: `pump` resolves through `waiter.resolve`, `setEndpoints`
+       * rejects through `waiter.reject`, and neither can reach `settle`.
+       * Without the wrappers a served or refused call leaves its abort listener
+       * attached to a signal that outlives it, and leaves its timeout timer
+       * armed - and that timer is deliberately not unref'd, so an abandoned one
+       * holds the event loop open for the whole of the caller's deadline.
        */
       waiter.resolve = (granted: string) => {
         cleanup();

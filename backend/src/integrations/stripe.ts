@@ -473,30 +473,22 @@ export type SavedCardCharge = {
  * lets it apply the exemption earned when the card was first authenticated.
  *
  * **A bank that insists anyway does NOT come back as an intent with
- * `requires_action` on it.** This said so for a while and it was wrong: an
- * off-session confirm that needs a challenge is REFUSED, with HTTP 402 and
- * `error.code = 'authentication_required'`, because the whole point of
- * `off_session` is the declaration that there is nobody there to challenge.
- * So that answer arrives as a thrown `StripeError`, which is why the error
- * carries `code` and the refused intent's id - see `startCheckout`, which
- * turns it into a sentence about the bank rather than about this server.
- *
- * `requires_action` on a returned intent is therefore reachable only through
- * the branch below that drops `off_session`, and the caller hands the client
- * secret to the browser there - which is why this returns the whole intent
- * rather than a boolean.
+ * `requires_action` on it.** An off-session confirm needing a challenge is
+ * REFUSED, HTTP 402 with `error.code = 'authentication_required'`, because
+ * `off_session` is precisely the declaration that there is nobody there to
+ * challenge. It arrives as a thrown `StripeError`, which is why the error
+ * carries `code` and the refused intent's id; `startCheckout` turns it into a
+ * sentence about the bank rather than about this server.
  *
  * **When 3-D Secure is required, that exemption is given up on purpose, and
- * `off_session` goes with it.** The two cannot both be sent: asking for a
- * challenge while declaring that nobody is present is a contradiction, and
- * Stripe resolves it by failing the intent with `authentication_required`
- * rather than by showing anybody a challenge. Dropping `off_session` says the
- * true thing instead - the buyer IS present, they just pressed Pay now - so
- * the challenge comes back as `requires_action` and the browser finishes it
- * through the path that already exists for a bank that insists.
- *
- * The cost is real and belongs to the operator who turned the setting on: a
- * kept card stops being one tap.
+ * `off_session` goes with it.** The two cannot both be sent - asking for a
+ * challenge while declaring nobody is present is a contradiction Stripe
+ * resolves by failing the intent. Dropping `off_session` says the true thing
+ * instead, so the challenge comes back as `requires_action` on a returned
+ * intent and the browser finishes it. That is the only way that status is
+ * reachable, and why this returns the whole intent rather than a boolean. The
+ * cost belongs to the operator who turned the setting on: a kept card stops
+ * being one tap.
  *
  * `confirm: true` makes this one call rather than create-then-confirm. The
  * idempotency key is the payment, so a retried request charges once - note
