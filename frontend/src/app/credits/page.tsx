@@ -16,15 +16,8 @@ import {
   type Payment,
   type PaymentOptions,
 } from '@/lib/payments';
-
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
-const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400';
-
-function formatDate(value: string): string {
-  const at = new Date(value);
-  return Number.isNaN(at.getTime()) ? value : at.toLocaleString();
-}
+import { formatDate } from '@/lib/format';
+import { CARD, LABEL } from '@/components/pageChrome';
 
 /**
  * The balance, what has been bought, and a button that opens the purchase.

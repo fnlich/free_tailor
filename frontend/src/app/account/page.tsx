@@ -8,6 +8,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountPlan } from '@/lib/auth';
 import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
+import { formatDate } from '@/lib/format';
+import { CARD, LABEL } from '@/components/pageChrome';
 
 /**
  * The signed-in account's own page: who they are, what plan they are on, and
@@ -18,9 +20,6 @@ import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
  * and a form that let somebody pick their own plan would be a form that lies.
  */
 
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
-const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400';
 /*
  * `break-words`, for the one value here that is an unbreakable word.
  *
@@ -32,12 +31,6 @@ const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:te
  * stay readable and selectable, not end in an ellipsis.
  */
 const VALUE = 'mt-1 break-words text-sm text-gray-900 dark:text-white';
-
-function formatDate(value?: string): string {
-  if (!value) return 'Never';
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
-}
 
 export default function AccountPage() {
   const { account, refresh, adopt } = useAuth();
@@ -163,11 +156,11 @@ export default function AccountPage() {
           </div>
           <div>
             <dt className={LABEL}>Member since</dt>
-            <dd className={VALUE}>{formatDate(account.createdAt)}</dd>
+            <dd className={VALUE}>{formatDate(account.createdAt, { empty: 'Never' })}</dd>
           </div>
           <div>
             <dt className={LABEL}>Last signed in</dt>
-            <dd className={VALUE}>{formatDate(account.lastLoginAt)}</dd>
+            <dd className={VALUE}>{formatDate(account.lastLoginAt, { empty: 'Never' })}</dd>
           </div>
         </dl>
 

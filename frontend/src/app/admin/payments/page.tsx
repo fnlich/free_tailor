@@ -10,17 +10,13 @@ import {
   STATE_STYLES,
   type AdminPayment,
 } from '@/lib/payments';
+import { formatDate } from '@/lib/format';
 
 /**
  * Every payment, for reconciliation and refunds.
  *
  * Under `/admin`, so the nav comes from that layout rather than from here.
  */
-
-function formatDate(value: string): string {
-  const at = new Date(value);
-  return Number.isNaN(at.getTime()) ? value : at.toLocaleString();
-}
 
 /**
  * One target's limits, while they are being edited.

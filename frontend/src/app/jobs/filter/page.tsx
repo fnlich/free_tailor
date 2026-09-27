@@ -3,7 +3,13 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { sheetApi, type AccountSheet } from '@/lib/sheet';
+import {
+  parsePositiveWholeNumber,
+  parseSpreadsheetColumnInput,
+  toSpreadsheetColumnLabel,
+  sheetApi,
+  type AccountSheet,
+} from '@/lib/sheet';
 import {
   getAIProviderLabel,
   GoogleSheetJobFilterResponse,
@@ -33,44 +39,6 @@ const DEFAULT_FORM: FilterFormState = {
   resultCol: 'H',
   reasonCol: 'I',
 };
-
-function parsePositiveWholeNumber(label: string, value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${label} must be a positive whole number.`);
-  }
-  return parsed;
-}
-
-function parseSpreadsheetColumnInput(label: string, value: string): number {
-  const normalized = value.trim().toUpperCase();
-  if (!normalized) {
-    throw new Error(`${label} is required.`);
-  }
-  if (!/^[A-Z]+$/.test(normalized)) {
-    throw new Error(`${label} must use spreadsheet letters like A, B, or AA.`);
-  }
-
-  let columnNumber = 0;
-  for (const character of normalized) {
-    columnNumber = (columnNumber * 26) + (character.charCodeAt(0) - 64);
-  }
-
-  return columnNumber;
-}
-
-function getColumnLabel(columnNumber: number): string {
-  let current = columnNumber;
-  let label = '';
-
-  while (current > 0) {
-    const remainder = (current - 1) % 26;
-    label = String.fromCharCode(65 + remainder) + label;
-    current = Math.floor((current - 1) / 26);
-  }
-
-  return label;
-}
 
 export default function JobFilterPage() {
   const [sheetSources, setSheetSources] = useState<GoogleSheetSource[]>([]);
@@ -462,9 +430,9 @@ export default function JobFilterPage() {
               <div>Scraped pages: {summary.scrapedRows}</div>
               <div>Skipped rows: {summary.skippedRows}</div>
               <div>Rows with errors: {summary.errorRows}</div>
-              <div>Job link column: {getColumnLabel(summary.jobLinkCol)}</div>
-              <div>Result column: {getColumnLabel(summary.resultCol)}</div>
-              <div>Reason column: {getColumnLabel(summary.reasonCol)}</div>
+              <div>Job link column: {toSpreadsheetColumnLabel(summary.jobLinkCol)}</div>
+              <div>Result column: {toSpreadsheetColumnLabel(summary.resultCol)}</div>
+              <div>Reason column: {toSpreadsheetColumnLabel(summary.reasonCol)}</div>
               <div>Rows: {summary.startRow} to {summary.endRow}</div>
               <div>Updated ranges: {summary.updatedRanges.join(', ')}</div>
             </div>

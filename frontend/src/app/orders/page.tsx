@@ -4,25 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import { isOrderLive, orderZipUrl, ordersApi, type Order } from '@/lib/orders';
-
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
-const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400';
+import { formatDate } from '@/lib/format';
+import { CARD, LABEL } from '@/components/pageChrome';
 
 /** Whether anything on the page is still moving, and therefore worth polling for. */
 function anyLive(orders: Order[]): boolean {
   return orders.some(isOrderLive);
-}
-
-function formatDate(value: string): string {
-  const at = new Date(value);
-  if (Number.isNaN(at.getTime())) return value;
-  return at.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 /** Days left, in the words somebody reading a list actually wants. */
@@ -137,7 +124,7 @@ export default function OrdersPage() {
                   </Link>
                   <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{order.label}</p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                    Placed {formatDate(order.createdAt)} &middot; {describeExpiry(order)}
+                    Placed {formatDate(order.createdAt, { style: 'short' })} &middot; {describeExpiry(order)}
                   </p>
                 </div>
                 <OrderStatePill state={order.state} />

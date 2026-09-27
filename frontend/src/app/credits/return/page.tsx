@@ -12,9 +12,7 @@ import {
   STATE_STYLES,
   type Payment,
 } from '@/lib/payments';
-
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
+import { CARD } from '@/components/pageChrome';
 
 /**
  * Where a provider sends the browser back to.

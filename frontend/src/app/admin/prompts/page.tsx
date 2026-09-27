@@ -17,6 +17,7 @@ import {
   PromptValidation,
   PromptVariableDefinition,
 } from '@/lib/api';
+import { formatDate } from '@/lib/format';
 
 type PromptDraft = {
   id?: string;
@@ -118,11 +119,6 @@ function makeDuplicateDraft(draft: PromptDraft): PromptDraft {
     createdAt: undefined,
     updatedAt: undefined,
   };
-}
-
-function formatDate(value?: string): string {
-  if (!value) return '-';
-  return new Date(value).toLocaleString();
 }
 
 /**
@@ -873,7 +869,7 @@ function PromptsPageBody() {
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900">Prompt Content</h3>
                   <div className="text-xs text-gray-500">
-                    Created: {formatDate(draft.createdAt)} | Updated: {formatDate(draft.updatedAt)}
+                    Created: {formatDate(draft.createdAt, { empty: '-' })} | Updated: {formatDate(draft.updatedAt, { empty: '-' })}
                   </div>
                 </div>
                 <textarea

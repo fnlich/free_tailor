@@ -14,10 +14,9 @@ import {
   type OrderItem,
   type OrderItemState,
 } from '@/lib/orders';
+import { formatDate } from '@/lib/format';
+import { CARD, LABEL } from '@/components/pageChrome';
 
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
-const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400';
 const VALUE = 'mt-1 text-sm text-gray-900 dark:text-white';
 
 const ITEM_STATE_STYLES: Record<OrderItemState, string> = {
@@ -35,12 +34,6 @@ const ITEM_STATE_LABELS: Record<OrderItemState, string> = {
   failed: 'Failed',
   cancelled: 'Cancelled',
 };
-
-function formatDate(value: string): string {
-  const at = new Date(value);
-  if (Number.isNaN(at.getTime())) return value;
-  return at.toLocaleString();
-}
 
 export default function OrderDetailPage() {
   const params = useParams<{ id: string }>();

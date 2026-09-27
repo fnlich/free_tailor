@@ -3,6 +3,11 @@
 import type { CSSProperties } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { adminApi, GoogleSheetCell, GoogleSheetColor, GoogleSheetMergeRange, GoogleSheetSource, GoogleSheetTab, GoogleSheetsRangeResponse } from '@/lib/api';
+import {
+  parsePositiveWholeNumber,
+  parseSpreadsheetColumnInput,
+  toSpreadsheetColumnLabel,
+} from '@/lib/sheet';
 
 type SheetsImportFormState = {
   sheetId: string;
@@ -37,44 +42,6 @@ const DEFAULT_SAVED_SHEET_FORM: SavedSheetFormState = {
   name: '',
   sheetId: '',
 };
-
-function parsePositiveWholeNumber(label: string, value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${label} must be a positive whole number.`);
-  }
-  return parsed;
-}
-
-function parseSpreadsheetColumnInput(label: string, value: string): number {
-  const normalized = value.trim().toUpperCase();
-  if (!normalized) {
-    throw new Error(`${label} is required.`);
-  }
-  if (!/^[A-Z]+$/.test(normalized)) {
-    throw new Error(`${label} must use spreadsheet letters like A, B, or AA.`);
-  }
-
-  let columnNumber = 0;
-  for (const character of normalized) {
-    columnNumber = (columnNumber * 26) + (character.charCodeAt(0) - 64);
-  }
-
-  return columnNumber;
-}
-
-function toSpreadsheetColumnLabel(columnNumber: number): string {
-  let current = columnNumber;
-  let label = '';
-
-  while (current > 0) {
-    const remainder = (current - 1) % 26;
-    label = String.fromCharCode(65 + remainder) + label;
-    current = Math.floor((current - 1) / 26);
-  }
-
-  return label;
-}
 
 function toRgba(color: GoogleSheetColor | null | undefined, fallback: string): string {
   if (!color) return fallback;
