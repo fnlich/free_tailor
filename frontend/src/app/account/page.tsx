@@ -6,6 +6,7 @@ import Link from 'next/link';
 import CreditLedger from '@/components/CreditLedger';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountPlan } from '@/lib/auth';
+import { operatorDetail } from '@/lib/api';
 import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
 import { formatDate } from '@/lib/format';
@@ -44,6 +45,12 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<AccountSheet | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
+  /*
+   * The operator half of a Sheets failure, which the server sends to
+   * administrators only. Absent for everybody else, so rendering it
+   * unconditionally is safe - there is nothing to render.
+   */
+  const [sheetDetail, setSheetDetail] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
 
   useEffect(() => {
@@ -82,6 +89,7 @@ export default function AccountPage() {
         setSheet(await sheetApi.get());
       } catch (caught) {
         setSheetError(caught instanceof Error ? caught.message : 'Could not load your sheet.');
+        setSheetDetail(operatorDetail(caught));
       }
     })();
   }, []);
@@ -102,6 +110,7 @@ export default function AccountPage() {
   const changeVisibility = async (visibility: SheetVisibility) => {
     setSharing(true);
     setSheetError(null);
+    setSheetDetail(null);
     try {
       const result = await sheetApi.setVisibility(visibility);
       // Stored from the response rather than from the button that was pressed:
@@ -110,6 +119,7 @@ export default function AccountPage() {
       setSheet((current) => (current ? { ...current, visibility: result.visibility } : current));
     } catch (caught) {
       setSheetError(caught instanceof Error ? caught.message : 'Could not change the sharing.');
+      setSheetDetail(operatorDetail(caught));
     } finally {
       setSharing(false);
     }
@@ -203,9 +213,11 @@ export default function AccountPage() {
         </p>
 
         {sheetError && (
-          <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
-            {sheetError}
-          </p>
+          <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+            <p>{sheetError}</p>
+            {/* Administrators only: the server withholds this from everyone else. */}
+            {sheetDetail && <p className="mt-2 text-xs opacity-90">{sheetDetail}</p>}
+          </div>
         )}
 
         {!sheet && !sheetError && (

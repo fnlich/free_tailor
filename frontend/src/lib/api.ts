@@ -178,6 +178,24 @@ async function readErrorBody(response: Response): Promise<Record<string, unknown
     : {};
 }
 
+/**
+ * The administrator-only half of a refusal, when the server sent one.
+ *
+ * Some failures have two audiences. "This server's Google sign-in is no longer
+ * valid" is for whoever hit the page; "run npm run sheets:login in backend/" is
+ * for whoever runs the server, and naming a command and a directory at somebody
+ * who administers neither is noise at best. The backend decides - it attaches
+ * `detail` for an administrator and omits it for everybody else - so a caller
+ * can render this unconditionally and get nothing when there is nothing to
+ * show. Do NOT reintroduce a client-side role check here; the server's omission
+ * is the control.
+ */
+export function operatorDetail(error: unknown): string | null {
+  if (!(error instanceof ApiResponseError)) return null;
+  const detail = error.body.detail;
+  return typeof detail === 'string' && detail.trim() ? detail : null;
+}
+
 /** The account is at its plan's profile limit. */
 export function isProfileLimit(error: unknown): error is ApiResponseError {
   return error instanceof ApiResponseError && error.code === 'profile-limit';

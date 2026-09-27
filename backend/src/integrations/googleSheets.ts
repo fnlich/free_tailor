@@ -503,9 +503,27 @@ export function describeCredentialInUse(): string {
 export class GoogleSheetsRequestError extends Error {
   statusCode: number;
 
-  constructor(statusCode: number, message: string) {
+  /**
+   * What to tell the OPERATOR, kept apart from what anyone may read.
+   *
+   * The useful thing to say about a refused credential names a command to run
+   * in `backend/`, or an environment variable, or a file on the server's disk.
+   * That is exactly right in a log and exactly wrong on a page: `/api/sheet` is
+   * behind `requireUser`, not `requireAdmin`, so every account holder opening
+   * their own Account page was being handed `Run "npm run sheets:login" in
+   * backend/` about a server they do not administer, along with the layout of
+   * its directories.
+   *
+   * So `message` stays true and says only what the reader can act on, and the
+   * half that assumes shell access goes here. A route decides who sees it -
+   * see `fail` in `routes/sheet.ts` - and the log always does.
+   */
+  detail?: string;
+
+  constructor(statusCode: number, message: string, detail?: string) {
     super(message);
     this.statusCode = statusCode;
+    if (detail) this.detail = detail;
   }
 }
 
@@ -785,26 +803,44 @@ export async function getAccessToken(scope: string): Promise<string> {
     } catch {
       // Ignore JSON parsing failures and use the fallback message.
     }
+    /*
+     * Split in two: what anybody may read, and what only an operator should.
+     *
+     * Everything below that names a command, a file on disk or an environment
+     * variable goes into `detail`. `message` keeps the diagnosis, because an
+     * account holder seeing "the server's Google sign-in has expired" at least
+     * knows to stop retrying and tell somebody.
+     */
+    let operatorDetail: string | undefined;
+
     if (errorMessage.toLowerCase().includes('invalid_grant')) {
       errorMessage =
-        `${errorMessage}\n` +
-        (credentials.kind === 'authorized_user'
+        credentials.kind === 'authorized_user'
+          ? "This server's Google sign-in is no longer valid, so Sheets and Drive are " +
+            'unavailable until an administrator renews it.'
+          : "This server's Google service account key was rejected, so Sheets and Drive are " +
+            'unavailable until an administrator replaces it.';
+      operatorDetail =
+        credentials.kind === 'authorized_user'
           ? 'The saved consent is no longer valid - it was revoked, or it expired because the ' +
             'OAuth consent screen is still in Testing mode, where refresh tokens last seven days. ' +
             'Run "npm run sheets:login" in backend/ again, and publish the consent screen to stop ' +
             'it recurring.'
           : 'The service account key was rejected. It may have been deleted or revoked; issue a ' +
-            'new one. A clock more than a few minutes out will also do this.');
+            'new one. A clock more than a few minutes out will also do this.';
     }
     if (errorMessage.toLowerCase().includes('user not found')) {
       errorMessage =
-        `Google service account was not recognized: ${
+        "This server's Google service account was not recognized, so Sheets and Drive are " +
+        'unavailable until an administrator replaces its key.';
+      operatorDetail =
+        `Google did not recognize ${
           credentials.kind === 'service_account' ? credentials.clientEmail : '(user credentials)'
         }. ` +
         'This usually means the JSON key belongs to a deleted or disabled service account, or the key file does not match the live account. ' +
         'Create a new key for the current service account and replace backend/service-account-key.json.';
     }
-    throw new GoogleSheetsRequestError(response.status, errorMessage);
+    throw new GoogleSheetsRequestError(response.status, errorMessage, operatorDetail);
   }
 
   const data = (await response.json()) as { access_token?: string; expires_in?: number };
