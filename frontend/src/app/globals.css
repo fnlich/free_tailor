@@ -414,8 +414,8 @@ html.dark .shadow-2xl {
    named, and reads the same custom properties it does.
 
    Page CONTENT is not affected by any of this and keeps its existing utility
-   classes; eighteen pages carry no dark: variants at all and theme entirely
-   through that shim. It stays.                                             */
+   classes; thirteen of the 23 App Router pages carry no dark: variants at all
+   and theme entirely through that shim. It stays.                          */
 
 /*
  * display:contents so [data-drawer] can live on a real element for the CSS

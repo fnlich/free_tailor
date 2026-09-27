@@ -35,17 +35,18 @@ Facts worth knowing before you build:
   Editing a `.ts` and rerunning a single test file directly will run stale
   JavaScript.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
-  pre-existing `react-hooks/set-state-in-effect` errors in
-  `src/app/page.tsx` and `src/bid-assistant/App.jsx`, plus 2 warnings. Not a
-  build gate: `next build` does not run ESLint. Do not treat a red lint as
+  pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
+  `src/bid-assistant/App.jsx` (lines 259, 293, 369; `src/app/page.tsx`
+  contributes none), plus 1 `no-img-element` warning in that feature's TopBar.
+  Not a build gate: `next build` does not run ESLint. Do not treat a red lint as
   something your change caused without checking `git stash` first.
 - **Dark mode does not work the way it looks.** `globals.css` ends with a block
   that remaps light utilities under `html.dark` (`html.dark .bg-white { ... }`).
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. Eighteen pages carry no `dark:` at all and theme entirely through
-  it, so it stays. New chrome uses the `@theme inline` tokens instead
+  ignored. Thirteen of the 23 App Router pages carry no `dark:` at all and
+  theme entirely through it, so it stays. New chrome uses the `@theme inline` tokens instead
   (`bg-surface`, `border-line`, `text-muted`), which the shim never names, and
   needs no `dark:` variant. Three of its rules are catch-alls rather than
   dark-mode fixes — the bare `border` width class, every `shadow*`, and bare
@@ -89,6 +90,7 @@ backend/src/
   database/migrations # numbered, run on first DB use
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
+  integrations/       # Stripe, Cryptomus, Google Sheets - one file per service
   middleware/         # auth, and turning an AI failure into a useful status
   routes/             # one file per /api/* area
   scripts/            # operator tools, each behind an npm script: browser:debug,
@@ -99,9 +101,12 @@ backend/src/
   bidAssistant/       # the Bid Assistant's own prompt building
   types/, utils/      # shared types; path, storage and filename helpers
 backend/
-  scrapers/           # the ONLY JavaScript in the backend, and not under src/:
-                      #   eight Apify actors behind one registry, reached from
-                      #   services/scraperProviders.ts and routes/jobs.ts
+  scrapers/           # NOT under src/, and the bulk of the backend's
+                      #   JavaScript: seven Apify actors plus one shared
+                      #   apify.js, behind one registry, reached from
+                      #   services/scraperProviders.ts and routes/jobs.ts.
+                      #   (bidAssistant/database.js and scripts/installBrowser.js
+                      #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
   test/               # node:test, 74 files; fixtures/cli replays real streams
 frontend/src/
@@ -119,6 +124,8 @@ frontend/src/
                       #   wizard reducer with no JSX in it; chrome.ts holds the
                       #   shared class strings and the note on why none of them
                       #   carries a `dark:` variant.
+  bid-assistant/      # the largest single feature directory here, and the only
+                      #   JSX: its own App, components and stylesheet
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page), lib/sheet.ts (the spreadsheet range
@@ -162,7 +169,7 @@ runner, and storage tests point `DB_DIR` and `TAILOR_STATIC_DIR` at temp dirs.
 
 ## Conventions from the history
 
-144 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
+148 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
 The pattern in nearly every feature arc is a feature commit followed by one or
 more "fix what the adversarial review found" commits, so expect review passes
 to be part of the work rather than an afterthought.
