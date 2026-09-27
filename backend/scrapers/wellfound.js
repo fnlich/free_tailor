@@ -1,41 +1,15 @@
 'use strict';
 
-const { ApifyClient } = require('apify-client');
+const { getApifyClient, getAllDatasetItems } = require('./apify');
 const { mapFiltersForWellfound } = require('./filters');
 const { normalizeWellfoundItems } = require('./normalize');
 
 const ACTOR_ID = 'blackfalcondata/wellfound-scraper';
 const ACTOR_NAME = 'Wellfound scraper';
 const RUN_TIMEOUT_SECS = 300;
-const DATASET_PAGE_SIZE = 1000;
-
-function getApifyClient() {
-  const token = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
-  if (!token) {
-    throw new Error('APIFY_API_TOKEN is required to run the Wellfound scraper.');
-  }
-
-  return new ApifyClient({ token });
-}
-
-async function getAllDatasetItems(client, runId) {
-  const datasetClient = client.run(runId).dataset();
-  const items = [];
-
-  for (let offset = 0; ; offset += DATASET_PAGE_SIZE) {
-    const page = await datasetClient.listItems({ limit: DATASET_PAGE_SIZE, offset });
-    items.push(...page.items);
-
-    if (page.items.length < DATASET_PAGE_SIZE) {
-      break;
-    }
-  }
-
-  return items;
-}
 
 async function runWellfoundScraper(filters) {
-  const client = getApifyClient();
+  const client = getApifyClient(ACTOR_NAME);
   const actorInput = mapFiltersForWellfound(filters || {});
   const startedRun = await client.actor(ACTOR_ID).start(actorInput, { timeout: RUN_TIMEOUT_SECS });
   const finishedRun = await client.run(startedRun.id).waitForFinish({ waitSecs: RUN_TIMEOUT_SECS });
@@ -47,7 +21,7 @@ async function runWellfoundScraper(filters) {
     throw new Error(`${ACTOR_NAME} run ${finishedRun.id || startedRun.id} ${statusMessage}.`);
   }
 
-  const items = await getAllDatasetItems(client, finishedRun.id);
+  const items = await getAllDatasetItems(client.run(finishedRun.id).dataset());
   return normalizeWellfoundItems(items);
 }
 

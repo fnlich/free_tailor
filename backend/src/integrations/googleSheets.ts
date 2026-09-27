@@ -922,7 +922,8 @@ function hasRangeInput(input: GoogleSheetsRangeRequest): boolean {
   );
 }
 
-function toColumnLetters(columnNumber: number): string {
+/** 1 -> `A`, 27 -> `AA`. Spreadsheet column letters, for building an A1 range. */
+export function toColumnLetters(columnNumber: number): string {
   let current = columnNumber;
   let letters = '';
 

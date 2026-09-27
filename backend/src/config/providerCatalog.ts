@@ -342,11 +342,6 @@ export function coerceProviderId(value: unknown): AIProvider | null {
   return null;
 }
 
-/** Test seam: lets a test assert the alias warning fires exactly once. */
-export function resetProviderAliasWarningsForTests(): void {
-  warnedAliases.clear();
-}
-
 /**
  * The two chat sites this app drives in a browser.
  *

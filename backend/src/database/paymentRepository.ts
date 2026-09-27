@@ -19,11 +19,20 @@ export type PaymentMethod = 'card' | 'crypto';
 /**
  * Who took the money.
  *
- * `coinbase` stays in the union although new crypto checkouts no longer use
- * it: rows exist, they still have to read and render, and its webhook still
- * has to be answered for an install part-way through the change.
+ * `coinbase` and `chain` stay in the union although both paths are DELETED -
+ * no code here can open one, and neither webhook is answered any more. Their
+ * rows still exist, still have to read and render, and still have to refund
+ * with the right advice about where that money actually is. Narrowing this
+ * union is what misreads history: a row does not stop having been paid
+ * on-chain because the code that watched the chain was deleted.
+ *
+ * Nothing in this codebase switches exhaustively on this type, so ADDING a
+ * member is not a compile error. A new provider has to be carried by hand to
+ * every place that says something different per provider - in practice the
+ * refund advice in `services/payments`, the same sentence on the admin page,
+ * and the precedence in `describeMethods`.
  */
-export type PaymentProvider = 'stripe' | 'coinbase' | 'chain';
+export type PaymentProvider = 'stripe' | 'coinbase' | 'chain' | 'cryptomus';
 
 /**
  * Where a payment has got to.
@@ -221,24 +230,65 @@ export function getPaymentByProviderRef(provider: PaymentProvider, providerRef: 
   return row ? toPayment(row) : null;
 }
 
-export function listPaymentsForUser(userId: string, limit = 50): Payment[] {
+/**
+ * A page of one account's payments, newest first.
+ *
+ * The offset is what makes this a history rather than a window onto the newest
+ * fifty. Each row on the credits page links to the order's own page, so a row
+ * the list cannot reach is an order its buyer cannot open.
+ *
+ * The `rowid` tiebreak is load-bearing for the same reason it is in
+ * `listAllPayments` below: `created_at` is a second-resolution string, so
+ * without it two payments made in the same second can swap places between two
+ * requests, and one of them is returned on neither page.
+ */
+export function listPaymentsForUser(userId: string, limit = 50, offset = 0): Payment[] {
   const rows = getDb()
     .prepare(
       `SELECT ${PAYMENT_COLUMNS} FROM payments
-       WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`
+       WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
     )
-    .all(userId, limit) as PaymentRow[];
+    .all(userId, limit, offset) as PaymentRow[];
   return rows.map(toPayment);
 }
 
+/** How many that account has, so a page can say what it is not showing. */
+export function countPaymentsForUser(userId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS total FROM payments WHERE user_id = ?')
+    .get(userId) as { total: number };
+  return row.total;
+}
+
 /** Every payment, newest first. The administrator's reconciliation view. */
-export function listAllPayments(limit = 200): Payment[] {
+/**
+ * A page of every payment, newest first.
+ *
+ * The offset is what makes the list reachable past its first page, and the
+ * reason it had to exist: refunds are driven from a ROW on the admin page, so
+ * a payment the page cannot show is a payment nobody can refund. With 377
+ * payments on one install, 66 paid ones sat past the cap with no button
+ * anywhere in the product - while the page introduced itself as "every credit
+ * purchase on this installation".
+ *
+ * `rowid` breaks the tie on `created_at`, which is a second-resolution string:
+ * without it two payments made in the same second could swap places between
+ * pages and one of them would never be returned.
+ */
+export function listAllPayments(limit = 200, offset = 0): Payment[] {
   const rows = getDb()
     .prepare(
-      `SELECT ${PAYMENT_COLUMNS} FROM payments ORDER BY created_at DESC, rowid DESC LIMIT ?`
+      `SELECT ${PAYMENT_COLUMNS} FROM payments
+       ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
     )
-    .all(limit) as PaymentRow[];
+    .all(limit, offset) as PaymentRow[];
   return rows.map(toPayment);
+}
+
+/** How many there are in total, so a page can say what it is not showing. */
+export function countAllPayments(): number {
+  const row = getDb().prepare('SELECT COUNT(*) AS total FROM payments').get() as { total: number };
+  return row.total;
 }
 
 /**
@@ -397,17 +447,4 @@ export function recordEventOnce(event: PaymentEvent): boolean {
     if (/UNIQUE constraint failed/i.test(message)) return false;
     throw error;
   }
-}
-
-export function listEventsForPayment(paymentId: string): Array<{
-  eventId: string;
-  type: string;
-  receivedAt: string;
-}> {
-  return getDb()
-    .prepare(
-      `SELECT event_id AS eventId, type, received_at AS receivedAt
-       FROM payment_events WHERE payment_id = ? ORDER BY received_at ASC`
-    )
-    .all(paymentId) as Array<{ eventId: string; type: string; receivedAt: string }>;
 }

@@ -33,3 +33,55 @@ export const sheetApi = {
       body: JSON.stringify({ visibility }),
     }),
 };
+
+/**
+ * Reading the range fields a person types: `A`, `AA`, `12`.
+ *
+ * Here because three pages and two modals ask for the same four fields - a
+ * from-column, a to-column, a start row and an end row - and each had written
+ * its own copy of these, byte for byte. They throw rather than returning a
+ * sentinel because every caller is inside a submit handler that already catches
+ * and shows the message, and `label` is the field's own name so the message
+ * names the field the person got wrong.
+ */
+
+/** `A` -> 1, `Z` -> 26, `AA` -> 27. Throws if it is not spreadsheet letters. */
+export function parseSpreadsheetColumnInput(label: string, value: string): number {
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) {
+    throw new Error(`${label} is required.`);
+  }
+  if (!/^[A-Z]+$/.test(normalized)) {
+    throw new Error(`${label} must use spreadsheet letters like A, B, or AA.`);
+  }
+
+  let columnNumber = 0;
+  for (const character of normalized) {
+    columnNumber = (columnNumber * 26) + (character.charCodeAt(0) - 64);
+  }
+
+  return columnNumber;
+}
+
+/** The inverse: 1 -> `A`, 27 -> `AA`. Zero and below give an empty string. */
+export function toSpreadsheetColumnLabel(columnNumber: number): string {
+  let current = columnNumber;
+  let label = '';
+
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    current = Math.floor((current - 1) / 26);
+  }
+
+  return label;
+}
+
+/** A row number as typed. Throws on anything that is not 1 or more. */
+export function parsePositiveWholeNumber(label: string, value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive whole number.`);
+  }
+  return parsed;
+}

@@ -86,20 +86,24 @@ export default function AppTopBar({ credits, drawerOpen, onToggleDrawer, trigger
 
       <div className="ml-auto flex shrink-0 items-center gap-1 px-3 sm:gap-2 sm:px-4">
         <CreditsPill credits={credits} />
+        <NotificationsMenu />
+        <ThemeToggleButton />
+        <AccountMenu />
 
         {/*
           Templates is a destination rather than a control, but it belongs up
           here with them: it is shared by the whole installation, so it is not
           any one person's work the way the sidebar entries are. Everybody can
           look; only an administrator can change one.
+
+          Last, and after the account, for that same reason. Everything before
+          it acts on the session in front of you - what you have, what is new,
+          how it looks, who you are - and this one navigates away. Putting a
+          door in the middle of a row of switches is what made it read oddly.
         */}
         <Link href="/admin/templates" className="tl-icon-button" title="Templates">
           <IconTemplates className="h-5 w-5" />
         </Link>
-
-        <NotificationsMenu />
-        <ThemeToggleButton />
-        <AccountMenu />
       </div>
     </header>
   );

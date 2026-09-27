@@ -159,12 +159,6 @@ export function assertCanAddProfile(account: UserAccount, adding = 1): void {
   throw new ProfileLimitError(plan.label, plan.profileLimit, used);
 }
 
-/** For the account page: "2 of 5", or "2 of unlimited". */
-export function describeProfileUsage(account: UserAccount): string {
-  const plan = resolveAccountPlan(account.plan);
-  return `${countProfilesForOwner(account.id)} of ${describeProfileLimit(plan)}`;
-}
-
 /**
  * The old unscoped list, kept only where a viewer genuinely does not exist.
  *

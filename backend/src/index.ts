@@ -16,7 +16,6 @@ import paymentRoutes, { adminPaymentsRouter } from './routes/payments';
 import paymentWebhookRoutes from './routes/paymentWebhooks';
 import { ownerOfGeneratedFile } from './database/orderRepository';
 import { orderRetentionDays, startOrderRetention } from './services/orders/retention';
-import { chainProblems, startChainWatcher } from './services/payments/chain/watcher';
 import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
 import authRoutes from './routes/auth';
@@ -328,23 +327,6 @@ const server = app.listen(PORT, HOST, () => {
   startOrderRetention();
   console.log(`[orders] Ordered files are kept for ${orderRetentionDays()} day(s).`);
 
-  /*
-   * The chain watcher, for the same reasons and in the same shape.
-   *
-   * Started here rather than on import, unref'd so it never holds the process
-   * open, and it sweeps once immediately - a transfer that arrived while this
-   * server was down is found on boot rather than on the next interval.
-   *
-   * It starts nothing at all when no asset is configured, so an installation
-   * taking only cards pays nothing for this existing. An asset the operator
-   * asked for that CANNOT be served is named out loud instead of silently
-   * dropped, because a misconfigured address is a payment that arrives
-   * somewhere nobody is looking.
-   */
-  startChainWatcher();
-  for (const problem of chainProblems()) {
-    console.warn(`[chain] ${problem.asset} is not available: ${problem.reason}`);
-  }
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   //

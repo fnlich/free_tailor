@@ -4,8 +4,8 @@
  * Nothing here is a unit test: it talks to http://127.0.0.1:3001 over the
  * network, through the real routers, the real auth middleware, the real
  * database and the real webhook mount. The only thing that is not real is the
- * company at the other end - fake-providers.js replaced the four functions
- * that reach Stripe and Coinbase, and serves a checkout page of its own that
+ * company at the other end - fake-providers.js replaces every function that
+ * reaches Stripe or Cryptomus, and serves a checkout page of its own that
  * signs a webhook exactly as they would.
  *
  * Sign-in is seeded rather than driven: there is no offline path to a login
@@ -52,7 +52,7 @@ async function call(token, path, init = {}) {
 
 const stamp = Date.now().toString(36);
 
-/** The watcher's sweep answers before it has finished writing. */
+/** A signed callback is delivered and settled on a tick of its own. */
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
@@ -163,98 +163,89 @@ async function main() {
   );
 
   /*
-   * Crypto, which no longer means a hosted page.
+   * Crypto, which now means exactly one thing.
    *
-   * This step used to POST `{ method: 'crypto' }` with no coin and follow the
-   * `redirectUrl` to Coinbase Commerce's fake. That shape is now a 400 by
-   * design: with a CHAIN_ADDRESS block configured the server takes coin into
-   * its own wallet, and which coin is no longer somebody else's page's
-   * question to ask. The step was left behind when the chain branch landed and
-   * read as a crash rather than a failure, which is the worse of the two.
+   * This step used to ask the server which of three providers it was running
+   * and branch accordingly. Two of the three have been deleted, so there is
+   * one shape: a URL to send the buyer to, and a signed callback that settles.
    */
   console.log('\n=== 5. Crypto ===');
-  const noCoin = await call(buyerToken, '/payments/checkout', {
-    method: 'POST',
-    body: JSON.stringify({ method: 'crypto', credits: 15 }),
-  });
+  const methodsBody = (await call(buyerToken, '/payments/methods')).body;
+  const cryptoMethod = methodsBody?.methods?.find((entry) => entry.method === 'crypto');
   check(
-    'a crypto checkout with no coin named is refused',
-    noCoin.status === 400,
-    `status=${noCoin.status} ${JSON.stringify(noCoin.body)}`
+    'crypto is offered, through Cryptomus',
+    cryptoMethod?.available === true && cryptoMethod?.provider === 'cryptomus',
+    JSON.stringify(cryptoMethod ?? null)
   );
 
   /*
-   * The floor is read, not assumed: crypto carries its own minimum under
-   * Admin -> Payments and it is not the card one. On top of it a different
-   * amount every run, because an open invoice reserves its exact figure for
-   * twenty minutes - so a second run inside that window would ask for an
-   * amount the first is still holding, and be correctly refused.
+   * One button, and no coin fields on it.
+   *
+   * The coin and the network are chosen on Cryptomus's page, from Cryptomus's
+   * list, so a per-coin row here would offer a choice nothing could honour.
    */
-  const coin = (await call(buyerToken, '/payments/methods')).body?.targets?.find(
-    (target) => target.asset === 'ethereum:USDT'
-  );
-  check('the server offers USDT on Ethereum', Boolean(coin?.available), JSON.stringify(coin ?? null));
-  const cryptoCredits = (coin?.minCredits ?? 100) + (Math.floor(Date.now() / 1000) % 40);
+  /*
+   * Counted, not filtered on a field that no longer exists.
+   *
+   * This asked for crypto targets carrying an `asset`, and `PaymentTarget` lost
+   * that field when the coins went away - so the filter was always empty and
+   * the check could not fail however many crypto rows the server sent. The
+   * claim is that there is exactly ONE, which is a thing a count can say.
+   */
+  const cryptoRows = (methodsBody?.targets ?? []).filter((target) => target.method === 'crypto');
+  check('and as one button rather than a row per coin', cryptoRows.length === 1,
+    JSON.stringify(cryptoRows.map((row) => row.id)));
+
+  const cryptoRow = (methodsBody?.targets ?? []).find((target) => target.id === 'crypto');
+  const cryptoCredits = cryptoRow?.minCredits ?? 100;
   const cryptoCheckout = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'crypto', credits: cryptoCredits, asset: 'ethereum:USDT' }),
+    body: JSON.stringify({ method: 'crypto', credits: cryptoCredits }),
   });
   check(
     'a crypto checkout is created',
     cryptoCheckout.status === 201,
     `${cryptoCheckout.status} ${cryptoCheckout.body?.reference ?? JSON.stringify(cryptoCheckout.body)}`
   );
-
-  const invoice = cryptoCheckout.body?.invoice;
   check(
-    'it hands back our own address and an exact amount',
-    invoice?.address === process.env.CHAIN_EVM_ADDRESS && Boolean(invoice?.amountAtomic),
-    JSON.stringify(invoice)
+    'and sends the buyer to the provider rather than showing an address',
+    Boolean(cryptoCheckout.body?.redirectUrl) && !cryptoCheckout.body?.invoice,
+    `${cryptoCheckout.body?.redirectUrl} invoice=${JSON.stringify(cryptoCheckout.body?.invoice ?? null)}`
   );
-  check('and sends nobody to a hosted page', !cryptoCheckout.body?.redirectUrl, cryptoCheckout.body?.redirectUrl);
 
   let balanceWithCrypto = balanceAfter;
-  if (invoice?.address) {
+  const cryptoPaymentId = cryptoCheckout.body?.paymentId ?? null;
+  const invoiceId = String(cryptoCheckout.body?.redirectUrl ?? '').split('/').pop();
+
+  if (invoiceId) {
     /*
-     * Announced at the tip and THEN buried, which is the only order that
-     * works. The cursor is persistent and the scan runs from it forward, so a
-     * transfer announced 30 blocks down is already behind the cursor and is
-     * never discovered - a mistake that looks exactly like a broken settler.
-     * One pass here; the shallow-then-buried sequence is walked in
-     * buy-credits.js and repeating it would prove nothing new.
+     * Pay on the fake's own page, which posts a callback signed the way
+     * Cryptomus signs one - the signature INSIDE the body - to the real
+     * endpoint. The server's own verifier decides whether to believe it.
      */
-    await fetch(
-      `${FAKE}/chain/send?asset=ethereum%3AUSDT&to=${encodeURIComponent(invoice.address)}` +
-        `&amount=${invoice.amountAtomic}&depth=1&advance=30`,
-      { method: 'POST' }
-    );
-    await fetch(`${FAKE}/chain/sweep?chain=ethereum`, { method: 'POST' });
+    await fetch(`${FAKE}/pay/${invoiceId}`, { method: 'POST', redirect: 'manual' });
     await wait(300);
 
     const cryptoPaid = await call(buyerToken, `/payments/${cryptoCheckout.body.paymentId}`);
     balanceWithCrypto = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-    /*
-     * Against the payment's OWN figure, not the number of credits asked for.
-     *
-     * Crypto carries a fee here (220 bps under Admin -> Payments) and the fee
-     * comes out of the credits granted rather than being added to the price -
-     * so a buyer who asks for 117 pays for 117 and receives 114. Asserting
-     * `asked` would make the fee look like money going missing.
-     */
     const granted = cryptoPaid.body?.payment?.creditsGranted ?? 0;
     check(
-      'a confirmed transfer credits too',
+      'a signed callback credits',
       cryptoPaid.body?.payment?.state === 'paid' &&
         granted > 0 &&
-        granted <= cryptoCredits &&
         balanceWithCrypto === balanceAfter + granted,
-      `state=${cryptoPaid.body?.payment?.state} balance=${balanceWithCrypto} ` +
-        `granted=${granted} of ${cryptoCredits} asked`
+      `state=${cryptoPaid.body?.payment?.state} balance=${balanceWithCrypto} granted=${granted}`
     );
+
+    // Cryptomus retries until it gets a 2xx, so a second copy of the same
+    // callback is ordinary traffic rather than an attack.
+    await fetch(`${FAKE}/replay/${invoiceId}`, { method: 'POST' });
+    await wait(200);
+    const afterReplay = (await call(buyerToken, '/credits')).body?.balance ?? 0;
+    check('and a retried callback credits nothing further', afterReplay === balanceWithCrypto,
+      `${afterReplay} vs ${balanceWithCrypto}`);
   } else {
-    // A failed checkout is a failed check above, not a crash three lines
-    // later that hides every step after it.
-    check('a confirmed transfer credits too', false, 'no invoice to pay');
+    check('a signed callback credits', false, 'no invoice to pay');
   }
 
   console.log('\n=== 6. Cancelling ===');
@@ -330,14 +321,36 @@ async function main() {
     body: JSON.stringify({ amount: -balanceAfterRefund, note: 'spent on resumes' }),
   });
   check('the balance is spent down to nothing', spend.status === 200, `status=${spend.status}`);
-  const shortRefund = await call(adminToken, `/admin/payments/${cryptoCheckout.body.paymentId}/refund`, {
-    method: 'POST',
-    body: JSON.stringify({ note: 'spent already' }),
-  });
+  const shortRefund = cryptoPaymentId
+    ? await call(adminToken, `/admin/payments/${cryptoPaymentId}/refund`, {
+        method: 'POST',
+        body: JSON.stringify({ note: 'spent already' }),
+      })
+    : { status: 0, body: { error: 'no crypto payment was made' } };
+  /*
+   * And says WHERE the money is.
+   *
+   * This asserted the word "coinbase" for every crypto payment, which was the
+   * old message and the wrong place for an on-chain one: no processor ever
+   * held that money. Both of those providers are deleted now and only their
+   * ROWS survive, but the trap is not - `PaymentProvider` is still not
+   * switched on exhaustively anywhere, so a fourth would silently inherit
+   * whichever branch happens to be last. The wrong answers are asserted
+   * ABSENT, not merely left unasserted, because that is the half that catches
+   * it. The per-provider table for the rows that remain lives in
+   * `paymentRefund.test.js`.
+   */
   check(
     'a crypto refund says plainly that it cannot be done automatically',
-    shortRefund.status === 409 && /coinbase/i.test(shortRefund.body?.error ?? ''),
+    shortRefund.status === 409 &&
+      /cannot be refunded automatically/i.test(shortRefund.body?.error ?? ''),
     `${shortRefund.status}: ${shortRefund.body?.error}`
+  );
+  check(
+    'and points at Cryptomus rather than at the wrong place',
+    /Cryptomus merchant dashboard/i.test(shortRefund.body?.error ?? '') &&
+      !/coinbase|wallet you configured/i.test(shortRefund.body?.error ?? ''),
+    shortRefund.body?.error
   );
 
   console.log('\n=== 12. What the provider was actually asked for ===');

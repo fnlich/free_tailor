@@ -1,6 +1,6 @@
 import puppeteer from 'puppeteer';
 import type { Browser, Page } from 'puppeteer';
-import { hostOf, matchesHost, matchesSite } from './conversation';
+import { hostOf, matchesSite } from './conversation';
 import { wrapPuppeteerPage } from './page';
 import { ChatTab, type ChatTabOptions } from './tab';
 import type { ChatSite, ChatSiteId } from './sites';

@@ -51,11 +51,41 @@ export class StripeError extends Error {
    */
   readonly transport: boolean;
 
-  constructor(message: string, status = 502, transport = false) {
+  /**
+   * Stripe's own machine-readable reason, when it gave one.
+   *
+   * `error.message` is written for a human and Stripe rewords it; `error.code`
+   * is the thing to branch on. The one branch that needs it today is
+   * `authentication_required`, which is how a bank demanding a challenge
+   * arrives on an off-session charge - as a REFUSAL, not as an intent with
+   * `requires_action` on it. Without the code that lands in the same catch as
+   * a misconfigured key and gets the same message.
+   */
+  readonly code: string;
+
+  /**
+   * The intent the refusal was about, when the body named one.
+   *
+   * Stripe returns the whole `payment_intent` object on a failed confirm, and
+   * that id is the only thing that makes the attempt attributable: the charge
+   * exists at Stripe whether or not this server ever heard a usable answer.
+   * Recording it means a later webhook about that intent finds the payment
+   * instead of resolving to nobody.
+   */
+  readonly paymentIntentId: string;
+
+  constructor(
+    message: string,
+    status = 502,
+    transport = false,
+    detail: { code?: string; paymentIntentId?: string } = {}
+  ) {
     super(message);
     this.name = 'StripeError';
     this.status = status;
     this.transport = transport;
+    this.code = detail.code ?? '';
+    this.paymentIntentId = detail.paymentIntentId ?? '';
   }
 }
 
@@ -212,8 +242,32 @@ async function stripeFetch<T>(
   }
 
   if (!response.ok) {
-    const detail = (parsed as { error?: { message?: string } })?.error?.message;
-    throw new StripeError(detail || `Stripe refused the request (HTTP ${response.status}).`);
+    /*
+     * The code and the intent id are kept, and nothing else is.
+     *
+     * A Stripe error body quotes back what it was sent, including the tail of
+     * the key it was sent with, so it must not become a customer's error
+     * message - the caller replaces `message` for exactly that reason. These
+     * two fields are safe and are the two a caller can act on: `code` says
+     * WHAT was refused, and `payment_intent.id` says which charge it was
+     * about, which is the difference between an attempt that can be traced
+     * and one that cannot.
+     */
+    const body = parsed as {
+      error?: { message?: string; code?: string; payment_intent?: { id?: string } };
+    };
+    const failure = body?.error;
+    throw new StripeError(
+      failure?.message || `Stripe refused the request (HTTP ${response.status}).`,
+      502,
+      false,
+      {
+        ...(typeof failure?.code === 'string' ? { code: failure.code } : {}),
+        ...(typeof failure?.payment_intent?.id === 'string'
+          ? { paymentIntentId: failure.payment_intent.id }
+          : {}),
+      }
+    );
   }
   return parsed as T;
 }
@@ -242,6 +296,8 @@ export type CheckoutRequest = {
   customer?: string;
   /** Keep the card for later. Requires `customer`. */
   saveCard?: boolean;
+  /** Ask the bank to authenticate, rather than letting Stripe decide. */
+  requireThreeDSecure?: boolean;
 };
 
 /**
@@ -300,6 +356,16 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
         metadata: { paymentId: input.paymentId, reference: input.reference },
         ...(input.saveCard && input.customer ? { setup_future_usage: 'off_session' } : {}),
       },
+      /*
+       * At the SESSION level, not inside `payment_intent_data` above.
+       *
+       * Worth saying because the eye goes to `payment_intent_data` - that is
+       * where `setup_future_usage` lives, and both read like properties of the
+       * intent. A Checkout Session takes `payment_method_options` itself, and
+       * putting it in the wrong place is not an error: Stripe accepts the
+       * request and silently does not require authentication.
+       */
+      ...(input.requireThreeDSecure ? { payment_method_options: THREE_D_SECURE_REQUIRED } : {}),
       line_items: [
         {
           quantity: 1,
@@ -370,6 +436,24 @@ export async function detachPaymentMethod(methodId: string): Promise<void> {
   await stripeFetch(`/payment_methods/${encodeURIComponent(methodId)}/detach`, { method: 'POST' });
 }
 
+/**
+ * What to send when the operator has asked for every card to be authenticated.
+ *
+ * `'any'` asks for 3-D Secure wherever the card's network supports it, rather
+ * than leaving Stripe to apply its own risk rules (`'automatic'`, the default
+ * when this is absent). It is the setting that moves chargeback liability to
+ * the issuing bank.
+ *
+ * NOT `'challenge'`, which is the stricter value and forces an interactive
+ * challenge even where a frictionless check would have authenticated the
+ * cardholder anyway. That is more friction for the same liability shift, so it
+ * is left as something an operator can ask for later rather than the default
+ * reading of "require 3-D Secure".
+ *
+ * Resolved at the pinned API version above, like every other request here.
+ */
+const THREE_D_SECURE_REQUIRED = { card: { request_three_d_secure: 'any' } } as const;
+
 export type SavedCardCharge = {
   paymentId: string;
   reference: string;
@@ -378,6 +462,8 @@ export type SavedCardCharge = {
   customer: string;
   paymentMethod: string;
   returnUrl: string;
+  /** Ask the bank to authenticate. Changes the shape of the call - see below. */
+  requireThreeDSecure?: boolean;
 };
 
 /**
@@ -385,12 +471,30 @@ export type SavedCardCharge = {
  *
  * `off_session: true` tells Stripe nobody is at the keyboard, which is what
  * lets it apply the exemption earned when the card was first authenticated.
- * It can still come back `requires_action` - a bank may insist - and the caller
- * then hands the client secret to the browser, which is why this returns the
- * whole intent rather than a boolean.
+ *
+ * **A bank that insists anyway does NOT come back as an intent with
+ * `requires_action` on it.** An off-session confirm needing a challenge is
+ * REFUSED, HTTP 402 with `error.code = 'authentication_required'`, because
+ * `off_session` is precisely the declaration that there is nobody there to
+ * challenge. It arrives as a thrown `StripeError`, which is why the error
+ * carries `code` and the refused intent's id; `startCheckout` turns it into a
+ * sentence about the bank rather than about this server.
+ *
+ * **When 3-D Secure is required, that exemption is given up on purpose, and
+ * `off_session` goes with it.** The two cannot both be sent - asking for a
+ * challenge while declaring nobody is present is a contradiction Stripe
+ * resolves by failing the intent. Dropping `off_session` says the true thing
+ * instead, so the challenge comes back as `requires_action` on a returned
+ * intent and the browser finishes it. That is the only way that status is
+ * reachable, and why this returns the whole intent rather than a boolean. The
+ * cost belongs to the operator who turned the setting on: a kept card stops
+ * being one tap.
  *
  * `confirm: true` makes this one call rather than create-then-confirm. The
- * idempotency key is the payment, so a retried request charges once.
+ * idempotency key is the payment, so a retried request charges once - note
+ * that Stripe refuses a reused key whose body differs, so a payment retried
+ * across a change to this setting errors rather than quietly charging under
+ * the old shape. That is the safer direction and the message says so.
  */
 export async function chargeSavedCard(input: SavedCardCharge): Promise<StripePaymentIntent> {
   return stripeFetch<StripePaymentIntent>('/payment_intents', {
@@ -402,7 +506,9 @@ export async function chargeSavedCard(input: SavedCardCharge): Promise<StripePay
       customer: input.customer,
       payment_method: input.paymentMethod,
       confirm: true,
-      off_session: true,
+      ...(input.requireThreeDSecure
+        ? { payment_method_options: THREE_D_SECURE_REQUIRED }
+        : { off_session: true }),
       return_url: input.returnUrl,
       description: input.reference,
       metadata: {

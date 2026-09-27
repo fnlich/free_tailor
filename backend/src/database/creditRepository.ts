@@ -405,11 +405,31 @@ export function heldForUser(userId: string): number {
   return row.held;
 }
 
-export function listLedger(userId: string, limit = 100): LedgerEntry[] {
+/**
+ * A page of one account's movements, newest first.
+ *
+ * Ordered on `seq`, which is monotonic per row, so offset paging over it is
+ * stable and needs no tiebreak - unlike the payments list, whose timestamp is
+ * only second-resolution.
+ *
+ * The limit clamp stays where it is rather than moving to the route. It is a
+ * second guard, and the thing it guards against - one request asking for every
+ * row an account has ever moved - is not something a caller should be able to
+ * do by getting the query string wrong.
+ */
+export function listLedger(userId: string, limit = 100, offset = 0): LedgerEntry[] {
   const rows = getDb()
-    .prepare('SELECT * FROM credit_ledger WHERE user_id = ? ORDER BY seq DESC LIMIT ?')
-    .all(userId, Math.max(1, Math.min(limit, 500))) as LedgerRow[];
+    .prepare('SELECT * FROM credit_ledger WHERE user_id = ? ORDER BY seq DESC LIMIT ? OFFSET ?')
+    .all(userId, Math.max(1, Math.min(limit, 500)), Math.max(0, offset)) as LedgerRow[];
   return rows.map(toEntry);
+}
+
+/** How many movements that account has, so a page can say what it is hiding. */
+export function countLedger(userId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS total FROM credit_ledger WHERE user_id = ?')
+    .get(userId) as { total: number };
+  return row.total;
 }
 
 export function hasLedgerEntries(userId: string): boolean {

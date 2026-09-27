@@ -270,21 +270,6 @@ async function poolFor(id: ChatSiteId, env: NodeJS.ProcessEnv): Promise<TabPool>
   return pool;
 }
 
-/** For tests, and for a config change that should not need a restart. */
-export function resetBrowserChatSession(): void {
-  const held = [...sessions.values()];
-  sessions.clear();
-  for (const session of held) {
-    // Not awaited - the caller wants the handles dropped, not a round trip to a
-    // browser that may already be gone - but the rejection IS caught. An
-    // unhandled one from `disconnect()` on a dead socket takes the process down
-    // under Node's default policy, and this runs from config-change handlers
-    // and from test teardown, where an exit is a mystifying failure elsewhere.
-    void session.dispose().catch(() => undefined);
-  }
-}
-
-
 /**
  * A tab, or a failure worded for the thing that actually went wrong.
  *

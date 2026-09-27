@@ -25,6 +25,11 @@
  *     `refundPayment` measures the balance either side and clamps at zero;
  *   - crypto is not refundable automatically: the same function says so and
  *     answers 409.
+ *
+ * Crypto briefly had two sets of lines, because the on-chain path asked the
+ * buyer to send an exact amount to an address and this one does not. That path
+ * is gone; what is left is the hosted set, which is the only one that was ever
+ * true of a provider whose page quotes and matches on its own.
  */
 
 const TONES = {
@@ -79,7 +84,7 @@ export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) 
       />
       <Panel
         tone="warn"
-        title={method === 'card' ? 'Refunds' : 'Refunds, and getting the amount right'}
+        title={method === 'card' ? 'Refunds' : 'Refunds, and paying on the next page'}
         points={
           method === 'card'
             ? [
@@ -87,9 +92,9 @@ export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) 
                 'This server never sees your card number. The card form is served by the payment provider and your details go straight to them.',
               ]
             : [
-                'A crypto payment cannot be refunded automatically - coin can only be sent back by hand, by an administrator. Check the amount and the network before you send anything.',
-                'Send the exact amount shown, on the network named. A payment on a different network cannot be recovered by anyone, including us.',
-                'If the amount differs from the one shown, we credit what arrived wherever we can safely tell which order it belongs to. Where we cannot, the payment is held and somebody contacts you - it is never silently credited and never written off.',
+                'A crypto payment cannot be refunded automatically - coin can only be sent back by hand, by an administrator.',
+                'You pay on the payment provider\u2019s own page, not this one. The coin, the network and the amount to send are all chosen and shown there, at their rates.',
+                'Credits are added when the provider confirms the payment, which for crypto can take several minutes. This order stays open until they do, and you can close this window without losing it.',
               ]
         }
       />

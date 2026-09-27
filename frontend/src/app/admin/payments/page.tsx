@@ -9,19 +9,14 @@ import {
   STATE_LABELS,
   STATE_STYLES,
   type AdminPayment,
-  type HeldTransfer,
 } from '@/lib/payments';
+import { formatDate } from '@/lib/format';
 
 /**
  * Every payment, for reconciliation and refunds.
  *
  * Under `/admin`, so the nav comes from that layout rather than from here.
  */
-
-function formatDate(value: string): string {
-  const at = new Date(value);
-  return Number.isNaN(at.getTime()) ? value : at.toLocaleString();
-}
 
 /**
  * One target's limits, while they are being edited.
@@ -198,6 +193,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   const [minCredits, setMinCredits] = useState('');
   const [maxCredits, setMaxCredits] = useState('');
   const [limits, setLimits] = useState<LimitDraft[]>([]);
+  const [require3ds, setRequire3ds] = useState(false);
   const [newTarget, setNewTarget] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -212,6 +208,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         setMinCredits(String(settings.creditMinCredits));
         setMaxCredits(String(settings.creditMaxCredits));
         setLimits(settings.paymentLimits.map(toDraft));
+        setRequire3ds(settings.requireThreeDSecure);
       } catch {
         setProblem('Could not load the current pricing.');
       } finally {
@@ -230,6 +227,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         creditMinCredits: Number.parseInt(minCredits, 10),
         creditMaxCredits: Number.parseInt(maxCredits, 10),
         paymentLimits: limits.map(toRow),
+        requireThreeDSecure: require3ds,
       });
       setNote('Pricing saved. It applies to new purchases only.');
       onSaved();
@@ -284,6 +282,33 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
       </div>
 
       <div className="mt-6 border-t border-gray-200 pt-5">
+        <h3 className="text-sm font-semibold text-gray-900">Card security</h3>
+        <label className="mt-3 flex items-start gap-3 text-sm">
+          <input
+            type="checkbox"
+            checked={require3ds}
+            onChange={(event) => setRequire3ds(event.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0"
+          />
+          <span className="min-w-0">
+            <span className="font-medium text-gray-700">
+              Always ask the cardholder&apos;s bank to authenticate
+            </span>
+            <span className="mt-1 block text-gray-600">
+              Off, your payment provider decides when to challenge somebody, using its own risk
+              rules. On, every card payment asks the bank &ndash; which is what moves
+              responsibility for a disputed payment from you to the bank that issued the card.
+            </span>
+            <span className="mt-1 block text-gray-600">
+              It is not free: a challenge is a step a buyer can fail or give up on, and a card
+              somebody has kept stops charging in one tap, because they have to confirm each
+              time. That trade is yours to make, which is why this is a switch.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="mt-6 border-t border-gray-200 pt-5">
         <h3 className="text-sm font-semibold text-gray-900">Limits per payment method</h3>
         <p className="mt-1 text-sm text-gray-600">
           In cents, and the tighter of the two wins: a row here can narrow a method but never
@@ -293,9 +318,10 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         </p>
         <p className="mt-1 text-sm text-gray-600">
           A fee is taken <span className="font-medium">out of</span> the amount charged, not added
-          to it - the buyer pays what they chose and receives the credits the remainder buys. A
-          row naming a coin, such as <span className="font-mono">ethereum:USDT</span>, overrides
-          the <span className="font-mono">crypto</span> row for that coin alone.
+          to it - the buyer pays what they chose and receives the credits the remainder buys.
+          There are two methods to name here, <span className="font-mono">card</span> and{' '}
+          <span className="font-mono">crypto</span>; a row naming a coin is left over from when
+          this app chose the coin itself and no longer applies to anything.
         </p>
 
         <div className="mt-4 space-y-4">
@@ -322,13 +348,20 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         </div>
 
         <div className="mt-4 flex flex-wrap items-end gap-3">
+          {/*
+            `card or crypto`, and not the coin id this suggested for three
+            commits after the coins were deleted. Two paragraphs above, this page
+            already tells the operator that a row naming a coin applies to
+            nothing - and then invited them to type one, and saved it without a
+            word.
+          */}
           <label className="block text-sm">
             <span className="font-medium text-gray-700">Add a target</span>
             <input
               type="text"
               value={newTarget}
               onChange={(event) => setNewTarget(event.target.value)}
-              placeholder="card, crypto, or ethereum:USDT"
+              placeholder="card or crypto"
               className="mt-1 w-64 rounded-md border border-gray-300 px-3 py-2"
             />
           </label>
@@ -382,29 +415,21 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
 
 function PaymentsBody() {
   const [payments, setPayments] = useState<AdminPayment[]>([]);
-  const [held, setHeld] = useState<HeldTransfer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [refunding, setRefunding] = useState('');
   const [confirming, setConfirming] = useState('');
   const [note, setNote] = useState('');
-  const [resolving, setResolving] = useState('');
+  /** How many exist, against how many are on screen. */
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const response = await adminPaymentsApi.list();
       setPayments(response.payments);
-      /*
-       * Settled separately: a held transfer is the more urgent of the two and
-       * must not be hidden because the payment list failed to load, nor take
-       * the payment list down when it fails itself.
-       */
-      try {
-        setHeld((await adminPaymentsApi.held()).held);
-      } catch {
-        // An older backend has no such route. Nothing to show is correct.
-      }
+      setTotal(response.total ?? response.payments.length);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load payments.');
@@ -418,23 +443,24 @@ function PaymentsBody() {
   }, [load]);
 
   /**
-   * Marks an unattributable transfer as dealt with.
+   * The next page, appended rather than swapped in.
    *
-   * Deliberately NOT a credit and NOT a refund: this server cannot know which
-   * of those the administrator did, only that they have finished. What it
-   * changes is the queue, so that a list of things needing a person stays a
-   * list of things needing a person.
+   * Refunds are driven from a row here, so a payment this page cannot show is
+   * a payment nobody can refund - and it used to stop at the newest 200 with
+   * no control, no count and no hint that anything was missing. On an install
+   * with 377 payments that hid 66 refundable ones.
    */
-  const dismiss = async (entry: HeldTransfer) => {
-    setResolving(entry.id);
+  const loadMore = async () => {
+    setLoadingMore(true);
     try {
-      await adminPaymentsApi.resolveHeld(entry.id);
-      setHeld((current) => current.filter((item) => item.id !== entry.id));
-      setMessage('Marked as dealt with.');
+      const response = await adminPaymentsApi.list(payments.length);
+      setPayments((current) => [...current, ...response.payments]);
+      if (typeof response.total === 'number') setTotal(response.total);
+      setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not clear that item.');
+      setError(err instanceof Error ? err.message : 'Could not load older payments.');
     } finally {
-      setResolving('');
+      setLoadingMore(false);
     }
   };
 
@@ -484,81 +510,11 @@ function PaymentsBody() {
         <p className="mt-1 text-sm text-gray-600">
           Every credit purchase on this installation. Quote the reference when reconciling against
           your provider&apos;s dashboard.
+          {total > payments.length && (
+            <> Showing the newest {payments.length} of {total}.</>
+          )}
         </p>
       </div>
-
-      {/*
-        Above everything, because it is the only thing on this page that is
-        somebody's money sitting unclaimed.
-
-        A transfer lands here when it could not be attributed to exactly ONE
-        open order - the amount was off and either nothing or two things were
-        close enough. Nothing was credited and nothing was written off, which
-        is the only honest outcome when guessing would give one buyer's coin
-        to another buyer's order.
-      */}
-      {held.length > 0 && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-          <h2 className="text-base font-semibold text-red-700">
-            {held.length} payment{held.length === 1 ? ' needs' : 's need'} attention
-          </h2>
-          <p className="mt-1 text-sm text-red-700">
-            Coin arrived that could not be matched to one order automatically. Nothing has been
-            credited and nothing has been lost. Check the transaction against the order, then
-            adjust the balance from the accounts page.
-          </p>
-          <ul className="mt-3 space-y-2">
-            {held.map((entry) => (
-              <li key={entry.id} className="rounded-md border border-red-200 bg-white p-3 text-sm">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span className="font-medium text-gray-900">{entry.asset}</span>
-                  <span className="text-xs text-gray-500">{formatDate(entry.at)}</span>
-                </div>
-                <p className="mt-1 text-gray-700">{entry.note}</p>
-                <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-gray-600 sm:grid-cols-2">
-                  {/*
-                    Shown only when there is one. An unattributable transfer
-                    has no single order behind it, so an "Expected: —" row
-                    reads as a figure that went missing rather than as a
-                    question this entry does not have an answer to.
-                  */}
-                  {entry.expected && (
-                    <div>
-                      <dt className="inline font-medium">Expected: </dt>
-                      <dd className="inline font-mono">{entry.expected}</dd>
-                    </div>
-                  )}
-                  <div>
-                    <dt className="inline font-medium">Received: </dt>
-                    <dd className="inline font-mono">{entry.received || '—'}</dd>
-                  </div>
-                  {entry.txid && (
-                    <div className="sm:col-span-2">
-                      <dt className="inline font-medium">Transaction: </dt>
-                      <dd className="inline break-all font-mono">{entry.txid}</dd>
-                    </div>
-                  )}
-                </dl>
-                {/*
-                  Only an unattributable transfer offers this. A held invoice
-                  belongs to a payment and keeps its place in that payment's
-                  history, so there is nothing here to dismiss.
-                */}
-                {entry.resolvable && (
-                  <button
-                    type="button"
-                    onClick={() => void dismiss(entry)}
-                    disabled={resolving === entry.id}
-                    className="mt-3 rounded-md border-2 border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
-                  >
-                    {resolving === entry.id ? 'Clearing…' : 'Mark as dealt with'}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       <PricingCard onSaved={() => void load()} />
 
@@ -604,7 +560,15 @@ function PaymentsBody() {
                       {payment.providerRef && (
                         <>
                           {' '}
-                          &middot; <span className="font-mono">{payment.providerRef}</span>
+                          {/*
+                            `break-all`, as the transaction id above already
+                            has. Both are opaque provider identifiers with no
+                            break opportunity - a Stripe session id runs to 66
+                            characters - and this was the only one of the two
+                            that could be clipped by its card.
+                          */}
+                          &middot;{' '}
+                          <span className="break-all font-mono">{payment.providerRef}</span>
                         </>
                       )}
                     </p>
@@ -642,8 +606,34 @@ function PaymentsBody() {
                       {payment.userEmail || 'this account'}?
                     </p>
                     <p className="mt-1 text-sm text-red-800">
-                      The money goes back through {payment.provider}. Credits already spent cannot be
-                      reversed - a balance never goes below zero - and this will say how many were.
+                      {/*
+                        Said BEFORE the button, because for crypto the answer
+                        is "not by us" - and pressing it does NOTHING.
+                        `refundPayment` answers 409 for every crypto provider
+                        before touching the balance, so the old chain line
+                        ("pressing this will reverse the credits only") was a
+                        promise the server refuses. The old copy before that
+                        said "the money goes back through chain" and let the
+                        administrator discover the refusal by pressing, which
+                        is a worse way to find out than reading it here.
+                      */}
+                      {payment.method === 'crypto' ? (
+                        <>
+                          {payment.provider === 'chain'
+                            ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured.'
+                            : payment.provider === 'coinbase'
+                              ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account.'
+                              : 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard.'}{' '}
+                          Then adjust the balance from the accounts page. Pressing this reverses
+                          nothing and will say so.
+                        </>
+                      ) : (
+                        <>
+                          The money goes back through {payment.provider}. Credits already spent
+                          cannot be reversed - a balance never goes below zero - and this will say
+                          how many were.
+                        </>
+                      )}
                     </p>
                     <input
                       type="text"
@@ -674,6 +664,22 @@ function PaymentsBody() {
               </li>
             ))}
           </ul>
+          {/*
+            The way past the first page. Shown only while there is more, so a
+            small installation never sees a button that would do nothing.
+          */}
+          {payments.length < total && (
+            <div className="border-t border-gray-200 p-4 text-center">
+              <button
+                type="button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+              >
+                {loadingMore ? 'Loading…' : `Show older payments (${total - payments.length} more)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

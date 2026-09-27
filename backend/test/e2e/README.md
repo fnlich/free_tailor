@@ -12,16 +12,20 @@ bottom rather than something a script can arrange.
 
 ## What is faked, and what is not
 
-`fake-providers.js` is loaded with `node --require` **before** the app, and
-replaces exactly four functions: `createCheckoutSession`, `getCheckoutSession`,
-`refundPaymentIntent` and `createCharge`. Everything else is the shipping code.
+`fake-providers.js` is loaded with `node --require` **before** the app, so it is
+evaluated before the app requires its integration modules. It replaces every
+function that reaches the network and nothing else: Stripe's
+`createCheckoutSession`, `getCheckoutSession`, `refundPaymentIntent`,
+`createCustomer`, `getPaymentIntent`, `getPaymentMethod`,
+`detachPaymentMethod` and `chargeSavedCard`, plus Cryptomus's `createInvoice`.
+The routes, the database, the webhook mount, the signature verification and the
+ledger are all the shipping code.
 
-It replaces five exports in all - `createCheckoutSession`, `getCheckoutSession`,
-`refundPaymentIntent`, `createCharge` and `getCharge` - and serves a checkout
-page of its own on port 4242. Pressing **Pay** there
-signs a webhook with the real HMAC scheme and posts it to the real endpoint,
-exactly as Stripe would; the server's own verifier decides whether to believe
-it.
+It also serves a checkout page of its own on port 4242. Pressing **Pay** there
+signs a webhook with the real scheme and posts it to the real endpoint, exactly
+as the provider would; the server's own verifier decides whether to believe it.
+For Cryptomus that means the signature goes INSIDE the body, which is the one
+thing about it that is genuinely unlike Stripe.
 
 ### What a fake cannot do, now the form is embedded
 
@@ -47,8 +51,8 @@ cat >> .env <<'EOF'
 STRIPE_SECRET_KEY=sk_test_e2e_not_a_real_key
 STRIPE_PUBLISHABLE_KEY=pk_test_e2e_not_a_real_key
 STRIPE_WEBHOOK_SECRET=whsec_e2e_local_secret
-COINBASE_COMMERCE_API_KEY=cb_test_e2e_not_a_real_key
-COINBASE_COMMERCE_WEBHOOK_SECRET=cb_whsec_e2e_local_secret
+CRYPTOMUS_MERCHANT_ID=e2e-merchant-not-a-real-id
+CRYPTOMUS_PAYMENT_API_KEY=e2e_cryptomus_local_key
 ADMIN_EMAILS=boss@example.com
 EOF
 
@@ -62,12 +66,11 @@ node test/e2e/walkthrough.js
 # 4. The browser walkthroughs, with the frontend running too
 npm run start --prefix ../frontend
 node test/e2e/buy-credits.js   # the three-step purchase dialog; puppeteer
-node test/e2e/held-queue.js    # the needs-attention queue; puppeteer
 node test/e2e/browser.js       # the OLD buy page; needs playwright, which may not be installed
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js` and `held-queue.js` use puppeteer, which the backend already
+`buy-credits.js` and `shell.js` use puppeteer, which the backend already
 installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
@@ -81,23 +84,22 @@ scripts are testing.
 
 ## What they check
 
-`walkthrough.js` — 41 claims over HTTP: both methods offered with the price
+`walkthrough.js` — 42 claims over HTTP: both methods offered with the price
 from settings; a request carrying its own price priced by the server anyway;
 a checkout that credits nothing until the webhook lands; the return URL
 visited before paying crediting nothing; a card crediting on a signed event
-and coin crediting on a confirmed transfer, with a crypto checkout that names
-no coin refused rather than sent to a hosted page; a retried delivery
-crediting nothing further; a cancelled checkout closing without crediting;
+and crypto crediting on a signed Cryptomus callback, offered as one button
+rather than a row per coin; a retried delivery crediting nothing further; a cancelled checkout closing without crediting;
 another account's payment answering 404; forged and unsigned webhooks refused;
 the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 50 claims over the three-step dialog, half of them through
-HTTP first because the browser half needs what they leave behind. Over HTTP:
-each method judged by its own bounds and presets that fall inside them; an
-`asset` naming a method, or a coin this build has never heard of, refused
-before anything is recorded; a purchase that asks to keep the card keeping it,
+`buy-credits.js` — 92 claims over the three-step dialog and the credits page,
+a third of them through HTTP first because the browser half needs what they
+leave behind. Over HTTP: each method judged by its own bounds and presets that
+fall inside them; an `asset` from a stale tab ignored rather than refused, and
+unable to change the price; a purchase that asks to keep the card keeping it,
 and one that does not, not - even for an account that already has a customer;
 a saved card that is the owner's alone to charge or delete, and answering 404
 to anybody else; and an off-session charge settling through
@@ -108,31 +110,22 @@ AT the ceiling and saying so; Back preserving the amount; the summary pricing
 itself without opening a checkout, so looking at it costs the buyer nothing;
 the order appearing when the new-card form is asked for; the form mounting or
 saying plainly that it could not; Escape closing; and nothing hanging off the
-side at 1440 or 390, in either theme. It screenshots each step.
+side at 1440 or 390, in either theme. On the credits page: two columns wide and
+stacked narrow, both histories opening on five rows and saying how many there
+are, Older and Newer moving between real pages, and a page whose request FAILS
+keeping its rows while the count sentence still describes them - a failed press
+used to leave rows 1-5 under "6-10 of 12". It screenshots each step.
 
-`buy-credits.js` also drives a whole on-chain payment: a coin per button with
-its network named, an address matching the configured one, a second buyer told
-to wait when they ask for an amount already reserved, a transfer announced
-below the confirmation depth reported as `seen` and crediting nothing, and the
-same transfer crediting once it is buried - with the fee coming out of the
-credits rather than the amount sent.
+`buy-credits.js` also drives a whole crypto payment through the fake Cryptomus:
+one button rather than a row per coin, the hand-off panel naming whose page
+comes next, a callback signed the way Cryptomus signs one, and a retried
+callback crediting nothing further.
 
-`held-queue.js` — 8 claims over the one path the others cannot reach: two
-orders a dollar apart, a transfer landing exactly between them, and what
-happens next. That nothing is credited to a guess; that BOTH orders are left
-open and reserved, because those buyers may still pay the figure they were
-quoted and cancelling them would punish them for a third party's mistake; that
-the money is written down rather than merely logged; that it reaches the page
-an administrator already opens, in both themes; and that pressing **Mark as
-dealt with** clears it from the page and from the server.
-
-Worth knowing why it exists: the settler used to hand a `held` status back to a
-caller that only logged it, so the queue was permanently empty and the line on
-the buyer's screen - that we hold it and get in touch - described nothing the
-server did. A queue nobody can reach is indistinguishable from no queue, which
-is why this is a script and not a unit test.
-
-`browser.js` — the same purchase with a mouse, now that the form is embedded:
+`browser.js` — needs playwright, so it does NOT run on a checkout without it,
+and that is how its `Your payments` selector survived three commits past the
+heading being renamed to *Payment history*. Read the page for the current
+wording before trusting a locator in here. The same purchase with a mouse, now
+that the form is embedded:
 the buy page priced from the server; pressing Pay navigating NOWHERE and the
 dialog opening in place; the form either mounting or saying plainly that it
 could not; the return page waiting for the webhook rather than congratulating
@@ -161,19 +154,42 @@ the internet can reach:
    balance does not move, the webhook endpoint is missing that event. Then use
    `4000 0025 0000 3155` as the saved card to exercise the branch where the
    bank demands authentication anyway and the browser has to finish it.
-7. Repeat 1-2 in the Coinbase Commerce sandbox, if you use it.
-8. **One real payment per crypto asset, at the smallest amount your limits
-   allow.** This is the row that matters most on this list. No reader in this
-   repository has ever contacted a live chain, so every response shape is
-   pinned by tests against recorded bodies and confirmed by nothing else.
-   Check, for each asset: that the amount the buy page quotes is the amount
-   your wallet sends; that the payment moves to `seen` within a block or two;
-   and that it credits at the confirmation count `chainAssets.ts` names.
-9. **Send a deliberately wrong amount once**, a few percent short, and confirm
-   it either credits in proportion or appears in the *needs attention* list
-   under Admin -> Payments. Both are correct outcomes; silence is not.
-10. The decimals are keyed on `(chain, contract)` because USDT is 6 decimals on
-    Ethereum and **18** on BNB Chain - a factor of a trillion on a token with
-    the same ticker. If you enable `bsc:USDT`, test it separately from
-    `ethereum:USDT`. Getting that one wrong means a customer's money arrives
-    and is never credited.
+7. **Cryptomus, every step below.** This is the row that matters most on this
+   list, and it is not optional: **no call in this repository has ever reached
+   Cryptomus.** It was built on a machine that cannot resolve
+   `api.cryptomus.com`, so the endpoint path, the header names, the field
+   names, the signature formula and the status vocabulary all come from the
+   published reference and are pinned only by tests against a stubbed socket.
+   Those tests prove the shape does not change by accident. They cannot prove
+   it was ever right.
+
+   a. Put a real merchant id and payment API key in `.env`, restart, and
+      confirm the **Crypto** button is offered.
+
+   b. Open one invoice for the smallest amount your limits allow, and compare
+      the request this server logged against Cryptomus's current API reference
+      - path, header names, field names, and how `sign` is computed. A wrong
+      guess here is a 4xx with nothing in it that says which guess was wrong.
+
+   c. Pay it. Confirm the callback arrives, verifies, and credits. If it is
+      refused with *Signature verification failed*, the first thing to try is
+      JSON escaping: Cryptomus signs the serialized body, PHP escapes `/` as
+      `\/` by default and JavaScript does not, and callback bodies carry URLs.
+      One line, in `verifyWebhookSign`.
+
+   d. Re-send that same callback. It must credit **nothing** the second time -
+      Cryptomus retries until it gets a 2xx, so this is ordinary traffic and
+      not an attack.
+
+   e. Underpay one invoice and let another expire. Neither may credit, and
+      neither may sit silent: check the payment's own page and the backend log.
+
+   f. Confirm the statuses Cryptomus actually sends match the three sets in
+      `integrations/cryptomus.ts`. A status that belongs in `PAID_STATUSES` and
+      is not there is a customer who paid and got nothing; one in there that
+      should not be is credits given away.
+
+   g. If anything sits in front of this server, allow Cryptomus's callback
+      addresses through. The signature is the only authentication this endpoint
+      has, and it is the only one it needs - but an endpoint nothing can reach
+      credits nobody.

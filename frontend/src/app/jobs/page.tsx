@@ -2,7 +2,12 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { sheetApi, type AccountSheet } from '@/lib/sheet';
+import {
+  parsePositiveWholeNumber,
+  parseSpreadsheetColumnInput,
+  sheetApi,
+  type AccountSheet,
+} from '@/lib/sheet';
 import {
   GoogleSheetSource,
   GoogleSheetTab,
@@ -93,31 +98,6 @@ const DEFAULT_SHEET_EXPORT_FORM: SheetExportFormState = {
   jobLinkCol: 'F',
   jobDescriptionCol: 'G',
 };
-
-function parsePositiveWholeNumber(label: string, value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${label} must be a positive whole number.`);
-  }
-  return parsed;
-}
-
-function parseSpreadsheetColumnInput(label: string, value: string): number {
-  const normalized = value.trim().toUpperCase();
-  if (!normalized) {
-    throw new Error(`${label} is required.`);
-  }
-  if (!/^[A-Z]+$/.test(normalized)) {
-    throw new Error(`${label} must use spreadsheet letters like A, B, or AA.`);
-  }
-
-  let columnNumber = 0;
-  for (const character of normalized) {
-    columnNumber = (columnNumber * 26) + (character.charCodeAt(0) - 64);
-  }
-
-  return columnNumber;
-}
 
 function formatFetchedAt(value: string): string {
   const date = new Date(value);

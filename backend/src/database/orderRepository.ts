@@ -307,15 +307,6 @@ export function getOrder(id: string): Order | null {
   return row ? toOrder(row) : null;
 }
 
-export function getOrderByBatchId(batchId: string): Order | null {
-  const trimmed = batchId.trim();
-  if (!trimmed) return null;
-  const row = getDb()
-    .prepare(`SELECT ${ORDER_COLUMNS} FROM orders WHERE batch_id = ? ORDER BY created_at DESC LIMIT 1`)
-    .get(trimmed) as OrderRow | undefined;
-  return row ? toOrder(row) : null;
-}
-
 export function listOrdersForUser(userId: string, limit = 50): Order[] {
   const rows = getDb()
     .prepare(

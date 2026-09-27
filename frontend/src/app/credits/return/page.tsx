@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   formatAmount,
   isPaymentPending,
@@ -11,9 +12,7 @@ import {
   STATE_STYLES,
   type Payment,
 } from '@/lib/payments';
-
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
+import { CARD } from '@/components/pageChrome';
 
 /**
  * Where a provider sends the browser back to.
@@ -25,12 +24,13 @@ const CARD =
  * So it polls the payment until the server says it was paid.
  *
  * Usually that is over before the redirect finishes. For crypto it can be
- * minutes, because a chain payment has to confirm - which is why the waiting
- * copy says so rather than spinning silently.
+ * minutes, because the network has to confirm the transfer - which is why the
+ * waiting copy says so rather than spinning silently.
  */
 function ReturnBody() {
   const search = useSearchParams();
   const paymentId = search?.get('payment') ?? '';
+  const { refresh } = useAuth();
 
   const [payment, setPayment] = useState<Payment | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,13 +54,28 @@ function ReturnBody() {
       if (token !== latestRequest.current) return;
       setPayment(response.payment);
       setError('');
+      /*
+       * Tell the rest of the app the balance moved.
+       *
+       * Nothing else has any reason to re-read the account: the webhook that
+       * credited it is server-to-server and the browser never saw it, and
+       * client-side navigation away from here does not help because the auth
+       * context fetches on mount and the root layout never unmounts. Without
+       * this the page says "credits added" while the top-bar pill, the balance
+       * panel and the credit history all still show the pre-purchase figure
+       * until a full reload.
+       *
+       * `isPaymentPending` goes false on this state, so the poll below stops
+       * right after and this fires once.
+       */
+      if (response.payment.state === 'paid') void refresh();
     } catch (err) {
       if (token !== latestRequest.current) return;
       setError(err instanceof Error ? err.message : 'Could not find that payment.');
     } finally {
       if (token === latestRequest.current) setLoading(false);
     }
-  }, [paymentId]);
+  }, [paymentId, refresh]);
 
   useEffect(() => {
     void load();
@@ -141,6 +156,7 @@ function ReturnBody() {
         {waiting && (
           <div className="mt-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
             <p className="font-semibold">Waiting for the payment to be confirmed.</p>
+
             <p className="mt-1">
               {/*
                 Careful not to promise. Landing here proves only that a browser
@@ -151,7 +167,7 @@ function ReturnBody() {
                 below says what to do when it stays that way.
               */}
               {payment.method === 'crypto'
-                ? 'A chain payment has to confirm, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
+                ? 'A crypto payment has to be confirmed by the network, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
                 : 'This usually takes a second or two. If the payment went through, your credits will be added even if you close this page.'}
             </p>
             {waitedTooLong && (
@@ -174,7 +190,18 @@ function ReturnBody() {
             <p className="font-semibold">
               {payment.state === 'expired' ? 'That checkout expired.' : 'That payment did not go through.'}
             </p>
-            <p className="mt-1">You were not charged. {payment.failure}</p>
+            {/*
+              The server's own sentence, or nothing but the reassurance.
+
+              This used to read "You were not charged." and then the sentence,
+              which put a flat contradiction on the page for the one failure
+              where money DID move: a crypto payment that arrived short is
+              closed as failed, and the coin is at the provider. Every sentence
+              the server writes now says what happened to the money itself, so
+              printing it alone is both shorter and true. The fallback covers a
+              row closed before those sentences existed.
+            */}
+            <p className="mt-1">{payment.failure || 'You were not charged.'}</p>
             <Link href="/credits" className="mt-2 inline-block font-semibold underline">
               Try again
             </Link>

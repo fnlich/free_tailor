@@ -567,12 +567,6 @@ export function readHardSkillPriorityMap(): Map<string, number> {
   );
 }
 
-export function readHardSkillCategoryMap(): Map<string, HardSkillCategory> {
-  return new Map(
-    readStore().hard.map((item) => [normalizeSkillValue(item.skill), item.category] as const)
-  );
-}
-
 export function addSkill(type: SkillType, skill: string, metadata: HardSkillMetadata = {}): AddSkillResult {
   const cleaned = cleanSkill(skill);
   if (!cleaned) {

@@ -216,7 +216,7 @@ const SCHEMA = `
    * price must not rewrite what somebody already paid.
    *
    * UNIQUE (provider, provider_ref) is a guard, not a convenience: it is what
-   * stops two rows ever claiming the same Stripe session or Coinbase charge.
+   * stops two rows ever claiming the same Stripe session or Cryptomus invoice.
    */
   CREATE TABLE IF NOT EXISTS payments (
     id               TEXT PRIMARY KEY,
@@ -243,9 +243,10 @@ const SCHEMA = `
      *
      * credits_granted is distinct from credits because they answer different
      * questions - credits is what was QUOTED, credits_granted is what the
-     * ledger actually received. They differ when a fee is taken, and again
-     * when a chain payment arrives for something other than the quoted
-     * amount. Measured, not assumed, exactly as refunded_credits is.
+     * ledger actually received. They differ when a fee is taken - and they
+     * could differ more widely on the retired on-chain path, where a transfer
+     * could arrive for something other than the quoted amount. Measured, not
+     * assumed, exactly as refunded_credits is.
      */
     fee_cents        INTEGER NOT NULL DEFAULT 0,
     credits_granted  INTEGER NOT NULL DEFAULT 0,
@@ -290,115 +291,36 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_payment_events_payment
     ON payment_events (payment_id, received_at);
 
-  /**
-   * One crypto invoice: an address, an exact amount, and a deadline.
+  /*
+   * chain_invoices, chain_cursors and chain_orphans were here.
    *
-   * Separate from the payment because the payment is provider-agnostic and this
-   * is entirely about chains. It hangs off payments.provider_ref, the same slot
-   * a Stripe session id occupies.
+   * They belonged to the non-custodial path - one address per chain, an exact
+   * amount per order, and a watcher reading four blockchains to match them up.
+   * Crypto goes through a hosted provider now and nothing reads any of them.
    *
-   * AMOUNT_ATOMIC is a TEXT column holding a decimal integer, not an INTEGER
-   * column. An 18-decimal token amount exceeds what SQLite's 64-bit INTEGER can
-   * hold once the numbers get large, and a silently truncated amount is a
-   * payment that is never matched. Every comparison on it is string equality on
-   * a canonical decimal, which is exact.
+   * The statements are gone; the TABLES are not dropped. A database that
+   * already has them keeps them, untouched, because those rows are somebody's
+   * record of money that arrived. A new install simply never creates them.
    *
-   * The UNIQUE index on (chain, asset, amount_atomic) WHERE reserved = 1 is the
-   * whole matching scheme. Buyers all send to ONE address per chain, so the
-   * amount is the only thing distinguishing them, and two invoices quoting the
-   * same amount would be two payments nobody can tell apart. The index is the
-   * decision - not an application check, which two concurrent checkouts would
-   * race straight past.
+   * TWO OF THOSE STATES OUTLIVE A PAYMENT, and losing their only reader is
+   * the one cost of this deletion worth writing down. An ORPHAN is coin that
+   * arrived and matched no single order; a HELD invoice is coin that arrived
+   * against an order it could not be credited to. Neither is transient -
+   * both waited for a person, and the admin queue that showed them went with
+   * the rest. They are still here, and still readable:
+   *
+   *   SELECT * FROM chain_orphans WHERE resolved_at IS NULL;
+   *   SELECT * FROM chain_invoices WHERE state = 'held';
+   *
+   * An operator with rows in either had money to account for before this
+   * shipped. The README says the same thing where they would go looking.
+   *
+   * (NO BACKTICKS ANYWHERE IN THIS FILE - the whole schema below is one
+   * template literal, and a backtick in a comment ends it. The warning lived
+   * in the chain_cursors comment that went with the tables; it is repeated
+   * here because it is still true of every line after this one, and it is
+   * cheaper to read than the syntax errors it prevents.)
    */
-  CREATE TABLE IF NOT EXISTS chain_invoices (
-    id             TEXT PRIMARY KEY,
-    payment_id     TEXT NOT NULL,
-    chain          TEXT NOT NULL,
-    asset          TEXT NOT NULL,
-    address        TEXT NOT NULL,
-    amount_atomic  TEXT NOT NULL,
-    decimals       INTEGER NOT NULL,
-    unit_price_usd TEXT NOT NULL DEFAULT '',
-    reserved       INTEGER NOT NULL DEFAULT 1,
-    quote_expires_at TEXT NOT NULL,
-    monitor_until  TEXT NOT NULL,
-    seen_txid      TEXT,
-    seen_amount    TEXT,
-    seen_at        TEXT,
-    confirmations  INTEGER NOT NULL DEFAULT 0,
-    state          TEXT NOT NULL DEFAULT 'waiting',
-    note           TEXT NOT NULL DEFAULT '',
-    created_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_invoices_slot
-    ON chain_invoices (chain, asset, amount_atomic) WHERE reserved = 1;
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_invoices_payment
-    ON chain_invoices (payment_id);
-
-  CREATE INDEX IF NOT EXISTS idx_chain_invoices_open
-    ON chain_invoices (state, monitor_until);
-
-  /**
-   * How far each chain has been read.
-   *
-   * Without this a restart has only two options, and both lose money: rescan
-   * from the beginning of the chain, which no public endpoint will serve, or
-   * start from the current tip, which silently skips every transfer that
-   * arrived while the process was down. Neither is recoverable afterwards,
-   * because the watcher's only record of having looked IS this number.
-   *
-   * HEIGHT is TEXT for the same reason amount_atomic is: it is written and
-   * compared as a decimal integer, and a block height is one number this code
-   * should not have to promise stays inside a double forever. (No backticks
-   * anywhere in this file - the whole schema is one template literal, and a
-   * backtick in a comment ends it.)
-   *
-   * It is written in the SAME transaction as whatever that height produced.
-   * Advancing the cursor first and recording the transfers afterwards is a
-   * crash away from a payment nobody will ever look for again.
-   */
-  CREATE TABLE IF NOT EXISTS chain_cursors (
-    chain      TEXT PRIMARY KEY,
-    height     TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  /**
-   * Money that arrived on a chain and belongs to nobody identifiable.
-   *
-   * Its own table because it has no invoice to live on: the whole reason a
-   * transfer ends up here is that two open orders were equally close to it and
-   * neither could be credited without possibly robbing the other. The invoices
-   * are deliberately left alone - those buyers may still pay correctly - so
-   * the record of the unattributable money has to go somewhere of its own.
-   *
-   * Without this the settler said "held" to a caller that only logged it, the
-   * administrator's queue was permanently empty, and the promise made to the
-   * buyer on the payment screen - that we hold it and get in touch - was not
-   * true of anything the server actually did.
-   *
-   * The UNIQUE index is load-bearing in the same way the invoice slot index
-   * is: the watcher re-reads the same transfer on every tick, so without it
-   * one unclaimed payment would become a thousand rows.
-   */
-  CREATE TABLE IF NOT EXISTS chain_orphans (
-    id            TEXT PRIMARY KEY,
-    chain         TEXT NOT NULL,
-    asset         TEXT NOT NULL,
-    txid          TEXT NOT NULL,
-    amount_atomic TEXT NOT NULL,
-    decimals      INTEGER NOT NULL,
-    reason        TEXT NOT NULL DEFAULT '',
-    resolved_at   TEXT,
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_orphans_tx
-    ON chain_orphans (chain, asset, txid);
 
   /**
    * Accounts.

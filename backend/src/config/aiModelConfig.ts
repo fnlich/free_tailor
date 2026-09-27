@@ -94,14 +94,19 @@ type AppSettings = {
   creditMinCredits: number;
   creditMaxCredits: number;
   /**
-   * What each payment method, and optionally each coin, may be bought in.
+   * What each payment method may be bought in.
    *
-   * One flat list rather than a field per method, because the targets are not
-   * a fixed set: every asset an operator enables is another one. A row's
-   * `target` is a method (`card`, `crypto`) or a single asset
-   * (`ethereum:USDT`), and lookup is exact-asset first, then method, then the
-   * hard defaults - so per-coin limits are possible without demanding a row
-   * for every coin the operator is happy to treat like the rest.
+   * One flat list rather than a field per method, because the targets were not
+   * a fixed set while this application chose the coin itself: every asset an
+   * operator enabled was another possible row. They ARE a fixed set now -
+   * `card` and `crypto` - because the coin is chosen on the provider's own page
+   * from the provider's own list, and nothing can ask to be priced as one.
+   *
+   * A stored row naming a coin (`ethereum:USDT`) is therefore a record from
+   * before that, and it is kept rather than dropped: the normalizer accepts it,
+   * the admin page renders it and writes it back, and a settings save does not
+   * quietly discard somebody's configuration. Nothing prices off it any more.
+   * `pricing.ts` says the same thing from the resolving end.
    *
    * Bounds are in CENTS here and nowhere else in this file, because cents are
    * what an operator thinks in ("between $2.50 and $100"). They become credit
@@ -109,6 +114,21 @@ type AppSettings = {
    * know the price.
    */
   paymentLimits: PaymentTargetLimits[];
+  /**
+   * Force the cardholder's bank to authenticate every card payment.
+   *
+   * Off by default, because turning it on changes what every buyer sees and
+   * no existing install asked for it. On, it sets Stripe's
+   * `request_three_d_secure` rather than leaving Stripe to decide, which is
+   * what moves chargeback liability to the issuing bank.
+   *
+   * It costs something, and the cost is the point of the setting rather than
+   * a flaw in it: a challenge is a step the buyer can fail or abandon, and a
+   * card kept for later stops charging in one tap. An operator weighing fraud
+   * against conversion is the only one who can make that trade, which is why
+   * this is a setting and not a constant.
+   */
+  requireThreeDSecure: boolean;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /**
@@ -224,6 +244,7 @@ export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & 
   creditMinCredits: number;
   creditMaxCredits: number;
   paymentLimits: PaymentTargetLimits[];
+  requireThreeDSecure: boolean;
 };
 
 export type AppSettingsUpdate = Partial<PublicAppSettings> & {
@@ -235,6 +256,7 @@ export type AppSettingsUpdate = Partial<PublicAppSettings> & {
   creditMinCredits?: number;
   creditMaxCredits?: number;
   paymentLimits?: PaymentTargetLimits[];
+  requireThreeDSecure?: boolean;
 };
 
 /**
@@ -259,7 +281,10 @@ export const CREDIT_CURRENCY = 'usd';
  * because 2.2% is 220 and needs no decimal anywhere in the arithmetic.
  */
 export type PaymentTargetLimits = {
-  /** A method (`card`, `crypto`) or one asset id (`ethereum:USDT`). */
+  /**
+   * `card` or `crypto`. A stored row naming a coin id still reads and still
+   * round-trips - see the note on `paymentLimits` - but nothing resolves one.
+   */
   target: string;
   minCents: number;
   maxCents: number;
@@ -280,9 +305,9 @@ export type PaymentTargetLimits = {
 /**
  * The defaults, which are the figures in the design this was built to.
  *
- * Card takes no fee and starts at $2.50; crypto starts at $50 because a chain
- * payment costs the buyer a network fee whatever we do, and a $2.50 purchase
- * that costs $4 to send is not a kindness.
+ * Card takes no fee and starts at $2.50; crypto starts at $50 because sending
+ * coin costs the buyer a network fee whatever we do, and a $2.50 purchase that
+ * costs $4 to send is not a kindness.
  */
 export const DEFAULT_PAYMENT_LIMITS: PaymentTargetLimits[] = [
   {
@@ -512,6 +537,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   creditMinCredits: DEFAULT_CREDIT_MIN,
   creditMaxCredits: DEFAULT_CREDIT_MAX,
   paymentLimits: DEFAULT_PAYMENT_LIMITS,
+  requireThreeDSecure: false,
   aiModels: DEFAULT_MODEL_RECORDS,
   googleSheetsSources: [],
   browserChatEndpoints: defaultBrowserChatEndpoints(),
@@ -1160,6 +1186,11 @@ function normalizeSettings(
       source.creditMaxCredits, fallback.creditMaxCredits, 1, 1_000_000, 'creditMaxCredits', strict
     ),
     paymentLimits: normalizePaymentLimits(source.paymentLimits, fallback.paymentLimits, strict),
+    requireThreeDSecure: typeof source.requireThreeDSecure === 'boolean'
+      ? source.requireThreeDSecure
+      : strict && hasOwnProperty(source, 'requireThreeDSecure')
+        ? (() => { throw new Error('requireThreeDSecure must be a boolean'); })()
+      : fallback.requireThreeDSecure,
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
@@ -1268,6 +1299,7 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     creditMinCredits: settings.creditMinCredits,
     creditMaxCredits: settings.creditMaxCredits,
     paymentLimits: settings.paymentLimits,
+    requireThreeDSecure: settings.requireThreeDSecure,
   };
 }
 
@@ -1363,29 +1395,6 @@ export async function getPublicAppSettings(): Promise<PublicAppSettingsWithDeriv
 
 export async function getAdminAppSettings(): Promise<AdminAppSettings> {
   return toAdminSettings(await readSettings());
-}
-
-/**
- * A field an operator typed, checked rather than corrected.
- *
- * `normalizeSettings` clamps out-of-range numbers, which is right when reading
- * a stored file - a settings row that will not load takes the whole app down.
- * It is wrong here. Somebody typed 80 into a port box; silently saving 1024 and
- * starting a browser on it is the same class of bug as parsing "9222; rm -rf /"
- * as 9222, and it is worse for being invisible. Say what was wrong instead.
- */
-function assertInRange(
-  value: unknown,
-  min: number,
-  max: number,
-  field: string
-): void {
-  if (typeof value === 'undefined') return;
-  const raw = typeof value === 'number' ? String(value) : String(value ?? '').trim();
-  const parsed = /^-?\d+$/.test(raw) ? Number.parseInt(raw, 10) : Number.NaN;
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw new Error(`${field} must be a whole number between ${min} and ${max}`);
-  }
 }
 
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
@@ -1790,11 +1799,6 @@ export async function getAIModelSettings(): Promise<AIModelSettings> {
   return { providersEnabled: { ...settings.providersEnabled } };
 }
 
-export async function updateAIModelSettings(input: Partial<AIModelSettings>): Promise<AIModelSettings> {
-  const updated = await updateAppSettings(input);
-  return { providersEnabled: { ...updated.providersEnabled } };
-}
-
 /**
  * The API key for a metered provider, from the environment.
  *
@@ -1819,6 +1823,7 @@ export async function getCreditPricingSettings(): Promise<{
   creditMinCredits: number;
   creditMaxCredits: number;
   paymentLimits: PaymentTargetLimits[];
+  requireThreeDSecure: boolean;
   currency: string;
 }> {
   const settings = await readSettings();
@@ -1827,6 +1832,7 @@ export async function getCreditPricingSettings(): Promise<{
     creditMinCredits: settings.creditMinCredits,
     creditMaxCredits: settings.creditMaxCredits,
     paymentLimits: settings.paymentLimits,
+    requireThreeDSecure: settings.requireThreeDSecure,
     currency: CREDIT_CURRENCY,
   };
 }

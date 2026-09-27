@@ -358,7 +358,6 @@ export default function Home() {
     };
     // Deliberately once, on mount. Re-running this on every render would attach
     // a second reader to the same stream.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const getSelectedProfilesForSheetsBuilder = () => {
@@ -811,7 +810,6 @@ export default function Home() {
         return;
       }
 
-
       if (generateMode === 'single') {
         const profile = profiles.find((p) => p.id === selectedProfileId);
         const templateId = profile?.preferredTemplate || 'default';
@@ -862,7 +860,6 @@ export default function Home() {
       clearGenerationProgress();
     }
   };
-
 
   const handleTailoredContentChange = (value: string) => {
     setTailoredContentDraft(value);

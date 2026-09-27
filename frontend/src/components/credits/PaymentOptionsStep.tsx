@@ -1,6 +1,6 @@
 'use client';
 
-import { MarkCardTrio, MarkCoinTrio, CoinMark } from '@/components/icons/marks';
+import { MarkCardTrio, MarkCoinTrio } from '@/components/icons/marks';
 import { IconChevronRight } from '@/components/icons';
 import { CHOICE, LABEL } from './chrome';
 import { formatAmount, type PaymentTarget } from '@/lib/payments';
@@ -22,18 +22,20 @@ import { formatAmount, type PaymentTarget } from '@/lib/payments';
  */
 
 function Mark({ target }: { target: PaymentTarget }) {
-  if (target.mark === 'card') return <MarkCardTrio />;
-  // The method-level crypto entry, before the server offers a row per coin.
-  if (target.mark === 'crypto') return <MarkCoinTrio />;
-  return <CoinMark assetId={target.asset} symbol={target.symbol} className="h-6 w-6" />;
+  // Two marks, because there are two buttons. There was a per-coin one until
+  // the on-chain path went: the coin is chosen on the provider's page now, and
+  // the trio is the honest picture of "some cryptocurrency, decided later".
+  return target.mark === 'card' ? <MarkCardTrio /> : <MarkCoinTrio />;
 }
 
 function Range({ targets, currency }: { targets: PaymentTarget[]; currency: string }) {
   /*
    * The widest range the section can actually serve.
    *
-   * Taken across the AVAILABLE targets only: a coin that is switched off has
-   * bounds of zero, and folding those in would advertise a $0.00 minimum.
+   * Taken across the AVAILABLE targets only, because an unavailable one has
+   * bounds of zero and folding those in would advertise a $0.00 minimum. Each
+   * section holds one row now, so it is that row's range or nothing - it was a
+   * genuine span back when a section could hold six coins with six floors.
    */
   const live = targets.filter((target) => target.available);
   if (live.length === 0) return null;
@@ -48,27 +50,23 @@ function Range({ targets, currency }: { targets: PaymentTarget[]; currency: stri
 
 function Choice({
   target,
-  currency,
-  showRange,
   onChoose,
 }: {
   target: PaymentTarget;
-  currency: string;
-  /**
-   * False when this is the only thing in its section.
-   *
-   * The section heading already carries the range, and with one target the
-   * two are the same figures printed twice. Once there is a row per coin they
-   * differ - USDT and Bitcoin need not share a minimum - and each button says
-   * its own.
-   */
-  showRange: boolean;
   onChoose: (target: PaymentTarget) => void;
 }) {
   return (
     <button
       type="button"
-      className={`${CHOICE} flex items-center gap-3`}
+      className={`${CHOICE} flex gap-3 ${
+        /*
+         * Centred while the row is one or two lines, top-aligned once it is
+         * not. An unavailable row carries setup instructions that run to
+         * several lines in this dialog, and a mark centred against five lines
+         * of text sits opposite nothing.
+         */
+        target.available ? 'items-center' : 'items-start'
+      }`}
       disabled={!target.available}
       onClick={() => onChoose(target)}
       // The reason is on the element as well as in the text below it, so it
@@ -78,14 +76,28 @@ function Choice({
       <Mark target={target} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-semibold text-ink">{target.label}</span>
-        {(!target.available || showRange) && (
-          <span className="block truncate text-xs text-subtle">
-            {target.available
-              ? `${formatAmount(target.minAmountCents, currency)} – ${formatAmount(
-                  target.maxAmountCents,
-                  currency
-                )}`
-              : target.reason || 'Not available.'}
+        {/*
+          No range under the label, only the reason when there is one.
+
+          Each section holds exactly one row now, and its heading already
+          carries the range - printing it again on the button beneath would be
+          the same two figures twice. There was a per-row range while a coin
+          section could hold six, because USDT and Bitcoin need not share a
+          minimum.
+        */}
+        {/*
+          Wrapped, not truncated, and the difference matters.
+
+          This is the only thing on screen telling an operator what to go and
+          set, and the part that says which keys is at the END of the sentence
+          - so one line with an ellipsis hides the whole point of showing it.
+          `break-words` is for the keys themselves: CRYPTOMUS_PAYMENT_API_KEY
+          is one long word with nowhere a browser will break it, and in this
+          column it has to go somewhere.
+        */}
+        {!target.available && (
+          <span className="block break-words text-xs text-subtle">
+            {target.reason || 'Not available.'}
           </span>
         )}
       </span>
@@ -105,8 +117,6 @@ export default function PaymentOptionsStep({
 }) {
   const cards = targets.filter((target) => target.method === 'card');
   const coins = targets.filter((target) => target.method === 'crypto');
-  const liveCards = cards.filter((target) => target.available).length;
-  const liveCoins = coins.filter((target) => target.available).length;
 
   return (
     <div className="space-y-6">
@@ -121,8 +131,6 @@ export default function PaymentOptionsStep({
               <Choice
                 key={target.id}
                 target={target}
-                currency={currency}
-                showRange={liveCards > 1}
                 onChoose={onChoose}
               />
             ))}
@@ -137,16 +145,22 @@ export default function PaymentOptionsStep({
             <Range targets={coins} currency={currency} />
           </h3>
           {/*
-            One column until there is more than one coin to choose between -
-            a two-column grid holding a single button leaves a hole beside it.
+            One column, at every width, and it stays that way.
+
+            This grid went two-up whenever a section held more than one row,
+            back when there was a row per coin. Step 1 is always the narrow
+            panel - BuyCreditsDialog passes `md` for every step but the summary
+            - so it is inside 446px whatever the viewport is, and two-up meant
+            a 195px chip with a 103px text column, which clipped five of six
+            rows at 1440. There is one row per section now and nothing to
+            arrange, but a `sm:grid-cols-2` added back here would break the
+            same way the moment a section grows again.
           */}
-          <div className={`mt-2 grid gap-2 ${coins.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+          <div className="mt-2 grid gap-2">
             {coins.map((target) => (
               <Choice
                 key={target.id}
                 target={target}
-                currency={currency}
-                showRange={liveCoins > 1}
                 onChoose={onChoose}
               />
             ))}

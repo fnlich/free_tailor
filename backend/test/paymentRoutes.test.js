@@ -29,14 +29,14 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     process.env.STRIPE_SECRET_KEY = 'sk_test_key';
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
     process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
-    process.env.COINBASE_COMMERCE_API_KEY = 'cb_key';
-    process.env.COINBASE_COMMERCE_WEBHOOK_SECRET = 'cb_secret';
+    process.env.CRYPTOMUS_MERCHANT_ID = 'merchant-uuid';
+    process.env.CRYPTOMUS_PAYMENT_API_KEY = 'payment-api-key';
   } else {
     delete process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_WEBHOOK_SECRET;
     delete process.env.STRIPE_PUBLISHABLE_KEY;
-    delete process.env.COINBASE_COMMERCE_API_KEY;
-    delete process.env.COINBASE_COMMERCE_WEBHOOK_SECRET;
+    delete process.env.CRYPTOMUS_MERCHANT_ID;
+    delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   }
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
 
@@ -69,10 +69,14 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     created.push(input);
     return { id: `cs_test_${created.length}`, client_secret: `cs_test_${created.length}_secret` };
   };
-  const coinbase = loadFresh('../dist/integrations/coinbaseCommerce');
-  coinbase.createCharge = async (input) => {
+  const cryptomus = loadFresh('../dist/integrations/cryptomus');
+  cryptomus.createInvoice = async (input) => {
     created.push(input);
-    return { id: 'ch_1', code: `CODE${created.length}`, hosted_url: 'https://commerce.example/1' };
+    return {
+      uuid: `inv-${created.length}`,
+      order_id: input.paymentId,
+      url: `https://pay.cryptomus.com/inv-${created.length}`,
+    };
   };
 
   loadFresh('../dist/services/payments/pricing');
@@ -395,6 +399,71 @@ test('the buy page is given the publishable key it needs to mount the form', asy
     // Served rather than baked into the frontend build: publishable keys are
     // safe to hand out, and this keeps every Stripe value in the one .env.
     assert.equal(methods.publishableKey, 'pk_test_key');
+  } finally {
+    server.close();
+  }
+});
+
+test('the admin list pages past its first two hundred', async () => {
+  /*
+   * Refunds are driven from a ROW on the admin page, so a payment the page
+   * cannot show is a payment nobody can refund. It stopped at the newest 200
+   * with no control and no count, while introducing itself as "every credit
+   * purchase on this installation" - which on a real install hid 66
+   * refundable ones.
+   */
+  const server = await serve();
+  try {
+    const wanted = 205;
+    for (let i = 0; i < wanted; i += 1) {
+      server.payments.createPayment({
+        userId: server.alice.id,
+        method: 'card',
+        provider: 'stripe',
+        credits: 10,
+        amountCents: 500,
+        currency: 'usd',
+        unitPriceCents: 50,
+      });
+    }
+
+    const first = await (await server.call(server.adminToken, '/api/admin/payments')).json();
+    assert.equal(first.payments.length, 200);
+    assert.ok(first.total >= wanted, `total ${first.total}`);
+    assert.equal(first.offset, 0);
+
+    const second = await (
+      await server.call(server.adminToken, '/api/admin/payments?offset=200')
+    ).json();
+    assert.ok(second.payments.length > 0, 'the second page is empty');
+    assert.equal(second.offset, 200);
+
+    // No row appears on both pages: the rowid tiebreak is what guarantees it,
+    // because created_at is a second-resolution string and these were all
+    // made inside the same second.
+    const firstIds = new Set(first.payments.map((p) => p.id));
+    const overlap = second.payments.filter((p) => firstIds.has(p.id));
+    assert.equal(overlap.length, 0, `${overlap.length} row(s) on both pages`);
+
+    // And between them they reach everything.
+    assert.equal(firstIds.size + second.payments.length, Math.min(first.total, 400));
+  } finally {
+    server.close();
+  }
+});
+
+test('a junk offset is refused into the first page rather than erroring', async () => {
+  const server = await serve();
+  try {
+    for (const bad of ['-5', 'abc', '', '1e999']) {
+      const response = await server.call(
+        server.adminToken,
+        `/api/admin/payments?offset=${encodeURIComponent(bad)}`
+      );
+      assert.equal(response.status, 200, `offset=${bad} answered ${response.status}`);
+      const body = await response.json();
+      assert.ok(body.offset >= 0, `offset=${bad} became ${body.offset}`);
+    }
   } finally {
     server.close();
   }

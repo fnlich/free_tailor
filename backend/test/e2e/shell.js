@@ -91,6 +91,81 @@ async function setTheme(page, theme) {
   }, theme);
 }
 
+/**
+ * The top bar's own geometry and the order of its controls.
+ *
+ * Separate from `inspect` because the question is different, and because the
+ * metric there cannot answer it. `documentElement.scrollWidth` is what catches
+ * a page that grew a horizontal scrollbar - but `.tl-topbar` is
+ * `position: fixed`, so anything hanging off its end does not extend the
+ * document at all. The bar overflowed by 6px at 390 for as long as that check
+ * has existed, and it passed every time, because the 6px is not scrollable -
+ * it is simply off the screen, where nobody can reach it.
+ */
+async function inspectTopBar(page) {
+  return page.evaluate(() => {
+    const bar = document.querySelector('.tl-topbar');
+    if (!bar) return null;
+    const viewport = window.innerWidth;
+
+    let worst = 0;
+    let culprit = '';
+    for (const node of bar.querySelectorAll('*')) {
+      const box = node.getBoundingClientRect();
+      if (box.width === 0) continue;
+      const past = Math.round(box.right - viewport);
+      if (past > worst) {
+        worst = past;
+        culprit = `${node.tagName}.${(node.className || '').toString().slice(0, 48)}`;
+      }
+    }
+
+    /*
+     * Read by position rather than by DOM order, so the check describes what
+     * somebody sees. A flex row can be reordered in CSS without the markup
+     * moving, and the spec is about the row.
+     */
+    const group = bar.lastElementChild;
+    const controls = Array.from(
+      (group || bar).querySelectorAll('a[title], button[aria-label], button[title], .tl-credits')
+    )
+      .map((node) => ({
+        name:
+          node.getAttribute('title') ||
+          node.getAttribute('aria-label') ||
+          (node.classList.contains('tl-credits') ? 'Credits' : ''),
+        left: node.getBoundingClientRect().left,
+      }))
+      .filter((entry) => entry.name)
+      .sort((left, right) => left.left - right.left)
+      .map((entry) => entry.name);
+
+    const wordmark = bar.querySelector('.tl-brand span');
+    return {
+      viewport,
+      past: worst,
+      culprit,
+      controls,
+      /*
+       * The product name, and whether all of it is there.
+       *
+       * The spec for this bar begins "Top Left: brand and logo and
+       * name(Tailor)", and the first fix for the bar's overflow spent exactly
+       * that: letting the brand shrink rendered the wordmark as "Tai..." at
+       * 390 and as nothing at all once the credit balance ran to six figures.
+       * The app says its own name in one place, so this is the one string in
+       * the bar that may not be shortened to make room.
+       */
+      brand: wordmark
+        ? { text: wordmark.textContent.trim(), whole: wordmark.scrollWidth <= wordmark.clientWidth + 1 }
+        : null,
+    };
+  });
+}
+
+/** A pause, for the ticks React needs to mount or unmount a panel. */
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** What the shell looks like from inside the page. */
 async function inspect(page) {
   return page.evaluate(() => {
@@ -209,6 +284,31 @@ async function main() {
       `saw: ${shell.navLabels.join(', ')}`
     );
 
+    /*
+     * The way to the page where money is spent.
+     *
+     * It was reachable only from the coin pill in the top bar, which is a
+     * balance you can press rather than a door somebody goes looking for. Last
+     * in the main group, beside Orders, because noticing you are out of credits
+     * is something that happens on an order.
+     */
+    const creditsShell = await visit(page, '/credits', 'user');
+    check(
+      'user: Credits is in the rail, last in the main group',
+      creditsShell.navLabels.includes('Credits'),
+      `saw: ${creditsShell.navLabels.join(', ')}`
+    );
+    check(
+      'user: and it is the row that lights up on /credits',
+      creditsShell.activeLabels.length === 1 && creditsShell.activeLabels[0] === 'Credits',
+      `lit: ${creditsShell.activeLabels.join(', ')}`
+    );
+    check(
+      'user: Credits sits after Orders',
+      creditsShell.navLabels.indexOf('Credits') === creditsShell.navLabels.indexOf('Orders') + 1,
+      `saw: ${creditsShell.navLabels.join(', ')}`
+    );
+
     // The prefix collision that a vertical rail makes obvious.
     const filter = await visit(page, '/jobs/filter', 'user');
     check(
@@ -292,6 +392,107 @@ async function main() {
     check('phone: content is not offset by a rail that is not there', phone.railWidth <= 280);
     await page.screenshot({ path: `${SHOTS}/shell-3-phone-closed.png` });
 
+    /*
+     * The top bar, at both widths.
+     *
+     * The order is the one the navigation spec asked for: the things that act
+     * on the session you are in, then the one that navigates away.
+     */
+    for (const [label, viewport] of [['wide', WIDE], ['phone', PHONE]]) {
+      await page.setViewport(viewport);
+      await page.goto(`${APP}/orders`, { waitUntil: 'networkidle0' });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const bar = await inspectTopBar(page);
+
+      check(
+        `top bar ${label}: nothing hangs off the end`,
+        bar && bar.past <= 0,
+        `${bar?.past}px past ${bar?.viewport}: ${bar?.culprit}`
+      );
+      check(
+        `top bar ${label}: the name Tailor is there in full`,
+        bar?.brand?.text === 'Tailor' && bar.brand.whole,
+        JSON.stringify(bar?.brand)
+      );
+
+      /*
+       * The whole row, not just its two ends.
+       *
+       * Checking only that Templates came last could not see the account at
+       * all: that control carried neither a title nor an aria-label, so it was
+       * missing from this list entirely, and Templates sitting between the
+       * theme toggle and the account would still have matched. Naming the
+       * account button closed the blind spot; asserting the full sequence is
+       * what makes this check say what its name claims.
+       *
+       * Names come from title or aria-label, so this reads what a screen
+       * reader would - folded to one word each, because two of them carry a
+       * person's name or a state that changes with the theme.
+       */
+      const order = (bar?.controls ?? []).join(' < ');
+      const shape = (bar?.controls ?? [])
+        .map((name) => {
+          if (/^Credits/.test(name)) return 'Credits';
+          if (/^Notifications/.test(name)) return 'Notifications';
+          if (/(mode|theme)$/i.test(name)) return 'Theme';
+          if (/^Account/.test(name)) return 'Account';
+          return name;
+        })
+        .join(' < ');
+      check(
+        `top bar ${label}: the row reads Credits, Notifications, Theme, Account, Templates`,
+        shape === 'Credits < Notifications < Theme < Account < Templates',
+        order
+      );
+
+      /*
+       * And the menus it opens stay on the screen.
+       *
+       * Both hang off a trigger near the right edge and are right-aligned to
+       * it, so on a phone their left edge used to fall outside the viewport -
+       * the notifications panel started at -74px at 390 and -112 at 320, with
+       * the heading rendering as "ions". Nothing above could see it: this
+       * function measures the bar's own children with both menus shut, and the
+       * page-level check reads `documentElement.scrollWidth`, which never
+       * registers overflow to the LEFT at all.
+       */
+      for (const [name, selector] of [
+        ['notifications', '.tl-topbar button[aria-label^="Notifications"]'],
+        ['account', '.tl-topbar button[aria-label^="Account"]'],
+      ]) {
+        // Opened and measured in two steps: the panel is mounted by a state
+        // change, so it is not in the DOM in the same tick as the click.
+        const opened = await page.evaluate((sel) => {
+          const trigger = document.querySelector(sel);
+          if (!trigger) return false;
+          trigger.click();
+          return true;
+        }, selector);
+        await wait(300);
+        const box = opened
+          ? await page.evaluate(() => {
+              const panel = document.querySelector('.app-top-nav-menu');
+              if (!panel) return { missing: 'panel' };
+              const rect = panel.getBoundingClientRect();
+              return {
+                left: Math.round(rect.left),
+                right: Math.round(rect.right),
+                viewport: window.innerWidth,
+              };
+            })
+          : { missing: 'trigger' };
+        check(
+          `top bar ${label}: the ${name} menu opens on the screen`,
+          box && !box.missing && box.left >= 0 && box.right <= box.viewport,
+          JSON.stringify(box)
+        );
+        await page.keyboard.press('Escape');
+        await page.evaluate(() => document.body.click());
+        await wait(200);
+      }
+    }
+    await page.setViewport(PHONE);
+
     const opened = await page.evaluate(() => {
       const trigger = document.querySelector('.tl-topbar button[aria-controls="app-sidebar"]');
       if (!trigger) return false;
@@ -326,6 +527,15 @@ async function main() {
       adminShell.navLabels.includes('Settings') &&
         adminShell.navLabels.includes('Manage Accounts') &&
         !adminShell.navLabels.includes('Find Jobs'),
+      `saw: ${adminShell.navLabels.join(', ')}`
+    );
+
+    // Administrators too. They do not spend credits, and the page says so
+    // itself - a row they can see and a page that explains beats a missing row
+    // and a balance they cannot account for.
+    check(
+      'admin: Credits is in the rail as well',
+      adminShell.navLabels.includes('Credits'),
       `saw: ${adminShell.navLabels.join(', ')}`
     );
 

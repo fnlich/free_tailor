@@ -75,6 +75,18 @@ export async function getPricingLimits(): Promise<PricingLimits> {
 }
 
 /**
+ * Whether the operator has asked for every card payment to be authenticated.
+ *
+ * Its own accessor rather than a field on `PricingLimits`, because it is not a
+ * price or a bound and folding it in there would make that type mean "whatever
+ * the buy page happens to need". Payments reads its settings through this
+ * module, so this keeps that one door.
+ */
+export async function requireThreeDSecure(): Promise<boolean> {
+  return (await getCreditPricingSettings()).requireThreeDSecure;
+}
+
+/**
  * The names a row can carry that are METHODS rather than coins.
  *
  * One column holds both namespaces, and half of what goes looking in it
@@ -99,8 +111,10 @@ function rowFor(rows: PaymentTargetLimits[], target?: QuoteTarget): PaymentTarge
    * one step from a request that can choose its own price, which is the thing
    * this module exists to make impossible.
    *
-   * `startCheckout` also refuses an asset this build does not know, so this is
-   * the second of two locks rather than the only one. It is here as well as
+   * This is the ONLY lock now. `startCheckout` used to refuse an asset this
+   * build did not know, before the coins went away and the request stopped
+   * carrying one at all - so a stored row keyed on a coin can still be
+   * resolved here, but nothing can ask for one by name. It is here as well as
    * there because this function is the pricing authority: anything that calls
    * it later, by any route, gets the same answer.
    */
@@ -319,17 +333,4 @@ export async function quoteCredits(requested: unknown, target?: QuoteTarget): Pr
     currency: limits.currency,
     target: limits.target,
   };
-}
-
-/** `$12.50`, for a log line or a page. Money is never formatted by hand. */
-export function formatAmount(amountCents: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: currency.toUpperCase(),
-    }).format(amountCents / 100);
-  } catch {
-    // An unknown currency code should not take a page down over a label.
-    return `${(amountCents / 100).toFixed(2)} ${currency.toUpperCase()}`;
-  }
 }

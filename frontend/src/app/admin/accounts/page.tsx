@@ -12,6 +12,7 @@ import {
   type UserRole,
 } from '@/lib/auth';
 import { describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credits';
+import { formatDate } from '@/lib/format';
 
 /**
  * Managing everybody's accounts.
@@ -28,12 +29,6 @@ const CARD =
 const SELECT =
   'rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 ' +
   'focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white';
-
-function formatDate(value?: string): string {
-  if (!value) return 'Never';
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleDateString() : value;
-}
 
 function AccountsTable() {
   const { account: me, refresh: refreshMe } = useAuth();
@@ -404,7 +399,7 @@ function AccountsTable() {
                     </td>
 
                     <td className="px-4 py-3 text-xs text-gray-500 dark:text-slate-400">
-                      {formatDate(row.lastLoginAt)}
+                      {formatDate(row.lastLoginAt, { empty: 'Never', style: 'date' })}
                     </td>
 
                     <td className="px-4 py-3">
@@ -560,7 +555,7 @@ function AccountsTable() {
                                           </p>
                                         )}
                                         <p className="text-xs text-gray-400 dark:text-slate-500">
-                                          {formatDate(entry.createdAt)}
+                                          {formatDate(entry.createdAt, { empty: 'Never', style: 'date' })}
                                         </p>
                                       </div>
                                       <div className="shrink-0 text-right">

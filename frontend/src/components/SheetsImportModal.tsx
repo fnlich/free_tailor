@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { importApi } from '@/lib/api';
+import { parseSpreadsheetColumnInput, toSpreadsheetColumnLabel } from '@/lib/sheet';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
 
 export type ImportedSheetJob = {
@@ -100,36 +101,6 @@ const EMPTY_MAPPING: ColumnMapping = {
   jobTitle: '',
   jobDescription: '',
 };
-
-function toSpreadsheetColumnLabel(columnNumber: number): string {
-  let current = columnNumber;
-  let label = '';
-
-  while (current > 0) {
-    const remainder = (current - 1) % 26;
-    label = String.fromCharCode(65 + remainder) + label;
-    current = Math.floor((current - 1) / 26);
-  }
-
-  return label;
-}
-
-function parseSpreadsheetColumnInput(label: string, value: string): number {
-  const normalized = value.trim().toUpperCase();
-  if (!normalized) {
-    throw new Error(`${label} is required.`);
-  }
-  if (!/^[A-Z]+$/.test(normalized)) {
-    throw new Error(`${label} must use spreadsheet letters like A, B, or AA.`);
-  }
-
-  let columnNumber = 0;
-  for (const character of normalized) {
-    columnNumber = (columnNumber * 26) + (character.charCodeAt(0) - 64);
-  }
-
-  return columnNumber;
-}
 
 function getColumnOffset(startColumn: number, columnLabel: string, totalColumns: number): string {
   const absoluteColumn = parseSpreadsheetColumnInput(columnLabel, columnLabel);
@@ -435,7 +406,6 @@ export default function SheetsImportModal({
                   {error}
                 </div>
               )}
-
 
               <div className="grid gap-4">
                 <div>

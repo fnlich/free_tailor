@@ -8,6 +8,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountPlan } from '@/lib/auth';
 import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
+import { formatDate } from '@/lib/format';
+import { CARD, LABEL } from '@/components/pageChrome';
 
 /**
  * The signed-in account's own page: who they are, what plan they are on, and
@@ -18,16 +20,17 @@ import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
  * and a form that let somebody pick their own plan would be a form that lies.
  */
 
-const CARD =
-  'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900';
-const LABEL = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-slate-400';
-const VALUE = 'mt-1 text-sm text-gray-900 dark:text-white';
-
-function formatDate(value?: string): string {
-  if (!value) return 'Never';
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
-}
+/*
+ * `break-words`, for the one value here that is an unbreakable word.
+ *
+ * Every other row is short - a role, a date - but the email row is the
+ * reader's own address, and an address has no break opportunity in it. In a
+ * grid cell that means it pushes the cell wider instead of wrapping, and on a
+ * phone it scrolls the whole page sideways. Wrapped rather than truncated
+ * because this is somebody's own address on their own account page: it should
+ * stay readable and selectable, not end in an ellipsis.
+ */
+const VALUE = 'mt-1 break-words text-sm text-gray-900 dark:text-white';
 
 export default function AccountPage() {
   const { account, refresh, adopt } = useAuth();
@@ -56,7 +59,9 @@ export default function AccountPage() {
     void (async () => {
       const [status, entries] = await Promise.allSettled([
         creditsApi.status(),
-        creditsApi.ledger(50),
+        // (offset, limit): the newest fifty. This read `ledger(50)` while the
+        // arguments were the other way round.
+        creditsApi.ledger(0, 50),
       ]);
       if (status.status === 'fulfilled') setCredits(status.value);
       if (entries.status === 'fulfilled') setLedger(entries.value.entries);
@@ -151,11 +156,11 @@ export default function AccountPage() {
           </div>
           <div>
             <dt className={LABEL}>Member since</dt>
-            <dd className={VALUE}>{formatDate(account.createdAt)}</dd>
+            <dd className={VALUE}>{formatDate(account.createdAt, { empty: 'Never' })}</dd>
           </div>
           <div>
             <dt className={LABEL}>Last signed in</dt>
-            <dd className={VALUE}>{formatDate(account.lastLoginAt)}</dd>
+            <dd className={VALUE}>{formatDate(account.lastLoginAt, { empty: 'Never' })}</dd>
           </div>
         </dl>
 

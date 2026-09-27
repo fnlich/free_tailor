@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DEFAULT_PROMPT_TEMPLATE } from '../lib/promptTemplate.js';
-import { getBidAssistantApiUrl } from '../lib/apiBase.js';
+import { bidAssistantFetch } from '../lib/apiBase.js';
 
 // Creates a blank question row with a default character limit.
 function createQuestionRow(overrides = {}) {
@@ -188,7 +188,7 @@ export default function AskWindow({
       setLoading(true);
       setErrorMessage('');
 
-      const response = await fetch(getBidAssistantApiUrl('/api/ask'), {
+      const response = await bidAssistantFetch('/api/ask', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

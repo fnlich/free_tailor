@@ -230,40 +230,6 @@ function mapFiltersForIndeed(filters) {
   };
 }
 
-function mapFiltersForIndeedBorderline(filters) {
-  const actorInput = {
-    country: 'us',
-    query: buildExpandedKeywordQuery(filters && filters.keywords) || 'software engineer',
-    location: normalizeText(filters && filters.location) || DEFAULT_LINKEDIN_LOCATION,
-    sort: 'date',
-    maxRows: toMaxResults(filters || {}),
-    enableUniqueJobs: true,
-    includeSimilarJobs: false,
-  };
-  const jobType = normalizeText(filters && filters.jobType);
-  const timePosted = normalizeText(filters && filters.timePosted);
-
-  if (jobType) {
-    actorInput.jobType = jobType.replace(/-/g, '');
-  }
-
-  if (timePosted === '24h') {
-    actorInput.fromDays = '1';
-  } else if (timePosted === '3d') {
-    actorInput.fromDays = '3';
-  } else if (timePosted === '7d') {
-    actorInput.fromDays = '7';
-  } else if (timePosted === '30d') {
-    actorInput.fromDays = '14';
-  }
-
-  if (filters && filters.remoteOnly) {
-    actorInput.remote = 'remote';
-  }
-
-  return actorInput;
-}
-
 function mapFiltersForJobBoard(filters) {
   const actorInput = {
     searchTerm: normalizeText(filters && filters.keywords) || 'software engineer',
@@ -422,7 +388,6 @@ module.exports = {
   buildIndeedSearchUrl,
   isBroadSoftwareRoleSearch,
   mapFiltersForIndeed,
-  mapFiltersForIndeedBorderline,
   mapFiltersForJobBoard,
   mapFiltersForWellfound,
   mapFiltersForHiringCafe,

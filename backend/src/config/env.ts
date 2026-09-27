@@ -23,4 +23,3 @@ for (const [key, value] of Object.entries(parsed)) {
   process.env[key] = value;
 }
 
-export const ENV_LOADED = true;

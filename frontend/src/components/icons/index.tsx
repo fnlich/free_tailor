@@ -6,8 +6,8 @@ import type { ReactNode, SVGProps } from 'react';
  * Twenty icons is under the size where a dependency pays for itself, and this
  * project has five runtime packages and no UI library at all - adding one costs
  * every contributor an install step on a checkout that already needs a native
- * rebuild and a Chrome download. There were also nineteen hand-written inline
- * <svg> across seven files before this existed; those can move here over time.
+ * rebuild and a Chrome download. Eighteen hand-written inline <svg> remain
+ * across six other files; those can move here over time.
  *
  * All of them share one grid and one stroke weight, which is the whole reason a
  * set reads as a set: 24x24, 1.75 stroke, round caps and joins, no fills.
@@ -16,8 +16,8 @@ import type { ReactNode, SVGProps } from 'react';
  * Those four rules are also the boundary of this file. A brand mark - a card
  * network, a coin - cannot obey them: it is filled, it is multi-colour, and its
  * colours are not the row's to choose. Bitcoin is orange wherever it appears,
- * and USDT and USDC are told apart by their green and their blue and by nothing
- * else. Pushing them through the wrapper above would either break the
+ * and Tether's green is the only thing that says which coin it is. Pushing
+ * them through the wrapper above would either break the
  * single-colour promise for all twenty icons here or produce outlines nobody
  * recognises, so they live in `./marks.tsx` instead. Anything new that needs a
  * fill belongs there and not here.
@@ -201,13 +201,6 @@ export const IconChevronRight = (p: IconProps) => (
   </Icon>
 );
 
-export const IconCopy = (p: IconProps) => (
-  <Icon {...p}>
-    <rect x="9" y="9" width="11.5" height="11.5" rx="2" />
-    <path d="M15 9V5.5a2 2 0 0 0-2-2H5.5a2 2 0 0 0-2 2V13a2 2 0 0 0 2 2H9" />
-  </Icon>
-);
-
 export const IconCheck = (p: IconProps) => (
   <Icon {...p}>
     <path d="m5 12.5 4.5 4.5L19 7.5" />
@@ -256,7 +249,6 @@ export const ICONS = {
   chevronRight: IconChevronRight,
   plus: IconPlus,
   check: IconCheck,
-  copy: IconCopy,
   trash: IconTrash,
 } as const;
 

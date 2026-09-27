@@ -348,11 +348,30 @@ test('removing the last browser tells the line, instead of leaving it to time ou
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(pool.queued, 1);
 
+  /*
+   * And the deadline it no longer needs is taken down with it.
+   *
+   * A waiter's timeout timer is deliberately not unref'd - a caller waiting for
+   * a tab is real work and must not let the loop drain - so an abandoned one
+   * holds the process open for the whole of that caller's deadline. This
+   * rejection comes from outside the closure that owns the timer, which is
+   * exactly the path that used to skip the cleanup: this file took a full
+   * extra minute to exit, over the sixty-second deadline above, with nothing
+   * left to wait for.
+   */
+  const timersArmed = () =>
+    process.getActiveResourcesInfo().filter((kind) => kind === 'Timeout').length;
+  const withWaiter = timersArmed();
+
   pool.setEndpoints([]);
   await assert.rejects(waiting, (error) => {
     assert.ok(error instanceof NoTabsConfiguredError);
     return true;
   });
+  assert.ok(
+    timersArmed() < withWaiter,
+    `the refused caller left its deadline armed (${withWaiter} -> ${timersArmed()})`
+  );
   held.release();
 });
 
@@ -367,6 +386,14 @@ test('removing the last browser tells the line, instead of leaving it to time ou
  * was simply busy. A generous deadline tests the same thing and cannot be lost
  * to a loaded machine; if the wake never comes, node:test's own timeout still
  * fails the test.
+ *
+ * **The deadline was not the whole story, and it is worth knowing which part
+ * was which.** Both went on failing about one run in five, at the full thirty
+ * seconds - which no amount of load explains, and a wake that had merely been
+ * slow would still have arrived. The cause was a wake timer firing a fraction
+ * before the clock had moved the whole rest, finding the browser still
+ * resting, and leaving nothing armed to look again. The third test below pins
+ * that down against a clock it owns; `scheduleWake` in `pool.ts` is the fix.
  */
 const WAKE_TIMEOUT_MS = 30_000;
 
@@ -386,6 +413,45 @@ test('a browser coming back wakes the line rather than waiting for a release', a
 
   const lease = await waiting;
   assert.equal(lease.endpoint, B, 'and be woken by B, not by A being released');
+  lease.release();
+  onA.release();
+});
+
+test('a wake that fires before the clock has moved tries again', async () => {
+  /*
+   * The two tests around this one used to fail about one run in five, and this
+   * is the reason - asserted here against a clock this test owns, rather than
+   * left to be rediscovered.
+   *
+   * A timer set for 60ms fires when Node's loop reaches it, which can be a
+   * fraction before `Date.now()` has moved 60ms. The rest is then still
+   * running as far as `isDown` is concerned, `pump` finds nothing free, and the
+   * timer has already been dropped - so nothing ever looks again and the
+   * queued caller waits out its own deadline over a browser that came back.
+   *
+   * A frozen clock is that race made certain: every wake fires early, because
+   * the clock never moves until this test moves it.
+   */
+  let clock = 1_000;
+  const pool = new TabPool('Claude (free)', () => clock);
+  pool.setEndpoints([A, B]);
+
+  const onA = await pool.acquire();
+  assert.equal(onA.endpoint, A);
+  pool.markUnreachable(B, 60);
+
+  const waiting = pool.acquire({ timeoutMs: WAKE_TIMEOUT_MS });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.queued, 1, 'it must queue while B is resting');
+
+  // Long enough for the first wake to have fired and found the rest still
+  // running. Nothing has been released, so only a re-armed wake can serve this.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(pool.queued, 1, 'and still be queued: B has not come back yet');
+
+  clock = 1_060;
+  const lease = await waiting;
+  assert.equal(lease.endpoint, B, 'the re-armed wake served it, not a release');
   lease.release();
   onA.release();
 });

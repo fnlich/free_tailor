@@ -1,41 +1,15 @@
 'use strict';
 
-const { ApifyClient } = require('apify-client');
+const { getApifyClient, getAllDatasetItems } = require('./apify');
 const { mapFiltersForJobBoard } = require('./filters');
 const { normalizeJobBoardItems } = require('./normalize');
 
 const ACTOR_ID = 'openclawai/job-board-scraper';
 const ACTOR_NAME = 'Job Board scraper';
 const RUN_TIMEOUT_SECS = 300;
-const DATASET_PAGE_SIZE = 1000;
-
-function getApifyClient() {
-  const token = process.env.APIFY_API_TOKEN || process.env.APIFY_API_KEY;
-  if (!token) {
-    throw new Error('APIFY_API_TOKEN is required to run the Job Board scraper.');
-  }
-
-  return new ApifyClient({ token });
-}
-
-async function getAllDatasetItems(client, runId) {
-  const datasetClient = client.run(runId).dataset();
-  const items = [];
-
-  for (let offset = 0; ; offset += DATASET_PAGE_SIZE) {
-    const page = await datasetClient.listItems({ limit: DATASET_PAGE_SIZE, offset });
-    items.push(...page.items);
-
-    if (page.items.length < DATASET_PAGE_SIZE) {
-      break;
-    }
-  }
-
-  return items;
-}
 
 async function runJobBoardScraper(filters) {
-  const client = getApifyClient();
+  const client = getApifyClient(ACTOR_NAME);
   const actorInput = mapFiltersForJobBoard(filters || {});
   const startedRun = await client.actor(ACTOR_ID).start(actorInput, { timeout: RUN_TIMEOUT_SECS });
   const finishedRun = await client.run(startedRun.id).waitForFinish({ waitSecs: RUN_TIMEOUT_SECS });
@@ -47,7 +21,7 @@ async function runJobBoardScraper(filters) {
     throw new Error(`${ACTOR_NAME} run ${finishedRun.id || startedRun.id} ${statusMessage}.`);
   }
 
-  const items = await getAllDatasetItems(client, finishedRun.id);
+  const items = await getAllDatasetItems(client.run(finishedRun.id).dataset());
   return normalizeJobBoardItems(items);
 }
 

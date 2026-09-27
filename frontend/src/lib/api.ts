@@ -50,9 +50,8 @@ export function getPreferredApiBase(): string {
  * signed in on, so pointing the frame at the hostname baked into
  * NEXT_PUBLIC_API_URL at build time sent it somewhere the cookie does not go:
  * open the app on a LAN IP, and every preview rendered the API's
- * "Sign in to do that" JSON instead of a resume.
- *
- * This used to read `getCurrentApiBase()`, which does not follow the page.
+ * "Sign in to do that" JSON instead of a resume. `getCurrentApiBase()` does
+ * not follow the page and is the wrong one to reach for here.
  */
 export function getApiOrigin(): string {
   return getPreferredApiBase().replace(/\/api$/, '');
@@ -177,11 +176,6 @@ async function readErrorBody(response: Response): Promise<Record<string, unknown
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
     ? (parsed as Record<string, unknown>)
     : {};
-}
-
-/** The account cannot afford the run it just asked for. */
-export function isInsufficientCredits(error: unknown): error is ApiResponseError {
-  return error instanceof ApiResponseError && error.code === 'insufficient-credits';
 }
 
 /** The account is at its plan's profile limit. */
@@ -378,13 +372,6 @@ export async function apiFetch<T>(
  */
 export type PromptCategoryId = 'extracting' | 'building' | 'other';
 
-export type PromptCategory = {
-  id: PromptCategoryId;
-  label: string;
-  description: string;
-  order: number;
-};
-
 export type AIProvider =
   | 'claude-cli'
   | 'claude'
@@ -433,10 +420,6 @@ export function getAIProviderLabel(provider: AIProvider): string {
   return Object.prototype.hasOwnProperty.call(PROVIDER_META, provider)
     ? PROVIDER_META[provider].label
     : provider;
-}
-
-export function providerRequiresApiKey(provider: AIProvider): boolean {
-  return PROVIDER_META[provider]?.requiresApiKey ?? true;
 }
 
 /** Provider ids an older release wrote, and what they mean now. */
@@ -701,8 +684,6 @@ export interface PublicAppSettings {
   providerTuning: ProviderTuningSupport[];
 }
 
-export type AIModelSettings = PublicAppSettings;
-
 export interface AdminAppSettings extends PublicAppSettings {
   outputBaseDir: string;
   outputPathTemplate: string;
@@ -727,6 +708,15 @@ export interface AdminAppSettings extends PublicAppSettings {
    * here can narrow a method but never widen it past the credit bounds.
    */
   paymentLimits: PaymentTargetLimits[];
+  /**
+   * Ask the cardholder's bank to authenticate every card payment.
+   *
+   * Off by default. On, it is Stripe's `request_three_d_secure` rather than
+   * Stripe's own risk rules deciding, which is what moves chargeback liability
+   * to the issuing bank - and what makes a kept card need a confirmation
+   * instead of charging in one tap.
+   */
+  requireThreeDSecure: boolean;
 }
 
 /**
@@ -876,9 +866,9 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
     .map((entry) => ({
       id: typeof entry.id === 'string' ? entry.id : '',
       name: typeof entry.name === 'string' ? entry.name : '',
-      // Coerced, not whitelisted: this used to rewrite anything it did
-      // not recognise to 'openai', so a model row for a newer provider
-      // displayed, filtered and default-gated as OpenAI.
+      // Coerced, not whitelisted. Rewriting an unrecognised provider to
+      // 'openai' makes a model row for a newer one display, filter and
+      // default-gate as OpenAI.
       provider: coerceProvider(entry.provider) ?? 'claude-cli',
       modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
       description: typeof entry.description === 'string' ? entry.description : '',
@@ -1014,6 +1004,7 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     creditMinCredits: typeof source.creditMinCredits === 'number' ? source.creditMinCredits : 10,
     creditMaxCredits: typeof source.creditMaxCredits === 'number' ? source.creditMaxCredits : 5000,
     paymentLimits: normalizePaymentLimits(source.paymentLimits),
+    requireThreeDSecure: source.requireThreeDSecure === true,
   };
 }
 
@@ -1024,6 +1015,7 @@ export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   creditMinCredits?: number;
   creditMaxCredits?: number;
   paymentLimits?: PaymentTargetLimits[];
+  requireThreeDSecure?: boolean;
 }
 
 /** One debug browser: which chat site it shows, and the port it listens on. */
@@ -1716,8 +1708,6 @@ export interface TailoredContent {
   skills: string[];
   hardSkills: string[];
   softSkills: string[];
-  requiredSkills?: string[];
-  preferredSkills?: string[];
   strengths: TailoredStrength[];
   unconfirmedHardSkills?: string[];
   unconfirmedSoftSkills?: string[];

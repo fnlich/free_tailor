@@ -9,11 +9,6 @@
 .toolbar,
 .agendaDay,
 .dayCard,
-.detailsPanel {
-  border: 1px solid var(--border-color);
-  background: var(--surface-secondary);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
-}
 
 .shareForm {
   display: grid;
@@ -110,14 +105,8 @@
 }
 
 .panel,
-.detailsPanel {
-  padding: 0.6rem;
-}
 
 .panel + .panel,
-.detailsPanel + .detailsPanel {
-  margin-top: 0.45rem;
-}
 
 .panelTitleRow,
 .toolbar {

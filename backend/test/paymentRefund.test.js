@@ -193,28 +193,53 @@ test('a provider that refuses the refund changes nothing locally', async () => {
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid', 'and it can be tried again');
 });
 
-test('a crypto payment says plainly that it cannot be refunded automatically', async () => {
-  const context = await setup();
-  const payment = context.paymentsDb.createPayment({
-    userId: context.buyer.id,
-    method: 'crypto',
-    provider: 'coinbase',
-    credits: 60,
-    amountCents: 3000,
-    currency: 'usd',
-    unitPriceCents: 50,
-  });
-  context.paymentsDb.attachProviderRef(payment.id, 'CODE1');
-  context.payments.creditPaid(payment.id);
+/*
+ * Crypto cannot be pulled back, only sent back - and the message has to say
+ * WHERE FROM, which is different for each of the three providers that have
+ * taken crypto here.
+ *
+ * All three are tested because `PaymentProvider` is not switched on
+ * exhaustively anywhere in this codebase: a new member does not fail to
+ * compile, it falls into whichever branch happens to be last. That is how this
+ * message once told every on-chain payment to look in a Coinbase Commerce
+ * account the coin had never passed through, and it is why the retired rows -
+ * which still exist, and still get refunded - are pinned here rather than
+ * assumed to have gone away with the code that created them.
+ */
+const CRYPTO_REFUND_ADVICE = [
+  ['cryptomus', 'inv-uuid-1', /Cryptomus merchant dashboard/],
+  ['coinbase', 'CODE1', /Coinbase Commerce account/],
+  ['chain', 'cinv_1', /wallet you configured in CHAIN_\*_ADDRESS/],
+];
 
-  // A chain payment cannot be pulled back, only sent back. Pretending
-  // otherwise would be the worst possible answer here.
-  await assert.rejects(
-    () => context.payments.refundPayment(payment.id, context.admin.id),
-    /cannot be refunded automatically/i
-  );
-  assert.equal(context.balance(), 60, 'and nothing is reversed on a promise');
-});
+for (const [provider, providerRef, advice] of CRYPTO_REFUND_ADVICE) {
+  test(`a ${provider} payment says plainly where to send the money back from`, async () => {
+    const context = await setup();
+    const payment = context.paymentsDb.createPayment({
+      userId: context.buyer.id,
+      method: 'crypto',
+      provider,
+      credits: 60,
+      amountCents: 3000,
+      currency: 'usd',
+      unitPriceCents: 50,
+    });
+    context.paymentsDb.attachProviderRef(payment.id, providerRef);
+    context.payments.creditPaid(payment.id);
+
+    // Pretending it can be pulled back would be the worst possible answer, and
+    // naming the wrong place to go and look is the second worst.
+    await assert.rejects(
+      () => context.payments.refundPayment(payment.id, context.admin.id),
+      (error) => {
+        assert.match(error.message, /cannot be refunded automatically|nobody is holding it/i);
+        assert.match(error.message, advice);
+        return true;
+      }
+    );
+    assert.equal(context.balance(), 60, 'and nothing is reversed on a promise');
+  });
+}
 
 test('two refunds of the same payment at once: one refunds, the other is refused', async () => {
   const context = await setup();
@@ -279,4 +304,88 @@ test('a provider that refuses leaves the payment refundable', async () => {
   stripe.refundPaymentIntent = async () => {};
   const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'retried');
   assert.equal(outcome.creditsReversed, 100);
+});
+
+test('a refund whose answer was lost says so, instead of "nothing moved"', async () => {
+  /*
+   * The distinction `startCheckout` has always made, and this did not.
+   *
+   * Every failed refund released the claim with the comment "the money did not
+   * move" - which for a dropped socket is a guess in the wrong direction. The
+   * refund may well exist at Stripe, and the credits have NOT been reversed,
+   * because that happens after the provider call. Money back, credits kept,
+   * and an operator told nothing happened.
+   *
+   * The claim still goes back either way, because pressing Refund again is
+   * safe: `refundPaymentIntent` sends `Idempotency-Key: refund:<paymentId>` and
+   * Stripe will not create a second refund under it. What has to change is what
+   * the operator is told, and the message has to say that.
+   */
+  const context = await setup();
+  const payment = context.paidPayment(100);
+
+  const stripe = require('../dist/integrations/stripe');
+  stripe.refundPaymentIntent = async () => {
+    throw new stripe.StripeError(
+      'Lost the connection to Stripe while reading its reply: socket hang up',
+      502,
+      true
+    );
+  };
+
+  const failure = await context.payments
+    .refundPayment(payment.id, context.admin.id, '')
+    .then(() => null)
+    .catch((error) => error);
+
+  assert.ok(failure instanceof Error);
+  assert.match(failure.message, /could not confirm the refund/i, failure.message);
+  assert.match(failure.message, /may/i, 'it must not claim the refund did not happen');
+  assert.match(failure.message, /again/i, 'and must say retrying is the way out');
+  assert.doesNotMatch(
+    failure.message,
+    /nothing was refunded|did not go through/i,
+    'which is exactly the claim it cannot make'
+  );
+
+  // Still refundable and nothing reversed, as for any other failure - the
+  // release is right, it is only the sentence that was wrong.
+  assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid');
+  assert.equal(context.balance(), 100);
+
+  stripe.refundPaymentIntent = async () => {};
+  const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'retried');
+  assert.equal(outcome.creditsReversed, 100, 'and pressing again finishes it');
+});
+
+test('a provider this build does not know is not sent to Coinbase', async () => {
+  /*
+   * The fallback used to name Coinbase Commerce, which made "a provider added
+   * after this code was written" and "Coinbase" the same answer - while the
+   * admin page's own copy ended on Cryptomus, so the two halves of the product
+   * already disagreed about that case. Every member of the union is named now
+   * and the fallback names none of them.
+   */
+  const context = await setup();
+  const payment = context.paymentsDb.createPayment({
+    userId: context.buyer.id,
+    method: 'crypto',
+    provider: 'stripe-crypto-of-the-future',
+    credits: 60,
+    amountCents: 3_000,
+    currency: 'usd',
+    unitPriceCents: 50,
+  });
+  context.paymentsDb.markPaid(payment.id, 60);
+  context.paymentsDb.attachProviderRef(payment.id, 'unknown_ref_1');
+
+  const refusal = await context.payments
+    .refundPayment(payment.id, context.admin.id, '')
+    .then(() => null)
+    .catch((error) => error);
+
+  assert.ok(refusal instanceof Error);
+  assert.equal(refusal.status, 409);
+  assert.doesNotMatch(refusal.message, /coinbase|cryptomus|wallet you configured/i, refusal.message);
+  assert.match(refusal.message, /wherever this payment was taken/i);
 });

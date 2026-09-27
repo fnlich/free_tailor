@@ -36,6 +36,7 @@ export default function CardPanel({
   onUseNewCard,
   onUseSavedCards,
   publishableKey,
+  requireThreeDSecure,
   dark,
   saveCard,
   onSaveCard,
@@ -52,6 +53,8 @@ export default function CardPanel({
   onUseNewCard: () => void;
   onUseSavedCards: () => void;
   publishableKey: string;
+  /** Warn before the challenge, rather than surprising somebody with it. */
+  requireThreeDSecure: boolean;
   dark: boolean;
   saveCard: boolean;
   onSaveCard: (save: boolean) => void;
@@ -74,7 +77,15 @@ export default function CardPanel({
               <div key={card.id} className={`${CHOICE} flex items-center gap-3`}>
                 <MarkCardBrand brand={card.brand} className="h-5 w-8 shrink-0" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-ink">
+                  {/*
+                    Wrapped, not truncated. "Visa ending in 4242" needs 130px
+                    and this column is 102px at 390, so `truncate` cut 28px -
+                    which lands before the digits, every time, whatever they
+                    are. Two saved cards then read identically as "Visa ending
+                    in..." above the Pay now button that charges one of them.
+                    The digits are the only thing telling the two apart.
+                  */}
+                  <span className="block text-sm font-medium text-ink">
                     {describeCard(card)}
                   </span>
                   <span className="block text-xs text-subtle">
@@ -85,7 +96,7 @@ export default function CardPanel({
                   type="button"
                   onClick={() => onPayWithCard(card.id)}
                   disabled={busyCardId !== null}
-                  className={`${PRIMARY} px-3 py-1.5`}
+                  className={`${PRIMARY} shrink-0 px-3 py-1.5`}
                 >
                   {busyCardId === card.id ? 'Charging…' : 'Pay now'}
                 </button>
@@ -101,6 +112,18 @@ export default function CardPanel({
               </div>
             ))}
           </div>
+          {/*
+            Said here, beside the button it changes, rather than once at the
+            top of the dialog. A kept card is the one place this setting
+            contradicts what somebody already expects - they saved it to skip
+            exactly this - so the warning belongs where the expectation is.
+          */}
+          {requireThreeDSecure && (
+            <p className="mt-2 text-xs text-subtle">
+              Your bank will ask you to confirm this payment, so paying with a saved card takes
+              one extra step.
+            </p>
+          )}
           <p className="mt-2 text-xs text-subtle">
             Removing a card here also removes it at the payment provider. Payments already made
             with it are not affected.
@@ -171,16 +194,16 @@ export default function CardPanel({
                 </div>
               )}
 
-              {order.status === 'ready' && order.started.processing && (
-                <div className={PANEL}>
-                  <p className="text-sm font-semibold text-ink">Your card is being charged.</p>
-                  <p className="mt-1 text-sm text-muted">
-                    Nothing more to do here. Your credits arrive as soon as the provider confirms
-                    it, usually within a minute.
-                  </p>
-                </div>
-              )}
+              {/*
+                There was a "your card is being charged" panel here, for a
+                `processing` order, and nothing could ever reach it.
 
+                `processing` is only ever true of a card already on file, and an
+                order is opened only for the card FORM and for crypto - a kept
+                card goes through `payWithCard`, which navigates straight to the
+                page that waits for the webhook. So this drew the same waiting
+                state, one screen earlier, for a case that never arrives there.
+              */}
               {order.status === 'ready' && order.started.clientSecret && (
                 <PayForm
                   publishableKey={publishableKey}

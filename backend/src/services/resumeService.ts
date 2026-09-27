@@ -671,17 +671,11 @@ function normalizeJobAnalysisResponse(
   parsed: RawNestedJobAnalysis,
   jobDescription: string
 ): JobAnalysis {
-  // const inferredSoft = inferAtsSoftSkillsFromText(jobDescription);
-  // const inferredHard = inferHardSkillsFromText(jobDescription);
-
   const technical = normalizeSafeKeywordList([
     ...toStringList(parsed.skills?.technical),
     ...toStringList(parsed.skills?.required),
   ]);
-  const required = normalizeSkillsList([
-    ...technical,
-    // ...inferredHard,
-  ]);
+  const required = normalizeSkillsList(technical);
   const preferred = normalizeSkillsList([
     ...toStringList(parsed.skills?.preferred),
   ]);

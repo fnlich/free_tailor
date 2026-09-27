@@ -7,7 +7,11 @@ import {
   GoogleSheetsRequestError,
   updateGoogleSheetsRow,
 } from '../integrations/googleSheets';
-import { JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW } from '../integrations/googleSheets';
+import {
+  JOB_SHEET_COLUMNS,
+  JOB_SHEET_FIRST_DATA_ROW,
+  toColumnLetters,
+} from '../integrations/googleSheets';
 import { SheetAccessError } from '../services/sheets/accountSheet';
 import {
   resolveAppendRow,
@@ -84,23 +88,6 @@ const BROAD_SOFTWARE_EXCLUDED_PATTERNS = [
   /\bentry[- ]level\b/i,
   /\bno prior experience required\b/i,
 ];
-
-function toColumnLetters(columnNumber: number): string {
-  let current = columnNumber;
-  let letters = '';
-
-  while (current > 0) {
-    const remainder = (current - 1) % 26;
-    letters = String.fromCharCode(65 + remainder) + letters;
-    current = Math.floor((current - 1) / 26);
-  }
-
-  return letters;
-}
-
-function getJobSheetLink(job: { externalApplyUrl?: string }): string {
-  return job.externalApplyUrl || '';
-}
 
 function normalizeCompanyName(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -451,14 +438,6 @@ function shouldSkipExistingFilterRow(input: {
   }
 
   return false;
-}
-
-function requireNonEmptyString(fieldName: string, value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new GoogleSheetsRequestError(400, `${fieldName} is required.`);
-  }
-
-  return value.trim();
 }
 
 function toPositiveInteger(fieldName: string, value: unknown): number {

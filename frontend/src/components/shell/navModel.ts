@@ -35,6 +35,11 @@ export const SIDEBAR_MAIN: NavItem[] = [
   { href: '/admin/groups', label: 'Groups', icon: 'groups', needs: 'premium' },
   { href: '/', label: 'Build Resumes', icon: 'build' },
   { href: '/orders', label: 'Orders', icon: 'orders' },
+  // Last, and beside Orders on purpose: running out of credits is something
+  // you notice on an order. The coin pill in the top bar goes to the same
+  // page - it is a balance you can press, not a way to find the page, and
+  // somebody not looking at it had no door here at all.
+  { href: '/credits', label: 'Credits', icon: 'credits' },
 ];
 
 /** Everything to do with finding work, below a divider. */

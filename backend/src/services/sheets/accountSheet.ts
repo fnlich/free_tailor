@@ -86,10 +86,6 @@ export function setSheetsClientForTests(next: SheetsClient): void {
   client = next;
 }
 
-export function resetSheetsClientForTests(): void {
-  client = realClient;
-}
-
 /**
  * Drops the in-flight join, so a test can force the race it normally prevents.
  *

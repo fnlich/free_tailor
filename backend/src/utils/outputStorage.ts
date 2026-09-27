@@ -37,16 +37,6 @@ export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company na
 export const ORDER_OUTPUT_PATH_TEMPLATE =
   '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}';
 
-export const OUTPUT_PATH_TOKENS = [
-  { token: '{{date}}', description: 'Current date as YYYY-MM-DD' },
-  { token: '{{account name}}', description: 'Signed-in account name' },
-  { token: '{{order number}}', description: 'Order number, for ordered builds' },
-  { token: '{{profile name}}', description: 'Selected profile name' },
-  { token: '{{company name}}', description: 'Company name' },
-  { token: '{{row number}}', description: 'Source Google Sheet row number' },
-  { token: '{{job title}}', description: 'Role / job title' },
-] as const;
-
 export type OutputTemplateVariables = {
   date: string;
   profileName: string;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getBidAssistantApiUrl } from '../lib/apiBase.js';
+import { bidAssistantFetch } from '../lib/apiBase.js';
 
 async function readResponseData(response) {
   const responseText = await response.text();
@@ -21,7 +21,7 @@ async function readResponseData(response) {
 
 // Fetches saved answers for one job id.
 async function fetchAnswers(jobId) {
-  const response = await fetch(getBidAssistantApiUrl(`/api/answers/${jobId}`));
+  const response = await bidAssistantFetch(`/api/answers/${jobId}`);
   const data = await readResponseData(response);
 
   if (!response.ok) {
@@ -36,7 +36,7 @@ async function deleteSavedAnswer(jobId, profileId, question) {
     profileId,
     question
   });
-  const response = await fetch(getBidAssistantApiUrl(`/api/answers/${jobId}?${query.toString()}`), {
+  const response = await bidAssistantFetch(`/api/answers/${jobId}?${query.toString()}`, {
     method: 'DELETE'
   });
   const data = await readResponseData(response);

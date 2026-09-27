@@ -116,12 +116,6 @@ function getTransport(config: MailConfig): Transporter {
   return transport;
 }
 
-/** Drops the pooled connection. Tests share a process; a live pool leaks. */
-export function resetMailerForTests(): void {
-  cached?.transport.close?.();
-  cached = null;
-}
-
 const APP_NAME = 'Free Tailor';
 
 function codeEmail(code: string, ttlMinutes: number): { subject: string; text: string; html: string } {

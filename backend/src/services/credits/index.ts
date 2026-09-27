@@ -8,6 +8,7 @@ import {
   getReservation,
   hasLedgerEntries,
   heldForUser,
+  countLedger,
   listLedger,
   listOpenReservations,
   refundAgainstReservation,
@@ -239,8 +240,14 @@ export function getStatus(account: UserAccount): CreditStatus {
   };
 }
 
-export function getLedger(userId: string, limit?: number): LedgerEntry[] {
-  return listLedger(userId, limit);
+export function getLedger(userId: string, limit?: number, offset?: number): LedgerEntry[] {
+  return listLedger(userId, limit, offset);
 }
 
-export { findInconsistentBalances, getReservation, hasLedgerEntries, listOpenReservations };
+export {
+  countLedger,
+  findInconsistentBalances,
+  getReservation,
+  hasLedgerEntries,
+  listOpenReservations,
+};
