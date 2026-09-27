@@ -82,16 +82,28 @@ advance.
 
 ```
 backend/src/
-  index.ts            # Express app: mounts ~19 routers under /api
+  index.ts            # Express app: mounts 21 routers under /api
   config/             # env loading (.env, UTF-16 aware), browser resolution
+  controllers/        # one file, the skills handlers routes/resume.ts mounts
   database/           # better-sqlite3, one repository per table
   database/migrations # numbered, run on first DB use
+  extractors/         # reading a template's styles back out of its HTML
+  generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
+  middleware/         # auth, and turning an AI failure into a useful status
   routes/             # one file per /api/* area
+  scripts/            # operator tools, each behind an npm script: browser:debug,
+                      #   browser:doctor, sheets:login, sheets:doctor,
+                      #   migrate:legacy, ai:rollback
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart)
-  generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
+  bidAssistant/       # the Bid Assistant's own prompt building
+  types/, utils/      # shared types; path, storage and filename helpers
+backend/
+  scrapers/           # the ONLY JavaScript in the backend, and not under src/:
+                      #   eight Apify actors behind one registry, reached from
+                      #   services/scraperProviders.ts and routes/jobs.ts
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, ~70 files; fixtures/cli replays real streams
+  test/               # node:test, 74 files; fixtures/cli replays real streams
 frontend/src/
   app/                # App Router pages: /, /admin/*, /jobs, /orders, /credits
   components/shell/   # The app shell - top bar, sidebar, settings sub-nav.
@@ -107,7 +119,11 @@ frontend/src/
                       #   wizard reducer with no JSX in it; chrome.ts holds the
                       #   shared class strings and the note on why none of them
                       #   carries a `dark:` variant.
-  components/, lib/   # UI and the API client
+  components/, lib/   # UI and the API client. Shared bits worth knowing before
+                      #   writing another copy: lib/format.ts (one formatDate for
+                      #   every page), lib/sheet.ts (the spreadsheet range
+                      #   parsers), components/pageChrome.ts (the CARD and LABEL
+                      #   class strings, with the note on why they keep `dark:`).
 ```
 
 Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
@@ -146,7 +162,7 @@ runner, and storage tests point `DB_DIR` and `TAILOR_STATIC_DIR` at temp dirs.
 
 ## Conventions from the history
 
-140 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
+144 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
 The pattern in nearly every feature arc is a feature commit followed by one or
 more "fix what the adversarial review found" commits, so expect review passes
 to be part of the work rather than an afterthought.
