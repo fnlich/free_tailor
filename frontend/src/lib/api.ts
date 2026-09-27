@@ -179,11 +179,6 @@ async function readErrorBody(response: Response): Promise<Record<string, unknown
     : {};
 }
 
-/** The account cannot afford the run it just asked for. */
-export function isInsufficientCredits(error: unknown): error is ApiResponseError {
-  return error instanceof ApiResponseError && error.code === 'insufficient-credits';
-}
-
 /** The account is at its plan's profile limit. */
 export function isProfileLimit(error: unknown): error is ApiResponseError {
   return error instanceof ApiResponseError && error.code === 'profile-limit';

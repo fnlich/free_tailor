@@ -180,10 +180,6 @@ export function getSemaphoreStats(): Record<
   return stats;
 }
 
-export function resetSemaphoresForTests(): void {
-  semaphores.clear();
-}
-
 /**
  * Acquires a slot inside a deadline, translating both failure modes into the
  * shared error type so a route does not have to know a semaphore exists.

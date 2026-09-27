@@ -56,10 +56,6 @@ function getClient(clientId: string): OAuth2Client {
   return client;
 }
 
-export function resetGoogleClientForTests(): void {
-  cached = null;
-}
-
 /**
  * The verified identity behind an ID token.
  *

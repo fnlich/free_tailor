@@ -25,10 +25,6 @@ export function warnOnce(key: string, message: string): void {
   console.warn(`[ai] ${message}`);
 }
 
-export function resetWarnOnceForTests(): void {
-  warned.clear();
-}
-
 export type CallSiteUsage = {
   callSite: string;
   provider: AIProvider;
@@ -143,6 +139,3 @@ export function getUsageSnapshot(): UsageSnapshot {
   return { entries, totals };
 }
 
-export function resetUsageForTests(): void {
-  usage.clear();
-}

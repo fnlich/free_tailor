@@ -56,10 +56,6 @@ export function orderRetentionDays(): number {
   return parsed;
 }
 
-export function resetRetentionWarningForTests(): void {
-  warnedAboutRetentionSetting = false;
-}
-
 /**
  * Removes directories the purge has just emptied, and only those.
  *

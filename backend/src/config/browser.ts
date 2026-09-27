@@ -362,12 +362,6 @@ export function resetResolvedBrowser(): void {
   cached = undefined;
 }
 
-/** Forgets puppeteer's remembered path as well. Tests only. */
-export function resetPuppeteerPathForTests(): void {
-  puppeteerPath = undefined;
-  cached = undefined;
-}
-
 export class BrowserUnavailableError extends Error {
   readonly cause?: unknown;
 
