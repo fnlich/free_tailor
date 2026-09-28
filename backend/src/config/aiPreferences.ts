@@ -1,5 +1,3 @@
-import { EFFORT_LEVELS, isEffortLevel, type EffortLevel } from '../services/ai/types';
-import { DEFAULT_CLI_EFFORT } from '../services/ai/providers/claudeCli/options';
 import {
   isHybridSelection,
   resolveRequestedAIModel,
@@ -9,16 +7,14 @@ import type { FreeChatRoute } from '../services/ai/freeChatRouting';
 import type { AIProvider } from '../types/template';
 
 /**
- * How hard the model is asked to work.
+ * What a run is asked to use.
  *
- * `--effort` is a documented CLI flag (low, medium, high, xhigh, max): how much
- * reasoning the model spends before answering.
- *
- * There used to be a second knob beside it, `thinking`, which was an on/off for
- * whether the model could think at all. It is gone. It reached only the Claude
- * CLI provider - there is no equivalent on the API providers or in a chat
- * window - so for anyone on the browser route it was a select box that did
- * nothing, and thinking is adaptive and ON by default anyway.
+ * Only the model now. Two knobs stood beside it and both are gone for the same
+ * reason: `thinking` reached one provider, and `effort` reached one provider,
+ * so on every other model in the menu they were select boxes that changed
+ * nothing and said nothing. A stored value for either is IGNORED rather than
+ * rejected - a profile that still carries one must keep working, not take its
+ * owner's builder down over a dead key.
  */
 
 /**
@@ -31,7 +27,6 @@ import type { AIProvider } from '../types/template';
 export type AiPreferences = {
   /** An `AIModelRecord` id, as configured under Admin -> Models. */
   modelId?: string;
-  effort?: EffortLevel;
 };
 
 /** The label shown wherever a layer inherits rather than chooses. */
@@ -44,7 +39,6 @@ export function normalizeAiPreferences(raw: unknown): AiPreferences {
 
   const modelId = typeof record.modelId === 'string' ? record.modelId.trim() : '';
   if (modelId) preferences.modelId = modelId;
-  if (isEffortLevel(record.effort)) preferences.effort = record.effort;
 
   return preferences;
 }
@@ -52,45 +46,18 @@ export function normalizeAiPreferences(raw: unknown): AiPreferences {
 /**
  * Later layers win, field by field.
  *
- * Field by field and not object by object: a request that overrides only the
- * effort must keep the profile's model, which a whole-object precedence would
- * throw away.
+ * Field by field rather than object by object. It reads as overkill with one
+ * field, and it is the shape that stays correct when a second one is added -
+ * a whole-object precedence silently throws away everything the later layer
+ * did not mention.
  */
 export function mergeAiPreferences(...layers: Array<AiPreferences | undefined>): AiPreferences {
   const merged: AiPreferences = {};
   for (const layer of layers) {
     if (!layer) continue;
     if (layer.modelId) merged.modelId = layer.modelId;
-    if (layer.effort) merged.effort = layer.effort;
   }
   return merged;
-}
-
-/**
- * The effort used when neither the request nor the profile names one.
- *
- * Read from the same `AI_CLI_EFFORT` the provider itself reads, so the value
- * offered as "the app default" in the UI is the value that will actually be
- * used rather than a second opinion about it.
- */
-export function appDefaultEffort(env: NodeJS.ProcessEnv = process.env): EffortLevel {
-  const configured = (env.AI_CLI_EFFORT ?? '').trim();
-  return isEffortLevel(configured) ? configured : DEFAULT_CLI_EFFORT;
-}
-
-export type AiPreferenceDefaults = {
-  effort: EffortLevel;
-  effortLevels: readonly EffortLevel[];
-};
-
-/** What the UI needs to label the inherit option and populate the selects. */
-export function describeAiPreferenceDefaults(
-  env: NodeJS.ProcessEnv = process.env
-): AiPreferenceDefaults {
-  return {
-    effort: appDefaultEffort(env),
-    effortLevels: EFFORT_LEVELS,
-  };
 }
 
 /**
@@ -108,7 +75,6 @@ export type AiChoice = {
   /** The `AIModelRecord` id it came from, for logs and for the UI. */
   modelId: string;
   modelLabel: string;
-  effort?: EffortLevel;
   /**
    * Set only when the choice was Hybrid.
    *
@@ -160,7 +126,6 @@ export async function resolveAiChoice(
     modelName: model.modelName,
     modelId: model.id,
     modelLabel: hybrid ? `${model.name} (hybrid)` : model.name,
-    effort: preferences.effort,
     ...(hybrid ? { route: 'hybrid' as const } : {}),
   };
 }
@@ -169,6 +134,5 @@ export async function resolveAiChoice(
 export function describeAiChoice(choice: AiChoice): string {
   const parts = [`${choice.provider}/${choice.modelName}`];
   if (choice.route) parts.push(`route=${choice.route}`);
-  if (choice.effort) parts.push(`effort=${choice.effort}`);
   return parts.join(' ');
 }

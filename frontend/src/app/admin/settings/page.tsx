@@ -650,27 +650,10 @@ function AdminSettingsPageBody() {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Model controls</h2>
             <p className="text-sm text-gray-600">
-              What the model and effort selects offer, everywhere they appear - the builder and
-              every profile alike.
+              What the model select offers, everywhere it appears - the builder and every profile
+              alike.
             </p>
           </div>
-          <SettingSwitch
-            id="effortControlEnabled"
-            checked={settings.effortControlEnabled}
-            disabled={savingSection !== null}
-            onChange={(next) =>
-              void saveSection(
-                'modelControls',
-                { effortControlEnabled: next },
-                next ? 'The effort select is offered again.' : 'The effort select is hidden.'
-              )
-            }
-            title="Offer the effort select"
-          >
-            Only the Claude subscription seat honours effort at all; every other model runs at its
-            own default. Switch this off and no effort select is drawn anywhere, and none is sent
-            to a provider - so a tab loaded before the change cannot send one either.
-          </SettingSwitch>
           <SettingSwitch
             id="browserChatEnabled"
             checked={settings.browserChatEnabled}

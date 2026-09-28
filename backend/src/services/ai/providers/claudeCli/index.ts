@@ -1,6 +1,5 @@
 import {
   getProviderDescriptor,
-  providerSupportsEffort,
 } from '../../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../../errors';
 import { acquireSlot, getProviderSemaphore } from '../../concurrency';
@@ -74,8 +73,6 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     // call site instead of silently dropping it on every call.
     temperature: false,
     maxOutputTokens: false,
-    // The one it does have: --effort, a documented flag.
-    effort: providerSupportsEffort(PROVIDER_ID),
     nativeJsonMode: 'json-schema',
     systemBlocks: true,
     requiresApiKey: false,
@@ -168,7 +165,6 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
 
       const invocation = buildClaudeArgv({
         model,
-        effort: request.effort ?? config.effort,
         systemPrompt,
         jsonSchema: request.jsonSchema,
         fallbackModels: config.fallbackModels,

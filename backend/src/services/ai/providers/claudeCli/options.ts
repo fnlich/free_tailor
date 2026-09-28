@@ -1,5 +1,4 @@
 import path from 'path';
-import { isEffortLevel, type EffortLevel } from '../../types';
 
 /**
  * Environment-driven configuration for the Claude CLI provider.
@@ -13,7 +12,6 @@ import { isEffortLevel, type EffortLevel } from '../../types';
  */
 
 export const DEFAULT_CLI_MODEL = 'sonnet';
-export const DEFAULT_CLI_EFFORT: EffortLevel = 'low';
 
 /**
  * The POSIX limit. Linux caps a SINGLE argv entry at MAX_ARG_STRLEN (128 KiB),
@@ -46,7 +44,6 @@ function intFlag(name: string, fallback: number, min: number, max: number): numb
 export type ClaudeCliConfig = {
   binary: string;
   model: string;
-  effort: EffortLevel;
   fallbackModels: string[];
   concurrency: number;
   queueWaitMs: number;
@@ -80,20 +77,11 @@ function defaultWorkdir(): string {
 }
 
 export function readClaudeCliConfig(): ClaudeCliConfig {
-  const effortRaw = flag('AI_CLI_EFFORT', DEFAULT_CLI_EFFORT);
-  const effort = isEffortLevel(effortRaw) ? effortRaw : DEFAULT_CLI_EFFORT;
-  if (!isEffortLevel(effortRaw)) {
-    console.warn(
-      `[ai] AI_CLI_EFFORT="${effortRaw}" is not a valid effort level; using "${DEFAULT_CLI_EFFORT}".`
-    );
-  }
-
   const defaultTimeoutMs = intFlag('AI_CLI_TIMEOUT_MS', 180_000, 5_000, 3_600_000);
 
   return {
     binary: flag('AI_CLI_BIN', 'claude'),
     model: flag('AI_CLI_MODEL', DEFAULT_CLI_MODEL),
-    effort,
     fallbackModels: flag('AI_CLI_FALLBACK_MODELS', 'haiku')
       .split(',')
       .map((entry) => entry.trim())

@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 
-import { describeAiPreferenceDefaults, type AiPreferenceDefaults } from './aiPreferences';
 import { getSetting, setSetting } from '../database/settingsRepository';
 import { planRoute } from '../services/ai/freeChatRouting';
 import { getDatabasePath } from '../database/sqlite';
@@ -21,7 +20,6 @@ import {
   isProviderLocked,
   listLockedProviderIds,
   providerRequiresApiKey,
-  providerSupportsEffort,
 } from './providerCatalog';
 import {
   DEFAULT_CLAUDE_CLI_MODEL,
@@ -89,16 +87,6 @@ type AppSettings = {
    * model that can never answer.
    */
   browserChatEnabled: boolean;
-  /**
-   * Whether the effort control is offered.
-   *
-   * Off, no effort select is rendered anywhere and no effort reaches a
-   * provider - see `promptExecution`, which drops it rather than trusting the
-   * page not to send one. Only the CLI provider honours effort at all, so an
-   * install that does not run it is offering a knob that does nothing on every
-   * model in the menu.
-   */
-  effortControlEnabled: boolean;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -188,14 +176,14 @@ export type { BrowserChatSiteId } from './providerCatalog';
  * The settings slice the AI layer runs on.
  *
  * Everything here is read on the request path: which providers may be reached,
- * whether browser mode exists at all, and whether effort is a thing this
- * installation offers. Kept as one slice so a caller cannot hold a half-answer
+ * and whether browser mode exists at all. Kept as one slice so a caller cannot
+ * hold a half-answer
  * - a record of enable flags that says "yes" about a site the master switch has
  * withdrawn.
  */
 export type AIModelSettings = Pick<
   AppSettings,
-  'providersEnabled' | 'browserChatEnabled' | 'effortControlEnabled'
+  'providersEnabled' | 'browserChatEnabled'
 >;
 
 /**
@@ -209,36 +197,6 @@ export type LegacyProviderFlags = {
   deepseekEnabled: boolean;
 };
 
-/**
- * Which tuning knobs actually reach a given provider's model.
- *
- * Sent with the settings rather than fetched from `/ai/health`, because the
- * pickers need it on every render and that endpoint probes every provider -
- * seconds of work to answer a question whose answer is fixed at build time.
- */
-export type ProviderTuningSupport = {
-  provider: AIProvider;
-  effort: boolean;
-};
-
-/**
- * Which providers honour effort, given what this installation offers.
- *
- * Takes the settings because `effortControlEnabled` can withdraw the control
- * outright: off, nothing honours effort, whatever the catalog says about a
- * provider's flags. Reported rather than left to the UI so that anything else
- * reading this - the admin page, a future API caller - gets the same answer the
- * executor acts on.
- */
-export function listProviderTuningSupport(
-  settings: Pick<AppSettings, 'effortControlEnabled'>
-): ProviderTuningSupport[] {
-  return AI_PROVIDER_IDS.map((provider) => ({
-    provider,
-    effort: settings.effortControlEnabled !== false && providerSupportsEffort(provider),
-  }));
-}
-
 export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   AppSettings,
   | 'defaultMode'
@@ -251,7 +209,6 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   | 'defaultCoverLetterDocxEnabled'
   | 'aiModels'
   | 'browserChatEnabled'
-  | 'effortControlEnabled'
   | 'googleSheetsSources'
   | 'browserChatEndpoints'
 >;
@@ -273,16 +230,7 @@ export type ProviderLock = {
 };
 
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
-  /** Which providers honour effort at all. */
-  providerTuning: ProviderTuningSupport[];
   outputPathUsesJobTitle: boolean;
-  /**
-   * The effort a run uses when nothing overrides it, plus the
-   * values that may be chosen. Sent rather than hard-coded in the client so
-   * that the "use the app default" option can name the value it will really
-   * use, and so a new effort level does not need a matching frontend release.
-   */
-  aiPreferenceDefaults: AiPreferenceDefaults;
   /** Providers locked in this build, so the UI can say so instead of hiding them. */
   providerLocks: ProviderLock[];
 };
@@ -578,7 +526,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   // Both default ON so an install that predates them behaves exactly as it did.
   // A flag that changes behaviour by existing is a flag that breaks upgrades.
   browserChatEnabled: true,
-  effortControlEnabled: true,
   defaultMode: 'preview',
   defaultTheme: 'light',
   defaultResumeSelection: 'single',
@@ -1182,13 +1129,9 @@ function normalizeSettings(
   const browserChatEnabled = normalizeBooleanSetting(
     source, 'browserChatEnabled', fallback.browserChatEnabled, strict
   );
-  const effortControlEnabled = normalizeBooleanSetting(
-    source, 'effortControlEnabled', fallback.effortControlEnabled, strict
-  );
   const providerSettings: AIModelSettings = {
     providersEnabled,
     browserChatEnabled,
-    effortControlEnabled,
   };
   const defaultModelId = resolveDefaultModelId(
     source.defaultModelId,
@@ -1281,7 +1224,6 @@ function normalizeSettings(
       source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
     ),
     browserChatEnabled,
-    effortControlEnabled,
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
@@ -1344,7 +1286,6 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
   return {
     providersEnabled: { ...settings.providersEnabled },
     browserChatEnabled: settings.browserChatEnabled,
-    effortControlEnabled: settings.effortControlEnabled,
     ...toLegacyProviderFlags(settings),
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
@@ -1375,9 +1316,7 @@ function toPublicSettingsWithDerived(settings: AppSettings): PublicAppSettingsWi
   return {
     ...toPublicSettings(settings),
     outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
-    aiPreferenceDefaults: describeAiPreferenceDefaults(),
     providerLocks: describeProviderLocks(settings),
-    providerTuning: listProviderTuningSupport(settings),
   };
 }
 
@@ -1896,7 +1835,6 @@ export async function getAIModelSettings(): Promise<AIModelSettings> {
   return {
     providersEnabled: { ...settings.providersEnabled },
     browserChatEnabled: settings.browserChatEnabled,
-    effortControlEnabled: settings.effortControlEnabled,
   };
 }
 

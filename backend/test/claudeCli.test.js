@@ -70,7 +70,6 @@ function makeAdapter(runner, config = {}) {
 test('claude argv carries the flags the provider depends on and never --bare', () => {
   const { argv: flags, systemPromptOverflow } = argv.buildClaudeArgv({
     model: 'sonnet',
-    effort: 'low',
     systemPrompt: 'Be terse.',
   });
 
@@ -81,7 +80,6 @@ test('claude argv carries the flags the provider depends on and never --bare', (
     '--include-partial-messages',
     '--verbose',
     '--model',
-    '--effort',
     '--tools',
     '--safe-mode',
     '--strict-mcp-config',
@@ -103,11 +101,11 @@ test('claude argv carries the flags the provider depends on and never --bare', (
 });
 
 test('a JSON schema is passed only when one is supplied', () => {
-  const without = argv.buildClaudeArgv({ model: 'sonnet', effort: 'low', systemPrompt: 'x' });
+  const without = argv.buildClaudeArgv({ model: 'sonnet', systemPrompt: 'x' });
   assert.equal(without.argv.includes('--json-schema'), false);
 
   const schema = { type: 'object', properties: { a: { type: 'string' } } };
-  const with_ = argv.buildClaudeArgv({ model: 'sonnet', effort: 'low', systemPrompt: 'x', jsonSchema: schema });
+  const with_ = argv.buildClaudeArgv({ model: 'sonnet', systemPrompt: 'x', jsonSchema: schema });
   assert.equal(with_.argv[with_.argv.indexOf('--json-schema') + 1], JSON.stringify(schema));
 });
 
@@ -117,7 +115,6 @@ test('the Linux argument limit is measured on the argument, not the command line
   const prompt = 'x'.repeat(40_000);
   const built = argv.buildClaudeArgv({
     model: 'sonnet',
-    effort: 'low',
     systemPrompt: prompt,
     platform: 'linux',
   });
@@ -133,7 +130,6 @@ test('Windows measures the whole command line, which is where it actually fails'
   const prompt = 'x'.repeat(40_000);
   const built = argv.buildClaudeArgv({
     model: 'sonnet',
-    effort: 'low',
     systemPrompt: prompt,
     platform: 'win32',
   });
@@ -154,7 +150,6 @@ test('an ordinary prompt stays in argv on Windows too', () => {
   const prompt = 'Answer in JSON.'.repeat(200);
   const built = argv.buildClaudeArgv({
     model: 'sonnet',
-    effort: 'low',
     systemPrompt: prompt,
     jsonSchema: { type: 'object', properties: { verdict: { type: 'string' } } },
     platform: 'win32',
@@ -169,7 +164,7 @@ test('an oversized system prompt moves to stdin instead of blowing the exec argu
   // "Argument list too long", because Linux caps one argv entry at 128 KiB
   // regardless of the much larger ARG_MAX total.
   const huge = 'x'.repeat(200_000);
-  const built = argv.buildClaudeArgv({ model: 'sonnet', effort: 'low', systemPrompt: huge });
+  const built = argv.buildClaudeArgv({ model: 'sonnet', systemPrompt: huge });
 
   assert.equal(built.systemPromptOverflow, huge);
   assert.equal(built.argv[built.argv.indexOf('--system-prompt') + 1], argv.CLI_BASE_SYSTEM_PROMPT);

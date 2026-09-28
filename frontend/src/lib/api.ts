@@ -578,55 +578,31 @@ export interface GoogleSheetJobFilterResponse {
   }>;
 }
 
-/** The `--effort` levels the Claude CLI accepts, lowest first. */
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type EffortLevel = (typeof EFFORT_LEVELS)[number];
-
 /**
- * A model and effort choice.
+ * A model choice.
  *
- * Every field is optional and absent means INHERIT: a profile inherits the app
- * default, and one generation inherits the profile. That is why the same type
- * describes both layers.
+ * Optional, and absent means INHERIT: a profile inherits the app default, and
+ * one generation inherits the profile. That is why the same type describes both
+ * layers.
  */
 export interface AiPreferences {
   modelId?: string;
-  effort?: EffortLevel;
-}
-
-export interface AiPreferenceDefaults {
-  effort: EffortLevel;
-  effortLevels: EffortLevel[];
-}
-
-export const EFFORT_LABELS: Record<EffortLevel, string> = {
-  low: 'Low - fastest',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Very high',
-  max: 'Max - slowest, most thorough',
-};
-
-export function isEffortLevel(value: unknown): value is EffortLevel {
-  return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
 }
 
 /**
  * The per-run override fields every generate endpoint accepts.
  *
  * Named `model` rather than `modelId` because that is the field the API has
- * always taken; `effort` keeps its own name.
+ * always taken.
  */
 export interface AiRequestOverrides {
   model?: string;
-  effort?: EffortLevel;
 }
 
 /** Only fields that were actually chosen are sent, so the rest inherit. */
 export function toAiRequestOverrides(preferences: AiPreferences): AiRequestOverrides {
   return {
     ...(preferences.modelId ? { model: preferences.modelId } : {}),
-    ...(preferences.effort ? { effort: preferences.effort } : {}),
   };
 }
 
@@ -635,7 +611,6 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
   const preferences: AiPreferences = {};
   const modelId = typeof source.modelId === 'string' ? source.modelId.trim() : '';
   if (modelId) preferences.modelId = modelId;
-  if (isEffortLevel(source.effort)) preferences.effort = source.effort;
   return preferences;
 }
 
@@ -649,13 +624,6 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
  * models a request may name.
  */
 /**
- * Which tuning knobs actually reach a given provider's model.
- *
- * A chat window has no effort flag - there is nowhere to put one - so the
- * select has to go inactive rather than accept a setting that changes nothing
- * and says nothing.
- */
-/**
  * The reserved model id that means "use both free chat accounts".
  *
  * Not a row in the model table: there is no provider to call and no model name
@@ -664,11 +632,6 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
  * be recognised by name.
  */
 export const HYBRID_MODEL_ID = 'free-hybrid';
-
-export interface ProviderTuningSupport {
-  provider: AIProvider;
-  effort: boolean;
-}
 
 export interface ProviderLock {
   id: AIProvider;
@@ -690,8 +653,6 @@ export interface PublicAppSettings {
    * is worth showing.
    */
   browserChatEnabled: boolean;
-  /** Whether the effort select is offered anywhere. */
-  effortControlEnabled: boolean;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -702,15 +663,12 @@ export interface PublicAppSettings {
   defaultCoverLetterDocxEnabled: boolean;
   outputPathUsesJobTitle: boolean;
   /** What a run uses when nothing overrides it, and the values on offer. */
-  aiPreferenceDefaults: AiPreferenceDefaults;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /** The debug browsers the free chat providers drive, one tab apiece. */
   browserChatEndpoints: BrowserChatEndpoint[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
-  /** Which providers honour effort at all. */
-  providerTuning: ProviderTuningSupport[];
 }
 
 export interface AdminAppSettings extends PublicAppSettings {
@@ -859,39 +817,15 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
   outputPathUsesJobTitle: true,
-  aiPreferenceDefaults: {
-    effort: 'low',
-    effortLevels: [...EFFORT_LEVELS],
-  },
   aiModels: [],
   googleSheetsSources: [],
-  // Both permissive until the server answers, for the same reason as
-  // providerTuning below: withdrawing a control on a guess hides something the
-  // installation may well offer, and the answer is one request away.
+  // Permissive until the server answers: withdrawing browser mode on a guess
+  // hides something the installation may well offer, and the answer is one
+  // request away.
   browserChatEnabled: true,
-  effortControlEnabled: true,
   browserChatEndpoints: [],
   providerLocks: [],
-  // Permissive until the server answers: a select greyed out on a guess would
-  // stop somebody choosing an effort the provider does in fact honour.
-  providerTuning: [],
 };
-
-/**
- * The lists come from the server so that a level added there shows up without
- * a frontend release; anything unrecognised is dropped rather than rendered as
- * an option that would be rejected on save.
- */
-function normalizeAiPreferenceDefaults(value: unknown): AiPreferenceDefaults {
-  const source = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
-  const effortLevels = Array.isArray(source.effortLevels)
-    ? source.effortLevels.filter(isEffortLevel)
-    : [];
-  return {
-    effort: isEffortLevel(source.effort) ? source.effort : DEFAULT_PUBLIC_APP_SETTINGS.aiPreferenceDefaults.effort,
-    effortLevels: effortLevels.length ? effortLevels : [...EFFORT_LEVELS],
-  };
-}
 
 function normalizeModelRecords(value: unknown): AIModelRecord[] {
   if (!Array.isArray(value)) return [];
@@ -918,42 +852,6 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
  * padlock is the part that has to be right, and a build that locks something
  * without explaining itself should still say the model cannot be picked.
  */
-function normalizeProviderTuning(value: unknown): ProviderTuningSupport[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-    .map((entry) => {
-      const provider = coerceProvider(entry.provider);
-      if (!provider) return null;
-      return {
-        provider,
-        // Read strictly: a server that predates this field sends nothing, and
-        // the empty list above is what makes that case permissive. A row that
-        // IS sent is believed exactly as sent.
-        effort: entry.effort === true,
-      } satisfies ProviderTuningSupport;
-    })
-    .filter((entry): entry is ProviderTuningSupport => entry !== null);
-}
-
-/**
- * Whether a model's provider honours a knob.
- *
- * Unknown is treated as yes. The alternative - greying a control because the
- * answer has not arrived - would stop somebody choosing an effort the provider
- * does honour, and on a page that loads settings asynchronously that is a race
- * they would hit as a flicker and then a locked select.
- */
-export function providerHonours(
-  tuning: ProviderTuningSupport[],
-  provider: AIProvider | undefined,
-  knob: 'effort'
-): boolean {
-  if (!provider) return true;
-  const row = tuning.find((entry) => entry.provider === provider);
-  return row ? row[knob] : true;
-}
-
 function normalizeProviderLocks(value: unknown): ProviderLock[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -996,8 +894,6 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
     // both - so absent reads as on, never as off.
     browserChatEnabled:
       typeof source.browserChatEnabled === 'boolean' ? source.browserChatEnabled : true,
-    effortControlEnabled:
-      typeof source.effortControlEnabled === 'boolean' ? source.effortControlEnabled : true,
     defaultMode: source.defaultMode === 'generate' ? 'generate' : 'preview',
     defaultTheme: source.defaultTheme === 'dark' ? 'dark' : 'light',
     defaultResumeSelection:
@@ -1013,7 +909,6 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
       typeof source.defaultCoverLetterDocxEnabled === 'boolean' ? source.defaultCoverLetterDocxEnabled : true,
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
-    aiPreferenceDefaults: normalizeAiPreferenceDefaults(source.aiPreferenceDefaults),
     browserChatEndpoints: Array.isArray(source.browserChatEndpoints)
       ? source.browserChatEndpoints
           .filter(
@@ -1027,7 +922,6 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
       : [],
     aiModels: normalizeModelRecords(source.aiModels),
     providerLocks: normalizeProviderLocks(source.providerLocks),
-    providerTuning: normalizeProviderTuning(source.providerTuning),
     googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
   };
 }
@@ -1534,7 +1428,7 @@ export interface ProfileSettings {
   hardSkillOrdering?: HardSkillOrdering;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
-  /** This profile's default model and effort. */
+  /** This profile's default model. */
   ai?: AiPreferences;
 }
 
@@ -2068,7 +1962,6 @@ export const resumeApi = {
     role: string;
     sourceRowNumber?: number;
     model?: string;
-    effort?: EffortLevel;
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
   }) =>
@@ -2139,7 +2032,6 @@ export const resumeApi = {
     jobAnalysis?: JobAnalysis;
     tailoredContent?: TailoredContent;
     model?: string;
-    effort?: EffortLevel;
   }) =>
     apiFetch<{ html: string; tailored: boolean; tailoredContent?: TailoredContent }>('/resume/preview', {
       method: 'POST',
@@ -2151,7 +2043,6 @@ export const resumeApi = {
     jobDescription?: string;
     jobAnalysis?: JobAnalysis;
     model?: string;
-    effort?: EffortLevel;
     profileIds?: string[];
   }) =>
     apiFetch<{

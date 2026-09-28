@@ -56,7 +56,6 @@ type SubmitBody = {
   format?: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx?: boolean;
   model?: string;
-  effort?: string;
   profileIds?: string[];
   jobs?: Array<{
     companyName?: string;
@@ -85,7 +84,6 @@ export class SubmitError extends Error {}
 function readAiOverrides(body: SubmitBody): AiPreferences {
   return {
     ...(body.model ? { modelId: body.model } : {}),
-    ...(body.effort ? { effort: body.effort as AiPreferences['effort'] } : {}),
   };
 }
 

@@ -4,7 +4,6 @@ const test = require('node:test');
 const {
   isProviderEnabled,
   getPickableModels,
-  listProviderTuningSupport,
 } = require('../dist/config/aiModelConfig');
 
 /**
@@ -38,7 +37,6 @@ function settings(overrides = {}) {
       'chatgpt-web': true,
     },
     browserChatEnabled: true,
-    effortControlEnabled: true,
     ...overrides,
   };
 }
@@ -95,7 +93,6 @@ test('an unset flag is read as on, so an older settings row keeps browser mode',
   delete legacy.browserChatEnabled;
   assert.equal(isProviderEnabled('claude-web', legacy), true);
   assert.ok(getPickableModels(legacy).some((model) => model.id === 'free-hybrid'));
-  assert.equal(listProviderTuningSupport(legacy).length > 0, true);
 });
 
 /**
@@ -109,47 +106,33 @@ test('an unset flag is read as on, so an older settings row keeps browser mode',
  */
 const { loadFresh, useTempStorage } = require('./helpers');
 
-test('both flags round-trip through a real settings save', async () => {
+test('the flag round-trips through a real settings save', async () => {
   useTempStorage(`model-flags-${Math.random().toString(36).slice(2)}`);
   const config = loadFresh('../dist/config/aiModelConfig');
 
   const before = await config.getPublicAppSettings();
-  assert.equal(before.browserChatEnabled, true, 'a fresh install offers both');
-  assert.equal(before.effortControlEnabled, true);
+  assert.equal(before.browserChatEnabled, true, 'a fresh install offers it');
 
-  const saved = await config.updateAppSettings({
-    browserChatEnabled: false,
-    effortControlEnabled: false,
-  });
+  const saved = await config.updateAppSettings({ browserChatEnabled: false });
   assert.equal(saved.browserChatEnabled, false);
-  assert.equal(saved.effortControlEnabled, false);
 
   // Read back through the public shape the pages actually fetch.
   const after = await config.getPublicAppSettings();
   assert.equal(after.browserChatEnabled, false);
-  assert.equal(after.effortControlEnabled, false);
   assert.equal(
     after.aiModels.some((model) => model.id === 'free-hybrid'),
     false,
     'the browser row is gone from the list both pages render'
   );
-  assert.ok(
-    after.providerTuning.every((row) => row.effort === false),
-    'and nothing claims to honour effort'
-  );
 
   // Back on, and the installation is exactly as it was.
-  const restored = await config.updateAppSettings({
-    browserChatEnabled: true,
-    effortControlEnabled: true,
-  });
+  const restored = await config.updateAppSettings({ browserChatEnabled: true });
   assert.equal(restored.browserChatEnabled, true);
   // Read the PUBLIC shape for the hybrid row, not the admin one: admin settings
   // carry the raw model list so Admin -> Models can manage every record,
   // including the browser ones, and the synthesized row is not in it by design.
   const backOn = await config.getPublicAppSettings();
   assert.ok(backOn.aiModels.some((model) => model.id === 'free-hybrid'));
-  assert.ok(backOn.providerTuning.some((row) => row.effort === true));
 });
 
 test('a malformed flag cannot flip the switch', async () => {
@@ -164,14 +147,13 @@ test('a malformed flag cannot flip the switch', async () => {
    * so nonsense from a client falls back to what is stored rather than
    * rejecting the whole save. The property worth pinning is that it falls back
    * to the STORED value: a buggy or stale client must not be able to withdraw
-   * browser mode, or hide the effort control, by sending a string.
+   * browser mode by sending a string.
    *
    * A stored row that is corrupt is the other case and is NOT lenient -
    * `readSettings` normalizes strictly and throws, because a database that
    * disagrees with its own schema is not something to paper over.
    */
-  await config.updateAppSettings({ browserChatEnabled: 'no', effortControlEnabled: 0 });
+  await config.updateAppSettings({ browserChatEnabled: 'no' });
   const after = await config.getPublicAppSettings();
   assert.equal(after.browserChatEnabled, true, 'a string did not switch browser mode off');
-  assert.equal(after.effortControlEnabled, true, 'a zero did not withdraw the effort select');
 });

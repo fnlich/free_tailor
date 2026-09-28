@@ -3,14 +3,8 @@
 import {
   AIModelRecord,
   AiPreferences,
-  EFFORT_LABELS,
-  EffortLevel,
   LOCK_ICON,
   ProviderLock,
-  ProviderTuningSupport,
-  isEffortLevel,
-  providerHonours,
-  HYBRID_MODEL_ID,
 } from '@/lib/api';
 
 /**
@@ -21,7 +15,6 @@ import {
  */
 export type InheritedAiChoice = {
   modelLabel: string;
-  effort: EffortLevel;
 };
 
 type Props = {
@@ -35,27 +28,6 @@ type Props = {
    * told why they cannot.
    */
   providerLocks?: ProviderLock[];
-  /**
-   * Which providers honour effort.
-   *
-   * Empty means "not known yet", and everything stays enabled - see
-   * `providerHonours`. Greying a control on a guess is worse than offering one
-   * that turns out to be a no-op.
-   */
-  providerTuning?: ProviderTuningSupport[];
-  effortLevels: EffortLevel[];
-  /**
-   * Whether this installation offers the effort control at all.
-   *
-   * Distinct from `providerTuning`, and hidden rather than greyed - which is
-   * the opposite of what the select does when a CHOSEN MODEL cannot honour
-   * effort. The difference is what the reader is being told. A control that
-   * greys as you change the model above it is answering "not for this one";
-   * a control that is simply absent is the installation saying there is no such
-   * setting here, and greying it instead would leave every profile page with a
-   * permanently dead field and a sentence about chat windows that is not why.
-   */
-  effortEnabled?: boolean;
   inherited: InheritedAiChoice;
   /** Where an unset field falls back to: "app default", "profile", ... */
   inheritedFrom: string;
@@ -69,8 +41,6 @@ const SELECT_CLASS =
   'dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100';
 
 const LABEL_CLASS = 'block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1';
-const DISABLED_LABEL_CLASS =
-  'block text-sm font-medium text-gray-400 dark:text-gray-500 mb-1';
 const HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
 /**
  * The locked-provider note, as plain running text.
@@ -86,10 +56,10 @@ const HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
 const LOCK_HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
 
 /**
- * The model and effort selects.
+ * The model select.
  *
- * One component for both places these appear - the profile, where they set a
- * default, and the builder, where they override it for a single run - so the
+ * One component for both places it appears - the profile, where it sets a
+ * default, and the builder, where it overrides that for a single run - so the
  * two cannot drift into offering different options or different wording for
  * the same setting.
  */
@@ -98,9 +68,6 @@ export default function AiPreferenceFields({
   onChange,
   models,
   providerLocks = [],
-  providerTuning = [],
-  effortLevels,
-  effortEnabled = true,
   inherited,
   inheritedFrom,
   disabled = false,
@@ -118,44 +85,12 @@ export default function AiPreferenceFields({
     lockedModels.some((entry) => entry.lock.id === lock.id)
   );
 
-  /**
-   * Which provider this profile's calls will reach, for the effort knob below.
-   *
-   * Hybrid names no single provider, and both of the free accounts it routes
-   * between answer the same way - neither has an effort flag - so it is read as
-   * a chat window rather than as "unknown".
-   *
-   * A blank model means INHERIT, and what it inherits is not known here: the
-   * app default is a server-side setting this component is not given. So it
-   * stays permissive, on the same reasoning as `providerHonours` - a control
-   * greyed on a guess stops somebody choosing something that would have worked.
-   */
-  const chosenModel = models.find((model) => model.id === value.modelId);
-  const chosenProvider =
-    value.modelId === HYBRID_MODEL_ID ? 'claude-web' : chosenModel?.provider;
-  const honoursEffort = providerHonours(providerTuning, chosenProvider, 'effort');
-  const notTunable = chosenModel
-    ? `${chosenModel.name} is a chat window, which has no such setting.`
-    : 'The chosen model is a chat window, which has no such setting.';
-
-  /**
-   * Changing the model drops the effort the new one cannot honour.
-   *
-   * Not merely cosmetic. The select below shows "Use the app default" while it
-   * is inactive, so leaving a stored `effort=max` behind would have the form
-   * SAY one thing and SEND another - and the stale value would come back the
-   * moment somebody switched to a model that does honour it, as a setting they
-   * do not remember making.
-   */
   const chooseModel = (modelId: string) => {
-    const next: AiPreferences = { ...value, modelId: modelId || undefined };
-    const provider = modelId === HYBRID_MODEL_ID ? 'claude-web' : models.find((model) => model.id === modelId)?.provider;
-    if (!providerHonours(providerTuning, provider, 'effort')) delete next.effort;
-    onChange(next);
+    onChange({ ...value, modelId: modelId || undefined });
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4">
       <div>
         <label className={LABEL_CLASS} htmlFor={`${idPrefix}-model`}>
           Model
@@ -189,41 +124,6 @@ export default function AiPreferenceFields({
         ))}
       </div>
 
-      {effortEnabled && (
-      <div>
-        <label
-          className={honoursEffort ? LABEL_CLASS : DISABLED_LABEL_CLASS}
-          htmlFor={`${idPrefix}-effort`}
-        >
-          Effort
-        </label>
-        <select
-          id={`${idPrefix}-effort`}
-          value={value.effort ?? ''}
-          // Inactive rather than hidden. A control that vanishes when you change
-          // the model above it reads as a bug; one that is greyed with a reason
-          // reads as an answer.
-          disabled={disabled || !honoursEffort}
-          onChange={(event) =>
-            onChange({
-              ...value,
-              effort: isEffortLevel(event.target.value) ? event.target.value : undefined,
-            })
-          }
-          className={SELECT_CLASS}
-        >
-          <option value="">{inheritOption(EFFORT_LABELS[inherited.effort])}</option>
-          {effortLevels.map((level) => (
-            <option key={level} value={level}>
-              {EFFORT_LABELS[level]}
-            </option>
-          ))}
-        </select>
-        <p className={HINT_CLASS}>
-          {honoursEffort ? 'How much reasoning the model spends before answering.' : notTunable}
-        </p>
-      </div>
-      )}
 
     </div>
   );

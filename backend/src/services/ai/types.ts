@@ -13,20 +13,8 @@ import type { CredentialKind } from '../../config/providerCatalog';
 
 export type CompletionResponseFormat = 'json' | 'text';
 
-/** The `--effort` levels the Claude CLI accepts. */
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type EffortLevel = (typeof EFFORT_LEVELS)[number];
-
-export function isEffortLevel(value: unknown): value is EffortLevel {
-  return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
-}
-
 /** A knob a caller asked for that the chosen provider cannot honour. */
-export type DroppedParam =
-  | 'temperature'
-  | 'maxOutputTokens'
-  | 'jsonSchema'
-  | 'effort';
+export type DroppedParam = 'temperature' | 'maxOutputTokens' | 'jsonSchema';
 
 /**
  * Sampling values the CALLER would like. They are hints, not guarantees:
@@ -86,7 +74,6 @@ export type CompletionRequest = {
    */
   readonly jsonSchema?: Readonly<Record<string, unknown>>;
   readonly sampling: SamplingHints;
-  readonly effort?: EffortLevel;
   readonly deadline: Deadline;
   readonly signal?: AbortSignal;
   /** Stable id of the calling feature, for logs and usage buckets. */
@@ -123,8 +110,6 @@ export type ProviderCapabilities = {
   readonly label: string;
   readonly temperature: boolean;
   readonly maxOutputTokens: boolean;
-  /** Whether `--effort`, or an equivalent, actually reaches the model. */
-  readonly effort: boolean;
   readonly nativeJsonMode: 'response_format' | 'json-schema' | 'none';
   /** false => the facade folds system text into the head of the user body. */
   readonly systemBlocks: boolean;

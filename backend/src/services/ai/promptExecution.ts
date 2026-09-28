@@ -29,11 +29,9 @@ import { getAdapter } from './registry';
 import { recordCompletion, recordFailure, warnOnce } from './telemetry';
 import {
   createDeadline,
-  isEffortLevel,
   type CompletionRequest,
   type CompletionResponseFormat,
   type CompletionResult,
-  type EffortLevel,
 } from './types';
 
 /**
@@ -166,7 +164,6 @@ export type CreatePromptCompletionInput = {
    * wrong layer the moment the two drift apart.
    */
   jsonSchema?: Readonly<Record<string, unknown>>;
-  effort?: EffortLevel;
   timeoutMs?: number;
   signal?: AbortSignal;
   /** The profile's free-chat route, so a hybrid call can use both accounts. */
@@ -182,8 +179,7 @@ async function runAssembled(
     maxTokens?: number;
     temperature?: number;
     jsonSchema?: Readonly<Record<string, unknown>>;
-    effort?: EffortLevel;
-    timeoutMs?: number;
+      timeoutMs?: number;
     signal?: AbortSignal;
     appendToUserBody?: string;
     route?: FreeChatRoute;
@@ -292,20 +288,6 @@ async function runAssembled(
           maxOutputTokens: input.maxTokens,
           temperature: input.temperature,
         },
-        /*
-         * Dropped outright when the installation has withdrawn the control.
-         *
-         * Not left to the page. The effort select is hidden when the flag is
-         * off, but a tab loaded before the change - or anything calling this
-         * API directly - can still send one, and an effort that reached the
-         * CLI would put `--effort` on the command line of a server whose
-         * operator has said there is no such setting here. Hiding a control is
-         * a UI decision; this is the one that makes it true.
-         */
-        effort:
-          settings.effortControlEnabled !== false && isEffortLevel(input.effort)
-            ? input.effort
-            : undefined,
         deadline,
         signal: input.signal,
         callSite: input.callSite,
@@ -416,7 +398,6 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     jsonSchema: input.jsonSchema,
-    effort: input.effort,
     timeoutMs: input.timeoutMs,
     signal: input.signal,
     appendToUserBody: input.appendToUserBody,
@@ -436,7 +417,6 @@ export type CreateRawCompletionInput = {
   maxTokens?: number;
   temperature?: number;
   jsonSchema?: Readonly<Record<string, unknown>>;
-  effort?: EffortLevel;
   timeoutMs?: number;
   signal?: AbortSignal;
   route?: FreeChatRoute;
@@ -464,8 +444,7 @@ export async function createRawCompletion(input: CreateRawCompletionInput): Prom
       maxTokens: input.maxTokens,
       temperature: input.temperature,
       jsonSchema: input.jsonSchema,
-      effort: input.effort,
-      timeoutMs: input.timeoutMs,
+        timeoutMs: input.timeoutMs,
       signal: input.signal,
       route: input.route,
     }

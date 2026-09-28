@@ -1,5 +1,4 @@
 import { warnOnce } from '../../telemetry';
-import type { EffortLevel } from '../../types';
 import { MAX_SYSTEM_PROMPT_ARG_BYTES } from './options';
 
 /**
@@ -78,7 +77,6 @@ export function resolveCliModel(requested: string | undefined, fallback: string)
 
 export type ClaudeArgvOptions = {
   model: string;
-  effort: EffortLevel;
   /** Instructions for the model. Moved to stdin when it exceeds the arg cap. */
   systemPrompt: string;
   jsonSchema?: Readonly<Record<string, unknown>>;
@@ -144,8 +142,6 @@ export function buildClaudeArgv(options: ClaudeArgvOptions): ClaudeInvocation {
     '--verbose', // required by stream-json
     '--model',
     options.model,
-    '--effort',
-    options.effort,
     // No tools at all. The answer is text; a tool call is a way for the turn
     // to end without one.
     '--tools',
