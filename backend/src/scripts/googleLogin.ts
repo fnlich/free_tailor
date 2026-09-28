@@ -172,7 +172,7 @@ function waitForRedirect(server: http.Server, state: string): Promise<string> {
       const say = (message: string) => {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(
-          `<!doctype html><meta charset="utf-8"><title>Free Tailor</title>` +
+          `<!doctype html><meta charset="utf-8"><title>Tailor</title>` +
             `<body style="font-family:system-ui;padding:3rem;max-width:32rem">` +
             `<h1 style="font-size:1.25rem">${message}</h1>` +
             `<p>You can close this tab and go back to the terminal.</p></body>`
@@ -197,7 +197,7 @@ function waitForRedirect(server: http.Server, state: string): Promise<string> {
         return;
       }
 
-      say('Signed in. Free Tailor can now use your Google Sheets.');
+      say('Signed in. Tailor can now use your Google Sheets.');
       resolve(code);
     });
   });

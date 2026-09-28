@@ -138,6 +138,11 @@ export function todaySheetTitle(at: Date = new Date()): string {
 }
 
 function spreadsheetTitleFor(account: UserAccount): string {
+  // Still the old name, deliberately. This is a STORED title on every
+  // spreadsheet ever allocated, and Drive sorts by it: renaming it here
+  // would not touch the existing files, so new accounts' sheets would
+  // simply file themselves somewhere else in the operator's Drive. Change
+  // it only alongside a pass that renames what is already out there.
   return `Free Tailor - ${account.email}`;
 }
 

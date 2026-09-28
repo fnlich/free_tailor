@@ -116,7 +116,7 @@ function getTransport(config: MailConfig): Transporter {
   return transport;
 }
 
-const APP_NAME = 'Free Tailor';
+const APP_NAME = 'Tailor';
 
 function codeEmail(code: string, ttlMinutes: number): { subject: string; text: string; html: string } {
   const subject = `${code} is your ${APP_NAME} sign-in code`;

@@ -927,6 +927,135 @@ Existing database records are never overwritten.
 
 ---
 
+## 🌐 Serving it on your own domain
+
+Everything above runs the app on a LAN address over plain http. Putting it on a
+public domain means one reverse proxy in front of the two processes, which keeps
+them on loopback and gives both halves the same origin — so the session cookie,
+the CORS rule and the payment webhooks all line up without special cases.
+
+```
+                        yourdomain.com
+                              │
+                         ┌────┴────┐
+                         │  Caddy  │  :443, certificate renewed for you
+                         └────┬────┘
+                  /api/*  ────┤────  everything else
+                              │
+              ┌───────────────┴───────────────┐
+        Express :3001                   Next.js :3000
+```
+
+**The `.env` differences.** Bind both halves to loopback — the proxy is the only
+thing that should be reachable — and name the public address once:
+
+```bash
+HOST=127.0.0.1
+PORT=3001
+FRONTEND_HOST=127.0.0.1
+FRONTEND_PORT=3000
+
+DB_DIR=/opt/free_tailor/data/db          # absolute: a relative path follows the cwd
+NEXT_PUBLIC_API_URL=https://yourdomain.com/api
+PAYMENTS_RETURN_URL=https://yourdomain.com
+ADMIN_EMAILS=you@yourdomain.com
+```
+
+`NEXT_PUBLIC_API_URL` is the one that catches people. It is compiled into the
+bundle, so set it **before** `npm run build --prefix frontend`; and it is needed
+even though both halves are on the same machine, because only the hostname is
+swapped at runtime — the port and the scheme are kept, so leaving it unset asks
+an https page for `http://yourdomain.com:3001/api`.
+
+`FRONTEND_URL` is *not* needed: the backend allows any origin whose hostname
+matches the `Host` the request arrived on, and Caddy passes `Host` through. Set
+it only if your proxy rewrites `Host`.
+
+**The Caddyfile** — this is the whole of it:
+
+```
+yourdomain.com {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+```
+
+**Both processes under systemd.** `/etc/systemd/system/tailor-api.service`:
+
+```ini
+[Unit]
+Description=Tailor API
+After=network.target
+
+[Service]
+User=tailor
+WorkingDirectory=/opt/free_tailor/backend
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`tailor-web.service` is the same file with `WorkingDirectory` pointing at
+`frontend`. Build both first (`npm run build --prefix backend`, then the
+frontend), then `systemctl enable --now tailor-api tailor-web`.
+
+**Chrome's shared libraries are not on a fresh server**, and puppeteer's
+download does not bring them. Without these, PDF generation fails with a bare
+"browser exited":
+
+```bash
+sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2   libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1   libpango-1.0-0 libcairo2 libasound2t64
+```
+
+**Three consoles hold the old address** and need the new one:
+
+| Where | What to set |
+|-------|-------------|
+| Google Cloud → Credentials → your Web application client | Add `https://yourdomain.com` to **Authorized JavaScript origins**. There is no redirect URI to add — sign-in verifies an ID token rather than redirecting. |
+| Stripe → Webhooks | Endpoint `https://yourdomain.com/api/payments/webhook/stripe`, subscribed to all seven events listed in `.env.example`. Copy the new signing secret into `STRIPE_WEBHOOK_SECRET`. |
+| Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL` | `https://yourdomain.com/api/payments/webhook/cryptomus` — the **API**, not the frontend. |
+
+**The default AI provider will not work on a headless server.** `claude-web`
+drives a Chrome tab you signed in to by hand, and there is no display to sign in
+on. Before cutting over, either install the Claude CLI on the server
+(`claude auth login` over SSH) or set a metered API key, and add
+`AI_LOCKED_PROVIDERS=claude-web,chatgpt-web` so nobody picks a provider this
+machine cannot run.
+
+**Mail from your own domain** is four values. Outgoing mail here is only the
+sign-in codes, so there is nothing else to move. With Google Workspace, `SMTP_PASS`
+must be an **App Password** — Google rejects the account password over SMTP, and
+App Passwords only exist once 2-Step Verification is on:
+
+```bash
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=you@yourdomain.com
+SMTP_PASS=the-16-character-app-password
+SMTP_FROM=you@yourdomain.com
+```
+
+Then check the three things that can only be checked from outside:
+
+```bash
+curl https://yourdomain.com/api/health
+cd backend && npm run sheets:doctor
+```
+
+and request a sign-in code in a browser, confirming it arrives from the new
+address. A failure to send names itself in `journalctl -u tailor-api`; the code
+itself is deliberately never in that log.
+
 ## 📁 Project Structure
 
 ```
@@ -1082,7 +1211,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 | A payment closed with *This server could not start that payment* | Not the provider - this end. The settings row would not load, or the database refused a write, before anything was sent anywhere. Nothing was charged. Read the backend log for the reference: the real error is there, and it is usually `DB_DIR` becoming unwritable or a settings row saved as something that will not parse. |
 | Buying with a card works, but paying with a SAVED card takes the money and never credits it | The webhook endpoint is not subscribed to `payment_intent.succeeded`. A saved card is charged off-session, which emits `payment_intent.*` and never `checkout.session.completed` - so the card path works and the saved-card path silently does not. Add `payment_intent.succeeded`, `payment_intent.payment_failed` and `payment_intent.canceled` to the endpoint's events. `stripe listen` forwards everything, so this only bites an endpoint created by hand. |
 | The buy page says no payment method is set up, but the keys are in `.env` | A method is offered only when **every** one of its keys is set - for Stripe that is all three, including the webhook secret. The buy page lists which key each method is missing. Keys are read at startup, so a `.env` edited while the server was running has not been seen yet: restart the backend. |
-| The page cannot reach the API but the backend is clearly running | Look for `[cors] Refused origin ...` in the backend output. A browser reports a refused origin as an unreachable server, so the page cannot tell the two apart - the backend log is the only place the reason appears. It names the origin and the `FRONTEND_URL` value that allows it. |
+| The page cannot reach the API but the backend is clearly running | Look for `[cors] Refused origin ...` in the backend output. A browser reports a refused origin as an unreachable server, so the page cannot tell the two apart - the backend log is the only place the reason appears. It names the origin and the `FRONTEND_URL` value that allows it. Behind a reverse proxy this should not happen at all — the rule allows any origin whose hostname matches the `Host` the request arrived on — so seeing it there means the proxy is rewriting `Host`, and `FRONTEND_URL=https://yourdomain.com` is the fix. |
+| On a domain, the site loads over https but every action cannot reach the backend | `NEXT_PUBLIC_API_URL` is unset or stale **in the built bundle**. It is compiled in, not read at runtime, so a restart changes nothing — only `npm run build --prefix frontend` does. Unset, the frontend keeps the default port and scheme and swaps only the hostname, asking an https page for `http://yourdomain.com:3001/api`: the wrong port, and blocked as mixed content besides. Set it to `https://yourdomain.com/api`, rebuild the frontend, then restart it. The browser console shows the mixed-content refusal; the network tab shows the port. |
 | `Cannot reach the backend at ...` naming a port you did not expect | `NEXT_PUBLIC_API_URL` and `PORT` disagree. They must name the same port when both point at this machine. Delete `NEXT_PUBLIC_API_URL` from `.env` to derive it from `PORT`, or set the two to match. The backend and the frontend build both print an `[env]` line when they disagree. |
 | `Cannot reach the backend at http://localhost:3001/api ...` in the UI | The frontend is running but nothing answered on the API port. The backend prints its own reason where it was started - the `backend` half of `npm run dev`, or its own terminal. Most often it exited at boot over the database directory or a native-module mismatch, both rows below. The two halves are independent: a crashed backend no longer takes the frontend down with it, so the page stays up to tell you. |
 | `[browser] TypeError: executablePath.lastIndexOf is not a function` during `npm install` | The same puppeteer 24-vs-25 difference as the row below, hit by the postinstall script rather than the compiler: it reads the expected Chrome path out of `executablePath()`, which is a promise in 25. Handled now. It only ever skipped the Chrome download, so `npm run setup:browser` finishes the job on an install that hit it. |
