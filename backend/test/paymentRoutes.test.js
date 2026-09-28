@@ -21,7 +21,7 @@ const { loadFresh, useTempStorage, useAdminEmails, writeSettingRaw } = require('
 
 const PRICE_CENTS = 50;
 
-async function serve({ withKeys = true, settings = {} } = {}) {
+async function serve({ withKeys = true, settings = {}, returnUrl = 'https://app.example.com', appUrl = null } = {}) {
   const { dbDir } = useTempStorage(`payment-routes-${Math.random().toString(36).slice(2)}`);
   useAdminEmails('boss@example.com');
 
@@ -38,7 +38,14 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     delete process.env.CRYPTOMUS_MERCHANT_ID;
     delete process.env.CRYPTOMUS_PAYMENT_API_KEY;
   }
-  process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
+  // Each rung of the return-URL chain is set explicitly, including to nothing,
+  // so a test for one of them cannot be answered by another left over from the
+  // process it is running in.
+  if (returnUrl) process.env.PAYMENTS_RETURN_URL = returnUrl;
+  else delete process.env.PAYMENTS_RETURN_URL;
+  if (appUrl) process.env.APP_URL = appUrl;
+  else delete process.env.APP_URL;
+  delete process.env.FRONTEND_URL;
 
   // Before anything reads settings: the settings module caches what it sees.
   writeSettingRaw(
@@ -117,8 +124,12 @@ async function serve({ withKeys = true, settings = {} } = {}) {
     adminToken: users.createSession(admin.id),
     close: () => server.close(),
     call,
-    checkout: (token, body) =>
-      call(token, '/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
+    checkout: (token, body, init = {}) =>
+      call(token, '/api/payments/checkout', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        ...init,
+      }),
   };
 }
 
@@ -486,6 +497,93 @@ test('without the publishable key the card method is withheld', async () => {
     assert.equal(response.status, 503);
   } finally {
     process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
+    server.close();
+  }
+});
+
+/**
+ * Where a buyer is sent after paying somewhere else.
+ *
+ * 3-D Secure and every crypto invoice leave this site, and the return URL is
+ * the only thing that brings the person back. It used to fall through to
+ * `http://localhost:3000` whenever neither PAYMENTS_RETURN_URL nor FRONTEND_URL
+ * was set - which is exactly the shape of a proxied domain install, where
+ * neither is needed for anything else. The credits still landed, because the
+ * webhook grants them; the buyer just arrived at their own machine.
+ *
+ * Note the CORS middleware that vets `Origin` is mounted in `index.ts`, not in
+ * this harness, so these tests exercise the plumbing rather than that check.
+ */
+
+test('a buyer is sent back to the origin they bought from when nothing names one', async () => {
+  const server = await serve({ returnUrl: null });
+  try {
+    const response = await server.checkout(
+      server.aliceToken,
+      { method: 'card', credits: 20 },
+      { headers: { origin: 'https://example.org' } }
+    );
+    assert.equal(response.status, 201);
+
+    const [input] = server.created;
+    assert.ok(
+      input.returnUrl.startsWith('https://example.org/credits/return'),
+      `returnUrl was ${input.returnUrl}`
+    );
+    assert.doesNotMatch(input.returnUrl, /localhost/);
+  } finally {
+    server.close();
+  }
+});
+
+test('APP_URL outranks the buyer\'s origin, and PAYMENTS_RETURN_URL outranks both', async () => {
+  const viaAppUrl = await serve({ returnUrl: null, appUrl: 'https://configured.example' });
+  try {
+    await viaAppUrl.checkout(
+      viaAppUrl.aliceToken,
+      { method: 'card', credits: 20 },
+      { headers: { origin: 'https://somewhere-else.example' } }
+    );
+    assert.ok(
+      viaAppUrl.created[0].returnUrl.startsWith('https://configured.example/credits/return'),
+      `returnUrl was ${viaAppUrl.created[0].returnUrl}`
+    );
+  } finally {
+    viaAppUrl.close();
+  }
+
+  const viaExplicit = await serve({
+    returnUrl: 'https://app.example.com',
+    appUrl: 'https://configured.example',
+  });
+  try {
+    await viaExplicit.checkout(
+      viaExplicit.aliceToken,
+      { method: 'card', credits: 20 },
+      { headers: { origin: 'https://somewhere-else.example' } }
+    );
+    // The existing contract: the variable that names this exact thing wins.
+    assert.ok(
+      viaExplicit.created[0].returnUrl.startsWith('https://app.example.com/credits/return'),
+      `returnUrl was ${viaExplicit.created[0].returnUrl}`
+    );
+  } finally {
+    viaExplicit.close();
+  }
+});
+
+test('an Origin that is not an absolute http(s) origin is ignored, not pasted in', async () => {
+  const server = await serve({ returnUrl: null });
+  try {
+    await server.checkout(
+      server.aliceToken,
+      { method: 'card', credits: 20 },
+      // What a non-browser client, or `Origin: null` from a sandboxed frame,
+      // will send. Pasting it in would build a return URL nobody can follow.
+      { headers: { origin: 'null' } }
+    );
+    assert.match(server.created[0].returnUrl, /^http:\/\/localhost:\d+\/credits\/return/);
+  } finally {
     server.close();
   }
 });

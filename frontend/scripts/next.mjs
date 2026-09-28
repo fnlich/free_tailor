@@ -156,8 +156,21 @@ for (const [key, value] of Object.entries(parseEnvFile(join(repoRoot, '.env'))))
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const backendPort = (process.env.PORT || '3001').trim();
 
+/**
+ * `APP_URL` trimmed of trailing slashes, or ''.
+ *
+ * Its own two lines rather than an import: this is an .mjs and the backend's
+ * `config/publicUrl.ts` is TypeScript. Kept to trim-and-strip so there is no
+ * second parser to drift from that one - anything cleverer belongs there.
+ */
+const appUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
+
 if (!process.env.NEXT_PUBLIC_API_URL) {
-  process.env.NEXT_PUBLIC_API_URL = `http://localhost:${backendPort}/api`;
+  // One variable for a single-origin deployment. Without APP_URL this is the
+  // old derivation from PORT, so a local install is unchanged.
+  process.env.NEXT_PUBLIC_API_URL = appUrl
+    ? `${appUrl}/api`
+    : `http://localhost:${backendPort}/api`;
 } else {
   let configured = null;
   try {
@@ -178,6 +191,21 @@ if (!process.env.NEXT_PUBLIC_API_URL) {
     // Read back by lib/api.ts so the message in the UI can say this too. The
     // build-time warning above is easy to scroll past; the page is not.
     process.env.NEXT_PUBLIC_EXPECTED_API_PORT = backendPort;
+  }
+
+  /*
+   * An http API base under an https public address is the half-configured
+   * install: the browser blocks every call as mixed content, and reports that
+   * to the page as an unreachable server - the same `TypeError` as a stopped
+   * backend. Worth naming here, because nothing downstream can tell them apart.
+   */
+  if (configured && appUrl.startsWith('https://') && configured.protocol === 'http:') {
+    console.warn(
+      `\n[env] NEXT_PUBLIC_API_URL is http:// but APP_URL is https://.\n` +
+        `      A browser blocks that as mixed content and the page can only say it ` +
+        `cannot reach the backend.\n` +
+        `      Set NEXT_PUBLIC_API_URL to ${appUrl}/api, or delete it to derive it from APP_URL.\n`
+    );
   }
 }
 
