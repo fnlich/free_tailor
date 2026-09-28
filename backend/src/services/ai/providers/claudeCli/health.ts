@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
-import { resolveCliExecPlan } from './resolveBinary';
+import { resolveCliExecPlan } from '../cli/resolveBinary';
+import { CLAUDE_CLI_BINARY_HINTS } from './hints';
 import type { ProviderHealth } from '../../types';
 
 /**
@@ -26,7 +27,7 @@ function run(
   // real request would actually find - a `.cmd` shim on Windows included.
   let plan;
   try {
-    plan = resolveCliExecPlan(binary);
+    plan = resolveCliExecPlan(binary, undefined, CLAUDE_CLI_BINARY_HINTS);
   } catch (error) {
     return Promise.resolve({
       ok: false,

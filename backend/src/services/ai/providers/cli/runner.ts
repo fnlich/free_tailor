@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { resolveCliExecPlan } from './resolveBinary';
+import { resolveCliExecPlan, type CliBinaryHints } from './resolveBinary';
 
 /**
  * The process seam.
@@ -29,6 +29,8 @@ export type CliRunSpec = {
   signal?: AbortSignal;
   /** Called once per complete NDJSON line, in order. */
   onLine: (line: string) => void;
+  /** Passed to the resolver so an unwrappable shim names this provider's own setting. */
+  binaryHints?: CliBinaryHints;
 };
 
 export type CliRunOutcome = {
@@ -187,7 +189,7 @@ export function createSpawnRunner(): CliRunner {
         // them. resolveCliExecPlan finds something runnable directly instead.
         let plan;
         try {
-          plan = resolveCliExecPlan(spec.binary);
+          plan = resolveCliExecPlan(spec.binary, undefined, spec.binaryHints);
         } catch (error) {
           if (errFd !== null) {
             try {

@@ -20,7 +20,8 @@ import { classifyCliFailure } from './classify';
 import { checkClaudeCliHealth, type ClaudeCliHealth } from './health';
 import { interpretRateLimitEvent, OutageTable } from './limits';
 import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './options';
-import { createSpawnRunner, ensureCliWorkdir, type CliRunner } from './runner';
+import { createSpawnRunner, ensureCliWorkdir, type CliRunner } from '../cli/runner';
+import { CLAUDE_CLI_BINARY_HINTS } from './hints';
 
 const PROVIDER_ID = 'claude-cli' as const;
 
@@ -193,6 +194,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         maxOutputBytes: config.maxOutputBytes,
         signal: request.signal,
         onLine: (line) => reduce(line, now() - startedAt),
+        binaryHints: CLAUDE_CLI_BINARY_HINTS,
       });
 
       const latencyMs = now() - startedAt;

@@ -240,7 +240,26 @@ export function clearCliExecPlanCache(): void {
   planCache.clear();
 }
 
-export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultResolveDeps()): CliExecPlan {
+/**
+ * What to suggest when a shim cannot be unwrapped.
+ *
+ * Supplied by the provider rather than known here, because this module is
+ * shared: it resolves `claude` and `codex` alike and has no business knowing
+ * which npm package either came from. Omitted, the message is still actionable,
+ * just less specific.
+ */
+export type CliBinaryHints = {
+  /** The env var that overrides the binary, e.g. `AI_CLI_BIN`. */
+  envVar: string;
+  /** Path segments under node_modules to the real program, for the example. */
+  packageBinSegments: readonly string[];
+};
+
+export function resolveCliExecPlan(
+  binary: string,
+  deps: ResolveDeps = defaultResolveDeps(),
+  hints?: CliBinaryHints
+): CliExecPlan {
   // On POSIX, spawn resolves PATH itself and executes scripts by shebang, so
   // there is nothing to do. Keeping this branch trivial also keeps the
   // behaviour that has been running in production unchanged.
@@ -310,8 +329,10 @@ export function resolveCliExecPlan(binary: string, deps: ResolveDeps = defaultRe
     binary,
     `Found "${found}", but could not work out what it runs. It is a shim, and this server will not ` +
       'execute one through a shell - an admin-editable system prompt goes on that command line. ' +
-      `Set AI_CLI_BIN to the real program instead: for an npm install that is usually ` +
-      `"${pathFor(deps).join(pathFor(deps).dirname(found), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')}".`
+      (hints
+        ? `Set ${hints.envVar} to the real program instead: for an npm install that is usually ` +
+          `"${pathFor(deps).join(pathFor(deps).dirname(found), 'node_modules', ...hints.packageBinSegments)}".`
+        : 'Point this provider\'s binary setting at the real program instead of the shim.')
   );
 }
 

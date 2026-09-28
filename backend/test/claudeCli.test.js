@@ -786,8 +786,9 @@ test('a spent seat-wide window parks the seat, whatever rateLimitType names', ()
 // cover a Windows-only failure from a Linux CI.
 
 const { resolveCliExecPlan, CliBinaryUnresolvableError, clearCliExecPlanCache } = load(
-  '../dist/services/ai/providers/claudeCli/resolveBinary'
+  '../dist/services/ai/providers/cli/resolveBinary'
 );
+const { CLAUDE_CLI_BINARY_HINTS } = load('../dist/services/ai/providers/claudeCli/hints');
 
 /** A fake Windows box with the given files present. */
 function windowsDeps(files) {
@@ -942,10 +943,33 @@ test('a missing Windows binary is reported as missing, not as something else', (
 test('an unrunnable shim asks for AI_CLI_BIN rather than falling back to a shell', () => {
   // Falling back to cmd.exe would work and would be a command-injection hole,
   // so this deliberately fails with something an operator can act on.
+  //
+  // The hints are passed because the resolver is shared with the Codex CLI now
+  // and cannot know which npm package a binary came from. Claude's own call
+  // sites supply these, so what an operator reads is unchanged; this test names
+  // them explicitly because it calls the resolver directly.
   const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
   assert.throws(
-    () => resolveCliExecPlan('claude', windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' })),
+    () =>
+      resolveCliExecPlan(
+        'claude',
+        windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' }),
+        CLAUDE_CLI_BINARY_HINTS
+      ),
     (error) => error instanceof CliBinaryUnresolvableError && /AI_CLI_BIN/.test(error.message)
+  );
+});
+
+test('without hints the same refusal is still actionable, just not package-specific', () => {
+  // The Codex path, and any future one: no hints means no invented package
+  // name, but it must still say what to do and must never fall back to a shell.
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd';
+  assert.throws(
+    () => resolveCliExecPlan('codex', windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' })),
+    (error) =>
+      error instanceof CliBinaryUnresolvableError &&
+      /binary setting/.test(error.message) &&
+      !/cmd\.exe/i.test(error.message)
   );
 });
 
