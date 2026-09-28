@@ -129,6 +129,23 @@ let queue: TaskQueue | null = null;
  * ONE line for the browsers, not two lines that each believe they have the run
  * of the place.
  */
+/**
+ * How many times one resume may be BUILT before it is given up on.
+ *
+ * Counts the first go, so 3 means "try, then twice more" and 1 means no
+ * retrying at all. Spelled that way round because "at most 3" is ambiguous and
+ * an operator setting it must not have to guess which reading this file took.
+ *
+ * Capped rather than trusted: a large number here would keep one broken job
+ * cycling through the queue for hours, holding a slot each time, and the thing
+ * it is competing with is other people's resumes.
+ */
+function readMaxAttempts(): number {
+  const raw = Number.parseInt((process.env.GENERATION_MAX_ATTEMPTS ?? '').trim(), 10);
+  if (!Number.isFinite(raw)) return 3;
+  return Math.min(10, Math.max(1, raw));
+}
+
 export function getGenerationQueue(): TaskQueue {
   if (!queue) {
     queue = new TaskQueue(() => readCapacity(), store, {
@@ -179,7 +196,9 @@ export function getGenerationQueue(): TaskQueue {
             : null
         );
       },
-    });
+    },
+    readMaxAttempts()
+    );
     registerTaskRunner(
       RESUME_TASK_KIND,
       makeResumeRunner(

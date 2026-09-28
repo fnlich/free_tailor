@@ -107,6 +107,14 @@ export type Task<T = unknown> = TaskDescriptor<T> & {
   runningOn?: string;
   value?: T;
   error?: string;
+  /**
+   * How many times this task has been STARTED, counting the first.
+   *
+   * Absent on a task written before retrying existed, which reads as 1 - so no
+   * migration, and none is needed for a second reason too: the whole task is
+   * stored as JSON in `generation_tasks.data`, so a new field rides along.
+   */
+  attempts?: number;
 };
 
 export type BatchState = 'running' | 'done' | 'cancelled';
@@ -149,6 +157,8 @@ export type BatchSnapshot = {
       id: string;
       seq: number;
       state: TaskState;
+      /** Present only from the second go on, so "attempt 1" is never rendered. */
+      attempts?: number;
       runningOn?: string;
       error?: string;
     }
@@ -254,7 +264,16 @@ export class TaskQueue {
   constructor(
     private readonly readCapacity: () => Promise<Capacity>,
     private readonly store?: QueueStore,
-    private readonly hooks?: QueueHooks
+    private readonly hooks?: QueueHooks,
+    /**
+     * How many times a task may RUN in total, not how many retries follow the
+     * first go. 1 disables retrying.
+     *
+     * Passed in rather than read from the environment here so a test can set it
+     * without touching `process.env`, and so the one place that reads the
+     * variable is the one place that builds the real queue.
+     */
+    private readonly maxAttempts = 1
   ) {}
 
   /**
@@ -637,6 +656,9 @@ export class TaskQueue {
     }
 
     task.state = 'running';
+    // Counted on the way in, so a task that is running has always been started
+    // at least once and the snapshot can say "attempt 2 of 3" honestly.
+    task.attempts = task.attempts ?? 1;
     task.runningOn = slot.site ?? 'claude-cli';
     this.busy.set(slot.id, task);
     this.persist((store) => store.saveTask(task));
@@ -678,11 +700,17 @@ export class TaskQueue {
         });
         this.settle(task, 'done');
       } catch (error) {
-        this.settle(
-          task,
-          batch.controller.signal.aborted ? 'cancelled' : 'failed',
-          describeError(error)
-        );
+        const cancelled = batch.controller.signal.aborted;
+        // Retried HERE and nowhere else, which is what makes the credit
+        // arithmetic come out right without touching it. `settle` is what
+        // eventually calls the taskFinished hook, and that hook is where a
+        // failed unit is refunded - so a task that goes back on the queue
+        // instead of settling has neither been charged again nor refunded
+        // early. It is simply still in flight, which is the truth.
+        if (!cancelled && this.retryTask(task, describeError(error))) {
+          return;
+        }
+        this.settle(task, cancelled ? 'cancelled' : 'failed', describeError(error));
       } finally {
         release();
       }
@@ -728,6 +756,35 @@ export class TaskQueue {
     }
 
     if (options.emit !== false) this.emitTask(task);
+  }
+
+  /**
+   * Puts a failed task back on the queue, or says it is out of attempts.
+   *
+   * Only the RUNNER's own failure comes here. The other two ways a task can
+   * fail are deliberately excluded and both would be bugs to include: a
+   * cancelled batch is not a failure to retry, and `failUnservable` fails a
+   * task because no registered browser can ever serve the sites it is pinned
+   * to - re-queueing that one would fail it again immediately, for ever.
+   *
+   * It goes on the TAIL. A retry is not more urgent than the work already
+   * waiting, and a task that fails fast at the head would otherwise spin
+   * through its attempts while everything behind it waited.
+   */
+  private retryTask(task: Task, error: string): boolean {
+    const attempts = task.attempts ?? 1;
+    if (attempts >= this.maxAttempts) return false;
+
+    task.attempts = attempts + 1;
+    task.state = 'queued';
+    task.runningOn = undefined;
+    // Kept, so a task waiting on its second go still says what went wrong the
+    // first time rather than looking like it was never tried.
+    task.error = error;
+    this.queues[task.queue].push(task);
+    this.persist((store) => store.saveTask(task));
+    this.emitTask(task);
+    return true;
   }
 
   private settle(task: Task, state: TaskState, error?: string): void {
@@ -788,6 +845,9 @@ export class TaskQueue {
         id: task.id,
         seq: task.seq,
         state: task.state,
+        // Sent only once it means something. A task on its first go says
+        // nothing, so a UI has no "attempt 1 of 3" noise to suppress.
+        ...(task.attempts && task.attempts > 1 ? { attempts: task.attempts } : {}),
         ...(task.runningOn ? { runningOn: task.runningOn } : {}),
         ...(task.error ? { error: task.error } : {}),
       })),
