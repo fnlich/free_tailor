@@ -37,6 +37,7 @@ import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
+import { applyProxyTrust } from './config/proxyTrust';
 import {
   describeBrowser,
   describeMissingBrowser,
@@ -45,6 +46,9 @@ import {
 } from './config/browser';
 
 const app = express();
+// Behind a reverse proxy this is what lets the session cookie be marked
+// Secure. See config/proxyTrust for why it is 1 and not true.
+applyProxyTrust(app);
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 const configuredFrontendOrigins = new Set(
