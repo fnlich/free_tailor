@@ -7,7 +7,9 @@ import {
   adminApi,
   AIModelOption,
   AIProvider,
+  DEFAULT_PUBLIC_APP_SETTINGS,
   getAIProviderLabel,
+  isProviderOffered,
   promptsApi,
   PromptFeatureKey,
   PromptPreviewResult,
@@ -16,6 +18,7 @@ import {
   PromptSummary,
   PromptValidation,
   PromptVariableDefinition,
+  PublicAppSettings,
 } from '@/lib/api';
 import { formatDate } from '@/lib/format';
 
@@ -150,6 +153,22 @@ function PromptsPageBody() {
   const [enabledProviders, setEnabledProviders] = useState<Record<AIProvider, boolean>>(
     () => ({}) as Record<AIProvider, boolean>
   );
+  /*
+   * The locks and the browser-mode flag, kept so the disabled check below can be
+   * the SHARED rule rather than a private copy of half of it.
+   *
+   * This page was safe only by accident: the option list arrives already
+   * filtered server-side, so its own predicate never had to be right. That is a
+   * fragile reason to be correct, and it is one release from being wrong.
+   */
+  const [offerSettings, setOfferSettings] = useState<
+    Pick<PublicAppSettings, 'providerLocks' | 'browserChatEnabled'>
+  >(() => ({
+    providerLocks: DEFAULT_PUBLIC_APP_SETTINGS.providerLocks,
+    browserChatEnabled: DEFAULT_PUBLIC_APP_SETTINGS.browserChatEnabled,
+  }));
+  const providerOffered = (provider: AIProvider): boolean =>
+    isProviderOffered(offerSettings, provider, enabledProviders);
   const [selectedFeatureKey, setSelectedFeatureKey] = useState<PromptFeatureKey | null>(null);
   const [activeCandidateId, setActiveCandidateId] = useState('');
   const [draft, setDraft] = useState<PromptDraft | null>(null);
@@ -337,6 +356,10 @@ function PromptsPageBody() {
 
         setModelOptions(options);
         setEnabledProviders(settings.providersEnabled);
+        setOfferSettings({
+          providerLocks: settings.providerLocks,
+          browserChatEnabled: settings.browserChatEnabled,
+        });
       } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load prompt model options');
@@ -839,9 +862,9 @@ function PromptsPageBody() {
                     <option
                       key={option.id}
                       value={option.id}
-                      disabled={!enabledProviders[option.provider]}
+                      disabled={!providerOffered(option.provider)}
                     >
-                      {option.label}{!enabledProviders[option.provider] ? ' (provider disabled)' : ''}
+                      {option.label}{!providerOffered(option.provider) ? ' (provider disabled)' : ''}
                     </option>
                   ))}
                 </select>

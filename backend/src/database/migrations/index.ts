@@ -19,6 +19,11 @@ import {
   CREDIT_LEDGER_SCHEMA_VERSION,
   type CreditLedgerMigrationReport,
 } from './004_credit_opening_balances';
+import {
+  migrate005,
+  CODEX_MODEL_SCHEMA_VERSION,
+  type CodexModelMigrationReport,
+} from './005_seed_codex_model';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -68,6 +73,10 @@ function describeOwnership(report: OwnershipMigrationReport): string {
   if (report.profiles) parts.push(`${report.profiles} profile(s)`);
   if (report.groups) parts.push(`${report.groups} group(s)`);
   return parts.length ? `${parts.join(' and ')} assigned to ${report.ownerEmail}` : 'nothing to change';
+}
+
+function describeCodexModel(report: CodexModelMigrationReport): string {
+  return report.seededModels ? 'Codex model record added' : 'nothing to change';
 }
 
 function describeCreditLedger(report: CreditLedgerMigrationReport): string {
@@ -141,6 +150,14 @@ const MIGRATIONS: readonly MigrationStep[] = [
       return { ran: report.ran, notes: report.notes, summary: describeCreditLedger(report) };
     },
   },
+  {
+    version: CODEX_MODEL_SCHEMA_VERSION,
+    label: 'Codex model migration',
+    apply: (db) => {
+      const report = migrate005(db);
+      return { ran: report.ran, notes: report.notes, summary: describeCodexModel(report) };
+    },
+  },
 ];
 
 /**
@@ -197,10 +214,12 @@ export {
   BROWSER_CHAT_SCHEMA_VERSION,
   OWNERSHIP_SCHEMA_VERSION,
   CREDIT_LEDGER_SCHEMA_VERSION,
+  CODEX_MODEL_SCHEMA_VERSION,
 };
 export type {
   MigrationReport,
   BrowserChatMigrationReport,
   OwnershipMigrationReport,
   CreditLedgerMigrationReport,
+  CodexModelMigrationReport,
 };

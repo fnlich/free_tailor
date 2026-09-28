@@ -132,3 +132,53 @@ test('an unreadable settings row slows the batch rather than failing it', async 
   const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {});
   assert.equal(capacity.limit, 1);
 });
+
+/**
+ * The Codex seat, which is a SEPARATE number from the Claude one.
+ *
+ * It used to fall past every branch into the metered-HTTP default, and that was
+ * right only by the coincidence that both defaults are 4. The two cases below
+ * are the ones the coincidence hid.
+ */
+test('the Codex seat runs at its own process limit, not the Claude seat\'s', async () => {
+  const { resolveBatchCapacity, codexConcurrency } = loadCapacity();
+
+  const wide = await resolveBatchCapacity(
+    { provider: 'codex-cli' },
+    { AI_CODEX_CONCURRENCY: '12', AI_CLI_CONCURRENCY: '4' }
+  );
+  assert.equal(wide.limit, 12, 'a tuned-up Codex seat is actually offered its slots');
+  assert.match(wide.reason, /Codex/);
+
+  const narrow = await resolveBatchCapacity(
+    { provider: 'codex-cli' },
+    { AI_CODEX_CONCURRENCY: '1', AI_CLI_CONCURRENCY: '16' }
+  );
+  assert.equal(narrow.limit, 1, 'and a narrowed one is not flooded from an invisible queue');
+
+  // The same pin the Claude case carries: this module and the provider's own
+  // semaphore must agree, or the batch offers work into a pool of another size.
+  assert.equal(codexConcurrency({ AI_CODEX_CONCURRENCY: '12' }), 12);
+  assert.equal(codexConcurrency({}), 4, 'the same default the provider reads');
+  assert.equal(codexConcurrency({ AI_CODEX_CONCURRENCY: '999' }), 32, 'same upper bound too');
+});
+
+test('each CLI seat is sized from its own variable, and they do not share a lane', async () => {
+  useTempStorage('batch-capacity-lanes');
+  delete require.cache[require.resolve('../dist/services/queue/index')];
+  const queueModule = require('../dist/services/queue/index');
+
+  // Deliberately different numbers: a shared lane would have to pick one.
+  const capacity = await queueModule.readCapacityForTests({
+    AI_CLI_CONCURRENCY: '3',
+    AI_CODEX_CONCURRENCY: '7',
+  });
+
+  assert.equal(capacity.cli.length, 3, 'the Claude seat and the metered providers');
+  assert.equal(capacity.codex.length, 7, 'the Codex seat, from AI_CODEX_CONCURRENCY');
+  assert.ok(
+    capacity.cli.every((slot) => slot.queue === 'cli') &&
+      capacity.codex.every((slot) => slot.queue === 'codex'),
+    'and the slots say which lane they belong to, which is what keeps the pools apart'
+  );
+});

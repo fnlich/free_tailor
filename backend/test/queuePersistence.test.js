@@ -257,3 +257,166 @@ test('a task whose kind nothing registers fails by name', async () => {
   assert.equal(snapshot.failed, 1);
   assert.match(snapshot.tasks[0].error, /No runner is registered for "from-a-later-build"/);
 });
+
+/**
+ * The attempt counter across a restart.
+ *
+ * Through the PRODUCTION mapper, deliberately: every test above builds its own
+ * `taskRow` fixture, and that is exactly how the counter came to be missing from
+ * the real one for a whole commit. `data` is a hand-picked projection, not the
+ * task serialized, so a field added to `Task` does not reach the disk by being
+ * there - and without it a crash-looping job came back entitled to a full fresh
+ * budget every boot, which is the one case the on-disk queue exists for.
+ */
+test('attempts already spent survive a restart, through the real persistence path', async () => {
+  useTempStorage('queue-persistence-attempts');
+  process.env.GENERATION_MAX_ATTEMPTS = '3';
+  const queueModule = loadFresh('../dist/services/queue/index');
+  queueModule.resetGenerationQueueForTests();
+
+  const queue = queueModule.getGenerationQueue();
+  const batch = queue.submit(
+    [
+      {
+        queue: 'cli',
+        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        kind: 'restart-attempts',
+        payload: { batchId: 'ignored' },
+      },
+    ],
+    { id: 'bat_attempts', label: 'Restart', deferPersist: true }
+  );
+
+  // The state a process death leaves behind: on its third go, mid-build.
+  batch.tasks[0].state = 'running';
+  batch.tasks[0].attempts = 3;
+  batch.tasks[0].error = 'the first two goes failed';
+  queueModule.persistNewBatch(batch);
+
+  // The restart.
+  queueModule.resetGenerationQueueForTests();
+  const restored = loadFresh('../dist/services/queue/index');
+  restored.restoreGenerationQueue();
+
+  const snapshot = restored.getGenerationQueue().snapshot('bat_attempts');
+  assert.ok(snapshot, 'the batch comes back');
+  assert.equal(snapshot.tasks[0].state, 'queued', 'a task that was running is built again');
+  assert.equal(
+    snapshot.tasks[0].attempts,
+    3,
+    'the attempts already spent came back - without this the cap resets on every restart'
+  );
+  assert.equal(snapshot.maxAttempts, 3, 'the ceiling is reported so a page need not hard-code it');
+
+  delete process.env.GENERATION_MAX_ATTEMPTS;
+});
+
+/**
+ * The two failures that must NOT be retried, because retrying them is pure
+ * delay: both are deterministic, so three goes produce the same error three
+ * times while holding a slot each go.
+ */
+test('a kind nothing registers fails once, however many attempts are allowed', async () => {
+  useTempStorage('queue-persistence-no-runner');
+  process.env.GENERATION_MAX_ATTEMPTS = '3';
+  const queueModule = loadFresh('../dist/services/queue/index');
+  queueModule.resetGenerationQueueForTests();
+
+  const queue = queueModule.getGenerationQueue();
+  const batch = queue.submit(
+    [
+      {
+        queue: 'cli',
+        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        kind: 'a-kind-nothing-registers',
+        payload: {},
+      },
+    ],
+    { id: 'bat_no_runner', label: 'Missing runner' }
+  );
+
+  // The dispatcher runs on a timer, so wait for the task to stop rather than
+  // assuming it already has.
+  for (let i = 0; i < 200 && batch.tasks[0].state === 'queued'; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  const snapshot = queue.snapshot('bat_no_runner');
+  assert.equal(snapshot.tasks[0].state, 'failed');
+  assert.match(snapshot.tasks[0].error, /No runner is registered/);
+  assert.equal(
+    snapshot.tasks[0].attempts,
+    undefined,
+    'one go only - the snapshot omits attempts below 2, so this asserts it was never retried'
+  );
+
+  delete process.env.GENERATION_MAX_ATTEMPTS;
+});
+
+test('cancelling a task that is waiting for a RETRY does not claim it never started', async () => {
+  useTempStorage('queue-persistence-cancel-retry');
+  process.env.GENERATION_MAX_ATTEMPTS = '3';
+  const queueModule = loadFresh('../dist/services/queue/index');
+  queueModule.resetGenerationQueueForTests();
+
+  const queue = queueModule.getGenerationQueue();
+  const batch = queue.submit(
+    [
+      {
+        queue: 'cli',
+        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        kind: 'cancel-between-attempts',
+        payload: {},
+      },
+    ],
+    { id: 'bat_cancel_retry', label: 'Cancel' }
+  );
+
+  // The state between two goes: queued again, carrying why the last one failed.
+  batch.tasks[0].state = 'queued';
+  batch.tasks[0].attempts = 2;
+  batch.tasks[0].error = 'the browser was out of messages';
+
+  queue.cancel('bat_cancel_retry');
+
+  const snapshot = queue.snapshot('bat_cancel_retry');
+  assert.equal(snapshot.tasks[0].state, 'cancelled');
+  assert.match(
+    snapshot.tasks[0].error,
+    /after 2 attempt/,
+    '"Cancelled before it started" is false here - it HAD started, twice'
+  );
+  assert.match(
+    snapshot.tasks[0].error,
+    /out of messages/,
+    'and the reason the last go failed is not thrown away'
+  );
+
+  delete process.env.GENERATION_MAX_ATTEMPTS;
+});
+
+test('an unset GENERATION_MAX_ATTEMPTS means three goes, not one', async () => {
+  useTempStorage('queue-persistence-default-attempts');
+  // The branch every other test skips, because they all set the variable.
+  delete process.env.GENERATION_MAX_ATTEMPTS;
+  const queueModule = loadFresh('../dist/services/queue/index');
+  queueModule.resetGenerationQueueForTests();
+
+  const batch = queueModule.getGenerationQueue().submit(
+    [
+      {
+        queue: 'cli',
+        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        kind: 'default-attempts',
+        payload: {},
+      },
+    ],
+    { id: 'bat_default_attempts', label: 'Default' }
+  );
+
+  assert.equal(
+    queueModule.getGenerationQueue().snapshot(batch.id).maxAttempts,
+    3,
+    'the documented default reaches the queue rather than the constructor\'s retry-off 1'
+  );
+});

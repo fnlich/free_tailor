@@ -496,10 +496,25 @@ export default function Home() {
       // Named from the OLDEST running task rather than the newest, so the label
       // is steady instead of flickering between however many run at once.
       const current = snapshot.tasks.find((task) => task.state === 'running');
+      /*
+       * Retries, said out loud.
+       *
+       * A build that failed goes back on the queue for another go, which moves
+       * the running and queued counts BACKWARDS while `done` stands still. With
+       * nothing naming it, that reads as the run going wrong or hanging - so the
+       * count of tasks on a second-or-later attempt is reported, with the
+       * server's own ceiling rather than a number hard-coded here.
+       */
+      const retrying = snapshot.tasks.filter(
+        (task) => (task.attempts ?? 1) > 1 && (task.state === 'queued' || task.state === 'running')
+      ).length;
+      const retryNote = retrying
+        ? `, ${retrying} retrying${snapshot.maxAttempts ? ` (up to ${snapshot.maxAttempts} tries each)` : ''}`
+        : '';
       setGenerationStep(
         snapshot.running > 0
-          ? `${describe.phase} - ${snapshot.running} running, ${finished}/${snapshot.total} done`
-          : `${describe.phase} - ${finished}/${snapshot.total} done`
+          ? `${describe.phase} - ${snapshot.running} running, ${finished}/${snapshot.total} done${retryNote}`
+          : `${describe.phase} - ${finished}/${snapshot.total} done${retryNote}`
       );
       setGenerationProgress({
         total: snapshot.total,

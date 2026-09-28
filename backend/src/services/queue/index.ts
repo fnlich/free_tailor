@@ -8,7 +8,7 @@ import {
   saveTaskRow,
 } from '../../database/generationRepository';
 import { getProfile } from '../../database/profileRepository';
-import { cliConcurrency } from '../ai/batchCapacity';
+import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
 import type { BrowserChatSiteId } from '../../config/providerCatalog';
 import { closeIfSettled, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
@@ -60,7 +60,11 @@ export {
  * browsers and one ChatGPT browser is three slots, and which of them is free is
  * what decides whether a Claude-pinned task may start.
  *
- * The CLI seat's slots are interchangeable, so they are just counted out.
+ * A seat's slots are interchangeable WITHIN its lane, so they are just counted
+ * out - but each CLI provider gets its OWN lane, sized from its own variable.
+ * They hold separate semaphores, so one shared lane would either strand the
+ * larger pool or let the smaller one's blocked tasks squat on slots the other
+ * provider's work needs.
  */
 async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capacity> {
   const endpoints = await getBrowserChatEndpoints();
@@ -73,12 +77,19 @@ async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capac
     site: entry.siteId,
   }));
 
+  // `cli` carries the Claude seat AND the metered HTTP providers, which have no
+  // local resource of their own and for whom this is only a throttle.
   const cli: Slot[] = Array.from({ length: cliConcurrency(env) }, (_, index) => ({
     id: `cli:${index}`,
     queue: 'cli' as const,
   }));
 
-  return { browser, cli };
+  const codex: Slot[] = Array.from({ length: codexConcurrency(env) }, (_, index) => ({
+    id: `codex:${index}`,
+    queue: 'codex' as const,
+  }));
+
+  return { browser, cli, codex };
 }
 
 /** The batch's serializable half: everything but the tasks and the controller. */
@@ -110,6 +121,16 @@ function taskRow(task: Task) {
       payload: task.payload,
       ...(task.value !== undefined ? { value: task.value } : {}),
       ...(task.error ? { error: task.error } : {}),
+      /*
+       * The attempt counter, and it has to be written EXPLICITLY.
+       *
+       * `data` is a projection, not the task - so a field added to `Task` does
+       * not reach the disk by being there. Leaving this out made the retry cap
+       * unbounded in the one case the on-disk queue exists for: a task that was
+       * mid-build when the process died came back with no counter, `start` read
+       * it as attempt 1, and a crash-looping job got a fresh budget every boot.
+       */
+      ...(task.attempts && task.attempts > 1 ? { attempts: task.attempts } : {}),
     },
   };
 }
@@ -211,6 +232,18 @@ export function getGenerationQueue(): TaskQueue {
 }
 
 /**
+ * The capacity reading, exposed so the lane split can be asserted.
+ *
+ * Not a test seam for the dispatcher - it still reads the real settings row.
+ * This just makes the pure part callable with an environment of the caller's
+ * choosing, which is the only way to pin that the two CLI lanes are sized from
+ * two different variables.
+ */
+export function readCapacityForTests(env: NodeJS.ProcessEnv): Promise<Capacity> {
+  return readCapacity(env);
+}
+
+/**
  * Saves a whole submission in one transaction.
  *
  * Used instead of the queue's own per-row writes at submit time: thirty tasks is
@@ -282,6 +315,7 @@ export function restoreGenerationQueue(): RestoreReport {
             payload?: unknown;
             value?: unknown;
             error?: string;
+            attempts?: number;
           };
           if (task.state === 'running') report.requeued += 1;
           return {
@@ -300,6 +334,10 @@ export function restoreGenerationQueue(): RestoreReport {
             payload: taskData.payload,
             ...(taskData.value !== undefined ? { value: taskData.value } : {}),
             ...(taskData.error ? { error: taskData.error } : {}),
+            // Carried across the restart, so the attempts already spent still
+            // count against the cap. A task requeued here is on its NEXT go,
+            // not its first.
+            ...(taskData.attempts ? { attempts: taskData.attempts } : {}),
           };
         });
 

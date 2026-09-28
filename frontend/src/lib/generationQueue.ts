@@ -20,8 +20,17 @@ export type BatchTask = {
   companyName: string;
   role: string;
   sourceRowNumber?: number;
-  /** Which browser is building it right now. */
+  /** Which browser or seat is building it right now. */
   runningOn?: string;
+  /**
+   * Which go this is, present only from the SECOND on.
+   *
+   * Read so a retry is visible. A retried build goes back to `queued` still
+   * carrying the previous attempt's `error` - deliberately, so the reason is not
+   * lost - and without this the row simply read as failed and then quietly
+   * succeeded, or looked hung.
+   */
+  attempts?: number;
   error?: string;
 };
 
@@ -47,6 +56,8 @@ export type BatchSnapshot = {
   failed: number;
   cancelled: number;
   jobCount: number;
+  /** How many goes each task gets, from the server's own configuration. */
+  maxAttempts?: number;
   createdAt: string;
   finishedAt?: string;
   tasks: BatchTask[];

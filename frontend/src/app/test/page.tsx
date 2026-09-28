@@ -7,6 +7,7 @@ import {
   coerceProvider,
   DEFAULT_PUBLIC_APP_SETTINGS,
   getAIProviderLabel,
+  isProviderOffered,
   PromptSummary,
   PublicAppSettings,
   promptsApi,
@@ -61,17 +62,27 @@ const OUTPUT_KEY_CLASSES = [
   'bg-rose-100 text-rose-950 ring-1 ring-rose-300 dark:bg-rose-400/20 dark:text-rose-100 dark:ring-rose-300/30',
 ];
 
+/**
+ * Whether this page may offer a provider at all.
+ *
+ * `isProviderOffered` and nothing else. This used to be a private copy that read
+ * only `providersEnabled`, and it went stale the moment browser mode became
+ * switchable: the select went on listing the two browser providers on an install
+ * that had withdrawn them, and picking one produced a backend error blaming
+ * model configuration for a withdrawn feature. It dropped the LOCK clause too,
+ * so a provider this machine cannot run was offered here unlabelled.
+ */
 function isEnabled(settings: PublicAppSettings, provider: AIProvider): boolean {
-  return settings.providersEnabled[provider] === true;
+  return isProviderOffered(settings, provider, settings.providersEnabled);
 }
 
 /**
- * The first enabled provider in catalog order, which puts the keyless
+ * The first offered provider in catalog order, which puts the keyless
  * subscription seat ahead of every metered one. Both of these used to end in
  * an unguarded fall-through to DeepSeek.
  */
 function pickDefaultProvider(settings: PublicAppSettings): AIProvider {
-  return AI_PROVIDERS.find((provider) => settings.providersEnabled[provider]) ?? AI_PROVIDERS[0];
+  return AI_PROVIDERS.find((provider) => isEnabled(settings, provider)) ?? AI_PROVIDERS[0];
 }
 
 function normalizeTerm(value: string): string {

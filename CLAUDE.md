@@ -87,7 +87,11 @@ backend/src/
   config/             # env loading (.env, UTF-16 aware), browser resolution
   controllers/        # one file, the skills handlers routes/resume.ts mounts
   database/           # better-sqlite3, one repository per table
-  database/migrations # numbered, run on first DB use
+  database/migrations # numbered, run on first DB use, and a CHAIN: a step that
+                      #   defers (003 waits for an admin) stops the ones after
+                      #   it. Adding a seed model needs a migration - stored
+                      #   `aiModels` is read verbatim, never unioned with the
+                      #   defaults, so a seed reaches fresh installs only.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service
@@ -97,7 +101,13 @@ backend/src/
                       #   browser:doctor, sheets:login, sheets:doctor,
                       #   migrate:legacy, ai:rollback
   services/ai/        # provider-agnostic transport; one directory per provider
-  services/queue/     # on-disk generation queue (survives a restart)
+  services/queue/     # on-disk generation queue (survives a restart). One LANE
+                      #   per real resource - browsers, the Claude seat, the
+                      #   Codex seat - each sized from its own variable. A task
+                      #   row's `data` is a hand-picked PROJECTION built by
+                      #   index.ts's `taskRow`, not the Task serialized, so a new
+                      #   field must be named there AND in the restore mapper or
+                      #   it silently does not persist.
   bidAssistant/       # the Bid Assistant's own prompt building
   types/, utils/      # shared types; path, storage and filename helpers
 backend/

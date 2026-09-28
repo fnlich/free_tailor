@@ -255,7 +255,7 @@ async function endpointsFor(
  *
  * Each site has its own pool and therefore its own line: Claude free and
  * ChatGPT free do not wait for one another, and neither waits for the Claude
- * CLI, which has a semaphore of its own. Three providers, three queues.
+ * CLI, which has a semaphore of its own. Two chat sites, and a lane per real resource.
  */
 async function poolFor(id: ChatSiteId, env: NodeJS.ProcessEnv): Promise<TabPool> {
   const { mine, all } = await endpointsFor(id, env);

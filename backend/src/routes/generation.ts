@@ -15,6 +15,7 @@ import {
   type BatchSnapshot,
   type ResumeJob,
   type ResumeTaskPayload,
+  type QueueName,
   type ResumeTaskResult,
   type TaskDescriptor,
 } from '../services/queue';
@@ -149,16 +150,23 @@ function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
 export function routeFor(choice: {
   provider: string;
   route?: string;
-}): { queue: 'browser' | 'cli'; sites?: BrowserChatSiteId[] } {
+}): { queue: QueueName; sites?: BrowserChatSiteId[] } {
   if (choice.route === 'hybrid') {
     return { queue: 'browser', sites: ['claude-web', 'chatgpt-web'] };
   }
   if (isBrowserChatSiteId(choice.provider)) {
     return { queue: 'browser', sites: [choice.provider] };
   }
-  // Everything that is not a chat window runs on the seat's queue: the CLI, and
-  // the metered HTTP providers, which have no local resource of their own and
-  // would otherwise need a third queue that does nothing.
+  // Codex has its own lane because it has its own semaphore, sized by its own
+  // variable. Sharing the Claude seat's lane meant the dispatcher offered
+  // `AI_CLI_CONCURRENCY` slots into an `AI_CODEX_CONCURRENCY` pool, so one of
+  // the two was always wrong.
+  if (choice.provider === 'codex-cli') {
+    return { queue: 'codex' };
+  }
+  // Everything else that is not a chat window runs on the Claude seat's queue:
+  // that CLI, and the metered HTTP providers, which have no local resource of
+  // their own and would otherwise need a lane that does nothing.
   return { queue: 'cli' };
 }
 
