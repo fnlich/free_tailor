@@ -13,6 +13,7 @@ import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
 import { createAnthropicHttpAdapter } from './providers/anthropicHttp';
 import { createClaudeCliAdapter, type ClaudeCliAdapter } from './providers/claudeCli';
+import { createCodexCliAdapter } from './providers/codexCli';
 import { createBrowserChatAdapter } from './providers/browserChat';
 import { createOpenAICompatibleAdapter } from './providers/openaiCompatible';
 import type { AIProviderAdapter, ProviderCapabilities, ProviderHealth } from './types';
@@ -58,6 +59,7 @@ function registerDefaults(): void {
   }
   defaultsRegistered = true;
   registerDefault('claude-cli', () => createClaudeCliAdapter());
+  registerDefault('codex-cli', () => createCodexCliAdapter());
   registerDefault('claude', () => createAnthropicHttpAdapter({ defaultModel: DEFAULT_CLAUDE_MODEL }));
   registerDefault('openai', () =>
     createOpenAICompatibleAdapter({

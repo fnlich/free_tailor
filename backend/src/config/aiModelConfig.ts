@@ -4,6 +4,7 @@ import { getSetting, setSetting } from '../database/settingsRepository';
 import { planRoute } from '../services/ai/freeChatRouting';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
+import { CODEX_DEFAULT_MODEL } from '../services/ai/providers/codexCli/options';
 import {
   AI_PROVIDER_IDS,
   coerceProviderId,
@@ -370,6 +371,30 @@ function createDefaultModelRecords(): AIModelRecord[] {
       provider: 'claude-cli',
       modelName: 'haiku',
       description: 'Fastest model on the subscription seat, for classification and short extractions.',
+    },
+    /*
+     * The ChatGPT seat, as ONE entry.
+     *
+     * `modelName: 'default'` is a sentinel: the argv builder omits `-m`
+     * entirely, so the turn runs on whatever that account is configured for.
+     * That is the only model name that is true on every account - Codex
+     * resolves its catalog from the signed-in account at runtime, so there is
+     * no static list to seed and any specific id hard-coded here would be a
+     * guess that fails at request time on somebody else's plan.
+     *
+     * A specific model is a record an administrator adds under Admin -> Models,
+     * which already takes a provider plus a model name.
+     *
+     * Seeded AFTER the Claude seat models on purpose: `defaultSeedModelId`
+     * takes the first unlocked seed, and a fresh install should still land on
+     * Claude Sonnet rather than silently changing which seat it spends.
+     */
+    {
+      name: 'Codex (subscription)',
+      provider: 'codex-cli',
+      modelName: CODEX_DEFAULT_MODEL,
+      description:
+        "Runs the local codex CLI on your ChatGPT subscription, using that account's own default model.",
     },
     // Browser-driven chat. Ranked after the seat and before the metered APIs:
     // both cost nothing to run, but a chat window answers at reading speed and

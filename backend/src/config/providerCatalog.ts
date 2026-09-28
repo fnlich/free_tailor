@@ -101,6 +101,28 @@ export const PROVIDER_CATALOG = {
       'Run `claude login` there, then remove it from AI_LOCKED_PROVIDERS.',
     order: 0,
   },
+  'codex-cli': {
+    id: 'codex-cli',
+    label: 'Codex (subscription)',
+    summary:
+      'Runs the local `codex` CLI on the signed-in ChatGPT subscription. No API key, no metered tokens.',
+    // Nothing older than this provider can be asking about it, so a flat wire
+    // flag would be a field with no reader.
+    legacyEnabledField: null,
+    // Null on purpose, and the opposite of what it looks like. `OPENAI_API_KEY`
+    // exists and this provider must NOT be given it: an API key outranks the
+    // subscription in the CLI's own resolution order, so honouring one here
+    // would move every call onto metered billing while looking identical. The
+    // child environment strips it; see providers/codexCli/env.ts.
+    envKeyVar: null,
+    requiresApiKey: false,
+    credentialKind: 'subscription-seat',
+    locked: false,
+    lockReason:
+      'Needs the `codex` CLI installed and a ChatGPT subscription signed in on this machine. ' +
+      'Run `codex login --device-auth` there, then remove it from AI_LOCKED_PROVIDERS.',
+    order: 1,
+  },
   claude: {
     id: 'claude',
     label: 'Anthropic API',
@@ -111,7 +133,7 @@ export const PROVIDER_CATALOG = {
     credentialKind: 'api-key',
     locked: false,
     lockReason: '',
-    order: 1,
+    order: 2,
   },
   openai: {
     id: 'openai',
@@ -123,7 +145,7 @@ export const PROVIDER_CATALOG = {
     credentialKind: 'api-key',
     locked: false,
     lockReason: '',
-    order: 2,
+    order: 3,
   },
   deepseek: {
     id: 'deepseek',
@@ -135,7 +157,7 @@ export const PROVIDER_CATALOG = {
     credentialKind: 'api-key',
     locked: false,
     lockReason: '',
-    order: 3,
+    order: 4,
   },
   'claude-web': {
     id: 'claude-web',
@@ -148,7 +170,7 @@ export const PROVIDER_CATALOG = {
     credentialKind: 'browser-session',
     locked: false,
     lockReason: '',
-    order: 4,
+    order: 5,
   },
   'chatgpt-web': {
     id: 'chatgpt-web',
@@ -161,7 +183,7 @@ export const PROVIDER_CATALOG = {
     credentialKind: 'browser-session',
     locked: false,
     lockReason: '',
-    order: 5,
+    order: 6,
   },
 } as const satisfies Record<AIProvider, ProviderDescriptor>;
 

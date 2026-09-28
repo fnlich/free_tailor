@@ -75,6 +75,7 @@ export interface JobAnalysis {
  */
 export type AIProvider =
   | 'claude-cli'
+  | 'codex-cli'
   | 'claude'
   | 'openai'
   | 'deepseek'

@@ -158,14 +158,26 @@ Every model call goes through `backend/src/services/ai`. A provider is one
 directory implementing `AIProviderAdapter`; the registry is keyed on the
 provider catalog, so a missing entry is a compile error. Providers:
 `claude-web` and `chatgpt-web` (drive a chat tab in a debug Chrome you start
-yourself — the default, free, no key), `claude-cli` (a Claude subscription seat
-via the local `claude` binary), and `claude` / `openai` / `deepseek` (metered
-API keys). `AI_LOCKED_PROVIDERS` in `.env` marks a provider this machine cannot
-run; nothing is locked out of the box.
+yourself — free, no key, and the only two that need a display, so they cannot
+work on a headless box), `claude-cli` and `codex-cli` (subscription seats via
+the local `claude` and `codex` binaries; both work headless, and `codex login
+--device-auth` needs no browser on the server), and `claude` / `openai` /
+`deepseek` (metered API keys). `AI_LOCKED_PROVIDERS` in `.env` marks a provider
+this machine cannot run; nothing is locked out of the box. `browserChatEnabled`
+under Admin → Settings withdraws the two browser ones outright — gated inside
+`isProviderEnabled`, so "not shown" and "not reachable" are one statement.
+
+Both CLI providers share the spawn seam in `services/ai/providers/cli/`:
+`runner.ts` is the only module under `services/ai` that imports
+`child_process`, and `resolveBinary.ts` exists because npm installs a CLI on
+Windows as a `.cmd` shim `spawn` cannot execute. Codex differs from Claude in
+one way worth knowing: its answer is read from the file named by
+`--output-last-message`, not from the event stream, so the JSONL envelope can
+move without breaking it.
 
 Tests never spawn a browser, a subprocess or a network call: the CLI provider
-replays recorded event streams from `test/fixtures/cli` through an injected
-runner, and storage tests point `DB_DIR` and `TAILOR_STATIC_DIR` at temp dirs.
+replays recorded event streams from `test/fixtures/cli` and
+`test/fixtures/codex` through an injected runner, and storage tests point `DB_DIR` and `TAILOR_STATIC_DIR` at temp dirs.
 
 ## Conventions from the history
 

@@ -392,6 +392,7 @@ export type PromptCategoryId = 'extracting' | 'building' | 'other';
 
 export type AIProvider =
   | 'claude-cli'
+  | 'codex-cli'
   | 'claude'
   | 'openai'
   | 'deepseek'
@@ -416,6 +417,15 @@ export const PROVIDER_META = {
     label: 'Claude (subscription)',
     requiresApiKey: false,
     modelNameHint: 'sonnet, opus, haiku',
+  },
+  'codex-cli': {
+    label: 'Codex (subscription)',
+    requiresApiKey: false,
+    // Not a list of ids, because Codex resolves its catalog from the signed-in
+    // account at runtime - so what is valid here depends on the plan, and a
+    // hint naming specific models would be wrong for somebody. `default` means
+    // "whatever that account uses", which is the one answer true everywhere.
+    modelNameHint: 'default, or a model your ChatGPT plan offers',
   },
   claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
   openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },

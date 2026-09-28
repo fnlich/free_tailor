@@ -279,6 +279,7 @@ test('an explicitly registered adapter wins, and the other providers still exist
     'claude',
     'claude-cli',
     'claude-web',
+    'codex-cli',
     'deepseek',
     'openai',
   ]);
