@@ -157,3 +157,72 @@ test('a malformed flag cannot flip the switch', async () => {
   const after = await config.getPublicAppSettings();
   assert.equal(after.browserChatEnabled, true, 'a string did not switch browser mode off');
 });
+
+/**
+ * What happens to work that was pinned to browser mode before it was withdrawn.
+ *
+ * This is the half the flag can most easily get wrong. Hiding the option is
+ * easy; not breaking the profiles that already chose it is the part that needs
+ * saying out loud, because those owners did not flip the switch and cannot see
+ * it from a failed generate.
+ */
+
+test('a profile pinned to a browser model runs on the default instead of failing', async () => {
+  useTempStorage(`browser-pin-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const preferences = loadFresh('../dist/config/aiPreferences');
+
+  await config.updateAppSettings({ browserChatEnabled: false });
+
+  const choice = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'claude-web-chat' } },
+  });
+  assert.notEqual(choice.provider, 'claude-web');
+  assert.notEqual(choice.provider, 'chatgpt-web');
+
+  // The synthesized entry needs its own line: `free-hybrid` is not a row in
+  // aiModels, so the lookup that catches the one above cannot catch it.
+  const hybridPinned = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'free-hybrid' } },
+  });
+  assert.notEqual(hybridPinned.provider, 'claude-web');
+  assert.notEqual(hybridPinned.provider, 'chatgpt-web');
+  assert.ok(hybridPinned.modelId, 'it resolved to something real');
+});
+
+test('nothing reads as hybrid once browser mode is off', async () => {
+  useTempStorage(`browser-hybrid-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  assert.equal(await config.isHybridSelection('free-hybrid'), true);
+  await config.updateAppSettings({ browserChatEnabled: false });
+  // Asserted directly rather than left to depend on the resolver throwing
+  // first, which is what made it true before.
+  assert.equal(await config.isHybridSelection('free-hybrid'), false);
+});
+
+test('a withdrawn browser provider is not probed for health', async () => {
+  useTempStorage(`browser-health-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+  await config.updateAppSettings({ browserChatEnabled: false });
+
+  const ai = loadFresh('../dist/services/ai/registry');
+  let probed = 0;
+  ai.registerAdapter('claude-web', () => ({
+    id: 'claude-web',
+    capabilities: { id: 'claude-web', label: 'x' },
+    defaultModelName: () => 'chat',
+    health: async () => {
+      probed += 1;
+      return { ok: true, detail: 'probed', checkedAt: new Date().toISOString() };
+    },
+    complete: async () => {
+      throw new Error('not used');
+    },
+  }));
+
+  const report = await ai.checkProviderHealth('claude-web');
+  assert.equal(probed, 0, 'the adapter must not be touched at all');
+  assert.equal(report.ok, false);
+  assert.match(report.detail, /switched off/i);
+});

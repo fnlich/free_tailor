@@ -70,6 +70,7 @@ function makeAdapter(runner, config = {}) {
 test('claude argv carries the flags the provider depends on and never --bare', () => {
   const { argv: flags, systemPromptOverflow } = argv.buildClaudeArgv({
     model: 'sonnet',
+    effort: 'low',
     systemPrompt: 'Be terse.',
   });
 
@@ -80,6 +81,7 @@ test('claude argv carries the flags the provider depends on and never --bare', (
     '--include-partial-messages',
     '--verbose',
     '--model',
+    '--effort',
     '--tools',
     '--safe-mode',
     '--strict-mcp-config',
@@ -101,11 +103,11 @@ test('claude argv carries the flags the provider depends on and never --bare', (
 });
 
 test('a JSON schema is passed only when one is supplied', () => {
-  const without = argv.buildClaudeArgv({ model: 'sonnet', systemPrompt: 'x' });
+  const without = argv.buildClaudeArgv({ model: 'sonnet', effort: 'low', systemPrompt: 'x' });
   assert.equal(without.argv.includes('--json-schema'), false);
 
   const schema = { type: 'object', properties: { a: { type: 'string' } } };
-  const with_ = argv.buildClaudeArgv({ model: 'sonnet', systemPrompt: 'x', jsonSchema: schema });
+  const with_ = argv.buildClaudeArgv({ model: 'sonnet', effort: 'low', systemPrompt: 'x', jsonSchema: schema });
   assert.equal(with_.argv[with_.argv.indexOf('--json-schema') + 1], JSON.stringify(schema));
 });
 
@@ -115,6 +117,7 @@ test('the Linux argument limit is measured on the argument, not the command line
   const prompt = 'x'.repeat(40_000);
   const built = argv.buildClaudeArgv({
     model: 'sonnet',
+    effort: 'low',
     systemPrompt: prompt,
     platform: 'linux',
   });
@@ -130,6 +133,7 @@ test('Windows measures the whole command line, which is where it actually fails'
   const prompt = 'x'.repeat(40_000);
   const built = argv.buildClaudeArgv({
     model: 'sonnet',
+    effort: 'low',
     systemPrompt: prompt,
     platform: 'win32',
   });
@@ -150,6 +154,7 @@ test('an ordinary prompt stays in argv on Windows too', () => {
   const prompt = 'Answer in JSON.'.repeat(200);
   const built = argv.buildClaudeArgv({
     model: 'sonnet',
+    effort: 'low',
     systemPrompt: prompt,
     jsonSchema: { type: 'object', properties: { verdict: { type: 'string' } } },
     platform: 'win32',
@@ -164,7 +169,7 @@ test('an oversized system prompt moves to stdin instead of blowing the exec argu
   // "Argument list too long", because Linux caps one argv entry at 128 KiB
   // regardless of the much larger ARG_MAX total.
   const huge = 'x'.repeat(200_000);
-  const built = argv.buildClaudeArgv({ model: 'sonnet', systemPrompt: huge });
+  const built = argv.buildClaudeArgv({ model: 'sonnet', effort: 'low', systemPrompt: huge });
 
   assert.equal(built.systemPromptOverflow, huge);
   assert.equal(built.argv[built.argv.indexOf('--system-prompt') + 1], argv.CLI_BASE_SYSTEM_PROMPT);
@@ -1012,4 +1017,52 @@ test('a failed resolution is not cached, so installing the CLI needs no restart'
 
   const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
   assert.equal(resolveCliExecPlan('claude', windowsDeps({ [exe]: '' })).kind, 'windows-exe');
+});
+
+// -- the effort default ----------------------------------------------------- //
+
+/**
+ * `AI_CLI_EFFORT` is the whole of the effort story now.
+ *
+ * There is no per-profile or per-run control, deliberately: a select that
+ * reached one provider out of six showed a knob that did nothing on every other
+ * model in the menu. What remains is one operator setting, and the two things
+ * worth pinning about it are that it DEFAULTS to low and that a typo cannot
+ * reach the CLI - which rejects an unknown level outright, turning a bad `.env`
+ * into every generation failing at the transport.
+ */
+const { readClaudeCliConfig, DEFAULT_CLI_EFFORT } = load('../dist/services/ai/providers/claudeCli/options');
+
+test('effort defaults to low, and the default is what the constant says', () => {
+  delete process.env.AI_CLI_EFFORT;
+  assert.equal(readClaudeCliConfig().effort, 'low');
+  assert.equal(DEFAULT_CLI_EFFORT, 'low');
+});
+
+test('a configured effort is honoured, and a junk one warns and falls back', () => {
+  process.env.AI_CLI_EFFORT = 'max';
+  assert.equal(readClaudeCliConfig().effort, 'max');
+
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    process.env.AI_CLI_EFFORT = 'turbo';
+    assert.equal(readClaudeCliConfig().effort, 'low', 'junk must not reach the CLI');
+  } finally {
+    console.warn = originalWarn;
+    delete process.env.AI_CLI_EFFORT;
+  }
+  assert.equal(warnings.length, 1, 'a rejected level must say so');
+  assert.match(warnings[0], /AI_CLI_EFFORT/);
+  assert.match(warnings[0], /turbo/);
+});
+
+test('the configured effort is what reaches argv', () => {
+  // The two halves joined: reading the variable is only useful if the flag it
+  // feeds carries the value.
+  const built = argv.buildClaudeArgv({ model: 'sonnet', effort: 'high', systemPrompt: 'x' });
+  const at = built.argv.indexOf('--effort');
+  assert.ok(at >= 0, '--effort must be present');
+  assert.equal(built.argv[at + 1], 'high');
 });

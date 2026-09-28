@@ -1,4 +1,9 @@
-import { AI_PROVIDER_IDS, getProviderLockReason } from '../../config/providerCatalog';
+import {
+  AI_PROVIDER_IDS,
+  getProviderLockReason,
+  isBrowserChatSiteId,
+} from '../../config/providerCatalog';
+import { getAIModelSettings } from '../../config/aiModelConfig';
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_DEEPSEEK_MODEL,
@@ -107,6 +112,26 @@ export function listProviderCapabilities(): ProviderCapabilities[] {
 export type ProviderHealthReport = ProviderHealth & { provider: AIProvider };
 
 export async function checkProviderHealth(id: AIProvider): Promise<ProviderHealthReport> {
+  /*
+   * Browser mode switched off is the same kind of fact as a lock, and gets the
+   * same treatment: answered here, without touching the adapter.
+   *
+   * Not a cosmetic saving. The browser-chat health check opens a socket to a
+   * debug port and drives a tab, and on the headless server this switch exists
+   * for there is no browser to find - so every boot preflight and every visit
+   * to the admin health panel spent that timeout to report "not signed in",
+   * when the truth is that nobody can sign in and nothing is meant to.
+   */
+  if (isBrowserChatSiteId(id) && !(await getAIModelSettings()).browserChatEnabled) {
+    return {
+      provider: id,
+      ok: false,
+      detail: 'Browser mode is switched off in this installation.',
+      checkedAt: new Date().toISOString(),
+      meta: { offered: false },
+    };
+  }
+
   // Answered without touching the adapter. Probing a locked provider costs
   // something real - the CLI check spawns a binary and waits on it - to learn
   // a fact that could not change the answer, and it would report "not signed

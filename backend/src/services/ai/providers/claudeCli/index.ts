@@ -165,6 +165,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
 
       const invocation = buildClaudeArgv({
         model,
+        effort: config.effort,
         systemPrompt,
         jsonSchema: request.jsonSchema,
         fallbackModels: config.fallbackModels,

@@ -11,6 +11,7 @@ import {
   coerceProvider,
   getAIProviderLabel,
   isProviderLocked,
+  isProviderOffered,
   LOCK_ICON,
   PROVIDER_META,
 } from '@/lib/api';
@@ -327,7 +328,11 @@ function ModelsPageBody() {
           {settings.aiModels.map((model) => {
             const isDefault = settings.defaultModelId === model.id;
             const providerIsLocked = isProviderLocked(settings, model.provider);
-            const providerIsEnabled = providerEnabled[model.provider] && !providerIsLocked;
+            // The same rule the backend gate applies, via the shared helper: a
+            // model whose provider this installation has withdrawn is still
+            // MANAGEABLE here - that is why the admin list is the raw one - but
+            // it must read as off and must not be settable as the default.
+            const providerIsEnabled = isProviderOffered(settings, model.provider, providerEnabled);
 
             return (
               <div key={model.id} className="flex flex-col gap-4 px-6 py-5 lg:flex-row lg:items-start lg:justify-between">

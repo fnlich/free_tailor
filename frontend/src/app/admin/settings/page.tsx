@@ -5,6 +5,9 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   AI_PROVIDERS,
   adminApi,
+  // The browser-mode switch has to govern exactly the set the backend gate
+  // does, so the list comes from there rather than being retyped here.
+  BROWSER_CHAT_PROVIDERS,
   AdminAppSettings,
   AdminAppSettingsUpdate,
   BrowserChatEndpoint,
@@ -17,6 +20,7 @@ import {
   groupsApi,
   isPlatformActive,
   isProviderLocked,
+  isProviderOffered,
   LOCK_ICON,
   Profile,
   profilesApi,
@@ -24,8 +28,6 @@ import {
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
-
-const BROWSER_CHAT_PROVIDERS: AIProvider[] = ['claude-web', 'chatgpt-web'];
 
 type SettingsFormState = {
   providersEnabled: Record<AIProvider, boolean>;
@@ -551,8 +553,10 @@ function AdminSettingsPageBody() {
   }
 
   const providerEnabled = form.providersEnabled;
+  // Admin settings carry the RAW model list so every record stays manageable,
+  // so the offer rule has to be applied here rather than relied on upstream.
   const availableDefaultModels = settings.aiModels.filter(
-    (model) => model.enabled && providerEnabled[model.provider] && !isProviderLocked(settings, model.provider)
+    (model) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled)
   );
   const outputPathPreview = buildPathPreview(form.outputPathTemplate);
 
@@ -931,7 +935,12 @@ npm run browser:debug
             </p>
           </div>
 
-          {AI_PROVIDERS.map((provider) => {
+          {AI_PROVIDERS.filter(
+            // A provider this installation has withdrawn has no row: there is
+            // nothing to toggle and nothing to read, and a live health line
+            // against a browser nobody can sign in to is worse than silence.
+            (provider) => settings.browserChatEnabled || !BROWSER_CHAT_PROVIDERS.includes(provider)
+          ).map((provider) => {
             const lock = settings.providerLocks.find((entry) => entry.id === provider);
             return (
               <label

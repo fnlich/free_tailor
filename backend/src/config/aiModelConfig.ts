@@ -1568,20 +1568,63 @@ export async function resolveStoredAIModelPreference(
   }
 
   const settings = await readSettings();
+
+  /*
+   * A pin to the browser entry, when browser mode has since been switched off.
+   *
+   * It needs its own line because `free-hybrid` is SYNTHESIZED - it is not a
+   * row in `aiModels` - so the lookup below cannot find it and the fallback
+   * below cannot catch it. Without this the call reaches
+   * `resolveRequestedAIModel`, which refuses an id it cannot find, and every
+   * generation for that profile fails on a switch its owner did not flip.
+   */
+  if (isHybridModelId(requested) && !settings.browserChatEnabled) {
+    warnOncePerPreference(
+      requested,
+      '[ai] A stored preference names the browser entry, and browser mode is switched off in this ' +
+        'installation; those calls run on the default model instead.'
+    );
+    return resolveRequestedAIModel();
+  }
+
   const stored = settings.aiModels.find((model) => model.id === requested);
-  if (stored && isProviderLocked(stored.provider)) {
-    if (!warnedLockedPreferences.has(requested)) {
-      warnedLockedPreferences.add(requested);
-      console.warn(
-        `[ai] A stored preference names "${stored.name}", whose provider is locked in this ` +
-          'installation; those calls run on the default model instead. Pick a new model for it to ' +
-          'silence this.'
-      );
-    }
+  /*
+   * Three states, and only two of them are staleness.
+   *
+   * LOCKED - this deployment cannot run it - and BROWSER MODE OFF both say the
+   * installation does not offer the thing, through no act of the profile's
+   * owner and invisibly to them, so the preference is stale and falls back.
+   *
+   * MERELY DISABLED by an administrator is deliberately still an error, and
+   * that is a decision this file already made: it is real misconfiguration,
+   * the admin who flipped it is the person who can see the failure, and
+   * swallowing it would hide the case where they turned off the wrong one.
+   * Browser mode joins the first group rather than the second because it is
+   * withdrawn on exactly the machines - headless ones - where the browser could
+   * never have answered anyway.
+   */
+  const notOffered =
+    stored &&
+    (isProviderLocked(stored.provider) ||
+      (isBrowserChatSiteId(stored.provider) && !settings.browserChatEnabled));
+  if (notOffered && stored) {
+    warnOncePerPreference(
+      requested,
+      `[ai] A stored preference names "${stored.name}", whose provider is not offered in this ` +
+        'installation; those calls run on the default model instead. Pick a new model for it to ' +
+        'silence this.'
+    );
     return resolveRequestedAIModel();
   }
 
   return resolveRequestedAIModel(requested);
+}
+
+/** One line per stale preference, however many calls it makes. */
+function warnOncePerPreference(key: string, message: string): void {
+  if (warnedLockedPreferences.has(key)) return;
+  warnedLockedPreferences.add(key);
+  console.warn(message);
 }
 
 /**
@@ -1610,6 +1653,12 @@ export async function resolveStoredAIModelPreference(
 export async function isHybridSelection(storedModelId?: string): Promise<boolean> {
   const requested = typeof storedModelId === 'string' ? storedModelId.trim() : '';
   const settings = await readSettings();
+
+  // Nothing is hybrid on an installation with no browser mode. Asserted here
+  // rather than relied upon from the callers: this used to be true only because
+  // the resolver above threw first, which is safe by accident - and the accident
+  // ends the moment somebody reorders those two calls.
+  if (!settings.browserChatEnabled) return false;
 
   if (requested) {
     if (isHybridModelId(requested)) return true;

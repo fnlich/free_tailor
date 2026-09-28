@@ -54,7 +54,9 @@ function profileFixture(extra = {}) {
       companyFolderNameTemplate: '{{row number}}_{{company name}}',
       hardSkillOrdering: 'library',
       technicalSkillsLayout: 'categorized',
-      ai: { modelId: 'free-hybrid', effort: 'max' },
+      ai: { modelId: 'free-hybrid', // A dead key a live database still holds - see aiPreferences: it must be
+      // read through and ignored, never rejected.
+      effort: 'max' },
     },
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-06-01T00:00:00.000Z',
