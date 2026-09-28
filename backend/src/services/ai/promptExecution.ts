@@ -292,7 +292,20 @@ async function runAssembled(
           maxOutputTokens: input.maxTokens,
           temperature: input.temperature,
         },
-        effort: isEffortLevel(input.effort) ? input.effort : undefined,
+        /*
+         * Dropped outright when the installation has withdrawn the control.
+         *
+         * Not left to the page. The effort select is hidden when the flag is
+         * off, but a tab loaded before the change - or anything calling this
+         * API directly - can still send one, and an effort that reached the
+         * CLI would put `--effort` on the command line of a server whose
+         * operator has said there is no such setting here. Hiding a control is
+         * a UI decision; this is the one that makes it true.
+         */
+        effort:
+          settings.effortControlEnabled !== false && isEffortLevel(input.effort)
+            ? input.effort
+            : undefined,
         deadline,
         signal: input.signal,
         callSite: input.callSite,

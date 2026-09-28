@@ -35,13 +35,41 @@ test('the metered HTTP providers honour no effort flag', () => {
 });
 
 test('every provider has an answer, so no picker has to guess', () => {
-  const tuning = listProviderTuningSupport();
+  const tuning = listProviderTuningSupport({ effortControlEnabled: true });
   assert.equal(tuning.length, AI_PROVIDER_IDS.length);
   for (const id of AI_PROVIDER_IDS) {
     const row = tuning.find((entry) => entry.provider === id);
     assert.ok(row, `${id} is missing from the tuning report`);
     assert.equal(typeof row.effort, 'boolean');
   }
+});
+
+/**
+ * The installation-wide withdrawal, which is a different statement from the
+ * per-provider one above.
+ *
+ * `providerSupportsEffort` stays a fact about the PROVIDER - the CLI has an
+ * --effort flag whatever any operator thinks - and this report is what the
+ * installation OFFERS. Conflating them would mean an admin switching the
+ * control off had quietly edited the catalog.
+ */
+test('with the control switched off, nothing offers effort - not even the CLI', () => {
+  const tuning = listProviderTuningSupport({ effortControlEnabled: false });
+  assert.equal(tuning.length, AI_PROVIDER_IDS.length);
+  for (const row of tuning) {
+    assert.equal(row.effort, false, `${row.provider} still offers effort`);
+  }
+  // The catalog is untouched: switching the offer off is not a claim about
+  // what the binary can do, and switching it back on must restore exactly this.
+  assert.equal(providerSupportsEffort('claude-cli'), true);
+});
+
+test('an unset flag is read as on, so an older settings row keeps its select', () => {
+  // The flag postdates every install that exists. Reading a missing value as
+  // "off" would silently remove a working control on upgrade.
+  const tuning = listProviderTuningSupport({});
+  const cli = tuning.find((entry) => entry.provider === 'claude-cli');
+  assert.equal(cli.effort, true);
 });
 
 test('the adapters report the same answer the pickers are given', () => {

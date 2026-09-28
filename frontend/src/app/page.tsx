@@ -1686,6 +1686,7 @@ export default function Home() {
                   providerLocks={modelSettings.providerLocks}
                   providerTuning={modelSettings.providerTuning}
                   effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
+                  effortEnabled={modelSettings.effortControlEnabled}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                   inherited={inheritedChoice}
                   disabled={isGenerating}

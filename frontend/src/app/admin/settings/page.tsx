@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   AI_PROVIDERS,
@@ -42,7 +42,47 @@ type SettingsFormState = {
   browserChatEndpoints: BrowserChatEndpoint[];
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'browserChat';
+type SaveSection = 'output' | 'providers' | 'defaults' | 'browserChat' | 'modelControls';
+
+/**
+ * A switch that saves the moment it is flipped.
+ *
+ * No Save button, unlike the sections around it: these two withdraw a control
+ * from every other page in the app, so "did that take?" is a question worth
+ * answering immediately rather than after a second click somewhere below.
+ */
+function SettingSwitch({
+  id,
+  checked,
+  onChange,
+  disabled,
+  title,
+  children,
+}: {
+  id: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled: boolean;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-3" htmlFor={id}>
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-1 h-4 w-4 rounded border-gray-300"
+      />
+      <span>
+        <span className="block text-sm font-medium text-gray-900">{title}</span>
+        <span className="block text-sm text-gray-600">{children}</span>
+      </span>
+    </label>
+  );
+}
 
 function buildPathPreview(template: string): string {
   const normalized = (template || '').trim() || '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
@@ -608,6 +648,59 @@ function AdminSettingsPageBody() {
 
         <section className="space-y-4">
           <div>
+            <h2 className="text-lg font-semibold text-gray-900">Model controls</h2>
+            <p className="text-sm text-gray-600">
+              What the model and effort selects offer, everywhere they appear - the builder and
+              every profile alike.
+            </p>
+          </div>
+          <SettingSwitch
+            id="effortControlEnabled"
+            checked={settings.effortControlEnabled}
+            disabled={savingSection !== null}
+            onChange={(next) =>
+              void saveSection(
+                'modelControls',
+                { effortControlEnabled: next },
+                next ? 'The effort select is offered again.' : 'The effort select is hidden.'
+              )
+            }
+            title="Offer the effort select"
+          >
+            Only the Claude subscription seat honours effort at all; every other model runs at its
+            own default. Switch this off and no effort select is drawn anywhere, and none is sent
+            to a provider - so a tab loaded before the change cannot send one either.
+          </SettingSwitch>
+          <SettingSwitch
+            id="browserChatEnabled"
+            checked={settings.browserChatEnabled}
+            disabled={savingSection !== null}
+            onChange={(next) =>
+              void saveSection(
+                'modelControls',
+                { browserChatEnabled: next },
+                next
+                  ? 'Browser mode is offered again.'
+                  : 'Browser mode is hidden, and no request can reach it.'
+              )
+            }
+            title="Offer browser-tab mode"
+          >
+            <strong>Default (browser)</strong> needs a Chrome running on this server that you have
+            signed in to by hand, which a headless box cannot have. Switch this off and the option
+            disappears from every model menu - here and on the builder - and a request naming it is
+            refused rather than left waiting for a browser that will never answer. The per-site
+            preferences below are kept, so switching it back on restores them.
+          </SettingSwitch>
+        </section>
+
+        {/* Gone entirely when browser mode is off, rather than greyed: there is
+            nothing here to read or fix on an installation that has withdrawn it,
+            and the switch that brings it back lives in Model controls above - so
+            hiding this cannot strand anyone. */}
+        {settings.browserChatEnabled && (
+        <section className="space-y-4">
+          <div>
             <h2 className="text-lg font-semibold text-gray-900">Browser Chat (free)</h2>
             <p className="text-sm text-gray-600">
               <strong>Default (browser)</strong> drives chat tabs in browsers you start here and
@@ -838,6 +931,7 @@ npm run browser:debug
           {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
 
         </section>
+        )}
 
         <section className="space-y-4">
           <div>

@@ -681,6 +681,17 @@ export interface ProviderLock {
 export interface PublicAppSettings {
   /** Canonical enable flags, keyed by provider id. */
   providersEnabled: Record<AIProvider, boolean>;
+  /**
+   * Whether this installation offers browser-tab mode at all.
+   *
+   * Off, the server has already removed every browser row from `aiModels`, so
+   * nothing here has to filter. It is carried anyway because the Settings page
+   * needs it to draw the switch and to decide whether the Browser Chat section
+   * is worth showing.
+   */
+  browserChatEnabled: boolean;
+  /** Whether the effort select is offered anywhere. */
+  effortControlEnabled: boolean;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -854,6 +865,11 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   },
   aiModels: [],
   googleSheetsSources: [],
+  // Both permissive until the server answers, for the same reason as
+  // providerTuning below: withdrawing a control on a guess hides something the
+  // installation may well offer, and the answer is one request away.
+  browserChatEnabled: true,
+  effortControlEnabled: true,
   browserChatEndpoints: [],
   providerLocks: [],
   // Permissive until the server answers: a select greyed out on a guess would
@@ -976,6 +992,12 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
 
   return {
     providersEnabled: normalizeProvidersEnabled(source),
+    // Absent means an older server, which had no such switch and always offered
+    // both - so absent reads as on, never as off.
+    browserChatEnabled:
+      typeof source.browserChatEnabled === 'boolean' ? source.browserChatEnabled : true,
+    effortControlEnabled:
+      typeof source.effortControlEnabled === 'boolean' ? source.effortControlEnabled : true,
     defaultMode: source.defaultMode === 'generate' ? 'generate' : 'preview',
     defaultTheme: source.defaultTheme === 'dark' ? 'dark' : 'light',
     defaultResumeSelection:

@@ -648,6 +648,7 @@ export default function ProfileForm({
           providerLocks={appSettings.providerLocks}
           providerTuning={appSettings.providerTuning}
           effortLevels={appSettings.aiPreferenceDefaults.effortLevels}
+          effortEnabled={appSettings.effortControlEnabled}
           inheritedFrom="app default"
           inherited={{
             modelLabel:

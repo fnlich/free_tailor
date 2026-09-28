@@ -44,6 +44,18 @@ type Props = {
    */
   providerTuning?: ProviderTuningSupport[];
   effortLevels: EffortLevel[];
+  /**
+   * Whether this installation offers the effort control at all.
+   *
+   * Distinct from `providerTuning`, and hidden rather than greyed - which is
+   * the opposite of what the select does when a CHOSEN MODEL cannot honour
+   * effort. The difference is what the reader is being told. A control that
+   * greys as you change the model above it is answering "not for this one";
+   * a control that is simply absent is the installation saying there is no such
+   * setting here, and greying it instead would leave every profile page with a
+   * permanently dead field and a sentence about chat windows that is not why.
+   */
+  effortEnabled?: boolean;
   inherited: InheritedAiChoice;
   /** Where an unset field falls back to: "app default", "profile", ... */
   inheritedFrom: string;
@@ -88,6 +100,7 @@ export default function AiPreferenceFields({
   providerLocks = [],
   providerTuning = [],
   effortLevels,
+  effortEnabled = true,
   inherited,
   inheritedFrom,
   disabled = false,
@@ -176,6 +189,7 @@ export default function AiPreferenceFields({
         ))}
       </div>
 
+      {effortEnabled && (
       <div>
         <label
           className={honoursEffort ? LABEL_CLASS : DISABLED_LABEL_CLASS}
@@ -209,6 +223,7 @@ export default function AiPreferenceFields({
           {honoursEffort ? 'How much reasoning the model spends before answering.' : notTunable}
         </p>
       </div>
+      )}
 
     </div>
   );
