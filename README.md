@@ -1156,6 +1156,26 @@ SMTP_PASS=the-16-character-app-password
 SMTP_FROM=you@yourdomain.com
 ```
 
+**Sending through a relay instead** — Resend, SendGrid, Brevo and the like — is the
+free alternative to a paid mailbox, and it makes two variables that look optional
+**mandatory**. Both of these produce an install that reads as configured and is
+not:
+
+- **`SMTP_FROM`.** It falls back to `SMTP_USER`, and a relay's username is not an
+  address: Resend's is the literal word `resend`, SendGrid's is `apikey`. Without
+  `SMTP_FROM` the server tries to send *from* `resend`.
+- **`ADMIN_EMAILS`.** It falls back to `SMTP_USER` too, but only when that looks
+  like an address - deliberately, so `apikey` is not promoted to administrator.
+  With a relay it therefore names nobody, and an installation with no
+  administrator cannot appoint one from the UI.
+
+A relay needs its own DNS records to send as your domain, and a domain may hold
+only **one** SPF record. If you are also forwarding inbound mail with something
+that writes an SPF record of its own (Cloudflare Email Routing does), merge the
+two into a single record rather than adding a second - two SPF records on one name
+is invalid and breaks both. Most relays sidestep this by putting their records on
+a `send.` subdomain, since an apex SPF policy does not apply to subdomains.
+
 Then check the three things that can only be checked from outside:
 
 ```bash
@@ -1393,6 +1413,8 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch, a task pinned to a browser platform no registered browser can serve, and a task kind this build does not know are **not** retried. |
 | Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
+| Sign-in emails try to send from `resend`, `apikey` or another bare username | `SMTP_FROM` is unset and fell back to `SMTP_USER`, which on a relay is not an address. Set `SMTP_FROM` to a real address on your domain. |
+| Nobody is an administrator, and the UI offers no way to appoint one | `ADMIN_EMAILS` is unset. The fallback is `SMTP_USER`, and it is used **only** when that value looks like an email address - so a relay username (`resend`, `apikey`) names nobody. Fix: set `ADMIN_EMAILS` to the address you sign in with, restart, and sign in again. An account that already exists is promoted on the way in, so there is no need to delete it and start over. |
 | Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, *Import from Sheets* and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen: Cloud console -> APIs \& Services -> OAuth consent screen -> PUBLISH APP. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
 | Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
