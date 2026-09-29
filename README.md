@@ -975,6 +975,37 @@ redirect — **delete those two first**; left in place they win over what you ad
 Then `dig +short yourdomain.com` from somewhere else before going on. Open only
 80 and 443 in the firewall: 3000 and 3001 stay on loopback.
 
+**Behind Cloudflare, leave the proxy OFF.** This is the opposite of Cloudflare's
+default and it is not a preference — the orange cloud is incompatible with how
+generation works here.
+
+Cloudflare's proxy read timeout is about **100 seconds on Free, Pro and Business,
+and cannot be raised** (only Enterprise can). But `/api/resume/analyze`,
+`/generate` and `/preview` run **inline** and wait: `/generate` awaits the job
+analysis, then the tailoring, then the PDF and DOCX rendering, against budgets of
+`AI_CLI_TIMEOUT_MS=180000` and `AI_CLI_TIMEOUT_MS_TAILOR=300000` — three to five
+minutes per call, deliberately, because a subscription seat is not fast. Each of
+those requests is a guaranteed **error 524** behind the proxy, on a server that is
+working perfectly.
+
+So set the `A` records to **DNS only** (grey cloud). Two consequences: the origin
+IP is public, so the firewall above is doing real work; and Cloudflare's
+**SSL/TLS mode is irrelevant** — traffic never reaches their edge, and Caddy's
+Let's Encrypt certificate is the real one.
+
+Wanting the CDN later means splitting the origin: the app on a proxied
+`yourdomain.com`, the API on a **grey-clouded** `api.yourdomain.com`, with
+`NEXT_PUBLIC_API_URL=https://api.yourdomain.com/api` and
+`FRONTEND_URL=https://yourdomain.com`. The session survives it — the cookie is
+`sameSite: 'lax'` and a subdomain shares the registrable domain, so it is still
+same-site — but CORS becomes real. If you do proxy, use **Full (strict)**, never
+*Flexible* (plaintext to your origin, and a redirect loop against Caddy), and know
+that **Bot Fight Mode blocks webhook POSTs** from Stripe and Cryptomus.
+
+Last Cloudflare-specific trap, on the mail side: **do not enable Email Routing.**
+It rewrites your MX records to Cloudflare's and silently takes delivery away from
+whatever provider you set up below.
+
 **The `.env` differences.** Bind both halves to loopback — the proxy is the only
 thing that should be reachable — and name the public address once:
 
@@ -1359,6 +1390,7 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | A Codex turn fails with `spawn codex ... ENOENT` | Same two causes as the row above, one vendor along: either `@openai/codex` is not installed, or this process has a different PATH than your shell (common under systemd and Docker). Set `AI_CODEX_BIN` to the full path from `which codex`. |
 | Codex says `Not logged in`, or a turn fails with an auth error | Run `codex login --device-auth` **as the user the server runs as** - it prints a code you approve from a browser anywhere, so the server needs no display. The sign-in lives in that user's `CODEX_HOME`, so a login as yourself is invisible to a service running as someone else. `codex login status` prints the account; note it exits 0 either way, so read the text rather than the exit code. Then check **Admin → Settings**, which shows this seat's own readiness card. |
 | Codex answers instantly and your OpenAI bill grows | An `OPENAI_API_KEY` reached the child process. A key **outranks** the subscription in the CLI's own resolution order, so the answers look identical and every one is metered. This server strips `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN` from the child by default; if you see this, `AI_CODEX_ALLOW_API_KEY` has been switched on. |
+| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch, a task pinned to a browser platform no registered browser can serve, and a task kind this build does not know are **not** retried. |
 | Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
 | Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, *Import from Sheets* and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen: Cloud console -> APIs \& Services -> OAuth consent screen -> PUBLISH APP. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
