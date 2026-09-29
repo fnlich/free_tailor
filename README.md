@@ -961,6 +961,20 @@ the CORS rule and the payment webhooks all line up without special cases.
         Express :3001                   Next.js :3000
 ```
 
+**Point the domain at the box first.** Caddy cannot get a certificate for a name
+that does not resolve to it, so this is the step everything else waits on:
+
+| Type | Host | Value |
+|---|---|---|
+| A | `@` | the server's public IPv4 |
+| A | `www` | the same address, if you want `www` to work |
+| AAAA | `@` | the server's IPv6, if it has one |
+
+At a registrar that parks new domains — Namecheap plants a `www` CNAME and a URL
+redirect — **delete those two first**; left in place they win over what you add.
+Then `dig +short yourdomain.com` from somewhere else before going on. Open only
+80 and 443 in the firewall: 3000 and 3001 stay on loopback.
+
 **The `.env` differences.** Bind both halves to loopback — the proxy is the only
 thing that should be reachable — and name the public address once:
 
@@ -1009,6 +1023,11 @@ yourdomain.com {
 		reverse_proxy 127.0.0.1:3000
 	}
 }
+
+# Only if you added the `www` A record above.
+www.yourdomain.com {
+	redir https://yourdomain.com{uri} permanent
+}
 ```
 
 **Both processes under systemd.** `/etc/systemd/system/tailor-api.service`:
@@ -1051,15 +1070,52 @@ sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2   li
 
 **The default AI provider will not work on a headless server.** `claude-web`
 drives a Chrome tab you signed in to by hand, and there is no display to sign in
-on. Before cutting over, either install the Claude CLI on the server
-(`claude auth login` over SSH) or set a metered API key, and add
-`AI_LOCKED_PROVIDERS=claude-web,chatgpt-web` so nobody picks a provider this
-machine cannot run.
+on. Both **subscription seats** do work here, and either is the natural choice:
 
-**Mail from your own domain** is four values. Outgoing mail here is only the
-sign-in codes, so there is nothing else to move. With Google Workspace, `SMTP_PASS`
-must be an **App Password** — Google rejects the account password over SMTP, and
-App Passwords only exist once 2-Step Verification is on:
+```bash
+npm i -g @anthropic-ai/claude-code @openai/codex
+
+sudo -u tailor -H claude auth login          # over SSH
+sudo -u tailor -H codex login --device-auth  # prints a code you approve in ANY browser
+```
+
+Three things go wrong in this order:
+
+- **Sign in as the user the service runs as.** The sign-in lives in that user's
+  home (`CODEX_HOME` for Codex), so `claude auth login` as root is invisible to a
+  unit running as `tailor` - hence `sudo -u tailor -H`.
+- **systemd gets a minimal `PATH`.** A turn that fails with `spawn codex ...
+  ENOENT`, or with "the Claude CLI is not installed", wants `AI_CLI_BIN` and
+  `AI_CODEX_BIN` set to the full paths from `which claude` / `which codex`.
+- **Each seat has its own queue lane**, sized by `AI_CLI_CONCURRENCY` and
+  `AI_CODEX_CONCURRENCY`. They are counted separately; the defaults of 4 are a
+  fine place to start.
+
+Then **switch browser mode off** under **Admin → Settings**, so nobody can pick a
+provider this machine cannot run: both browser providers leave every model
+picker, their health stops being probed, and a stored preference pinned to one
+falls back to the default instead of failing. `AI_LOCKED_PROVIDERS=claude-web,chatgpt-web`
+in `.env` does the same job from the config side if you would rather it not be
+togglable at all.
+
+**Mail from your own domain** is DNS first, then four values. Outgoing mail here
+is only the sign-in codes, so there is nothing else to move.
+
+Take the **MX and DKIM records from your mail provider's own setup wizard** — it
+shows the records for your account and is the authority; anything written down
+here is only for sanity-checking what it gives you. With Google Workspace that
+is one MX record (`smtp.google.com`, priority 1; the older five `ASPMX…` records
+still work, but use one form or the other and never both), SPF as a TXT record on
+`@` (`v=spf1 include:_spf.google.com ~all`), and DKIM generated under Admin →
+Apps → Google Workspace → Gmail → *Authenticate email*. Generating the DKIM key
+without then pressing **Start authentication** is the usual half-finished state.
+A DMARC TXT record on `_dmarc` is worth adding, starting at `p=none`: it reports
+without rejecting, and going straight to `p=reject` with DKIM misconfigured bins
+your own mail silently.
+
+Then the app's four values. With Google Workspace, `SMTP_PASS` must be an **App
+Password** — Google rejects the account password over SMTP, and App Passwords
+only exist once 2-Step Verification is on:
 
 ```bash
 SMTP_HOST=smtp.gmail.com
@@ -1079,6 +1135,15 @@ cd backend && npm run sheets:doctor
 and request a sign-in code in a browser, confirming it arrives from the new
 address. A failure to send names itself in `journalctl -u tailor-api`; the code
 itself is deliberately never in that log.
+
+Two more worth doing once, because each fails quietly rather than loudly:
+
+- **Open the page and watch the network tab.** API calls must go to
+  `https://yourdomain.com/api/...`. If they go to `http://...:3001` the frontend
+  was built before `APP_URL` was set - rebuild it, as above.
+- **Send a mail from the new inbox to a Gmail address and open *Show original*.**
+  SPF, DKIM and DMARC must all read **PASS**. Anything else means a DNS record is
+  missing or DKIM was generated but never started.
 
 ## 📁 Project Structure
 
