@@ -39,20 +39,6 @@ export type ProviderDescriptor = {
     | 'openaiEnabled'
     | 'deepseekEnabled'
     | null;
-  /**
-   * Whether the effort knob reaches the model at all.
-   *
-   * Here, with the provider's other facts, rather than only on the adapter,
-   * because the UI needs it and the adapter is not reachable from the settings
-   * layer. Each adapter reads its own capabilities from this, so the answer a
-   * picker greys a select with is the same one the transport acts on.
-   *
-   * The chat providers are the reason this exists. A chat window has no effort
-   * flag: there is nowhere to put one. Offering the
-   * two selects anyway meant a profile could be saved asking for `effort=max`
-   * on ChatGPT, where it changed nothing and said nothing.
-   */
-  supportsEffort: boolean;
   /** Environment variable holding this provider's key, or null when keyless. */
   envKeyVar: string | null;
   requiresApiKey: boolean;
@@ -96,7 +82,6 @@ export const PROVIDER_CATALOG = {
     id: 'claude-cli',
     label: 'Claude (subscription)',
     summary: 'Runs the local `claude` CLI on the signed-in subscription seat. No API key, no metered tokens.',
-    supportsEffort: true,
     legacyEnabledField: 'claudeCliEnabled',
     envKeyVar: null,
     requiresApiKey: false,
@@ -116,65 +101,69 @@ export const PROVIDER_CATALOG = {
       'Run `claude login` there, then remove it from AI_LOCKED_PROVIDERS.',
     order: 0,
   },
+  'codex-cli': {
+    id: 'codex-cli',
+    label: 'Codex (subscription)',
+    summary:
+      'Runs the local `codex` CLI on the signed-in ChatGPT subscription. No API key, no metered tokens.',
+    // Nothing older than this provider can be asking about it, so a flat wire
+    // flag would be a field with no reader.
+    legacyEnabledField: null,
+    // Null on purpose, and the opposite of what it looks like. `OPENAI_API_KEY`
+    // exists and this provider must NOT be given it: an API key outranks the
+    // subscription in the CLI's own resolution order, so honouring one here
+    // would move every call onto metered billing while looking identical. The
+    // child environment strips it; see providers/codexCli/env.ts.
+    envKeyVar: null,
+    requiresApiKey: false,
+    credentialKind: 'subscription-seat',
+    locked: false,
+    lockReason:
+      'Needs the `codex` CLI installed and a ChatGPT subscription signed in on this machine. ' +
+      'Run `codex login --device-auth` there, then remove it from AI_LOCKED_PROVIDERS.',
+    order: 1,
+  },
   claude: {
     id: 'claude',
     label: 'Anthropic API',
     summary: 'Anthropic Messages API with an API key. Billed per token.',
-    supportsEffort: false,
     legacyEnabledField: 'claudeEnabled',
     envKeyVar: 'ANTHROPIC_API_KEY',
     requiresApiKey: true,
     credentialKind: 'api-key',
     locked: false,
     lockReason: '',
-    order: 1,
+    order: 2,
   },
   openai: {
     id: 'openai',
     label: 'OpenAI',
     summary: 'OpenAI chat completions with an API key. Billed per token.',
-    supportsEffort: false,
     legacyEnabledField: 'openaiEnabled',
     envKeyVar: 'OPENAI_API_KEY',
     requiresApiKey: true,
     credentialKind: 'api-key',
     locked: false,
     lockReason: '',
-    order: 2,
+    order: 3,
   },
   deepseek: {
     id: 'deepseek',
     label: 'DeepSeek',
     summary: 'DeepSeek chat completions with an API key. Billed per token.',
-    supportsEffort: false,
     legacyEnabledField: 'deepseekEnabled',
     envKeyVar: 'DEEPSEEK_API_KEY',
     requiresApiKey: true,
     credentialKind: 'api-key',
     locked: false,
     lockReason: '',
-    order: 3,
+    order: 4,
   },
   'claude-web': {
     id: 'claude-web',
     label: 'Claude (free)',
     summary:
       'Drives claude.ai in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
-    supportsEffort: false,
-    legacyEnabledField: null,
-    envKeyVar: null,
-    requiresApiKey: false,
-    credentialKind: 'browser-session',
-    locked: false,
-    lockReason: '',
-    order: 4,
-  },
-  'chatgpt-web': {
-    id: 'chatgpt-web',
-    label: 'ChatGPT (free)',
-    summary:
-      'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
-    supportsEffort: false,
     legacyEnabledField: null,
     envKeyVar: null,
     requiresApiKey: false,
@@ -182,6 +171,19 @@ export const PROVIDER_CATALOG = {
     locked: false,
     lockReason: '',
     order: 5,
+  },
+  'chatgpt-web': {
+    id: 'chatgpt-web',
+    label: 'ChatGPT (free)',
+    summary:
+      'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
+    legacyEnabledField: null,
+    envKeyVar: null,
+    requiresApiKey: false,
+    credentialKind: 'browser-session',
+    locked: false,
+    lockReason: '',
+    order: 6,
   },
 } as const satisfies Record<AIProvider, ProviderDescriptor>;
 
@@ -393,8 +395,4 @@ export function isHybridModelId(value: unknown): boolean {
   return typeof value === 'string' && value.trim() === HYBRID_MODEL_ID;
 }
 
-/** Does this provider honour the effort knob? Used by pickers and adapters alike. */
-export function providerSupportsEffort(id: AIProvider): boolean {
-  return getProviderDescriptor(id).supportsEffort;
-}
 

@@ -395,3 +395,57 @@ test('a throwing subscriber does not fail the task it was watching', async () =>
   await settle();
   assert.equal(harnessed.queue.snapshot(batch.id).completed, 1);
 });
+
+/**
+ * Every lane is actually DISPATCHED to, not merely sized and routed to.
+ *
+ * The gap this closes: adding the Codex lane gave it slots and a route, and the
+ * dispatcher filled `browser` and `cli` by name - so a Codex task was accepted,
+ * persisted, counted, and never started. It sat queued for ever with nothing in
+ * any log saying why, which is the worst shape a queue bug can take.
+ */
+test('a task on a lane added later is actually started', async () => {
+  const harnessed = harness({
+    browser: [],
+    cli: [{ id: 'cli0', queue: 'cli' }],
+    codex: [{ id: 'codex0', queue: 'codex' }],
+  });
+
+  harnessed.queue.submit([
+    harnessed.task('on-codex', { queue: 'codex' }),
+    harnessed.task('on-cli', { queue: 'cli' }),
+  ]);
+  await harnessed.queue.refreshCapacity();
+  await settle();
+
+  assert.equal(harnessed.started.length, 2, 'both lanes were filled, not just the named ones');
+  assert.deepEqual(
+    harnessed.started.map((entry) => entry.label).sort(),
+    ['on-cli', 'on-codex']
+  );
+});
+
+test('the two CLI lanes do not take each other\'s work', async () => {
+  // One Codex slot, no Claude slot: a Claude-seat task must WAIT rather than
+  // being run on the Codex seat, which would answer from the wrong account.
+  const harnessed = harness({
+    browser: [],
+    cli: [],
+    codex: [{ id: 'codex0', queue: 'codex' }],
+  });
+
+  const batch = harnessed.queue.submit([
+    harnessed.task('needs-claude', { queue: 'cli' }),
+    harnessed.task('needs-codex', { queue: 'codex' }),
+  ]);
+  await harnessed.queue.refreshCapacity();
+  await settle();
+
+  assert.deepEqual(
+    harnessed.started.map((entry) => entry.label),
+    ['needs-codex'],
+    'only the lane with a slot ran'
+  );
+  const snapshot = harnessed.queue.snapshot(batch.id);
+  assert.equal(snapshot.queued, 1, 'and the other is still waiting for its own seat');
+});

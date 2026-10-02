@@ -111,12 +111,25 @@ function getTransport(config: MailConfig): Transporter {
     auth: { user: config.user, pass: config.pass },
     pool: true,
     maxConnections: 2,
+    /*
+     * Bounded, because the interesting failure is silence.
+     *
+     * A network that BLOCKS outbound SMTP - many home ISPs, most corporate ones,
+     * and this project's own build container - does not refuse the connection, it
+     * drops the packets. With no timeout nodemailer waits indefinitely: the sign-in
+     * request hangs rather than returning an error, and `mail:doctor` sits there
+     * instead of reporting the one thing it exists to report. Ten seconds is far
+     * longer than any reachable relay needs to answer.
+     */
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
   });
   cached = { key, transport };
   return transport;
 }
 
-const APP_NAME = 'Free Tailor';
+const APP_NAME = 'Tailor';
 
 function codeEmail(code: string, ttlMinutes: number): { subject: string; text: string; html: string } {
   const subject = `${code} is your ${APP_NAME} sign-in code`;
@@ -131,6 +144,62 @@ function codeEmail(code: string, ttlMinutes: number): { subject: string; text: s
     '<p style="color:#666;font-size:13px">If you did not ask to sign in, you can ignore this email - ' +
     'nobody can use the code without it.</p>';
   return { subject, text, html };
+}
+
+/**
+ * Connects and authenticates, and sends NOTHING.
+ *
+ * Exists for `mail:doctor`, and the distinction from a real send is the whole
+ * value: this proves the host, the port, the TLS mode and the credentials, while
+ * a relay's refusal to send from an unverified domain happens later, at message
+ * time. Separating them turns one ambiguous error into two precise ones.
+ *
+ * Reuses `readConfig` and `getTransport` deliberately - a doctor that built its
+ * own transport would be checking its own second opinion rather than the one the
+ * app uses.
+ */
+export async function verifyMailTransport(env: NodeJS.ProcessEnv = process.env): Promise<MailStatus> {
+  const { config, missing } = readConfig(env);
+  if (!config) throw new MailNotConfiguredError(missing);
+
+  try {
+    await getTransport(config).verify();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new MailSendError(`Could not connect to ${config.host}:${config.port}: ${reason}`, error);
+  }
+
+  return { configured: true, host: config.host, port: config.port, from: config.from };
+}
+
+/**
+ * One real message, for `mail:doctor --to`.
+ *
+ * Deliberately NOT the sign-in template: nothing here should put a six-digit
+ * number that looks like a live code into somebody's inbox or a terminal
+ * scrollback. Returns the resolved `From` so the caller can show which address
+ * the relay actually accepted.
+ */
+export async function sendTestMessage(
+  to: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<string> {
+  const { config, missing } = readConfig(env);
+  if (!config) throw new MailNotConfiguredError(missing);
+
+  const subject = `${APP_NAME} mail check`;
+  const text =
+    `This is a test message from ${APP_NAME}'s mail:doctor.\n\n` +
+    `It confirms this server can send as ${config.from}. No action is needed.`;
+
+  try {
+    await getTransport(config).sendMail({ from: config.from, to, subject, text });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new MailSendError(`${config.host} refused the message: ${reason}`, error);
+  }
+
+  return config.from;
 }
 
 export async function sendLoginCode(

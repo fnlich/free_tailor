@@ -29,6 +29,9 @@ function makeClient(overrides = {}) {
       calls.push(['isConfigured']);
       return true;
     },
+    async checkCredential() {
+      calls.push(['checkCredential']);
+    },
     async createSpreadsheet(title, firstTabTitle) {
       calls.push(['createSpreadsheet', title, firstTabTitle]);
       minted += 1;
@@ -335,6 +338,38 @@ test('accounts from before the feature are given a spreadsheet by the backfill',
   const again = await sheets.backfillAccountSheets(0);
   assert.equal(again.done, 0);
   assert.equal(named('createSpreadsheet').length, 2);
+});
+
+test('a credential Google refused ends the backfill instead of failing per account', async () => {
+  /*
+   * One dead token, one warning - not one per account, each after a pause.
+   *
+   * Every allocation below needs the same access token, so a credential Google
+   * refused (an expired consent, a deleted service account) fails all of them
+   * for one reason. The loop used to run anyway: two hundred sheet-less accounts
+   * meant two hundred and one warnings and, at the real 250ms pause, close to a
+   * minute of startup spent failing.
+   */
+  let probes = 0;
+  const { users, sheets, named } = setup('backfill-no-credential', {
+    async checkCredential() {
+      probes += 1;
+      throw new Error('invalid_grant: Token has been expired or revoked.');
+    },
+  });
+  users.createUser({ email: 'alice@example.com' });
+  users.createUser({ email: 'bob@example.com' });
+
+  const result = await sheets.backfillAccountSheets(0);
+
+  assert.equal(result.done, 0);
+  assert.equal(result.failed, 2, 'every waiting account is reported, once, as not done');
+  assert.equal(
+    named('createSpreadsheet').length,
+    0,
+    'and nothing was attempted, because nothing could have worked'
+  );
+  assert.equal(probes, 1, 'asked once, not once per account');
 });
 
 test('the header row is the one from the tracking sheet, spelling included', () => {

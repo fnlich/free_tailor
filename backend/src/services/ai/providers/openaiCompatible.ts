@@ -2,11 +2,9 @@ import OpenAI from 'openai';
 import { getProviderApiKey } from '../../../config/aiModelConfig';
 import {
   getProviderDescriptor,
-  providerSupportsEffort,
 } from '../../../config/providerCatalog';
 import type { AIProvider } from '../../../types/template';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../errors';
-import { collectUnsupportedReasoningParams } from '../reasoningParams';
 import type {
   AIProviderAdapter,
   CompletionRequest,
@@ -48,9 +46,6 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
     label: descriptor.label,
     temperature: true,
     maxOutputTokens: true,
-    // Neither is wired for this transport yet, so a caller asking for one is
-    // told it was dropped rather than left to assume it applied.
-    effort: providerSupportsEffort(options.id),
     nativeJsonMode: 'response_format',
     systemBlocks: false,
     requiresApiKey: true,
@@ -159,7 +154,7 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
             cacheReadTokens: completion.usage?.prompt_tokens_details?.cached_tokens ?? 0,
             cacheWriteTokens: 0,
           },
-          droppedParams: collectUnsupportedReasoningParams(request, capabilities),
+          droppedParams: [],
           latencyMs: Date.now() - startedAt,
         };
       } catch (error) {

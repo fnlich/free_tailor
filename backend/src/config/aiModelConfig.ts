@@ -1,10 +1,10 @@
 import { randomUUID } from 'crypto';
 
-import { describeAiPreferenceDefaults, type AiPreferenceDefaults } from './aiPreferences';
 import { getSetting, setSetting } from '../database/settingsRepository';
 import { planRoute } from '../services/ai/freeChatRouting';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
+import { CODEX_DEFAULT_MODEL } from '../services/ai/providers/codexCli/options';
 import {
   AI_PROVIDER_IDS,
   coerceProviderId,
@@ -21,7 +21,6 @@ import {
   isProviderLocked,
   listLockedProviderIds,
   providerRequiresApiKey,
-  providerSupportsEffort,
 } from './providerCatalog';
 import {
   DEFAULT_CLAUDE_CLI_MODEL,
@@ -72,6 +71,23 @@ type AppSettings = {
    * so an already-loaded browser tab does not break across a deploy.
    */
   providersEnabled: ProvidersEnabled;
+  /**
+   * Whether this installation offers the browser-tab providers at all.
+   *
+   * A master switch ABOVE `providersEnabled`, not a third entry in it. Off, the
+   * two chat sites stop being a thing anyone can see or reach: no "Default
+   * (browser)" row in any model picker, no Browser Chat section in Settings, no
+   * preflight against a debug browser - and a request that names one is refused
+   * rather than quietly served. The per-site preferences underneath are KEPT,
+   * exactly as a locked provider keeps its checkbox, so turning it back on
+   * restores what the operator had rather than a row that reset itself.
+   *
+   * It exists because "browser mode" is one decision, not two: an operator on a
+   * headless server cannot sign a Chrome in, and asking them to work that out
+   * from two separate provider toggles is how an install ends up offering a
+   * model that can never answer.
+   */
+  browserChatEnabled: boolean;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -157,7 +173,19 @@ export type BrowserChatEndpoint = {
 export { BROWSER_CHAT_SITE_IDS, isBrowserChatSiteId } from './providerCatalog';
 export type { BrowserChatSiteId } from './providerCatalog';
 
-export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
+/**
+ * The settings slice the AI layer runs on.
+ *
+ * Everything here is read on the request path: which providers may be reached,
+ * and whether browser mode exists at all. Kept as one slice so a caller cannot
+ * hold a half-answer
+ * - a record of enable flags that says "yes" about a site the master switch has
+ * withdrawn.
+ */
+export type AIModelSettings = Pick<
+  AppSettings,
+  'providersEnabled' | 'browserChatEnabled'
+>;
 
 /**
  * The flat per-provider booleans older clients read. Derived from
@@ -170,25 +198,6 @@ export type LegacyProviderFlags = {
   deepseekEnabled: boolean;
 };
 
-/**
- * Which tuning knobs actually reach a given provider's model.
- *
- * Sent with the settings rather than fetched from `/ai/health`, because the
- * pickers need it on every render and that endpoint probes every provider -
- * seconds of work to answer a question whose answer is fixed at build time.
- */
-export type ProviderTuningSupport = {
-  provider: AIProvider;
-  effort: boolean;
-};
-
-export function listProviderTuningSupport(): ProviderTuningSupport[] {
-  return AI_PROVIDER_IDS.map((provider) => ({
-    provider,
-    effort: providerSupportsEffort(provider),
-  }));
-}
-
 export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   AppSettings,
   | 'defaultMode'
@@ -200,6 +209,7 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   | 'defaultResumeDocxEnabled'
   | 'defaultCoverLetterDocxEnabled'
   | 'aiModels'
+  | 'browserChatEnabled'
   | 'googleSheetsSources'
   | 'browserChatEndpoints'
 >;
@@ -221,16 +231,7 @@ export type ProviderLock = {
 };
 
 export type PublicAppSettingsWithDerived = PublicAppSettings & {
-  /** Which providers honour effort at all. */
-  providerTuning: ProviderTuningSupport[];
   outputPathUsesJobTitle: boolean;
-  /**
-   * The effort a run uses when nothing overrides it, plus the
-   * values that may be chosen. Sent rather than hard-coded in the client so
-   * that the "use the app default" option can name the value it will really
-   * use, and so a new effort level does not need a matching frontend release.
-   */
-  aiPreferenceDefaults: AiPreferenceDefaults;
   /** Providers locked in this build, so the UI can say so instead of hiding them. */
   providerLocks: ProviderLock[];
 };
@@ -370,6 +371,30 @@ function createDefaultModelRecords(): AIModelRecord[] {
       provider: 'claude-cli',
       modelName: 'haiku',
       description: 'Fastest model on the subscription seat, for classification and short extractions.',
+    },
+    /*
+     * The ChatGPT seat, as ONE entry.
+     *
+     * `modelName: 'default'` is a sentinel: the argv builder omits `-m`
+     * entirely, so the turn runs on whatever that account is configured for.
+     * That is the only model name that is true on every account - Codex
+     * resolves its catalog from the signed-in account at runtime, so there is
+     * no static list to seed and any specific id hard-coded here would be a
+     * guess that fails at request time on somebody else's plan.
+     *
+     * A specific model is a record an administrator adds under Admin -> Models,
+     * which already takes a provider plus a model name.
+     *
+     * Seeded AFTER the Claude seat models on purpose: `defaultSeedModelId`
+     * takes the first unlocked seed, and a fresh install should still land on
+     * Claude Sonnet rather than silently changing which seat it spends.
+     */
+    {
+      name: 'Codex (subscription)',
+      provider: 'codex-cli',
+      modelName: CODEX_DEFAULT_MODEL,
+      description:
+        "Runs the local codex CLI on your ChatGPT subscription, using that account's own default model.",
     },
     // Browser-driven chat. Ranked after the seat and before the metered APIs:
     // both cost nothing to run, but a chat window answers at reading speed and
@@ -523,6 +548,9 @@ function defaultSeedModelId(): string {
 
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
+  // Both default ON so an install that predates them behaves exactly as it did.
+  // A flag that changes behaviour by existing is a flag that breaks upgrades.
+  browserChatEnabled: true,
   defaultMode: 'preview',
   defaultTheme: 'light',
   defaultResumeSelection: 'single',
@@ -550,6 +578,29 @@ function cloneDefaultSettings(): AppSettings {
     aiModels: DEFAULT_SETTINGS.aiModels.map((model) => ({ ...model })),
     googleSheetsSources: [...DEFAULT_SETTINGS.googleSheetsSources],
   };
+}
+
+/**
+ * A boolean from a stored row, or from an admin's save.
+ *
+ * `strict` is the difference between the two callers. Reading the database is
+ * forgiving - a row written by an older release simply has no such key, and
+ * falling back is right. A save from the admin page is not: a key that IS
+ * present and is not a boolean is a client sending nonsense, and silently
+ * substituting the old value would tell them it saved when it did not.
+ */
+function normalizeBooleanSetting(
+  source: Record<string, unknown>,
+  key: string,
+  fallback: boolean,
+  strict: boolean
+): boolean {
+  const value = source[key];
+  if (typeof value === 'boolean') return value;
+  if (strict && hasOwnProperty(source, key)) {
+    throw new Error(`${key} must be a boolean`);
+  }
+  return fallback;
 }
 
 function hasOwnProperty(source: object, key: PropertyKey): boolean {
@@ -1098,7 +1149,15 @@ function normalizeSettings(
   const providersEnabled = normalizeProvidersEnabled(source, fallback.providersEnabled, strict);
 
   const aiModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
-  const providerSettings: AIModelSettings = { providersEnabled };
+  // Read early: the default-model resolver below takes the same slice the
+  // provider gate does, and browser models are only pickable while this is on.
+  const browserChatEnabled = normalizeBooleanSetting(
+    source, 'browserChatEnabled', fallback.browserChatEnabled, strict
+  );
+  const providerSettings: AIModelSettings = {
+    providersEnabled,
+    browserChatEnabled,
+  };
   const defaultModelId = resolveDefaultModelId(
     source.defaultModelId,
     aiModels,
@@ -1186,11 +1245,10 @@ function normalizeSettings(
       source.creditMaxCredits, fallback.creditMaxCredits, 1, 1_000_000, 'creditMaxCredits', strict
     ),
     paymentLimits: normalizePaymentLimits(source.paymentLimits, fallback.paymentLimits, strict),
-    requireThreeDSecure: typeof source.requireThreeDSecure === 'boolean'
-      ? source.requireThreeDSecure
-      : strict && hasOwnProperty(source, 'requireThreeDSecure')
-        ? (() => { throw new Error('requireThreeDSecure must be a boolean'); })()
-      : fallback.requireThreeDSecure,
+    requireThreeDSecure: normalizeBooleanSetting(
+      source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
+    ),
+    browserChatEnabled,
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
@@ -1252,6 +1310,7 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
   const pickable = getPickableModels(settings);
   return {
     providersEnabled: { ...settings.providersEnabled },
+    browserChatEnabled: settings.browserChatEnabled,
     ...toLegacyProviderFlags(settings),
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
@@ -1282,9 +1341,7 @@ function toPublicSettingsWithDerived(settings: AppSettings): PublicAppSettingsWi
   return {
     ...toPublicSettings(settings),
     outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
-    aiPreferenceDefaults: describeAiPreferenceDefaults(),
     providerLocks: describeProviderLocks(settings),
-    providerTuning: listProviderTuningSupport(),
   };
 }
 
@@ -1536,20 +1593,63 @@ export async function resolveStoredAIModelPreference(
   }
 
   const settings = await readSettings();
+
+  /*
+   * A pin to the browser entry, when browser mode has since been switched off.
+   *
+   * It needs its own line because `free-hybrid` is SYNTHESIZED - it is not a
+   * row in `aiModels` - so the lookup below cannot find it and the fallback
+   * below cannot catch it. Without this the call reaches
+   * `resolveRequestedAIModel`, which refuses an id it cannot find, and every
+   * generation for that profile fails on a switch its owner did not flip.
+   */
+  if (isHybridModelId(requested) && !settings.browserChatEnabled) {
+    warnOncePerPreference(
+      requested,
+      '[ai] A stored preference names the browser entry, and browser mode is switched off in this ' +
+        'installation; those calls run on the default model instead.'
+    );
+    return resolveRequestedAIModel();
+  }
+
   const stored = settings.aiModels.find((model) => model.id === requested);
-  if (stored && isProviderLocked(stored.provider)) {
-    if (!warnedLockedPreferences.has(requested)) {
-      warnedLockedPreferences.add(requested);
-      console.warn(
-        `[ai] A stored preference names "${stored.name}", whose provider is locked in this ` +
-          'installation; those calls run on the default model instead. Pick a new model for it to ' +
-          'silence this.'
-      );
-    }
+  /*
+   * Three states, and only two of them are staleness.
+   *
+   * LOCKED - this deployment cannot run it - and BROWSER MODE OFF both say the
+   * installation does not offer the thing, through no act of the profile's
+   * owner and invisibly to them, so the preference is stale and falls back.
+   *
+   * MERELY DISABLED by an administrator is deliberately still an error, and
+   * that is a decision this file already made: it is real misconfiguration,
+   * the admin who flipped it is the person who can see the failure, and
+   * swallowing it would hide the case where they turned off the wrong one.
+   * Browser mode joins the first group rather than the second because it is
+   * withdrawn on exactly the machines - headless ones - where the browser could
+   * never have answered anyway.
+   */
+  const notOffered =
+    stored &&
+    (isProviderLocked(stored.provider) ||
+      (isBrowserChatSiteId(stored.provider) && !settings.browserChatEnabled));
+  if (notOffered && stored) {
+    warnOncePerPreference(
+      requested,
+      `[ai] A stored preference names "${stored.name}", whose provider is not offered in this ` +
+        'installation; those calls run on the default model instead. Pick a new model for it to ' +
+        'silence this.'
+    );
     return resolveRequestedAIModel();
   }
 
   return resolveRequestedAIModel(requested);
+}
+
+/** One line per stale preference, however many calls it makes. */
+function warnOncePerPreference(key: string, message: string): void {
+  if (warnedLockedPreferences.has(key)) return;
+  warnedLockedPreferences.add(key);
+  console.warn(message);
 }
 
 /**
@@ -1578,6 +1678,12 @@ export async function resolveStoredAIModelPreference(
 export async function isHybridSelection(storedModelId?: string): Promise<boolean> {
   const requested = typeof storedModelId === 'string' ? storedModelId.trim() : '';
   const settings = await readSettings();
+
+  // Nothing is hybrid on an installation with no browser mode. Asserted here
+  // rather than relied upon from the callers: this used to be true only because
+  // the resolver above threw first, which is safe by accident - and the accident
+  // ends the moment somebody reorders those two calls.
+  if (!settings.browserChatEnabled) return false;
 
   if (requested) {
     if (isHybridModelId(requested)) return true;
@@ -1796,7 +1902,14 @@ export async function deleteAIModel(id: string): Promise<AdminAppSettings> {
 
 export async function getAIModelSettings(): Promise<AIModelSettings> {
   const settings = await readSettings();
-  return { providersEnabled: { ...settings.providersEnabled } };
+  // Both halves of what the provider gate reads. Returning only the record
+  // would hand callers a slice that answers `isProviderEnabled` differently
+  // from the settings it came from - a browser site would read as enabled on
+  // an installation that has switched browser mode off.
+  return {
+    providersEnabled: { ...settings.providersEnabled },
+    browserChatEnabled: settings.browserChatEnabled,
+  };
 }
 
 /**
@@ -1856,6 +1969,14 @@ export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'out
  * check somewhere.
  */
 export function isProviderEnabled(provider: AIProvider, settings: AIModelSettings): boolean {
+  if (isBrowserChatSiteId(provider) && settings.browserChatEnabled === false) {
+    // The master switch, applied HERE rather than at each of the places that
+    // list or resolve a model. This function is documented above as the one
+    // gate everything funnels through, which is exactly the property the switch
+    // needs: with it here, "never shown" and "never reachable" are the same
+    // statement, and neither can be lost by a caller forgetting a check.
+    return false;
+  }
   return settings.providersEnabled[provider] === true && !isProviderLocked(provider);
 }
 

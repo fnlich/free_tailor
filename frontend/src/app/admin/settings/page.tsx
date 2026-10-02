@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   AI_PROVIDERS,
   adminApi,
+  // The browser-mode switch has to govern exactly the set the backend gate
+  // does, so the list comes from there rather than being retyped here.
+  BROWSER_CHAT_PROVIDERS,
   AdminAppSettings,
   AdminAppSettingsUpdate,
   BrowserChatEndpoint,
@@ -17,6 +20,7 @@ import {
   groupsApi,
   isPlatformActive,
   isProviderLocked,
+  isProviderOffered,
   LOCK_ICON,
   Profile,
   profilesApi,
@@ -24,8 +28,6 @@ import {
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
-
-const BROWSER_CHAT_PROVIDERS: AIProvider[] = ['claude-web', 'chatgpt-web'];
 
 type SettingsFormState = {
   providersEnabled: Record<AIProvider, boolean>;
@@ -42,7 +44,47 @@ type SettingsFormState = {
   browserChatEndpoints: BrowserChatEndpoint[];
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'browserChat';
+type SaveSection = 'output' | 'providers' | 'defaults' | 'browserChat' | 'modelControls';
+
+/**
+ * A switch that saves the moment it is flipped.
+ *
+ * No Save button, unlike the sections around it: these two withdraw a control
+ * from every other page in the app, so "did that take?" is a question worth
+ * answering immediately rather than after a second click somewhere below.
+ */
+function SettingSwitch({
+  id,
+  checked,
+  onChange,
+  disabled,
+  title,
+  children,
+}: {
+  id: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled: boolean;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-3" htmlFor={id}>
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-1 h-4 w-4 rounded border-gray-300"
+      />
+      <span>
+        <span className="block text-sm font-medium text-gray-900">{title}</span>
+        <span className="block text-sm text-gray-600">{children}</span>
+      </span>
+    </label>
+  );
+}
 
 function buildPathPreview(template: string): string {
   const normalized = (template || '').trim() || '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
@@ -71,25 +113,44 @@ function formatPercent(value: number | null): string {
 }
 
 /**
- * Readiness of the Claude subscription seat.
+ * Readiness of one subscription seat.
  *
  * A seat fails in ways an API key cannot - the binary is not on PATH, the
  * sign-in expired, the five-hour window is spent - and none of those are
  * visible from a settings page that only knows how to render a key.
+ *
+ * Takes the PROVIDER, because there are two seats now. Hard-coded to
+ * `claude-cli`, this card left the Codex seat with no readiness anywhere: the
+ * numbers were already on the wire (`concurrency` and `usage.byProvider` are
+ * both keyed per provider) and simply never read, so an operator whose `codex`
+ * was unsigned-in or off PATH had nothing on the page saying so.
+ *
+ * `seatWindow` is opt-in for the same honest reason: `subscription` on the wire
+ * is ONE object, the Claude adapter's, because the Codex adapter deliberately
+ * models no usage window or outage table - inventing the shape of a refusal
+ * nobody has seen produces a confidently wrong message at the worst moment. An
+ * absent window on the Codex card is the truth; an absent in-flight row was not.
  */
 function SubscriptionCard({
   health,
   healthError,
+  provider: providerId,
+  title,
+  seatWindow = false,
 }: {
   health: ProviderHealthReport | null;
   healthError: string;
+  provider: AIProvider;
+  title: string;
+  seatWindow?: boolean;
 }) {
-  const provider = health?.providers.find((item) => item.id === 'claude-cli');
-  const seat = health?.subscription.seat;
-  const outages = health?.subscription.outages ?? [];
+  const provider = health?.providers.find((item) => item.id === providerId);
+  const seat = seatWindow ? health?.subscription.seat : undefined;
+  const outages = seatWindow ? health?.subscription.outages ?? [] : [];
   // This provider's own numbers. The process-wide totals include every metered
   // provider, and reporting those here would credit them to the seat.
-  const usage = health?.usage.byProvider['claude-cli'];
+  const usage = health?.usage.byProvider[providerId];
+  const concurrency = health?.concurrency[providerId];
 
   const tone = healthError
     ? { dot: 'bg-red-500', box: 'border-red-200 bg-red-50' }
@@ -105,7 +166,7 @@ function SubscriptionCard({
     <section className={`space-y-3 rounded-md border p-4 ${tone.box}`}>
       <div className="flex items-center gap-2">
         <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone.dot}`} aria-hidden />
-        <h2 className="text-lg font-semibold text-gray-900">Claude Subscription</h2>
+        <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
       </div>
 
       <p className="text-sm text-gray-700">
@@ -113,7 +174,7 @@ function SubscriptionCard({
           ? `Could not read provider status: ${healthError}`
           : health
             ? provider?.detail ?? 'No status reported.'
-            : 'Checking the Claude CLI on the server...'}
+            : 'Checking the CLI on the server...'}
       </p>
       {provider?.warning && <p className="text-sm font-medium text-amber-800">{provider.warning}</p>}
 
@@ -122,19 +183,21 @@ function SubscriptionCard({
           <dt className="text-gray-500">Sign-in</dt>
           <dd>{provider?.authMethod === 'oauth_token' ? 'Subscription (OAuth)' : provider?.authMethod ?? 'unknown'}</dd>
         </div>
-        <div className="flex gap-2">
-          <dt className="text-gray-500">Usage window</dt>
-          <dd>
-            {formatPercent(seat?.utilization ?? null)}
-            {seat?.resetsAt ? ` (resets ${new Date(seat.resetsAt).toLocaleTimeString()})` : ''}
-          </dd>
-        </div>
+        {seatWindow && (
+          <div className="flex gap-2">
+            <dt className="text-gray-500">Usage window</dt>
+            <dd>
+              {formatPercent(seat?.utilization ?? null)}
+              {seat?.resetsAt ? ` (resets ${new Date(seat.resetsAt).toLocaleTimeString()})` : ''}
+            </dd>
+          </div>
+        )}
         <div className="flex gap-2">
           <dt className="text-gray-500">In flight</dt>
           <dd>
-            {health?.concurrency['claude-cli']
-              ? `${health.concurrency['claude-cli'].inFlight} of ${health.concurrency['claude-cli'].limit}` +
-                (health.concurrency['claude-cli'].queued ? `, ${health.concurrency['claude-cli'].queued} queued` : '')
+            {concurrency
+              ? `${concurrency.inFlight} of ${concurrency.limit}` +
+                (concurrency.queued ? `, ${concurrency.queued} queued` : '')
               : 'idle'}
           </dd>
         </div>
@@ -258,21 +321,6 @@ function AdminSettingsPageBody() {
       })
       .catch((err) => setHealthError(err instanceof Error ? err.message : 'Could not read provider status'));
 
-    // Same reasoning: probing the debug port is a network round trip that can
-    // simply not answer, and the form must render either way. No port is passed
-    // so the server uses the stored one - the form may not have loaded yet.
-    adminApi
-      .getDebugBrowsers()
-      .then((report) => {
-        setDebugReport(report);
-        setDebugError('');
-      })
-      .catch(() => {
-        // Silent on load. Nothing listening is the ordinary state before the
-        // operator presses the button, and an error banner on arrival would
-        // read as something being broken.
-        setDebugReport(null);
-      });
   }, []);
 
   const loadSettings = async () => {
@@ -288,6 +336,30 @@ function AdminSettingsPageBody() {
       setGroups(groupsData);
       setProfiles(profilesData.filter((profile) => !profile.disabled));
       setForm(toFormState(settingsData));
+
+      /*
+       * The debug-browser reading, and only once the settings say to.
+       *
+       * It used to fire from the mount effect, before this call had resolved, so
+       * every load of this page probed the debug ports even on an install with
+       * browser mode off - where the panel that would show the answer is not
+       * rendered at all. Moved here because that flag is the thing that decides,
+       * and it is not known until now.
+       *
+       * Still fire-and-forget: probing a port is a round trip that can simply
+       * not answer, and the form must render either way. Silent on failure -
+       * nothing listening is the ordinary state before the operator presses the
+       * button, and a banner on arrival would read as something being broken.
+       */
+      if (settingsData.browserChatEnabled) {
+        adminApi
+          .getDebugBrowsers()
+          .then((report) => {
+            setDebugReport(report);
+            setDebugError('');
+          })
+          .catch(() => setDebugReport(null));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -465,13 +537,17 @@ function AdminSettingsPageBody() {
 
   const handleSaveProviders = async () => {
     if (!form || !settings) return;
+    // `isProviderOffered`, not just the lock: a browser provider ticked before
+    // browser mode was switched off keeps its stored `true` (its row is not
+    // rendered, so nothing unticks it), and counting it here let an admin untick
+    // everything else and save an install where nothing could actually run.
     const runnable = AI_PROVIDERS.filter(
-      (provider) => form.providersEnabled[provider] && !isProviderLocked(settings, provider)
+      (provider) => isProviderOffered(settings, provider, form.providersEnabled)
     );
     if (runnable.length === 0) {
       setError(
-        'At least one unlocked AI provider must remain enabled. Locked providers cannot run here ' +
-          'however they are ticked.'
+        'At least one AI provider that can run here must remain enabled. Locked providers, and the ' +
+          'browser ones while browser mode is off, cannot run however they are ticked.'
       );
       return;
     }
@@ -511,8 +587,10 @@ function AdminSettingsPageBody() {
   }
 
   const providerEnabled = form.providersEnabled;
+  // Admin settings carry the RAW model list so every record stays manageable,
+  // so the offer rule has to be applied here rather than relied on upstream.
   const availableDefaultModels = settings.aiModels.filter(
-    (model) => model.enabled && providerEnabled[model.provider] && !isProviderLocked(settings, model.provider)
+    (model) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled)
   );
   const outputPathPreview = buildPathPreview(form.outputPathTemplate);
 
@@ -604,8 +682,59 @@ function AdminSettingsPageBody() {
           </div>
         </section>
 
-        <SubscriptionCard health={health} healthError={healthError} />
+        {/* One card per seat this installation could run. Keyed on the LOCK, not
+            on the enabled tick: a seat an admin has unticked is exactly the one
+            whose readiness they want to read while deciding whether to tick it
+            back on, and a locked seat cannot run here however it is ticked. */}
+        {(['claude-cli', 'codex-cli'] as const)
+          .filter((seatProvider) => !isProviderLocked(settings, seatProvider))
+          .map((seatProvider) => (
+            <SubscriptionCard
+              key={seatProvider}
+              health={health}
+              healthError={healthError}
+              provider={seatProvider}
+              title={seatProvider === 'codex-cli' ? 'ChatGPT Subscription (Codex)' : 'Claude Subscription'}
+              seatWindow={seatProvider === 'claude-cli'}
+            />
+          ))}
 
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Model controls</h2>
+            <p className="text-sm text-gray-600">
+              What the model select offers, everywhere it appears - the builder and every profile
+              alike.
+            </p>
+          </div>
+          <SettingSwitch
+            id="browserChatEnabled"
+            checked={settings.browserChatEnabled}
+            disabled={savingSection !== null}
+            onChange={(next) =>
+              void saveSection(
+                'modelControls',
+                { browserChatEnabled: next },
+                next
+                  ? 'Browser mode is offered again.'
+                  : 'Browser mode is hidden, and no request can reach it.'
+              )
+            }
+            title="Offer browser-tab mode"
+          >
+            <strong>Default (browser)</strong> needs a Chrome running on this server that you have
+            signed in to by hand, which a headless box cannot have. Switch this off and the option
+            disappears from every model menu - here and on the builder - and a request naming it is
+            refused rather than left waiting for a browser that will never answer. The per-site
+            preferences below are kept, so switching it back on restores them.
+          </SettingSwitch>
+        </section>
+
+        {/* Gone entirely when browser mode is off, rather than greyed: there is
+            nothing here to read or fix on an installation that has withdrawn it,
+            and the switch that brings it back lives in Model controls above - so
+            hiding this cannot strand anyone. */}
+        {settings.browserChatEnabled && (
         <section className="space-y-4">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Browser Chat (free)</h2>
@@ -838,6 +967,7 @@ npm run browser:debug
           {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
 
         </section>
+        )}
 
         <section className="space-y-4">
           <div>
@@ -854,7 +984,12 @@ npm run browser:debug
             </p>
           </div>
 
-          {AI_PROVIDERS.map((provider) => {
+          {AI_PROVIDERS.filter(
+            // A provider this installation has withdrawn has no row: there is
+            // nothing to toggle and nothing to read, and a live health line
+            // against a browser nobody can sign in to is worse than silence.
+            (provider) => settings.browserChatEnabled || !BROWSER_CHAT_PROVIDERS.includes(provider)
+          ).map((provider) => {
             const lock = settings.providerLocks.find((entry) => entry.id === provider);
             return (
               <label

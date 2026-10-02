@@ -786,8 +786,9 @@ test('a spent seat-wide window parks the seat, whatever rateLimitType names', ()
 // cover a Windows-only failure from a Linux CI.
 
 const { resolveCliExecPlan, CliBinaryUnresolvableError, clearCliExecPlanCache } = load(
-  '../dist/services/ai/providers/claudeCli/resolveBinary'
+  '../dist/services/ai/providers/cli/resolveBinary'
 );
+const { CLAUDE_CLI_BINARY_HINTS } = load('../dist/services/ai/providers/claudeCli/hints');
 
 /** A fake Windows box with the given files present. */
 function windowsDeps(files) {
@@ -942,10 +943,33 @@ test('a missing Windows binary is reported as missing, not as something else', (
 test('an unrunnable shim asks for AI_CLI_BIN rather than falling back to a shell', () => {
   // Falling back to cmd.exe would work and would be a command-injection hole,
   // so this deliberately fails with something an operator can act on.
+  //
+  // The hints are passed because the resolver is shared with the Codex CLI now
+  // and cannot know which npm package a binary came from. Claude's own call
+  // sites supply these, so what an operator reads is unchanged; this test names
+  // them explicitly because it calls the resolver directly.
   const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd';
   assert.throws(
-    () => resolveCliExecPlan('claude', windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' })),
+    () =>
+      resolveCliExecPlan(
+        'claude',
+        windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' }),
+        CLAUDE_CLI_BINARY_HINTS
+      ),
     (error) => error instanceof CliBinaryUnresolvableError && /AI_CLI_BIN/.test(error.message)
+  );
+});
+
+test('without hints the same refusal is still actionable, just not package-specific', () => {
+  // The Codex path, and any future one: no hints means no invented package
+  // name, but it must still say what to do and must never fall back to a shell.
+  const shim = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd';
+  assert.throws(
+    () => resolveCliExecPlan('codex', windowsDeps({ [shim]: '@ECHO off\r\nrem nothing parseable here' })),
+    (error) =>
+      error instanceof CliBinaryUnresolvableError &&
+      /binary setting/.test(error.message) &&
+      !/cmd\.exe/i.test(error.message)
   );
 });
 
@@ -993,4 +1017,52 @@ test('a failed resolution is not cached, so installing the CLI needs no restart'
 
   const exe = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.exe';
   assert.equal(resolveCliExecPlan('claude', windowsDeps({ [exe]: '' })).kind, 'windows-exe');
+});
+
+// -- the effort default ----------------------------------------------------- //
+
+/**
+ * `AI_CLI_EFFORT` is the whole of the effort story now.
+ *
+ * There is no per-profile or per-run control, deliberately: a select that
+ * reached one provider out of six showed a knob that did nothing on every other
+ * model in the menu. What remains is one operator setting, and the two things
+ * worth pinning about it are that it DEFAULTS to low and that a typo cannot
+ * reach the CLI - which rejects an unknown level outright, turning a bad `.env`
+ * into every generation failing at the transport.
+ */
+const { readClaudeCliConfig, DEFAULT_CLI_EFFORT } = load('../dist/services/ai/providers/claudeCli/options');
+
+test('effort defaults to low, and the default is what the constant says', () => {
+  delete process.env.AI_CLI_EFFORT;
+  assert.equal(readClaudeCliConfig().effort, 'low');
+  assert.equal(DEFAULT_CLI_EFFORT, 'low');
+});
+
+test('a configured effort is honoured, and a junk one warns and falls back', () => {
+  process.env.AI_CLI_EFFORT = 'max';
+  assert.equal(readClaudeCliConfig().effort, 'max');
+
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    process.env.AI_CLI_EFFORT = 'turbo';
+    assert.equal(readClaudeCliConfig().effort, 'low', 'junk must not reach the CLI');
+  } finally {
+    console.warn = originalWarn;
+    delete process.env.AI_CLI_EFFORT;
+  }
+  assert.equal(warnings.length, 1, 'a rejected level must say so');
+  assert.match(warnings[0], /AI_CLI_EFFORT/);
+  assert.match(warnings[0], /turbo/);
+});
+
+test('the configured effort is what reaches argv', () => {
+  // The two halves joined: reading the variable is only useful if the flag it
+  // feeds carries the value.
+  const built = argv.buildClaudeArgv({ model: 'sonnet', effort: 'high', systemPrompt: 'x' });
+  const at = built.argv.indexOf('--effort');
+  assert.ok(at >= 0, '--effort must be present');
+  assert.equal(built.argv[at + 1], 'high');
 });

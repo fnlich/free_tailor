@@ -273,10 +273,17 @@ test('a task routes to a queue by the profile model, not by the request', async 
     queue: 'browser',
     sites: ['claude-web', 'chatgpt-web'],
   });
-  // The seat and the metered providers share the non-browser queue: neither has
-  // a local browser to wait for, and a third queue would do nothing.
+  // The Claude seat and the metered providers share a lane: the metered ones
+  // have no local resource to wait for, so the lane is only a throttle for them.
   assert.deepEqual(routeFor({ provider: 'claude-cli' }), { queue: 'cli' });
   assert.deepEqual(routeFor({ provider: 'openai' }), { queue: 'cli' });
+
+  // Codex does NOT. It holds its own semaphore, sized by its own variable, so
+  // sharing the Claude seat's lane meant the dispatcher offered
+  // AI_CLI_CONCURRENCY slots into an AI_CODEX_CONCURRENCY pool - either
+  // stranding the larger of the two, or letting tasks blocked on the smaller
+  // squat on slots the other provider's work needed.
+  assert.deepEqual(routeFor({ provider: 'codex-cli' }), { queue: 'codex' });
 });
 
 test('the batch endpoints are closed to a request with no session', async () => {

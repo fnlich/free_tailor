@@ -70,6 +70,7 @@ async function serve(clientOverride) {
 
   const alice = users.createUser({ email: 'alice@example.com' });
   const bob = users.createUser({ email: 'bob@example.com' });
+  const boss = users.createUser({ email: 'boss@example.com', role: 'admin' });
 
   const app = express();
   app.use(express.json());
@@ -84,6 +85,7 @@ async function serve(clientOverride) {
     visibility: fake.visibility,
     aliceToken: users.createSession(alice.id),
     bobToken: users.createSession(bob.id),
+    adminToken: users.createSession(boss.id),
     close: () => server.close(),
     request: (token, path, init = {}) =>
       fetch(`http://127.0.0.1:${port}/api/sheet${path}`, {
@@ -191,19 +193,26 @@ test('anything other than public or private is rejected', async () => {
   }
 });
 
-test('an install with no key is told what to set, not handed a 500', async () => {
+test('an install with no key tells the admin what to set, and everyone else what it means', async () => {
   const server = await serve({
     async isConfigured() {
       return false;
     },
   });
   try {
-    const response = await server.request(server.aliceToken, '/');
+    const response = await server.request(server.adminToken, '/');
     // 200: nothing the caller sent was wrong, and the fix is on the server.
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.configured, false);
-    assert.match(body.message, /GOOGLE_SERVICE_ACCOUNT_KEY_PATH/);
+    assert.match(body.message, /GOOGLE_SERVICE_ACCOUNT_KEY_PATH/, 'the admin gets the variable');
+
+    // The same state, read by somebody who cannot set an environment variable.
+    const mine = await server.request(server.aliceToken, '/');
+    const asUser = await mine.json();
+    assert.equal(asUser.configured, false);
+    assert.doesNotMatch(asUser.message, /GOOGLE_SERVICE_ACCOUNT_KEY_PATH/);
+    assert.match(asUser.message, /administrator/i, 'and is told whose job it is instead');
   } finally {
     server.close();
   }
@@ -223,6 +232,47 @@ test("Google's own failure reaches the user with its reason intact", async () =>
     });
     assert.equal(response.status, 403);
     assert.match((await response.json()).error, /Drive API/);
+  } finally {
+    server.close();
+  }
+});
+
+test('the half of a failure that names a command reaches admins only', async () => {
+  /*
+   * This route is `requireUser`, so the reader is usually somebody who cannot
+   * act on the answer - and an expired Google consent used to hand them
+   * `Run "npm run sheets:login" in backend/`, naming a command and a directory
+   * on a server they do not administer. The diagnosis is everybody's; the
+   * instruction is not.
+   */
+  const { GoogleSheetsRequestError } = require('../dist/integrations/googleSheets');
+  const server = await serve({
+    async checkCredential() {
+      throw new GoogleSheetsRequestError(
+        400,
+        "This server's Google sign-in is no longer valid.",
+        'Run "npm run sheets:login" in backend/ again, and publish the consent screen.'
+      );
+    },
+    async createSpreadsheet() {
+      throw new GoogleSheetsRequestError(
+        400,
+        "This server's Google sign-in is no longer valid.",
+        'Run "npm run sheets:login" in backend/ again, and publish the consent screen.'
+      );
+    },
+  });
+  try {
+    const mine = await server.request(server.aliceToken, '/');
+    const body = await mine.json();
+    assert.match(body.error, /no longer valid/, 'the diagnosis is still told plainly');
+    assert.equal(body.detail, undefined, 'but not the part that assumes a shell');
+    assert.doesNotMatch(JSON.stringify(body), /sheets:login|backend\//);
+
+    const asAdmin = await server.request(server.adminToken, '/');
+    const adminBody = await asAdmin.json();
+    assert.match(adminBody.error, /no longer valid/);
+    assert.match(adminBody.detail, /sheets:login/, 'an administrator gets the instruction');
   } finally {
     server.close();
   }

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { requireUser } from '../middleware/auth';
+import { isAdmin, requireUser } from '../middleware/auth';
 import { GoogleSheetsRequestError } from '../integrations/googleSheets';
 import {
   describeAccountSheet,
@@ -21,14 +21,25 @@ import {
 const router = Router();
 router.use(requireUser);
 
-const NOT_CONFIGURED =
+/**
+ * What an ordinary account holder is told, and what an administrator is.
+ *
+ * This route is `requireUser`, so the reader is usually somebody who cannot act
+ * on the answer. Naming `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` at them is noise at
+ * best; the admin version is the one that says what to change.
+ */
+const NOT_CONFIGURED_ADMIN =
   'Google Sheets is not set up on this server. Add a service account key ' +
   '(GOOGLE_SERVICE_ACCOUNT_KEY_PATH) and enable the Sheets and Drive APIs for its project.';
+const NOT_CONFIGURED =
+  'Job sheets are not set up on this server yet. An administrator has to connect Google Sheets ' +
+  'before this page can show you one.';
 
-function fail(res: Response, error: unknown): void {
+function fail(req: Request, res: Response, error: unknown): void {
   if (error instanceof SheetAccessError) {
     // Carries its own status and its own sentence - the refusal to go private
-    // while the owner has no grant of their own is the one that matters.
+    // while the owner has no grant of their own is the one that matters. It is
+    // about THIS account's spreadsheet, so everybody gets it.
     res.status(error.status).json({ error: error.message });
     return;
   }
@@ -36,7 +47,20 @@ function fail(res: Response, error: unknown): void {
     // Pass Google's own status through. The 403 in particular carries the
     // "enable the Drive API" sentence, which is the actual fix.
     const status = error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502;
-    res.status(status).json({ error: error.message });
+
+    /*
+     * The operator half is logged every time and sent only to an administrator.
+     *
+     * `error.detail` is the part that names a command to run in `backend/`, a
+     * file on disk or an environment variable. Whoever is reading their own
+     * Account page is usually not the person who can do any of that, and the
+     * log is where it was always meant to go.
+     */
+    if (error.detail) console.error(`[sheets] ${error.message} ${error.detail}`);
+    res.status(status).json({
+      error: error.message,
+      ...(error.detail && isAdmin(req) ? { detail: error.detail } : {}),
+    });
     return;
   }
   console.error('[sheets] Sheet request failed.', error);
@@ -54,12 +78,16 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const state = await describeAccountSheet(req.user!);
     if (!state.configured) {
-      res.json({ configured: false, message: NOT_CONFIGURED, todayTab: state.todayTab });
+      res.json({
+        configured: false,
+        message: isAdmin(req) ? NOT_CONFIGURED_ADMIN : NOT_CONFIGURED,
+        todayTab: state.todayTab,
+      });
       return;
     }
     res.json(state);
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 
@@ -76,7 +104,7 @@ router.post('/visibility', async (req: Request, res: Response) => {
     const visibility = await setAccountSheetVisibility(req.user!, requested);
     res.json({ visibility });
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 

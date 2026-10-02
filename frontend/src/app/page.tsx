@@ -93,7 +93,7 @@ export default function Home() {
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   /**
-   * Model and effort for THIS run only.
+   * The model for THIS run only.
    *
    * Empty means every field falls through to the selected profile's own
    * setting, and then to the app default - nothing here is persisted.
@@ -188,7 +188,6 @@ export default function Home() {
     modelSettings.aiModels.find((model) => model.id === modelSettings.defaultModelId);
   const inheritedChoice = {
     modelLabel: inheritedModel?.name || 'the first enabled model',
-    effort: profilePreferences.effort ?? modelSettings.aiPreferenceDefaults.effort,
   };
 
   const loadInitialData = async () => {
@@ -497,10 +496,25 @@ export default function Home() {
       // Named from the OLDEST running task rather than the newest, so the label
       // is steady instead of flickering between however many run at once.
       const current = snapshot.tasks.find((task) => task.state === 'running');
+      /*
+       * Retries, said out loud.
+       *
+       * A build that failed goes back on the queue for another go, which moves
+       * the running and queued counts BACKWARDS while `done` stands still. With
+       * nothing naming it, that reads as the run going wrong or hanging - so the
+       * count of tasks on a second-or-later attempt is reported, with the
+       * server's own ceiling rather than a number hard-coded here.
+       */
+      const retrying = snapshot.tasks.filter(
+        (task) => (task.attempts ?? 1) > 1 && (task.state === 'queued' || task.state === 'running')
+      ).length;
+      const retryNote = retrying
+        ? `, ${retrying} retrying${snapshot.maxAttempts ? ` (up to ${snapshot.maxAttempts} tries each)` : ''}`
+        : '';
       setGenerationStep(
         snapshot.running > 0
-          ? `${describe.phase} - ${snapshot.running} running, ${finished}/${snapshot.total} done`
-          : `${describe.phase} - ${finished}/${snapshot.total} done`
+          ? `${describe.phase} - ${snapshot.running} running, ${finished}/${snapshot.total} done${retryNote}`
+          : `${describe.phase} - ${finished}/${snapshot.total} done${retryNote}`
       );
       setGenerationProgress({
         total: snapshot.total,
@@ -1670,7 +1684,7 @@ export default function Home() {
 
             <details className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
               <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
-                Model and effort
+                Model
                 {hasAiOverrides && (
                   <span className="ml-2 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                     overridden for this run
@@ -1684,8 +1698,6 @@ export default function Home() {
                   onChange={setAiOverrides}
                   models={modelSettings.aiModels}
                   providerLocks={modelSettings.providerLocks}
-                  providerTuning={modelSettings.providerTuning}
-                  effortLevels={modelSettings.aiPreferenceDefaults.effortLevels}
                   inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                   inherited={inheritedChoice}
                   disabled={isGenerating}

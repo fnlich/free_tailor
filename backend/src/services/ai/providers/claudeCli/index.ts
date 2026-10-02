@@ -1,6 +1,5 @@
 import {
   getProviderDescriptor,
-  providerSupportsEffort,
 } from '../../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../../errors';
 import { acquireSlot, getProviderSemaphore } from '../../concurrency';
@@ -20,7 +19,8 @@ import { classifyCliFailure } from './classify';
 import { checkClaudeCliHealth, type ClaudeCliHealth } from './health';
 import { interpretRateLimitEvent, OutageTable } from './limits';
 import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './options';
-import { createSpawnRunner, ensureCliWorkdir, type CliRunner } from './runner';
+import { createSpawnRunner, ensureCliWorkdir, type CliRunner } from '../cli/runner';
+import { CLAUDE_CLI_BINARY_HINTS } from './hints';
 
 const PROVIDER_ID = 'claude-cli' as const;
 
@@ -73,8 +73,6 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     // call site instead of silently dropping it on every call.
     temperature: false,
     maxOutputTokens: false,
-    // The one it does have: --effort, a documented flag.
-    effort: providerSupportsEffort(PROVIDER_ID),
     nativeJsonMode: 'json-schema',
     systemBlocks: true,
     requiresApiKey: false,
@@ -167,7 +165,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
 
       const invocation = buildClaudeArgv({
         model,
-        effort: request.effort ?? config.effort,
+        effort: config.effort,
         systemPrompt,
         jsonSchema: request.jsonSchema,
         fallbackModels: config.fallbackModels,
@@ -193,6 +191,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         maxOutputBytes: config.maxOutputBytes,
         signal: request.signal,
         onLine: (line) => reduce(line, now() - startedAt),
+        binaryHints: CLAUDE_CLI_BINARY_HINTS,
       });
 
       const latencyMs = now() - startedAt;

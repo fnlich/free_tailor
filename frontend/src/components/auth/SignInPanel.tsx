@@ -157,7 +157,7 @@ export default function SignInPanel() {
       <div className={CARD}>
         <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-50">Sign in</h1>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-          Free Tailor keeps your profiles to your own account.
+          Tailor keeps your profiles to your own account.
         </p>
 
         {optionsError && (

@@ -24,7 +24,23 @@ import type { BrowserChatSiteId } from '../../config/providerCatalog';
  * stays underneath as the guarantee that one browser serves one call.
  */
 
-export type QueueName = 'browser' | 'cli';
+/**
+ * One lane per REAL resource, which is the whole rule here.
+ *
+ * `codex` is its own lane rather than sharing `cli`, and that is not tidiness.
+ * Each CLI provider holds its own semaphore, and Claude's happens to be the
+ * same size as the lane it ran in, so sharing was invisible until a second
+ * provider arrived with a limit set by a different variable. Sharing one lane
+ * across two independently-sized pools breaks both ways: the dispatcher offers
+ * at most the lane's width, so the larger pool is unreachable, and tasks for the
+ * smaller one sit in lane slots BLOCKED on their own semaphore - for up to ten
+ * minutes - while the other provider's work starves behind them.
+ *
+ * The metered HTTP providers stay on `cli`. They have no local resource of their
+ * own, so the lane is only a throttle for them, and a lane each would be three
+ * that do nothing.
+ */
+export type QueueName = 'browser' | 'cli' | 'codex';
 
 /**
  * One unit of capacity: one debug browser, or one CLI process slot.
@@ -45,6 +61,7 @@ export type Slot = {
 export type Capacity = {
   browser: Slot[];
   cli: Slot[];
+  codex: Slot[];
 };
 
 export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -107,6 +124,17 @@ export type Task<T = unknown> = TaskDescriptor<T> & {
   runningOn?: string;
   value?: T;
   error?: string;
+  /**
+   * How many times this task has been STARTED, counting the first.
+   *
+   * Absent on a task written before retrying existed, which reads as 1, so no
+   * migration is needed. It does NOT persist by itself, though: the row's `data`
+   * column is a projection built by `taskRow` in `services/queue/index.ts`, not
+   * this object serialized, so this field only survives a restart because that
+   * projection and the restore mapper beside it both name it. Adding another
+   * field here means editing both.
+   */
+  attempts?: number;
 };
 
 export type BatchState = 'running' | 'done' | 'cancelled';
@@ -144,11 +172,20 @@ export type BatchSnapshot = {
   jobCount: number;
   createdAt: string;
   finishedAt?: string;
+  /**
+   * How many goes each task gets here, so a page can say "attempt 2 of 3"
+   * without knowing what `GENERATION_MAX_ATTEMPTS` is set to. On the snapshot
+   * rather than baked into the UI precisely because the number is an operator's
+   * to choose.
+   */
+  maxAttempts: number;
   tasks: Array<
     TaskLabel & {
       id: string;
       seq: number;
       state: TaskState;
+      /** Present only from the second go on, so "attempt 1" is never rendered. */
+      attempts?: number;
       runningOn?: string;
       error?: string;
     }
@@ -221,7 +258,7 @@ export class TaskQueue {
    * One array per queue, and THE ORDER IS THE CONTRACT. A task submitted later
    * never runs before one submitted earlier that an idle browser could take.
    */
-  private readonly queues: Record<QueueName, Task[]> = { browser: [], cli: [] };
+  private readonly queues: Record<QueueName, Task[]> = { browser: [], cli: [], codex: [] };
 
   private readonly batches = new Map<string, Batch>();
 
@@ -240,7 +277,7 @@ export class TaskQueue {
    * class exists to prevent. Reading capacity is a settings-database call, so it
    * happens out here instead, and the loop only ever reads a plain field.
    */
-  private capacity: Capacity = { browser: [], cli: [] };
+  private capacity: Capacity = { browser: [], cli: [], codex: [] };
   private capacityReadAt = 0;
   private refreshing: Promise<void> | null = null;
 
@@ -254,7 +291,16 @@ export class TaskQueue {
   constructor(
     private readonly readCapacity: () => Promise<Capacity>,
     private readonly store?: QueueStore,
-    private readonly hooks?: QueueHooks
+    private readonly hooks?: QueueHooks,
+    /**
+     * How many times a task may RUN in total, not how many retries follow the
+     * first go. 1 disables retrying.
+     *
+     * Passed in rather than read from the environment here so a test can set it
+     * without touching `process.env`, and so the one place that reads the
+     * variable is the one place that builds the real queue.
+     */
+    private readonly maxAttempts = 1
   ) {}
 
   /**
@@ -391,7 +437,17 @@ export class TaskQueue {
    */
   restore<T>(
     meta: { id: string; label: string; jobCount: number; shared: Record<string, unknown>; createdAt: number },
-    entries: Array<TaskDescriptor<T> & { id: string; seq: number; state: TaskState; value?: T; error?: string }>
+    entries: Array<
+      TaskDescriptor<T> & {
+        id: string;
+        seq: number;
+        state: TaskState;
+        value?: T;
+        error?: string;
+        /** Attempts already spent, so a restart does not hand out a fresh budget. */
+        attempts?: number;
+      }
+    >
   ): Batch<T> {
     const tasks: Task<T>[] = entries.map((entry) => ({
       ...entry,
@@ -463,7 +519,15 @@ export class TaskQueue {
         // below - otherwise a thirty-task batch would write and emit thirty
         // times for one click.
         this.finishTask(task, 'cancelled', {
-          error: 'Cancelled before it started',
+          // "Before it started" is only true on the FIRST go. A task cancelled
+          // while queued for a retry HAS been tried, and overwriting its error
+          // would throw away the reason the first attempt failed - which
+          // `retryTask` kept on purpose.
+          error:
+            (task.attempts ?? 1) > 1
+              ? `Cancelled after ${task.attempts} attempt(s)` +
+                (task.error ? `; last failure: ${task.error}` : '')
+              : 'Cancelled before it started',
           persist: false,
           emit: false,
         });
@@ -501,7 +565,7 @@ export class TaskQueue {
 
   /** What the dispatcher is doing right now, for the admin page and the logs. */
   stats(): Record<QueueName, { queued: number; running: number; width: number }> {
-    const running: Record<QueueName, number> = { browser: 0, cli: 0 };
+    const running: Record<QueueName, number> = { browser: 0, cli: 0, codex: 0 };
     for (const task of this.busy.values()) running[task.queue] += 1;
     return {
       browser: {
@@ -514,6 +578,11 @@ export class TaskQueue {
         running: running.cli,
         width: this.capacity.cli.length,
       },
+      codex: {
+        queued: this.queues.codex.length,
+        running: running.codex,
+        width: this.capacity.codex.length,
+      },
     };
   }
 
@@ -525,7 +594,7 @@ export class TaskQueue {
     this.batches.clear();
     this.busy.clear();
     this.listeners.clear();
-    this.capacity = { browser: [], cli: [] };
+    this.capacity = { browser: [], cli: [], codex: [] };
     this.capacityReadAt = 0;
     this.dispatching = false;
     this.dispatchAgain = false;
@@ -546,8 +615,12 @@ export class TaskQueue {
       do {
         this.dispatchAgain = false;
         this.failUnservable();
-        this.fill(this.capacity.browser);
-        this.fill(this.capacity.cli);
+        // Every lane, by iteration rather than by name. Naming them meant a lane
+        // added later was sized, routed to, and then never filled - its tasks
+        // sat queued for ever with nothing saying why.
+        for (const lane of Object.keys(this.capacity) as QueueName[]) {
+          this.fill(this.capacity[lane]);
+        }
       } while (this.dispatchAgain);
     } finally {
       this.dispatching = false;
@@ -588,7 +661,9 @@ export class TaskQueue {
 
   private eligible(task: Task, slot: Slot): boolean {
     if (task.queue !== slot.queue) return false;
-    if (slot.queue === 'cli') return true;
+    // Both CLI lanes' slots are interchangeable WITHIN their lane; the lane is
+    // what keeps the two providers' pools apart.
+    if (slot.queue !== 'browser') return true;
     if (!task.sites || task.sites.length === 0) return true;
     return Boolean(slot.site && task.sites.includes(slot.site));
   }
@@ -637,7 +712,13 @@ export class TaskQueue {
     }
 
     task.state = 'running';
-    task.runningOn = slot.site ?? 'claude-cli';
+    // Counted on the way in, so a task that is running has always been started
+    // at least once and the snapshot can say "attempt 2 of 3" honestly.
+    task.attempts = task.attempts ?? 1;
+    // The browser lane names the site; a CLI lane names its provider. Reading
+    // the lane rather than hard-coding one provider is what keeps this honest
+    // once there is more than one seat.
+    task.runningOn = slot.site ?? (slot.queue === 'codex' ? 'codex-cli' : 'claude-cli');
     this.busy.set(slot.id, task);
     this.persist((store) => store.saveTask(task));
     this.emitTask(task);
@@ -659,18 +740,30 @@ export class TaskQueue {
       this.dispatch();
     };
 
+    /*
+     * Resolved BEFORE the try below, and the placement is the whole point.
+     *
+     * A kind nothing registered is deterministic, so inside the retrying catch
+     * it would burn every attempt on the identical error and only delay it. Both
+     * non-retryable failures now settle outside that catch - this one and
+     * `failUnservable` - which is what makes `retryTask`'s claim that only the
+     * runner's own failure reaches it true rather than nearly true.
+     *
+     * Only reachable for a task restored from a build that knew a kind this one
+     * does not; failing it by name beats it sitting queued for ever.
+     */
+    const runner = runners.get(task.kind);
+    if (!runner) {
+      this.settle(task, 'failed', `No runner is registered for "${task.kind}" tasks`);
+      release();
+      return;
+    }
+
     // Every rejection is caught HERE. There is no HTTP request left to absorb an
     // unhandled one, and Node's default policy for an unhandled rejection is to
     // take the process down - so a single failed resume would stop the server.
     void (async () => {
       try {
-        const runner = runners.get(task.kind);
-        if (!runner) {
-          // A kind nothing registered. Only reachable for a task restored from
-          // a build that knew a kind this one does not, and failing it by name
-          // beats it sitting queued for ever.
-          throw new Error(`No runner is registered for "${task.kind}" tasks`);
-        }
         task.value = await runner(task.payload, {
           queue: slot.queue,
           site: slot.site,
@@ -678,11 +771,17 @@ export class TaskQueue {
         });
         this.settle(task, 'done');
       } catch (error) {
-        this.settle(
-          task,
-          batch.controller.signal.aborted ? 'cancelled' : 'failed',
-          describeError(error)
-        );
+        const cancelled = batch.controller.signal.aborted;
+        // Retried HERE and nowhere else, which is what makes the credit
+        // arithmetic come out right without touching it. `settle` is what
+        // eventually calls the taskFinished hook, and that hook is where a
+        // failed unit is refunded - so a task that goes back on the queue
+        // instead of settling has neither been charged again nor refunded
+        // early. It is simply still in flight, which is the truth.
+        if (!cancelled && this.retryTask(task, describeError(error))) {
+          return;
+        }
+        this.settle(task, cancelled ? 'cancelled' : 'failed', describeError(error));
       } finally {
         release();
       }
@@ -728,6 +827,35 @@ export class TaskQueue {
     }
 
     if (options.emit !== false) this.emitTask(task);
+  }
+
+  /**
+   * Puts a failed task back on the queue, or says it is out of attempts.
+   *
+   * Only the RUNNER's own failure comes here. The other two ways a task can
+   * fail are deliberately excluded and both would be bugs to include: a
+   * cancelled batch is not a failure to retry, and `failUnservable` fails a
+   * task because no registered browser can ever serve the sites it is pinned
+   * to - re-queueing that one would fail it again immediately, for ever.
+   *
+   * It goes on the TAIL. A retry is not more urgent than the work already
+   * waiting, and a task that fails fast at the head would otherwise spin
+   * through its attempts while everything behind it waited.
+   */
+  private retryTask(task: Task, error: string): boolean {
+    const attempts = task.attempts ?? 1;
+    if (attempts >= this.maxAttempts) return false;
+
+    task.attempts = attempts + 1;
+    task.state = 'queued';
+    task.runningOn = undefined;
+    // Kept, so a task waiting on its second go still says what went wrong the
+    // first time rather than looking like it was never tried.
+    task.error = error;
+    this.queues[task.queue].push(task);
+    this.persist((store) => store.saveTask(task));
+    this.emitTask(task);
+    return true;
   }
 
   private settle(task: Task, state: TaskState, error?: string): void {
@@ -781,6 +909,7 @@ export class TaskQueue {
       total: batch.tasks.length,
       ...counted,
       jobCount: batch.jobCount,
+      maxAttempts: this.maxAttempts,
       createdAt: new Date(batch.createdAt).toISOString(),
       ...(batch.finishedAt ? { finishedAt: new Date(batch.finishedAt).toISOString() } : {}),
       tasks: batch.tasks.map((task) => ({
@@ -788,6 +917,9 @@ export class TaskQueue {
         id: task.id,
         seq: task.seq,
         state: task.state,
+        // Sent only once it means something. A task on its first go says
+        // nothing, so a UI has no "attempt 1 of 3" noise to suppress.
+        ...(task.attempts && task.attempts > 1 ? { attempts: task.attempts } : {}),
         ...(task.runningOn ? { runningOn: task.runningOn } : {}),
         ...(task.error ? { error: task.error } : {}),
       })),

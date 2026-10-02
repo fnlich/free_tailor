@@ -64,6 +64,20 @@ export function cliConcurrency(env: NodeJS.ProcessEnv = process.env): number {
   return Math.min(32, Math.max(1, raw));
 }
 
+/**
+ * Mirrors `AI_CODEX_CONCURRENCY` in codexCli/options, bounds included.
+ *
+ * A SECOND reader, not a shared one, because the two seats are sized separately
+ * and conflating them is the bug this exists to prevent: Codex used to fall
+ * through to the metered-provider default below, which was right only by the
+ * coincidence that both defaults are 4.
+ */
+export function codexConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.AI_CODEX_CONCURRENCY || '', 10);
+  if (!Number.isInteger(raw)) return 4;
+  return Math.min(32, Math.max(1, raw));
+}
+
 function countBrowsers(endpoints: BrowserChatEndpoint[], site: BrowserChatSiteId): number {
   return endpoints.filter((entry) => entry.siteId === site).length;
 }
@@ -101,6 +115,14 @@ export async function resolveBatchCapacity(
     // pins the two to the same answer.
     const limit = cliConcurrency(env);
     return { limit, reason: `${limit} Claude CLI slot${limit === 1 ? '' : 's'}` };
+  }
+
+  if (choice.provider === 'codex-cli') {
+    // Its own variable, for the same reason. Falling through to the default
+    // below offered 4 into a semaphore that might hold 1 or 12 - an invisible
+    // queue in one direction and an idle seat in the other.
+    const limit = codexConcurrency(env);
+    return { limit, reason: `${limit} Codex CLI slot${limit === 1 ? '' : 's'}` };
   }
 
   if (choice.route === 'hybrid' || isBrowserChatSiteId(choice.provider)) {

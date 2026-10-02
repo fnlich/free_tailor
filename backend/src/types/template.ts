@@ -75,6 +75,7 @@ export interface JobAnalysis {
  */
 export type AIProvider =
   | 'claude-cli'
+  | 'codex-cli'
   | 'claude'
   | 'openai'
   | 'deepseek'
@@ -149,8 +150,6 @@ export interface GenerateResumeRequest {
   tailoredContent?: TailoredContent;
   /** An AI model record id; overrides the profile's own for this run. */
   model?: string;
-  /** Overrides the profile's effort for this run. */
-  effort?: string;
   companyName: string;
   role: string;
   sourceRowNumber?: number;

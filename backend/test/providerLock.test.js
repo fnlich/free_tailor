@@ -38,9 +38,17 @@ function withLock({ locked, unlocked } = {}) {
   else delete process.env.AI_UNLOCKED_PROVIDERS;
 }
 
-/** The case every test here is about: the seat locked out by the operator. */
+/**
+ * The case every test here is about: the CLI seats locked out by the operator.
+ *
+ * BOTH of them, because there are two now - the Claude subscription and the
+ * ChatGPT one - and the subject is a box with no CLI seat signed in at all.
+ * Locking one alone stopped testing that: the fallback simply landed on the
+ * other seat, which is correct behaviour and not what these assertions are
+ * about.
+ */
 function lockSeat() {
-  withLock({ locked: 'claude-cli' });
+  withLock({ locked: 'claude-cli,codex-cli' });
 }
 
 test.beforeEach(() => withLock());

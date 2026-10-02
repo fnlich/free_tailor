@@ -150,12 +150,18 @@ router.post('/checkout', async (req: Request, res: Response) => {
      * which is why a stale tab still sending `asset` is simply not read.
      */
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const started = await startCheckout(req.user!, {
-      method: body.method,
-      credits: body.credits,
-      cardId: body.cardId,
-      saveCard: body.saveCard,
-    });
+    const started = await startCheckout(
+      req.user!,
+      {
+        method: body.method,
+        credits: body.credits,
+        cardId: body.cardId,
+        saveCard: body.saveCard,
+      },
+      // Already vetted: the CORS middleware refuses a disallowed origin before
+      // any route runs, so this is a checked value rather than a raw header.
+      { requestOrigin: req.headers.origin }
+    );
     res.status(201).json({
       paymentId: started.payment.id,
       reference: started.payment.reference,

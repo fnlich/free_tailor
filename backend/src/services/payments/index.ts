@@ -23,6 +23,7 @@ import {
   type PaymentProvider,
 } from '../../database/paymentRepository';
 import type { UserAccount } from '../../types/account';
+import { normalizeOrigin, publicBaseUrl } from '../../config/publicUrl';
 import * as stripe from '../../integrations/stripe';
 import * as cryptomus from '../../integrations/cryptomus';
 import {
@@ -131,17 +132,49 @@ export class PaymentError extends Error {
 /**
  * Where the browser comes back to.
  *
- * `PAYMENTS_RETURN_URL` when set, otherwise the first configured frontend
- * origin. It has to be absolute and it has to be the FRONTEND: a provider
- * redirects a person's browser there, and sending them to the API would show
- * them JSON.
+ * It has to be absolute and it has to be the FRONTEND: a provider redirects a
+ * person's browser there, and sending them to the API would show them JSON.
+ *
+ * Most card payments never use it - the form confirms in place - but 3-D Secure
+ * and every crypto invoice hand the buyer to somebody else's site, and this is
+ * where they are sent afterwards. Getting it wrong does not lose the money (the
+ * webhook grants the credits either way) but it lands a person who has just
+ * paid on a dead page, which they cannot tell apart from having lost it.
+ *
+ * Most explicit first:
+ *
+ *   1. PAYMENTS_RETURN_URL - names this exact thing, so nothing outranks it.
+ *   2. APP_URL             - names the installation's public address.
+ *   3. FRONTEND_URL        - a list of allowed origins; the first is canonical.
+ *   4. The origin the buyer's browser is actually on.
+ *   5. localhost.
+ *
+ * Rung 4 is what rescues a domain install where none of the three variables was
+ * set, and it is safe BECAUSE OF WHERE IT COMES FROM: the CORS middleware in
+ * index.ts runs ahead of every route and answers 403 to an origin that is not
+ * allowed, so a handler only ever sees an `Origin` that already passed
+ * `isOriginAllowed`. It is not a client header being trusted; it is one that
+ * has been checked. Anything that moves this call out from behind that
+ * middleware has to re-establish that, or drop the rung.
+ *
+ * Rung 5 is then only reached by a request-less caller with nothing configured,
+ * which in practice means local development.
  */
-export function returnBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function returnBaseUrl(
+  env: NodeJS.ProcessEnv = process.env,
+  requestOrigin?: string
+): string {
   const explicit = env.PAYMENTS_RETURN_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, '');
 
+  const app = publicBaseUrl(env);
+  if (app) return app;
+
   const frontend = env.FRONTEND_URL?.split(',')[0]?.trim();
   if (frontend) return frontend.replace(/\/+$/, '');
+
+  const fromRequest = normalizeOrigin(requestOrigin);
+  if (fromRequest) return fromRequest;
 
   const port = env.FRONTEND_PORT?.trim() || '3000';
   return `http://localhost:${port}`;
@@ -227,11 +260,24 @@ const CHECKOUT_WINDOW_MS = 60 * 60 * 1000;
  * has a window in which money can be taken for a payment this server has never
  * heard of.
  */
+export type CheckoutContext = {
+  env?: NodeJS.ProcessEnv;
+  /**
+   * `Origin` from the request that asked for this checkout, when there was one.
+   *
+   * Kept OUT of `CheckoutRequest` on purpose: that object is assembled from
+   * `req.body`, and a value the server derived must not sit where a buyer could
+   * later be read into it by a careless spread.
+   */
+  requestOrigin?: string;
+};
+
 export async function startCheckout(
   account: UserAccount,
   request: CheckoutRequest,
-  env: NodeJS.ProcessEnv = process.env
+  context: CheckoutContext = {}
 ): Promise<StartedCheckout> {
+  const { env = process.env, requestOrigin } = context;
   const { method, credits: requestedCredits } = request;
   if (method !== 'card' && method !== 'crypto') {
     throw new PaymentError('Choose a payment method.');
@@ -321,7 +367,7 @@ export async function startCheckout(
     feeCents: quote.feeCents,
   });
 
-  const base = returnBaseUrl(env);
+  const base = returnBaseUrl(env, requestOrigin);
   /*
    * Where a customer lands if the payment took them off our page.
    *

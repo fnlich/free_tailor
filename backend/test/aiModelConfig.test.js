@@ -176,6 +176,7 @@ test('app settings preserve at least one enabled provider, and keys come from th
     () => config.updateAppSettings({
       providersEnabled: {
         'claude-cli': false,
+        'codex-cli': false,
         claude: false,
         openai: false,
         deepseek: false,

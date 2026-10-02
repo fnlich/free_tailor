@@ -37,6 +37,8 @@ import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
+import { applyProxyTrust } from './config/proxyTrust';
+import { normalizeOrigin, publicBaseUrl } from './config/publicUrl';
 import {
   describeBrowser,
   describeMissingBrowser,
@@ -45,13 +47,27 @@ import {
 } from './config/browser';
 
 const app = express();
+// Behind a reverse proxy this is what lets the session cookie be marked
+// Secure. See config/proxyTrust for why it is 1 and not true.
+applyProxyTrust(app);
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
+/**
+ * Origins allowed outright, whatever Host the request arrived on.
+ *
+ * `APP_URL` is in here as well as `FRONTEND_URL` so a single-origin deployment
+ * needs only the one variable - the hostname test below already covers the
+ * usual case, and this is what carries a proxy that rewrites `Host`.
+ *
+ * Normalized through `normalizeOrigin` because the values are compared against
+ * a browser's `Origin` header, which never carries a trailing slash or a path.
+ * A perfectly reasonable `FRONTEND_URL=https://example.org/` used to match
+ * nothing at all.
+ */
 const configuredFrontendOrigins = new Set(
-  (process.env.FRONTEND_URL || '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean)
+  [...(process.env.FRONTEND_URL || '').split(','), process.env.APP_URL || '']
+    .map((origin) => normalizeOrigin(origin))
+    .filter((origin): origin is string => origin !== null)
 );
 
 function getHostname(value: string | undefined): string | null {
@@ -278,6 +294,10 @@ getDb();
 const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);
   console.log(`Server listening on ${listServerUrls().join(', ')}`);
+  // The address people actually type, which is none of the above on a
+  // proxied install - the bind addresses are all loopback there.
+  const publicUrl = publicBaseUrl();
+  if (publicUrl) console.log(`Public address: ${publicUrl} (APP_URL)`);
   // Said here because this is the process that can see both values, and the
   // browser cannot tell a wrong port from a stopped server.
   const mismatch = findApiPortMismatch(process.env.NEXT_PUBLIC_API_URL, PORT);

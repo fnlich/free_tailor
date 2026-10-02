@@ -123,6 +123,17 @@ router.put(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: 
 router.get('/browser/debug', requireAdmin, async (_req: Request, res: Response) => {
   try {
     const settings = await getAdminAppSettings();
+
+    // Nothing to probe on an install that has withdrawn browser mode, and
+    // probing anyway contradicted the Settings page's own promise that no
+    // request can reach a browser here. An empty reading rather than an error:
+    // the panel that would show it is not rendered either, so there is nothing
+    // for a caller to report.
+    if (!settings.browserChatEnabled) {
+      res.json({ browsers: [], platforms: [], queues: getTabPoolStats() });
+      return;
+    }
+
     const browsers = await Promise.all(
       settings.browserChatEndpoints.map(async (entry) => ({
         siteId: entry.siteId,

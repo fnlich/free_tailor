@@ -1,0 +1,228 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const {
+  isProviderEnabled,
+  getPickableModels,
+} = require('../dist/config/aiModelConfig');
+
+/**
+ * The master switch for browser-tab mode.
+ *
+ * "Never shown" and "never reachable" have to be the same statement, or the
+ * flag is decoration: a model hidden from a picker but still accepted by the
+ * executor is reachable from a stale tab, and a chat window on a headless
+ * server cannot answer, so the call would hang rather than fail.
+ *
+ * That is why the switch lives in `isProviderEnabled` - documented as the one
+ * gate runnable models, the public model list, request resolution and the
+ * prompt executor all funnel through - rather than in each of them.
+ */
+
+const MODELS = [
+  { id: 'cli-sonnet', provider: 'claude-cli', modelName: 'sonnet', name: 'Claude Sonnet', enabled: true },
+  { id: 'web-claude', provider: 'claude-web', modelName: 'chat', name: 'Claude (free)', enabled: true },
+  { id: 'web-chatgpt', provider: 'chatgpt-web', modelName: 'chat', name: 'ChatGPT (free)', enabled: true },
+];
+
+function settings(overrides = {}) {
+  return {
+    aiModels: MODELS.map((model) => ({ ...model })),
+    providersEnabled: {
+      'claude-cli': true,
+      claude: true,
+      openai: true,
+      deepseek: true,
+      'claude-web': true,
+      'chatgpt-web': true,
+    },
+    browserChatEnabled: true,
+    ...overrides,
+  };
+}
+
+test('with browser mode on, the picker offers the browser entry', () => {
+  const pickable = getPickableModels(settings());
+  assert.ok(
+    pickable.some((model) => model.id === 'free-hybrid'),
+    'the hybrid "Default (browser)" row is how browser mode is picked at all'
+  );
+  assert.equal(isProviderEnabled('claude-web', settings()), true);
+});
+
+test('with browser mode off, no browser row survives into any picker', () => {
+  const off = settings({ browserChatEnabled: false });
+  const pickable = getPickableModels(off);
+
+  assert.equal(
+    pickable.some((model) => model.id === 'free-hybrid'),
+    false,
+    'the hybrid row is synthesized from runnable browser sites and must go with them'
+  );
+  // Both pages read this same list, so one assertion covers the admin picker
+  // and the user one.
+  for (const model of pickable) {
+    assert.notEqual(model.provider, 'claude-web');
+    assert.notEqual(model.provider, 'chatgpt-web');
+  }
+  // Something must remain, or the flag would strand the installation.
+  assert.ok(pickable.some((model) => model.provider === 'claude-cli'));
+});
+
+test('with browser mode off, the gate itself refuses - not merely the list', () => {
+  const off = settings({ browserChatEnabled: false });
+  assert.equal(isProviderEnabled('claude-web', off), false);
+  assert.equal(isProviderEnabled('chatgpt-web', off), false);
+  // The rest of the catalog is untouched: this withdraws browser mode, not
+  // everything.
+  assert.equal(isProviderEnabled('claude-cli', off), true);
+  assert.equal(isProviderEnabled('openai', off), true);
+});
+
+test('the per-site preferences underneath are kept, the way a lock keeps them', () => {
+  // Turning the switch back on must restore what the operator had chosen,
+  // rather than a row that quietly reset itself while it was off.
+  const off = settings({ browserChatEnabled: false });
+  assert.equal(off.providersEnabled['claude-web'], true, 'the stored preference is not rewritten');
+  const backOn = settings({ ...off, browserChatEnabled: true });
+  assert.equal(isProviderEnabled('claude-web', backOn), true);
+});
+
+test('an unset flag is read as on, so an older settings row keeps browser mode', () => {
+  const legacy = settings();
+  delete legacy.browserChatEnabled;
+  assert.equal(isProviderEnabled('claude-web', legacy), true);
+  assert.ok(getPickableModels(legacy).some((model) => model.id === 'free-hybrid'));
+});
+
+/**
+ * The admin save path, not just the gate.
+ *
+ * The gate tests above hand settings objects straight to the functions. This
+ * one goes through the real store, so it covers the two things those cannot:
+ * that the flags survive a write and a read, and that the strict validator the
+ * admin route uses accepts them rather than throwing on a key it has never
+ * seen.
+ */
+const { loadFresh, useTempStorage } = require('./helpers');
+
+test('the flag round-trips through a real settings save', async () => {
+  useTempStorage(`model-flags-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  const before = await config.getPublicAppSettings();
+  assert.equal(before.browserChatEnabled, true, 'a fresh install offers it');
+
+  const saved = await config.updateAppSettings({ browserChatEnabled: false });
+  assert.equal(saved.browserChatEnabled, false);
+
+  // Read back through the public shape the pages actually fetch.
+  const after = await config.getPublicAppSettings();
+  assert.equal(after.browserChatEnabled, false);
+  assert.equal(
+    after.aiModels.some((model) => model.id === 'free-hybrid'),
+    false,
+    'the browser row is gone from the list both pages render'
+  );
+
+  // Back on, and the installation is exactly as it was.
+  const restored = await config.updateAppSettings({ browserChatEnabled: true });
+  assert.equal(restored.browserChatEnabled, true);
+  // Read the PUBLIC shape for the hybrid row, not the admin one: admin settings
+  // carry the raw model list so Admin -> Models can manage every record,
+  // including the browser ones, and the synthesized row is not in it by design.
+  const backOn = await config.getPublicAppSettings();
+  assert.ok(backOn.aiModels.some((model) => model.id === 'free-hybrid'));
+});
+
+test('a malformed flag cannot flip the switch', async () => {
+  useTempStorage(`model-flags-junk-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  /*
+   * What matters here is the direction of the failure, not that it throws.
+   *
+   * `updateAppSettings` is deliberately lenient about a value it cannot read -
+   * the same convention `requireThreeDSecure` already follows in this file -
+   * so nonsense from a client falls back to what is stored rather than
+   * rejecting the whole save. The property worth pinning is that it falls back
+   * to the STORED value: a buggy or stale client must not be able to withdraw
+   * browser mode by sending a string.
+   *
+   * A stored row that is corrupt is the other case and is NOT lenient -
+   * `readSettings` normalizes strictly and throws, because a database that
+   * disagrees with its own schema is not something to paper over.
+   */
+  await config.updateAppSettings({ browserChatEnabled: 'no' });
+  const after = await config.getPublicAppSettings();
+  assert.equal(after.browserChatEnabled, true, 'a string did not switch browser mode off');
+});
+
+/**
+ * What happens to work that was pinned to browser mode before it was withdrawn.
+ *
+ * This is the half the flag can most easily get wrong. Hiding the option is
+ * easy; not breaking the profiles that already chose it is the part that needs
+ * saying out loud, because those owners did not flip the switch and cannot see
+ * it from a failed generate.
+ */
+
+test('a profile pinned to a browser model runs on the default instead of failing', async () => {
+  useTempStorage(`browser-pin-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const preferences = loadFresh('../dist/config/aiPreferences');
+
+  await config.updateAppSettings({ browserChatEnabled: false });
+
+  const choice = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'claude-web-chat' } },
+  });
+  assert.notEqual(choice.provider, 'claude-web');
+  assert.notEqual(choice.provider, 'chatgpt-web');
+
+  // The synthesized entry needs its own line: `free-hybrid` is not a row in
+  // aiModels, so the lookup that catches the one above cannot catch it.
+  const hybridPinned = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'free-hybrid' } },
+  });
+  assert.notEqual(hybridPinned.provider, 'claude-web');
+  assert.notEqual(hybridPinned.provider, 'chatgpt-web');
+  assert.ok(hybridPinned.modelId, 'it resolved to something real');
+});
+
+test('nothing reads as hybrid once browser mode is off', async () => {
+  useTempStorage(`browser-hybrid-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  assert.equal(await config.isHybridSelection('free-hybrid'), true);
+  await config.updateAppSettings({ browserChatEnabled: false });
+  // Asserted directly rather than left to depend on the resolver throwing
+  // first, which is what made it true before.
+  assert.equal(await config.isHybridSelection('free-hybrid'), false);
+});
+
+test('a withdrawn browser provider is not probed for health', async () => {
+  useTempStorage(`browser-health-${Math.random().toString(36).slice(2)}`);
+  const config = loadFresh('../dist/config/aiModelConfig');
+  await config.updateAppSettings({ browserChatEnabled: false });
+
+  const ai = loadFresh('../dist/services/ai/registry');
+  let probed = 0;
+  ai.registerAdapter('claude-web', () => ({
+    id: 'claude-web',
+    capabilities: { id: 'claude-web', label: 'x' },
+    defaultModelName: () => 'chat',
+    health: async () => {
+      probed += 1;
+      return { ok: true, detail: 'probed', checkedAt: new Date().toISOString() };
+    },
+    complete: async () => {
+      throw new Error('not used');
+    },
+  }));
+
+  const report = await ai.checkProviderHealth('claude-web');
+  assert.equal(probed, 0, 'the adapter must not be touched at all');
+  assert.equal(report.ok, false);
+  assert.match(report.detail, /switched off/i);
+});

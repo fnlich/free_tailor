@@ -1,10 +1,8 @@
 import { getProviderApiKey } from '../../../config/aiModelConfig';
 import {
   getProviderDescriptor,
-  providerSupportsEffort,
 } from '../../../config/providerCatalog';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../errors';
-import { collectUnsupportedReasoningParams } from '../reasoningParams';
 import type {
   AIProviderAdapter,
   CompletionRequest,
@@ -76,9 +74,6 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
     label: descriptor.label,
     temperature: true,
     maxOutputTokens: true,
-    // Neither is wired for this transport yet, so a caller asking for one is
-    // told it was dropped rather than left to assume it applied.
-    effort: providerSupportsEffort(PROVIDER_ID),
     nativeJsonMode: 'none',
     systemBlocks: true,
     requiresApiKey: true,
@@ -210,7 +205,8 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
               cacheReadTokens: data.usage?.cache_read_input_tokens ?? 0,
               cacheWriteTokens: data.usage?.cache_creation_input_tokens ?? 0,
             },
-            droppedParams: collectUnsupportedReasoningParams(request, capabilities),
+            // Nothing to report: this transport honours every hint it is given.
+            droppedParams: [],
             latencyMs: Date.now() - startedAt,
           };
         } catch (error) {

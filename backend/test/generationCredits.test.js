@@ -17,8 +17,17 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 let harnessSeq = 0;
 
-async function harness(name) {
+async function harness(name, { attempts = 1 } = {}) {
   useTempStorage(`generation-credits-${name}`);
+  /*
+   * ONE attempt unless a test says otherwise.
+   *
+   * These tests drive failures by hand to check the credit arithmetic, so a
+   * queue that silently retried would change what "h.fail('b')" means halfway
+   * through each of them. The retry behaviour has its own test below, at the
+   * real default, where the arithmetic under retry is the point.
+   */
+  process.env.GENERATION_MAX_ATTEMPTS = String(attempts);
   useAdminEmails('admin@example.com');
 
   // Real registered browsers, the way the app gets its capacity. There is no
@@ -223,4 +232,83 @@ test('a repeated hook cannot refund the same resume twice', async () => {
   // a second time. The idempotency key makes it free.
   h.credits.refundTaskUnit(batchId, batch.tasks[0].id, 'replayed');
   assert.equal(h.balance(h.alice.id), afterFirst);
+});
+
+/**
+ * The retry, and the one thing it must not do: charge twice.
+ *
+ * A credit is reserved per resume up front and refunded per resume that did not
+ * deliver. That makes the retry's placement the whole of its correctness - it
+ * happens BEFORE a task reaches a terminal state, so the refund hook never
+ * fires for an attempt that is going to be tried again. These assert that from
+ * the balance rather than from the code's shape.
+ */
+
+test('a resume that fails and then succeeds costs exactly one credit', async () => {
+  const h = await harness('retry-succeeds', { attempts: 3 });
+  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+
+  const batchId = require('../dist/services/queue/taskQueue').newBatchId();
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 1, { kind: 'batch', id: batchId });
+  h.queue.submit([h.task('a')], { id: batchId });
+  await h.queue.refreshCapacity();
+
+  await until(() => h.started() > 0, 'the first attempt');
+  h.fail('a', 'the browser was signed out');
+  await until(() => h.started() > 0, 'the second attempt');
+  h.fail('a', 'signed out again');
+  await until(() => h.started() > 0, 'the third attempt');
+  h.finish('a');
+  await settle();
+
+  const snapshot = h.queue.snapshot(batchId);
+  assert.equal(snapshot.completed, 1, 'it delivered in the end');
+  assert.equal(snapshot.failed, 0);
+  assert.equal(snapshot.tasks[0].attempts, 3, 'and the snapshot says how many goes it took');
+
+  // 10 - 1, and nothing given back: the resume was delivered.
+  assert.equal(h.balance(h.alice.id), 9);
+  const refunds = h.credits.getLedger(h.alice.id).filter((e) => e.reason === 'generation-refund');
+  assert.equal(refunds.length, 0, 'a retried attempt is not a failed unit');
+});
+
+test('a resume that fails every attempt is refunded once, not once per attempt', async () => {
+  const h = await harness('retry-exhausted', { attempts: 3 });
+  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+
+  const batchId = require('../dist/services/queue/taskQueue').newBatchId();
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 1, { kind: 'batch', id: batchId });
+  h.queue.submit([h.task('a')], { id: batchId });
+  await h.queue.refreshCapacity();
+
+  for (const go of [1, 2, 3]) {
+    await until(() => h.started() > 0, `attempt ${go}`);
+    h.fail('a', `attempt ${go} failed`);
+  }
+  await settle();
+
+  const snapshot = h.queue.snapshot(batchId);
+  assert.equal(snapshot.failed, 1, 'three goes, one failed resume');
+
+  // Back to where it started: charged once, refunded once.
+  assert.equal(h.balance(h.alice.id), 10);
+  const refunds = h.credits.getLedger(h.alice.id).filter((e) => e.reason === 'generation-refund');
+  assert.equal(refunds.length, 1, 'three attempts must not mean three refunds');
+});
+
+test('retrying can be switched off, and then one failure is final', async () => {
+  const h = await harness('retry-disabled', { attempts: 1 });
+  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+
+  const batchId = require('../dist/services/queue/taskQueue').newBatchId();
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 1, { kind: 'batch', id: batchId });
+  h.queue.submit([h.task('a')], { id: batchId });
+  await h.queue.refreshCapacity();
+
+  await until(() => h.started() > 0, 'the only attempt');
+  h.fail('a', 'no second chance');
+  await settle();
+
+  assert.equal(h.queue.snapshot(batchId).failed, 1);
+  assert.equal(h.balance(h.alice.id), 10);
 });

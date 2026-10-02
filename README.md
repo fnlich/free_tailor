@@ -17,7 +17,7 @@
 
 Tailor is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
 
-By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **Claude subscription seat** through the local `claude` CLI is also offered, and needs only that the `claude` binary is installed and signed in on the machine running the server. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
+By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **subscription seat** through a local CLI is also offered, for either vendor: the `claude` binary on a Claude Pro/Max plan, or the `codex` binary on a ChatGPT Plus/Pro plan. Each needs only that its binary is installed and signed in on the machine running the server, and both work on a headless box. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
 
 ### ✨ Features
 
@@ -73,6 +73,7 @@ is a compile error rather than a silent fall-through.
 | `claude-web` (default) | A claude.ai tab you signed in to yourself | Free. Slow, and one conversation per browser. |
 | `chatgpt-web` | A chatgpt.com tab you signed in to yourself | Free, same terms. |
 | `claude-cli` | The `claude` CLI's own sign-in — no key | Offered. Needs `claude` installed and signed in on the server's machine. Free at the margin, one subprocess per call. |
+| `codex-cli` | The `codex` CLI's own sign-in — no key | Offered. Runs on a ChatGPT Plus/Pro subscription through the local `codex` binary. Headless-friendly: `codex login --device-auth` prints a code you approve from any other browser, so the server needs no display. Its seeded model is `default`, meaning "whatever that account is configured with" — Codex resolves its catalog from the account, so add a specific model under **Admin → Models** if you want to pin one. |
 | `claude` | `ANTHROPIC_API_KEY` | Metered. The only provider that can still honour `temperature`. |
 | `openai` | `OPENAI_API_KEY` | Metered. |
 | `deepseek` | `DEEPSEEK_API_KEY` | Metered. |
@@ -708,14 +709,28 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 - A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
   Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
   backend prints the resolved path at startup.
-- **Claude Code**, only if you want to run on a subscription seat. Install it
-  and sign it in; the free browser-chat route needs none of this.
+- **Claude Code**, only if you want to run on a Claude subscription seat. Install
+  it and sign it in; the free browser-chat route needs none of this.
 
   ```bash
   npm i -g @anthropic-ai/claude-code
   claude auth login
   claude auth status     # must print "loggedIn": true and "authMethod": "oauth_token"
   ```
+
+- **Codex**, only if you want to run on a ChatGPT subscription seat. Same
+  arrangement, different vendor - and `--device-auth` is why this one is
+  comfortable on a server: it prints a code you approve from a browser on any
+  other machine, so the box itself needs no display.
+
+  ```bash
+  npm i -g @openai/codex
+  codex login --device-auth
+  codex login status     # prints the account, or "Not logged in"
+  ```
+
+  Run it as the **same user the server runs as** - the sign-in lives in that
+  user's `CODEX_HOME`, and a login as yourself is not one the service can see.
 
   On Windows npm installs this as `claude.cmd`, which Node cannot spawn
   directly. The backend reads the shim and runs what it wraps - the package's
@@ -794,7 +809,7 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   about three seconds, four requests took 25.5s on one browser and 12.9s on two.
 
   There are **two queues** - one shared by every browser whichever site it
-  shows, and one for the Claude CLI seat, so a slow seat never stalls the
+  shows, one for the Claude CLI seat and one for the Codex seat, so a slow seat never stalls the
   browsers - and **neither has a length limit**. Whenever a browser frees, the
   task that has waited longest takes it. A request only ever gives up on its own timeout, never for being
   late in the line. If a configured browser turns out not to be running, the
@@ -879,7 +894,7 @@ and is resolved from the directory the backend was started in.
 Nothing else is required for AI generation: the default provider drives a
 claude.ai tab in the debug Chrome described above, which costs nothing and
 needs no key. The `AI_CLI_*` variables in `.env.example` tune the model,
-effort, concurrency and timeouts of the subscription-seat provider, which
+concurrency and timeouts of the subscription-seat provider, which
 needs the `claude` CLI installed and signed in on this machine.
 
 The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the page was loaded from, and the backend accepts requests from any origin on the same host as the API. That means you can open the app through `localhost`, a LAN IP, or a hostname without changing configuration.
@@ -926,6 +941,274 @@ npm run migrate:legacy -- /path/to/old/backend/data
 Existing database records are never overwritten.
 
 ---
+
+## 🌐 Serving it on your own domain
+
+Everything above runs the app on a LAN address over plain http. Putting it on a
+public domain means one reverse proxy in front of the two processes, which keeps
+them on loopback and gives both halves the same origin — so the session cookie,
+the CORS rule and the payment webhooks all line up without special cases.
+
+```
+                        yourdomain.com
+                              │
+                         ┌────┴────┐
+                         │  Caddy  │  :443, certificate renewed for you
+                         └────┬────┘
+                  /api/*  ────┤────  everything else
+                              │
+              ┌───────────────┴───────────────┐
+        Express :3001                   Next.js :3000
+```
+
+**Point the domain at the box first.** Caddy cannot get a certificate for a name
+that does not resolve to it, so this is the step everything else waits on:
+
+| Type | Host | Value |
+|---|---|---|
+| A | `@` | the server's public IPv4 |
+| A | `www` | the same address, if you want `www` to work |
+| AAAA | `@` | the server's IPv6, if it has one |
+
+At a registrar that parks new domains — Namecheap plants a `www` CNAME and a URL
+redirect — **delete those two first**; left in place they win over what you add.
+Then `dig +short yourdomain.com` from somewhere else before going on. Open only
+80 and 443 in the firewall: 3000 and 3001 stay on loopback.
+
+**Behind Cloudflare, leave the proxy OFF.** This is the opposite of Cloudflare's
+default and it is not a preference — the orange cloud is incompatible with how
+generation works here.
+
+Cloudflare's proxy read timeout is about **100 seconds on Free, Pro and Business,
+and cannot be raised** (only Enterprise can). But `/api/resume/analyze`,
+`/generate` and `/preview` run **inline** and wait: `/generate` awaits the job
+analysis, then the tailoring, then the PDF and DOCX rendering, against budgets of
+`AI_CLI_TIMEOUT_MS=180000` and `AI_CLI_TIMEOUT_MS_TAILOR=300000` — three to five
+minutes per call, deliberately, because a subscription seat is not fast. Each of
+those requests is a guaranteed **error 524** behind the proxy, on a server that is
+working perfectly.
+
+So set the `A` records to **DNS only** (grey cloud). Two consequences: the origin
+IP is public, so the firewall above is doing real work; and Cloudflare's
+**SSL/TLS mode is irrelevant** — traffic never reaches their edge, and Caddy's
+Let's Encrypt certificate is the real one.
+
+Wanting the CDN later means splitting the origin: the app on a proxied
+`yourdomain.com`, the API on a **grey-clouded** `api.yourdomain.com`, with
+`NEXT_PUBLIC_API_URL=https://api.yourdomain.com/api` and
+`FRONTEND_URL=https://yourdomain.com`. The session survives it — the cookie is
+`sameSite: 'lax'` and a subdomain shares the registrable domain, so it is still
+same-site — but CORS becomes real. If you do proxy, use **Full (strict)**, never
+*Flexible* (plaintext to your origin, and a redirect loop against Caddy), and know
+that **Bot Fight Mode blocks webhook POSTs** from Stripe and Cryptomus.
+
+Last Cloudflare-specific trap, on the mail side: **do not enable Email Routing.**
+It rewrites your MX records to Cloudflare's and silently takes delivery away from
+whatever provider you set up below.
+
+**The `.env` differences.** Bind both halves to loopback — the proxy is the only
+thing that should be reachable — and name the public address once:
+
+```bash
+APP_URL=https://yourdomain.com           # the only domain value you need
+
+HOST=127.0.0.1
+PORT=3001
+FRONTEND_HOST=127.0.0.1
+FRONTEND_PORT=3000
+
+DB_DIR=/opt/free_tailor/data/db          # absolute: a relative path follows the cwd
+ADMIN_EMAILS=you@yourdomain.com
+```
+
+`APP_URL` is what the frontend's API base, the payment return address and the
+allowed CORS origin are all derived from. The backend prints it at startup, so
+the log says what it resolved to.
+
+Two consequences worth knowing:
+
+- **It is compiled into the frontend bundle.** Set it *before*
+  `npm run build --prefix frontend`; changing it later needs another build, not
+  a restart. Setting only `APP_URL` and restarting is the commonest way to see
+  every action report an unreachable backend.
+- **`NEXT_PUBLIC_API_URL`, `PAYMENTS_RETURN_URL` and `FRONTEND_URL` are now only
+  for split deployments** — the frontend and API on different machines. Each
+  still overrides what `APP_URL` derives, so an existing install that sets them
+  keeps working exactly as it did.
+
+`FRONTEND_URL` in particular is *not* needed here: the backend allows any origin
+whose hostname matches the `Host` the request arrived on, plus `APP_URL`, and
+Caddy passes `Host` through. Set it only if your proxy rewrites `Host`.
+
+**The Caddyfile** — this is the whole of it:
+
+```
+yourdomain.com {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+# Only if you added the `www` A record above.
+www.yourdomain.com {
+	redir https://yourdomain.com{uri} permanent
+}
+```
+
+**Both processes under systemd.** `/etc/systemd/system/tailor-api.service`:
+
+```ini
+[Unit]
+Description=Tailor API
+After=network.target
+
+[Service]
+User=tailor
+WorkingDirectory=/opt/free_tailor/backend
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`tailor-web.service` is the same file with `WorkingDirectory` pointing at
+`frontend`. Build both first (`npm run build --prefix backend`, then the
+frontend), then `systemctl enable --now tailor-api tailor-web`.
+
+**Chrome's shared libraries are not on a fresh server**, and puppeteer's
+download does not bring them. Without these, PDF generation fails with a bare
+"browser exited":
+
+```bash
+sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2   libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1   libpango-1.0-0 libcairo2 libasound2t64
+```
+
+**Three consoles hold the old address** and need the new one:
+
+| Where | What to set |
+|-------|-------------|
+| Google Cloud → Credentials → your Web application client | Add `https://yourdomain.com` to **Authorized JavaScript origins**. There is no redirect URI to add — sign-in verifies an ID token rather than redirecting. |
+| Stripe → Webhooks | Endpoint `https://yourdomain.com/api/payments/webhook/stripe`, subscribed to all seven events listed in `.env.example`. Copy the new signing secret into `STRIPE_WEBHOOK_SECRET`. |
+| Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL` | `https://yourdomain.com/api/payments/webhook/cryptomus` — the **API**, not the frontend. |
+
+**The default AI provider will not work on a headless server.** `claude-web`
+drives a Chrome tab you signed in to by hand, and there is no display to sign in
+on. Both **subscription seats** do work here, and either is the natural choice:
+
+```bash
+npm i -g @anthropic-ai/claude-code @openai/codex
+
+sudo -u tailor -H claude auth login          # over SSH
+sudo -u tailor -H codex login --device-auth  # prints a code you approve in ANY browser
+```
+
+Three things go wrong in this order:
+
+- **Sign in as the user the service runs as.** The sign-in lives in that user's
+  home (`CODEX_HOME` for Codex), so `claude auth login` as root is invisible to a
+  unit running as `tailor` - hence `sudo -u tailor -H`.
+- **systemd gets a minimal `PATH`.** A turn that fails with `spawn codex ...
+  ENOENT`, or with "the Claude CLI is not installed", wants `AI_CLI_BIN` and
+  `AI_CODEX_BIN` set to the full paths from `which claude` / `which codex`.
+- **Each seat has its own queue lane**, sized by `AI_CLI_CONCURRENCY` and
+  `AI_CODEX_CONCURRENCY`. They are counted separately; the defaults of 4 are a
+  fine place to start.
+
+Then **switch browser mode off** under **Admin → Settings**, so nobody can pick a
+provider this machine cannot run: both browser providers leave every model
+picker, their health stops being probed, and a stored preference pinned to one
+falls back to the default instead of failing. `AI_LOCKED_PROVIDERS=claude-web,chatgpt-web`
+in `.env` does the same job from the config side if you would rather it not be
+togglable at all.
+
+**Mail from your own domain** is DNS first, then four values. Outgoing mail here
+is only the sign-in codes, so there is nothing else to move.
+
+Take the **MX and DKIM records from your mail provider's own setup wizard** — it
+shows the records for your account and is the authority; anything written down
+here is only for sanity-checking what it gives you. With Google Workspace that
+is one MX record (`smtp.google.com`, priority 1; the older five `ASPMX…` records
+still work, but use one form or the other and never both), SPF as a TXT record on
+`@` (`v=spf1 include:_spf.google.com ~all`), and DKIM generated under Admin →
+Apps → Google Workspace → Gmail → *Authenticate email*. Generating the DKIM key
+without then pressing **Start authentication** is the usual half-finished state.
+A DMARC TXT record on `_dmarc` is worth adding, starting at `p=none`: it reports
+without rejecting, and going straight to `p=reject` with DKIM misconfigured bins
+your own mail silently.
+
+Then the app's four values. With Google Workspace, `SMTP_PASS` must be an **App
+Password** — Google rejects the account password over SMTP, and App Passwords
+only exist once 2-Step Verification is on:
+
+```bash
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=you@yourdomain.com
+SMTP_PASS=the-16-character-app-password
+SMTP_FROM=you@yourdomain.com
+```
+
+**Sending through a relay instead** — Resend, SendGrid, Brevo and the like — is the
+free alternative to a paid mailbox, and it makes two variables that look optional
+**mandatory**. Both of these produce an install that reads as configured and is
+not:
+
+- **`SMTP_FROM`.** It falls back to `SMTP_USER`, and a relay's username is not an
+  address: Resend's is the literal word `resend`, SendGrid's is `apikey`. Without
+  `SMTP_FROM` the server tries to send *from* `resend`.
+- **`ADMIN_EMAILS`.** It falls back to `SMTP_USER` too, but only when that looks
+  like an address - deliberately, so `apikey` is not promoted to administrator.
+  With a relay it therefore names nobody, and an installation with no
+  administrator cannot appoint one from the UI.
+
+A relay needs its own DNS records to send as your domain, and a domain may hold
+only **one** SPF record. If you are also forwarding inbound mail with something
+that writes an SPF record of its own (Cloudflare Email Routing does), merge the
+two into a single record rather than adding a second - two SPF records on one name
+is invalid and breaks both. Most relays sidestep this by putting their records on
+a `send.` subdomain, since an apex SPF policy does not apply to subdomains.
+
+**Check the mail setup on its own, before anything else is involved:**
+
+```bash
+cd backend
+npm run mail:doctor                          # config, the two relay traps, connect + auth
+npm run mail:doctor -- --to you@example.com   # also sends one real message
+```
+
+It walks the same chain the sign-in flow walks and stops at the first break, naming
+what to change — and it needs no server, no frontend and no domain pointed anywhere.
+The step that matters most is the distinction between *connecting* and *sending*: a
+relay authenticates fine and then refuses to send from a domain it has not verified,
+which is the usual state mid-setup and the one the app's own error cannot express.
+
+Then check the three things that can only be checked from outside:
+
+```bash
+curl https://yourdomain.com/api/health
+cd backend && npm run sheets:doctor
+```
+
+and request a sign-in code in a browser, confirming it arrives from the new
+address. A failure to send names itself in `journalctl -u tailor-api`; the code
+itself is deliberately never in that log.
+
+Two more worth doing once, because each fails quietly rather than loudly:
+
+- **Open the page and watch the network tab.** API calls must go to
+  `https://yourdomain.com/api/...`. If they go to `http://...:3001` the frontend
+  was built before `APP_URL` was set - rebuild it, as above.
+- **Send a mail from the new inbox to a Gmail address and open *Show original*.**
+  SPF, DKIM and DMARC must all read **PASS**. Anything else means a DNS record is
+  missing or DKIM was generated but never started.
 
 ## 📁 Project Structure
 
@@ -1015,9 +1298,10 @@ unique across the install, which settles all of it in one segment.
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
+| **Browser mode (the master switch)** | One toggle under **Admin → Settings** withdraws both browser providers from this installation outright. With it off they vanish from every model picker, admin and user alike, their health is not probed, the Browser Chat panel is hidden, and a stored preference pinned to one of them falls back to the default rather than failing. It is the right switch for a headless server, where a Chrome tab is not a thing that can exist - "not shown" and "not reachable" become one statement rather than two that can disagree |
 | **Browser Chat (free)** | Register a debug port per browser here; registering saves immediately, because this list is what the providers and the launcher both read. It shows each platform as **Active** or **Not active** (active = the provider found a signed-in chat tab, which a port probe alone cannot tell from a signed-out one) and the ports registered, reachable, and showing the site. It does **not** start browsers - `npm run browser:debug` does. Unregistering forgets a browser here; it does not close a window |
 | **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
-| **AI defaults per profile** | Each profile picks its own model and effort (`low`..`max`); the builder shows those defaults and can override either for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag: how much reasoning the model spends before answering |
+| **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden |
 | **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it |
@@ -1043,10 +1327,17 @@ unique across the install, which settles all of it in one segment.
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
-| `AI_CLI_MODEL` / `AI_CLI_EFFORT` | Default model alias (`sonnet`) and reasoning effort (`low`) |
+| `AI_CLI_MODEL` | Default model alias (`sonnet`) |
 | `AI_CLI_CONCURRENCY` | Simultaneous `claude` processes, process-wide (default `4`) |
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
+| `AI_CLI_EFFORT` | Reasoning effort passed to the `claude` CLI, installation-wide (default `low`). There is no per-run control by design: this is an operational default, not a per-request choice. An unrecognised value warns at startup and falls back |
+| `AI_CODEX_BIN` | Path to the `codex` binary when it is not on PATH |
+| `AI_CODEX_MODEL` | Default model (`default` means "pass no `-m`" and let the account decide) |
+| `AI_CODEX_CONCURRENCY` | Simultaneous `codex` processes, and the size of the Codex queue lane (default `4`). Counted separately from `AI_CLI_CONCURRENCY` |
+| `AI_CODEX_TIMEOUT_MS` / `AI_CODEX_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
+| `AI_CODEX_ALLOW_API_KEY` | Off by default, and the most important default here: an `OPENAI_API_KEY` in the environment **outranks the subscription** in the CLI's own resolution order, so it is stripped from the child process. Left in place it produces identical answers and bills every one of them |
+| `GENERATION_MAX_ATTEMPTS` | How many times one resume may be built before it is given up on (default `3`, counting the first go; `1` switches retrying off). A retry costs no extra credit. Read at startup only |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
@@ -1060,7 +1351,7 @@ unique across the install, which settles all of it in one segment.
 | `ADMIN_EMAILS` | Who administers this installation. Wins over `SMTP_USER`; a comma-separated list may name several |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
 
-See `.env.example` for the full `AI_CLI_*` list.
+See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 
 ---
 
@@ -1082,7 +1373,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 | A payment closed with *This server could not start that payment* | Not the provider - this end. The settings row would not load, or the database refused a write, before anything was sent anywhere. Nothing was charged. Read the backend log for the reference: the real error is there, and it is usually `DB_DIR` becoming unwritable or a settings row saved as something that will not parse. |
 | Buying with a card works, but paying with a SAVED card takes the money and never credits it | The webhook endpoint is not subscribed to `payment_intent.succeeded`. A saved card is charged off-session, which emits `payment_intent.*` and never `checkout.session.completed` - so the card path works and the saved-card path silently does not. Add `payment_intent.succeeded`, `payment_intent.payment_failed` and `payment_intent.canceled` to the endpoint's events. `stripe listen` forwards everything, so this only bites an endpoint created by hand. |
 | The buy page says no payment method is set up, but the keys are in `.env` | A method is offered only when **every** one of its keys is set - for Stripe that is all three, including the webhook secret. The buy page lists which key each method is missing. Keys are read at startup, so a `.env` edited while the server was running has not been seen yet: restart the backend. |
-| The page cannot reach the API but the backend is clearly running | Look for `[cors] Refused origin ...` in the backend output. A browser reports a refused origin as an unreachable server, so the page cannot tell the two apart - the backend log is the only place the reason appears. It names the origin and the `FRONTEND_URL` value that allows it. |
+| The page cannot reach the API but the backend is clearly running | Look for `[cors] Refused origin ...` in the backend output. A browser reports a refused origin as an unreachable server, so the page cannot tell the two apart - the backend log is the only place the reason appears. It names the origin and the `FRONTEND_URL` value that allows it. Behind a reverse proxy this should not happen at all — the rule allows any origin whose hostname matches the `Host` the request arrived on — so seeing it there means the proxy is rewriting `Host`, and `FRONTEND_URL=https://yourdomain.com` is the fix. |
+| On a domain, the site loads over https but every action cannot reach the backend | The public address is missing or stale **in the built bundle**. It is compiled in, not read at runtime, so a restart changes nothing — only `npm run build --prefix frontend` does. With neither `APP_URL` nor `NEXT_PUBLIC_API_URL` set, the frontend keeps the default port and scheme and swaps only the hostname, asking an https page for `http://yourdomain.com:3001/api`: the wrong port, and blocked as mixed content besides. Set `APP_URL=https://yourdomain.com`, rebuild the frontend, then restart it. The frontend build also warns outright when `NEXT_PUBLIC_API_URL` is `http:` under an `https:` `APP_URL`. The browser console shows the mixed-content refusal; the network tab shows the port. |
 | `Cannot reach the backend at ...` naming a port you did not expect | `NEXT_PUBLIC_API_URL` and `PORT` disagree. They must name the same port when both point at this machine. Delete `NEXT_PUBLIC_API_URL` from `.env` to derive it from `PORT`, or set the two to match. The backend and the frontend build both print an `[env]` line when they disagree. |
 | `Cannot reach the backend at http://localhost:3001/api ...` in the UI | The frontend is running but nothing answered on the API port. The backend prints its own reason where it was started - the `backend` half of `npm run dev`, or its own terminal. Most often it exited at boot over the database directory or a native-module mismatch, both rows below. The two halves are independent: a crashed backend no longer takes the frontend down with it, so the page stays up to tell you. |
 | `[browser] TypeError: executablePath.lastIndexOf is not a function` during `npm install` | The same puppeteer 24-vs-25 difference as the row below, hit by the postinstall script rather than the compiler: it reads the expected Chrome path out of `executablePath()`, which is a promise in 25. Handled now. It only ever skipped the Chrome download, so `npm run setup:browser` finishes the job on an install that hit it. |
@@ -1098,16 +1390,15 @@ See `.env.example` for the full `AI_CLI_*` list.
 | Not sure whether the selectors still match the live site | `npm run browser:doctor` attaches to your signed-in tab and reports, per role, which candidate matched and how many nodes it found; `--send` drives one real round trip and says which step failed. It reads the page and sends nothing unless you pass `--send`. Every BROKEN line names the `AI_WEB_*` override that fixes it. |
 | A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
 | How a batch is spread over the browsers | Ten resumes and five browsers means five run at once and five queue; the moment any browser finishes it takes the next queued resume, on that same browser, rather than waiting for the rest of its wave. If one of the five is out of messages it is passed over and the other four carry the batch - all ten are still generated. Add browsers under Admin → Settings → Browser Chat to widen it. |
-| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Browsers take tasks off the head of the queue as they come free, so with three browsers three resumes are built at once and the moment one finishes the next task starts on that browser. A second request appends behind the first. There are two queues, because there are two resources: one shared by every debug browser, one for the Claude CLI seat, so a stalled seat cannot hold up the browsers. |
+| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Browsers take tasks off the head of the queue as they come free, so with three browsers three resumes are built at once and the moment one finishes the next task starts on that browser. A second request appends behind the first. There is a lane per real resource: one shared by every debug browser, one for the Claude CLI seat (and the metered API providers, which have no local resource of their own), and one for the Codex seat - so a stalled seat cannot hold up the browsers, and neither seat can hold up the other. |
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of browser time. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was in a browser at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones in a browser are aborted. |
 | A profile's platform choice inside a batch | Still honoured. A profile that had picked `claude-web` before the pickers were folded into one entry still waits for a Claude browser even if a ChatGPT one is idle; a profile on `Default (browser)` goes to whichever frees up first. A pinned task at the head does not block a browser it cannot use - the browser reaches past it for the next task it can run. A task no registered browser can serve fails with that reason rather than waiting for ever. |
-| A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: the browsers registered for that site, both sites' added together under Hybrid, or `AI_CLI_CONCURRENCY` slots for the subscription seat. The queues were already there - a free browser is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
+| A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: the browsers registered for that site, both sites' added together under Hybrid, or each subscription seat's own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`). The queues were already there - a free browser is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. |
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
 | One browser is out of messages and the whole request fails | Fixed. A browser that is reachable but cannot take the prompt - out of messages, signed out, wedged, or a previous turn that never let go - is passed over for the next browser of that site, and left out for a few minutes so later calls skip it too. That is the reason to run more than one: each window is a separate session, so an account's wall is not the site's. The retry only happens when the prompt never reached the site; once it has landed, another browser would be asking the same question twice. When every browser refuses, the error is still that browser's own (a usage wall is a 429, a signed-out tab a 503) with each browser and its reason named in the log. |
 | A free account runs out of messages halfway through a batch | Nothing to set - **Default (browser)** already spreads calls across both free accounts. A tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry, so it moves to the other whenever one is out of messages, signed out, or has no browser running. It appears whenever at least one free provider is enabled, and covers whichever of the two are. |
-| Effort is greyed out | The chosen model is a chat window, and a chat window has no effort flag - there is nowhere to put one. The select goes inactive rather than accept a setting that would change nothing. Pick the Claude CLI seat to get it back. |
 | Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
@@ -1127,10 +1418,21 @@ See `.env.example` for the full `AI_CLI_*` list.
 | A browser provider says the tab `was navigated to ...` | Something moved that tab off the chat site mid-answer - usually a link clicked in it. Give the app a tab of its own in the debug browser, or leave that window alone while a run is in flight. |
 | A browser provider returns the prompt instead of an answer | The site's assistant selector is also matching your own message. The backend refuses the answer rather than tailoring a resume to the instructions, and says so. Set `AI_WEB_CLAUDE_ASSISTANT` or `AI_WEB_CHATGPT_ASSISTANT` to something that can only match an assistant turn. |
 | A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
-| An effort choice appears to do nothing | Look for `[ai] ... has no effort control` in the backend output. Only the Claude CLI provider honours it; the metered OpenAI, Anthropic and DeepSeek transports report it as dropped rather than pretending it applied. Switch the model, on the profile or under Admin → Models, to a Claude CLI one. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |
 | `The Claude CLI is not installed or is not on the server PATH` | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows npm installs the CLI as `claude.cmd`, a shim wrapping `node_modules\@anthropic-ai\claude-code\bin\claude.exe`; the server follows the shim to that binary on its own, so `AI_CLI_BIN` is only needed if that fails, and then it should name the `.exe`, not the `.cmd`. |
+| A Codex turn fails with `spawn codex ... ENOENT` | Same two causes as the row above, one vendor along: either `@openai/codex` is not installed, or this process has a different PATH than your shell (common under systemd and Docker). Set `AI_CODEX_BIN` to the full path from `which codex`. |
+| Codex says `Not logged in`, or a turn fails with an auth error | Run `codex login --device-auth` **as the user the server runs as** - it prints a code you approve from a browser anywhere, so the server needs no display. The sign-in lives in that user's `CODEX_HOME`, so a login as yourself is invisible to a service running as someone else. `codex login status` prints the account; note it exits 0 either way, so read the text rather than the exit code. Then check **Admin → Settings**, which shows this seat's own readiness card. |
+| Codex answers instantly and your OpenAI bill grows | An `OPENAI_API_KEY` reached the child process. A key **outranks** the subscription in the CLI's own resolution order, so the answers look identical and every one is metered. This server strips `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN` from the child by default; if you see this, `AI_CODEX_ALLOW_API_KEY` has been switched on. |
+| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
+| A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch, a task pinned to a browser platform no registered browser can serve, and a task kind this build does not know are **not** retried. |
+| Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
+| Sign-in emails are not arriving and the log says only `Could not send the sign-in email via …` | That one sentence covers a missing variable, a wrong key, a blocked port and an unverified sending domain. Run `npm run mail:doctor` in `backend/` - it walks the same chain in order and stops at the first break with what to change. Add `-- --to you@example.com` to include a real send, which is the only step that catches an unverified domain. |
+| Sign-in works for your own address but fails for everyone else, with a 403 from the relay | The relay is still sandboxed: most of them refuse to send to anybody but your own account address until the sending domain is **verified** in their dashboard. It is not a bug in the app, and the failure reaches the page as a 502 with the relay's own wording. Finish the DNS records the relay asked for, wait for it to read *Verified*, then retry. Test with a second address afterwards - your own inbox is the one case that works either way, so it proves nothing. |
+| The sign-in email arrives with no sender name, just the address | Expected: `From` is whatever `SMTP_FROM` says, verbatim. Set it to the display-name form to fix it - `SMTP_FROM="Tailor <login@yourdomain.com>"`, quoted because the value contains spaces. It is the only branding on the only email this app sends. |
+| Sign-in emails try to send from `resend`, `apikey` or another bare username | `SMTP_FROM` is unset and fell back to `SMTP_USER`, which on a relay is not an address. Set `SMTP_FROM` to a real address on your domain. |
+| Nobody is an administrator, and the UI offers no way to appoint one | `ADMIN_EMAILS` is unset. The fallback is `SMTP_USER`, and it is used **only** when that value looks like an email address - so a relay username (`resend`, `apikey`) names nobody. Fix: set `ADMIN_EMAILS` to the address you sign in with, restart, and sign in again. An account that already exists is promoted on the way in, so there is no need to delete it and start over. |
+| Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, *Import from Sheets* and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen: Cloud console -> APIs \& Services -> OAuth consent screen -> PUBLISH APP. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
 | Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
 
@@ -1155,7 +1457,7 @@ and spawns no subprocess.
 |-------|--------------|
 | **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
 | **Backend** | Express, TypeScript, better-sqlite3 |
-| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI (subscription seat), OpenAI, Anthropic API, DeepSeek |
+| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI and Codex CLI (subscription seats), OpenAI, Anthropic API, DeepSeek |
 | **PDF** | Puppeteer |
 | **DOCX** | html-to-docx |
 | **Templates** | Handlebars |

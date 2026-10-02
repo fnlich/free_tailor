@@ -1,5 +1,4 @@
 import path from 'path';
-import { isEffortLevel, type EffortLevel } from '../../types';
 
 /**
  * Environment-driven configuration for the Claude CLI provider.
@@ -13,7 +12,28 @@ import { isEffortLevel, type EffortLevel } from '../../types';
  */
 
 export const DEFAULT_CLI_MODEL = 'sonnet';
-export const DEFAULT_CLI_EFFORT: EffortLevel = 'low';
+
+/**
+ * How hard the model is asked to work, as an OPERATOR setting.
+ *
+ * `--effort` is a documented flag on this CLI and on no other provider here,
+ * which is exactly why it lives in this file and not in the shared types: it is
+ * an implementation detail of one transport, not a concept the app has.
+ *
+ * There is deliberately NO per-profile or per-run control, and adding one back
+ * would be a regression rather than a feature. It was tried: a select that
+ * reached one provider out of six meant every other model in the menu showed a
+ * knob that changed nothing and said nothing, and the machinery to explain that
+ * away came to several hundred lines. One variable, one default, every run the
+ * same - and an operator who wants a different one edits `.env` and restarts.
+ */
+export const CLI_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type CliEffort = (typeof CLI_EFFORT_LEVELS)[number];
+export const DEFAULT_CLI_EFFORT: CliEffort = 'low';
+
+function isCliEffort(value: string): value is CliEffort {
+  return (CLI_EFFORT_LEVELS as readonly string[]).includes(value);
+}
 
 /**
  * The POSIX limit. Linux caps a SINGLE argv entry at MAX_ARG_STRLEN (128 KiB),
@@ -46,7 +66,7 @@ function intFlag(name: string, fallback: number, min: number, max: number): numb
 export type ClaudeCliConfig = {
   binary: string;
   model: string;
-  effort: EffortLevel;
+  effort: CliEffort;
   fallbackModels: string[];
   concurrency: number;
   queueWaitMs: number;
@@ -80,15 +100,23 @@ function defaultWorkdir(): string {
 }
 
 export function readClaudeCliConfig(): ClaudeCliConfig {
+  const defaultTimeoutMs = intFlag('AI_CLI_TIMEOUT_MS', 180_000, 5_000, 3_600_000);
+
+  /*
+   * A junk value warns and falls back rather than reaching the CLI.
+   *
+   * The CLI rejects an unknown level outright, so passing one through would
+   * turn a typo in `.env` into every generation failing at the transport with
+   * an error that names the flag and not the file it came from.
+   */
   const effortRaw = flag('AI_CLI_EFFORT', DEFAULT_CLI_EFFORT);
-  const effort = isEffortLevel(effortRaw) ? effortRaw : DEFAULT_CLI_EFFORT;
-  if (!isEffortLevel(effortRaw)) {
+  const effort = isCliEffort(effortRaw) ? effortRaw : DEFAULT_CLI_EFFORT;
+  if (!isCliEffort(effortRaw)) {
     console.warn(
-      `[ai] AI_CLI_EFFORT="${effortRaw}" is not a valid effort level; using "${DEFAULT_CLI_EFFORT}".`
+      `[ai] AI_CLI_EFFORT="${effortRaw}" is not one of ` +
+        `${CLI_EFFORT_LEVELS.join(', ')}; using "${DEFAULT_CLI_EFFORT}".`
     );
   }
-
-  const defaultTimeoutMs = intFlag('AI_CLI_TIMEOUT_MS', 180_000, 5_000, 3_600_000);
 
   return {
     binary: flag('AI_CLI_BIN', 'claude'),

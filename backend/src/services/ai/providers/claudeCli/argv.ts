@@ -1,6 +1,5 @@
 import { warnOnce } from '../../telemetry';
-import type { EffortLevel } from '../../types';
-import { MAX_SYSTEM_PROMPT_ARG_BYTES } from './options';
+import { MAX_SYSTEM_PROMPT_ARG_BYTES, type CliEffort } from './options';
 
 /**
  * Command-line construction for one `claude -p` turn.
@@ -78,7 +77,8 @@ export function resolveCliModel(requested: string | undefined, fallback: string)
 
 export type ClaudeArgvOptions = {
   model: string;
-  effort: EffortLevel;
+  /** The installation-wide `--effort`, from `AI_CLI_EFFORT`. Never per-run. */
+  effort: CliEffort;
   /** Instructions for the model. Moved to stdin when it exceeds the arg cap. */
   systemPrompt: string;
   jsonSchema?: Readonly<Record<string, unknown>>;

@@ -1,7 +1,6 @@
 import { getBrowserChatEndpoints } from '../../../../config/aiModelConfig';
 import {
   getProviderDescriptor,
-  providerSupportsEffort,
 } from '../../../../config/providerCatalog';
 import { AIProviderError, type AIErrorKind } from '../../errors';
 import {
@@ -13,7 +12,6 @@ import {
   type TabLease,
   type TabPool,
 } from './pool';
-import { collectUnsupportedReasoningParams } from '../../reasoningParams';
 import { warnOnce } from '../../telemetry';
 import type {
   AIProviderAdapter,
@@ -257,7 +255,7 @@ async function endpointsFor(
  *
  * Each site has its own pool and therefore its own line: Claude free and
  * ChatGPT free do not wait for one another, and neither waits for the Claude
- * CLI, which has a semaphore of its own. Three providers, three queues.
+ * CLI, which has a semaphore of its own. Two chat sites, and a lane per real resource.
  */
 async function poolFor(id: ChatSiteId, env: NodeJS.ProcessEnv): Promise<TabPool> {
   const { mine, all } = await endpointsFor(id, env);
@@ -353,7 +351,6 @@ export function createBrowserChatAdapter(
     // report the loss once per call site rather than dropping it silently.
     temperature: false,
     maxOutputTokens: false,
-    effort: providerSupportsEffort(id),
     nativeJsonMode: 'none',
     // No system channel. The facade folds the system text into the head of the
     // user turn, which is the only place a chat UI has to put it.
@@ -453,7 +450,7 @@ export function createBrowserChatAdapter(
     },
 
     async complete(request: CompletionRequest): Promise<CompletionResult> {
-      const droppedParams: DroppedParam[] = collectUnsupportedReasoningParams(request, capabilities);
+      const droppedParams: DroppedParam[] = [];
       if (typeof request.sampling.temperature === 'number') {
         droppedParams.push('temperature');
         warnOnce(
