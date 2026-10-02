@@ -80,6 +80,47 @@ export type SheetsClient = {
   setSpreadsheetVisibility(spreadsheetId: string, visibility: SheetVisibility): Promise<SheetVisibility>;
 };
 
+const warnedVisibility = new Set<string>();
+
+/**
+ * Whether a newly allocated spreadsheet is link-shared.
+ *
+ * `public` on this app's Drive means **anyone with the link may EDIT** - see
+ * `setSpreadsheetVisibility` - and the sheet holds one person's job search:
+ * companies, roles, dates. On an installation anybody can sign up to, the URL
+ * would be the only thing between a stranger and that, so the default is
+ * `private` and the account holder reaches theirs through the per-account writer
+ * grant instead.
+ *
+ * The validation is DELIBERATELY ASYMMETRIC: only the exact string `public`
+ * opens a sheet up, and everything else - a typo, a casing slip, `yes`, `1`,
+ * empty - resolves to `private` with a warning. A misread value must fail towards
+ * the safe answer, because the unsafe one cannot be taken back once a link is
+ * out.
+ *
+ * Per-account sharing is unaffected: `POST /sheet/visibility` still flips either
+ * way whenever somebody wants their own sheet shared.
+ */
+export function defaultSheetVisibility(env: NodeJS.ProcessEnv = process.env): SheetVisibility {
+  const raw = (env.SHEET_DEFAULT_VISIBILITY ?? '').trim();
+  if (!raw || raw === 'private') return 'private';
+  if (raw === 'public') return 'public';
+
+  // Once per distinct value, not once per allocation: this is read every time an
+  // account gets a sheet, and a misconfigured install would otherwise warn on
+  // every new sign-up. Not `services/ai/telemetry`'s warnOnce, which prefixes
+  // `[ai]` - a sheets problem filed under the AI layer sends the next reader to
+  // the wrong place.
+  if (!warnedVisibility.has(raw)) {
+    warnedVisibility.add(raw);
+    console.warn(
+      `[sheets] SHEET_DEFAULT_VISIBILITY="${raw}" is not "private" or "public". Treating it as ` +
+        '"private", because a value nobody meant must not link-share everybody\'s job rows.'
+    );
+  }
+  return 'private';
+}
+
 const realClient: SheetsClient = {
   isConfigured: isGoogleSheetsConfigured,
   checkCredential: async () => {
@@ -215,16 +256,27 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
       await client.formatJobSheetTab(spreadsheetId, created.firstTabGid);
       recordSheetTabDate(current.id, todayTab, created.firstTabGid);
 
-      // Public ONLY here, on the sheet's first day. Re-asserting it on every
-      // ensure would quietly undo the private toggle on the next sign-in,
-      // which is the opposite of what pressing it meant.
-      try {
-        await client.setSpreadsheetVisibility(spreadsheetId, 'public');
-      } catch (error) {
-        console.warn(
-          `[sheets] Created ${spreadsheetId} for ${current.email} but could not make it link-shared.`,
-          error
-        );
+      /*
+       * Link sharing, ONLY here and only if asked for.
+       *
+       * Set on the sheet's first day and never re-asserted: doing it on every
+       * ensure would quietly undo the private toggle on the next sign-in, which
+       * is the opposite of what pressing it meant.
+       *
+       * `private` makes NO Drive call at all rather than asking for 'private'.
+       * A brand-new file has no `anyone` grant to revoke, so the call could only
+       * waste a round trip or fail; the account holder's own access comes from
+       * the writer grant above, not from this.
+       */
+      if (defaultSheetVisibility() === 'public') {
+        try {
+          await client.setSpreadsheetVisibility(spreadsheetId, 'public');
+        } catch (error) {
+          console.warn(
+            `[sheets] Created ${spreadsheetId} for ${current.email} but could not make it link-shared.`,
+            error
+          );
+        }
       }
     } else {
       // Somebody else claimed the slot while this call was talking to Google.
@@ -290,9 +342,22 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
 /**
  * Makes sure the owner holds a grant of their own, repairing it if not.
  *
- * Never fatal. A failure here leaves the sheet exactly as it was, and the
- * private toggle refuses to take the link away until this has succeeded - so
- * the worst case is a sheet that stays public, not one nobody can open.
+ * Never fatal, and retried on EVERY ensure - so a transient failure heals itself
+ * on the account's next sign-in rather than needing anybody to intervene.
+ *
+ * What the worst case is depends on the default, and it changed when that did.
+ * While new sheets were link-shared, a failure here left a sheet that stayed
+ * public: reachable, if too reachable. Now that they are private, a failure
+ * leaves a sheet its own account holder cannot open - the file exists, the row
+ * points at it, and only this app's Drive identity has access. That is a worse
+ * experience and a better accident: the alternative was publishing somebody's
+ * job search to anyone with the URL because a Drive call failed. It is also
+ * almost always one cause - the Drive API not enabled for the server's project -
+ * which `npm run sheets:doctor` names outright.
+ *
+ * The private TOGGLE still refuses while this has not succeeded (below), because
+ * there the sheet IS public and withdrawing the link would take away the only
+ * access that works.
  */
 async function ensureOwnerAccess(spreadsheetId: string, email: string): Promise<boolean> {
   try {
