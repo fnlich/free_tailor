@@ -1176,6 +1176,20 @@ two into a single record rather than adding a second - two SPF records on one na
 is invalid and breaks both. Most relays sidestep this by putting their records on
 a `send.` subdomain, since an apex SPF policy does not apply to subdomains.
 
+**Check the mail setup on its own, before anything else is involved:**
+
+```bash
+cd backend
+npm run mail:doctor                          # config, the two relay traps, connect + auth
+npm run mail:doctor -- --to you@example.com   # also sends one real message
+```
+
+It walks the same chain the sign-in flow walks and stops at the first break, naming
+what to change — and it needs no server, no frontend and no domain pointed anywhere.
+The step that matters most is the distinction between *connecting* and *sending*: a
+relay authenticates fine and then refuses to send from a domain it has not verified,
+which is the usual state mid-setup and the one the app's own error cannot express.
+
 Then check the three things that can only be checked from outside:
 
 ```bash
@@ -1413,6 +1427,7 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch, a task pinned to a browser platform no registered browser can serve, and a task kind this build does not know are **not** retried. |
 | Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
+| Sign-in emails are not arriving and the log says only `Could not send the sign-in email via …` | That one sentence covers a missing variable, a wrong key, a blocked port and an unverified sending domain. Run `npm run mail:doctor` in `backend/` - it walks the same chain in order and stops at the first break with what to change. Add `-- --to you@example.com` to include a real send, which is the only step that catches an unverified domain. |
 | Sign-in works for your own address but fails for everyone else, with a 403 from the relay | The relay is still sandboxed: most of them refuse to send to anybody but your own account address until the sending domain is **verified** in their dashboard. It is not a bug in the app, and the failure reaches the page as a 502 with the relay's own wording. Finish the DNS records the relay asked for, wait for it to read *Verified*, then retry. Test with a second address afterwards - your own inbox is the one case that works either way, so it proves nothing. |
 | The sign-in email arrives with no sender name, just the address | Expected: `From` is whatever `SMTP_FROM` says, verbatim. Set it to the display-name form to fix it - `SMTP_FROM="Tailor <login@yourdomain.com>"`, quoted because the value contains spaces. It is the only branding on the only email this app sends. |
 | Sign-in emails try to send from `resend`, `apikey` or another bare username | `SMTP_FROM` is unset and fell back to `SMTP_USER`, which on a relay is not an address. Set `SMTP_FROM` to a real address on your domain. |

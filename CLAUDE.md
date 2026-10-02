@@ -98,8 +98,11 @@ backend/src/
   middleware/         # auth, and turning an AI failure into a useful status
   routes/             # one file per /api/* area
   scripts/            # operator tools, each behind an npm script: browser:debug,
-                      #   browser:doctor, sheets:login, sheets:doctor,
-                      #   migrate:legacy, ai:rollback
+                      #   browser:doctor, mail:doctor, sheets:login, sheets:doctor,
+                      #   migrate:legacy, ai:rollback. The doctors share one shape -
+                      #   walk the real chain in order, stop at the first break,
+                      #   name the remedy - because each diagnoses a failure whose
+                      #   single error message covers several causes.
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart). One LANE
                       #   per real resource - browsers, the Claude seat, the
