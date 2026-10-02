@@ -1,6 +1,8 @@
 import '../config/env';
 
 import { resolveAdminIdentity } from '../config/adminIdentity';
+import { ENV_PATH } from '../config/env';
+import { summarizeEnvFile } from '../config/envFile';
 import {
   createSpreadsheet,
   deleteSpreadsheet,
@@ -80,6 +82,40 @@ async function main(): Promise<void> {
   let owner = '';
 
   const steps: Step[] = [
+    {
+      /*
+       * The same blind spot `mail:doctor` has: a setting that is plainly in the
+       * file and plainly not in effect. The path is resolved from this compiled
+       * module, so it is the repository root and never `backend/` - which is
+       * where it lands for anyone running these scripts from `backend/`.
+       */
+      title: 'Locate the .env',
+      run: async () => {
+        const file = summarizeEnvFile(ENV_PATH);
+        if (!file.exists) {
+          // Not fatal: the credential search below has defaults that need no
+          // .env at all, so this reports and moves on.
+          return `No file at ${file.path} - relying on the default credential search`;
+        }
+
+        const googleKeys = file.keys.filter(
+          (key) => key.startsWith('GOOGLE_') || key.startsWith('SHEET_')
+        );
+        const dupes = file.duplicates.filter(
+          (key) => key.startsWith('GOOGLE_') || key.startsWith('SHEET_')
+        );
+
+        return (
+          `${file.path}\n` +
+          `    ${file.bytes} bytes, ${file.encoding}\n` +
+          `    sheets settings found: ${googleKeys.length ? googleKeys.join(', ') : 'none'}` +
+          (dupes.length ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}` : '')
+        );
+      },
+      remedy: () =>
+        'The path above is the only .env this app reads, and it is the repository root\n' +
+        '  rather than backend/ - a file beside these scripts is ignored.',
+    },
     {
       title: 'Find the Google credentials',
       run: async () => {

@@ -1,6 +1,8 @@
 import '../config/env';
 
 import { describeAdminIdentity, resolveAdminIdentity } from '../config/adminIdentity';
+import { ENV_PATH } from '../config/env';
+import { summarizeEnvFile } from '../config/envFile';
 import {
   describeMailConfig,
   MailNotConfiguredError,
@@ -67,6 +69,55 @@ async function main(): Promise<void> {
   console.log('Mail doctor\n');
 
   const steps: Step[] = [
+    {
+      /*
+       * Before judging the configuration, say where it came from.
+       *
+       * "SMTP_HOST is not set" against a file that visibly contains it has four
+       * causes that look the same from outside: a DIFFERENT file was read, a
+       * later duplicate key won, the encoding did not decode, or the edit was
+       * never saved. This step separates them, and it informs rather than gates -
+       * it only fails when there is no file, or nothing mail-related in it.
+       */
+      title: 'Locate the .env',
+      run: async () => {
+        const file = summarizeEnvFile(ENV_PATH);
+        if (!file.exists) {
+          throw new Error(`No file at ${file.path}`);
+        }
+
+        const mailKeys = file.keys.filter(
+          (key) => key.startsWith('SMTP_') || key === 'ADMIN_EMAILS'
+        );
+        if (mailKeys.length === 0) {
+          throw new Error(
+            `${file.path} holds ${file.keys.length} setting(s), and none of them is SMTP_ or ADMIN_EMAILS`
+          );
+        }
+
+        const dupes = file.duplicates.filter(
+          (key) => key.startsWith('SMTP_') || key === 'ADMIN_EMAILS'
+        );
+
+        return (
+          `${file.path}\n` +
+          `    ${file.bytes} bytes, ${file.encoding}\n` +
+          `    mail settings found: ${mailKeys.join(', ')}` +
+          (dupes.length
+            ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}`
+            : '')
+        );
+      },
+      remedy: () =>
+        'This is the only .env the app reads, and the path is resolved from the compiled\n' +
+        '  module rather than from where you ran the command - so a file at backend/.env is\n' +
+        '  ignored no matter which directory you are in. Check in order:\n' +
+        '    1. the file is at the path above, i.e. the REPOSITORY ROOT, not backend/;\n' +
+        '    2. your editor saved it;\n' +
+        '    3. the encoding above is utf8 or utf16le - a UTF-16 file written WITHOUT a\n' +
+        '       byte-order mark decodes to nonsense, and PowerShell\'s > writes UTF-16;\n' +
+        '    4. no key is listed as duplicated, since the last assignment silently wins.',
+    },
     {
       title: 'Read the SMTP configuration',
       run: async () => {

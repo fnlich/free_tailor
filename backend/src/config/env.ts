@@ -16,7 +16,13 @@ import { readEnvFileText } from './envFile';
  * whatever the shell happens to export.
  */
 
-const ENV_PATH = path.join(__dirname, '../../../.env');
+/**
+ * The ONE file this app reads, exported so a doctor can report it rather than
+ * recompute it. Resolved from this compiled module, so it is always the
+ * repository root - never `backend/.env`, which is where it gets put by anyone
+ * running the scripts from `backend/`.
+ */
+export const ENV_PATH = path.join(__dirname, '../../../.env');
 
 const parsed = dotenv.parse(readEnvFileText(ENV_PATH));
 for (const [key, value] of Object.entries(parsed)) {
