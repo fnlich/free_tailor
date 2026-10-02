@@ -206,12 +206,14 @@ async function main(): Promise<void> {
         if (said.includes('NO Drive storage')) {
           return (
             'Nothing is misconfigured - a service account simply has no storage of its own on a\n' +
-            '  consumer Google project, and Google stopped granting it. Two ways out:\n' +
-            '    - a Google Workspace domain, and a SHARED DRIVE the service account belongs to,\n' +
-            '      where files count against the shared drive rather than the account; or\n' +
-            '    - credentials belonging to a real person, so the sheets live in THEIR Drive.\n' +
-            '  The second needs no Workspace and no paid plan, and is the one to pick for a\n' +
-            '  personal Google account.'
+            '  consumer Google project, and Google stopped granting it.\n\n' +
+            '  Use credentials belonging to a real person instead, so the sheets live in THEIR\n' +
+            '  Drive:  npm run sheets:login\n\n' +
+            '  A Google Workspace SHARED DRIVE is the other way a service account can have room,\n' +
+            '  but THIS APP CANNOT USE ONE: `createSpreadsheet` names no parent, so the Sheets\n' +
+            '  API always puts the new file in the caller\'s own My Drive - which for a service\n' +
+            '  account is the drive with no space. Setting a shared drive up would not help\n' +
+            '  without a code change, so do not spend the afternoon on it.'
           );
         }
         return (
@@ -233,8 +235,9 @@ async function main(): Promise<void> {
       },
       remedy: () =>
         'This is the call that fails in your log. With the steps above green, the usual\n' +
-        '  remaining cause is the service account having no Drive storage of its own - point\n' +
-        '  the key at a shared drive, or grant it storage.',
+        '  remaining cause is the service account having no Drive storage of its own, and the\n' +
+        '  fix is `npm run sheets:login` rather than a shared drive - see the step above for\n' +
+        '  why a shared drive cannot help this app as it stands.',
     },
     {
       title: 'Write the job sheet header into it',

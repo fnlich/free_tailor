@@ -532,12 +532,18 @@ npm run sheets:doctor -- --email you@example.com   # also tests sharing
 npm run sheets:doctor -- --keep                    # leave the throwaway behind
 ```
 
-**Which credential, and why it probably is not a service account.** The tidy
-arrangement is a service account key, and on a Google Workspace domain with a
-shared drive it works. On a **consumer Google project it cannot**: the service
-account is given a Drive quota of **zero bytes**, so it authenticates perfectly
-and can never own a file - and creating a spreadsheet means owning one. The
-failure is a 403 that blames permissions and means storage.
+**Which credential, and why it is not a service account.** The tidy arrangement
+looks like a service account key, and on a **consumer Google project it cannot
+work**: the service account is given a Drive quota of **zero bytes**, so it
+authenticates perfectly and can never own a file - and creating a spreadsheet
+means owning one. The failure is a 403 that blames permissions and means storage.
+
+A Workspace **shared drive** is how a service account would normally get room,
+and **this app cannot put files in one**: `createSpreadsheet` names no parent, so
+the Sheets API always creates in the caller's own My Drive. Supporting a shared
+drive would need a `parents` on that call and a drive id to point at - a code
+change, not a configuration. Until then the service-account path only works where
+the account itself has storage, which on a consumer project it never does.
 
 So the app accepts either credential, and prefers the one that works:
 
@@ -551,16 +557,18 @@ created in **your** Drive and shared with its owner as an editor. It needs an
 OAuth client from the Cloud console (Desktop app type) - the script says exactly
 where to click if it cannot find one. `GOOGLE_CREDENTIALS_PATH` overrides where
 credentials are looked for; a service account key at
-`backend/service-account-key.json` still works if you have a shared drive for it.
+`backend/service-account-key.json` is still read, but see the paragraph above
+before counting on it.
 
 Two things this needs from Google, and both are easy to miss:
 
 - The **Drive API** enabled for the same Cloud project as the key, not just the
   Sheets API. Sharing is a Drive concept, and a missing Drive API produces a 403
   that blames the file rather than the setting.
-- Room in the service account's own Drive. Files it creates count against *its*
-  quota, not against any person's, so a large installation should point the key
-  at a shared drive.
+- Room in the service account's own Drive, if you use one. Files it creates count
+  against *its* quota, not against any person's - and pointing the key at a shared
+  drive does not move them, because the create call names no parent. Use
+  `npm run sheets:login` instead.
 
 **Moving to another server.** Nothing is registered with Google a second time.
 The Cloud project, the enabled Sheets and Drive APIs, the consent screen and the
