@@ -90,3 +90,35 @@ test('NO VALUE ever appears in the summary - it is printed and pasted into chat'
   assert.ok(!serialized.includes('smtp.resend.com'), 'names only, so no value can leak by accident');
   assert.ok(!serialized.includes('you@example.com'));
 });
+
+test('a bare NAME= is listed as empty, because it is in the file and sets nothing', () => {
+  // The shape .env.example ships dozens of: copied as-is, every one of these
+  // names is "in the file", and a doctor reporting `keys` alone told an
+  // operator GOOGLE_CREDENTIALS_PATH was found when it was not in effect.
+  const summary = summarize(
+    writeFixture(
+      '.env',
+      Buffer.from(
+        'GOOGLE_CREDENTIALS_PATH=\n' +
+          'GOOGLE_SERVICE_ACCOUNT_KEY_PATH=   \n' +
+          'SHEET_TIMEZONE=Europe/Berlin\n' +
+          'SMTP_HOST=first\n' +
+          // The LAST assignment is the one the loader keeps, so this is empty.
+          'SMTP_HOST=\n' +
+          'QUOTED_EMPTY=""\n' +
+          'SMTP_USER=resend # a comment is not a value\n',
+        'utf8'
+      )
+    )
+  );
+
+  assert.deepEqual(summary.empty, [
+    'GOOGLE_CREDENTIALS_PATH',
+    'GOOGLE_SERVICE_ACCOUNT_KEY_PATH',
+    'SMTP_HOST',
+    'QUOTED_EMPTY',
+  ]);
+  assert.ok(summary.keys.includes('GOOGLE_CREDENTIALS_PATH'), 'still a key: it IS in the file');
+  assert.ok(!summary.empty.includes('SHEET_TIMEZONE'));
+  assert.ok(!summary.empty.includes('SMTP_USER'));
+});

@@ -56,9 +56,144 @@ function argValue(flag: string): string {
 const keepThrowaway = process.argv.includes('--keep');
 const shareWith = argValue('--email');
 
-function reason(error: unknown): string {
-  if (error instanceof GoogleSheetsRequestError) return `HTTP ${error.statusCode}: ${error.message}`;
+/** The two shapes a credential file comes in; step 2 says which one is in use. */
+export type CredentialKind = 'authorized_user' | 'service_account';
+
+/**
+ * A failure, as the operator should read it.
+ *
+ * `detail` is the operator half of a Google error, kept apart so pages an
+ * account holder can open never carry it (see `GoogleSheetsRequestError`).
+ * Whoever runs this IS the operator - and since that split, this printed only
+ * the half written for everyone else, "until an administrator renews it",
+ * which is the one sentence the administrator can do nothing with.
+ */
+export function reason(error: unknown): string {
+  if (error instanceof GoogleSheetsRequestError) {
+    return `HTTP ${error.statusCode}: ${error.message}` + (error.detail ? `\n    ${error.detail}` : '');
+  }
   return error instanceof Error ? error.message : String(error);
+}
+
+/*
+ * The remedies that depend on WHICH credential is in use.
+ *
+ * Every one of these was written when a service account was the only shape,
+ * and kept being printed after `sheets:login` became the recommended one. The
+ * result was an operator whose saved sign-in had expired being told to issue a
+ * new service account key and check their clock - neither of which a refresh
+ * token has. Exported so the tests can hold both halves without running the
+ * doctor against Google.
+ */
+
+/** Step 3: the first time the credential itself is shown to Google. */
+export function tokenRefusedRemedy(kind: CredentialKind): string {
+  if (kind === 'authorized_user') {
+    return (
+      'Google refused the saved sign-in from "npm run sheets:login" - the reason above has its\n' +
+      '  own words. The fix is to sign in again:\n' +
+      '    1. If the OAuth consent screen is still in Testing, publish it FIRST: Cloud console ->\n' +
+      '       Google Auth Platform -> Audience -> Publish app. Testing expires every consent seven\n' +
+      '       days after it is given, and a consent given in Testing keeps that limit.\n' +
+      '    2. Run "npm run sheets:login" in backend/ and approve BOTH Sheets and Drive. It re-uses\n' +
+      '       the OAuth client already saved in the credential file.\n' +
+      '  If Google said invalid_client rather than invalid_grant, the OAuth client itself was\n' +
+      '  deleted or its secret reset - download a new Desktop app client into backend/ first.'
+    );
+  }
+  return (
+    'The key was rejected outright. Usually the service account was deleted or its key\n' +
+    '  revoked - issue a new key and replace the file. A clock more than a few minutes\n' +
+    '  off will also do this, because the assertion is signed with a timestamp.'
+  );
+}
+
+/** Step 4. */
+export function driveScopeRemedy(kind: CredentialKind): string {
+  if (kind === 'authorized_user') {
+    // One consent carries both scopes and a refresh token cannot be narrowed
+    // per call, so a refresh that worked one step ago and fails now is not a
+    // missing permission. A consent with Drive unticked fails later, at step 5.
+    return (
+      'Both scopes come from the same saved sign-in, which the step above just used, so this\n' +
+      '  is not a missing permission. Read the reason above; if it repeats, run\n' +
+      '  "npm run sheets:login" in backend/ again and approve both Sheets and Drive.'
+    );
+  }
+  return (
+    'The Sheets scope worked and this one did not, which points at a domain-wide delegation\n' +
+    '  policy stripping the Drive scope from this service account.'
+  );
+}
+
+/** Step 5, which is where a consent with Drive unticked first shows. */
+export function driveAboutRemedy(said: string, kind: CredentialKind): string {
+  if (said.includes('switched off')) {
+    return 'Follow the URL above, enable the API, wait a minute and run this again.';
+  }
+  if (said.includes('did not carry the scope')) {
+    return kind === 'authorized_user'
+      ? 'The saved sign-in does not include Drive - Google lets each permission be unticked on\n' +
+          '  the consent screen. Run "npm run sheets:login" in backend/ again and leave BOTH ticked.'
+      : 'A domain-wide delegation policy is stripping the Drive scope from this service account.';
+  }
+  if (said.includes('NO Drive storage')) {
+    if (kind === 'authorized_user') {
+      return (
+        'The signed-in Google account has no storage of its own - a Workspace administrator\n' +
+        '  can set a user\'s limit to zero. Sign in as an account that has room\n' +
+        '  ("npm run sheets:login" in backend/), or ask that administrator.'
+      );
+    }
+    return (
+      'Nothing is misconfigured - a service account simply has no storage of its own on a\n' +
+      '  consumer Google project, and Google stopped granting it.\n\n' +
+      '  Use credentials belonging to a real person instead, so the sheets live in THEIR\n' +
+      '  Drive:  npm run sheets:login\n\n' +
+      '  A Google Workspace SHARED DRIVE is the other way a service account can have room,\n' +
+      '  but THIS APP CANNOT USE ONE: `createSpreadsheet` names no parent, so the Sheets\n' +
+      '  API always puts the new file in the caller\'s own My Drive - which for a service\n' +
+      '  account is the drive with no space. Setting a shared drive up would not help\n' +
+      '  without a code change, so do not spend the afternoon on it.'
+    );
+  }
+  return (
+    'Enable the Google Drive API for the Cloud project this credential belongs to - for your\n' +
+    '  own account, the project that owns the OAuth client. Creating a spreadsheet makes a\n' +
+    '  Drive file, so allocation cannot work without it even though the error names Sheets.'
+  );
+}
+
+/** Step 6. */
+export function createSpreadsheetRemedy(kind: CredentialKind): string {
+  if (kind === 'authorized_user') {
+    return (
+      'This is the call that fails in your log. With the steps above green and your own\n' +
+      '  account signed in, read the reason above: the usual causes are the Drive API not being\n' +
+      '  enabled for the project that owns the OAuth client, or that account\'s Drive being full.'
+    );
+  }
+  return (
+    'This is the call that fails in your log. With the steps above green, the usual\n' +
+    '  remaining cause is the service account having no Drive storage of its own, and the\n' +
+    '  fix is `npm run sheets:login` rather than a shared drive - see the step above for\n' +
+    '  why a shared drive cannot help this app as it stands.'
+  );
+}
+
+/**
+ * The `.env` variables this doctor reports on.
+ *
+ * Named rather than matched on a `GOOGLE_` prefix, because GOOGLE_CLIENT_ID is
+ * the sign-in button's OAuth client and has nothing to do with the credential
+ * Sheets uses - listing it here invited reading it as the client step 2 names.
+ */
+function isSheetsSetting(key: string): boolean {
+  return (
+    key === 'GOOGLE_CREDENTIALS_PATH' ||
+    key === 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH' ||
+    key.startsWith('SHEET_')
+  );
 }
 
 function formatBytes(value?: string): string {
@@ -74,12 +209,14 @@ function formatBytes(value?: string): string {
   return `${size.toFixed(1)} ${units[unit]}`;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   console.log('Google Sheets doctor\n');
 
   let spreadsheetId = '';
   let firstTabGid = -1;
   let owner = '';
+  // Set by step 2, which every later step runs after.
+  let credentialKind: CredentialKind = 'service_account';
 
   const steps: Step[] = [
     {
@@ -98,17 +235,18 @@ async function main(): Promise<void> {
           return `No file at ${file.path} - relying on the default credential search`;
         }
 
-        const googleKeys = file.keys.filter(
-          (key) => key.startsWith('GOOGLE_') || key.startsWith('SHEET_')
-        );
-        const dupes = file.duplicates.filter(
-          (key) => key.startsWith('GOOGLE_') || key.startsWith('SHEET_')
-        );
+        // A bare `NAME=` - which is how .env.example ships every one of
+        // these - sets nothing, and reporting it as "found" said otherwise.
+        const named = file.keys.filter(isSheetsSetting);
+        const inEffect = named.filter((key) => !file.empty.includes(key));
+        const empty = named.filter((key) => file.empty.includes(key));
+        const dupes = file.duplicates.filter(isSheetsSetting);
 
         return (
           `${file.path}\n` +
           `    ${file.bytes} bytes, ${file.encoding}\n` +
-          `    sheets settings found: ${googleKeys.length ? googleKeys.join(', ') : 'none'}` +
+          `    sheets settings in effect: ${inEffect.length ? inEffect.join(', ') : 'none'}` +
+          (empty.length ? `\n    present but EMPTY, so not in effect: ${empty.join(', ')}` : '') +
           (dupes.length ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}` : '')
         );
       },
@@ -121,6 +259,7 @@ async function main(): Promise<void> {
       run: async () => {
         const account = await describeServiceAccount();
         owner = account.identity;
+        credentialKind = account.kind;
         const label = account.kind === 'authorized_user' ? 'OAuth client:   ' : 'service account:';
         return (
           `${account.path}\n` +
@@ -139,18 +278,12 @@ async function main(): Promise<void> {
     {
       title: 'Mint an access token for the Sheets scope',
       run: async () => `${(await getAccessToken(SHEETS_SCOPE)).slice(0, 12)}... (ok)`,
-      remedy: () =>
-        'The key was rejected outright. Usually the service account was deleted or its key\n' +
-        '  revoked - issue a new key and replace the file. A clock more than a few minutes\n' +
-        '  off will also do this, because the assertion is signed with a timestamp.',
+      remedy: () => tokenRefusedRemedy(credentialKind),
     },
     {
       title: 'Mint an access token for the Drive scope',
       run: async () => `${(await getAccessToken(DRIVE_SCOPE)).slice(0, 12)}... (ok)`,
-      remedy: () =>
-        'The Sheets scope worked and this one did not. With a service account that points at a\n' +
-        '  domain-wide delegation policy; with your own account it means the consent did not\n' +
-        '  include Drive - run "npm run sheets:login" again and accept both.',
+      remedy: () => driveScopeRemedy(credentialKind),
     },
     {
       title: 'Ask Drive about itself (proves the Drive API is enabled)',
@@ -172,8 +305,9 @@ async function main(): Promise<void> {
          */
         if (rawLimit !== undefined && Number(rawLimit) === 0) {
           throw new Error(
-            'This service account has NO Drive storage (limit is 0 bytes), so it cannot own ' +
-              'any file - which is what creating a spreadsheet requires.'
+            `${credentialKind === 'authorized_user' ? 'The signed-in account' : 'This service account'} ` +
+              'has NO Drive storage (limit is 0 bytes), so it cannot own any file - which is ' +
+              'what creating a spreadsheet requires.'
           );
         }
 
@@ -198,29 +332,7 @@ async function main(): Promise<void> {
 
         return `drive reachable as ${owner}, ${used} of ${limit} used${mismatch}`;
       },
-      remedy: (error) => {
-        const said = reason(error);
-        if (said.includes('switched off')) {
-          return 'Follow the URL above, enable the API, wait a minute and run this again.';
-        }
-        if (said.includes('NO Drive storage')) {
-          return (
-            'Nothing is misconfigured - a service account simply has no storage of its own on a\n' +
-            '  consumer Google project, and Google stopped granting it.\n\n' +
-            '  Use credentials belonging to a real person instead, so the sheets live in THEIR\n' +
-            '  Drive:  npm run sheets:login\n\n' +
-            '  A Google Workspace SHARED DRIVE is the other way a service account can have room,\n' +
-            '  but THIS APP CANNOT USE ONE: `createSpreadsheet` names no parent, so the Sheets\n' +
-            '  API always puts the new file in the caller\'s own My Drive - which for a service\n' +
-            '  account is the drive with no space. Setting a shared drive up would not help\n' +
-            '  without a code change, so do not spend the afternoon on it.'
-          );
-        }
-        return (
-          'Enable the Google Drive API for this key\'s project. Creating a spreadsheet makes a\n' +
-          '  Drive file, so allocation cannot work without it even though the error names Sheets.'
-        );
-      },
+      remedy: (error) => driveAboutRemedy(reason(error), credentialKind),
     },
     {
       title: 'Create a throwaway spreadsheet',
@@ -233,11 +345,7 @@ async function main(): Promise<void> {
         firstTabGid = created.firstTabGid;
         return `${created.spreadsheetUrl} (first tab gid ${firstTabGid})`;
       },
-      remedy: () =>
-        'This is the call that fails in your log. With the steps above green, the usual\n' +
-        '  remaining cause is the service account having no Drive storage of its own, and the\n' +
-        '  fix is `npm run sheets:login` rather than a shared drive - see the step above for\n' +
-        '  why a shared drive cannot help this app as it stands.',
+      remedy: () => createSpreadsheetRemedy(credentialKind),
     },
     {
       title: 'Write the job sheet header into it',
@@ -317,10 +425,29 @@ async function main(): Promise<void> {
     );
   }
 
-  process.exit(failed ? 1 : 0);
+  return failed ? 1 : 0;
 }
 
-void main().catch((error) => {
-  console.error('The doctor itself failed:', error);
-  process.exit(1);
-});
+/*
+ * Only when run as a script, so the tests can import the remedies above
+ * without running the doctor against Google.
+ *
+ * And `exitCode` rather than `process.exit()`, which is not tidiness. On
+ * Windows, exiting outright straight after a fetch() races Node's own teardown
+ * and aborts with "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING),
+ * file src\win\async.c" - after the whole report has printed, but replacing
+ * the exit code with a crash code. Fixed in Node itself only in 24.20 and 26.7
+ * (nodejs/node#61999), never in 22. Letting the event loop drain avoids the
+ * race on every version, and nothing here holds the loop open: fetch's idle
+ * keep-alive sockets are unref'd.
+ */
+if (require.main === module) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error('The doctor itself failed:', error);
+      process.exitCode = 1;
+    });
+}

@@ -4,6 +4,7 @@ import { describeAdminIdentity, resolveAdminIdentity } from '../config/adminIden
 import { ENV_PATH } from '../config/env';
 import { summarizeEnvFile } from '../config/envFile';
 import {
+  closeMailTransport,
   describeMailConfig,
   MailNotConfiguredError,
   sendTestMessage,
@@ -65,7 +66,7 @@ function addressOf(from: string): string {
   return (angled ? angled[1] : from).trim();
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   console.log('Mail doctor\n');
 
   const steps: Step[] = [
@@ -98,11 +99,16 @@ async function main(): Promise<void> {
         const dupes = file.duplicates.filter(
           (key) => key.startsWith('SMTP_') || key === 'ADMIN_EMAILS'
         );
+        // A bare `NAME=`, which is how .env.example ships every one of these,
+        // is in the file and sets nothing - so it is not reported as found.
+        const inEffect = mailKeys.filter((key) => !file.empty.includes(key));
+        const empty = mailKeys.filter((key) => file.empty.includes(key));
 
         return (
           `${file.path}\n` +
           `    ${file.bytes} bytes, ${file.encoding}\n` +
-          `    mail settings found: ${mailKeys.join(', ')}` +
+          `    mail settings in effect: ${inEffect.length ? inEffect.join(', ') : 'none'}` +
+          (empty.length ? `\n    present but EMPTY, so not in effect: ${empty.join(', ')}` : '') +
           (dupes.length
             ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}`
             : '')
@@ -257,10 +263,22 @@ async function main(): Promise<void> {
     );
   }
 
-  process.exit(failed ? 1 : 0);
+  return failed ? 1 : 0;
 }
 
-void main().catch((error) => {
-  console.error('The doctor itself failed:', error);
-  process.exit(1);
-});
+/*
+ * `exitCode` rather than `process.exit()`: on Windows, exiting outright just
+ * after network I/O races Node's teardown and aborts with "Assertion failed:
+ * !(handle->flags & UV_HANDLE_CLOSING)" - see the same block in sheetsDoctor.ts.
+ * Letting the loop drain needs the pooled SMTP connection closed first, or a
+ * finished `--to` run waits out its idle timeout.
+ */
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error('The doctor itself failed:', error);
+    process.exitCode = 1;
+  })
+  .finally(closeMailTransport);

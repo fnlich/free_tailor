@@ -238,6 +238,15 @@ async function main(): Promise<void> {
     code = await waitForRedirect(server, state);
   } finally {
     server.close();
+    /*
+     * `close()` stops new connections and ends idle ones, but not a socket that
+     * never carried a request - and browsers open exactly those, speculatively,
+     * beside the one the redirect arrives on. One of them is enough to keep this
+     * process alive after it has saved the file and said so. Forced shut a
+     * moment later rather than now, so the page the browser is being sent still
+     * gets there; unref'd, so the timer never holds the process open itself.
+     */
+    setTimeout(() => server.closeAllConnections(), 1_000).unref();
   }
 
   const response = await fetch(TOKEN_ENDPOINT, {
@@ -291,7 +300,10 @@ async function main(): Promise<void> {
   console.log('Check it with:  npm run sheets:doctor');
 }
 
+// `exitCode`, not `process.exit()`: on Windows, exiting outright just after a
+// fetch() races Node's teardown and aborts with "Assertion failed:
+// !(handle->flags & UV_HANDLE_CLOSING)" - see the same block in sheetsDoctor.ts.
 void main().catch((error) => {
   console.error(`\n${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

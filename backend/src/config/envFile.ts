@@ -1,3 +1,4 @@
+import dotenv from 'dotenv';
 import fs from 'fs';
 
 /**
@@ -27,6 +28,17 @@ export type EnvFileSummary = {
   keys: string[];
   /** Names assigned more than once. `dotenv.parse` keeps the LAST and cannot show this. */
   duplicates: string[];
+  /**
+   * Names whose value, as the loader will actually see it, is empty.
+   *
+   * `.env.example` ships dozens of bare `NAME=` lines, so a file copied from it
+   * lists every one of those names in `keys` while setting none of them. A
+   * doctor that reports `keys` alone says "GOOGLE_CREDENTIALS_PATH found" about
+   * a variable that is not in effect - the very confusion it exists to end.
+   * Taken from `dotenv.parse`, so the last assignment wins and quoting and
+   * comments are read exactly as the loader reads them. NAMES ONLY, as above.
+   */
+  empty: string[];
 };
 
 /** The encoding `readEnvFileText` would decode this file as. */
@@ -62,14 +74,23 @@ export function summarizeEnvFile(filePath: string): EnvFileSummary {
   try {
     buffer = fs.readFileSync(filePath);
   } catch {
-    return { path: filePath, exists: false, bytes: 0, encoding: 'absent', keys: [], duplicates: [] };
+    return {
+      path: filePath,
+      exists: false,
+      bytes: 0,
+      encoding: 'absent',
+      keys: [],
+      duplicates: [],
+      empty: [],
+    };
   }
 
+  const text = readEnvFileText(filePath);
   const keys: string[] = [];
   const seen = new Set<string>();
   const duplicates = new Set<string>();
 
-  for (const line of readEnvFileText(filePath).split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     // The same shape dotenv accepts: an optional `export`, a name, then `=`.
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
     if (!match) continue;
@@ -86,6 +107,9 @@ export function summarizeEnvFile(filePath: string): EnvFileSummary {
     encoding: detectEncoding(buffer),
     keys,
     duplicates: [...duplicates],
+    empty: Object.entries(dotenv.parse(text))
+      .filter(([, value]) => value.trim() === '')
+      .map(([name]) => name),
   };
 }
 

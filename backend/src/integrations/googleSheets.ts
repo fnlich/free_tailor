@@ -487,6 +487,7 @@ type GoogleSheetsBatchUpdateValuesResponse = {
 const cachedAccessTokens = new Map<string, CachedAccessToken>();
 
 let warnedAboutExtraKeys = false;
+let warnedAboutMissingExplicitPath = false;
 
 /**
  * Which credential the last load actually used, for error messages.
@@ -556,9 +557,12 @@ async function fileExists(filePath: string): Promise<boolean> {
 const CREDENTIAL_FILENAMES = ['google-oauth-credentials.json', 'service-account-key.json'];
 
 export async function resolveCredentialPath(): Promise<string> {
-  const explicitPath =
-    process.env.GOOGLE_CREDENTIALS_PATH?.trim() ||
-    process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim();
+  const explicitVariable = process.env.GOOGLE_CREDENTIALS_PATH?.trim()
+    ? 'GOOGLE_CREDENTIALS_PATH'
+    : process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim()
+      ? 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH'
+      : '';
+  const explicitPath = explicitVariable ? process.env[explicitVariable]!.trim() : '';
   const cwd = process.cwd();
   const directories = [cwd, path.join(cwd, 'backend'), path.join(__dirname, '../..'), path.join(__dirname, '../../..')];
   const candidates = [
@@ -583,6 +587,27 @@ export async function resolveCredentialPath(): Promise<string> {
     }
   }
 
+  /**
+   * A path that was asked for and is not there is said out loud.
+   *
+   * It used to drop out of the candidate list like any other missing file, so
+   * the search quietly answered with something else - the stale-variable trap
+   * the warning below describes, minus the warning. A relative value resolves
+   * from the directory the process started in, which is `backend/` under
+   * `npm run --prefix backend` and the repository root under
+   * `node backend/dist/index.js`, so the same `.env` can find the file from one
+   * and not the other. Warned rather than thrown: falling back is what an
+   * install that works today depends on.
+   */
+  if (explicitPath && !present.includes(path.resolve(explicitPath)) && !warnedAboutMissingExplicitPath) {
+    warnedAboutMissingExplicitPath = true;
+    console.warn(
+      `[sheets] ${explicitVariable} names ${path.resolve(explicitPath)}, which does not exist` +
+        `${path.isAbsolute(explicitPath) ? '' : ` (a relative path resolves from ${cwd})`}. ` +
+        'Searching the default locations instead.'
+    );
+  }
+
   if (present.length > 0) {
     /**
      * More than one key on disk is a trap, and a quiet one.
@@ -596,10 +621,19 @@ export async function resolveCredentialPath(): Promise<string> {
      */
     if (present.length > 1 && !warnedAboutExtraKeys) {
       warnedAboutExtraKeys = true;
+      // "Set GOOGLE_CREDENTIALS_PATH" is no advice to somebody whose variable
+      // is the reason this file won. And the REPOSITORY .env, specifically:
+      // the loader copies every assignment in it over the real environment,
+      // empty ones included, so the shipped `GOOGLE_CREDENTIALS_PATH=` line
+      // silently cancels the same variable set in a shell.
+      const chosenExplicitly = Boolean(explicitPath) && present[0] === path.resolve(explicitPath);
       console.warn(
         `[sheets] ${present.length} Google credential files were found and only the first is used.\n` +
           present.map((file, index) => `         ${index === 0 ? 'USING  ' : 'ignored'} ${file}`).join('\n') +
-          '\n         Delete the ones you do not want, or set GOOGLE_CREDENTIALS_PATH to be explicit.'
+          (chosenExplicitly
+            ? `\n         It is used because ${explicitVariable} names it. Delete the others to quiet this.`
+            : '\n         Delete the ones you do not want, or set GOOGLE_CREDENTIALS_PATH in the repository ' +
+              '.env to be explicit.')
       );
     }
     return present[0];
@@ -614,13 +648,15 @@ export async function resolveCredentialPath(): Promise<string> {
 }
 
 /**
- * Whether this install has a service-account key at all.
+ * The credential's own identity, for the doctor to print before it tries anything.
  *
- * Its own predicate so callers can answer "not configured" as a fact rather
- * than by catching the 500 that every sheets call would otherwise throw. A
- * missing key is a deployment that has not set sheets up yet, not a failure.
+ * Read through the same loader every real call uses, so a file the app would
+ * refuse fails HERE, with the loader's own message. Classifying it by the
+ * presence of `refresh_token` alone let a downloaded OAuth client - only half
+ * of a credential - pass this step as "service account (missing)", and the
+ * real complaint then surfaced one step later under a remedy about revoked
+ * keys.
  */
-/** The credential's own identity, for the doctor to print before it tries anything. */
 export async function describeServiceAccount(): Promise<{
   path: string;
   kind: LoadedCredentials['kind'];
@@ -628,12 +664,12 @@ export async function describeServiceAccount(): Promise<{
   projectId: string;
 }> {
   const filePath = await resolveCredentialPath();
+  const credentials = await loadGoogleCredentials();
   const parsed = JSON.parse(await fs.readFile(filePath, 'utf8')) as GoogleCredentialFile;
-  const isUser = Boolean(parsed.refresh_token?.trim());
   return {
     path: filePath,
-    kind: isUser ? 'authorized_user' : 'service_account',
-    identity: isUser ? (parsed.client_id ?? '(missing)') : (parsed.client_email ?? '(missing)'),
+    kind: credentials.kind,
+    identity: credentials.kind === 'authorized_user' ? credentials.clientId : credentials.clientEmail,
     projectId: parsed.project_id ?? '(not in this file)',
   };
 }
@@ -653,6 +689,13 @@ export async function deleteSpreadsheet(spreadsheetId: string): Promise<void> {
   });
 }
 
+/**
+ * Whether this install has a service-account key at all.
+ *
+ * Its own predicate so callers can answer "not configured" as a fact rather
+ * than by catching the 500 that every sheets call would otherwise throw. A
+ * missing key is a deployment that has not set sheets up yet, not a failure.
+ */
 export async function isGoogleSheetsConfigured(): Promise<boolean> {
   try {
     await resolveCredentialPath();
@@ -812,6 +855,15 @@ export async function getAccessToken(scope: string): Promise<string> {
      * knows to stop retrying and tell somebody.
      */
     let operatorDetail: string | undefined;
+    /*
+     * Google's own words, kept for the operator.
+     *
+     * The rewrites below replace them in `message`, and before this nothing
+     * carried them anywhere - so no log said "Token has been expired or
+     * revoked", which is the exact string the README's Troubleshooting row and
+     * every search engine are keyed on.
+     */
+    const googleSaid = ` Google said: "${errorMessage}".`;
 
     if (errorMessage.toLowerCase().includes('invalid_grant')) {
       errorMessage =
@@ -824,10 +876,29 @@ export async function getAccessToken(scope: string): Promise<string> {
         credentials.kind === 'authorized_user'
           ? 'The saved consent is no longer valid - it was revoked, or it expired because the ' +
             'OAuth consent screen is still in Testing mode, where refresh tokens last seven days. ' +
-            'Run "npm run sheets:login" in backend/ again, and publish the consent screen to stop ' +
-            'it recurring.'
+            'Publish the consent screen first (Cloud console -> Google Auth Platform -> Audience -> ' +
+            'Publish app), because a consent given while it is in Testing keeps the seven-day ' +
+            'limit; then run "npm run sheets:login" in backend/ again.'
           : 'The service account key was rejected. It may have been deleted or revoked; issue a ' +
             'new one. A clock more than a few minutes out will also do this.';
+      operatorDetail += googleSaid;
+    }
+    /*
+     * The OTHER half of a saved sign-in going bad: the token is fine but the
+     * OAuth client it was issued to is gone, or its secret was reset. Google
+     * answers `invalid_client`, and running sheets:login again cannot help on
+     * its own - it would re-use the same dead client out of the same file.
+     */
+    if (credentials.kind === 'authorized_user' && errorMessage.toLowerCase().includes('invalid_client')) {
+      errorMessage =
+        "This server's Google sign-in uses an OAuth client Google no longer accepts, so Sheets and " +
+        'Drive are unavailable until an administrator replaces it.';
+      operatorDetail =
+        'Google refused the OAuth client itself - it was deleted, or its secret was reset. Create a ' +
+        'new Desktop app OAuth client in the Cloud console, download its JSON into backend/, and run ' +
+        '"npm run sheets:login" in backend/; a freshly downloaded client is preferred over the one ' +
+        'saved beside the old token.' +
+        googleSaid;
     }
     if (errorMessage.toLowerCase().includes('user not found')) {
       errorMessage =

@@ -129,6 +129,18 @@ function getTransport(config: MailConfig): Transporter {
   return transport;
 }
 
+/**
+ * Closes the pooled connection, for a one-shot script.
+ *
+ * The pool is right for the server, where the next sign-in re-uses it. A script
+ * that has sent its one message would otherwise sit there, finished, until the
+ * idle connection's twenty-second socket timeout let the process end.
+ */
+export function closeMailTransport(): void {
+  cached?.transport.close();
+  cached = null;
+}
+
 const APP_NAME = 'Tailor';
 
 function codeEmail(code: string, ttlMinutes: number): { subject: string; text: string; html: string } {
