@@ -128,13 +128,17 @@ test('the sheet is only ever readable by the account that owns it', async () => 
     }
 
     // And the same through the body, which POST /visibility does read.
+    const bobVisibilityBefore = server.visibility.get(bob.spreadsheetId);
     const viaBody = await server.request(server.aliceToken, '/visibility', {
       method: 'POST',
       body: JSON.stringify({ visibility: 'private', userId: bobsId, sheetId: bob.spreadsheetId }),
     });
     assert.equal(viaBody.status, 200);
-    // Bob's sheet is untouched; hers is the one that moved.
-    assert.equal(server.visibility.get(bob.spreadsheetId), 'public');
+    // Bob's sheet is UNTOUCHED - whatever it was, it still is - and hers is the
+    // one that moved. Read rather than hard-coded, so the allocation default can
+    // change without this test quietly becoming about the default instead of
+    // about scoping.
+    assert.equal(server.visibility.get(bob.spreadsheetId), bobVisibilityBefore);
     assert.equal(server.visibility.get(alice.spreadsheetId), 'private');
   } finally {
     server.close();
@@ -147,7 +151,10 @@ test('reading the sheet reports the sharing state and the day it would file unde
     const body = await (await server.request(server.aliceToken, '/')).json();
 
     assert.equal(body.configured, true);
-    assert.equal(body.visibility, 'public');
+    // That it REPORTS the sharing state is the claim; the value is whatever a
+    // newly allocated sheet has, which is private unless an operator sets
+    // SHEET_DEFAULT_VISIBILITY=public.
+    assert.equal(body.visibility, 'private');
     assert.match(body.spreadsheetUrl, /docs\.google\.com/);
     assert.match(body.todayTab, /^\d{2}\/\d{2}\/\d{4}$/);
   } finally {

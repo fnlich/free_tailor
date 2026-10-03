@@ -532,12 +532,18 @@ npm run sheets:doctor -- --email you@example.com   # also tests sharing
 npm run sheets:doctor -- --keep                    # leave the throwaway behind
 ```
 
-**Which credential, and why it probably is not a service account.** The tidy
-arrangement is a service account key, and on a Google Workspace domain with a
-shared drive it works. On a **consumer Google project it cannot**: the service
-account is given a Drive quota of **zero bytes**, so it authenticates perfectly
-and can never own a file - and creating a spreadsheet means owning one. The
-failure is a 403 that blames permissions and means storage.
+**Which credential, and why it is not a service account.** The tidy arrangement
+looks like a service account key, and on a **consumer Google project it cannot
+work**: the service account is given a Drive quota of **zero bytes**, so it
+authenticates perfectly and can never own a file - and creating a spreadsheet
+means owning one. The failure is a 403 that blames permissions and means storage.
+
+A Workspace **shared drive** is how a service account would normally get room,
+and **this app cannot put files in one**: `createSpreadsheet` names no parent, so
+the Sheets API always creates in the caller's own My Drive. Supporting a shared
+drive would need a `parents` on that call and a drive id to point at - a code
+change, not a configuration. Until then the service-account path only works where
+the account itself has storage, which on a consumer project it never does.
 
 So the app accepts either credential, and prefers the one that works:
 
@@ -551,16 +557,18 @@ created in **your** Drive and shared with its owner as an editor. It needs an
 OAuth client from the Cloud console (Desktop app type) - the script says exactly
 where to click if it cannot find one. `GOOGLE_CREDENTIALS_PATH` overrides where
 credentials are looked for; a service account key at
-`backend/service-account-key.json` still works if you have a shared drive for it.
+`backend/service-account-key.json` is still read, but see the paragraph above
+before counting on it.
 
 Two things this needs from Google, and both are easy to miss:
 
 - The **Drive API** enabled for the same Cloud project as the key, not just the
   Sheets API. Sharing is a Drive concept, and a missing Drive API produces a 403
   that blames the file rather than the setting.
-- Room in the service account's own Drive. Files it creates count against *its*
-  quota, not against any person's, so a large installation should point the key
-  at a shared drive.
+- Room in the service account's own Drive, if you use one. Files it creates count
+  against *its* quota, not against any person's - and pointing the key at a shared
+  drive does not move them, because the create call names no parent. Use
+  `npm run sheets:login` instead.
 
 **Moving to another server.** Nothing is registered with Google a second time.
 The Cloud project, the enabled Sheets and Drive APIs, the consent screen and the
@@ -1342,6 +1350,7 @@ unique across the install, which settles all of it in one segment.
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
+| `SHEET_DEFAULT_VISIBILITY` | Whether a newly allocated spreadsheet is link-shared: `private` (default) or `public`. `public` means **anyone with the link may edit**. Only that exact string opens a sheet up - anything else resolves to `private` with a warning, because the unsafe value cannot be taken back once a link is out. The account holder's own access comes from a writer grant made at allocation either way, and each account can flip its own sheet from the account page |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
 | `CRYPTOMUS_MERCHANT_ID` / `CRYPTOMUS_PAYMENT_API_KEY` | Crypto through Cryptomus, on its hosted invoice page. Both are needed or the method is not offered. The payment API key does double duty: it signs outgoing requests **and** is what every incoming callback is verified against, so there is no separate webhook secret. The endpoint is `/api/payments/webhook/cryptomus` |
 | `CRYPTOMUS_CALLBACK_URL` | Optional. Sends the callback address per invoice instead of relying on the one set in the Cryptomus dashboard. Must be this server's API, reachable from the internet. Left empty the field is omitted entirely - sending it blank would override the dashboard with nothing |
@@ -1427,6 +1436,8 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch, a task pinned to a browser platform no registered browser can serve, and a task kind this build does not know are **not** retried. |
 | Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
+| Somebody opened their sheet link and Google said they need access | Expected since sheets became private by default: the link alone no longer works, and the person it belongs to opens it through the grant their own Google account holds. If they want a link others can use, the account page has a sharing toggle - or set `SHEET_DEFAULT_VISIBILITY=public` to go back to link-shared for new sheets, knowing that means anyone with the URL may edit. If the OWNER cannot open their own sheet, that is different: the writer grant failed, almost always because the Drive API is not enabled for the server's Google project. It is retried on their next sign-in, and `npm run sheets:doctor` names the cause. |
+| A setting is plainly in `.env` and plainly not in effect | Run `npm run mail:doctor` (or `sheets:doctor`) in `backend/` - its first step prints the absolute path of the file it read, the file's size and encoding, and which keys it found, names only. Four causes look identical without that: the loader read a **different** file - the path resolves from the compiled module, so it is always the **repository root** and never `backend/.env`, whichever directory you ran from; a **later duplicate** of the same key silently won, because the last assignment wins; the **encoding** did not decode, which happens to a UTF-16 file written without a byte-order mark and PowerShell's `>` writes UTF-16; or the editor never saved. |
 | Sign-in emails are not arriving and the log says only `Could not send the sign-in email via …` | That one sentence covers a missing variable, a wrong key, a blocked port and an unverified sending domain. Run `npm run mail:doctor` in `backend/` - it walks the same chain in order and stops at the first break with what to change. Add `-- --to you@example.com` to include a real send, which is the only step that catches an unverified domain. |
 | Sign-in works for your own address but fails for everyone else, with a 403 from the relay | The relay is still sandboxed: most of them refuse to send to anybody but your own account address until the sending domain is **verified** in their dashboard. It is not a bug in the app, and the failure reaches the page as a 502 with the relay's own wording. Finish the DNS records the relay asked for, wait for it to read *Verified*, then retry. Test with a second address afterwards - your own inbox is the one case that works either way, so it proves nothing. |
 | The sign-in email arrives with no sender name, just the address | Expected: `From` is whatever `SMTP_FROM` says, verbatim. Set it to the display-name form to fix it - `SMTP_FROM="Tailor <login@yourdomain.com>"`, quoted because the value contains spaces. It is the only branding on the only email this app sends. |

@@ -84,7 +84,13 @@ advance.
 ```
 backend/src/
   index.ts            # Express app: mounts 21 routers under /api
-  config/             # env loading (.env, UTF-16 aware), browser resolution
+  config/             # env loading (.env, UTF-16 aware), browser resolution.
+                      #   ENV_PATH resolves from the COMPILED module, so it is
+                      #   always <repo root>/.env regardless of cwd - a file at
+                      #   backend/.env is ignored. envFile.ts's summarizeEnvFile
+                      #   reports a file's path, encoding and key NAMES (never
+                      #   values) so the doctors can say why a setting that is in
+                      #   the file is not in effect.
   controllers/        # one file, the skills handlers routes/resume.ts mounts
   database/           # better-sqlite3, one repository per table
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that

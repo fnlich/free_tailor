@@ -111,16 +111,60 @@ test('an account gets exactly one spreadsheet, however many times it is asked fo
   assert.match(users.getUserById(account.id).sheetUrl, /docs\.google\.com/);
 });
 
-test('a new spreadsheet is shared with its owner and left link-editable', async () => {
-  const { users, sheets, shares, visibility } = setup('shared-public');
+test('a new spreadsheet is shared with its owner and NOT link-shared', async () => {
+  const { users, sheets, shares, visibility, calls } = setup('shared-private');
+  delete process.env.SHEET_DEFAULT_VISIBILITY;
   const account = users.createUser({ email: 'alice@example.com' });
 
   const state = await sheets.ensureAccountSheet(account);
 
+  // The grant that matters: the account holder can open their own sheet.
   assert.equal(shares.get(state.spreadsheetId), 'alice@example.com');
-  // Public by default, which for this feature means anyone with the link may
-  // edit. The private case is a choice the owner makes on the account page.
-  assert.equal(visibility.get(state.spreadsheetId), 'public');
+
+  /*
+   * Private by default, and `public` on this app's Drive means anyone with the
+   * link may EDIT somebody's job search. The owner loses nothing - the writer
+   * grant above is their access - and anyone who wants a shareable link presses
+   * the toggle.
+   */
+  assert.equal(visibility.get(state.spreadsheetId), 'private');
+  // And no Drive call is made to achieve it: a new file has no `anyone` grant to
+  // revoke, so asking for 'private' would be a round trip that can only fail.
+  assert.ok(
+    !calls.some(([name]) => name === 'setSpreadsheetVisibility'),
+    'allocation must not touch sharing at all when the default is private'
+  );
+});
+
+test('SHEET_DEFAULT_VISIBILITY=public restores link sharing for anyone who wants it', async () => {
+  const { users, sheets, visibility, calls } = setup('shared-public-optin');
+  process.env.SHEET_DEFAULT_VISIBILITY = 'public';
+  try {
+    const account = users.createUser({ email: 'alice@example.com' });
+    const state = await sheets.ensureAccountSheet(account);
+
+    assert.equal(visibility.get(state.spreadsheetId), 'public');
+    assert.deepEqual(
+      calls.filter(([name]) => name === 'setSpreadsheetVisibility'),
+      [['setSpreadsheetVisibility', state.spreadsheetId, 'public']]
+    );
+  } finally {
+    delete process.env.SHEET_DEFAULT_VISIBILITY;
+  }
+});
+
+test('a value nobody meant resolves to private, which is the safe direction', async () => {
+  const { users, sheets, visibility } = setup('shared-junk');
+  // Casing counts: only the exact string opens a sheet up, because the unsafe
+  // answer cannot be taken back once a link is out.
+  process.env.SHEET_DEFAULT_VISIBILITY = 'PUBLIC';
+  try {
+    const account = users.createUser({ email: 'alice@example.com' });
+    const state = await sheets.ensureAccountSheet(account);
+    assert.equal(visibility.get(state.spreadsheetId), 'private');
+  } finally {
+    delete process.env.SHEET_DEFAULT_VISIBILITY;
+  }
 });
 
 test("today's tab is created once and then never asked about again", async () => {
@@ -490,8 +534,13 @@ test('going private is refused while the owner has no access of their own', asyn
       throw new Error('Drive API has not been enabled for this project.');
     },
   });
+  // Link-shared on purpose: this guard is about the PUBLIC -> private
+  // transition, which is the only time withdrawing the link can take away
+  // somebody's only way in. A sheet that was private all along never had one.
+  process.env.SHEET_DEFAULT_VISIBILITY = 'public';
   const account = users.createUser({ email: 'alice@example.com' });
   const state = await sheets.ensureAccountSheet(account);
+  delete process.env.SHEET_DEFAULT_VISIBILITY;
 
   // Withdrawing the link is the only way in that remains when the personal
   // grant never landed, so this request would lock them out of their own sheet
