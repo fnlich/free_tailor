@@ -240,7 +240,10 @@ test('naming no sheet at all resolves to YOUR sheet, not just to some sheet', as
     assert.notEqual(response.status, 404);
     const { error } = await response.json();
     assert.doesNotMatch(error ?? '', /That spreadsheet was not found/);
-    assert.match(error ?? '', /Service Account key/i);
+    // The integration's own "not configured" - which says only that, the
+    // command and the file paths being for the operator's log, not this page.
+    assert.match(error ?? '', /Google Sheets is not set up on this server/);
+    assert.doesNotMatch(error ?? '', /sheets:login|service-account-key\.json/);
   } finally {
     server.close();
   }

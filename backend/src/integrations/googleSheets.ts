@@ -521,9 +521,22 @@ export class GoogleSheetsRequestError extends Error {
    */
   detail?: string;
 
+  /**
+   * Google's own status, when `statusCode` had to differ from it.
+   *
+   * A 401 from Google means THIS SERVER's credential was refused. A 401 from
+   * this API means the CALLER's session is gone, and the frontend acts on that
+   * by signing them out - so passing Google's through, which the routes do,
+   * signed out every account holder who opened a page while the server's Google
+   * sign-in was broken, and they never saw the sentence saying so. It becomes a
+   * 502, the upstream refusing us, and the original is kept here for the doctor.
+   */
+  upstreamStatus?: number;
+
   constructor(statusCode: number, message: string, detail?: string) {
     super(message);
-    this.statusCode = statusCode;
+    this.statusCode = statusCode === 401 ? 502 : statusCode;
+    if (statusCode !== this.statusCode) this.upstreamStatus = statusCode;
     if (detail) this.detail = detail;
   }
 }
@@ -631,7 +644,7 @@ export async function resolveCredentialPath(): Promise<string> {
         `[sheets] ${present.length} Google credential files were found and only the first is used.\n` +
           present.map((file, index) => `         ${index === 0 ? 'USING  ' : 'ignored'} ${file}`).join('\n') +
           (chosenExplicitly
-            ? `\n         It is used because ${explicitVariable} names it. Delete the others to quiet this.`
+            ? `\n         It is used because ${explicitVariable} names it; the others are ignored.`
             : '\n         Delete the ones you do not want, or set GOOGLE_CREDENTIALS_PATH in the repository ' +
               '.env to be explicit.')
       );
@@ -641,6 +654,7 @@ export async function resolveCredentialPath(): Promise<string> {
 
   throw new GoogleSheetsRequestError(
     500,
+    'Google Sheets is not set up on this server yet.',
     'No Google credentials were found. Run "npm run sheets:login" in backend/ to sign in with ' +
       'your own Google account, or place a service account key at ' +
       'backend/service-account-key.json. GOOGLE_CREDENTIALS_PATH overrides where to look.'
@@ -709,11 +723,20 @@ async function loadGoogleCredentials(): Promise<LoadedCredentials> {
   const filePath = await resolveCredentialPath();
   const raw = await fs.readFile(filePath, 'utf8');
 
+  /*
+   * Each refusal below names a file on the server's disk and a command to run
+   * there, so that half is `detail` - the same split getAccessToken makes, and
+   * for the same reason: these reach account holders' pages too.
+   */
+  const unusable =
+    "This server's Google credential file cannot be used, so Sheets and Drive are unavailable " +
+    'until an administrator fixes it.';
+
   let parsed: GoogleCredentialFile;
   try {
     parsed = JSON.parse(raw) as GoogleCredentialFile;
   } catch {
-    throw new GoogleSheetsRequestError(500, `${filePath} is not valid JSON.`);
+    throw new GoogleSheetsRequestError(500, unusable, `${filePath} is not valid JSON.`);
   }
 
   const tokenUri = parsed.token_uri?.trim() || DEFAULT_TOKEN_URI;
@@ -727,6 +750,7 @@ async function loadGoogleCredentials(): Promise<LoadedCredentials> {
     if (!clientId || !clientSecret) {
       throw new GoogleSheetsRequestError(
         500,
+        unusable,
         `${filePath} has a refresh_token but no client_id and client_secret to use it with. ` +
           'Run "npm run sheets:login" in backend/ to make a complete one.'
       );
@@ -742,6 +766,7 @@ async function loadGoogleCredentials(): Promise<LoadedCredentials> {
   if (!clientEmail || !privateKey) {
     throw new GoogleSheetsRequestError(
       500,
+      unusable,
       `${filePath} is not a credential this app can use. Expected either a service account key ` +
         '(client_email and private_key) or user credentials (client_id, client_secret and ' +
         'refresh_token). If this is an OAuth client file you just downloaded, it is only half of ' +
@@ -836,8 +861,12 @@ export async function getAccessToken(scope: string): Promise<string> {
 
   if (!response.ok) {
     let errorMessage = 'Failed to authenticate with Google Sheets.';
+    // Google's machine-readable code (`invalid_grant`, `deleted_client`...),
+    // classified on directly rather than searched for in the joined text.
+    let googleCode = '';
     try {
       const errorBody = (await response.json()) as GoogleApiErrorResponse;
+      if (typeof errorBody.error === 'string') googleCode = errorBody.error.trim().toLowerCase();
       if (typeof errorBody.error === 'string' && errorBody.error_description) {
         errorMessage = `${errorBody.error}: ${errorBody.error_description}`;
       } else if (typeof errorBody.error === 'object' && errorBody.error?.message) {
@@ -885,19 +914,31 @@ export async function getAccessToken(scope: string): Promise<string> {
     }
     /*
      * The OTHER half of a saved sign-in going bad: the token is fine but the
-     * OAuth client it was issued to is gone, or its secret was reset. Google
-     * answers `invalid_client`, and running sheets:login again cannot help on
-     * its own - it would re-use the same dead client out of the same file.
+     * OAuth client it was issued to is not. Google has three codes for that -
+     * `deleted_client` (deleted by hand, or by Google for going unused; it can
+     * be restored for 30 days), `disabled_client`, and `invalid_client` (an
+     * unknown client or a reset secret) - and running sheets:login again cannot
+     * help on its own: it would re-use the same dead client out of the same file.
      */
-    if (credentials.kind === 'authorized_user' && errorMessage.toLowerCase().includes('invalid_client')) {
+    const clientRefused =
+      /^(invalid|deleted|disabled)_client$/.test(googleCode) ||
+      /\b(invalid|deleted|disabled)_client\b/i.test(errorMessage);
+    if (credentials.kind === 'authorized_user' && clientRefused) {
       errorMessage =
         "This server's Google sign-in uses an OAuth client Google no longer accepts, so Sheets and " +
         'Drive are unavailable until an administrator replaces it.';
+      const why = googleCode.startsWith('deleted')
+        ? 'The OAuth client was deleted - by hand, or by Google for going unused. It can be ' +
+          'restored for 30 days under Cloud console -> Google Auth Platform -> Clients; after that, '
+        : googleCode.startsWith('disabled')
+          ? 'The OAuth client was disabled; the Cloud console says why. Re-enable it there, or '
+          : 'Google refused the OAuth client itself - it does not exist, or its secret was reset. ' +
+            'To replace it, ';
       operatorDetail =
-        'Google refused the OAuth client itself - it was deleted, or its secret was reset. Create a ' +
-        'new Desktop app OAuth client in the Cloud console, download its JSON into backend/, and run ' +
-        '"npm run sheets:login" in backend/; a freshly downloaded client is preferred over the one ' +
-        'saved beside the old token.' +
+        why +
+        'create a new Desktop app OAuth client, download its JSON into backend/, and run ' +
+        '"npm run sheets:login -- --client <that file>" in backend/. Naming the file matters: ' +
+        'without it an older client_secret*.json left in backend/ can be picked instead.' +
         googleSaid;
     }
     if (errorMessage.toLowerCase().includes('user not found')) {

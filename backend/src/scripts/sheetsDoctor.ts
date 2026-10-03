@@ -70,7 +70,9 @@ export type CredentialKind = 'authorized_user' | 'service_account';
  */
 export function reason(error: unknown): string {
   if (error instanceof GoogleSheetsRequestError) {
-    return `HTTP ${error.statusCode}: ${error.message}` + (error.detail ? `\n    ${error.detail}` : '');
+    // Google's own status where the route-facing one had to differ from it.
+    const status = error.upstreamStatus ?? error.statusCode;
+    return `HTTP ${status}: ${error.message}` + (error.detail ? `\n    ${error.detail}` : '');
   }
   return error instanceof Error ? error.message : String(error);
 }
@@ -97,8 +99,9 @@ export function tokenRefusedRemedy(kind: CredentialKind): string {
       '       days after it is given, and a consent given in Testing keeps that limit.\n' +
       '    2. Run "npm run sheets:login" in backend/ and approve BOTH Sheets and Drive. It re-uses\n' +
       '       the OAuth client already saved in the credential file.\n' +
-      '  If Google said invalid_client rather than invalid_grant, the OAuth client itself was\n' +
-      '  deleted or its secret reset - download a new Desktop app client into backend/ first.'
+      '  If Google said deleted_client, disabled_client or invalid_client rather than\n' +
+      '  invalid_grant, the OAuth client itself is the problem and signing in again re-uses it -\n' +
+      '  the reason above says what to do, ending in "npm run sheets:login -- --client <file>".'
     );
   }
   return (
@@ -164,13 +167,25 @@ export function driveAboutRemedy(said: string, kind: CredentialKind): string {
   );
 }
 
-/** Step 6. */
-export function createSpreadsheetRemedy(kind: CredentialKind): string {
+/**
+ * Step 6 - the run's first call to the SHEETS API.
+ *
+ * Every step before it talked to the token endpoint or to Drive, and step 5
+ * has just proved Drive enabled, so a project with only Drive switched on gets
+ * this far and no further.
+ */
+export function createSpreadsheetRemedy(said: string, kind: CredentialKind): string {
+  if (said.includes('switched off')) {
+    return (
+      'This is the first call to the Google Sheets API, and it is switched off for the project.\n' +
+      '  Follow the URL above, enable it, wait a minute and run this again.'
+    );
+  }
   if (kind === 'authorized_user') {
     return (
-      'This is the call that fails in your log. With the steps above green and your own\n' +
-      '  account signed in, read the reason above: the usual causes are the Drive API not being\n' +
-      '  enabled for the project that owns the OAuth client, or that account\'s Drive being full.'
+      'This is the call that fails in your log. Step 5 proved Drive is reachable, so read the\n' +
+      '  reason above for the rest: a storage quota means the signed-in account\'s Drive is full -\n' +
+      '  free space there, or run "npm run sheets:login" in backend/ as an account that has room.'
     );
   }
   return (
@@ -209,7 +224,12 @@ function formatBytes(value?: string): string {
   return `${size.toFixed(1)} ${units[unit]}`;
 }
 
-async function main(): Promise<number> {
+/**
+ * The whole walk. Exported, with the `.env` to report on as a parameter, so a
+ * test can run it end to end - the remedies being right is no use if the steps
+ * stop passing them the credential in use.
+ */
+export async function main(envPath: string = ENV_PATH): Promise<number> {
   console.log('Google Sheets doctor\n');
 
   let spreadsheetId = '';
@@ -228,7 +248,7 @@ async function main(): Promise<number> {
        */
       title: 'Locate the .env',
       run: async () => {
-        const file = summarizeEnvFile(ENV_PATH);
+        const file = summarizeEnvFile(envPath);
         if (!file.exists) {
           // Not fatal: the credential search below has defaults that need no
           // .env at all, so this reports and moves on.
@@ -236,7 +256,9 @@ async function main(): Promise<number> {
         }
 
         // A bare `NAME=` - which is how .env.example ships every one of
-        // these - sets nothing, and reporting it as "found" said otherwise.
+        // these - sets the variable to EMPTY, and reporting it as "found" said
+        // otherwise. Worse than nothing, in fact: this .env overrides the real
+        // environment, so the line blanks the same variable set in a shell.
         const named = file.keys.filter(isSheetsSetting);
         const inEffect = named.filter((key) => !file.empty.includes(key));
         const empty = named.filter((key) => file.empty.includes(key));
@@ -345,7 +367,7 @@ async function main(): Promise<number> {
         firstTabGid = created.firstTabGid;
         return `${created.spreadsheetUrl} (first tab gid ${firstTabGid})`;
       },
-      remedy: () => createSpreadsheetRemedy(credentialKind),
+      remedy: (error) => createSpreadsheetRemedy(reason(error), credentialKind),
     },
     {
       title: 'Write the job sheet header into it',

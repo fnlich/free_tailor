@@ -95,30 +95,35 @@ test('a bare NAME= is listed as empty, because it is in the file and sets nothin
   // The shape .env.example ships dozens of: copied as-is, every one of these
   // names is "in the file", and a doctor reporting `keys` alone told an
   // operator GOOGLE_CREDENTIALS_PATH was found when it was not in effect.
-  const summary = summarize(
-    writeFixture(
-      '.env',
-      Buffer.from(
-        'GOOGLE_CREDENTIALS_PATH=\n' +
-          'GOOGLE_SERVICE_ACCOUNT_KEY_PATH=   \n' +
-          'SHEET_TIMEZONE=Europe/Berlin\n' +
-          'SMTP_HOST=first\n' +
-          // The LAST assignment is the one the loader keeps, so this is empty.
-          'SMTP_HOST=\n' +
-          'QUOTED_EMPTY=""\n' +
-          'SMTP_USER=resend # a comment is not a value\n',
-        'utf8'
-      )
-    )
-  );
+  const text =
+    'GOOGLE_CREDENTIALS_PATH=\n' +
+    'GOOGLE_SERVICE_ACCOUNT_KEY_PATH=   \n' +
+    'SHEET_TIMEZONE=Europe/Berlin\n' +
+    'SMTP_HOST=first\n' +
+    // The LAST assignment is the one the loader keeps, so this is empty.
+    'SMTP_HOST=\n' +
+    'QUOTED_EMPTY=""\n' +
+    'SMTP_USER=resend # a comment is not a value\n';
 
-  assert.deepEqual(summary.empty, [
-    'GOOGLE_CREDENTIALS_PATH',
-    'GOOGLE_SERVICE_ACCOUNT_KEY_PATH',
-    'SMTP_HOST',
-    'QUOTED_EMPTY',
-  ]);
-  assert.ok(summary.keys.includes('GOOGLE_CREDENTIALS_PATH'), 'still a key: it IS in the file');
-  assert.ok(!summary.empty.includes('SHEET_TIMEZONE'));
-  assert.ok(!summary.empty.includes('SMTP_USER'));
+  // In every encoding the loader decodes - PowerShell's above all, since the
+  // empty list is computed from the decoded text and a refactor that parsed
+  // the raw bytes would quietly report nothing as empty on Windows.
+  const encodings = {
+    utf8: Buffer.from(text, 'utf8'),
+    utf16le: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]),
+    utf16be: Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]),
+  };
+
+  for (const [encoding, buffer] of Object.entries(encodings)) {
+    const summary = summarize(writeFixture('.env', buffer));
+    assert.equal(summary.encoding, encoding);
+    assert.deepEqual(
+      summary.empty,
+      ['GOOGLE_CREDENTIALS_PATH', 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH', 'SMTP_HOST', 'QUOTED_EMPTY'],
+      encoding
+    );
+    assert.ok(summary.keys.includes('GOOGLE_CREDENTIALS_PATH'), 'still a key: it IS in the file');
+    assert.ok(!summary.empty.includes('SHEET_TIMEZONE'), encoding);
+    assert.ok(!summary.empty.includes('SMTP_USER'), encoding);
+  }
 });

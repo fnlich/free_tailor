@@ -170,30 +170,42 @@ test('an expired sign-in is diagnosed as one, and the operator is told to sign i
   );
 });
 
-test('a deleted OAuth client is told apart from an expired sign-in', async () => {
-  // Signing in again re-uses the client saved in the file, so with the CLIENT
-  // gone that advice alone would loop. Google says invalid_client.
-  const { fakeFetch } = tokenEndpointSays(401, {
-    error: 'invalid_client',
-    error_description: 'The OAuth client was not found.',
-  });
+// Signing in again re-uses the client saved in the file, so with the CLIENT
+// gone that advice alone would loop. Google has three codes for it - and
+// `deleted_client` is the one a recently deleted client actually gets, which
+// the first version of this branch did not recognise.
+for (const { code, description, says } of [
+  { code: 'deleted_client', description: 'The OAuth client was deleted.', says: /restored for 30 days/ },
+  { code: 'disabled_client', description: 'The OAuth client was disabled.', says: /Re-enable it/ },
+  { code: 'invalid_client', description: 'The OAuth client was not found.', says: /does not exist/ },
+]) {
+  test(`a dead OAuth client (${code}) is told apart from an expired sign-in`, async () => {
+    const { fakeFetch } = tokenEndpointSays(401, { error: code, error_description: description });
 
-  await withCredentials(
-    { 'google-oauth-credentials.json': USER_CREDENTIAL },
-    async ({ sheets, doctor }) => {
-      const error = await sheets.getAccessToken(sheets.SHEETS_SCOPE).then(
-        () => assert.fail('an invalid_client must not mint a token'),
-        (refused) => refused
-      );
-      assert.equal(error.statusCode, 401);
-      assert.match(error.message, /OAuth client Google no longer accepts/);
-      assert.match(error.detail, /Desktop app OAuth client/);
-      assert.match(error.detail, /Google said: "invalid_client: The OAuth client was not found\./);
-      assert.match(doctor.tokenRefusedRemedy('authorized_user'), /invalid_client/);
-    },
-    { fakeFetch }
-  );
-});
+    await withCredentials(
+      { 'google-oauth-credentials.json': USER_CREDENTIAL },
+      async ({ sheets, doctor }) => {
+        const error = await sheets.getAccessToken(sheets.SHEETS_SCOPE).then(
+          () => assert.fail(`${code} must not mint a token`),
+          (refused) => refused
+        );
+        // NOT a 401 to the browser: the frontend reads that as the caller's own
+        // session ending and signs them out. Google's status is kept aside.
+        assert.equal(error.statusCode, 502);
+        assert.equal(error.upstreamStatus, 401);
+        assert.match(doctor.reason(error), /^HTTP 401: /, 'the doctor still shows what Google said');
+
+        assert.match(error.message, /OAuth client Google no longer accepts/);
+        assert.doesNotMatch(error.message, /sheets:login|backend\//);
+        assert.match(error.detail, says);
+        assert.match(error.detail, /sheets:login -- --client/);
+        assert.ok(error.detail.includes(`Google said: "${code}: ${description}`));
+        assert.match(doctor.tokenRefusedRemedy('authorized_user'), new RegExp(code));
+      },
+      { fakeFetch }
+    );
+  });
+}
 
 test('a refused service account key still gets the service-account advice', async () => {
   const { fakeFetch, calls } = tokenEndpointSays(400, {
@@ -221,7 +233,10 @@ test('a refused service account key still gets the service-account advice', asyn
       assert.match(remedy, /clock/);
       assert.doesNotMatch(remedy, /sheets:login/);
     },
-    { fakeFetch }
+    // Pinned, because the search takes every google-oauth-credentials.json
+    // before any service-account-key.json - including a developer's own
+    // sheets:login file beside the compiled code, which would otherwise win.
+    { fakeFetch, env: { GOOGLE_CREDENTIALS_PATH: '<dir>/service-account-key.json' } }
   );
 });
 
@@ -235,12 +250,18 @@ test('half a credential fails at step 2 with the loader\'s own words, not at ste
         installed: { client_id: 'id.apps.googleusercontent.com', client_secret: 'secret' },
       },
     },
-    async ({ sheets }) => {
+    async ({ sheets, doctor }) => {
       await assert.rejects(
         () => sheets.describeServiceAccount(),
         (error) => {
-          assert.match(error.message, /not a credential this app can use/);
-          assert.match(error.message, /sheets:login/);
+          // The file and the command are for the operator, who gets them from
+          // the doctor; an account holder's page gets neither.
+          assert.match(error.message, /credential file cannot be used/);
+          assert.doesNotMatch(error.message, /sheets:login|google-oauth-credentials/);
+          assert.match(error.detail, /not a credential this app can use/);
+          assert.match(error.detail, /google-oauth-credentials\.json/);
+          assert.match(error.detail, /sheets:login/);
+          assert.match(doctor.reason(error), /sheets:login/);
           return true;
         }
       );
@@ -269,8 +290,14 @@ test('the later remedies follow the credential kind as well', () => {
   assert.match(doctor.driveScopeRemedy('service_account'), /domain-wide delegation/);
   assert.doesNotMatch(doctor.driveScopeRemedy('authorized_user'), /delegation/);
 
-  assert.doesNotMatch(doctor.createSpreadsheetRemedy('authorized_user'), /service account/);
-  assert.match(doctor.createSpreadsheetRemedy('service_account'), /service account/);
+  // Step 6 is the first Sheets API call, after step 5 proved Drive works.
+  const refused = 'HTTP 403: The caller does not have permission';
+  assert.doesNotMatch(doctor.createSpreadsheetRemedy(refused, 'authorized_user'), /service account|Drive API/);
+  assert.match(doctor.createSpreadsheetRemedy(refused, 'service_account'), /service account/);
+  assert.match(
+    doctor.createSpreadsheetRemedy('Google Sheets API is switched off for project x', 'authorized_user'),
+    /first call to the Google Sheets API/
+  );
 });
 
 test('a credential path that names nothing is said out loud, then the search runs', async () => {
@@ -322,5 +349,102 @@ test('the two-files warning does not tell you to set a variable that is why the 
       // Unset, the advice stands - and names the file that actually decides.
       assert.match(warnings.join('\n'), /set GOOGLE_CREDENTIALS_PATH in the repository \.env/);
     }
+  );
+});
+
+test('a missing path beside two default files is not claimed as the reason one won', async () => {
+  // The stale-variable trap: the variable names nothing, so the search picks
+  // a file it does NOT name - and must not say the variable chose it.
+  await withCredentials(
+    {
+      'google-oauth-credentials.json': USER_CREDENTIAL,
+      'service-account-key.json': serviceAccountCredential(),
+    },
+    async ({ sheets, warnings }) => {
+      await sheets.resolveCredentialPath();
+      const said = warnings.join('\n');
+      assert.match(said, /which does not exist/);
+      assert.match(said, /Google credential files were found/);
+      assert.doesNotMatch(said, /It is used because/);
+      assert.match(said, /set GOOGLE_CREDENTIALS_PATH in the repository \.env/);
+    },
+    { env: { GOOGLE_CREDENTIALS_PATH: '<dir>/gone.json' } }
+  );
+});
+
+test('the older variable name is the one named when it is the one in use', async () => {
+  await withCredentials(
+    { 'google-oauth-credentials.json': USER_CREDENTIAL },
+    async ({ sheets, warnings }) => {
+      await sheets.resolveCredentialPath();
+      assert.match(warnings.join('\n'), /GOOGLE_SERVICE_ACCOUNT_KEY_PATH names .*gone\.json/);
+    },
+    { env: { GOOGLE_SERVICE_ACCOUNT_KEY_PATH: '<dir>/gone.json' } }
+  );
+
+  await withCredentials(
+    {
+      'google-oauth-credentials.json': USER_CREDENTIAL,
+      'service-account-key.json': serviceAccountCredential(),
+    },
+    async ({ sheets, warnings }) => {
+      await sheets.resolveCredentialPath();
+      assert.match(warnings.join('\n'), /It is used because GOOGLE_SERVICE_ACCOUNT_KEY_PATH names it/);
+    },
+    { env: { GOOGLE_SERVICE_ACCOUNT_KEY_PATH: '<dir>/service-account-key.json' } }
+  );
+});
+
+test('the whole walk, as reported: an expired sign-in gets the sign-in advice', async () => {
+  // The remedies being right is no use unless the steps hand them the
+  // credential in use - so this runs the doctor itself, against a .env
+  // shaped like one copied from .env.example.
+  const { fakeFetch } = tokenEndpointSays(400, {
+    error: 'invalid_grant',
+    error_description: 'Token has been expired or revoked.',
+  });
+
+  await withCredentials(
+    {
+      'google-oauth-credentials.json': USER_CREDENTIAL,
+      'service-account-key.json': serviceAccountCredential(),
+    },
+    async ({ dir, doctor }) => {
+      const envPath = path.join(dir, '.env');
+      fs.writeFileSync(
+        envPath,
+        'GOOGLE_CLIENT_ID=sign-in-button.apps.googleusercontent.com\n' +
+          'GOOGLE_CREDENTIALS_PATH=\n' +
+          'GOOGLE_SERVICE_ACCOUNT_KEY_PATH=\n' +
+          'SHEET_TIMEZONE=Europe/Berlin\n'
+      );
+
+      const printed = [];
+      const realLog = console.log;
+      console.log = (...args) => printed.push(args.join(' '));
+      let code;
+      try {
+        code = await doctor.main(envPath);
+      } finally {
+        console.log = realLog;
+      }
+      const out = printed.join('\n');
+
+      assert.equal(code, 1);
+      assert.match(out, /sheets settings in effect: SHEET_TIMEZONE/);
+      assert.match(
+        out,
+        /present but EMPTY, so not in effect: GOOGLE_CREDENTIALS_PATH, GOOGLE_SERVICE_ACCOUNT_KEY_PATH/
+      );
+      assert.doesNotMatch(out, /GOOGLE_CLIENT_ID/, "the sign-in button's client is not this credential");
+      assert.match(out, /kind: +your own Google account/);
+      assert.match(out, /FAIL 3\. Mint an access token/);
+      assert.match(out, /Token has been expired or revoked/);
+      assert.match(out, /npm run sheets:login/);
+      assert.match(out, /Publish app/);
+      assert.doesNotMatch(out, /issue a new key|clock/);
+      assert.doesNotMatch(out, /OK +4\./, 'the walk stops at the first break');
+    },
+    { fakeFetch }
   );
 });

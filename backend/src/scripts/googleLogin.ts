@@ -6,7 +6,7 @@ import http from 'http';
 import path from 'path';
 import { AddressInfo } from 'net';
 
-import { DRIVE_SCOPE, SHEETS_SCOPE } from '../integrations/googleSheets';
+import { DRIVE_SCOPE, resolveCredentialPath, SHEETS_SCOPE } from '../integrations/googleSheets';
 
 /**
  * Signs this installation in to Google as YOU, once, and saves the consent.
@@ -94,6 +94,14 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
         ...(await fs.readdir(process.cwd()).catch(() => [] as string[]))
           .filter((name) => name.startsWith('client_secret') && name.endsWith('.json'))
           .map((name) => path.join(process.cwd(), name)),
+        // The file the APP reads, when .env names one. sheets:doctor tells an
+        // operator whose consent expired that signing in again re-uses the
+        // client saved in that file - which was only true when it happened to
+        // be the copy in this directory.
+        ...[process.env.GOOGLE_CREDENTIALS_PATH, process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH]
+          .map((value) => value?.trim())
+          .filter((value): value is string => Boolean(value))
+          .map((value) => path.resolve(value)),
       ];
 
   /** A client found inside an already-consented file, used only if nothing else has one. */
@@ -296,6 +304,29 @@ async function main(): Promise<void> {
   );
 
   console.log(`\nSaved ${outputPath}`);
+
+  /*
+   * Whether the app will actually read what was just written.
+   *
+   * This always writes beside the directory it runs in, while the app takes
+   * GOOGLE_CREDENTIALS_PATH first when .env sets it. Pointed at an older copy,
+   * the fresh consent sits unused, the expired one keeps being refused, and the
+   * two-files warning names the new file as the one being ignored.
+   */
+  const inUse = await resolveCredentialPath().catch(() => '');
+  const sameFile =
+    process.platform === 'win32'
+      ? inUse.toLowerCase() === outputPath.toLowerCase()
+      : inUse === outputPath;
+  if (inUse && !sameFile) {
+    console.log(
+      `\nBUT the app reads ${inUse}, not this file - GOOGLE_CREDENTIALS_PATH in the repository\n` +
+        `.env (or an earlier copy found first) decides that. Point the variable at\n` +
+        `${outputPath}, empty it, or move this file over that one.\n`
+    );
+    return;
+  }
+
   console.log('Sheets will now be created in your own Google Drive.\n');
   console.log('Check it with:  npm run sheets:doctor');
 }

@@ -784,10 +784,14 @@ test('several key files on disk are reported rather than silently ranked', async
   // at the repo root and the new one in backend/ - is the trap: the new key is
   // ignored and nothing says so, and the 403 that follows sends somebody to
   // check the new project's settings instead of which key is loaded.
+  //
+  // Named google-oauth-credentials.json, which the search takes before any
+  // service account key: a developer who has run sheets:login has one beside
+  // the compiled code, and with key files here that real file would win.
   const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-keys-'));
   fs.mkdirSync(nodePath.join(root, 'backend'), { recursive: true });
-  const first = nodePath.join(root, 'service-account-key.json');
-  const second = nodePath.join(root, 'backend', 'service-account-key.json');
+  const first = nodePath.join(root, 'google-oauth-credentials.json');
+  const second = nodePath.join(root, 'backend', 'google-oauth-credentials.json');
   fs.writeFileSync(first, '{}');
   fs.writeFileSync(second, '{}');
 
@@ -801,7 +805,8 @@ test('several key files on disk are reported rather than silently ranked', async
     const chosen = await sheets.resolveCredentialPath();
     assert.equal(chosen, first, 'the first candidate still wins - only the silence changes');
     const said = warnings.join('\n');
-    assert.match(said, /2 Google credential files were found/);
+    // At least these two; a developer's own credentials can add to the count.
+    assert.match(said, /\d+ Google credential files were found/);
     assert.match(said, /USING/);
     assert.match(said, /ignored/);
   } finally {
@@ -989,10 +994,12 @@ test('the downloaded OAuth client is not a credential, and says which half it is
       () => sheets.getAccessToken(sheets.SHEETS_SCOPE),
       (error) => {
         // It must name the file, say what is missing, and say what to run -
-        // the three things somebody staring at a 403 does not have.
-        assert.match(error.message, /google-oauth-credentials\.json/);
-        assert.match(error.message, /refresh_token/);
-        assert.match(error.message, /sheets:login/);
+        // the three things somebody staring at a 403 does not have. In the
+        // operator half: an account holder's page gets the diagnosis only.
+        assert.match(error.detail, /google-oauth-credentials\.json/);
+        assert.match(error.detail, /refresh_token/);
+        assert.match(error.detail, /sheets:login/);
+        assert.doesNotMatch(error.message, /google-oauth-credentials|sheets:login/);
         return true;
       }
     );

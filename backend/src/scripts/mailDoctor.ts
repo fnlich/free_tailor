@@ -100,7 +100,8 @@ async function main(): Promise<number> {
           (key) => key.startsWith('SMTP_') || key === 'ADMIN_EMAILS'
         );
         // A bare `NAME=`, which is how .env.example ships every one of these,
-        // is in the file and sets nothing - so it is not reported as found.
+        // sets the variable to EMPTY - and since this .env overrides the real
+        // environment, blanks the same variable set in a shell. Not "found".
         const inEffect = mailKeys.filter((key) => !file.empty.includes(key));
         const empty = mailKeys.filter((key) => file.empty.includes(key));
 
@@ -272,6 +273,14 @@ async function main(): Promise<number> {
  * !(handle->flags & UV_HANDLE_CLOSING)" - see the same block in sheetsDoctor.ts.
  * Letting the loop drain needs the pooled SMTP connection closed first, or a
  * finished `--to` run waits out its idle timeout.
+ *
+ * And a backstop, because closing the pool is not the whole story. `verify()`
+ * opens a connection of its own outside the pool, and nodemailer closes a
+ * failed one by half-closing it with its socket timeout cleared - so a relay
+ * that accepted the TCP connection and then went silent (a wrong port, a hung
+ * daemon, a mail-scanning proxy with its upstream blocked) would hold this
+ * process open forever after the report printed. Unref'd: it never delays a
+ * clean exit, and by the time it fires the teardown race is long past.
  */
 main()
   .then((code) => {
@@ -281,4 +290,7 @@ main()
     console.error('The doctor itself failed:', error);
     process.exitCode = 1;
   })
-  .finally(closeMailTransport);
+  .finally(() => {
+    closeMailTransport();
+    setTimeout(() => process.exit(), 3_000).unref();
+  });
