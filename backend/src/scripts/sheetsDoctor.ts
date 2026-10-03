@@ -268,7 +268,9 @@ export async function main(envPath: string = ENV_PATH): Promise<number> {
           `${file.path}\n` +
           `    ${file.bytes} bytes, ${file.encoding}\n` +
           `    sheets settings in effect: ${inEffect.length ? inEffect.join(', ') : 'none'}` +
-          (empty.length ? `\n    present but EMPTY, so not in effect: ${empty.join(', ')}` : '') +
+          (empty.length
+            ? `\n    present but EMPTY - not in effect, and blanking any shell value: ${empty.join(', ')}`
+            : '') +
           (dupes.length ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}` : '')
         );
       },

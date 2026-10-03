@@ -9,6 +9,7 @@ const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
 const profileRepository = require('../database/profileRepository');
 const { requireUser } = require('../middleware/auth');
+const { sheetsOperatorDetail } = require('./sheetsDetail');
 const {
   assertSheetNotOwnedByAnotherAccount,
   SheetAccessError,
@@ -611,7 +612,7 @@ router.get('/google-sheets/:id/tabs', async (req, res) => {
     res.json(tabs);
   } catch (error) {
     const errorDetails = getGoogleSheetImportErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
   }
 });
 
@@ -629,7 +630,7 @@ router.post('/google-sheets', async (req, res) => {
     res.json(sheet);
   } catch (error) {
     const errorDetails = getGoogleSheetErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
   }
 });
 
@@ -649,7 +650,7 @@ router.put('/google-sheets/:id', async (req, res) => {
     res.json(sheet);
   } catch (error) {
     const errorDetails = getGoogleSheetErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
   }
 });
 
@@ -696,7 +697,7 @@ router.post('/google-sheets/:id/import', async (req, res) => {
     });
   } catch (error) {
     const errorDetails = getGoogleSheetImportErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
   }
 });
 

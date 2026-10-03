@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { requireUser } from '../middleware/auth';
+import { sheetsOperatorDetail } from './sheetsDetail';
 import {
   batchUpdateGoogleSheetsColumns,
   fetchGoogleSheetsColumnValues,
@@ -491,7 +492,7 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
         : /rate limited|timed out/i.test(message)
           ? 429
           : 500;
-    res.status(statusCode).json({ error: message });
+    res.status(statusCode).json({ error: message, ...sheetsOperatorDetail(req, error) });
   }
 });
 
@@ -678,7 +679,7 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
         : /rate limited|timed out/i.test(message)
           ? 429
           : 500;
-    res.status(statusCode).json({ error: message });
+    res.status(statusCode).json({ error: message, ...sheetsOperatorDetail(req, error) });
   }
 });
 
@@ -869,7 +870,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         : /rate limited/i.test(message)
           ? 429
           : 500;
-    res.status(statusCode).json({ error: message });
+    res.status(statusCode).json({ error: message, ...sheetsOperatorDetail(req, error) });
   }
 });
 

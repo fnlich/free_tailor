@@ -286,8 +286,9 @@ export function describeGoogleFailure(
     // the likeliest cause for THIS operation rather than leaving it at that.
     const hint =
       operation === 'create a spreadsheet'
-        ? 'Creating a spreadsheet makes a file in Drive, so the Drive API must be enabled for the ' +
-          'same Cloud project as the key - having only the Sheets API on is the usual cause.'
+        ? 'Creating a spreadsheet is a Sheets API call that makes a file in Drive, so the Drive API ' +
+          'must be enabled for the same Cloud project as the credential, and the Sheets API too - ' +
+          'having only one of the two on is the usual cause.'
         : operation.includes('share') || operation.includes('access') || operation.includes('open')
           ? 'Sharing is a Drive operation, so the Drive API must be enabled for the key\'s project.'
           : 'The service account may not have been given access to this spreadsheet.';
@@ -569,12 +570,22 @@ async function fileExists(filePath: string): Promise<boolean> {
  */
 const CREDENTIAL_FILENAMES = ['google-oauth-credentials.json', 'service-account-key.json'];
 
+/**
+ * Which variable names the credential, if one does - the newer name winning.
+ *
+ * Exported so `sheets:login` names the same one when it explains why the app
+ * will not read the file it just saved, rather than working it out again.
+ */
+export function credentialPathVariable(
+  env: NodeJS.ProcessEnv = process.env
+): '' | 'GOOGLE_CREDENTIALS_PATH' | 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH' {
+  if (env.GOOGLE_CREDENTIALS_PATH?.trim()) return 'GOOGLE_CREDENTIALS_PATH';
+  if (env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim()) return 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH';
+  return '';
+}
+
 export async function resolveCredentialPath(): Promise<string> {
-  const explicitVariable = process.env.GOOGLE_CREDENTIALS_PATH?.trim()
-    ? 'GOOGLE_CREDENTIALS_PATH'
-    : process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH?.trim()
-      ? 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH'
-      : '';
+  const explicitVariable = credentialPathVariable();
   const explicitPath = explicitVariable ? process.env[explicitVariable]!.trim() : '';
   const cwd = process.cwd();
   const directories = [cwd, path.join(cwd, 'backend'), path.join(__dirname, '../..'), path.join(__dirname, '../../..')];
@@ -721,17 +732,29 @@ export async function isGoogleSheetsConfigured(): Promise<boolean> {
 
 async function loadGoogleCredentials(): Promise<LoadedCredentials> {
   const filePath = await resolveCredentialPath();
-  const raw = await fs.readFile(filePath, 'utf8');
-
-  /*
-   * Each refusal below names a file on the server's disk and a command to run
-   * there, so that half is `detail` - the same split getAccessToken makes, and
-   * for the same reason: these reach account holders' pages too.
-   */
   const unusable =
     "This server's Google credential file cannot be used, so Sheets and Drive are unavailable " +
     'until an administrator fixes it.';
 
+  // Caught, because Node's own error names the path - and a file sheets:login
+  // wrote owner-only is unreadable to a service running as another user.
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    throw new GoogleSheetsRequestError(
+      500,
+      unusable,
+      `${filePath} could not be read: ${error instanceof Error ? error.message : String(error)}. ` +
+        'Check it is a file, and readable by the user the backend runs as.'
+    );
+  }
+
+  /*
+   * Each refusal here names a file on the server's disk and a command to run
+   * there, so that half is `detail` - the same split getAccessToken makes, and
+   * for the same reason: these reach account holders' pages too.
+   */
   let parsed: GoogleCredentialFile;
   try {
     parsed = JSON.parse(raw) as GoogleCredentialFile;

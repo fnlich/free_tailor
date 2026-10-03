@@ -91,7 +91,7 @@ test('NO VALUE ever appears in the summary - it is printed and pasted into chat'
   assert.ok(!serialized.includes('you@example.com'));
 });
 
-test('a bare NAME= is listed as empty, because it is in the file and sets nothing', () => {
+test('a bare NAME= is listed as empty, because it is in the file and sets no value', () => {
   // The shape .env.example ships dozens of: copied as-is, every one of these
   // names is "in the file", and a doctor reporting `keys` alone told an
   // operator GOOGLE_CREDENTIALS_PATH was found when it was not in effect.

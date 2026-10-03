@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 
 import { isAdmin, requireUser } from '../middleware/auth';
+import { sheetsOperatorDetail } from './sheetsDetail';
 import { GoogleSheetsRequestError } from '../integrations/googleSheets';
 import {
   describeAccountSheet,
@@ -45,7 +46,8 @@ function fail(req: Request, res: Response, error: unknown): void {
   }
   if (error instanceof GoogleSheetsRequestError) {
     // Pass Google's own status through. The 403 in particular carries the
-    // "enable the Drive API" sentence, which is the actual fix.
+    // "enable the Drive API" sentence, which is the actual fix. (Not a 401:
+    // the error has already made that a 502, since ours means "signed out".)
     const status = error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502;
 
     /*
@@ -56,11 +58,7 @@ function fail(req: Request, res: Response, error: unknown): void {
      * Account page is usually not the person who can do any of that, and the
      * log is where it was always meant to go.
      */
-    if (error.detail) console.error(`[sheets] ${error.message} ${error.detail}`);
-    res.status(status).json({
-      error: error.message,
-      ...(error.detail && isAdmin(req) ? { detail: error.detail } : {}),
-    });
+    res.status(status).json({ error: error.message, ...sheetsOperatorDetail(req, error) });
     return;
   }
   console.error('[sheets] Sheet request failed.', error);

@@ -6,7 +6,12 @@ import http from 'http';
 import path from 'path';
 import { AddressInfo } from 'net';
 
-import { DRIVE_SCOPE, resolveCredentialPath, SHEETS_SCOPE } from '../integrations/googleSheets';
+import {
+  credentialPathVariable,
+  DRIVE_SCOPE,
+  resolveCredentialPath,
+  SHEETS_SCOPE,
+} from '../integrations/googleSheets';
 
 /**
  * Signs this installation in to Google as YOU, once, and saves the consent.
@@ -78,13 +83,25 @@ async function exists(file: string): Promise<boolean> {
  * Preferring a client-only file first keeps the original intent - a fresh
  * download wins - without turning the tidy case into a dead end.
  */
-async function loadClient(): Promise<{ clientId: string; clientSecret: string; from: string }> {
+export async function loadClient(): Promise<{ clientId: string; clientSecret: string; from: string }> {
   const explicit = argValue('--client');
+  /*
+   * The file the APP reads, ahead of this directory's copy.
+   *
+   * sheets:doctor tells an operator whose consent expired that signing in
+   * again re-uses the client saved in the credential file it named. That was
+   * only true when it happened to be the copy here: with GOOGLE_CREDENTIALS_PATH
+   * pointing elsewhere, a stale copy here - quite possibly holding the client
+   * that was since deleted - won the tie. Only consented files are affected; a
+   * fresh client-only download still beats both.
+   */
+  const inUse = explicit ? '' : await resolveCredentialPath().catch(() => '');
   const candidates = explicit
     ? [explicit]
     : [
         path.join(process.cwd(), 'oauth-client.json'),
         path.join(process.cwd(), 'backend', 'oauth-client.json'),
+        ...(inUse ? [inUse] : []),
         // The output filename is searched too, because saving the downloaded
         // client under it is an easy mistake and a miserable one: the app
         // prefers that name, finds no refresh_token in it and refuses, while
@@ -94,14 +111,6 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
         ...(await fs.readdir(process.cwd()).catch(() => [] as string[]))
           .filter((name) => name.startsWith('client_secret') && name.endsWith('.json'))
           .map((name) => path.join(process.cwd(), name)),
-        // The file the APP reads, when .env names one. sheets:doctor tells an
-        // operator whose consent expired that signing in again re-uses the
-        // client saved in that file - which was only true when it happened to
-        // be the copy in this directory.
-        ...[process.env.GOOGLE_CREDENTIALS_PATH, process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH]
-          .map((value) => value?.trim())
-          .filter((value): value is string => Boolean(value))
-          .map((value) => path.resolve(value)),
       ];
 
   /** A client found inside an already-consented file, used only if nothing else has one. */
@@ -167,6 +176,23 @@ async function loadClient(): Promise<{ clientId: string; clientSecret: string; f
       'and this script will re-use them - so seeing this message means that file is gone\n' +
       'or unreadable too.\n'
   );
+}
+
+/**
+ * Whether two paths are one file, by identity rather than by spelling.
+ *
+ * A symlinked release directory, macOS's /tmp, a case-insensitive volume or a
+ * hard link all give the same file two names; comparing the strings called the
+ * file just saved "not the one the app reads" and sent the operator to fix a
+ * setting that was already right. bigint, because Windows file ids outgrow 2^53.
+ */
+export async function sameFileOnDisk(a: string, b: string): Promise<boolean> {
+  try {
+    const [x, y] = await Promise.all([fs.stat(a, { bigint: true }), fs.stat(b, { bigint: true })]);
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  }
 }
 
 /** One request, one answer, then the server goes away. */
@@ -314,16 +340,18 @@ async function main(): Promise<void> {
    * two-files warning names the new file as the one being ignored.
    */
   const inUse = await resolveCredentialPath().catch(() => '');
-  const sameFile =
-    process.platform === 'win32'
-      ? inUse.toLowerCase() === outputPath.toLowerCase()
-      : inUse === outputPath;
-  if (inUse && !sameFile) {
-    console.log(
-      `\nBUT the app reads ${inUse}, not this file - GOOGLE_CREDENTIALS_PATH in the repository\n` +
-        `.env (or an earlier copy found first) decides that. Point the variable at\n` +
-        `${outputPath}, empty it, or move this file over that one.\n`
-    );
+  if (inUse && !(await sameFileOnDisk(inUse, outputPath))) {
+    const variable = credentialPathVariable();
+    const why = variable
+      ? `${variable} in the repository .env names it`
+      : 'it is found before this one in the default search';
+    const fix =
+      variable === 'GOOGLE_SERVICE_ACCOUNT_KEY_PATH'
+        ? `set GOOGLE_CREDENTIALS_PATH=${outputPath} (it outranks the older name), or empty ${variable}`
+        : variable
+          ? `set ${variable}=${outputPath}, or empty it`
+          : `delete ${inUse}, or set GOOGLE_CREDENTIALS_PATH=${outputPath}`;
+    console.log(`\nBUT the app reads ${inUse}, not this file: ${why}.\nTo use this one, ${fix}.\n`);
     return;
   }
 
@@ -331,10 +359,13 @@ async function main(): Promise<void> {
   console.log('Check it with:  npm run sheets:doctor');
 }
 
-// `exitCode`, not `process.exit()`: on Windows, exiting outright just after a
-// fetch() races Node's teardown and aborts with "Assertion failed:
+// Only when run as a script, so the tests can hold `loadClient` without opening
+// a port. And `exitCode`, not `process.exit()`: on Windows, exiting outright just
+// after a fetch() races Node's teardown and aborts with "Assertion failed:
 // !(handle->flags & UV_HANDLE_CLOSING)" - see the same block in sheetsDoctor.ts.
-void main().catch((error) => {
-  console.error(`\n${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  void main().catch((error) => {
+    console.error(`\n${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}

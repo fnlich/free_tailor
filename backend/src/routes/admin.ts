@@ -11,6 +11,7 @@ import {
 } from '../config/aiModelConfig';
 import { getProviderLabel } from '../config/providerCatalog';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError, updateGoogleSheetsRange } from '../integrations/googleSheets';
+import { sheetsOperatorDetail } from './sheetsDetail';
 import { probeDebugBrowser } from '../services/debugBrowser';
 import { getTabPoolStats } from '../services/ai/providers/browserChat/pool';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
@@ -70,6 +71,7 @@ router.post('/google-sheets/range', requireAdmin, async (req: Request, res: Resp
     const statusCode = error instanceof GoogleSheetsRequestError ? error.statusCode : 500;
     res.status(statusCode).json({
       error: error instanceof Error ? error.message : 'Failed to fetch Google Sheets data',
+      ...sheetsOperatorDetail(req, error),
     });
   }
 });
@@ -82,6 +84,7 @@ router.put('/google-sheets/range', requireAdmin, async (req: Request, res: Respo
     const statusCode = error instanceof GoogleSheetsRequestError ? error.statusCode : 500;
     res.status(statusCode).json({
       error: error instanceof Error ? error.message : 'Failed to update Google Sheets data',
+      ...sheetsOperatorDetail(req, error),
     });
   }
 });

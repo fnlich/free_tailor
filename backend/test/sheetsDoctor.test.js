@@ -434,7 +434,7 @@ test('the whole walk, as reported: an expired sign-in gets the sign-in advice', 
       assert.match(out, /sheets settings in effect: SHEET_TIMEZONE/);
       assert.match(
         out,
-        /present but EMPTY, so not in effect: GOOGLE_CREDENTIALS_PATH, GOOGLE_SERVICE_ACCOUNT_KEY_PATH/
+        /present but EMPTY - not in effect, and blanking any shell value: GOOGLE_CREDENTIALS_PATH, GOOGLE_SERVICE_ACCOUNT_KEY_PATH/
       );
       assert.doesNotMatch(out, /GOOGLE_CLIENT_ID/, "the sign-in button's client is not this credential");
       assert.match(out, /kind: +your own Google account/);
@@ -447,4 +447,164 @@ test('the whole walk, as reported: an expired sign-in gets the sign-in advice', 
     },
     { fakeFetch }
   );
+});
+
+/** A fake Google for a doctor run that gets past the token: routes by URL. */
+function googleThatRefusesTheSheetsCall() {
+  return async (url) => {
+    const at = String(url);
+    const json = (status, body) =>
+      new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    if (at.startsWith('https://oauth2.googleapis.com/token')) {
+      return json(200, { access_token: 'ya29.test-token', expires_in: 3600 });
+    }
+    if (at.startsWith('https://www.googleapis.com/drive/v3/about')) {
+      return json(200, {
+        user: { emailAddress: 'operator@example.com' },
+        storageQuota: { limit: '16106127360', usage: '1024' },
+      });
+    }
+    if (at.startsWith('https://sheets.googleapis.com/v4/spreadsheets')) {
+      return json(403, { error: { code: 403, message: 'The caller does not have permission' } });
+    }
+    throw new Error(`unexpected request to ${at}`);
+  };
+}
+
+test('the whole walk to step 6: the first Sheets call is not blamed on the Drive step 5 proved', async () => {
+  await withCredentials(
+    { 'google-oauth-credentials.json': USER_CREDENTIAL },
+    async ({ dir, doctor }) => {
+      const envPath = path.join(dir, '.env');
+      fs.writeFileSync(envPath, '');
+      const printed = [];
+      const realLog = console.log;
+      console.log = (...args) => printed.push(args.join(' '));
+      let code;
+      try {
+        code = await doctor.main(envPath);
+      } finally {
+        console.log = realLog;
+      }
+      const out = printed.join('\n');
+
+      assert.equal(code, 1);
+      assert.match(out, /OK +3\./);
+      assert.match(out, /OK +4\./);
+      assert.match(out, /OK +5\..*\n.*drive reachable as operator@example\.com/);
+      assert.match(out, /FAIL 6\. Create a throwaway spreadsheet/);
+      // Each step past the token hands its remedy the credential in use:
+      // a regression to service-account wiring would print these.
+      assert.doesNotMatch(out, /service account|domain-wide delegation/);
+      assert.match(out, /Step 5 proved Drive is reachable/);
+      // And the reason above it names the Sheets API, not only Drive.
+      assert.match(out, /the Sheets API too/);
+    },
+    { fakeFetch: googleThatRefusesTheSheetsCall() }
+  );
+});
+
+test('the newer variable outranks the older one when both are set', async () => {
+  await withCredentials(
+    {
+      'google-oauth-credentials.json': USER_CREDENTIAL,
+      'service-account-key.json': serviceAccountCredential(),
+    },
+    async ({ sheets, dir }) => {
+      assert.equal(sheets.credentialPathVariable(), 'GOOGLE_CREDENTIALS_PATH');
+      const chosen = await sheets.resolveCredentialPath();
+      assert.equal(fs.realpathSync(chosen), fs.realpathSync(path.join(dir, 'google-oauth-credentials.json')));
+    },
+    {
+      env: {
+        GOOGLE_CREDENTIALS_PATH: '<dir>/google-oauth-credentials.json',
+        GOOGLE_SERVICE_ACCOUNT_KEY_PATH: '<dir>/service-account-key.json',
+      },
+    }
+  );
+});
+
+test('a relative path that names nothing says where it was resolved from', async () => {
+  await withCredentials(
+    { 'google-oauth-credentials.json': USER_CREDENTIAL },
+    async ({ sheets, warnings }) => {
+      await sheets.resolveCredentialPath();
+      assert.match(warnings.join('\n'), /which does not exist \(a relative path resolves from .+\)/);
+    },
+    { env: { GOOGLE_CREDENTIALS_PATH: 'nested/gone.json' } }
+  );
+});
+
+test("a route hands the operator half to an administrator and the log, never to an account holder's page", async () => {
+  await withCredentials({}, async ({ sheets }) => {
+    const { sheetsOperatorDetail } = loadFresh('../dist/routes/sheetsDetail');
+    const error = new sheets.GoogleSheetsRequestError(
+      500,
+      "This server's Google credential file cannot be used.",
+      '/srv/backend/google-oauth-credentials.json is not valid JSON.'
+    );
+
+    const logged = [];
+    const realError = console.error;
+    console.error = (...args) => logged.push(args.join(' '));
+    try {
+      assert.deepEqual(sheetsOperatorDetail({ user: { role: 'user' } }, error), {});
+      assert.deepEqual(sheetsOperatorDetail({ user: { role: 'admin' } }, error), {
+        detail: '/srv/backend/google-oauth-credentials.json is not valid JSON.',
+      });
+      assert.deepEqual(sheetsOperatorDetail({ user: { role: 'admin' } }, new Error('other')), {});
+    } finally {
+      console.error = realError;
+    }
+    assert.equal(logged.length, 2, 'logged for both readers, so the operator half always lands somewhere');
+    assert.match(logged[0], /not valid JSON/);
+  });
+});
+
+test('sheets:login re-uses the client from the file the app reads, not a stale copy beside it', async () => {
+  // The state an install is left in after GOOGLE_CREDENTIALS_PATH moved the
+  // credential: an older consented copy here, holding a client since deleted.
+  const stale = { ...USER_CREDENTIAL, client_id: 'stale-deleted.apps.googleusercontent.com' };
+  const live = { ...USER_CREDENTIAL, client_id: 'live.apps.googleusercontent.com' };
+
+  await withCredentials(
+    { 'google-oauth-credentials.json': stale, 'elsewhere.json': live },
+    async () => {
+      const login = loadFresh('../dist/scripts/googleLogin');
+      const realLog = console.log;
+      console.log = () => {};
+      try {
+        const client = await login.loadClient();
+        assert.equal(client.clientId, 'live.apps.googleusercontent.com');
+      } finally {
+        console.log = realLog;
+      }
+    },
+    { env: { GOOGLE_CREDENTIALS_PATH: '<dir>/elsewhere.json' } }
+  );
+
+  // A fresh download still beats every consented file.
+  await withCredentials(
+    {
+      'google-oauth-credentials.json': stale,
+      'elsewhere.json': live,
+      'client_secret_new.json': { installed: { client_id: 'fresh', client_secret: 'x' } },
+    },
+    async () => {
+      const login = loadFresh('../dist/scripts/googleLogin');
+      assert.equal((await login.loadClient()).clientId, 'fresh');
+    },
+    { env: { GOOGLE_CREDENTIALS_PATH: '<dir>/elsewhere.json' } }
+  );
+});
+
+test('sheets:login tells one file under two names from two files', async () => {
+  await withCredentials({ 'a.json': USER_CREDENTIAL, 'b.json': USER_CREDENTIAL }, async ({ dir }) => {
+    const login = loadFresh('../dist/scripts/googleLogin');
+    const a = path.join(dir, 'a.json');
+    const link = path.join(dir, 'link');
+    fs.symlinkSync(dir, link, 'junction');
+    assert.equal(await login.sameFileOnDisk(a, path.join(link, 'a.json')), true, 'a symlinked directory');
+    assert.equal(await login.sameFileOnDisk(a, path.join(dir, 'b.json')), false, 'identical content, two files');
+  });
 });

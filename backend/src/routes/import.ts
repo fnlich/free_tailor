@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { requireUser } from '../middleware/auth';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError } from '../integrations/googleSheets';
+import { sheetsOperatorDetail } from './sheetsDetail';
 import { SheetAccessError } from '../services/sheets/accountSheet';
 import { resolveAddressableSheet } from '../services/sheets/accountSheet';
 import { adminAllowedSheetIds } from '../services/sheets/jobSheetTarget';
@@ -49,6 +50,7 @@ router.post('/', async (req: Request, res: Response) => {
           : 500;
     res.status(statusCode).json({
       error: error instanceof Error ? error.message : 'Failed to import Google Sheets data',
+      ...sheetsOperatorDetail(req, error),
     });
   }
 });
