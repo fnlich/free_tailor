@@ -13,7 +13,7 @@ const ROUTE = path.join(__dirname, '..', 'src', 'routes', 'resume.ts');
  * against is somebody adding a seventh batch path as a `for ... await` loop -
  * which is exactly how the multi-job endpoint was written, and it is invisible
  * in the response: the results are identical, they just take ten times longer
- * and leave every browser but one idle for the whole run.
+ * and leave every slot on the seat but one idle for the whole run.
  */
 
 function routeSource() {
@@ -58,7 +58,7 @@ test('no batch endpoint awaits an AI call inside a for-loop', () => {
 
 test('every batch endpoint takes its width from the chosen provider', () => {
   // Not from a constant. A fixed four queued three calls behind every answer on
-  // a one-browser install and left four browsers idle on a six-browser one -
+  // a seat sized for one, and left eight slots idle on a seat sized for twelve -
   // and neither is visible from the page.
   const source = routeSource();
   const fanOuts = [...source.matchAll(/mapWithConcurrency\(\s*[\w.]+\s*,\s*([^,]+),/g)].map(

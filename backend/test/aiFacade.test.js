@@ -122,6 +122,79 @@ test('a provider with no system channel receives every instruction in one turn',
   assert.match(request.userBody, /A job/);
 });
 
+test('a provider with no system channel gets the instructions exactly once, not twice and not never', async () => {
+  // The trap this pins: the facade folds the system text into the user body for
+  // a provider with no system channel (codex-cli and the OpenAI-compatible
+  // transports), and an adapter that ALSO joined the three parts would send the
+  // instructions twice. Get it wrong the other way and the JSON-only
+  // instruction never arrives at all, which is silent - the reply is simply
+  // prose that fails to parse somewhere else, later.
+  const { staticDir } = useTempStorage('facade-flat-once');
+  writePrompt(staticDir, 'analyze-job-description', 'SYSTEM-PREAMBLE-MARKER\nMore rules.\n[[jobDescription]]');
+
+  const ai = loadAi();
+  const { adapter, requests } = stubAdapter({ capabilities: { systemBlocks: false } });
+  ai.registerAdapter('claude-cli', () => adapter);
+
+  await ai.createPromptCompletion({
+    promptId: 'analyze-job-description',
+    promptValues: { jobDescription: 'USER-BODY-MARKER' },
+    responseFormat: 'json',
+    useExactPromptId: true,
+  });
+
+  assert.equal(requests.length, 1);
+  const request = requests[0];
+  // Everything an adapter could send, however it joins the parts.
+  const sent = [request.stableSystem, request.volatileSystem, request.userBody].join('\n');
+  const occurrences = (needle) => sent.split(needle).length - 1;
+
+  assert.equal(occurrences('SYSTEM-PREAMBLE-MARKER'), 1, 'the preamble must arrive exactly once');
+  assert.equal(occurrences('USER-BODY-MARKER'), 1, 'the rendered variables must arrive once');
+  assert.equal(occurrences('valid JSON only'), 1, 'and so must the JSON-only instruction');
+});
+
+test('a provider with no JSON mode is asked for sentinels; one that enforces JSON is not', async () => {
+  // The instruction is chosen by what the TRANSPORT can enforce, not by its
+  // name. One that enforces nothing (nativeJsonMode 'none' - the metered
+  // Anthropic API today) needs the long instruction plus the markers the
+  // extractor keys on. One with a native JSON mode is already constrained, and
+  // asking IT for sentinels would put them inside the JSON it is obliged to
+  // emit - turning the one output guaranteed to parse into one guaranteed not to.
+  const { JSON_BEGIN_SENTINEL, JSON_END_SENTINEL } = require('../dist/services/ai/promptAssembly');
+  const { staticDir } = useTempStorage('facade-sentinels');
+  writePrompt(staticDir, 'analyze-job-description', 'Extract what matters.\n[[jobDescription]]');
+
+  const run = async (capabilities, text) => {
+    const ai = loadAi();
+    const { adapter, requests } = stubAdapter({ capabilities, text });
+    ai.registerAdapter('claude-cli', () => adapter);
+    await ai.createPromptCompletion({
+      promptId: 'analyze-job-description',
+      promptValues: { jobDescription: 'a job description' },
+      responseFormat: 'json',
+      useExactPromptId: true,
+    });
+    const request = requests[0];
+    return [request.stableSystem, request.volatileSystem, request.userBody].join('\n');
+  };
+
+  const unenforced = await run(
+    { nativeJsonMode: 'none' },
+    `${JSON_BEGIN_SENTINEL}\n{"ok":true}\n${JSON_END_SENTINEL}`
+  );
+  assert.ok(unenforced.includes(JSON_BEGIN_SENTINEL), 'it must be told which markers to emit');
+  assert.ok(unenforced.includes(JSON_END_SENTINEL));
+  assert.match(unenforced, /No preamble/i, 'and told not to narrate, which is what it does by default');
+  assert.match(unenforced, /trailing commas/i);
+
+  for (const nativeJsonMode of ['json-schema', 'response_format']) {
+    const enforced = await run({ nativeJsonMode });
+    assert.equal(enforced.includes(JSON_BEGIN_SENTINEL), false, `${nativeJsonMode} is not asked for sentinels`);
+    assert.match(enforced, /valid JSON only/);
+  }
+});
+
 test('a prompt with no variables at all still produces a non-empty user turn', async () => {
   const { staticDir } = useTempStorage('facade-novars');
   writePrompt(staticDir, 'analyze-job-description', 'Just instructions, no variables.');
@@ -274,15 +347,7 @@ test('an explicitly registered adapter wins, and the other providers still exist
 
   const capabilities = ai.listProviderCapabilities();
   const ids = capabilities.map((entry) => entry.id).sort();
-  assert.deepEqual(ids, [
-    'chatgpt-web',
-    'claude',
-    'claude-cli',
-    'claude-web',
-    'codex-cli',
-    'deepseek',
-    'openai',
-  ]);
+  assert.deepEqual(ids, ['claude', 'claude-cli', 'codex-cli', 'deepseek', 'openai']);
   assert.equal(
     capabilities.find((entry) => entry.id === 'claude-cli').label,
     'stub',

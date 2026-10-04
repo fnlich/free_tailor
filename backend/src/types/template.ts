@@ -72,15 +72,16 @@ export interface JobAnalysis {
  *
  * The former `openrouter` id was replaced by `claude-cli`; stored records that
  * still carry it are coerced by `coerceProviderId` in config/providerCatalog.
+ * The former `claude-web` and `chatgpt-web` ids were retired outright, with no
+ * replacement: stored records naming them are dropped or ignored on read - see
+ * `RETIRED_PROVIDER_IDS` there.
  */
 export type AIProvider =
   | 'claude-cli'
   | 'codex-cli'
   | 'claude'
   | 'openai'
-  | 'deepseek'
-  | 'claude-web'
-  | 'chatgpt-web';
+  | 'deepseek';
 
 export type RawNestedJobAnalysis = Partial<JobAnalysis> & {
   jobMeta?: {

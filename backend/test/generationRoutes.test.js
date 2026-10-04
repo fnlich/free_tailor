@@ -47,14 +47,6 @@ async function serve() {
     ownerId: account.id,
   });
 
-  const config = loadFresh('../dist/config/aiModelConfig');
-  await config.updateAppSettings({
-    browserChatEndpoints: [
-      { siteId: 'claude-web', port: 9801 },
-      { siteId: 'chatgpt-web', port: 9802 },
-    ],
-  });
-
   const queue = loadFresh('../dist/services/queue/index');
   queue.resetGenerationQueueForTests();
   const routes = loadFresh('../dist/routes/generation');
@@ -261,22 +253,12 @@ test('cancelling reports what it dropped, and twice is not an error', async () =
 
 test('a task routes to a queue by the profile model, not by the request', async () => {
   const { routeFor } = loadFresh('../dist/routes/generation');
-  assert.deepEqual(routeFor({ provider: 'claude-web' }), {
-    queue: 'browser',
-    sites: ['claude-web'],
-  });
-  assert.deepEqual(routeFor({ provider: 'chatgpt-web' }), {
-    queue: 'browser',
-    sites: ['chatgpt-web'],
-  });
-  assert.deepEqual(routeFor({ provider: 'claude-web', route: 'hybrid' }), {
-    queue: 'browser',
-    sites: ['claude-web', 'chatgpt-web'],
-  });
   // The Claude seat and the metered providers share a lane: the metered ones
   // have no local resource to wait for, so the lane is only a throttle for them.
   assert.deepEqual(routeFor({ provider: 'claude-cli' }), { queue: 'cli' });
+  assert.deepEqual(routeFor({ provider: 'claude' }), { queue: 'cli' });
   assert.deepEqual(routeFor({ provider: 'openai' }), { queue: 'cli' });
+  assert.deepEqual(routeFor({ provider: 'deepseek' }), { queue: 'cli' });
 
   // Codex does NOT. It holds its own semaphore, sized by its own variable, so
   // sharing the Claude seat's lane meant the dispatcher offered
@@ -284,6 +266,31 @@ test('a task routes to a queue by the profile model, not by the request', async 
   // stranding the larger of the two, or letting tasks blocked on the smaller
   // squat on slots the other provider's work needed.
   assert.deepEqual(routeFor({ provider: 'codex-cli' }), { queue: 'codex' });
+});
+
+test('a page loaded before the upgrade that still names the browser entry gets the default', async () => {
+  // The model picker used to offer a synthesized browser entry, labelled as the
+  // default. A tab opened before the upgrade still sends its id, and refusing it
+  // would break that tab on a change its user did not make - so the run goes
+  // ahead on the app default, in the Claude seat's lane.
+  const server = await serve();
+  try {
+    const response = await server.post('/batches', {
+      jobs: jobsFor(2),
+      profileIds: ['p1'],
+      model: 'free-hybrid',
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.total, 2);
+    assert.deepEqual(Object.keys(body.queues).sort(), ['cli', 'codex'], 'no lane for the removed providers');
+    assert.equal(body.queues.cli.queued + body.queues.cli.running, 2, 'both resumes are on the seat');
+
+    const stats = await (await server.call('/queues')).json();
+    assert.deepEqual(Object.keys(stats).sort(), ['cli', 'codex']);
+  } finally {
+    server.close();
+  }
 });
 
 test('the batch endpoints are closed to a request with no session', async () => {

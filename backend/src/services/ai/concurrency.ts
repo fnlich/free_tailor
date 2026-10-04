@@ -150,10 +150,9 @@ const semaphores = new Map<string, AsyncSemaphore>();
  * The semaphore for a lane, created once and then reused.
  *
  * The key is a plain string rather than a provider id because a lane is not
- * always one provider: the two browser-chat providers drive the same Chrome
- * window and take the foreground from each other, so they share a single lane
- * keyed on the debug endpoint. What the key has to identify is the RESOURCE
- * that only one call may hold.
+ * always a provider: PDF rendering holds one too (`resume-render`), bounding
+ * how many resumes print through one Chrome at once. What the key has to
+ * identify is the RESOURCE being shared out, not who is asking for it.
  */
 export function getProviderSemaphore(provider: string, limit: number): AsyncSemaphore {
   const existing = semaphores.get(provider);

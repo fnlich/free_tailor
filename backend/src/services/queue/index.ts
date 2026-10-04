@@ -1,4 +1,3 @@
-import { getBrowserChatEndpoints } from '../../config/aiModelConfig';
 import {
   deleteBatchRow,
   loadBatchRows,
@@ -9,10 +8,10 @@ import {
 } from '../../database/generationRepository';
 import { getProfile } from '../../database/profileRepository';
 import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
-import type { BrowserChatSiteId } from '../../config/providerCatalog';
 import { closeIfSettled, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
 import {
+  isQueueName,
   registerTaskRunner,
   TaskQueue,
   type Batch,
@@ -25,7 +24,7 @@ import {
 } from './taskQueue';
 import { makeResumeRunner, RESUME_TASK_KIND, type ResumeJob } from './resumeTask';
 
-export { TaskQueue, registerTaskRunner, newBatchId } from './taskQueue';
+export { TaskQueue, registerTaskRunner, newBatchId, isQueueName, QUEUE_NAMES } from './taskQueue';
 export type {
   Assignment,
   Batch,
@@ -55,28 +54,16 @@ export {
 /**
  * What the queue may run at once: one slot per real resource.
  *
- * A slot per REGISTERED BROWSER, carrying which site it shows, rather than a
- * count - the browser queue's capacity is a multiset, not a number. Two Claude
- * browsers and one ChatGPT browser is three slots, and which of them is free is
- * what decides whether a Claude-pinned task may start.
- *
  * A seat's slots are interchangeable WITHIN its lane, so they are just counted
  * out - but each CLI provider gets its OWN lane, sized from its own variable.
  * They hold separate semaphores, so one shared lane would either strand the
  * larger pool or let the smaller one's blocked tasks squat on slots the other
  * provider's work needs.
+ *
+ * Read from the environment alone, with no settings read: nothing an
+ * administrator saves changes how many processes a seat may run.
  */
 async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capacity> {
-  const endpoints = await getBrowserChatEndpoints();
-  const browser: Slot[] = endpoints.map((entry) => ({
-    // Keyed on the PORT, so the same browser keeps the same slot identity across
-    // readings. A slot id that changed each time would let the dispatcher hand
-    // work to a browser it already had busy.
-    id: `browser:${entry.port}`,
-    queue: 'browser' as const,
-    site: entry.siteId,
-  }));
-
   // `cli` carries the Claude seat AND the metered HTTP providers, which have no
   // local resource of their own and for whom this is only a throttle.
   const cli: Slot[] = Array.from({ length: cliConcurrency(env) }, (_, index) => ({
@@ -89,7 +76,7 @@ async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capac
     queue: 'codex' as const,
   }));
 
-  return { browser, cli, codex };
+  return { cli, codex };
 }
 
 /** The batch's serializable half: everything but the tasks and the controller. */
@@ -115,7 +102,6 @@ function taskRow(task: Task) {
     state: task.state,
     data: {
       queue: task.queue,
-      ...(task.sites ? { sites: task.sites } : {}),
       label: task.label,
       kind: task.kind,
       payload: task.payload,
@@ -147,8 +133,8 @@ let queue: TaskQueue | null = null;
  * The one queue, shared by every request in the process.
  *
  * Process-wide is the whole point: two pages submitting batches must end up in
- * ONE line for the browsers, not two lines that each believe they have the run
- * of the place.
+ * ONE line for each seat, not two lines that each believe they have the run of
+ * the place.
  */
 /**
  * How many times one resume may be BUILT before it is given up on.
@@ -234,10 +220,9 @@ export function getGenerationQueue(): TaskQueue {
 /**
  * The capacity reading, exposed so the lane split can be asserted.
  *
- * Not a test seam for the dispatcher - it still reads the real settings row.
- * This just makes the pure part callable with an environment of the caller's
- * choosing, which is the only way to pin that the two CLI lanes are sized from
- * two different variables.
+ * Not a test seam for the dispatcher. It makes the reading callable with an
+ * environment of the caller's choosing, which is the only way to pin that the
+ * two CLI lanes are sized from two different variables.
  */
 export function readCapacityForTests(env: NodeJS.ProcessEnv): Promise<Capacity> {
   return readCapacity(env);
@@ -264,13 +249,30 @@ export type RestoreReport = {
 };
 
 /**
+ * The lane a restored task goes back in.
+ *
+ * Its stored lane, when this build has it. Otherwise - a lane from an earlier
+ * build (the browser chat providers had one of their own), no lane at all, or
+ * anything unrecognisable - the lane is worked out again from the provider the
+ * task was resolved to, the way `routeFor` places new work: the Codex seat's
+ * lane for Codex, `cli` for everything else. That includes a task whose
+ * provider has itself been retired since; the runner resolves it a model again
+ * before it starts (see `makeResumeRunner`).
+ */
+function restoredLane(stored: unknown, payload: unknown): QueueName {
+  if (isQueueName(stored)) return stored;
+  const provider = (payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider;
+  return provider === 'codex-cli' ? 'codex' : 'cli';
+}
+
+/**
  * Puts the queue back together after a restart.
  *
  * Two things need saying about what this does with tasks that were RUNNING when
  * the process died. They are requeued, not failed: nothing completed them, so
  * their resume does not exist, and leaving them failed would mean a restart
- * silently dropped whatever happened to be in a browser at the time. Requeueing
- * costs one repeated browser turn, which is the cheapest of the honest options.
+ * silently dropped whatever happened to be running at the time. Requeueing
+ * costs one repeated model call, which is the cheapest of the honest options.
  *
  * It is safe to repeat because the output path is derived from the profile, the
  * company and the row - so a re-run overwrites the same files rather than adding
@@ -278,21 +280,37 @@ export type RestoreReport = {
  * midnight, where the date folder in the path changes and the earlier partial
  * output stays where it was.
  *
+ * Each batch is restored on its own. One that cannot be - a row this build
+ * cannot make sense of - is reported by id and left as it was, and every other
+ * batch still comes back: a single bad row used to end the loop and lose the
+ * batches after it too, holding their credits until the reconciler gave up on
+ * them hours later.
+ *
  * Never throws. A queue that could not be restored must not stop the server from
  * starting - the admin pages are how an operator would find out why.
  */
 export function restoreGenerationQueue(): RestoreReport {
   const report: RestoreReport = { batches: 0, requeued: 0, pruned: 0 };
+
+  let rows: ReturnType<typeof loadBatchRows>;
+  let restored: TaskQueue;
   try {
     report.pruned = pruneBatchRows(new Date(Date.now() - KEEP_FINISHED_MS).toISOString());
+    rows = loadBatchRows();
+    restored = getGenerationQueue();
+  } catch (error) {
+    console.warn(
+      '[queue] Could not restore the generation queue after restart; anything queued before is ' +
+        'lost. ' + (error instanceof Error ? error.message : String(error))
+    );
+    return report;
+  }
 
-    const rows = loadBatchRows();
-    const restored = getGenerationQueue();
+  for (const row of rows) {
+    if (row.state !== 'running') continue;
+    if (row.tasks.length === 0) continue;
 
-    for (const row of rows) {
-      if (row.state !== 'running') continue;
-      if (row.tasks.length === 0) continue;
-
+    try {
       const data = row.data as {
         label?: string;
         jobCount?: number;
@@ -304,12 +322,15 @@ export function restoreGenerationQueue(): RestoreReport {
       // already built must come back as a batch of thirty with eight built -
       // restoring only the remainder would shrink its total and drop the
       // finished resumes out of its results.
+      let requeued = 0;
       const entries = [...row.tasks]
         .sort((a, b) => a.seq - b.seq)
         .map((task) => {
+          // `data` is whatever the build that wrote it projected, so every field
+          // is read as possibly absent. An earlier build also wrote a list of
+          // chat sites here; it is not read, and the next write drops it.
           const taskData = task.data as {
-            queue?: QueueName;
-            sites?: BrowserChatSiteId[];
+            queue?: unknown;
             label?: Task['label'];
             kind?: string;
             payload?: unknown;
@@ -317,13 +338,12 @@ export function restoreGenerationQueue(): RestoreReport {
             error?: string;
             attempts?: number;
           };
-          if (task.state === 'running') report.requeued += 1;
+          if (task.state === 'running') requeued += 1;
           return {
             id: task.id,
             seq: task.seq,
             state: task.state as TaskState,
-            queue: taskData.queue ?? ('browser' as QueueName),
-            ...(taskData.sites ? { sites: taskData.sites } : {}),
+            queue: restoredLane(taskData.queue, taskData.payload),
             label: taskData.label ?? {
               profileId: '',
               profileName: 'Unknown',
@@ -353,22 +373,33 @@ export function restoreGenerationQueue(): RestoreReport {
         },
         entries
       );
-      // Written back once, so the requeued tasks are queued on disk too - a
-      // second restart must not count them as mid-flight all over again.
-      persistNewBatch(batch as Batch);
       report.batches += 1;
-    }
-
-    if (report.batches > 0) {
-      console.log(
-        `[queue] Restored ${report.batches} unfinished batch(es) after restart: ` +
-          `${report.requeued} resume(s) were mid-flight and will be built again.`
+      report.requeued += requeued;
+      // Written back once, so the requeued tasks are queued on disk too - a
+      // second restart must not count them as mid-flight all over again. Its
+      // own catch, because the batch is back in the queue and running by now,
+      // and a failed write must not be reported as a batch that was not.
+      try {
+        persistNewBatch(batch as Batch);
+      } catch (error) {
+        console.warn(
+          `[queue] Restored batch ${row.id}, but could not write it back to the database; its ` +
+            'running resumes will be counted as mid-flight again after another restart. ' +
+            (error instanceof Error ? error.message : String(error))
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[queue] Could not restore batch ${row.id} after restart; the other batches are unaffected. ` +
+          (error instanceof Error ? error.message : String(error))
       );
     }
-  } catch (error) {
-    console.warn(
-      '[queue] Could not restore the generation queue after restart; anything queued before is ' +
-        'lost. ' + (error instanceof Error ? error.message : String(error))
+  }
+
+  if (report.batches > 0) {
+    console.log(
+      `[queue] Restored ${report.batches} unfinished batch(es) after restart: ` +
+        `${report.requeued} resume(s) were mid-flight and will be built again.`
     );
   }
   return report;

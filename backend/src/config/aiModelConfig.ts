@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto';
 
 import { getSetting, setSetting } from '../database/settingsRepository';
-import { planRoute } from '../services/ai/freeChatRouting';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
 import { CODEX_DEFAULT_MODEL } from '../services/ai/providers/codexCli/options';
@@ -10,15 +9,10 @@ import {
   coerceProviderId,
   getProviderDescriptor,
   getProviderLabel as getCatalogProviderLabel,
-  BROWSER_CHAT_SITE_IDS,
   getProviderLockReason,
-  isBrowserChatSiteId,
-  type BrowserChatSiteId,
-  HYBRID_MODEL_DESCRIPTION,
-  HYBRID_MODEL_ID,
-  HYBRID_MODEL_LABEL,
-  isHybridModelId,
   isProviderLocked,
+  isRetiredModelId,
+  isRetiredProviderId,
   listLockedProviderIds,
   providerRequiresApiKey,
 } from './providerCatalog';
@@ -71,23 +65,6 @@ type AppSettings = {
    * so an already-loaded browser tab does not break across a deploy.
    */
   providersEnabled: ProvidersEnabled;
-  /**
-   * Whether this installation offers the browser-tab providers at all.
-   *
-   * A master switch ABOVE `providersEnabled`, not a third entry in it. Off, the
-   * two chat sites stop being a thing anyone can see or reach: no "Default
-   * (browser)" row in any model picker, no Browser Chat section in Settings, no
-   * preflight against a debug browser - and a request that names one is refused
-   * rather than quietly served. The per-site preferences underneath are KEPT,
-   * exactly as a locked provider keeps its checkbox, so turning it back on
-   * restores what the operator had rather than a row that reset itself.
-   *
-   * It exists because "browser mode" is one decision, not two: an operator on a
-   * headless server cannot sign a Chrome in, and asking them to work that out
-   * from two separate provider toggles is how an install ends up offering a
-   * model that can never answer.
-   */
-  browserChatEnabled: boolean;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -147,45 +124,17 @@ type AppSettings = {
   requireThreeDSecure: boolean;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
-  /**
-   * The debug browsers the free chat providers drive, one tab apiece.
-   *
-   * A list, not a port, and that is the whole design. A chat tab holds ONE
-   * conversation, so the only way to run two free calls at once is to have two
-   * tabs - which means two browsers, because a second tab in the same window is
-   * a background tab and Chrome freezes those. Each entry is therefore one
-   * browser, on its own debug port, showing one site.
-   *
-   * How many entries a site has IS its concurrency; the queue behind them is
-   * unbounded and first-come-first-served.
-   */
-  browserChatEndpoints: BrowserChatEndpoint[];
 };
-
-/** One debug browser: which chat site it shows, and the port it listens on. */
-export type BrowserChatEndpoint = {
-  siteId: BrowserChatSiteId;
-  port: number;
-};
-
-// Defined in the provider catalog, re-exported here because this is where
-// every existing caller imports them from.
-export { BROWSER_CHAT_SITE_IDS, isBrowserChatSiteId } from './providerCatalog';
-export type { BrowserChatSiteId } from './providerCatalog';
 
 /**
  * The settings slice the AI layer runs on.
  *
- * Everything here is read on the request path: which providers may be reached,
- * and whether browser mode exists at all. Kept as one slice so a caller cannot
- * hold a half-answer
- * - a record of enable flags that says "yes" about a site the master switch has
- * withdrawn.
+ * Read on the request path, so it carries only what the provider gate needs:
+ * which providers an administrator has left switched on. Whether a provider
+ * can run at all is the lock's question, and the lock is answered from the
+ * environment rather than from this row - see `isProviderEnabled`.
  */
-export type AIModelSettings = Pick<
-  AppSettings,
-  'providersEnabled' | 'browserChatEnabled'
->;
+export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
 
 /**
  * The flat per-provider booleans older clients read. Derived from
@@ -209,9 +158,7 @@ export type PublicAppSettings = AIModelSettings & LegacyProviderFlags & Pick<
   | 'defaultResumeDocxEnabled'
   | 'defaultCoverLetterDocxEnabled'
   | 'aiModels'
-  | 'browserChatEnabled'
   | 'googleSheetsSources'
-  | 'browserChatEndpoints'
 >;
 /**
  * One provider this installation cannot run, and the models it would offer.
@@ -396,24 +343,6 @@ function createDefaultModelRecords(): AIModelRecord[] {
       description:
         "Runs the local codex CLI on your ChatGPT subscription, using that account's own default model.",
     },
-    // Browser-driven chat. Ranked after the seat and before the metered APIs:
-    // both cost nothing to run, but a chat window answers at reading speed and
-    // one conversation at a time, so neither should be what an unset default
-    // falls back to.
-    {
-      name: 'Claude (free)',
-      provider: 'claude-web',
-      modelName: 'chat',
-      description:
-        'Free. Drives claude.ai in a Chrome you started and signed in to - no API key, nothing metered.',
-    },
-    {
-      name: 'ChatGPT (free)',
-      provider: 'chatgpt-web',
-      modelName: 'chat',
-      description:
-        'Free. Drives chatgpt.com in a Chrome you started and signed in to - no API key, nothing metered.',
-    },
     {
       name: DEFAULT_OPENAI_MODEL,
       provider: 'openai',
@@ -488,44 +417,6 @@ function allProvidersEnabled(value = true): ProvidersEnabled {
   }, {} as ProvidersEnabled);
 }
 
-/**
- * The debug port a fresh install starts with.
- *
- * Read from the environment so an operator who already configured
- * `AI_WEB_CDP_PORT` does not have to set it again in two places, and so a
- * deployment can ship a default. Once saved on the Settings page the stored
- * value wins - which is the whole point of putting it there.
- */
-export const BROWSER_CHAT_PORT_MIN = 1024;
-export const BROWSER_CHAT_PORT_MAX = 65535;
-
-function envPort(): number {
-  const raw = Number.parseInt((process.env.AI_WEB_CDP_PORT ?? '').trim(), 10);
-  return Number.isInteger(raw) && raw >= BROWSER_CHAT_PORT_MIN && raw <= BROWSER_CHAT_PORT_MAX
-    ? raw
-    : 9222;
-}
-
-/**
- * The browsers a fresh install expects, before anything is saved.
- *
- * One per site, on adjacent ports, because a browser here shows ONE chat tab -
- * two sites on one port would put one of them in a background tab, and Chrome
- * freezes those. `AI_WEB_CDP_PORT` names the first; the second follows it.
- * Either can be changed, and more added, on the Settings page.
- */
-function defaultBrowserChatEndpoints(): BrowserChatEndpoint[] {
-  const first = envPort();
-  const second = first < BROWSER_CHAT_PORT_MAX ? first + 1 : first - 1;
-  return [
-    { siteId: 'claude-web', port: first },
-    { siteId: 'chatgpt-web', port: second },
-  ];
-}
-
-/** Most browsers one site may have. A guard against a paste, not a policy. */
-export const BROWSER_CHAT_MAX_ENDPOINTS = 16;
-
 const DEFAULT_MODEL_RECORDS = createDefaultModelRecords();
 
 /**
@@ -533,8 +424,10 @@ const DEFAULT_MODEL_RECORDS = createDefaultModelRecords();
  *
  * The seed list is ordered cheapest-and-most-capable first, so "the first
  * unlocked seed" is the right answer rather than a fallback: on a build with
- * the subscription seat locked it lands on Claude (free), which costs nothing
- * and needs no key either.
+ * the Claude seat locked it lands on the Codex seat, which costs nothing and
+ * needs no key either. Only with BOTH seats locked does it reach a metered API
+ * model - which is then the only kind of model this deployment can run, so it
+ * is still the honest answer, but it is one that bills per token.
  */
 function defaultSeedModelId(): string {
   const preferred = buildModelId('claude-cli', DEFAULT_CLAUDE_CLI_MODEL);
@@ -548,9 +441,6 @@ function defaultSeedModelId(): string {
 
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
-  // Both default ON so an install that predates them behaves exactly as it did.
-  // A flag that changes behaviour by existing is a flag that breaks upgrades.
-  browserChatEnabled: true,
   defaultMode: 'preview',
   defaultTheme: 'light',
   defaultResumeSelection: 'single',
@@ -568,7 +458,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   requireThreeDSecure: false,
   aiModels: DEFAULT_MODEL_RECORDS,
   googleSheetsSources: [],
-  browserChatEndpoints: defaultBrowserChatEndpoints(),
 };
 
 function cloneDefaultSettings(): AppSettings {
@@ -796,6 +685,63 @@ function normalizeAIModelProvider(value: unknown): AIProvider | null {
   return coerceProviderId(value);
 }
 
+/**
+ * Ids of stored model records dropped on read because their provider is retired.
+ *
+ * Remembered so that a reference to one - a profile's stored preference, a
+ * request from a page loaded before the upgrade - is recognised as naming a
+ * retired provider and falls back to the default, instead of failing as a model
+ * that "was not found". The shipped ids are listed in `RETIRED_MODEL_IDS`; this
+ * covers the ones an administrator created, whose ids are random UUIDs.
+ *
+ * Only for the life of the process, and only ever added to. That is enough
+ * while the records are still in the row, which is exactly while a reference to
+ * one can be outstanding: migration 006 clears the references in the same pass
+ * that deletes the records. It deliberately does not grow into "any id that is
+ * missing falls back" - a model an administrator deleted is still an error.
+ */
+const droppedRetiredModelIds = new Set<string>();
+
+/**
+ * One line per kind of browser chat residue, however many reads find it.
+ *
+ * Settings are re-read every few seconds; a warning per read would bury the log
+ * under the same sentence for as long as the residue is there.
+ */
+const warnedRetiredResidue = new Set<string>();
+
+function warnRetiredResidueOnce(key: string, message: string): void {
+  if (warnedRetiredResidue.has(key)) return;
+  warnedRetiredResidue.add(key);
+  console.warn(message);
+}
+
+function noteDroppedRetiredModel(raw: Partial<Record<keyof AIModelRecord, unknown>>): void {
+  const provider = typeof raw.provider === 'string' ? raw.provider.trim() : '';
+  const id = normalizeAIModelText(raw.id);
+  const modelName = normalizeAIModelText(raw.modelName);
+  // The id a record with none would have been given, so a reference built the
+  // same way is recognised too.
+  droppedRetiredModelIds.add(id || `${provider}-${slugifyModelPart(modelName) || 'model'}`);
+
+  warnRetiredResidueOnce(
+    `records:${provider}`,
+    `[ai] Ignoring stored model record(s) for "${provider}": the browser chat providers were removed. ` +
+      'Migration 006 deletes these records on start-up, and saving Admin -> Settings writes the row ' +
+      'without them.'
+  );
+}
+
+/**
+ * True when `id` names a model that only ever ran on a retired provider.
+ *
+ * Asked by every path that resolves a model id, so that all of them agree on
+ * what such a reference means: the app default, never "not found".
+ */
+function isRetiredModelReference(id: string): boolean {
+  return isRetiredModelId(id) || droppedRetiredModelIds.has(id);
+}
+
 function normalizeAIModelText(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value.trim() : fallback;
 }
@@ -819,6 +765,16 @@ function normalizeAIModelRecords(input: unknown, fallback: AIModelRecord[], stri
       }
 
       const raw = entry as Partial<AIModelRecord>;
+      // Skipped EVEN WHEN STRICT. Strict exists to report a row somebody edited
+      // into nonsense; this is a row an older release wrote correctly, and
+      // nearly every install that ever saved its settings carries two of them.
+      // Refusing it would fail every settings read - the model list, every
+      // generation, and the very page an admin would repair it from.
+      if (isRetiredProviderId(raw.provider)) {
+        noteDroppedRetiredModel(raw);
+        return null;
+      }
+
       const provider = normalizeAIModelProvider(raw.provider);
       if (!provider) {
         if (strict) {
@@ -878,17 +834,10 @@ function resolveDefaultModelId(
 ): string {
   const runnableModels = aiModels.filter((model) => model.enabled && isProviderEnabled(model.provider, providerSettings));
   const availableModels = runnableModels.length > 0 ? runnableModels : aiModels.filter((model) => model.enabled);
+  // A default that names a retired model - the browser entry, or one of the
+  // records dropped on read - is not among them, so it lands on the seed
+  // default below like any other default that no longer resolves.
   const preferredId = typeof requestedDefaultModelId === 'string' ? requestedDefaultModelId.trim() : '';
-
-  // Hybrid is pickable but is not a row, so the membership test below would
-  // reject it and quietly rewrite the admin's choice to a real model - a
-  // setting that does not stick, with nothing to say it did not.
-  if (isHybridModelId(preferredId)) {
-    const freeSites = BROWSER_CHAT_SITE_IDS.filter((site) =>
-      availableModels.some((model) => model.provider === site)
-    );
-    if (freeSites.length > 0) return preferredId;
-  }
 
   if (preferredId && availableModels.some((model) => model.id === preferredId)) {
     return preferredId;
@@ -901,69 +850,18 @@ function resolveDefaultModelId(
   return availableModels[0]?.id ?? aiModels[0]?.id ?? '';
 }
 
-function getRunnableModels(settings: AppSettings): AIModelRecord[] {
+/**
+ * The models a profile or a request may pick: enabled, under a provider that is
+ * both switched on and runnable here.
+ *
+ * A locked provider's models are not among them - they are carried separately
+ * as `providerLocks`, so a picker can show them behind a padlock without anyone
+ * being able to choose one.
+ */
+export function getRunnableModels(settings: AIModelSettings & Pick<AppSettings, 'aiModels'>): AIModelRecord[] {
   return settings.aiModels.filter(
     (model) => model.enabled && isProviderEnabled(model.provider, settings)
   );
-}
-
-/**
- * The hybrid pseudo-model, offered only when there is something to be hybrid
- * BETWEEN.
- *
- * On an install with one free provider enabled it would be a choice that
- * behaves identically to the model already above it in the menu, which is worse
- * than not offering it: someone picks it expecting two accounts and gets one,
- * with nothing anywhere to say why.
- *
- * `provider` and `modelName` are the Claude site only so the record type is
- * satisfied. Nothing reads them - the choice resolver recognises the id first
- * and asks the router which account this call should go to.
- */
-function synthesizeHybridModel(settings: AppSettings): AIModelRecord[] {
-  const runnable = getRunnableModels(settings);
-  const sites = BROWSER_CHAT_SITE_IDS.filter((site) =>
-    runnable.some((model) => model.provider === site)
-  );
-  // ONE is enough, where it used to take two. This is no longer an extra option
-  // beside the per-site ones - it is the only way to pick browser mode at all,
-  // so requiring both would leave an install that runs a single platform with no
-  // browser option in the menu.
-  if (sites.length === 0) return [];
-
-  const now = new Date(0).toISOString();
-  return [
-    {
-      id: HYBRID_MODEL_ID,
-      name: HYBRID_MODEL_LABEL,
-      provider: 'claude-web',
-      modelName: 'chat',
-      description: HYBRID_MODEL_DESCRIPTION,
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    },
-  ];
-}
-
-/**
- * The models a profile or a request may pick.
- *
- * The per-site free models are NOT among them. "Claude (free)" and "ChatGPT
- * (free)" were a choice with no good answer: the queue hands a task to whichever
- * browser comes free, so pinning one to a platform only meant waiting longer for
- * the same resume. They are replaced by the single "Default (browser)" entry,
- * which means "any of them".
- *
- * They stay in `aiModels` rather than being deleted, so Admin -> Models can
- * still manage them and - the part that matters - a profile that picked one
- * before this change keeps resolving to exactly what it picked.
- */
-export function getPickableModels(settings: AppSettings): AIModelRecord[] {
-  const offered = getRunnableModels(settings).filter(
-    (model) => !isBrowserChatSiteId(model.provider)
-  );
-  return [...synthesizeHybridModel(settings), ...offered];
 }
 
 /**
@@ -975,6 +873,11 @@ export function getPickableModels(settings: AppSettings): AIModelRecord[] {
  * whose ONLY enabled provider was OpenRouter comes back with a working one
  * rather than a settings row that fails `assertAtLeastOneProviderEnabled`);
  * and, failing both, the fallback.
+ *
+ * Keys for a retired provider are ignored, with the same carry-over for the
+ * same reason: a row whose only switched-on providers were the browser chat
+ * ones comes back with the subscription seat on, rather than with nothing
+ * enabled and every settings read refused.
  */
 function normalizeProvidersEnabled(
   source: Record<string, unknown>,
@@ -1018,17 +921,33 @@ function normalizeProvidersEnabled(
 
     result[id] = fallback[id] ?? true;
   }
+
+  if (!AI_PROVIDER_IDS.some((id) => result[id])) {
+    const retiredOn = Object.keys(record ?? {}).filter(
+      (key) => isRetiredProviderId(key) && record?.[key] === true
+    );
+    if (retiredOn.length > 0) {
+      result['claude-cli'] = true;
+      warnRetiredResidueOnce(
+        'only-retired-providers',
+        '[ai] The stored settings have no provider switched on apart from the removed browser chat ' +
+          `ones (${retiredOn.join(', ')}); reading the subscription provider (claude-cli) as switched on ` +
+          'instead. Review it under Admin -> Settings.'
+      );
+    }
+  }
   return result;
 }
 
 /**
  * A whole number inside a range, or the fallback.
  *
- * Clamped rather than rejected outside strict mode, because these two arrive
- * from a number input in a browser and the useful behaviour for "70000" is the
- * highest port there is, not a settings file that will not load. Strict mode -
- * which is how the stored file is read - still refuses, so a hand-edited value
- * out of range is reported instead of silently becoming something else.
+ * Clamped rather than rejected outside strict mode, because these arrive from a
+ * number input on the admin page and the useful behaviour for a price typed one
+ * digit too long is the highest one allowed, not a settings save that fails.
+ * Strict mode - which is how the stored row is read - still refuses, so a
+ * hand-edited value out of range is reported instead of silently becoming
+ * something else.
  */
 function normalizeBoundedInteger(
   value: unknown,
@@ -1050,86 +969,70 @@ function normalizeBoundedInteger(
 
 
 /**
- * The endpoint list, and the one-port-one-browser rule it has to keep.
+ * Keeps a stored row that ran ONLY on a retired provider readable.
  *
- * Two entries on the same port would be two sites in one browser, which is the
- * shape this list exists to replace: the second tab is a background tab, Chrome
- * freezes it, and a DOM read against a frozen renderer never returns at all. So
- * a port appears at most once, and the first claim on it wins.
+ * Dropping the browser chat records can leave an install with nothing that can
+ * run: an operator who used the free chat sites alone, with every other model
+ * switched off or never added. The asserts in `readSettings` would then refuse
+ * every settings read - the model list, every generation, and the Settings page
+ * an administrator would repair it from. So the subscription seat is put back:
+ * switched on, and its seed models added where missing. That is the repair
+ * migration 006 writes, made for the reason 001 switched the seat on for an
+ * install that had run only on OpenRouter.
  *
- * Also migrates the field this replaced. An install that saved a single
- * `browserChatDebugPort` gets both sites on that port - not because it is a
- * good arrangement but because it is the arrangement they already have, and
- * silently moving one site to a port with no browser on it would break a setup
- * that was working.
+ * In memory only. Nothing here writes; 006, or the next save from the admin
+ * page, persists it - so 006 still finds the residue and snapshots the row
+ * before it changes anything. `providersEnabled` is the caller's freshly
+ * normalized record and is updated in place.
  */
-function normalizeBrowserChatEndpoints(
-  source: Partial<AppSettings> & Record<string, unknown>,
-  fallback: AppSettings,
-  strict: boolean
-): BrowserChatEndpoint[] {
-  const raw = source.browserChatEndpoints;
+function rescueRetiredOnlyModels(
+  source: Record<string, unknown>,
+  providersEnabled: ProvidersEnabled,
+  aiModels: AIModelRecord[]
+): AIModelRecord[] {
+  const stored = Array.isArray(source.aiModels) ? (source.aiModels as unknown[]) : [];
+  const droppedAny = stored.some(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      isRetiredProviderId((entry as Record<string, unknown>).provider)
+  );
+  if (!droppedAny || getRunnableModels({ providersEnabled, aiModels }).length > 0) {
+    return aiModels;
+  }
 
-  if (typeof raw === 'undefined') {
-    const legacy = source.browserChatDebugPort;
-    if (typeof legacy !== 'undefined') {
-      const port = normalizeBoundedInteger(
-        legacy,
-        fallback.browserChatEndpoints[0]?.port ?? envPort(),
-        BROWSER_CHAT_PORT_MIN,
-        BROWSER_CHAT_PORT_MAX,
-        'browserChatDebugPort',
-        strict
-      );
-      return [
-        { siteId: 'claude-web', port },
-        { siteId: 'chatgpt-web', port },
-      ];
+  providersEnabled['claude-cli'] = true;
+  const presentIds = new Set(aiModels.map((model) => model.id));
+  const presentKeys = new Set(aiModels.map((model) => `${model.provider}:${model.modelName.toLowerCase()}`));
+  const seeds = DEFAULT_MODEL_RECORDS.filter(
+    (model) =>
+      model.provider === 'claude-cli' &&
+      !presentIds.has(model.id) &&
+      !presentKeys.has(`${model.provider}:${model.modelName.toLowerCase()}`)
+  ).map((model) => ({ ...model }));
+  let rescued = [...seeds, ...aiModels];
+
+  // The seat's models were there all along but switched off. One is switched
+  // back on - the default one where it exists - because a row that cannot be
+  // read at all is worse than an administrator's untick being undone, and the
+  // warning below says which it was.
+  if (getRunnableModels({ providersEnabled, aiModels: rescued }).length === 0) {
+    const seatModels = rescued.filter((model) => model.provider === 'claude-cli');
+    const revive =
+      seatModels.find((model) => model.modelName.toLowerCase() === DEFAULT_CLAUDE_CLI_MODEL.toLowerCase()) ??
+      seatModels[0];
+    if (revive) {
+      rescued = rescued.map((model) => (model === revive ? { ...model, enabled: true } : model));
     }
-    return fallback.browserChatEndpoints.map((entry) => ({ ...entry }));
   }
 
-  if (!Array.isArray(raw)) {
-    if (strict) throw new Error('browserChatEndpoints must be an array');
-    return fallback.browserChatEndpoints.map((entry) => ({ ...entry }));
-  }
-
-  if (raw.length > BROWSER_CHAT_MAX_ENDPOINTS) {
-    throw new Error(`browserChatEndpoints may hold at most ${BROWSER_CHAT_MAX_ENDPOINTS} browsers`);
-  }
-
-  const seen = new Set<number>();
-  const out: BrowserChatEndpoint[] = [];
-  for (const entry of raw) {
-    const record = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
-    // Refused, never quietly dropped - like the port beside it and the
-    // duplicate check below. A list that saves with an entry silently missing
-    // is a browser the operator believes they configured and the providers
-    // have never heard of.
-    if (!isBrowserChatSiteId(record.siteId)) {
-      throw new Error(
-        `"${String(record.siteId)}" is not a chat site this app knows; expected one of ` +
-          `${BROWSER_CHAT_SITE_IDS.join(', ')}`
-      );
-    }
-    const port = normalizeBoundedInteger(
-      record.port,
-      Number.NaN,
-      BROWSER_CHAT_PORT_MIN,
-      BROWSER_CHAT_PORT_MAX,
-      'browserChatEndpoints[].port',
-      true
-    );
-    if (seen.has(port)) {
-      throw new Error(
-        `port ${port} is listed twice: one browser shows one chat tab, so each port belongs to ` +
-          'exactly one site'
-      );
-    }
-    seen.add(port);
-    out.push({ siteId: record.siteId, port });
-  }
-  return out;
+  warnRetiredResidueOnce(
+    'only-retired-models',
+    '[ai] The stored settings had no runnable model apart from the removed browser chat ones; reading ' +
+      'the subscription provider (claude-cli) as switched on with its models instead. Review it under ' +
+      'Admin -> Settings and Admin -> Models, and save to keep it.'
+  );
+  return rescued;
 }
 
 function normalizeSettings(
@@ -1148,25 +1051,21 @@ function normalizeSettings(
 
   const providersEnabled = normalizeProvidersEnabled(source, fallback.providersEnabled, strict);
 
-  const aiModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
-  // Read early: the default-model resolver below takes the same slice the
-  // provider gate does, and browser models are only pickable while this is on.
-  const browserChatEnabled = normalizeBooleanSetting(
-    source, 'browserChatEnabled', fallback.browserChatEnabled, strict
-  );
-  const providerSettings: AIModelSettings = {
-    providersEnabled,
-    browserChatEnabled,
-  };
+  const normalizedModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
+  // Only for a STORED row, which is what strict means here. A save from the
+  // admin page that leaves nothing runnable is refused by name instead, and
+  // repairing it behind the operator's back would hide the mistake they made.
+  const aiModels = strict
+    ? rescueRetiredOnlyModels(source, providersEnabled, normalizedModels)
+    : normalizedModels;
   const defaultModelId = resolveDefaultModelId(
     source.defaultModelId,
     aiModels,
-    providerSettings,
+    { providersEnabled },
     fallback.defaultModelId
   );
 
   return {
-    browserChatEndpoints: normalizeBrowserChatEndpoints(source, fallback, strict),
     providersEnabled,
     defaultMode:
       typeof source.defaultMode === 'undefined'
@@ -1248,7 +1147,6 @@ function normalizeSettings(
     requireThreeDSecure: normalizeBooleanSetting(
       source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
     ),
-    browserChatEnabled,
     aiModels,
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
@@ -1292,25 +1190,23 @@ function toLegacyProviderFlags(settings: AppSettings): LegacyProviderFlags {
  * The default model id the app actually OFFERS, which is not always the one
  * stored.
  *
- * They differ whenever the stored id is not pickable - most often a default the
- * browser-chat migration repointed at `claude-web-chat`, which the picker now
- * shows as the single browser entry. Anything reading the stored value directly
- * would disagree with what the user is looking at; `isHybridSelection` did, and
- * the result was an install whose picker said "Default (browser)" while its
- * runs were pinned to Claude and used half the browsers available.
+ * They differ whenever the stored id is not runnable right now - a provider
+ * locked since it was chosen, say. The public value has to be one of the models
+ * listed beside it, or the picker shows a default nobody can select; and it
+ * falls back exactly as `resolveRequestedAIModel` does for a run that names no
+ * model, so what the page shows as the default is what such a run uses.
  */
 function effectiveDefaultModelId(settings: AppSettings): string {
-  const pickable = getPickableModels(settings);
-  return pickable.some((model) => model.id === settings.defaultModelId)
+  const runnable = getRunnableModels(settings);
+  return runnable.some((model) => model.id === settings.defaultModelId)
     ? settings.defaultModelId
-    : pickable[0]?.id ?? '';
+    : runnable[0]?.id ?? '';
 }
 
 function toPublicSettings(settings: AppSettings): PublicAppSettings {
-  const pickable = getPickableModels(settings);
+  const runnable = getRunnableModels(settings);
   return {
     providersEnabled: { ...settings.providersEnabled },
-    browserChatEnabled: settings.browserChatEnabled,
     ...toLegacyProviderFlags(settings),
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
@@ -1320,9 +1216,8 @@ function toPublicSettings(settings: AppSettings): PublicAppSettings {
     defaultModelId: effectiveDefaultModelId(settings),
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
-    aiModels: pickable.map((model) => ({ ...model })),
+    aiModels: runnable.map((model) => ({ ...model })),
     googleSheetsSources: settings.googleSheetsSources,
-    browserChatEndpoints: settings.browserChatEndpoints.map((entry) => ({ ...entry })),
   };
 }
 
@@ -1424,8 +1319,14 @@ async function readSettings(): Promise<AppSettings> {
   // Normalizing drops them from what this process uses, but the row on disk
   // would keep the secrets indefinitely with nothing left that can manage
   // them, so they are written out rather than merely ignored.
+  //
+  // The stored row minus its key store, and NOTHING else. Writing the
+  // normalized row instead would also clean out whatever this read is only
+  // tolerating - browser chat records among them - before migration 006 has
+  // snapshotted them, and would forget which profile preferences named them.
   if (purgeStoredApiKeys(stored)) {
-    setSetting(APP_SETTINGS_KEY, settings);
+    const { apiKeys: _discarded, ...withoutKeys } = stored as Record<string, unknown>;
+    setSetting(APP_SETTINGS_KEY, withoutKeys);
   }
   assertAtLeastOneProviderEnabled(settings);
   assertAtLeastOneRunnableModel(settings);
@@ -1462,8 +1363,22 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
   // `providersEnabled` record, and the record wins over the flat fields, so an
   // older client's provider toggle would appear to save and change nothing.
   const legacyFlags = input as Record<string, unknown>;
-  const providersEnabled = input.providersEnabled
-    ? { ...current.providersEnabled, ...input.providersEnabled }
+  // A page loaded before the browser chat providers were removed still sends
+  // their switches: a flag per retired provider, the master switch, the list of
+  // debug browsers. Every one is dropped without a word - the normalizer below
+  // names none of them, so nothing reaches the row - because refusing the save
+  // would only stop a stale tab saving the settings it CAN still change. The
+  // retired provider flags are taken out here as well rather than left to it:
+  // a stored row whose only ticked providers are retired reads with the seat
+  // switched on, and on a save that would silently undo an administrator
+  // unticking everything else instead of telling them why it cannot be saved.
+  const requestedFlags = input.providersEnabled
+    ? (Object.fromEntries(
+        Object.entries(input.providersEnabled).filter(([id]) => !isRetiredProviderId(id))
+      ) as Partial<ProvidersEnabled>)
+    : null;
+  const providersEnabled = requestedFlags
+    ? { ...current.providersEnabled, ...requestedFlags }
     : AI_PROVIDER_IDS.reduce((acc, id) => {
         const legacyField =
           id === 'claude-cli' && typeof legacyFlags.openrouterEnabled === 'boolean'
@@ -1537,7 +1452,7 @@ export async function listAdminAIModels(): Promise<AIModelRecord[]> {
 
 export async function listAvailableAIModels(): Promise<AIModelRecord[]> {
   const settings = await readSettings();
-  return getPickableModels(settings).map((model) => ({ ...model }));
+  return getRunnableModels(settings).map((model) => ({ ...model }));
 }
 
 export async function listAvailableAIModelOptions(): Promise<Array<{
@@ -1594,45 +1509,34 @@ export async function resolveStoredAIModelPreference(
 
   const settings = await readSettings();
 
-  /*
-   * A pin to the browser entry, when browser mode has since been switched off.
-   *
-   * It needs its own line because `free-hybrid` is SYNTHESIZED - it is not a
-   * row in `aiModels` - so the lookup below cannot find it and the fallback
-   * below cannot catch it. Without this the call reaches
-   * `resolveRequestedAIModel`, which refuses an id it cannot find, and every
-   * generation for that profile fails on a switch its owner did not flip.
-   */
-  if (isHybridModelId(requested) && !settings.browserChatEnabled) {
+  // A preference for a model that ran on a removed provider - the browser
+  // entry, or a browser chat record - is stale in the same way a locked one is
+  // below, and more permanently. Checked before the lookup, because the record
+  // is not in `aiModels` any more and the lookup would only report it missing.
+  if (isRetiredModelReference(requested)) {
     warnOncePerPreference(
       requested,
-      '[ai] A stored preference names the browser entry, and browser mode is switched off in this ' +
-        'installation; those calls run on the default model instead.'
+      `[ai] A stored preference names "${requested}", a model on the browser chat providers, which ` +
+        'were removed; those calls run on the default model instead. Pick a new model for it to ' +
+        'silence this.'
     );
     return resolveRequestedAIModel();
   }
 
   const stored = settings.aiModels.find((model) => model.id === requested);
   /*
-   * Three states, and only two of them are staleness.
+   * Two states, and only one of them is staleness.
    *
-   * LOCKED - this deployment cannot run it - and BROWSER MODE OFF both say the
-   * installation does not offer the thing, through no act of the profile's
-   * owner and invisibly to them, so the preference is stale and falls back.
+   * LOCKED - this deployment cannot run it - says the installation does not
+   * offer the thing, through no act of the profile's owner and invisibly to
+   * them, so the preference is stale and falls back.
    *
    * MERELY DISABLED by an administrator is deliberately still an error, and
    * that is a decision this file already made: it is real misconfiguration,
    * the admin who flipped it is the person who can see the failure, and
    * swallowing it would hide the case where they turned off the wrong one.
-   * Browser mode joins the first group rather than the second because it is
-   * withdrawn on exactly the machines - headless ones - where the browser could
-   * never have answered anyway.
    */
-  const notOffered =
-    stored &&
-    (isProviderLocked(stored.provider) ||
-      (isBrowserChatSiteId(stored.provider) && !settings.browserChatEnabled));
-  if (notOffered && stored) {
+  if (stored && isProviderLocked(stored.provider)) {
     warnOncePerPreference(
       requested,
       `[ai] A stored preference names "${stored.name}", whose provider is not offered in this ` +
@@ -1645,78 +1549,22 @@ export async function resolveStoredAIModelPreference(
   return resolveRequestedAIModel(requested);
 }
 
+/**
+ * A request id that can only mean a retired provider: a retired model id, a
+ * dropped record's id, a retired provider id on its own, or `provider:model`
+ * with a retired provider - the four shapes `resolveRequestedAIModel` accepts.
+ */
+function namesRetiredModel(requested: string): boolean {
+  if (isRetiredModelReference(requested) || isRetiredProviderId(requested)) return true;
+  const separator = requested.indexOf(':');
+  return separator > 0 && isRetiredProviderId(requested.slice(0, separator));
+}
+
 /** One line per stale preference, however many calls it makes. */
 function warnOncePerPreference(key: string, message: string): void {
   if (warnedLockedPreferences.has(key)) return;
   warnedLockedPreferences.add(key);
   console.warn(message);
-}
-
-/**
- * Which free account a hybrid call goes to THIS time.
- *
- * The router decides; this only turns its answer back into a model record, so
- * everything downstream - the log line, the prompt config, the adapter lookup -
- * sees an ordinary model and needs to know nothing about routing.
- *
- * A hybrid preference on an install that has since lost one of the two free
- * providers resolves to whichever is left rather than failing. Hybrid stops
- * being offered in that state, but a profile that picked it while both were
- * there still has to generate.
- */
-/**
- * Was Hybrid actually chosen - by this id, or by the default it inherits?
- *
- * Read separately from the resolved record, because by the time Hybrid has
- * resolved it is indistinguishable from having picked that account outright.
- * And read through the DEFAULT too: a profile that names no model inherits the
- * app default, so an install whose default is Hybrid has every such profile on
- * Hybrid - and checking only the stored id said otherwise. Measured: a batch
- * with three browsers ran two at a time, because the tasks were pinned to the
- * one site Hybrid happened to resolve to instead of being eligible for both.
- */
-export async function isHybridSelection(storedModelId?: string): Promise<boolean> {
-  const requested = typeof storedModelId === 'string' ? storedModelId.trim() : '';
-  const settings = await readSettings();
-
-  // Nothing is hybrid on an installation with no browser mode. Asserted here
-  // rather than relied upon from the callers: this used to be true only because
-  // the resolver above threw first, which is safe by accident - and the accident
-  // ends the moment somebody reorders those two calls.
-  if (!settings.browserChatEnabled) return false;
-
-  if (requested) {
-    if (isHybridModelId(requested)) return true;
-
-    // The stored id does not always survive. `resolveStoredAIModelPreference`
-    // DROPS it when its provider is locked and falls back to the app default -
-    // so a profile pinned to the subscription seat on a machine that locked it
-    // runs on the default, and if that default is the browser entry the run is
-    // hybrid even though the stored id is not.
-    //
-    // This mirrors that function's decision deliberately. The two must agree:
-    // if they drift, a run lands on a browser but is pinned to whichever site
-    // it resolved to, instead of being eligible for both - which reads as the
-    // batch mysteriously using half the browsers it has.
-    const stored = settings.aiModels.find((model) => model.id === requested);
-    if (stored && !isProviderLocked(stored.provider)) return false;
-  }
-
-  // The EFFECTIVE default, not the stored one - see effectiveDefaultModelId.
-  return isHybridModelId(effectiveDefaultModelId(settings));
-}
-
-export function resolveHybridModel(settings: AppSettings): AIModelRecord {
-  const runnable = getRunnableModels(settings);
-  for (const site of planRoute('hybrid')) {
-    const model = runnable.find((candidate) => candidate.provider === site);
-    if (model) return model;
-  }
-  throw new Error(
-    'The Hybrid (free) option needs at least one of the free chat providers enabled, and none is. ' +
-      'Pick a different model for this profile, or enable Claude (browser) or ChatGPT (browser) ' +
-      'under Admin -> Models.'
-  );
 }
 
 export async function resolveRequestedAIModel(requestedModelId?: string): Promise<AIModelRecord> {
@@ -1727,18 +1575,27 @@ export async function resolveRequestedAIModel(requestedModelId?: string): Promis
     throw new Error('No enabled AI models are configured.');
   }
 
-  const requested = typeof requestedModelId === 'string' ? requestedModelId.trim() : '';
-  if (!requested) {
-    // The app default can itself be hybrid, so this has to go through the same
-    // door rather than assume a row exists with that id.
-    if (isHybridModelId(settings.defaultModelId)) {
-      return resolveHybridModel(settings);
-    }
-    return runnableModels.find((model) => model.id === settings.defaultModelId) ?? runnableModels[0];
+  const named = typeof requestedModelId === 'string' ? requestedModelId.trim() : '';
+  /*
+   * A request naming a model on a removed provider runs on the default.
+   *
+   * Not refused, unlike every other id this cannot find. It comes from a page
+   * loaded before the upgrade, or a choice that page remembered, and the one
+   * such id a person could have picked on purpose was the browser entry, which
+   * the picker labelled as the default. Refusing would break every stale tab on
+   * a change nobody using it made; running the default is what it asked for.
+   */
+  const retired = Boolean(named) && namesRetiredModel(named);
+  if (retired) {
+    warnOncePerPreference(
+      `request:${named}`,
+      `[ai] A request named "${named}", a model on the browser chat providers, which were removed; ` +
+        'it runs on the default model instead. Reloading the page that sent it stops this.'
+    );
   }
-
-  if (isHybridModelId(requested)) {
-    return resolveHybridModel(settings);
+  const requested = retired ? '' : named;
+  if (!requested) {
+    return runnableModels.find((model) => model.id === settings.defaultModelId) ?? runnableModels[0];
   }
 
   const requestedModel = settings.aiModels.find((model) => model.id === requested);
@@ -1902,13 +1759,8 @@ export async function deleteAIModel(id: string): Promise<AdminAppSettings> {
 
 export async function getAIModelSettings(): Promise<AIModelSettings> {
   const settings = await readSettings();
-  // Both halves of what the provider gate reads. Returning only the record
-  // would hand callers a slice that answers `isProviderEnabled` differently
-  // from the settings it came from - a browser site would read as enabled on
-  // an installation that has switched browser mode off.
   return {
     providersEnabled: { ...settings.providersEnabled },
-    browserChatEnabled: settings.browserChatEnabled,
   };
 }
 
@@ -1969,14 +1821,6 @@ export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'out
  * check somewhere.
  */
 export function isProviderEnabled(provider: AIProvider, settings: AIModelSettings): boolean {
-  if (isBrowserChatSiteId(provider) && settings.browserChatEnabled === false) {
-    // The master switch, applied HERE rather than at each of the places that
-    // list or resolve a model. This function is documented above as the one
-    // gate everything funnels through, which is exactly the property the switch
-    // needs: with it here, "never shown" and "never reachable" are the same
-    // statement, and neither can be lost by a caller forgetting a check.
-    return false;
-  }
   return settings.providersEnabled[provider] === true && !isProviderLocked(provider);
 }
 
@@ -2013,30 +1857,4 @@ export function getDefaultEnabledProvider(settings: AIModelSettings): AIProvider
     AI_PROVIDER_IDS.find((id) => settings.providersEnabled[id]) ??
     AI_PROVIDER_IDS[0]
   );
-}
-
-/**
- * The browser-chat settings, for the code paths that cannot wait on a read.
- *
- * `readSettings` is async and cached; the browser-chat adapter needs the port
- * and the queue bound at call time. Exposed as one accessor so there is a
- * single place that decides what wins - the stored value, then the
- * environment, then the built-in default.
- */
-/**
- * The browsers the free chat providers may use, for the call path that needs
- * them at call time rather than at startup.
- *
- * One accessor so there is a single place that decides what wins: the stored
- * list, and nothing else - the environment only supplies the default a fresh
- * install begins with.
- */
-export async function getBrowserChatEndpoints(): Promise<BrowserChatEndpoint[]> {
-  const settings = await readSettings();
-  return settings.browserChatEndpoints.map((entry) => ({ ...entry }));
-}
-
-/** What a fresh install would use, before anything is saved. */
-export function getBrowserChatEnvDefaults(): BrowserChatEndpoint[] {
-  return defaultBrowserChatEndpoints();
 }

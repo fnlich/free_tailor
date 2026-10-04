@@ -17,7 +17,7 @@
 
 Tailor is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
 
-By default it runs on **a chat tab you are already signed in to** rather than metered API tokens: the backend drives claude.ai or chatgpt.com in a Chrome you started yourself, so generation costs nothing per request and needs no API key. Running on a **subscription seat** through a local CLI is also offered, for either vendor: the `claude` binary on a Claude Pro/Max plan, or the `codex` binary on a ChatGPT Plus/Pro plan. Each needs only that its binary is installed and signed in on the machine running the server, and both work on a headless box. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
+By default it runs on **a subscription seat you already pay for** rather than metered API tokens: the backend runs the local `claude` binary on a Claude Pro/Max plan, so generation costs nothing per request beyond the plan and needs no API key. The other vendor's seat is offered the same way - the `codex` binary on a ChatGPT Plus/Pro plan. Each needs only that its binary is installed and signed in on the machine running the server, and both work on a headless box. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
 
 ### ✨ Features
 
@@ -44,17 +44,12 @@ By default it runs on **a chat tab you are already signed in to** rather than me
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌──────────────────────────┐
 │   Next.js 16    │────▶│  Express API    │────▶│  services/ai             │
-│   Frontend      │     │  Backend        │     │  ├── claude-web  (tab)   │
-│   (React 19)    │     │  (Port 3001)    │     │  ├── chatgpt-web (tab)   │
-└─────────────────┘     └─────────────────┘     │  ├── claude-cli  (seat)🔒│
-                                 │              │  ├── claude      (key)   │
+│   Frontend      │     │  Backend        │     │  ├── claude-cli  (seat)  │
+│   (React 19)    │     │  (Port 3001)    │     │  ├── codex-cli   (seat)  │
+└─────────────────┘     └─────────────────┘     │  ├── claude      (key)   │
                                  │              │  ├── openai      (key)   │
                                  │              │  └── deepseek    (key)   │
                                  │              └──────────────────────────┘
-                                 │                           │
-                                 │                           ▼
-                                 │              a chat tab in a Chrome you
-                                 │              started and signed in to
                                  │
                                  ├── SQLite database  (/data/db) — all dynamic data
                                  ├── Static assets    (backend/static) — defaults only
@@ -70,9 +65,7 @@ is a compile error rather than a silent fall-through.
 
 | Provider id | How it authenticates | Notes |
 |---|---|---|
-| `claude-web` (default) | A claude.ai tab you signed in to yourself | Free. Slow, and one conversation per browser. |
-| `chatgpt-web` | A chatgpt.com tab you signed in to yourself | Free, same terms. |
-| `claude-cli` | The `claude` CLI's own sign-in — no key | Offered. Needs `claude` installed and signed in on the server's machine. Free at the margin, one subprocess per call. |
+| `claude-cli` (default) | The `claude` CLI's own sign-in — no key | Runs on a Claude Pro/Max subscription. Needs `claude` installed and signed in on the server's machine. Free at the margin, one subprocess per call. |
 | `codex-cli` | The `codex` CLI's own sign-in — no key | Offered. Runs on a ChatGPT Plus/Pro subscription through the local `codex` binary. Headless-friendly: `codex login --device-auth` prints a code you approve from any other browser, so the server needs no display. Its seeded model is `default`, meaning "whatever that account is configured with" — Codex resolves its catalog from the account, so add a specific model under **Admin → Models** if you want to pin one. |
 | `claude` | `ANTHROPIC_API_KEY` | Metered. The only provider that can still honour `temperature`. |
 | `openai` | `OPENAI_API_KEY` | Metered. |
@@ -100,19 +93,23 @@ it stays an escape hatch.
 There is deliberately no button for either in the admin UI. A lock is a fact
 about the machine, and only whoever set the machine up can know it has changed.
 
+A lock moves the default with it. With the Claude seat locked, a fresh install
+defaults to the Codex seat, which needs no key either; with **both** seats
+locked the only models left are the metered ones, so the default is an API
+model and every call bills per token. Lock both only on a box that has a key in
+`.env` to fall back on.
+
 The `openrouter` provider was **replaced** by `claude-cli`. An existing database
 is migrated on the next boot (its settings row is backed up first, and
 `npm run ai:rollback` restores it); records that still name `openrouter` are
 read as `claude-cli` whether or not that migration has run.
 
-A second migration gives an install upgrading from before the browser-chat
-providers their `claude-web` and `chatgpt-web` model records. Model
-records are stored per install, so the seed list a new install starts from
-could never reach one that had already saved settings - which is why those two
-providers were enabled and configurable while no model in any picker named
-them. The same migration switches the two on if every provider the install had
-enabled turns out to be locked, and repoints a stored default that named the
-locked seat at a free model rather than at a metered one.
+The two providers that drove claude.ai and chatgpt.com in a debug Chrome you
+started yourself were **removed**, and nothing maps them onto another provider:
+their records name a model called `chat`, which neither seat has. An existing
+database is migrated on the next boot, and anything that still names them is
+read as the default whether or not that migration has run - see [Upgrading an
+install that used browser chat](#5-upgrading-an-install-that-used-browser-chat).
 
 ### Credits
 
@@ -127,7 +124,7 @@ not started; one that fails half way refunds the half that failed.
 
 Charging up front rather than on delivery is what makes a refusal mean
 something. The batch endpoint returns a job id before any work runs, and by the
-time a task reaches a browser there is no request and no user attached to it - so
+time a task starts running there is no request and no user attached to it - so
 the only moment a charge can be both truthful and attributable is when the work
 is asked for. It also means a run of thirty is refused as thirty, rather than
 being refused on the thirtieth after twenty-nine resumes already exist.
@@ -717,14 +714,26 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 - A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
   Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
   backend prints the resolved path at startup.
-- **Claude Code**, only if you want to run on a Claude subscription seat. Install
-  it and sign it in; the free browser-chat route needs none of this.
+- **Claude Code**, for the default provider: the Claude subscription seat.
+  Install it and sign it in as the user the server runs as. The Codex seat below
+  or a metered API key will do instead, but one of the three has to be in place
+  before anything can be generated.
 
   ```bash
   npm i -g @anthropic-ai/claude-code
   claude auth login
   claude auth status     # must print "loggedIn": true and "authMethod": "oauth_token"
   ```
+
+  On Windows npm installs this as `claude.cmd`, which Node cannot spawn
+  directly. The backend reads the shim and runs what it wraps - the package's
+  `bin/claude.exe` today, a `cli.js` under an older release - so no extra
+  configuration is needed. If that ever fails it says so and asks for
+  `AI_CLI_BIN`.
+
+  `oauth_token` is what a subscription looks like. Any other `authMethod` means
+  the CLI found an API key and every request will be billed per token; the
+  backend says so loudly at startup and on the admin Settings page.
 
 - **Codex**, only if you want to run on a ChatGPT subscription seat. Same
   arrangement, different vendor - and `--device-auth` is why this one is
@@ -740,16 +749,6 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   Run it as the **same user the server runs as** - the sign-in lives in that
   user's `CODEX_HOME`, and a login as yourself is not one the service can see.
 
-  On Windows npm installs this as `claude.cmd`, which Node cannot spawn
-  directly. The backend reads the shim and runs what it wraps - the package's
-  `bin/claude.exe` today, a `cli.js` under an older release - so no extra
-  configuration is needed. If that ever fails it says so and asks for
-  `AI_CLI_BIN`.
-
-  `oauth_token` is what a subscription looks like. Any other `authMethod` means
-  the CLI found an API key and every request will be billed per token; the
-  backend says so loudly at startup and on the admin Settings page.
-
 - **A Chrome to print with.** Resumes and cover letters are rendered by
   headless Chrome, and `npm install --prefix backend` downloads one
   automatically. Nothing further is needed unless that download is blocked -
@@ -759,91 +758,7 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
 
 - Optionally an **OpenAI**, **Anthropic** or **DeepSeek** API key in `.env`, if
   you want those providers available as alternatives. They are the only
-  credentials this app reads and it stores none of its own
-
-- A **debug Chrome** for the two browser-chat providers, one of which is the
-  default. They need no key at all.
-
-  **Register** each browser first, under **Admin → Settings → Browser Chat
-  (free)**: pick a site and a port, press **Register**, and it is saved
-  immediately. That list is the address book the providers send requests to, so
-  a browser that is not on it is a browser nothing will use.
-
-  Then **start** them yourself:
-
-  ```bash
-  npm run browser:debug                                   # every registered browser
-  npm run browser:debug -- --list                         # what is registered, and what is up
-  npm run browser:debug -- --port 9333 --site claude-web  # one, and register it
-  ```
-
-  `--port=9333` works too, and an unrecognised flag is an error rather than a
-  quiet fallback to starting everything.
-
-
-  **The backend never starts a browser.** There used to be a Start button that
-  made it spawn Chrome on an HTTP request; that is gone, along with the endpoint
-  behind it. The server only ever attaches to what it finds, which means these
-  windows belong to you, outlive a backend restart, and cannot be started by
-  anyone who can reach the admin API.
-
-  Sign in to `claude.ai` and/or `chatgpt.com` **in the window each one opens**
-  and leave it open. Each gets a profile directory of its own
-  (`~/.free-tailor-chrome-<port>`) because Chrome ignores
-  `--remote-debugging-port` when the same profile is already running, and the
-  launcher picks an installed Chrome/Edge/Brave rather than puppeteer's Chrome
-  for Testing - sign-in flows reject a browser in automation mode.
-
-  Running it again is safe: a port that already has a browser on it is left
-  alone rather than started twice.
-
-  **If a turn fails, ask the page what it offers** rather than guessing:
-
-  ```bash
-  npm run browser:doctor            # per role: which selector matched, and how many nodes
-  npm run browser:doctor -- --send  # also drive one real round trip, step by step
-  ```
-
-  Neither site publishes a markup contract and both rename these attributes, so
-  this is the fastest way to find which of the five roles went stale. Overrides
-  go in `.env` (`AI_WEB_CLAUDE_*`, `AI_WEB_CHATGPT_*`, candidates separated by
-  `|`) and take effect on a backend restart - no rebuild.
-
-  **One browser shows one chat tab**, on its own port and its own profile. That
-  is not a preference: a second tab in the same window is a background tab, and
-  Chrome freezes those - a DOM read against a frozen renderer never returns.
-  So parallelism comes from more browsers. Two browsers for claude.ai means two
-  free Claude requests run at once; measured against a fixture answering in
-  about three seconds, four requests took 25.5s on one browser and 12.9s on two.
-
-  There are **two queues** - one shared by every browser whichever site it
-  shows, one for the Claude CLI seat and one for the Codex seat, so a slow seat never stalls the
-  browsers - and **neither has a length limit**. Whenever a browser frees, the
-  task that has waited longest takes it. A request only ever gives up on its own timeout, never for being
-  late in the line. If a configured browser turns out not to be running, the
-  request is retried on another of that site's browsers and the dead one is set
-  aside for a short while.
-
-  Back on **Admin → Settings → Browser Chat (free)**, each platform shows
-  **Active** or **Not active**. Active means the provider's own check found a
-  signed-in chat tab - not merely that a window is running, which a port probe
-  alone cannot tell apart from a window that is signed out. Under it are the
-  ports registered, how many are reachable, and how many are showing the site.
-  Press **Check status** to re-read it after a launcher run.
-
-  The debug port listens on loopback only, and the launcher deliberately does
-  **not** pass `--remote-allow-origins=*`. That flag turns off Chrome's DevTools
-  origin check, which is the only thing stopping an ordinary web page you visit
-  from opening a socket to `127.0.0.1` and driving this browser - including
-  reading the accounts signed in to it. Nothing here needs it: the backend
-  connects from Node, which sends no `Origin` header, so the check never applies
-  to it. If you start the browser by hand, leave that flag off too.
-
-  Two things to know before enabling these: the prompt (your resume and the job
-  description) is typed into a third-party chat window and lands in that
-  account's history, and driving these sites this way may not be permitted by
-  their terms of service. They are also slow and strictly one call at a time, so
-  they suit a single tailoring run rather than a batch
+  credentials this app reads and it stores none of its own.
 
 ### 1. Clone & Install
 
@@ -899,11 +814,11 @@ picks the writable default for the platform it is on. Set it when you want the
 data somewhere specific - `DB_DIR=./data/db` works on both Windows and Ubuntu
 and is resolved from the directory the backend was started in.
 
-Nothing else is required for AI generation: the default provider drives a
-claude.ai tab in the debug Chrome described above, which costs nothing and
-needs no key. The `AI_CLI_*` variables in `.env.example` tune the model,
-concurrency and timeouts of the subscription-seat provider, which
-needs the `claude` CLI installed and signed in on this machine.
+Nothing else in `.env` is required for AI generation: the default provider is
+the Claude subscription seat, which needs no key - only the `claude` CLI
+installed and signed in on this machine, as under Prerequisites. The `AI_CLI_*`
+variables in `.env.example` tune its model, concurrency and timeouts, and the
+`AI_CODEX_*` ones do the same for the Codex seat.
 
 The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the page was loaded from, and the backend accepts requests from any origin on the same host as the API. That means you can open the app through `localhost`, a LAN IP, or a hostname without changing configuration.
 
@@ -925,8 +840,8 @@ a readiness line for each AI provider. A locked one is reported as locked
 rather than probed:
 
 ```
-[ai] claude-cli: Locked in this installation. Needs a Claude subscription seat ...
-[ai] claude-web: 1 browser configured, 1 reachable.
+[ai] claude-cli: Signed in on a Claude subscription (OAuth).
+[ai] codex-cli: Locked in this installation. Needs the `codex` CLI installed and a ChatGPT subscription ...
 ```
 
 Both sides read the single `.env` at the repository root, on Windows as well as
@@ -947,6 +862,39 @@ npm run migrate:legacy -- /path/to/old/backend/data
 ```
 
 Existing database records are never overwritten.
+
+### 5. Upgrading an install that used browser chat
+
+The `claude-web` and `chatgpt-web` providers - **Claude (browser)**,
+**ChatGPT (browser)**, and the **Default (browser)** entry that spread a run over
+both - are gone, along with the debug Chrome they drove. On the first start
+after upgrading, migration 006 tidies the database once:
+
+- It removes their model records, their enable switches, and the browser-chat
+  settings (the master switch and the registered debug ports).
+- It repoints whatever named them. The stored default moves to the Claude
+  seat's Sonnet, or to the first model this machine can run when that seat is
+  locked; a profile's model choice and a prompt's model override are cleared,
+  which means "use the default".
+- It keeps a verbatim copy of the settings row first, in `app_settings` under
+  `app-settings.backup.pre-browser-chat-removal`, and the prompt rows it changed
+  in a side table, `prompts_backup_pre_browser_chat_removal`. Nothing restores
+  these automatically - `npm run ai:rollback` is for the older provider
+  migration - they are there to read.
+
+Nothing depends on that migration having run, which matters because it can be
+held back: it comes after the one that waits for the first administrator. A
+record that still names a browser provider - from a restored backup, a
+hand-edited row, or a page left open from before the upgrade - is read as the
+default, never as an error, and the backend log says so once per name. A run
+that was queued across the upgrade still finishes: a resume that was waiting
+for a browser is built on whatever its profile resolves to now - the profile's
+own model, or the app default - and is not charged again.
+
+`npm run browser:debug`, `npm run browser:doctor` and every `AI_WEB_*` variable
+no longer exist. A leftover `AI_WEB_*` line in `.env` is ignored and can be
+deleted. The Chrome that prints PDFs is a different thing and is unaffected -
+see **A Chrome to print with** under Prerequisites.
 
 ---
 
@@ -1107,9 +1055,9 @@ sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2   li
 | Stripe → Webhooks | Endpoint `https://yourdomain.com/api/payments/webhook/stripe`, subscribed to all seven events listed in `.env.example`. Copy the new signing secret into `STRIPE_WEBHOOK_SECRET`. |
 | Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL` | `https://yourdomain.com/api/payments/webhook/cryptomus` — the **API**, not the frontend. |
 
-**The default AI provider will not work on a headless server.** `claude-web`
-drives a Chrome tab you signed in to by hand, and there is no display to sign in
-on. Both **subscription seats** do work here, and either is the natural choice:
+**Install the subscription seats on the server.** The default provider is the
+Claude seat, and both seats work on a headless box - neither needs a display,
+and Codex's device sign-in is approved from a browser anywhere else:
 
 ```bash
 npm i -g @anthropic-ai/claude-code @openai/codex
@@ -1129,13 +1077,6 @@ Three things go wrong in this order:
 - **Each seat has its own queue lane**, sized by `AI_CLI_CONCURRENCY` and
   `AI_CODEX_CONCURRENCY`. They are counted separately; the defaults of 4 are a
   fine place to start.
-
-Then **switch browser mode off** under **Admin → Settings**, so nobody can pick a
-provider this machine cannot run: both browser providers leave every model
-picker, their health stops being probed, and a stored preference pinned to one
-falls back to the default instead of failing. `AI_LOCKED_PROVIDERS=claude-web,chatgpt-web`
-in `.env` does the same job from the config side if you would rather it not be
-togglable at all.
 
 **Mail from your own domain** is DNS first, then four values. Outgoing mail here
 is only the sign-in codes, so there is nothing else to move.
@@ -1305,10 +1246,7 @@ unique across the install, which settles all of it in one segment.
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
-| **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
-| **Browser mode (the master switch)** | One toggle under **Admin → Settings** withdraws both browser providers from this installation outright. With it off they vanish from every model picker, admin and user alike, their health is not probed, the Browser Chat panel is hidden, and a stored preference pinned to one of them falls back to the default rather than failing. It is the right switch for a headless server, where a Chrome tab is not a thing that can exist - "not shown" and "not reachable" become one statement rather than two that can disagree |
-| **Browser Chat (free)** | Register a debug port per browser here; registering saves immediately, because this list is what the providers and the launcher both read. It shows each platform as **Active** or **Not active** (active = the provider found a signed-in chat tab, which a port probe alone cannot tell from a signed-out one) and the ports registered, reachable, and showing the site. It does **not** start browsers - `npm run browser:debug` does. Unregistering forgets a browser here; it does not close a window |
-| **Credentials** | Claude Code runs on your subscription seat, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
+| **Credentials** | Claude Code and Codex run on your subscription seats, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden |
 | **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
@@ -1392,40 +1330,18 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
-| A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave the windows it opens open. The app never starts one for you. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
-| The first call of a run works and the next one fails with `The chat page did not finish accepting the prompt` | That tab is too busy to take the prompt. The two calls are not the same size: analysing a job posting sends only the posting, while tailoring sends your whole profile, the analysis and the keyword lists - some 27,000 characters - and the site re-renders its editor over all of it. Close the other conversations in that window, reload the tab, and leave the window visible rather than minimised. (Earlier versions reported this as `Input.insertText timed out. Increase the 'protocolTimeout' setting`, which was this app's own limit being too small and is now sized for a real prompt.) |
-| A generation you cancelled by reloading the page keeps driving the browser | Fixed. The reload now stops the call: nothing further is typed into your chat history and the tab is handed back at once, so the request you make after reloading starts straight away instead of queueing behind the one you abandoned. A prompt already in flight when you reloaded finishes typing - nothing can recall a keystroke the browser has begun - but the turn ends there. |
-| A browser provider types the prompt but nothing is ever sent | The site's send button is disabled until its own framework notices the composer has content, and a click on a disabled button dispatches no event at all - so this used to look like "no reply". The driver now waits for the control to become clickable and falls back to Enter, and says `nothing sent it` when neither works. Run `npm run browser:doctor -- --send` to see which control it found. |
-| Not sure whether the selectors still match the live site | `npm run browser:doctor` attaches to your signed-in tab and reports, per role, which candidate matched and how many nodes it found; `--send` drives one real round trip and says which step failed. It reads the page and sends nothing unless you pass `--send`. Every BROKEN line names the `AI_WEB_*` override that fixes it. |
-| A browser provider says `found no message box` or `showed no reply` | Either that tab is not signed in - open it in the debug browser and sign in - or the site changed its markup. The backend names the role that failed; set the matching `AI_WEB_*` override in `.env` (candidates separated by `\|`). A deadline message distinguishes the two: `none of its assistant selectors matched anything at all` is a markup change, while `rendered no new message ... though "<selector>" does match` means the send did not land or the tab is signed out. |
-| How a batch is spread over the browsers | Ten resumes and five browsers means five run at once and five queue; the moment any browser finishes it takes the next queued resume, on that same browser, rather than waiting for the rest of its wave. If one of the five is out of messages it is passed over and the other four carry the batch - all ten are still generated. Add browsers under Admin → Settings → Browser Chat to widen it. |
-| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Browsers take tasks off the head of the queue as they come free, so with three browsers three resumes are built at once and the moment one finishes the next task starts on that browser. A second request appends behind the first. There is a lane per real resource: one shared by every debug browser, one for the Claude CLI seat (and the metered API providers, which have no local resource of their own), and one for the Codex seat - so a stalled seat cannot hold up the browsers, and neither seat can hold up the other. |
-| A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of browser time. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was in a browser at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
-| A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones in a browser are aborted. |
-| A profile's platform choice inside a batch | Still honoured. A profile that had picked `claude-web` before the pickers were folded into one entry still waits for a Claude browser even if a ChatGPT one is idle; a profile on `Default (browser)` goes to whichever frees up first. A pinned task at the head does not block a browser it cannot use - the browser reaches past it for the next task it can run. A task no registered browser can serve fails with that reason rather than waiting for ever. |
-| A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: the browsers registered for that site, both sites' added together under Hybrid, or each subscription seat's own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`). The queues were already there - a free browser is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
+| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource: one for the Claude CLI seat (shared with the metered API providers, which have no local resource of their own) and one for the Codex seat - so neither seat can hold up the other. |
+| A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
+| A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones running are aborted. |
+| A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: each subscription seat's own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`), or four for a metered API provider. The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. |
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
-| One browser is out of messages and the whole request fails | Fixed. A browser that is reachable but cannot take the prompt - out of messages, signed out, wedged, or a previous turn that never let go - is passed over for the next browser of that site, and left out for a few minutes so later calls skip it too. That is the reason to run more than one: each window is a separate session, so an account's wall is not the site's. The retry only happens when the prompt never reached the site; once it has landed, another browser would be asking the same question twice. When every browser refuses, the error is still that browser's own (a usage wall is a 429, a signed-out tab a 503) with each browser and its reason named in the log. |
-| A free account runs out of messages halfway through a batch | Nothing to set - **Default (browser)** already spreads calls across both free accounts. A tailoring run is three calls and a batch of ten profiles is thirty, which one account will not carry, so it moves to the other whenever one is out of messages, signed out, or has no browser running. It appears whenever at least one free provider is enabled, and covers whichever of the two are. |
 | Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
-| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. Nothing is locked by default, so this means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart, or use `Default (browser)`. |
-| The free Claude and ChatGPT models are missing from the model menus | An install that saved settings before those providers existed stores its own model list, which the newer seed list cannot reach. The migration on the next boot adds them; if it did not run, the backend log says why on a `[db]` line. Adding them by hand under Admin → Models works too: provider `Claude (browser)` or `ChatGPT (browser)`, model name `chat`. |
-| A free provider says it `has no browser set up yet` | No debug port is registered for that site. Register one under Admin → Settings → Browser Chat (free), start it with `npm run browser:debug`, and sign in to the tab it opens. |
-| A platform shows **Not active** though its window is plainly open | Active means the provider found a signed-in chat tab, not merely a running browser. Open that window, check the tab is signed in and showing the chat site, then press **Check status**. The line under each platform says how many registered ports are reachable and how many are showing the site, which separates "not started" from "started but signed out". |
-| `npm run browser:debug` starts every browser when you asked for one | Flags have to reach through two npm hops. From the repo root the form is `npm run browser:debug -- --port 9333 --site claude-web`; without the `--`, npm eats `--port` as its own option and the script never sees it. The script itself accepts either `--port 9333` or `--port=9333`, and refuses any flag it does not recognise rather than quietly falling back to starting everything - so if it *did* start the whole list, the flags did not reach it. |
-| `npm run browser:debug` says `No database at ...` | It could not find the settings database, so nothing is registered from its point of view and it used the `.env` defaults. Usually `DB_DIR` differs between your shell and the backend - or the backend runs in a container and its database is in there. Name the browser you want instead: `npm run browser:debug -- --port 9222 --site claude-web`. |
-| A free provider says a request `waited its whole time budget for a free tab` | Its browsers were all busy for the whole call. Nothing was refused for queue length - there is no limit - the request simply ran out of its own time. Add another browser for that site: each one runs one more request at a time. |
-| `npm run browser:debug` says `nothing is listening on port ...` | Usually another window of that browser is already running with the same profile: Chrome then opens a tab in the existing window and never opens the port. Close every window of it and run it again - a port that already has a browser on it is reused, not started twice. On a server with no display, Chrome exits at once - set `AI_WEB_BROWSER_ARGS=--headless=new --no-sandbox`, noting that a headless browser cannot be signed in to by hand and so only works against a profile that already is. |
-| `npm run browser:debug` says no installed browser was found | The resolver looks in the standard install locations and deliberately ignores `CHROME_PATH`, because that often points at puppeteer's Chrome for Testing and sign-in flows reject a browser in automation mode. Set `AI_WEB_BROWSER_PATH` to the browser you want used. |
-| A browser provider says the site `did not answer because ...` | The site refused rather than the driver failing. A usage limit or a rate limit is reported as such and resets on its own; a signed-out tab or a human-verification check needs you at the browser. Either way the backend stops at once instead of polling until the deadline. |
-| A browser provider warns `produced N assistant messages, and the first is being read as the reply` | The send produced more than one assistant message. The driver takes the first one that was not there before, which is right when a site streams two candidate answers side by side and wrong if one of those nodes is a reasoning trace or a preamble. If answers come back looking like reasoning, narrow `AI_WEB_CLAUDE_ASSISTANT` / `AI_WEB_CHATGPT_ASSISTANT` so it matches only the finished reply. |
-| A browser provider warns `no usable "still generating" selector` | Every stop-button candidate also matched an idle page, so nothing can report that a reply is in flight. Answers are still read correctly - the driver falls back to waiting until the text has stopped changing for several seconds - but each call is slower. Set `AI_WEB_CLAUDE_BUSY` or `AI_WEB_CHATGPT_BUSY` to something present only while the site is generating. |
-| A browser provider says the tab `was navigated to ...` | Something moved that tab off the chat site mid-answer - usually a link clicked in it. Give the app a tab of its own in the debug browser, or leave that window alone while a run is in flight. |
-| A browser provider returns the prompt instead of an answer | The site's assistant selector is also matching your own message. The backend refuses the answer rather than tailoring a resume to the instructions, and says so. Set `AI_WEB_CLAUDE_ASSISTANT` or `AI_WEB_CHATGPT_ASSISTANT` to something that can only match an assistant turn. |
+| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. Nothing is locked by default, so this means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart, or pick a model from another provider. |
+| **Claude (browser)**, **ChatGPT (browser)** or **Default (browser)** is missing from the model menus | Removed, along with the debug Chrome they drove - see [Upgrading an install that used browser chat](#5-upgrading-an-install-that-used-browser-chat). A stored default, profile or prompt that named one now runs on the default model, which is the Claude seat unless that is locked here, and the backend log says so once per name. `npm run browser:debug`, `npm run browser:doctor` and the `AI_WEB_*` variables no longer exist; a leftover `AI_WEB_*` line in `.env` is ignored. |
 | A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |
@@ -1434,7 +1350,7 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | Codex says `Not logged in`, or a turn fails with an auth error | Run `codex login --device-auth` **as the user the server runs as** - it prints a code you approve from a browser anywhere, so the server needs no display. The sign-in lives in that user's `CODEX_HOME`, so a login as yourself is invisible to a service running as someone else. `codex login status` prints the account; note it exits 0 either way, so read the text rather than the exit code. Then check **Admin → Settings**, which shows this seat's own readiness card. |
 | Codex answers instantly and your OpenAI bill grows | An `OPENAI_API_KEY` reached the child process. A key **outranks** the subscription in the CLI's own resolution order, so the answers look identical and every one is metered. This server strips `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN` from the child by default; if you see this, `AI_CODEX_ALLOW_API_KEY` has been switched on. |
 | Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
-| A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch, a task pinned to a browser platform no registered browser can serve, and a task kind this build does not know are **not** retried. |
+| A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch and a task kind this build does not know are **not** retried. |
 | Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
 | Somebody opened their sheet link and Google said they need access | Expected since sheets became private by default: the link alone no longer works, and the person it belongs to opens it through the grant their own Google account holds. If they want a link others can use, Settings > Job Sheet has a sharing toggle - or set `SHEET_DEFAULT_VISIBILITY=public` to go back to link-shared for new sheets, knowing that means anyone with the URL may edit. If the OWNER cannot open their own sheet, that is different: the writer grant failed, almost always because the Drive API is not enabled for the server's Google project. It is retried on their next sign-in, and `npm run sheets:doctor` names the cause. |
 | A setting is plainly in `.env` and plainly not in effect | Run `npm run mail:doctor` (or `sheets:doctor`) in `backend/` - its first step prints the absolute path of the file it read, the file's size and encoding, and which keys it found, names only - split into those in effect and those **present but empty**. A bare `NAME=`, which is how `.env.example` ships most of them, sets the variable to empty - and because this `.env` overrides the environment, it also blanks the same variable exported in your shell. Delete the line to let a shell value through. Four causes look identical without that: the loader read a **different** file - the path resolves from the compiled module, so it is always the **repository root** and never `backend/.env`, whichever directory you ran from; a **later duplicate** of the same key silently won, because the last assignment wins; the **encoding** did not decode, which happens to a UTF-16 file written without a byte-order mark and PowerShell's `>` writes UTF-16; or the editor never saved. |
@@ -1469,7 +1385,7 @@ and spawns no subprocess.
 |-------|--------------|
 | **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
 | **Backend** | Express, TypeScript, better-sqlite3 |
-| **AI** | Browser-driven Claude and ChatGPT (default, free), Claude Code CLI and Codex CLI (subscription seats), OpenAI, Anthropic API, DeepSeek |
+| **AI** | Claude Code CLI (default) and Codex CLI (subscription seats), OpenAI, Anthropic API, DeepSeek |
 | **PDF** | Puppeteer |
 | **DOCX** | html-to-docx |
 | **Templates** | Handlebars |

@@ -6,16 +6,13 @@ const { useTempStorage } = require('./helpers');
 /**
  * How wide a batch runs, and why it is not one number.
  *
- * The free chat providers hold one conversation per browser window: two prompts
- * typed into one composer do not queue, they interleave, and both answers are
- * lost. So the ceiling is exactly how many debug browsers the operator started
- * - and a fan-out above it is not throughput, it is a queue with a longer wait
- * at the end. The subscription seat spawns a process per call and has an
- * entirely different ceiling.
- *
- * Fixed at four, a batch on one browser queued three calls behind every answer
- * while a batch on six left four idle for the whole run. Neither is visible
- * from the page; both look like the app being slow.
+ * Each subscription seat spawns a process per call behind its own semaphore,
+ * sized by its own variable - `AI_CLI_CONCURRENCY` for Claude,
+ * `AI_CODEX_CONCURRENCY` for Codex. A fan-out above a seat's ceiling is not
+ * throughput, it is a queue with a longer wait at the end; one below it leaves
+ * the seat partly idle for the whole run. Neither is visible from the page; both
+ * look like the app being slow. The metered providers have no local resource to
+ * count, and keep the number this app has always used for them.
  */
 
 function loadCapacity() {
@@ -26,12 +23,14 @@ function loadCapacity() {
 
 test('an operator override wins over everything worked out', async () => {
   const { resolveBatchCapacity } = loadCapacity();
-  const capacity = await resolveBatchCapacity(
-    { provider: 'claude-web' },
-    { AI_BATCH_CONCURRENCY: '3' }
-  );
-  assert.equal(capacity.limit, 3);
-  assert.match(capacity.reason, /AI_BATCH_CONCURRENCY=3/);
+  for (const provider of ['claude-cli', 'codex-cli', 'openai']) {
+    const capacity = await resolveBatchCapacity(
+      { provider },
+      { AI_BATCH_CONCURRENCY: '3', AI_CLI_CONCURRENCY: '8', AI_CODEX_CONCURRENCY: '8' }
+    );
+    assert.equal(capacity.limit, 3, `${provider} takes the override`);
+    assert.match(capacity.reason, /AI_BATCH_CONCURRENCY=3/);
+  }
 });
 
 test('the subscription seat runs at its own process limit', async () => {
@@ -49,70 +48,6 @@ test('the subscription seat runs at its own process limit', async () => {
   assert.equal(cliConcurrency({ AI_CLI_CONCURRENCY: 'lots' }), 4);
 });
 
-test('a free provider runs at exactly its browser count', async () => {
-  const { resolveBatchCapacity } = loadCapacity();
-  const { updateAppSettings } = require('../dist/config/aiModelConfig');
-  await updateAppSettings({
-    browserChatEndpoints: [
-      { siteId: 'claude-web', port: 9222 },
-      { siteId: 'claude-web', port: 9223 },
-      { siteId: 'chatgpt-web', port: 9224 },
-    ],
-  });
-
-  const claude = await resolveBatchCapacity({ provider: 'claude-web' }, {});
-  assert.equal(claude.limit, 2, 'two browsers, two calls at a time');
-
-  const chatgpt = await resolveBatchCapacity({ provider: 'chatgpt-web' }, {});
-  assert.equal(chatgpt.limit, 1, 'one browser, one call at a time');
-});
-
-test('a hybrid run gets both accounts added together', async () => {
-  // The three-queue arrangement: Claude's browsers and ChatGPT's each pull from
-  // their own line as they free up, so the batch has to offer enough work to
-  // keep both fed. Offering only one site's worth would leave the other idle.
-  const { resolveBatchCapacity } = loadCapacity();
-  const { updateAppSettings } = require('../dist/config/aiModelConfig');
-  await updateAppSettings({
-    browserChatEndpoints: [
-      { siteId: 'claude-web', port: 9222 },
-      { siteId: 'claude-web', port: 9223 },
-      { siteId: 'chatgpt-web', port: 9224 },
-    ],
-  });
-
-  const hybrid = await resolveBatchCapacity({ provider: 'claude-web', route: 'hybrid' }, {});
-  assert.equal(hybrid.limit, 3);
-  assert.match(hybrid.reason, /claude-web/);
-  assert.match(hybrid.reason, /chatgpt-web/);
-});
-
-test('no browsers registered still runs, one at a time', async () => {
-  // A batch that refused over capacity would report a capacity problem where
-  // the real one is "there is no browser running" - which the first call says
-  // far better, and says once rather than once per item.
-  const { resolveBatchCapacity } = loadCapacity();
-  const { updateAppSettings } = require('../dist/config/aiModelConfig');
-  await updateAppSettings({ browserChatEndpoints: [] });
-  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {});
-  assert.equal(capacity.limit, 1);
-});
-
-test('the fan-out is capped however many browsers are registered', async () => {
-  // Each in-flight item is a model call and, later, a Chrome tab rendering a
-  // PDF. Twenty browsers should not mean twenty simultaneous renders.
-  const { resolveBatchCapacity } = loadCapacity();
-  const { updateAppSettings } = require('../dist/config/aiModelConfig');
-  await updateAppSettings({
-    browserChatEndpoints: Array.from({ length: 16 }, (_, index) => ({
-      siteId: index % 2 === 0 ? 'claude-web' : 'chatgpt-web',
-      port: 9300 + index,
-    })),
-  });
-  const capacity = await resolveBatchCapacity({ provider: 'claude-web', route: 'hybrid' }, {});
-  assert.ok(capacity.limit <= 16, `${capacity.limit} is above the ceiling`);
-});
-
 test('a metered provider keeps the number this app has always used', async () => {
   const { resolveBatchCapacity } = loadCapacity();
   for (const provider of ['claude', 'openai', 'deepseek']) {
@@ -121,16 +56,30 @@ test('a metered provider keeps the number this app has always used', async () =>
   }
 });
 
-test('an unreadable settings row slows the batch rather than failing it', async () => {
-  // The capacity is only needed in order to go faster. A batch must not fail
-  // over it.
+test('no width depends on the settings database', async () => {
+  // Every number above comes from the environment. A database that cannot be
+  // opened - a path under a regular FILE, so creating it fails at once with
+  // ENOTDIR rather than on a permission check that varies by platform - must
+  // not slow a batch, let alone fail one.
   delete require.cache[require.resolve('../dist/services/ai/batchCapacity')];
-  // A path under a regular FILE, so the directory creation fails immediately
-  // with ENOTDIR rather than on a permission check that varies by platform.
   process.env.DB_DIR = '/etc/hosts/not-a-directory';
   const { resolveBatchCapacity } = require('../dist/services/ai/batchCapacity');
+  const env = { AI_CLI_CONCURRENCY: '6', AI_CODEX_CONCURRENCY: '5' };
+
+  assert.equal((await resolveBatchCapacity({ provider: 'claude-cli' }, env)).limit, 6);
+  assert.equal((await resolveBatchCapacity({ provider: 'codex-cli' }, env)).limit, 5);
+  for (const provider of ['claude', 'openai', 'deepseek']) {
+    assert.equal((await resolveBatchCapacity({ provider }, env)).limit, 4, provider);
+  }
+});
+
+test('a choice naming a removed provider is sized like any other, not refused', async () => {
+  // A task resolved before the browser chat providers were removed can still
+  // carry one of their ids. The runner resolves it again before any call, so
+  // all this has to do is not throw.
+  const { resolveBatchCapacity } = loadCapacity();
   const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {});
-  assert.equal(capacity.limit, 1);
+  assert.equal(capacity.limit, 4);
 });
 
 /**
@@ -174,6 +123,7 @@ test('each CLI seat is sized from its own variable, and they do not share a lane
     AI_CODEX_CONCURRENCY: '7',
   });
 
+  assert.deepEqual(Object.keys(capacity).sort(), ['cli', 'codex'], 'one lane per seat, and no other');
   assert.equal(capacity.cli.length, 3, 'the Claude seat and the metered providers');
   assert.equal(capacity.codex.length, 7, 'the Codex seat, from AI_CODEX_CONCURRENCY');
   assert.ok(

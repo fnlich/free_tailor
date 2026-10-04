@@ -68,12 +68,10 @@ const OUTPUT_KEY_CLASSES = [
 /**
  * Whether this page may offer a provider at all.
  *
- * `isProviderOffered` and nothing else. This used to be a private copy that read
- * only `providersEnabled`, and it went stale the moment browser mode became
- * switchable: the select went on listing the two browser providers on an install
- * that had withdrawn them, and picking one produced a backend error blaming
- * model configuration for a withdrawn feature. It dropped the LOCK clause too,
- * so a provider this machine cannot run was offered here unlabelled.
+ * `isProviderOffered` and nothing else. A private copy that reads only
+ * `providersEnabled` drops the LOCK clause, so a provider this machine cannot
+ * run is offered here unlabelled and picking it produces a backend error - and
+ * the next clause the backend's rule grows is missed here as well.
  */
 function isEnabled(settings: PublicAppSettings, provider: AIProvider): boolean {
   return isProviderOffered(settings, provider, settings.providersEnabled);

@@ -43,14 +43,14 @@ function callsTo(source, name) {
 test('every AI call in the resume route can be cancelled by the caller going away', () => {
   // A reload of the builder page mid-generation closes the response, and
   // `requestSignal` aborts on that. A call that is not given the signal does not
-  // stop: it keeps driving the operator's chat tab for the rest of its deadline,
-  // holding the tab lease, so the request they make after reloading queues behind
-  // an answer that can never be delivered.
+  // stop: it keeps its seat process running for the rest of its deadline,
+  // holding a concurrency slot, so the request they make after reloading queues
+  // behind an answer that can never be delivered.
   //
   // This was wrong in exactly the way that is easy to miss. Every short
   // `analyzeJobDescription` call was cancellable while five of the six long
-  // `tailorResume` calls - minutes each, and the ones actually driving the
-  // browser - were not.
+  // `tailorResume` calls - minutes each, and the ones actually holding a slot -
+  // were not.
   const source = fs.readFileSync(ROUTE, 'utf8');
 
   for (const name of ['tailorResume', 'generateCoverLetter', 'analyzeJobDescription']) {

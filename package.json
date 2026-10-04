@@ -10,8 +10,6 @@
     "dev:frontend": "npm run dev --prefix frontend",
     "dev:frontend-live": "npm run dev:live --prefix frontend",
     "setup:browser": "npm run setup:browser --prefix backend",
-    "browser:debug": "npm run browser:debug --prefix backend --",
-    "browser:doctor": "npm run browser:doctor --prefix backend --",
     "test": "npm run test --prefix backend"
   },
   "devDependencies": {

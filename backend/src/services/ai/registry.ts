@@ -1,9 +1,4 @@
-import {
-  AI_PROVIDER_IDS,
-  getProviderLockReason,
-  isBrowserChatSiteId,
-} from '../../config/providerCatalog';
-import { getAIModelSettings } from '../../config/aiModelConfig';
+import { AI_PROVIDER_IDS, getProviderLockReason } from '../../config/providerCatalog';
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_DEEPSEEK_MODEL,
@@ -14,7 +9,6 @@ import { AIProviderError } from './errors';
 import { createAnthropicHttpAdapter } from './providers/anthropicHttp';
 import { createClaudeCliAdapter, type ClaudeCliAdapter } from './providers/claudeCli';
 import { createCodexCliAdapter } from './providers/codexCli';
-import { createBrowserChatAdapter } from './providers/browserChat';
 import { createOpenAICompatibleAdapter } from './providers/openaiCompatible';
 import type { AIProviderAdapter, ProviderCapabilities, ProviderHealth } from './types';
 
@@ -76,11 +70,6 @@ function registerDefaults(): void {
       tokenLimitField: 'max_tokens',
     })
   );
-  // Registered like any other, and costing nothing at import: the adapter does
-  // not touch the browser until a call is made, so a server with no debug
-  // browser running is unaffected by these existing.
-  registerDefault('claude-web', () => createBrowserChatAdapter('claude-web'));
-  registerDefault('chatgpt-web', () => createBrowserChatAdapter('chatgpt-web'));
 }
 
 export function getAdapter(id: AIProvider): AIProviderAdapter {
@@ -114,26 +103,6 @@ export function listProviderCapabilities(): ProviderCapabilities[] {
 export type ProviderHealthReport = ProviderHealth & { provider: AIProvider };
 
 export async function checkProviderHealth(id: AIProvider): Promise<ProviderHealthReport> {
-  /*
-   * Browser mode switched off is the same kind of fact as a lock, and gets the
-   * same treatment: answered here, without touching the adapter.
-   *
-   * Not a cosmetic saving. The browser-chat health check opens a socket to a
-   * debug port and drives a tab, and on the headless server this switch exists
-   * for there is no browser to find - so every boot preflight and every visit
-   * to the admin health panel spent that timeout to report "not signed in",
-   * when the truth is that nobody can sign in and nothing is meant to.
-   */
-  if (isBrowserChatSiteId(id) && !(await getAIModelSettings()).browserChatEnabled) {
-    return {
-      provider: id,
-      ok: false,
-      detail: 'Browser mode is switched off in this installation.',
-      checkedAt: new Date().toISOString(),
-      meta: { offered: false },
-    };
-  }
-
   // Answered without touching the adapter. Probing a locked provider costs
   // something real - the CLI check spawns a binary and waits on it - to learn
   // a fact that could not change the answer, and it would report "not signed

@@ -8,15 +8,14 @@ import {
 } from '../promptService';
 
 /**
- * The sentinels a chat window is asked to wrap its JSON in.
+ * The sentinels a provider with no JSON mode is asked to wrap its JSON in.
  *
- * Deliberately not markdown. A fence is the obvious choice and it is the wrong
- * one here: the reply reaches this app as the page's rendered `innerText`, and
- * a site that renders a fence as a code block hands back the code WITHOUT the
- * backticks, so the marker that was supposed to delimit the answer is the one
- * thing guaranteed to be missing. These survive rendering because they are
- * ordinary text - no character in them means anything to a markdown parser -
- * and they are ugly enough that no model emits them by accident.
+ * Deliberately not markdown. A fence is the obvious choice and a weak one: a
+ * model fences an example as readily as it fences the answer, and nothing about
+ * a fence says which one it is. These are ordinary text - no character in them
+ * means anything to a markdown parser, so nothing that renders or reformats the
+ * reply can strip them - and they are ugly enough that no model emits them by
+ * accident, so what lies between them is the answer by construction.
  */
 export const JSON_BEGIN_SENTINEL = '@@BEGIN_JSON@@';
 export const JSON_END_SENTINEL = '@@END_JSON@@';
@@ -33,18 +32,19 @@ export const JSON_ONLY_SYSTEM_PROMPT =
   'You are a strict JSON generator. Return valid JSON only, with no markdown fences or extra text.';
 
 /**
- * What to say to a chat window, which enforces nothing.
+ * What to say to a provider that enforces nothing.
  *
- * Every clause here is a failure that actually happens when you type a prompt
- * into claude.ai or chatgpt.com and read the answer back off the page:
+ * Chosen by capability, not by name: any transport whose `nativeJsonMode` is
+ * `none` gets it - today the metered Anthropic API. Every clause here is a
+ * failure a model left to itself actually produces:
  *
  *   - It opens with a sentence of preamble ("Here's the tailored resume:") and
  *     closes with an offer to help further. Both parse as prose, not JSON.
- *   - It wraps the answer in a fence, which `innerText` then strips, so a
- *     reader keyed on fences finds nothing.
+ *   - It wraps the answer in a fence, or fences an example and leaves the
+ *     answer bare, so a reader keyed on fences finds the wrong thing.
  *   - It "helpfully" adds `// comments`, trailing commas, or `...` where a long
  *     list bored it. Each is valid-looking and none is valid JSON.
- *   - It curls the quotes, because it is writing prose in a rich text surface.
+ *   - It curls the quotes, as it would in prose.
  *
  * The sentinels are what make this recoverable rather than merely likely to
  * work: whatever else the model says, the extractor takes what lies between

@@ -27,7 +27,7 @@ export type StoredTask = {
   batchId: string;
   seq: number;
   state: string;
-  /** Queue, sites, label, the runner's kind and payload, the result. */
+  /** Queue, label, the runner's kind and payload, the result. */
   data: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

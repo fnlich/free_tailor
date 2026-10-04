@@ -157,18 +157,17 @@ function PromptsPageBody() {
     () => ({}) as Record<AIProvider, boolean>
   );
   /*
-   * The locks and the browser-mode flag, kept so the disabled check below can be
-   * the SHARED rule rather than a private copy of half of it.
+   * The locks, kept so the disabled check below can be the SHARED rule rather
+   * than a private copy of half of it.
    *
    * This page was safe only by accident: the option list arrives already
    * filtered server-side, so its own predicate never had to be right. That is a
    * fragile reason to be correct, and it is one release from being wrong.
    */
   const [offerSettings, setOfferSettings] = useState<
-    Pick<PublicAppSettings, 'providerLocks' | 'browserChatEnabled'>
+    Pick<PublicAppSettings, 'providerLocks'>
   >(() => ({
     providerLocks: DEFAULT_PUBLIC_APP_SETTINGS.providerLocks,
-    browserChatEnabled: DEFAULT_PUBLIC_APP_SETTINGS.browserChatEnabled,
   }));
   const providerOffered = (provider: AIProvider): boolean =>
     isProviderOffered(offerSettings, provider, enabledProviders);
@@ -359,10 +358,7 @@ function PromptsPageBody() {
 
         setModelOptions(options);
         setEnabledProviders(settings.providersEnabled);
-        setOfferSettings({
-          providerLocks: settings.providerLocks,
-          browserChatEnabled: settings.browserChatEnabled,
-        });
+        setOfferSettings({ providerLocks: settings.providerLocks });
       } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load prompt model options');

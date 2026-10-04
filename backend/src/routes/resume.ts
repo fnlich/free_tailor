@@ -531,7 +531,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     // after it, and it was still one profile at a time. That is not a small
     // remainder: a profile with no cover letter in its tailored content needs a
     // second model call, so a batch of ten with no job description was ten full
-    // calls end to end with every browser but one idle.
+    // calls end to end with every seat slot but one idle.
     const capacity = await resolveBatchCapacity(selectedModel);
     const buildable = profiles.filter((profile): profile is Profile => Boolean(profile));
     console.log(
@@ -762,10 +762,10 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
      *
      * It runs INSIDE the unit that needs it rather than in a pass of its own
      * beforehand. A separate pass would be a second wave: thirty analyses, then
-     * thirty builds, with every browser idle between the two whenever one job's
+     * thirty builds, with every slot idle between the two whenever one job's
      * analysis ran long. Here a unit is the whole of one resume - analyse, then
-     * build - so a browser that takes a task keeps it until that resume is
-     * done, which is what the queue is supposed to look like.
+     * build - so a slot that takes a task keeps it until that resume is done,
+     * which is what the queue is supposed to look like.
      */
     const analysisByJob = new Map<string, Promise<JobAnalysis | undefined>>();
     const analysisFor = (job: (typeof normalizedJobs)[number]): Promise<JobAnalysis | undefined> => {
@@ -812,18 +812,17 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
      *
      * Flattened before anything runs, rather than left as nested loops, so the
      * whole grid is a single queue. Nested, a slow job at the head held every
-     * profile behind it even when other browsers sat idle - the outer loop
+     * profile behind it even when other slots sat idle - the outer loop
      * could not move on until the inner one finished, and the inner one was one
      * at a time as well.
      */
     const units = normalizedJobs.flatMap((job) => profiles.map((profile) => ({ job, profile })));
 
     // How wide to run, taken from the CHOSEN PROVIDER's real capacity: the
-    // browsers registered for that site, both sites' added together under a
-    // hybrid route, or the seat's process slots. See `resolveBatchCapacity`.
-    // The queues themselves are already there - the tab pool hands a free
-    // browser to the head of its line as each is released - so this only has to
-    // offer them enough work to stay busy.
+    // seat's process slots, or the default for a metered API. See
+    // `resolveBatchCapacity`. The queues themselves are already there - each
+    // seat's semaphore hands a free slot to the head of its line as one is
+    // released - so this only has to offer them enough work to stay busy.
     const capacity = await resolveBatchCapacity(selectedModel);
     console.log(
       `[Resume timing] multi-job batch: ${units.length} resume${units.length === 1 ? '' : 's'}, ` +

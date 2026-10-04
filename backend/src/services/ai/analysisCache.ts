@@ -7,8 +7,8 @@ import { createHash } from 'crypto';
  * description constantly: a sheet import re-run after fixing one row, a batch
  * regenerated against a different template, a preview followed by the generate
  * that produces the file. Each of those was a fresh analysis of text that had
- * not changed, and on a free chat provider each one is also a whole turn -
- * typing thirty thousand characters into a composer and waiting out the answer.
+ * not changed, and on a subscription seat each one is also a whole turn of
+ * that seat's usage allowance, spent to get back an answer already in hand.
  *
  * Safe to cache because the call is deterministic by construction: the analysis
  * runs at `temperature: 0` with a fixed prompt, so the same three inputs give

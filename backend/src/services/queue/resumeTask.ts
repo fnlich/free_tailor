@@ -1,11 +1,11 @@
-import type { AiChoice } from '../../config/aiPreferences';
-import type { BrowserChatSiteId } from '../../config/providerCatalog';
+import { resolveAiChoice, type AiChoice } from '../../config/aiPreferences';
+import { isRetiredProviderId } from '../../config/providerCatalog';
 import { getTemplateById } from '../../extractors/templateExtractor';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../../generators/coverLetterGenerator';
 import { generateResumePDF } from '../../generators/pdfGenerator';
 import { analysisCacheKey } from '../ai/analysisCache';
-import { getProviderSemaphore } from '../ai';
+import { getProviderSemaphore, warnOnce } from '../ai';
 import { analyzeJobDescription, generateCoverLetter, tailorResume } from '../resumeService';
 import type { Profile } from '../../types/profile';
 import type { JobAnalysis, Template } from '../../types/template';
@@ -18,7 +18,7 @@ import type { Assignment } from './taskQueue';
  * Lifted almost verbatim out of the batch route's worker, because that block was
  * already the right unit of work: analyse, tailor, write the cover letter, render
  * the files. A task is the whole of one resume rather than one model call, so a
- * browser that takes a task keeps working on that resume until it is finished.
+ * slot that takes a task keeps working on that resume until it is finished.
  *
  * Nothing here knows about express. There is no `req`, no `res`, and no
  * `requestSignal` - a batch now outlives the request that submitted it, so the
@@ -100,12 +100,11 @@ export type ResumeTaskResult = {
  * How many resumes may be RENDERED at once, across every queue.
  *
  * Separate from how many may be generated, and needed because the two used to be
- * the same number. The old single batch width was capped at 16 partly because
- * "each in-flight item is a model call AND, later, a Chrome tab rendering a
- * PDF"; per-queue widths now add up with no single ceiling over them, so an
- * install with a dozen browsers and a CLI seat could put fifteen simultaneous
- * renders through one Chrome. Rendering is seconds where a model call is
- * minutes, so a modest cap here costs nothing and bounds the memory.
+ * the same number. Each in-flight item is a model call AND, later, a Chrome tab
+ * rendering a PDF; per-queue widths add up with no single ceiling over them, so
+ * two seats sized at eight apiece could put sixteen simultaneous renders
+ * through one Chrome. Rendering is seconds where a model call is minutes, so a
+ * modest cap here costs nothing and bounds the memory.
  */
 const RENDER_CONCURRENCY = 4;
 
@@ -114,8 +113,8 @@ const RENDER_CONCURRENCY = 4;
  *
  * `analysisCache` already stops the SECOND call for a posting - but only after
  * the first has returned. Ten tasks on one job description all start together,
- * all miss, and all call. That is nine wasted turns on a free account, and it is
- * the commonest shape in this app: one posting, several profiles.
+ * all miss, and all call. That is nine wasted turns on a seat, and it is the
+ * commonest shape in this app: one posting, several profiles.
  *
  * Keyed on the model as well as the text, which the cache also does and a
  * per-batch memo did not: two profiles set to different models must not share
@@ -145,18 +144,37 @@ async function resolveTemplate(
 }
 
 /**
- * The choice, pinned to the browser that actually took the task.
+ * The task's choice, or a fresh one when it names a retired provider.
  *
- * A Hybrid task is eligible for both sites, and the dispatcher decides which one
- * by handing it to whichever browser came free. Without this the call would go
- * back to the router and could pick the other site - putting two turns into one
- * window while the one the queue reserved sits idle.
+ * A choice is resolved when the batch is submitted and written to disk with
+ * the task, so a task queued before the browser chat providers were removed can
+ * come back from a restart still naming one - or the "either site" route they
+ * offered. Run as stored, it would fail every attempt against a provider nothing
+ * serves and then be refunded, and the person who queued it would get nothing.
+ * The credit paid for a resume, not for a model, so the choice is resolved
+ * again from the profile exactly as a new submission would resolve it: the
+ * profile's own model, or the app default.
  */
-function pinChoice(choice: AiChoice, assignment: Assignment): AiChoice {
-  if (assignment.queue !== 'browser' || !assignment.site) return choice;
-  if (choice.provider === assignment.site) return choice;
-  return { ...choice, provider: assignment.site as BrowserChatSiteId };
+async function currentChoice(choice: AiChoice, profile: Profile): Promise<AiChoice> {
+  const stored = choice as (AiChoice & { route?: unknown }) | undefined;
+  if (!stored || (!isRetiredProviderId(stored.provider) && stored.route !== 'hybrid')) return choice;
+
+  const fresh = await resolveAiChoice(undefined, profile);
+  warnOnce(
+    `retiredQueuedChoice:${stored.provider}->${fresh.provider}/${fresh.modelName}`,
+    `A queued resume was set to run on "${stored.provider}", one of the removed browser chat ` +
+      `providers; it runs on ${fresh.provider}/${fresh.modelName} instead, resolved from its profile.`
+  );
+  return fresh;
 }
+
+/**
+ * The re-resolution on its own, for the tests that pin what a restored task
+ * naming a retired provider runs on. Marked rather than made public, as
+ * `__analyseOnceForTests` below is: a whole task would also drag in a template,
+ * a profile on disk and a PDF render.
+ */
+export const __currentChoiceForTests = currentChoice;
 
 async function analyseOnce(
   job: ResumeJob,
@@ -203,7 +221,7 @@ export async function runResumeTask(
   assignment: Assignment
 ): Promise<ResumeTaskResult> {
   const { profile, job } = input;
-  const choice = pinChoice(input.choice, assignment);
+  const choice = await currentChoice(input.choice, profile);
 
   const template = await resolveTemplate(profile, input.templateId);
   if (!template) throw new Error('Default template not available');

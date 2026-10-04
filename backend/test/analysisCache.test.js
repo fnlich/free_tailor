@@ -14,14 +14,15 @@ const {
  *
  * This app re-analyses the same posting constantly - a sheet import re-run
  * after fixing one row, a batch regenerated against a different template, a
- * preview followed by the generate that writes the file. On a free chat
- * provider each of those is a whole turn: thirty thousand characters typed into
- * a composer and the answer waited out.
+ * preview followed by the generate that writes the file. On a subscription
+ * seat each of those is a whole turn of the seat's usage allowance, and on a
+ * metered provider thirty thousand characters billed again, for an answer
+ * already in hand.
  */
 
 test.beforeEach(() => resetAnalysisCacheForTests());
 
-const KEY = { jobDescription: 'A posting.', promptText: 'Analyze this.', model: 'claude-web/chat' };
+const KEY = { jobDescription: 'A posting.', promptText: 'Analyze this.', model: 'codex-cli/default' };
 
 test('the same three inputs are the same key', () => {
   assert.equal(analysisCacheKey(KEY), analysisCacheKey({ ...KEY }));

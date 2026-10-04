@@ -395,9 +395,7 @@ export type AIProvider =
   | 'codex-cli'
   | 'claude'
   | 'openai'
-  | 'deepseek'
-  | 'claude-web'
-  | 'chatgpt-web';
+  | 'deepseek';
 
 export type ProviderMeta = {
   label: string;
@@ -430,16 +428,6 @@ export const PROVIDER_META = {
   claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
   openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },
   deepseek: { label: 'DeepSeek', requiresApiKey: true, modelNameHint: 'deepseek-v4-flash' },
-  'claude-web': {
-    label: 'Claude (browser)',
-    requiresApiKey: false,
-    modelNameHint: 'chat',
-  },
-  'chatgpt-web': {
-    label: 'ChatGPT (browser)',
-    requiresApiKey: false,
-    modelNameHint: 'chat',
-  },
 } as const satisfies Record<AIProvider, ProviderMeta>;
 
 export const AI_PROVIDERS: AIProvider[] = Object.keys(PROVIDER_META) as AIProvider[];
@@ -633,16 +621,6 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
  * They are carried separately from `aiModels` because that list is the set of
  * models a request may name.
  */
-/**
- * The reserved model id that means "use both free chat accounts".
- *
- * Not a row in the model table: there is no provider to call and no model name
- * to send. The server synthesises it into the pickable list and resolves it per
- * call, so the pickers treat it like any other option and only this id has to
- * be recognised by name.
- */
-export const HYBRID_MODEL_ID = 'free-hybrid';
-
 export interface ProviderLock {
   id: AIProvider;
   label: string;
@@ -654,15 +632,6 @@ export interface ProviderLock {
 export interface PublicAppSettings {
   /** Canonical enable flags, keyed by provider id. */
   providersEnabled: Record<AIProvider, boolean>;
-  /**
-   * Whether this installation offers browser-tab mode at all.
-   *
-   * Off, the server has already removed every browser row from `aiModels`, so
-   * nothing here has to filter. It is carried anyway because the Settings page
-   * needs it to draw the switch and to decide whether the Browser Chat section
-   * is worth showing.
-   */
-  browserChatEnabled: boolean;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -675,8 +644,6 @@ export interface PublicAppSettings {
   /** What a run uses when nothing overrides it, and the values on offer. */
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
-  /** The debug browsers the free chat providers drive, one tab apiece. */
-  browserChatEndpoints: BrowserChatEndpoint[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
 }
@@ -829,11 +796,6 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   outputPathUsesJobTitle: true,
   aiModels: [],
   googleSheetsSources: [],
-  // Permissive until the server answers: withdrawing browser mode on a guess
-  // hides something the installation may well offer, and the answer is one
-  // request away.
-  browserChatEnabled: true,
-  browserChatEndpoints: [],
   providerLocks: [],
 };
 
@@ -841,19 +803,26 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter((entry): entry is AIModelRecord => typeof entry === 'object' && entry !== null)
-    .map((entry) => ({
-      id: typeof entry.id === 'string' ? entry.id : '',
-      name: typeof entry.name === 'string' ? entry.name : '',
-      // Coerced, not whitelisted. Rewriting an unrecognised provider to
-      // 'openai' makes a model row for a newer one display, filter and
-      // default-gate as OpenAI.
-      provider: coerceProvider(entry.provider) ?? 'claude-cli',
-      modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
-      description: typeof entry.description === 'string' ? entry.description : '',
-      enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
-      createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
-      updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
-    }) satisfies AIModelRecord)
+    .flatMap((entry) => {
+      // Dropped, not relabelled. Falling back to any one provider makes a row
+      // this build cannot name display, filter and default-gate as that
+      // provider, and an id it does not know - a newer provider's, or one a
+      // release has since retired - means nothing to any provider it does.
+      const provider = coerceProvider(entry.provider);
+      if (!provider) return [];
+      return [
+        {
+          id: typeof entry.id === 'string' ? entry.id : '',
+          name: typeof entry.name === 'string' ? entry.name : '',
+          provider,
+          modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
+          description: typeof entry.description === 'string' ? entry.description : '',
+          enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
+          createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
+          updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
+        } satisfies AIModelRecord,
+      ];
+    })
     .filter((entry) => entry.id && entry.modelName);
 }
 
@@ -894,23 +863,16 @@ export function isProviderLocked(
   return settings.providerLocks.some((lock) => lock.id === provider);
 }
 
-/** The chat sites, which the browser-mode switch governs as one. */
-export const BROWSER_CHAT_PROVIDERS: AIProvider[] = ['claude-web', 'chatgpt-web'];
-
-export function isBrowserChatProvider(provider: AIProvider): boolean {
-  return BROWSER_CHAT_PROVIDERS.includes(provider);
-}
-
 /**
  * Whether this installation offers the provider at all, for a page that has to
  * decide for itself.
  *
- * The mirror of the backend's `isProviderEnabled`, clause for clause, and it
- * exists because the admin page had quietly grown its own copy that was missing
- * the browser-mode clause - so with browser mode off the default-model select,
- * the provider rows and the model table all went on offering chat sites the
- * server would refuse. One helper, so the next clause added to the backend has
- * exactly one place to be mirrored rather than three to be missed.
+ * The mirror of the backend's `isProviderEnabled`, clause for clause: a locked
+ * provider is never offered however it is ticked, and otherwise its enable flag
+ * decides. One helper rather than a copy per page, because a page's own copy
+ * falls behind the server's rule and goes on offering providers the server
+ * would refuse - so the next clause added to the backend has exactly one place
+ * to be mirrored rather than three to be missed.
  *
  * The PUBLIC model list is already filtered server-side and needs none of this.
  * Admin screens are what need it: they are deliberately served the RAW list so
@@ -918,11 +880,10 @@ export function isBrowserChatProvider(provider: AIProvider): boolean {
  * offer rule themselves.
  */
 export function isProviderOffered(
-  settings: Pick<PublicAppSettings, 'providerLocks' | 'browserChatEnabled'>,
+  settings: Pick<PublicAppSettings, 'providerLocks'>,
   provider: AIProvider,
   providersEnabled?: Record<AIProvider, boolean>
 ): boolean {
-  if (isBrowserChatProvider(provider) && settings.browserChatEnabled === false) return false;
   if (isProviderLocked(settings, provider)) return false;
   // Optional, because two of the three callers ask "is this offered at all"
   // while the settings form also has an unsaved copy of the enable flags.
@@ -935,10 +896,6 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
 
   return {
     providersEnabled: normalizeProvidersEnabled(source),
-    // Absent means an older server, which had no such switch and always offered
-    // both - so absent reads as on, never as off.
-    browserChatEnabled:
-      typeof source.browserChatEnabled === 'boolean' ? source.browserChatEnabled : true,
     defaultMode: source.defaultMode === 'generate' ? 'generate' : 'preview',
     defaultTheme: source.defaultTheme === 'dark' ? 'dark' : 'light',
     defaultResumeSelection:
@@ -954,17 +911,6 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
       typeof source.defaultCoverLetterDocxEnabled === 'boolean' ? source.defaultCoverLetterDocxEnabled : true,
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
-    browserChatEndpoints: Array.isArray(source.browserChatEndpoints)
-      ? source.browserChatEndpoints
-          .filter(
-            (entry): entry is BrowserChatEndpoint =>
-              typeof entry === 'object' &&
-              entry !== null &&
-              typeof (entry as BrowserChatEndpoint).port === 'number' &&
-              (entry as BrowserChatEndpoint).siteId !== undefined
-          )
-          .map((entry) => ({ siteId: entry.siteId, port: entry.port }))
-      : [],
     aiModels: normalizeModelRecords(source.aiModels),
     providerLocks: normalizeProviderLocks(source.providerLocks),
     googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
@@ -995,83 +941,6 @@ export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
   creditMaxCredits?: number;
   paymentLimits?: PaymentTargetLimits[];
   requireThreeDSecure?: boolean;
-}
-
-/** One debug browser: which chat site it shows, and the port it listens on. */
-export interface BrowserChatEndpoint {
-  siteId: AIProvider;
-  port: number;
-}
-
-/** One chat site, and whether the debug browser has a tab on it. */
-export interface DebugBrowserSite {
-  id: AIProvider;
-  label: string;
-  url: string;
-  open: boolean;
-}
-
-export interface DebugBrowserStatus {
-  port: number;
-  running: boolean;
-  browser: string | null;
-  sites: DebugBrowserSite[];
-}
-
-/**
- * What is registered for one chat platform, and how much of it is reachable.
- *
- * These are cheap port probes and stop short of the question that matters most:
- * a browser can be running with the site's tab open and still be SIGNED OUT,
- * and no port probe can tell. That answer comes from the provider health report
- * the same page already fetches - see `isPlatformActive`.
- */
-export interface DebugPlatformStatus {
-  id: AIProvider;
-  label: string;
-  /** Debug ports registered for this platform. */
-  registeredPorts: number[];
-  /** Of those, the ones with a browser answering. */
-  runningPorts: number[];
-  /** Of those, the ones showing this platform's site. */
-  tabPorts: number[];
-}
-
-/**
- * Whether a registered platform is usable right now.
- *
- * The provider's own health answer, which drives the tab and looks for the
- * composer - so it separates "signed in and ready" from "a window is open on
- * the right site but signed out", which is the distinction an operator staring
- * at a running browser most needs made for them.
- */
-export function isPlatformActive(
-  health: ProviderHealthReport | null,
-  platform: Pick<DebugPlatformStatus, 'id' | 'registeredPorts'>
-): boolean {
-  if (platform.registeredPorts.length === 0) return false;
-  return Boolean(health?.providers.find((entry) => entry.id === platform.id)?.ok);
-}
-
-/** One configured browser, with what the server can see of it right now. */
-export interface DebugBrowserEntry {
-  siteId: AIProvider;
-  port: number;
-  status: DebugBrowserStatus;
-}
-
-/** What each provider's queue is doing: tabs, in use, and how many are waiting. */
-export interface TabQueueStats {
-  tabs: number;
-  inUse: number;
-  queued: number;
-  endpoints: string[];
-}
-
-export interface DebugBrowserReport {
-  browsers: DebugBrowserEntry[];
-  platforms: DebugPlatformStatus[];
-  queues: Record<string, TabQueueStats>;
 }
 
 export interface BrowseOutputDirectoryResponse {
@@ -1232,8 +1101,6 @@ export const adminApi = {
 
   getSettings: async () =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/settings')),
-
-  getDebugBrowsers: () => apiFetch<DebugBrowserReport>('/admin/browser/debug'),
 
   browseOutputDirectory: (currentPath?: string) =>
     apiFetch<BrowseOutputDirectoryResponse>('/admin/browse-output-directory', {

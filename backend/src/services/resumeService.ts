@@ -1768,8 +1768,8 @@ function stripUnsafeResumeSentences(value: string, company?: string): string {
  * The profile as the MODEL needs to see it.
  *
  * Built by naming what goes in rather than by spreading the record and deleting
- * from it, so a field added to `Profile` later is not sent to a chat window by
- * default and noticed by nobody.
+ * from it, so a field added to `Profile` later is not sent to a model provider
+ * by default and noticed by nobody.
  *
  * Three groups are left out, and each for its own reason:
  *
@@ -1787,8 +1787,6 @@ function stripUnsafeResumeSentences(value: string, company?: string): string {
  * Measured on a five-role profile, together with dropping the pretty-printing:
  * the profile went from 7,428 characters to 5,363 and the whole tailoring
  * payload from 9,365 to 6,942 - 26% less, with nothing the model reads removed.
- * On a free chat provider that is also 26% less to type into the composer,
- * which is the slowest step of the turn by a wide margin.
  */
 function buildPromptProfile(profile: Profile): Record<string, unknown> {
   return {
@@ -2018,7 +2016,6 @@ export async function analyzeJobDescription(
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
-    route: choice.route,
     maxTokens: 7000,
     temperature: 0,
     responseFormat: 'json',
@@ -2172,7 +2169,6 @@ export async function tailorResume(
     promptValues,
     fallbackProvider: provider,
     fallbackModelName: modelName,
-    route: choice.route,
     maxTokens: 11000,
     temperature: 0.2,
     responseFormat: 'json',
@@ -2222,7 +2218,6 @@ export async function generateCoverLetter(
     promptValues,
     fallbackProvider: choice.provider,
     fallbackModelName: choice.modelName,
-    route: choice.route,
     maxTokens: 1500,
     // The only caller that wants sampling variety rather than determinism.
     // The CLI provider cannot honour it and says so once; pin this prompt to

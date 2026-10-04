@@ -760,6 +760,16 @@ test('a provider string naming an inherited property is not a provider', () => {
 
   assert.equal(coerceProviderId('claude-cli'), 'claude-cli');
   assert.equal(coerceProviderId('openrouter'), 'claude-cli', 'the one real legacy alias still resolves');
+
+  // The retired browser chat ids are NOT aliases: their records name a model
+  // called `chat`, which neither seat has. They coerce to nothing, and the
+  // read paths that tolerate them ask the retired list instead.
+  const { isRetiredProviderId } = load('../dist/config/providerCatalog');
+  for (const retired of ['claude-web', 'chatgpt-web']) {
+    assert.equal(coerceProviderId(retired), null, `"${retired}" is not mapped onto another provider`);
+    assert.equal(isRetiredProviderId(retired), true);
+  }
+  assert.equal(isRetiredProviderId('constructor'), false);
 });
 
 test('a spent seat-wide window parks the seat, whatever rateLimitType names', () => {

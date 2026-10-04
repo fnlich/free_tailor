@@ -10,13 +10,13 @@ const {
 } = require('../dist/services/ai/promptAssembly');
 
 /**
- * Getting JSON back out of a chat window.
+ * Getting JSON back out of a model that was only ASKED for it.
  *
- * Every case here is a shape a real reply takes. The reply reaches this app as
- * the page's rendered innerText, so it arrives with whatever the model said
- * around it and WITHOUT the markdown it said it in - a fence renders to a code
- * block and the backticks are gone. What survives rendering is ordinary text,
- * which is why the answer is delimited by sentinels rather than by fences.
+ * Every case here is a shape a real reply takes. A provider with no JSON mode
+ * enforces nothing, so the reply arrives with whatever the model said around
+ * it - a preamble, a closing offer, an example fenced the same way as the
+ * answer. A fence says nothing about which block is the answer, which is why
+ * the answer is delimited by sentinels rather than by fences.
  */
 
 const wrap = (json) => `${JSON_BEGIN_SENTINEL}\n${json}\n${JSON_END_SENTINEL}`;
@@ -40,7 +40,7 @@ test('the answer survives the preamble and the closing offer', () => {
 });
 
 test('a model that restates the instruction before obeying it is not misread', () => {
-  // "I will wrap it in @@BEGIN_JSON@@ ..." puts the marker on the page twice,
+  // "I will wrap it in @@BEGIN_JSON@@ ..." puts the marker in the reply twice,
   // and the answer is the LATER one. Taking the first returns the instruction
   // being quoted back.
   const reply =

@@ -1,27 +1,27 @@
 import { randomUUID } from 'crypto';
-import type { BrowserChatSiteId } from '../../config/providerCatalog';
 
 /**
  * The queues the server runs generation out of.
  *
  * A TASK is one resume. A request to generate ten resumes appends ten tasks to
- * the tail of a queue and returns; browsers take tasks off the head as they free
+ * the tail of a queue and returns; slots take tasks off the head as they free
  * up, until the queue is empty. The request is a way to SUBMIT work, not the
  * thing that performs it - which is what lets a batch outlive the page that
  * started it.
  *
- * Two queues, because there are two resources. Every debug browser draws from
- * the browser queue whichever site it is showing; the Claude CLI seat draws from
- * its own, at its own concurrency. A stalled seat cannot hold up the browsers,
- * and browser work cannot starve the seat.
+ * Two queues, because there are two resources: the Claude seat, which also
+ * carries the metered APIs, and the Codex seat. Each draws from its own lane at
+ * its own concurrency, so a stalled seat cannot hold up the other and one
+ * seat's backlog cannot starve the other's work.
  *
- * Why a dispatcher at all, when the tab pool already has a FIFO waiter list: a
- * call queued at the pool is ALREADY RUNNING ITS OWN CLOCK. `browserChat/index`
- * bounds a tab wait at `min(deadline.remainingMs(), 10 minutes)`, and a
- * tailoring call takes minutes - so dropping thirty tasks straight onto the pool
- * has tasks four through thirty time out while the first three are still being
- * answered. This queue exists to hold work whose clock has NOT started. The pool
- * stays underneath as the guarantee that one browser serves one call.
+ * Why a dispatcher at all, when each seat's semaphore already has a FIFO waiter
+ * list: a call queued at the semaphore is ALREADY RUNNING ITS OWN CLOCK.
+ * `acquireSlot` bounds the wait at `min(deadline.remainingMs(), queueWaitMs)`,
+ * and a tailoring call takes minutes - so dropping thirty tasks straight onto a
+ * four-slot seat has tasks five through thirty time out while the first four
+ * are still being answered. This queue exists to hold work whose clock has NOT
+ * started. The semaphore stays underneath as the guarantee that a seat never
+ * runs more calls at once than it was sized for.
  */
 
 /**
@@ -40,36 +40,47 @@ import type { BrowserChatSiteId } from '../../config/providerCatalog';
  * own, so the lane is only a throttle for them, and a lane each would be three
  * that do nothing.
  */
-export type QueueName = 'browser' | 'cli' | 'codex';
+export type QueueName = 'cli' | 'codex';
+
+/** Every lane this build has, in the order the dispatcher fills them. */
+export const QUEUE_NAMES: readonly QueueName[] = ['cli', 'codex'];
 
 /**
- * One unit of capacity: one debug browser, or one CLI process slot.
+ * Whether a stored lane name is one this build has.
  *
- * A list rather than a count, because the browser queue's capacity is not a
- * number - it is a multiset of SITES. Two Claude browsers and one ChatGPT
- * browser is three slots, and which of them is free decides which queued tasks
- * are eligible. A bare count of three would hand a Claude-only task to the
- * ChatGPT browser.
+ * A task's lane is written to disk and read back after a restart, possibly by
+ * a build with different lanes - an earlier release had a third, for the
+ * browser chat providers. Asked of the list rather than by indexing the queue
+ * map, so a stored `constructor` is not mistaken for a lane either.
+ */
+export function isQueueName(value: unknown): value is QueueName {
+  return typeof value === 'string' && (QUEUE_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * One unit of capacity: one process slot on a seat.
+ *
+ * A list rather than a count so each slot has an identity the dispatcher can
+ * mark busy, and the identity is stable across capacity readings - a slot id
+ * that changed each time would let the dispatcher hand work to a slot it
+ * already had busy.
  */
 export type Slot = {
   id: string;
   queue: QueueName;
-  /** Which site this browser shows. Absent for a CLI slot. */
-  site?: BrowserChatSiteId;
 };
 
-export type Capacity = {
-  browser: Slot[];
-  cli: Slot[];
-  codex: Slot[];
-};
+export type Capacity = Record<QueueName, Slot[]>;
+
+function emptyCapacity(): Capacity {
+  return { cli: [], codex: [] };
+}
 
 export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
-/** What a task is told when it starts: which browser is running it. */
+/** What a task is told when it starts: which lane is running it, and how to stop. */
 export type Assignment = {
   queue: QueueName;
-  site?: BrowserChatSiteId;
   signal: AbortSignal;
 };
 
@@ -99,15 +110,6 @@ export function registerTaskRunner(kind: string, runner: TaskRunner): void {
 
 export type TaskDescriptor<T> = {
   queue: QueueName;
-  /**
-   * Which sites may run this task, for the browser queue.
-   *
-   * The profile's model choice, kept as a real constraint: "Claude (free)" means
-   * a Claude browser, and a ChatGPT browser that happens to be idle must not
-   * quietly take it. Hybrid lists both, which is what lets it go to whichever
-   * frees up first.
-   */
-  sites?: BrowserChatSiteId[];
   label: TaskLabel;
   /** Which registered runner performs it. */
   kind: string;
@@ -256,9 +258,9 @@ function describeError(error: unknown): string {
 export class TaskQueue {
   /**
    * One array per queue, and THE ORDER IS THE CONTRACT. A task submitted later
-   * never runs before one submitted earlier that an idle browser could take.
+   * never runs before one submitted earlier that an idle slot could take.
    */
-  private readonly queues: Record<QueueName, Task[]> = { browser: [], cli: [], codex: [] };
+  private readonly queues: Record<QueueName, Task[]> = { cli: [], codex: [] };
 
   private readonly batches = new Map<string, Batch>();
 
@@ -273,11 +275,12 @@ export class TaskQueue {
    * `dispatch` below is SYNCHRONOUS from end to end, and this is what makes that
    * possible. An `await` in the dispatch loop opens a window in which two tasks
    * settling concurrently both observe the same free slot and both start into
-   * it - two turns typed into one composer, which is the single failure this
-   * class exists to prevent. Reading capacity is a settings-database call, so it
-   * happens out here instead, and the loop only ever reads a plain field.
+   * it - a seat handed more work than it was sized for, which is the single
+   * failure this class exists to prevent. Reading capacity is an injected async
+   * call, so it happens out here instead, and the loop only ever reads a plain
+   * field.
    */
-  private capacity: Capacity = { browser: [], cli: [], codex: [] };
+  private capacity: Capacity = emptyCapacity();
   private capacityReadAt = 0;
   private refreshing: Promise<void> | null = null;
 
@@ -330,10 +333,11 @@ export class TaskQueue {
   private warnedAboutStore = false;
 
   /**
-   * Re-reads how many browsers there are, then dispatches.
+   * Re-reads how wide each lane is, then dispatches.
    *
-   * Called on submit and whenever the reading goes stale, so an operator who
-   * starts a third browser sees the queue widen without restarting the server.
+   * Called on submit and whenever the reading goes stale. The reader is
+   * injected, so the dispatcher never assumes where the widths come from - the
+   * real one sizes the seats from the environment, a test however it likes.
    */
   async refreshCapacity(): Promise<void> {
     if (this.refreshing) return this.refreshing;
@@ -403,7 +407,7 @@ export class TaskQueue {
     this.batches.set(batchId, batch as Batch);
 
     for (const task of tasks) {
-      this.queues[task.queue].push(task as Task);
+      this.queues[this.laneOf(task as Task)].push(task as Task);
     }
 
     if (!meta.deferPersist) {
@@ -432,8 +436,8 @@ export class TaskQueue {
    *
    * A task that was RUNNING when the process died is requeued rather than
    * failed. Nothing completed it, so its resume does not exist; leaving it
-   * failed would mean a restart silently dropped whatever happened to be in a
-   * browser at the time.
+   * failed would mean a restart silently dropped whatever happened to be
+   * running at the time.
    */
   restore<T>(
     meta: { id: string; label: string; jobCount: number; shared: Record<string, unknown>; createdAt: number },
@@ -471,7 +475,10 @@ export class TaskQueue {
     this.batches.set(meta.id, batch as Batch);
 
     for (const task of tasks) {
-      if (task.state === 'queued') this.queues[task.queue].push(task as Task);
+      // Every task's lane is checked, finished ones included: the snapshot and
+      // the stats count by lane, and a finished task still names one.
+      const lane = this.laneOf(task as Task);
+      if (task.state === 'queued') this.queues[lane].push(task as Task);
     }
 
     // A batch whose every task had finished before the restart is finished, and
@@ -503,7 +510,7 @@ export class TaskQueue {
    * Stops a batch: queued tasks are dropped, running ones are aborted.
    *
    * Running work is aborted rather than waited out, because the only reason to
-   * cancel is to get the browsers back.
+   * cancel is to get the slots back.
    */
   cancel(batchId: string): { cancelled: number; aborted: number } | null {
     const batch = this.batches.get(batchId);
@@ -563,41 +570,53 @@ export class TaskQueue {
     };
   }
 
-  /** What the dispatcher is doing right now, for the admin page and the logs. */
+  /**
+   * What the dispatcher is doing right now, for the admin page and the logs.
+   *
+   * Built by walking the lanes rather than naming them, like everything else
+   * here that has to cover every lane: a lane named by hand is a lane the next
+   * one added is missing from.
+   */
   stats(): Record<QueueName, { queued: number; running: number; width: number }> {
-    const running: Record<QueueName, number> = { browser: 0, cli: 0, codex: 0 };
-    for (const task of this.busy.values()) running[task.queue] += 1;
-    return {
-      browser: {
-        queued: this.queues.browser.length,
-        running: running.browser,
-        width: this.capacity.browser.length,
-      },
-      cli: {
-        queued: this.queues.cli.length,
-        running: running.cli,
-        width: this.capacity.cli.length,
-      },
-      codex: {
-        queued: this.queues.codex.length,
-        running: running.codex,
-        width: this.capacity.codex.length,
-      },
-    };
+    const stats = {} as Record<QueueName, { queued: number; running: number; width: number }>;
+    for (const lane of QUEUE_NAMES) {
+      stats[lane] = { queued: this.queues[lane].length, running: 0, width: this.capacity[lane]?.length ?? 0 };
+    }
+    for (const task of this.busy.values()) {
+      if (stats[task.queue]) stats[task.queue].running += 1;
+    }
+    return stats;
   }
 
   /** Tests share one process; a queue left running would leak into the next. */
   resetForTests(): void {
     for (const batch of this.batches.values()) batch.controller.abort();
-    this.queues.browser = [];
-    this.queues.cli = [];
+    // Every lane. This named two of them and left the Codex lane's backlog to
+    // the next test.
+    for (const lane of QUEUE_NAMES) this.queues[lane] = [];
     this.batches.clear();
     this.busy.clear();
     this.listeners.clear();
-    this.capacity = { browser: [], cli: [], codex: [] };
+    this.capacity = emptyCapacity();
     this.capacityReadAt = 0;
     this.dispatching = false;
     this.dispatchAgain = false;
+  }
+
+  /**
+   * The lane a task belongs in, never one this build lacks.
+   *
+   * The restore mapper already turns a stored lane this build does not have
+   * into one it does; this is the last line behind it, for `submit` and
+   * `restore` alike. Pushing onto a lane that does not exist throws inside the
+   * caller, and in `restore` that throw would take the whole batch with it. So
+   * an unknown lane becomes `cli` - the lane that carries every provider without
+   * a seat of its own - and the task records it, so the stats and the retry path
+   * agree with where it actually waits.
+   */
+  private laneOf(task: Task): QueueName {
+    if (!isQueueName(task.queue)) task.queue = 'cli';
+    return task.queue;
   }
 
   /**
@@ -614,12 +633,11 @@ export class TaskQueue {
     try {
       do {
         this.dispatchAgain = false;
-        this.failUnservable();
         // Every lane, by iteration rather than by name. Naming them meant a lane
         // added later was sized, routed to, and then never filled - its tasks
         // sat queued for ever with nothing saying why.
-        for (const lane of Object.keys(this.capacity) as QueueName[]) {
-          this.fill(this.capacity[lane]);
+        for (const lane of QUEUE_NAMES) {
+          this.fill(this.capacity[lane] ?? []);
         }
       } while (this.dispatchAgain);
     } finally {
@@ -632,75 +650,27 @@ export class TaskQueue {
     }
   }
 
+  /**
+   * Everything still waiting, in every lane.
+   *
+   * By iteration, for the reason `dispatch` gives. Naming lanes here once
+   * counted a lane that no longer did anything and left out the Codex one, so a
+   * backlog that was ALL Codex work never asked for a fresh capacity reading.
+   */
   private pending(): number {
-    return this.queues.browser.length + this.queues.cli.length;
+    return QUEUE_NAMES.reduce((total, lane) => total + this.queues[lane].length, 0);
   }
 
   private fill(slots: Slot[]): void {
     for (const slot of slots) {
       if (this.busy.has(slot.id)) continue;
-      const task = this.takeEligible(slot);
+      if (!isQueueName(slot.queue)) continue;
+      // The head of the slot's own lane. Slots are interchangeable WITHIN a
+      // lane, so the first task waiting is the one this slot may run; the lane
+      // is what keeps the two seats' pools apart.
+      const task = this.queues[slot.queue].shift();
       if (!task) continue;
       this.start(task, slot);
-    }
-  }
-
-  /**
-   * The first queued task THIS SLOT may run - not simply the first queued task.
-   *
-   * A Claude-only task at the head does not stop a ChatGPT browser taking a
-   * later one it can run; it waits for a Claude browser instead. That is the
-   * whole of what "one browser queue, but the model choice still counts" means.
-   */
-  private takeEligible(slot: Slot): Task | undefined {
-    const queue = this.queues[slot.queue];
-    const index = queue.findIndex((task) => this.eligible(task, slot));
-    if (index < 0) return undefined;
-    return queue.splice(index, 1)[0];
-  }
-
-  private eligible(task: Task, slot: Slot): boolean {
-    if (task.queue !== slot.queue) return false;
-    // Both CLI lanes' slots are interchangeable WITHIN their lane; the lane is
-    // what keeps the two providers' pools apart.
-    if (slot.queue !== 'browser') return true;
-    if (!task.sites || task.sites.length === 0) return true;
-    return Boolean(slot.site && task.sites.includes(slot.site));
-  }
-
-  /**
-   * Fails tasks no registered browser could ever run.
-   *
-   * A Claude-only task on an install with only ChatGPT browsers is eligible for
-   * nothing. Left alone it sits in the queue for ever while later tasks pass it,
-   * and the batch never finishes - a hang, with no error anywhere to explain it.
-   * Saying so names the two things that actually cause it: a browser that was
-   * never started, or a profile pointed at a platform this install does not run.
-   */
-  private failUnservable(): void {
-    // Only once a capacity reading exists. Before the first one every task looks
-    // unservable, and failing the batch a millisecond after submitting it would
-    // be a spectacular own goal.
-    if (this.capacityReadAt === 0) return;
-
-    const servable = new Set(
-      this.capacity.browser.map((slot) => slot.site).filter(Boolean) as BrowserChatSiteId[]
-    );
-    const queue = this.queues.browser;
-    for (let index = queue.length - 1; index >= 0; index -= 1) {
-      const task = queue[index];
-      const sites = task.sites ?? [];
-      if (sites.length === 0 || sites.some((site) => servable.has(site))) continue;
-      queue.splice(index, 1);
-      this.settle(
-        task,
-        'failed',
-        `No running browser can generate this resume: it is set to ${sites.join(' or ')}, and ` +
-          (servable.size === 0
-            ? 'no debug browser is registered. Run `npm run browser:debug`, then register its port ' +
-              'under Admin -> Settings -> Browser Chat.'
-            : `only ${[...servable].join(' and ')} ${servable.size === 1 ? 'is' : 'are'} registered.`)
-      );
     }
   }
 
@@ -715,10 +685,9 @@ export class TaskQueue {
     // Counted on the way in, so a task that is running has always been started
     // at least once and the snapshot can say "attempt 2 of 3" honestly.
     task.attempts = task.attempts ?? 1;
-    // The browser lane names the site; a CLI lane names its provider. Reading
-    // the lane rather than hard-coding one provider is what keeps this honest
-    // once there is more than one seat.
-    task.runningOn = slot.site ?? (slot.queue === 'codex' ? 'codex-cli' : 'claude-cli');
+    // Each lane names the seat it runs on. Reading the lane rather than
+    // hard-coding one provider is what keeps this honest with two seats.
+    task.runningOn = slot.queue === 'codex' ? 'codex-cli' : 'claude-cli';
     this.busy.set(slot.id, task);
     this.persist((store) => store.saveTask(task));
     this.emitTask(task);
@@ -744,10 +713,9 @@ export class TaskQueue {
      * Resolved BEFORE the try below, and the placement is the whole point.
      *
      * A kind nothing registered is deterministic, so inside the retrying catch
-     * it would burn every attempt on the identical error and only delay it. Both
-     * non-retryable failures now settle outside that catch - this one and
-     * `failUnservable` - which is what makes `retryTask`'s claim that only the
-     * runner's own failure reaches it true rather than nearly true.
+     * it would burn every attempt on the identical error and only delay it. It
+     * settles outside that catch, which is what makes `retryTask`'s claim that
+     * only the runner's own failure reaches it true rather than nearly true.
      *
      * Only reachable for a task restored from a build that knew a kind this one
      * does not; failing it by name beats it sitting queued for ever.
@@ -766,7 +734,6 @@ export class TaskQueue {
       try {
         task.value = await runner(task.payload, {
           queue: slot.queue,
-          site: slot.site,
           signal: batch.controller.signal,
         });
         this.settle(task, 'done');
@@ -834,9 +801,9 @@ export class TaskQueue {
    *
    * Only the RUNNER's own failure comes here. The other two ways a task can
    * fail are deliberately excluded and both would be bugs to include: a
-   * cancelled batch is not a failure to retry, and `failUnservable` fails a
-   * task because no registered browser can ever serve the sites it is pinned
-   * to - re-queueing that one would fail it again immediately, for ever.
+   * cancelled batch is not a failure to retry, and a task whose kind has no
+   * registered runner would fail identically on every attempt - re-queueing
+   * that one would only spend the attempts and delay the same answer.
    *
    * It goes on the TAIL. A retry is not more urgent than the work already
    * waiting, and a task that fails fast at the head would otherwise spin

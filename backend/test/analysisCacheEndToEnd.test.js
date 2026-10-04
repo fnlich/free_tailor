@@ -60,7 +60,8 @@ const POSTING = 'A long job posting. '.repeat(500);
 test('the same posting is analysed once, not once per generation', async () => {
   // The saving that matters. A preview followed by the generate that writes the
   // file, or a sheet re-run after fixing one row, used to be two full calls
-  // over identical text - and on a free chat provider a call is a whole turn.
+  // over identical text - and on a subscription seat a call is a whole turn of
+  // its usage allowance.
   const { calls, analyzeJobDescription } = setUp('cache-e2e-hit');
 
   const first = await analyzeJobDescription(POSTING, CHOICE);

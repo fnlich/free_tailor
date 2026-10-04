@@ -7,9 +7,9 @@ const { loadFresh, useTempStorage } = require('./helpers');
  * The queue on disk, so a run survives the server restarting.
  *
  * `npm run dev` restarts on every file save, so this is not a rare event during
- * development - and a thirty-row sheet import is an hour of somebody's browser
+ * development - and a thirty-row sheet import is an hour of somebody's seat
  * time. The properties that matter are what SURVIVES and what is REDONE: work
- * already finished must come back finished, and work that was in a browser when
+ * already finished must come back finished, and work that was on a seat when
  * the process died must be built again, because nothing completed it.
  */
 
@@ -31,8 +31,7 @@ function taskRow(id, seq, state, extra = {}) {
     seq,
     state,
     data: {
-      queue: 'browser',
-      sites: ['claude-web'],
+      queue: 'cli',
       label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
       kind: 'resume',
       payload: { batchId: 'bat_1', profileId: 'p1', jobIndex: 0 },
@@ -122,7 +121,7 @@ function entry(name, seq, state, extra = {}) {
     id: `tsk_${name}`,
     seq,
     state,
-    queue: 'browser',
+    queue: 'cli',
     label: { profileId: 'p1', profileName: 'Ada', companyName: name, role: 'SWE' },
     kind: 'test',
     payload: { name },
@@ -137,10 +136,10 @@ test('work already finished comes back finished, and is not built again', () => 
   // Restoring only the remainder would shrink the batch's total and drop its
   // finished resumes out of the results - a batch of four with two built would
   // come back as a batch of two.
-  const { queue, started } = queueFor({ browser: [], cli: [] });
+  const { queue, started } = queueFor({ cli: [], codex: [] });
   const batch = queue.restore(meta, [
     entry('a', 0, 'done', { value: { built: 'a' } }),
-    entry('b', 1, 'failed', { error: 'the browser refused' }),
+    entry('b', 1, 'failed', { error: 'the model refused' }),
     entry('c', 2, 'queued'),
     entry('d', 3, 'running'),
   ]);
@@ -150,14 +149,14 @@ test('work already finished comes back finished, and is not built again', () => 
   assert.equal(snapshot.completed, 1);
   assert.equal(snapshot.failed, 1);
   assert.equal(snapshot.queued, 2, 'the queued one and the one that was mid-flight');
-  assert.equal(snapshot.tasks[1].error, 'the browser refused', 'a failure survives with its reason');
+  assert.equal(snapshot.tasks[1].error, 'the model refused', 'a failure survives with its reason');
   assert.deepEqual(started, [], 'nothing ran: there is no capacity yet');
 });
 
 test('a task that was mid-flight is built again, because nothing completed it', async () => {
   const { queue, started } = queueFor({
-    browser: [{ id: 'b1', queue: 'browser', site: 'claude-web' }],
-    cli: [],
+    cli: [{ id: 'c1', queue: 'cli' }],
+    codex: [],
   });
   queue.restore(meta, [entry('a', 0, 'done', { value: { built: 'a' } }), entry('b', 1, 'running')]);
   await queue.refreshCapacity();
@@ -167,7 +166,7 @@ test('a task that was mid-flight is built again, because nothing completed it', 
 });
 
 test('a batch whose every task had finished is not left running for ever', () => {
-  const { queue } = queueFor({ browser: [], cli: [] });
+  const { queue } = queueFor({ cli: [], codex: [] });
   const batch = queue.restore(meta, [
     entry('a', 0, 'done', { value: {} }),
     entry('b', 1, 'failed', { error: 'x' }),
@@ -179,8 +178,8 @@ test('a batch whose every task had finished is not left running for ever', () =>
 
 test('restored tasks keep their submitted order', async () => {
   const { queue, started } = queueFor({
-    browser: [{ id: 'b1', queue: 'browser', site: 'claude-web' }],
-    cli: [],
+    cli: [{ id: 'c1', queue: 'cli' }],
+    codex: [],
   });
   queue.restore(meta, [entry('c', 2, 'queued'), entry('a', 0, 'queued'), entry('b', 1, 'queued')]);
   await queue.refreshCapacity();
@@ -192,11 +191,11 @@ test('restored tasks keep their submitted order', async () => {
 test('a queue with no store still runs', () => {
   // The store is optional on purpose: a disk that will not take the row is a
   // reason to lose a restart, not a reason to stop building resumes.
-  const { queue } = queueFor({ browser: [], cli: [] });
+  const { queue } = queueFor({ cli: [], codex: [] });
   assert.doesNotThrow(() =>
     queue.submit([
       {
-        queue: 'browser',
+        queue: 'cli',
         label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'test',
         payload: { name: 'a' },
@@ -212,7 +211,7 @@ test('a store that throws warns once and does not fail the queue', () => {
   const warn = console.warn;
   console.warn = (message) => warnings.push(String(message));
   try {
-    const queue = new TaskQueue(async () => ({ browser: [], cli: [] }), {
+    const queue = new TaskQueue(async () => ({ cli: [], codex: [] }), {
       saveBatch: () => {
         throw new Error('disk is full');
       },
@@ -225,7 +224,7 @@ test('a store that throws warns once and does not fail the queue', () => {
     });
     const batch = queue.submit([
       {
-        queue: 'browser',
+        queue: 'cli',
         label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'test',
         payload: {},
@@ -244,8 +243,8 @@ test('a task whose kind nothing registers fails by name', async () => {
   // does not. Failing it by name beats it sitting queued for ever.
   const { TaskQueue } = loadFresh('../dist/services/queue/taskQueue');
   const queue = new TaskQueue(async () => ({
-    browser: [{ id: 'b1', queue: 'browser', site: 'claude-web' }],
-    cli: [],
+    cli: [{ id: 'c1', queue: 'cli' }],
+    codex: [],
   }));
   const batch = queue.restore(meta, [
     { ...entry('a', 0, 'queued'), kind: 'from-a-later-build' },
@@ -375,7 +374,7 @@ test('cancelling a task that is waiting for a RETRY does not claim it never star
   // The state between two goes: queued again, carrying why the last one failed.
   batch.tasks[0].state = 'queued';
   batch.tasks[0].attempts = 2;
-  batch.tasks[0].error = 'the browser was out of messages';
+  batch.tasks[0].error = 'the seat was out of messages';
 
   queue.cancel('bat_cancel_retry');
 
@@ -419,4 +418,196 @@ test('an unset GENERATION_MAX_ATTEMPTS means three goes, not one', async () => {
     3,
     'the documented default reaches the queue rather than the constructor\'s retry-off 1'
   );
+});
+
+/**
+ * Rows written by a build that still had the browser chat providers.
+ *
+ * Those builds ran a third lane, `browser`, and wrote the chat sites a task
+ * could use beside it. A restart onto this build reads those rows back, and a
+ * lane this build does not have is not a lane anything will ever dispatch: with
+ * no slot to take it, the task would sit queued for ever while its credit stayed
+ * reserved. So the restore mapper puts it in a lane that exists, and the runner
+ * resolves its model again, because the one stored with it is gone.
+ */
+function legacyTaskRow(batchId, id, seq, state, data) {
+  return {
+    id,
+    batchId,
+    seq,
+    state,
+    data: {
+      label: { profileId: data.payload.profileId, profileName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
+      kind: 'resume',
+      ...data,
+    },
+  };
+}
+
+function legacyBatchRow(id, jobCount) {
+  return {
+    id,
+    state: 'running',
+    data: {
+      label: 'Queued before the upgrade',
+      jobCount,
+      shared: { jobs: [{ companyName: 'Acme', role: 'SWE', jobDescription: '' }] },
+      createdAt: Date.now(),
+    },
+  };
+}
+
+/** The choice a hybrid task was stored with, exactly as that build wrote it. */
+const HYBRID_CHOICE = {
+  provider: 'claude-web',
+  modelName: 'chat',
+  modelId: 'free-hybrid',
+  modelLabel: 'Free chat (hybrid)',
+  route: 'hybrid',
+};
+
+async function untilSettled(queue, batchId) {
+  for (let i = 0; i < 300; i += 1) {
+    const snapshot = queue.snapshot(batchId);
+    if (snapshot && snapshot.tasks.every((task) => ['done', 'failed', 'cancelled'].includes(task.state))) {
+      return snapshot;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return queue.snapshot(batchId);
+}
+
+test('a task queued on the removed browser lane is restored onto a live lane, and runs', async () => {
+  useTempStorage('queue-persistence-browser-lane');
+  const store = loadFresh('../dist/database/generationRepository');
+  store.saveBatchWithTasks(legacyBatchRow('bat_legacy', 3), [
+    // Mid-build on a browser when the old process died.
+    legacyTaskRow('bat_legacy', 'tsk_hybrid', 0, 'running', {
+      queue: 'browser',
+      sites: ['claude-web', 'chatgpt-web'],
+      payload: { batchId: 'bat_legacy', profileId: 'p-default', jobIndex: 0, choice: HYBRID_CHOICE },
+    }),
+    // Pinned to one site, by a profile that has a model of its own today.
+    legacyTaskRow('bat_legacy', 'tsk_pinned', 1, 'queued', {
+      queue: 'browser',
+      sites: ['chatgpt-web'],
+      payload: {
+        batchId: 'bat_legacy',
+        profileId: 'p-openai',
+        jobIndex: 0,
+        choice: { provider: 'chatgpt-web', modelName: 'chat', modelId: 'chatgpt-web-chat', modelLabel: 'ChatGPT (free)' },
+      },
+    }),
+    // A lane name no build ever had, and a Codex choice: placed by provider.
+    legacyTaskRow('bat_legacy', 'tsk_codex', 2, 'queued', {
+      queue: 'constructor',
+      payload: {
+        batchId: 'bat_legacy',
+        profileId: 'p-default',
+        jobIndex: 0,
+        choice: { provider: 'codex-cli', modelName: 'default', modelId: 'codex-cli-default', modelLabel: 'Codex' },
+      },
+    }),
+  ]);
+
+  const queueModule = loadFresh('../dist/services/queue/index');
+  queueModule.resetGenerationQueueForTests();
+  const { __currentChoiceForTests } = require('../dist/services/queue/resumeTask');
+  const profiles = {
+    'p-default': { id: 'p-default', name: 'Ada', profileSettings: {} },
+    'p-openai': { id: 'p-openai', name: 'Ada', profileSettings: { ai: { modelId: 'openai-gpt-5-1' } } },
+  };
+
+  // The real queue and the real restore, with a runner that does the one thing
+  // the real one does before any model is called: resolve the choice it runs
+  // on. The rest of a resume - a template, a model call, a PDF - is not what is
+  // under test here.
+  const ran = [];
+  const queue = queueModule.getGenerationQueue();
+  queueModule.registerTaskRunner(queueModule.RESUME_TASK_KIND, async (payload, assignment) => {
+    const choice = await __currentChoiceForTests(payload.choice, profiles[payload.profileId]);
+    ran.push({ profileId: payload.profileId, lane: assignment.queue, model: `${choice.provider}/${choice.modelId}` });
+    return { profileId: payload.profileId };
+  });
+
+  const report = queueModule.restoreGenerationQueue();
+  assert.equal(report.batches, 1);
+  assert.equal(report.requeued, 1, 'the task that was mid-build is built again');
+
+  const snapshot = await untilSettled(queue, 'bat_legacy');
+  assert.deepEqual(
+    snapshot.tasks.map((task) => task.state),
+    ['done', 'done', 'done'],
+    'nothing is left queued on a lane no slot serves'
+  );
+
+  const byProfileAndLane = ran.map((entry) => `${entry.profileId}@${entry.lane}:${entry.model}`).sort();
+  assert.deepEqual(byProfileAndLane, [
+    // The hybrid task, on the app default.
+    'p-default@cli:claude-cli/claude-cli-sonnet',
+    // A Codex choice is not retired, so it runs as stored, on its own seat's lane.
+    'p-default@codex:codex-cli/codex-cli-default',
+    // The pinned task, on what its profile names today rather than on the app
+    // default: the credit paid for a resume built the way a new one would be.
+    'p-openai@cli:openai/openai-gpt-5-1',
+  ]);
+
+  // Written back without the old lane or the site list, so a second restart
+  // reads rows this build wrote.
+  const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
+  for (const task of row.tasks) {
+    assert.ok(['cli', 'codex'].includes(task.data.queue), `${task.id} is on a lane this build has`);
+    assert.equal('sites' in task.data, false, `${task.id} no longer carries chat sites`);
+  }
+});
+
+test('one batch that cannot be restored does not cost the others theirs', async () => {
+  useTempStorage('queue-persistence-isolation');
+  const store = loadFresh('../dist/database/generationRepository');
+  for (const id of ['bat_first', 'bat_broken', 'bat_last']) {
+    store.saveBatchWithTasks(legacyBatchRow(id, 1), [
+      legacyTaskRow(id, `tsk_${id}`, 0, 'queued', {
+        queue: 'browser',
+        sites: ['claude-web'],
+        payload: { batchId: id, profileId: 'p-default', jobIndex: 0, choice: HYBRID_CHOICE },
+      }),
+    ]);
+  }
+
+  const queueModule = loadFresh('../dist/services/queue/index');
+  queueModule.resetGenerationQueueForTests();
+  const queue = queueModule.getGenerationQueue();
+  queueModule.registerTaskRunner(queueModule.RESUME_TASK_KIND, async () => ({}));
+
+  // Whatever makes a batch unrestorable - a row this build cannot make sense
+  // of - it surfaces as `restore` throwing for that batch.
+  const restore = queue.restore.bind(queue);
+  queue.restore = (meta, entries) => {
+    if (meta.id === 'bat_broken') throw new Error('a row this build cannot read');
+    return restore(meta, entries);
+  };
+
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  let report;
+  try {
+    report = queueModule.restoreGenerationQueue();
+  } finally {
+    console.warn = warn;
+  }
+
+  assert.equal(report.batches, 2, 'the two good batches, and only them');
+  assert.ok(queue.getBatch('bat_first'), 'the batch before the broken one is back');
+  assert.ok(queue.getBatch('bat_last'), 'and so is the one after it');
+  assert.equal(queue.getBatch('bat_broken'), undefined);
+  assert.ok(
+    warnings.some((line) => line.includes('bat_broken') && /other batches are unaffected/.test(line)),
+    'the broken batch is named'
+  );
+
+  for (const id of ['bat_first', 'bat_last']) {
+    const snapshot = await untilSettled(queue, id);
+    assert.equal(snapshot.tasks[0].state, 'done', `${id} ran`);
+  }
 });

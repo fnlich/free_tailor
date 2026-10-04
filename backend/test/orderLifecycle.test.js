@@ -48,11 +48,6 @@ async function serve() {
     ownerId: account.id,
   });
 
-  const config = loadFresh('../dist/config/aiModelConfig');
-  await config.updateAppSettings({
-    browserChatEndpoints: [{ siteId: 'claude-web', port: 9801 }],
-  });
-
   const orders = loadFresh('../dist/database/orderRepository');
   const queue = loadFresh('../dist/services/queue/index');
   queue.resetGenerationQueueForTests();

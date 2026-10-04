@@ -9,8 +9,6 @@
     "build": "tsc",
     "postinstall": "node scripts/installBrowser.js --if-missing",
     "setup:browser": "node scripts/installBrowser.js",
-    "browser:debug": "npm run build && node dist/scripts/launchDebugBrowsers.js",
-    "browser:doctor": "npm run build && node dist/scripts/browserChatDoctor.js",
     "mail:doctor": "npm run build && node dist/scripts/mailDoctor.js",
     "sheets:login": "npm run build && node dist/scripts/googleLogin.js",
     "sheets:doctor": "npm run build && node dist/scripts/sheetsDoctor.js",

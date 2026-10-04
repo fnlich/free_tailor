@@ -20,7 +20,7 @@ export type BatchTask = {
   companyName: string;
   role: string;
   sourceRowNumber?: number;
-  /** Which browser or seat is building it right now. */
+  /** Which seat's lane is building it right now. */
   runningOn?: string;
   /**
    * Which go this is, present only from the SECOND on.

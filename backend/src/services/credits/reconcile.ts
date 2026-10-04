@@ -28,8 +28,8 @@ import {
  * How old an open reservation must be before it is presumed abandoned.
  *
  * Comfortably longer than the longest plausible run - a thirty-resume sheet
- * import on one slow browser is tens of minutes - because releasing one that is
- * merely slow would hand back credits for resumes that then arrive.
+ * import on a seat sized to one slot is tens of minutes - because releasing one
+ * that is merely slow would hand back credits for resumes that then arrive.
  */
 const ORPHAN_AFTER_MS = 6 * 60 * 60_000;
 

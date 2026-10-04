@@ -308,7 +308,7 @@ const server = app.listen(PORT, HOST, () => {
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
   // Picks up a generation run the last process was part way through. Whatever
-  // was in a browser when it stopped is built again, and whatever was queued
+  // was mid-build when it stopped is built again, and whatever was queued
   // carries on - which is the whole point of the queue being on disk.
   restoreGenerationQueue();
   // After the queue, not before: restore requeues what was mid-flight, and a

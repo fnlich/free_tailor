@@ -5,11 +5,6 @@ import {
   type MigrationReport,
 } from './001_openrouter_to_claude_cli';
 import {
-  migrate002,
-  BROWSER_CHAT_SCHEMA_VERSION,
-  type BrowserChatMigrationReport,
-} from './002_seed_browser_chat_models';
-import {
   migrate003,
   OWNERSHIP_SCHEMA_VERSION,
   type OwnershipMigrationReport,
@@ -24,6 +19,11 @@ import {
   CODEX_MODEL_SCHEMA_VERSION,
   type CodexModelMigrationReport,
 } from './005_seed_codex_model';
+import {
+  migrate006,
+  BROWSER_CHAT_REMOVAL_SCHEMA_VERSION,
+  type BrowserChatRemovalReport,
+} from './006_remove_browser_chat';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -60,14 +60,6 @@ function describe(report: MigrationReport): string {
   return parts.length ? parts.join(', ') : 'nothing to change';
 }
 
-function describeBrowserChat(report: BrowserChatMigrationReport): string {
-  const parts: string[] = [];
-  if (report.seededModels) parts.push(`${report.seededModels} browser-chat model(s) added`);
-  if (report.enabledProviders.length) parts.push(`${report.enabledProviders.join(' and ')} switched on`);
-  if (report.repointedDefaultModel) parts.push('default model repointed off a locked provider');
-  return parts.length ? parts.join(', ') : 'nothing to change';
-}
-
 function describeOwnership(report: OwnershipMigrationReport): string {
   const parts: string[] = [];
   if (report.profiles) parts.push(`${report.profiles} profile(s)`);
@@ -83,6 +75,27 @@ function describeCreditLedger(report: CreditLedgerMigrationReport): string {
   return report.accounts
     ? `${report.units} credit(s) across ${report.accounts} account(s) given an opening entry`
     : 'nothing to change';
+}
+
+function describeBrowserChatRemoval(report: BrowserChatRemovalReport): string {
+  const parts: string[] = [];
+  if (report.removedModels) parts.push(`${report.removedModels} browser chat model(s) removed`);
+  if (report.removedProviderFlags.length || report.removedSettingsKeys.length) {
+    parts.push('browser chat settings removed');
+  }
+  if (report.enabledProviders.length) parts.push(`${report.enabledProviders.join(' and ')} switched on`);
+  if (report.seededModels) parts.push(`${report.seededModels} subscription model(s) added`);
+  if (report.reenabledModels.length) parts.push(`${report.reenabledModels.join(', ')} switched back on`);
+  if (report.repointedDefaultModel) {
+    parts.push(
+      `default model ${report.repointedDefaultModel.from} -> ${report.repointedDefaultModel.to || '(app default)'}`
+    );
+  }
+  if (report.clearedPromptOverrides) parts.push(`${report.clearedPromptOverrides} prompt override(s) cleared`);
+  if (report.clearedProfilePreferences.length) {
+    parts.push(`${report.clearedProfilePreferences.length} profile model preference(s) cleared`);
+  }
+  return parts.length ? parts.join(', ') : 'nothing to change';
 }
 
 /**
@@ -111,6 +124,12 @@ type MigrationStep = {
  * back and have it re-run against rows it has already rewritten. Each step
  * narrows its own report here, which is what keeps the runner from having to
  * know the shape of any of them.
+ *
+ * Version 2 is missing, and that is deliberate. It seeded the browser chat
+ * models, which 6 removes; kept, it would add them to an install still at
+ * version 1 only for 6 to take them out again. The runner compares
+ * `current >= version`, so a gap in the numbers costs nothing - an install at 1
+ * goes straight on to 3.
  */
 const MIGRATIONS: readonly MigrationStep[] = [
   {
@@ -119,14 +138,6 @@ const MIGRATIONS: readonly MigrationStep[] = [
     apply: (db) => {
       const report = migrate001(db);
       return { ran: report.ran, notes: report.notes, summary: describe(report) };
-    },
-  },
-  {
-    version: BROWSER_CHAT_SCHEMA_VERSION,
-    label: 'Browser-chat model migration',
-    apply: (db) => {
-      const report = migrate002(db);
-      return { ran: report.ran, notes: report.notes, summary: describeBrowserChat(report) };
     },
   },
   {
@@ -156,6 +167,14 @@ const MIGRATIONS: readonly MigrationStep[] = [
     apply: (db) => {
       const report = migrate005(db);
       return { ran: report.ran, notes: report.notes, summary: describeCodexModel(report) };
+    },
+  },
+  {
+    version: BROWSER_CHAT_REMOVAL_SCHEMA_VERSION,
+    label: 'Browser chat removal',
+    apply: (db) => {
+      const report = migrate006(db);
+      return { ran: report.ran, notes: report.notes, summary: describeBrowserChatRemoval(report) };
     },
   },
 ];
@@ -211,15 +230,15 @@ export function runDataMigrations(db: Database.Database): void {
 
 export {
   PROVIDER_SCHEMA_VERSION,
-  BROWSER_CHAT_SCHEMA_VERSION,
   OWNERSHIP_SCHEMA_VERSION,
   CREDIT_LEDGER_SCHEMA_VERSION,
   CODEX_MODEL_SCHEMA_VERSION,
+  BROWSER_CHAT_REMOVAL_SCHEMA_VERSION,
 };
 export type {
   MigrationReport,
-  BrowserChatMigrationReport,
   OwnershipMigrationReport,
   CreditLedgerMigrationReport,
   CodexModelMigrationReport,
+  BrowserChatRemovalReport,
 };

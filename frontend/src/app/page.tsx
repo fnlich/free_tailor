@@ -463,9 +463,9 @@ export default function Home() {
    *
    * One request carrying every resume, rather than one request per resume. That
    * is the whole difference: the backend puts the tasks in a queue and hands
-   * them to browsers as they come free, so three browsers build three resumes at
-   * once. The loop this replaced awaited each resume in turn, so however many
-   * browsers were registered, two of every three sat idle.
+   * them out as a seat's slots come free, so a seat that can build several
+   * resumes at once does. The loop this replaced awaited each resume in turn, so
+   * however many builds a seat could run, all but one of its slots sat idle.
    *
    * Progress comes back down the stream. Every line is a COMPLETE snapshot, so
    * this can replace its state each time instead of applying deltas in order -
@@ -668,10 +668,10 @@ export default function Home() {
        *
        * This was a nested loop - for each job, analyse it, then for each profile
        * await a generate - so thirty sheet rows were thirty analyses and thirty
-       * builds, strictly one at a time. However many browsers were registered,
-       * all but one sat idle for the whole run.
+       * builds, strictly one at a time. However many builds the seats could run
+       * at once, all but one slot sat idle for the whole run.
        *
-       * Now the server queues the lot and hands them out as browsers come free,
+       * Now the server queues the lot and hands them out as slots come free,
        * and the analysis happens inside the task, shared between the profiles
        * that need the same job.
        */

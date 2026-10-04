@@ -78,7 +78,8 @@ function findFirstBalancedJson(text: string): string | null {
 }
 
 /**
- * The markers the JSON prompt asks a chat window to wrap its answer in.
+ * The markers the JSON prompt asks a provider with no JSON mode to wrap its
+ * answer in.
  *
  * Duplicated here rather than imported so this utility stays free of the AI
  * layer - it is called from places that have no business loading a provider
@@ -182,11 +183,11 @@ function stripCommentsOutsideStrings(source: string): string {
  *
  * Ordered by how much each source PROVES. The sentinels are the only marker the
  * model was explicitly told to emit, so text between them is the answer by
- * construction. A fence is next: still deliberate, but a chat window renders it
- * away and a model may fence something that is not the answer. The whole reply
- * is next, for the providers that emit nothing else. The balanced scan is last,
- * because it finds the first thing SHAPED like JSON, which in a reply with
- * preamble can be an example rather than the result.
+ * construction. A fence is next: still deliberate, but a model may fence
+ * something that is not the answer. The whole reply is next, for the providers
+ * that emit nothing else. The balanced scan is last, because it finds the first
+ * thing SHAPED like JSON, which in a reply with preamble can be an example
+ * rather than the result.
  *
  * Every candidate is tried honestly first and only then repaired, so a valid
  * document is never rewritten on its way through.

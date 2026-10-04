@@ -3,8 +3,8 @@ import type Database from 'better-sqlite3';
 /**
  * Gives an existing install the Codex model record it never got.
  *
- * The same bug as 002, one provider later, and worth stating plainly because
- * adding a provider will keep looking finished without it. Three facts combine:
+ * Worth stating plainly, because adding a provider will keep looking finished
+ * without a migration like this one. Three facts combine:
  *
  * - The seed list is only ever read by a FRESH install. `normalizeAIModelRecords`
  *   takes the stored `aiModels` array VERBATIM when there is one and never
@@ -13,7 +13,7 @@ import type Database from 'better-sqlite3';
  * - `normalizeProvidersEnabled` ends in `?? true`, and Codex has no legacy flag
  *   to read instead, so `providersEnabled['codex-cli']` comes out TRUE on every
  *   upgraded install.
- * - `getPickableModels` lists models, not providers.
+ * - The model picker lists models, not providers.
  *
  * So without this, Admin -> Settings shows Codex enabled with a green health
  * line while the builder, the profile picker and the app default have no way to
@@ -21,8 +21,8 @@ import type Database from 'better-sqlite3';
  * possible (add a record by hand under Admin -> Models) but nothing on screen
  * said it was needed.
  *
- * Raw JSON and raw SQL, for the same reason as 001 and 002: a migration that
- * runs through the validators only works on rows that did not need migrating.
+ * Raw JSON and raw SQL, for the same reason as 001: a migration that runs
+ * through the validators only works on rows that did not need migrating.
  */
 
 export const CODEX_MODEL_SCHEMA_VERSION = 5;
@@ -38,9 +38,10 @@ type Json = Record<string, unknown>;
  * model name this can seed. A specific model is a record an operator adds under
  * Admin -> Models, which takes a free-text model name for any provider.
  *
- * Spelled out here rather than imported from the seed list, by the same rule
- * migration 002 follows: a migration records what was true when it was written,
- * so a later change to the seed text cannot rewrite an install that already ran.
+ * Spelled out here rather than imported from the seed list, by the rule every
+ * migration here follows: a migration records what was true when it was
+ * written, so a later change to the seed text cannot rewrite an install that
+ * already ran.
  */
 const CODEX_SEED_MODEL = {
   id: 'codex-cli-default',
@@ -105,9 +106,9 @@ export function migrate005(db: Database.Database): CodexModelMigrationReport {
   }
 
   const models = (settings.aiModels as unknown[]).filter(isObject);
-  // Keyed on the PROVIDER, not the seed id, exactly as 002 is: an operator who
-  // has already added a Codex row of their own has the provider covered, and a
-  // second row for it would be a duplicate in their picker.
+  // Keyed on the PROVIDER, not the seed id: an operator who has already added a
+  // Codex row of their own has the provider covered, and a second row for it
+  // would be a duplicate in their picker.
   if (models.some((model) => model.provider === 'codex-cli')) {
     return report;
   }
@@ -122,9 +123,9 @@ export function migrate005(db: Database.Database): CodexModelMigrationReport {
   ];
   report.seededModels = 1;
 
-  // `defaultModelId` is deliberately NOT touched. Unlike 002, nothing here can
-  // strand it: this migration only adds a row, so whatever the default pointed
-  // at still resolves exactly as it did before.
+  // `defaultModelId` is deliberately NOT touched. Nothing here can strand it:
+  // this migration only adds a row, so whatever the default pointed at still
+  // resolves exactly as it did before.
 
   db.prepare(
     `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)

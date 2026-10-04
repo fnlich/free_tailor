@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { requireAdmin } from '../middleware/auth';
 import {
-  BROWSER_CHAT_SITE_IDS,
   createAIModel,
   deleteAIModel,
   getAdminAppSettings,
@@ -9,11 +8,8 @@ import {
   updateAIModel,
   updateAppSettings,
 } from '../config/aiModelConfig';
-import { getProviderLabel } from '../config/providerCatalog';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError, updateGoogleSheetsRange } from '../integrations/googleSheets';
 import { sheetsOperatorDetail } from './sheetsDetail';
-import { probeDebugBrowser } from '../services/debugBrowser';
-import { getTabPoolStats } from '../services/ai/providers/browserChat/pool';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
@@ -97,73 +93,6 @@ router.put(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: 
   } catch (error) {
     res.status(400).json({
       error: error instanceof Error ? error.message : 'Failed to update settings',
-    });
-  }
-});
-
-/**
- * The state of the browsers the free chat providers drive.
- *
- * READ-ONLY. There used to be a `POST /browser/debug/start` beside this that
- * spawned Chrome on the server; it is gone, and with it every path by which an
- * HTTP request could start a BROWSER. Operators run `npm run browser:debug`
- * instead.
- *
- * Not "start a process" - that would be false, and the distinction is worth
- * keeping honest: `POST /browse-output-directory` in this same router still
- * execFiles a native directory dialog. What is gone is the ability to launch
- * the thing that holds the operator's signed-in accounts.
- *
- * CHEAP ON PURPOSE: every reading here is a loopback DevTools HTTP probe, which
- * opens no page and drives nothing. The deeper question - is that tab actually
- * SIGNED IN - is the provider health check's to answer, and the admin UI
- * already asks `GET /ai/health` for it on the same page load. Calling it again
- * from here would run the page-driving probe twice per load and make this
- * endpoint as slow as that one; measured, it took this from milliseconds to
- * over two minutes. So this reports what is REGISTERED and what is REACHABLE,
- * and the caller pairs it with the health it already has.
- */
-router.get('/browser/debug', requireAdmin, async (_req: Request, res: Response) => {
-  try {
-    const settings = await getAdminAppSettings();
-
-    // Nothing to probe on an install that has withdrawn browser mode, and
-    // probing anyway contradicted the Settings page's own promise that no
-    // request can reach a browser here. An empty reading rather than an error:
-    // the panel that would show it is not rendered either, so there is nothing
-    // for a caller to report.
-    if (!settings.browserChatEnabled) {
-      res.json({ browsers: [], platforms: [], queues: getTabPoolStats() });
-      return;
-    }
-
-    const browsers = await Promise.all(
-      settings.browserChatEndpoints.map(async (entry) => ({
-        siteId: entry.siteId,
-        port: entry.port,
-        status: await probeDebugBrowser(entry.port),
-      }))
-    );
-
-    const platforms = BROWSER_CHAT_SITE_IDS.map((siteId) => {
-      const registered = browsers.filter((row) => row.siteId === siteId);
-      const running = registered.filter((row) => row.status.running);
-      const withTab = running.filter(
-        (row) => row.status.sites.find((site) => site.id === siteId)?.open
-      );
-      return {
-        id: siteId,
-        label: getProviderLabel(siteId),
-        registeredPorts: registered.map((row) => row.port),
-        runningPorts: running.map((row) => row.port),
-        tabPorts: withTab.map((row) => row.port),
-      };
-    });
-
-    res.json({ browsers, platforms, queues: getTabPoolStats() });
-  } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Could not check the debug browsers',
     });
   }
 });

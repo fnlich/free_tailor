@@ -1,24 +1,18 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   AI_PROVIDERS,
   adminApi,
-  // The browser-mode switch has to govern exactly the set the backend gate
-  // does, so the list comes from there rather than being retyped here.
-  BROWSER_CHAT_PROVIDERS,
   AdminAppSettings,
   AdminAppSettingsUpdate,
-  BrowserChatEndpoint,
-  DebugBrowserReport,
   AIProvider,
   DefaultMode,
   DefaultResumeSelection,
   getAIProviderLabel,
   Group,
   groupsApi,
-  isPlatformActive,
   isProviderLocked,
   isProviderOffered,
   LOCK_ICON,
@@ -28,7 +22,7 @@ import {
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
-import { Card, Field, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
+import { Card, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import styles from './page.module.css';
 
 type SettingsFormState = {
@@ -43,50 +37,9 @@ type SettingsFormState = {
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
   outputPathTemplate: string;
-  browserChatEndpoints: BrowserChatEndpoint[];
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'browserChat' | 'modelControls';
-
-/**
- * A switch that saves the moment it is flipped.
- *
- * No Save button, unlike the sections around it: these two withdraw a control
- * from every other page in the app, so "did that take?" is a question worth
- * answering immediately rather than after a second click somewhere below.
- */
-function SettingSwitch({
-  id,
-  checked,
-  onChange,
-  disabled,
-  title,
-  children,
-}: {
-  id: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled: boolean;
-  title: string;
-  children: ReactNode;
-}) {
-  // A choice box, so the explanation sits inside the thing being switched.
-  return (
-    <label className="tl-choice" data-on={checked} htmlFor={id}>
-      <input
-        id={id}
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span className="min-w-0">
-        <span className="block text-sm font-medium text-ink">{title}</span>
-        <span className="mt-1 block text-sm text-muted">{children}</span>
-      </span>
-    </label>
-  );
-}
+type SaveSection = 'output' | 'providers' | 'defaults';
 
 function buildPathPreview(template: string): string {
   const normalized = (template || '').trim() || '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
@@ -249,7 +202,6 @@ function toFormState(settings: AdminAppSettings): SettingsFormState {
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
-    browserChatEndpoints: settings.browserChatEndpoints.map((entry) => ({ ...entry })),
   };
 }
 
@@ -270,13 +222,6 @@ function mergeSavedSection(
     return {
       ...current,
       providersEnabled: { ...updated.providersEnabled },
-    };
-  }
-
-  if (section === 'browserChat') {
-    return {
-      ...current,
-      browserChatEndpoints: updated.browserChatEndpoints.map((entry) => ({ ...entry })),
     };
   }
 
@@ -306,12 +251,6 @@ function AdminSettingsPageBody() {
   const [form, setForm] = useState<SettingsFormState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [savingSection, setSavingSection] = useState<SaveSection | null>(null);
-  const [debugReport, setDebugReport] = useState<DebugBrowserReport | null>(null);
-  const [debugError, setDebugError] = useState('');
-  const [debugCheckedAt, setDebugCheckedAt] = useState('');
-  const [isChecking, setIsChecking] = useState(false);
-  const [newBrowserSite, setNewBrowserSite] = useState<AIProvider>('claude-web');
-  const [newBrowserPort, setNewBrowserPort] = useState('');
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -348,30 +287,6 @@ function AdminSettingsPageBody() {
       setGroups(groupsData);
       setProfiles(profilesData.filter((profile) => !profile.disabled));
       setForm(toFormState(settingsData));
-
-      /*
-       * The debug-browser reading, and only once the settings say to.
-       *
-       * It used to fire from the mount effect, before this call had resolved, so
-       * every load of this page probed the debug ports even on an install with
-       * browser mode off - where the panel that would show the answer is not
-       * rendered at all. Moved here because that flag is the thing that decides,
-       * and it is not known until now.
-       *
-       * Still fire-and-forget: probing a port is a round trip that can simply
-       * not answer, and the form must render either way. Silent on failure -
-       * nothing listening is the ordinary state before the operator presses the
-       * button, and a banner on arrival would read as something being broken.
-       */
-      if (settingsData.browserChatEnabled) {
-        adminApi
-          .getDebugBrowsers()
-          .then((report) => {
-            setDebugReport(report);
-            setDebugError('');
-          })
-          .catch(() => setDebugReport(null));
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -448,118 +363,19 @@ function AdminSettingsPageBody() {
     );
   };
 
-  /**
-   * Re-reads the browser state, and the sign-in state alongside it.
-   *
-   * Both, because "active" is the two together: a port probe says a window is
-   * up, and only the provider health check knows whether its tab is signed in.
-   * Refreshing one without the other leaves the panel disagreeing with itself.
-   *
-   * It also stamps when it ran. Nothing re-probes on its own any more - the app
-   * no longer starts these browsers, so there is no success moment to hang a
-   * refresh on - and a panel that says "not running" with no indication of how
-   * old that reading is looks broken right after a successful script run.
-   */
-  const refreshDebugBrowsers = async () => {
-    setIsChecking(true);
-    try {
-      const [report, healthReport] = await Promise.all([
-        adminApi.getDebugBrowsers(),
-        adminApi.getAiHealth().catch((err: unknown) => (err instanceof Error ? err : new Error('failed'))),
-      ]);
-      setDebugReport(report);
-      const healthOk = !(healthReport instanceof Error);
-      if (healthOk) {
-        setHealth(healthReport);
-        setHealthError('');
-      } else {
-        // Said out loud rather than swallowed. Active/Not active comes from
-        // this half, so a silent failure would leave the last reading on
-        // screen under a timestamp claiming it was just checked.
-        setHealthError(healthReport.message || 'Could not read provider status');
-      }
-      setDebugError('');
-      setDebugCheckedAt(
-        `${new Date().toLocaleTimeString()}${healthOk ? '' : ' (ports only - sign-in check failed)'}`
-      );
-    } catch (err) {
-      setDebugReport(null);
-      setDebugError(err instanceof Error ? err.message : 'Could not check the debug browsers');
-    } finally {
-      setIsChecking(false);
-    }
-  };
-
-  /**
-   * Registering a port WRITES, rather than staging an edit to be saved later.
-   *
-   * This list is not a preference - it is the address book the providers send
-   * requests to, and now also the list the launcher script reads. While a Start
-   * button existed it saved the list as a side effect of starting a browser, so
-   * the two could not drift far. Without it, a staged edit means an operator
-   * adds a port, switches to a terminal, runs the script, and the script starts
-   * the OLD list with nothing anywhere saying why.
-   */
-  const registerBrowser = async () => {
-    if (!form) return;
-    const port = Number.parseInt(newBrowserPort.trim(), 10);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      setDebugError('The debug port must be a whole number between 1024 and 65535.');
-      return;
-    }
-    if (form.browserChatEndpoints.some((entry) => entry.port === port)) {
-      setDebugError(
-        `Port ${port} is already registered. One browser shows one chat tab, so each port ` +
-          'belongs to exactly one site.'
-      );
-      return;
-    }
-    setDebugError('');
-    const next = [...form.browserChatEndpoints, { siteId: newBrowserSite, port }];
-    const saved = await saveSection(
-      'browserChat',
-      { browserChatEndpoints: next },
-      `Registered ${getAIProviderLabel(newBrowserSite)} on port ${port}. Run npm run browser:debug to start it.`
-    );
-    if (!saved) {
-      // Keep what they typed. Clearing it on failure means retyping the port to
-      // retry, and the reason is a banner three sections up the page.
-      setDebugError(`Port ${port} was not registered - see the error above.`);
-      return;
-    }
-    setNewBrowserPort('');
-    // Re-read, because the row list and the Active panel come from different
-    // places: the rows render the form, which has just changed, and the panel
-    // renders the server's report, which has not. Without this the panel keeps
-    // saying "no debug port registered" directly under the row that was just
-    // registered. Not awaited - the panel says "Checking..." while it settles.
-    void refreshDebugBrowsers();
-  };
-
-  const unregisterBrowser = async (port: number) => {
-    if (!form) return;
-    setDebugError('');
-    await saveSection(
-      'browserChat',
-      { browserChatEndpoints: form.browserChatEndpoints.filter((entry) => entry.port !== port) },
-      `Unregistered port ${port}. A browser already running on it is not closed.`
-    );
-    void refreshDebugBrowsers();
-  };
-
   const handleSaveProviders = async () => {
     if (!form || !settings) return;
-    // `isProviderOffered`, not just the lock: a browser provider ticked before
-    // browser mode was switched off keeps its stored `true` (its row is not
-    // rendered, so nothing unticks it), and counting it here let an admin untick
-    // everything else and save an install where nothing could actually run.
+    // `isProviderOffered`, not the bare ticks: a locked provider keeps its
+    // stored `true` (its checkbox is fixed, so nothing unticks it), and counting
+    // it here would let an admin untick everything else and save an install
+    // where nothing could actually run.
     const runnable = AI_PROVIDERS.filter(
       (provider) => isProviderOffered(settings, provider, form.providersEnabled)
     );
     if (runnable.length === 0) {
       setError(
-        'At least one AI provider that can run here must remain enabled. Locked providers, and the ' +
-          'browser ones while browser mode is off, cannot run however they are ticked.'
+        'At least one AI provider that can run here must remain enabled. Locked providers cannot ' +
+          'run however they are ticked.'
       );
       return;
     }
@@ -723,263 +539,13 @@ function AdminSettingsPageBody() {
       )}
 
       <Section
-        title="Model controls"
-        description="What the model select offers, everywhere it appears - the builder and every profile alike."
-      >
-        <SettingSwitch
-          id="browserChatEnabled"
-          checked={settings.browserChatEnabled}
-          disabled={savingSection !== null}
-          onChange={(next) =>
-            void saveSection(
-              'modelControls',
-              { browserChatEnabled: next },
-              next
-                ? 'Browser mode is offered again.'
-                : 'Browser mode is hidden, and no request can reach it.'
-            )
-          }
-          title="Offer browser-tab mode"
-        >
-          <strong>Default (browser)</strong> needs a Chrome running on this server that you have
-          signed in to by hand, which a headless box cannot have. Switch this off and the option
-          disappears from every model menu - here and on the builder - and a request naming it is
-          refused rather than left waiting for a browser that will never answer. The per-site
-          preferences below are kept, so switching it back on restores them.
-        </SettingSwitch>
-      </Section>
-
-      {/* Gone entirely when browser mode is off, rather than greyed: there is
-          nothing here to read or fix on an installation that has withdrawn it,
-          and the switch that brings it back lives in Model controls above - so
-          hiding this cannot strand anyone. */}
-      {settings.browserChatEnabled && (
-        <Section
-          title="Browser Chat (free)"
-          description={
-            <>
-              <strong>Default (browser)</strong> drives chat tabs in browsers you start here and
-              sign in to yourself. Nothing is metered and no API key is stored - the chat plan you
-              already have is the quota. Claude and ChatGPT are both used; which one a given resume
-              lands on is whichever browser is free, so there is one choice to make rather than
-              three.
-              {/* A block span rather than a second <p>: the kit puts the
-                  description inside one paragraph already. */}
-              <span className="mt-2 block">
-                One browser shows <strong>one</strong> chat tab, on its own port. That is not a
-                preference: a second tab in the same window is a background tab, and Chrome freezes
-                those. So <strong>every browser you add runs one more resume at a time</strong>.
-                There are two queues - one shared by every browser, one for the Claude CLI seat - and
-                neither has a length limit: whenever a browser frees, it takes the task that has
-                waited longest.
-              </span>
-            </>
-          }
-        >
-          {form.browserChatEndpoints.length === 0 ? (
-            <Notice tone="neutral">
-              No debug ports registered yet. Register one below, then start it with{' '}
-              <code className={styles.code}>npm run browser:debug</code> and sign in.
-            </Notice>
-          ) : (
-            <ul className="tl-rows">
-              {form.browserChatEndpoints.map((entry) => {
-                const live = debugReport?.browsers.find((row) => row.port === entry.port);
-                const site = live?.status.sites.find((row) => row.id === entry.siteId);
-                return (
-                  <li key={entry.port} className="flex flex-wrap items-center gap-3">
-                    <span className="min-w-[9rem] text-sm font-medium text-ink">
-                      {getAIProviderLabel(entry.siteId)}
-                    </span>
-                    <span className="text-sm text-muted">port {entry.port}</span>
-                    <span className="text-sm">
-                      {!live || !live.status.running ? (
-                        <Pill tone="grey">not running</Pill>
-                      ) : site?.open ? (
-                        <Pill tone="green">running, tab open</Pill>
-                      ) : (
-                        <Pill tone="amber">running, no tab yet</Pill>
-                      )}
-                    </span>
-                    <span className="ml-auto flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void unregisterBrowser(entry.port)}
-                        disabled={savingSection !== null}
-                        className="tl-button-quiet"
-                        data-size="sm"
-                      >
-                        Unregister
-                      </button>
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="w-full sm:w-56">
-              <label className="tl-label" htmlFor="newBrowserSite">
-                Register a browser for
-              </label>
-              <select
-                id="newBrowserSite"
-                value={newBrowserSite}
-                onChange={(event) => setNewBrowserSite(event.target.value as AIProvider)}
-                className="tl-input mt-2"
-              >
-                {BROWSER_CHAT_PROVIDERS.map((provider) => (
-                  <option key={provider} value={provider}>
-                    {getAIProviderLabel(provider)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="w-32">
-              <label className="tl-label" htmlFor="newBrowserPort">
-                on port
-              </label>
-              <input
-                id="newBrowserPort"
-                type="number"
-                min={1024}
-                max={65535}
-                value={newBrowserPort}
-                placeholder="9222"
-                onChange={(event) => setNewBrowserPort(event.target.value)}
-                className="tl-input mt-2"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => void registerBrowser()}
-              disabled={savingSection !== null}
-              className="tl-button"
-            >
-              {savingSection === 'browserChat' ? 'Registering...' : 'Register'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void refreshDebugBrowsers()}
-              disabled={isChecking || savingSection !== null}
-              className="tl-button-quiet"
-              // The primary beside it is 2.5rem; matched here, inline, because
-              // .tl-button-quiet is unlayered and outranks a min-h utility.
-              style={{ minHeight: '2.5rem' }}
-            >
-              {isChecking ? 'Checking...' : 'Check status'}
-            </button>
-            {debugCheckedAt ? (
-              <span className="self-center text-xs text-subtle">
-                Last checked {debugCheckedAt}
-              </span>
-            ) : null}
-          </div>
-
-          {/* The answer to "is this thing working", above the per-port detail.
-              A registered port with a running browser and an open tab can still
-              be SIGNED OUT, so `active` comes from the provider's own probe
-              rather than from the port. */}
-          {debugReport ? (
-            <ul className="grid gap-3 sm:grid-cols-2">
-              {debugReport.platforms.map((platform) => {
-                // Three states, not two. The port probe answers in milliseconds
-                // and the health check shells out and drives a tab, so for the
-                // seconds between them `health` is null - and rendering that as
-                // "Not active" tells an operator whose browsers are all fine
-                // that they are not, before flipping. "Checking" is the honest
-                // reading of "the answer has not arrived".
-                const healthKnown = health !== null || Boolean(healthError);
-                const active = isPlatformActive(health, platform);
-                const state =
-                  platform.registeredPorts.length === 0
-                    ? 'unregistered'
-                    : !healthKnown
-                      ? 'checking'
-                      : active
-                        ? 'active'
-                        : 'inactive';
-                return (
-                  <li key={platform.id} className="tl-card p-4">
-                    <div className="flex items-center gap-2">
-                      {/* The frontend's label, not the one the server sent.
-                          The rows above render getAIProviderLabel, and the two
-                          vocabularies differ, so using the server's would put
-                          one provider under two names in a single panel. */}
-                      <span className="text-sm font-medium text-ink">
-                        {getAIProviderLabel(platform.id)}
-                      </span>
-                      <span className="ml-auto">
-                        <Pill tone={state === 'active' ? 'green' : state === 'checking' ? 'sky' : 'grey'}>
-                          {state === 'active'
-                            ? 'Active'
-                            : state === 'checking'
-                              ? 'Checking...'
-                              : 'Not active'}
-                        </Pill>
-                      </span>
-                    </div>
-                    <p className="mt-2 break-words text-xs text-muted">
-                      {state === 'unregistered'
-                        ? 'No debug port registered for this platform yet. Register one below.'
-                        : describeProviderHealth(health, platform.id, healthError)}
-                    </p>
-                    {platform.registeredPorts.length > 0 && (
-                      <p className="mt-1 text-xs text-subtle">
-                        {`Port${platform.registeredPorts.length === 1 ? '' : 's'} ` +
-                          `${platform.registeredPorts.join(', ')} registered · ` +
-                          `${platform.runningPorts.length} reachable · ` +
-                          `${platform.tabPorts.length} showing the site`}
-                      </p>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : null}
-
-          {debugReport && Object.keys(debugReport.queues).length > 0 ? (
-            <div className="tl-card p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-subtle">Queues</p>
-              <ul className="mt-2 space-y-1">
-                {Object.entries(debugReport.queues).map(([siteId, stats]) => (
-                  <li key={siteId} className="text-sm text-muted">
-                    {getAIProviderLabel(siteId as AIProvider)}: {stats.tabs} tab
-                    {stats.tabs === 1 ? '' : 's'}, {stats.inUse} in use, {stats.queued} waiting
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          <Notice tone="neutral">
-            <p className="font-medium">Starting these browsers</p>
-            <p className="mt-1 text-muted">
-              This app never starts one. Register the port here, then run the launcher yourself on
-              the machine the backend is on:
-            </p>
-            <pre className={styles.command}>npm run browser:debug</pre>
-            <p className="mt-2 text-muted">
-              It starts every browser registered above, skipping any already running, and opens each
-              one on its own chat site. Sign in inside each window once and leave it open. Each gets
-              a profile directory of its own, because Chrome ignores the debug port on a profile
-              that is already running.
-            </p>
-          </Notice>
-
-          {debugError ? <Status tone="error">{debugError}</Status> : null}
-        </Section>
-      )}
-
-      <Section
         title="AI Providers"
         description={
           <>
             Disabled providers are hidden in Resume Builder and rejected by the backend. A{' '}
             {LOCK_ICON} provider is one this installation cannot run at all, and its switch is
-            fixed until that changes on the server. The free browser-chat providers drive a chat
-            tab you signed in to; the metered providers are keyed from{' '}
+            fixed until that changes on the server. The subscription seats need no key - they use
+            the CLI signed in on the server; the metered providers are keyed from{' '}
             <code className={styles.code}>.env</code> (<code className={styles.code}>ANTHROPIC_API_KEY</code>,{' '}
             <code className={styles.code}>OPENAI_API_KEY</code>,{' '}
             <code className={styles.code}>DEEPSEEK_API_KEY</code>) and this app does
@@ -988,12 +554,7 @@ function AdminSettingsPageBody() {
         }
       >
         <ul className="tl-rows overflow-hidden">
-          {AI_PROVIDERS.filter(
-            // A provider this installation has withdrawn has no row: there is
-            // nothing to toggle and nothing to read, and a live health line
-            // against a browser nobody can sign in to is worse than silence.
-            (provider) => settings.browserChatEnabled || !BROWSER_CHAT_PROVIDERS.includes(provider)
-          ).map((provider) => {
+          {AI_PROVIDERS.map((provider) => {
             const lock = settings.providerLocks.find((entry) => entry.id === provider);
             return (
               <li key={provider} className={lock ? 'bg-surface-muted' : undefined}>

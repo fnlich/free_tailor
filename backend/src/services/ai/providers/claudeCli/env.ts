@@ -25,9 +25,8 @@
  * this cannot quietly make one server answer differently from another.
  *
  * It used to be SET from the request, when thinking was a per-profile choice.
- * That choice is gone - it was a single-provider on/off that the browser route
- * could not honour at all - so nothing sets it now and the strip is all that
- * remains.
+ * That choice is gone - it was a single-provider on/off that every other
+ * provider ignored - so nothing sets it now and the strip is all that remains.
  *
  * Everything else is kept on purpose. `PATH`, `HOME`, `ANTHROPIC_BASE_URL` and
  * proxy variables are the operator's configuration and this module has no

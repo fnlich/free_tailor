@@ -4,16 +4,16 @@ export type GenerationProgressState = {
   total: number;
   completed: number;
   /**
-   * How many resumes are in a browser RIGHT NOW.
+   * How many resumes are being built RIGHT NOW.
    *
    * Absent before the server owned the queue, because the answer was always one:
-   * the page generated them itself, one request at a time. Now three browsers
-   * build three resumes at once, and a bar that still said "Resume 4 of 30"
-   * would be describing a machine that no longer exists - and hiding the one
-   * thing worth seeing, which is that the browsers are all busy.
+   * the page generated them itself, one request at a time. Now each seat builds
+   * several resumes at once, and a bar that still said "Resume 4 of 30" would be
+   * describing a machine that no longer exists - and hiding the one thing worth
+   * seeing, which is that every slot is busy.
    */
   running?: number;
-  /** How many are still waiting for a browser. */
+  /** How many are still waiting for a free slot. */
   queued?: number;
   phase: string;
   currentProfileName?: string;
@@ -107,7 +107,7 @@ export default function GenerationProgress({ progress, className = '' }: Generat
             )}
             {progress.queued ? (
               <div className="mt-1 text-xs text-subtle">
-                {progress.queued} waiting for a browser
+                {progress.queued} waiting for a free slot
               </div>
             ) : null}
           </div>

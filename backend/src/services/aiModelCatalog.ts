@@ -1,5 +1,10 @@
 import type { AIProvider } from '../types/template';
-import { AI_PROVIDER_IDS, coerceProviderId } from '../config/providerCatalog';
+import {
+  AI_PROVIDER_IDS,
+  coerceProviderId,
+  isRetiredModelId,
+  isRetiredProviderId,
+} from '../config/providerCatalog';
 
 export const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.1';
 export const DEFAULT_CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
@@ -10,6 +15,8 @@ export const DEFAULT_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4
  */
 export const DEFAULT_CLAUDE_CLI_MODEL = process.env.AI_CLI_MODEL || 'sonnet';
 
+const warnedRetiredOverrides = new Set<string>();
+
 export function normalizePromptModelSelection(
   provider: unknown,
   modelName: unknown
@@ -18,6 +25,26 @@ export function normalizePromptModelSelection(
   const normalizedModelName = typeof modelName === 'string' ? modelName.trim() : '';
 
   if (!normalizedProvider && !normalizedModelName) {
+    return null;
+  }
+
+  // An override naming a removed provider is NO override: the prompt runs on
+  // whatever model the caller resolved, which is what clearing it would do.
+  // Never a throw, because this is also the READ path - listing prompts has no
+  // per-record catch, so one stored override pinned to a browser chat site would
+  // take down Admin -> Prompts, and on a shipped prompt every generation that
+  // uses it. Migration 006 clears these; this keeps a row it has not reached yet
+  // (or one a restored backup brought back) harmless. See RETIRED_PROVIDER_IDS.
+  if (isRetiredProviderId(normalizedProvider) || isRetiredModelId(normalizedModelName)) {
+    const key = `${normalizedProvider}/${normalizedModelName}`;
+    if (!warnedRetiredOverrides.has(key)) {
+      warnedRetiredOverrides.add(key);
+      console.warn(
+        `[prompts] A prompt's model override names "${key}", on the browser chat providers, which were ` +
+          'removed; it is ignored and those prompts run on the model chosen for the run. Saving the prompt ' +
+          'under Admin -> Prompts clears it.'
+      );
+    }
     return null;
   }
 

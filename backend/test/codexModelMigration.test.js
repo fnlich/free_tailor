@@ -48,10 +48,11 @@ function withAdmin() {
 /**
  * Says the database has already run everything up to 004.
  *
- * Which ISOLATES the migration under test. Without it the fixture below also
- * trips 002, whose documented job is to repoint a default off a provider locked
- * at the time it was written - so assertions about what 005 left alone would
- * really be measuring 002. 001-004 have their own tests.
+ * Which ISOLATES the migration under test from the ones before it: 001-004 have
+ * their own tests, and assertions about what 005 left alone must not be
+ * measuring them. What comes AFTER 005 still runs, as it does on a real boot -
+ * the fixture below carries the browser chat rows an install of that era had,
+ * and 006 takes them out in the same pass.
  */
 function alreadyMigratedTo(dbDir, version) {
   const db = new Database(path.join(dbDir, 'free_tailor.db'));
@@ -146,7 +147,7 @@ test('an install that predates Codex can actually select it afterwards', async (
   // The property that was actually broken: enabled AND pickable, not one or the
   // other. An enabled provider with no model is a dead end on the page.
   assert.equal(settings.providersEnabled['codex-cli'], true);
-  const pickable = config.getPickableModels(settings);
+  const pickable = config.getRunnableModels(settings);
   assert.ok(
     pickable.some((model) => model.provider === 'codex-cli'),
     'Codex is selectable - this is what showed as done and was not'
@@ -156,6 +157,13 @@ test('an install that predates Codex can actually select it afterwards', async (
   // back to whatever stood first, and the stored default is untouched.
   assert.equal(settings.defaultModelId, 'claude-cli-sonnet');
   assert.equal(settings.aiModels[0].id, 'claude-cli-sonnet', 'appended, never prepended');
+
+  // And the chain carried on past 005: the browser chat record and flags the
+  // fixture holds are gone from the stored row, not merely hidden on read.
+  const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
+  assert.equal(stored.aiModels.some((model) => model.provider === 'claude-web'), false);
+  assert.equal('claude-web' in stored.providersEnabled, false);
+  assert.equal('chatgpt-web' in stored.providersEnabled, false);
 });
 
 test('running twice adds one record, not two', async () => {

@@ -10,9 +10,10 @@ const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
  *
  * `analysisCache` alone does not give this. It stops the second call only after
  * the first has RETURNED - so ten tasks starting together all miss, all call,
- * and nine turns are wasted. On a free account a turn is a browser typing thirty
- * thousand characters and waiting out the answer, and one posting across several
- * profiles is the commonest shape this app runs.
+ * and nine turns are wasted. On a subscription seat each of those turns is spent
+ * from the seat's usage allowance, on a metered provider thirty thousand
+ * characters are billed again, and one posting across several profiles is the
+ * commonest shape this app runs.
  */
 
 function setUp(name) {

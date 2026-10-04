@@ -7,12 +7,11 @@ const { buildTailorResumePromptValues } = require('../dist/services/resumeServic
  * What actually gets sent to the model.
  *
  * Two reasons to pin this rather than leave it to review. On a metered provider
- * every character is billed; on a free chat provider every character has to be
- * TYPED into a composer, which is the slowest step of the turn by a wide margin
- * and the one that used to hit the protocol timeout. And a `Profile` grows
- * fields over time - the projection is built by naming what goes in precisely
- * so a field added later is not sent to a chat window by default, and this is
- * what notices when that stops being true.
+ * every character is billed, and on a subscription seat every character counts
+ * against the seat's usage allowance and lengthens the turn. And a `Profile`
+ * grows fields over time - the projection is built by naming what goes in
+ * precisely so a field added later is not sent to a model by default, and this
+ * is what notices when that stops being true.
  */
 
 function profileFixture(extra = {}) {
@@ -54,7 +53,7 @@ function profileFixture(extra = {}) {
       companyFolderNameTemplate: '{{row number}}_{{company name}}',
       hardSkillOrdering: 'library',
       technicalSkillsLayout: 'categorized',
-      ai: { modelId: 'free-hybrid', // A dead key a live database still holds - see aiPreferences: it must be
+      ai: { modelId: 'claude-cli-opus', // A dead key a live database still holds - see aiPreferences: it must be
       // read through and ignored, never rejected.
       effort: 'max' },
     },
@@ -87,13 +86,13 @@ const ANALYSIS = {
 
 test("the operator's own configuration never reaches the model", () => {
   // `profileSettings` holds which prompt records to use, the output file-name
-  // templates, and which AI model they pay for. Sending it typed the operator's
-  // tooling choices into somebody else's chat history, for a call that rewrites
+  // templates, and which AI model they pay for. Sending it put the operator's
+  // tooling choices into a third party's model input, for a call that rewrites
   // a summary.
   const values = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
   const sent = JSON.parse(values.profileJson);
   assert.equal('profileSettings' in sent, false);
-  assert.doesNotMatch(values.profileJson, /free-hybrid/, 'the model preference must not travel');
+  assert.doesNotMatch(values.profileJson, /claude-cli-opus/, 'the model preference must not travel');
   assert.doesNotMatch(values.profileJson, /coverLetterFileNameTemplate/);
 });
 

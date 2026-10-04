@@ -62,7 +62,7 @@ function detectEncoding(buffer: Buffer): EnvFileSummary['encoding'] {
  * them in one line of output.
  *
  * NAMES ONLY, and that is a hard rule rather than tidiness: this prints to a
- * terminal and gets pasted into issues and chat windows, and one of these values
+ * terminal and gets pasted into issues and chat threads, and one of these values
  * is an API key.
  *
  * Duplicates are counted from the text rather than taken from `dotenv.parse`,

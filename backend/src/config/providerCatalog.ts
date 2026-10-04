@@ -6,19 +6,8 @@ import type { AIProvider } from '../types/template';
  * `api-key`   - a secret read from the environment.
  * `subscription-seat` - a sign-in the operator performed on the server; there
  *               is no secret for this app to store, hold, or leak.
- * `browser-session` - a chat site the operator is signed in to in a Chrome
- *               they started themselves. This app stores no credential and
- *               never asks for one: it attaches to that browser over the
- *               DevTools protocol and drives the page, so the session cookie
- *               is never copied anywhere. Worth being exact about what that
- *               does and does not mean - a DevTools attachment CAN read the
- *               cookies of the browser it is attached to. Nothing here does,
- *               and the code that drives the page is right there to check, but
- *               the guarantee is "this app does not", not "this app could
- *               not". Which is why it attaches to a browser the operator
- *               started, on loopback, with a profile of its own.
  */
-export type CredentialKind = 'api-key' | 'subscription-seat' | 'browser-session';
+export type CredentialKind = 'api-key' | 'subscription-seat';
 
 export type ProviderDescriptor = {
   id: AIProvider;
@@ -159,32 +148,6 @@ export const PROVIDER_CATALOG = {
     lockReason: '',
     order: 4,
   },
-  'claude-web': {
-    id: 'claude-web',
-    label: 'Claude (free)',
-    summary:
-      'Drives claude.ai in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
-    legacyEnabledField: null,
-    envKeyVar: null,
-    requiresApiKey: false,
-    credentialKind: 'browser-session',
-    locked: false,
-    lockReason: '',
-    order: 5,
-  },
-  'chatgpt-web': {
-    id: 'chatgpt-web',
-    label: 'ChatGPT (free)',
-    summary:
-      'Drives chatgpt.com in a Chrome you started and signed in to. Free: no API key, nothing metered, and the chat plan you already have is the quota. Add a browser per parallel request under Settings.',
-    legacyEnabledField: null,
-    envKeyVar: null,
-    requiresApiKey: false,
-    credentialKind: 'browser-session',
-    locked: false,
-    lockReason: '',
-    order: 6,
-  },
 } as const satisfies Record<AIProvider, ProviderDescriptor>;
 
 /** Every provider id, in menu order. */
@@ -306,6 +269,59 @@ export const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, AIProvider>> = Obj
   })
 );
 
+/**
+ * Provider ids an older release offered, retired with nothing to replace them.
+ *
+ * `claude-web` and `chatgpt-web` drove claude.ai and chatgpt.com in a debug
+ * Chrome the operator started and signed in to. They are deliberately NOT in
+ * `LEGACY_PROVIDER_ALIASES`: their records carry `modelName: 'chat'`, and
+ * aliasing one onto a CLI seat would run `claude --model chat` or
+ * `codex -m chat` - a model neither has - turning a value that could be read
+ * harmlessly into a failure at generate time. So `coerceProviderId` returns
+ * null for them like any unknown id, and every read path that would otherwise
+ * THROW on that null asks this list first and treats the value as absent: a
+ * model record is skipped, an enable flag is ignored, a prompt override is no
+ * override, and a stored preference falls back to the app default.
+ *
+ * PERMANENT, for the reason the alias map above is. Migration 006 removes them
+ * from the database once, but a restored backup, a hand-edited row or
+ * `npm run ai:rollback` (which restores a snapshot from before 006 and clears
+ * the version stamp) can put them back at any time - and 006 itself sits behind
+ * 003 in the migration chain, which waits for the first administrator. Tolerating
+ * them on read is what keeps any of those from taking every settings read down
+ * with "invalid provider".
+ */
+export const RETIRED_PROVIDER_IDS: readonly string[] = Object.freeze(['claude-web', 'chatgpt-web']);
+
+export function isRetiredProviderId(value: unknown): boolean {
+  return typeof value === 'string' && RETIRED_PROVIDER_IDS.includes(value.trim());
+}
+
+/**
+ * Model ids that only ever meant one of the retired providers.
+ *
+ * `free-hybrid` was the synthesized "any free chat browser" entry in the model
+ * picker - never a stored row - and `claude-web-chat` / `chatgpt-web-chat` the
+ * seeded records for the two sites. A profile, the stored default, or a request
+ * from a page loaded before the upgrade can still name any of them. They read as
+ * "the app default" rather than as an unknown model: the browser entry was
+ * labelled as the default and meant it, and refusing would break every stale
+ * tab and every profile that picked it, on a change their owners did not make.
+ *
+ * Only these three can be listed. A browser model an administrator created has
+ * a random id; `normalizeAIModelRecords` in aiModelConfig remembers those as it
+ * drops their records, which covers the same ground for the life of the process.
+ */
+export const RETIRED_MODEL_IDS: readonly string[] = Object.freeze([
+  'free-hybrid',
+  'claude-web-chat',
+  'chatgpt-web-chat',
+]);
+
+export function isRetiredModelId(value: unknown): boolean {
+  return typeof value === 'string' && RETIRED_MODEL_IDS.includes(value.trim());
+}
+
 const warnedAliases = new Set<string>();
 
 /**
@@ -343,56 +359,3 @@ export function coerceProviderId(value: unknown): AIProvider | null {
 
   return null;
 }
-
-/**
- * The two chat sites this app drives in a browser.
- *
- * Here rather than with the app settings that store them, because the routing
- * layer needs the list and the settings layer needs the routing - and with the
- * list in the settings module those two imported each other.
- */
-export type BrowserChatSiteId = Extract<AIProvider, 'claude-web' | 'chatgpt-web'>;
-
-export const BROWSER_CHAT_SITE_IDS: readonly BrowserChatSiteId[] = ['claude-web', 'chatgpt-web'];
-
-export function isBrowserChatSiteId(value: unknown): value is BrowserChatSiteId {
-  return value === 'claude-web' || value === 'chatgpt-web';
-}
-
-/**
- * The reserved model id that means BROWSER MODE: any free chat browser.
- *
- * The one entry the picker offers for browser work, replacing the three it used
- * to - "Claude (free)", "ChatGPT (free)" and "Hybrid (free)". Those three were a
- * choice nobody had a reason to make: the queue hands a task to whichever
- * browser comes free, so pinning one to a platform only meant waiting longer for
- * the same answer. One option that means "use the browsers" says what the app
- * actually does.
- *
- * The id still reads `free-hybrid`, and that is deliberate: profiles already
- * store it. Renaming would silently repoint every one of them at the app
- * default.
- *
- * It lives here, with the provider catalog, rather than with the routing logic
- * that acts on it, because the two things that need it sit on opposite sides of
- * that logic: the model list has to OFFER it, and the choice resolver has to
- * RECOGNISE it. Putting it in the routing module made those two import each
- * other through it.
- *
- * It is deliberately not a row in `aiModels`. There is no provider to call and
- * no model name to send, and an admin editing or deleting such a row would
- * leave every profile that picked it pointing at nothing.
- */
-export const HYBRID_MODEL_ID = 'free-hybrid';
-
-export const HYBRID_MODEL_LABEL = 'Default (browser)';
-
-export const HYBRID_MODEL_DESCRIPTION =
-  'Runs on whichever free chat browser is available - Claude or ChatGPT - and ' +
-  'moves to another when one is out of messages, signed out, or not running.';
-
-export function isHybridModelId(value: unknown): boolean {
-  return typeof value === 'string' && value.trim() === HYBRID_MODEL_ID;
-}
-
-

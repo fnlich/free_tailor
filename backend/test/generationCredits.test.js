@@ -30,14 +30,12 @@ async function harness(name, { attempts = 1 } = {}) {
   process.env.GENERATION_MAX_ATTEMPTS = String(attempts);
   useAdminEmails('admin@example.com');
 
-  // Real registered browsers, the way the app gets its capacity. There is no
-  // test seam for this on purpose - the dispatcher reads the same settings row
-  // the admin page writes, so a harness that faked it would be proving
-  // something about the fake.
-  const config = loadFresh('../dist/config/aiModelConfig');
-  await config.updateAppSettings({
-    browserChatEndpoints: [{ siteId: 'claude-web', port: 9931 }],
-  });
+  // One Claude seat slot, sized the way the app sizes it: from the variable the
+  // dispatcher reads on every capacity reading. There is no test seam for this
+  // on purpose - a harness that faked the reading would be proving something
+  // about the fake. ONE matters: several cases below count on exactly one task
+  // running while the rest wait.
+  process.env.AI_CLI_CONCURRENCY = '1';
 
   const users = loadFresh('../dist/database/userRepository');
   const credits = loadFresh('../dist/services/credits');
@@ -71,7 +69,7 @@ async function harness(name, { attempts = 1 } = {}) {
     kind,
     balance: (id) => users.getUserById(id).credits,
     task: (label) => ({
-      queue: 'browser',
+      queue: 'cli',
       label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
       kind,
       payload: { label },
@@ -139,7 +137,7 @@ test('a resume that fails gives its credit back', async () => {
   await until(() => h.started() > 0, 'task a to start');
   h.finish('a');
   await until(() => h.started() > 0, 'task b to start');
-  h.fail('b', 'the browser was signed out');
+  h.fail('b', 'the seat was signed out');
   await until(() => h.started() > 0, 'task c to start');
   h.finish('c');
   await settle();
@@ -254,7 +252,7 @@ test('a resume that fails and then succeeds costs exactly one credit', async () 
   await h.queue.refreshCapacity();
 
   await until(() => h.started() > 0, 'the first attempt');
-  h.fail('a', 'the browser was signed out');
+  h.fail('a', 'the seat was signed out');
   await until(() => h.started() > 0, 'the second attempt');
   h.fail('a', 'signed out again');
   await until(() => h.started() > 0, 'the third attempt');

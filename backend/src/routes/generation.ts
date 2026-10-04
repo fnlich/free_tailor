@@ -3,7 +3,6 @@ import { InsufficientCreditsError, releaseReservation, reserveCredits } from '..
 import { requireUser } from '../middleware/auth';
 import { getPublicAppSettings } from '../config/aiModelConfig';
 import { resolveAiChoice, type AiPreferences } from '../config/aiPreferences';
-import { isBrowserChatSiteId, type BrowserChatSiteId } from '../config/providerCatalog';
 import { listProfilesFor, type Viewer } from '../database/profileRepository';
 import { describeFailure } from '../middleware/aiErrors';
 import {
@@ -141,22 +140,13 @@ function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
 }
 
 /**
- * Which queue a task belongs in, and which browsers may run it.
+ * Which queue a task belongs in.
  *
  * The profile's own model choice decides, per profile - a batch of profiles that
  * disagree runs each on what it was set to, rather than on whichever profile
  * happened to come first.
  */
-export function routeFor(choice: {
-  provider: string;
-  route?: string;
-}): { queue: QueueName; sites?: BrowserChatSiteId[] } {
-  if (choice.route === 'hybrid') {
-    return { queue: 'browser', sites: ['claude-web', 'chatgpt-web'] };
-  }
-  if (isBrowserChatSiteId(choice.provider)) {
-    return { queue: 'browser', sites: [choice.provider] };
-  }
+export function routeFor(choice: { provider: string }): { queue: QueueName } {
   // Codex has its own lane because it has its own semaphore, sized by its own
   // variable. Sharing the Claude seat's lane meant the dispatcher offered
   // `AI_CLI_CONCURRENCY` slots into an `AI_CODEX_CONCURRENCY` pool, so one of
@@ -164,9 +154,9 @@ export function routeFor(choice: {
   if (choice.provider === 'codex-cli') {
     return { queue: 'codex' };
   }
-  // Everything else that is not a chat window runs on the Claude seat's queue:
-  // that CLI, and the metered HTTP providers, which have no local resource of
-  // their own and would otherwise need a lane that does nothing.
+  // Everything else runs on the Claude seat's queue: that CLI, and the metered
+  // HTTP providers, which have no local resource of their own and would
+  // otherwise need a lane that does nothing.
   return { queue: 'cli' };
 }
 
@@ -216,10 +206,8 @@ export async function buildTasks(
   for (const [jobIndex, job] of jobs.entries()) {
     for (const profile of profiles) {
       const choice = choices.get(profile.id)!;
-      const routing = routeFor(choice);
       descriptors.push({
-        queue: routing.queue,
-        ...(routing.sites ? { sites: routing.sites } : {}),
+        queue: routeFor(choice).queue,
         label: {
           profileId: profile.id,
           profileName: profile.name,
@@ -587,8 +575,8 @@ router.get('/batches/:id/stream', (req: Request<{ id: string }>, res: Response) 
 
 router.post('/batches/:id/cancel', (req: Request<{ id: string }>, res: Response) => {
   // Resolved through the viewer FIRST. Cancelling is destructive - it aborts
-  // work in a browser - so an unscoped id here let any signed-in account stop
-  // any other account's run.
+  // work already running - so an unscoped id here let any signed-in account
+  // stop any other account's run.
   const outcome = visibleBatch(req, req.params.id)
     ? getGenerationQueue().cancel(req.params.id)
     : null;

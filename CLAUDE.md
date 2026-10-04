@@ -72,8 +72,8 @@ curl http://127.0.0.1:3001/api/health
 Unset, `DB_DIR` defaults to `/data/db` on Linux/macOS (often not writable — the
 most common first-run failure) and `%LOCALAPPDATA%\free_tailor\db` on Windows.
 The backend prints the resolved path, the Chrome it will print with, and a
-readiness line per AI provider at startup; missing API keys and unreachable
-debug browsers are reported, not fatal.
+readiness line per AI provider at startup; missing API keys and signed-out
+seats are reported, not fatal.
 
 To sign in, `.env` needs Google OAuth (`GOOGLE_CLIENT_ID`) or SMTP. The first
 account to sign in becomes the administrator unless `ADMIN_EMAILS` decides in
@@ -97,22 +97,28 @@ backend/src/
                       #   defers (003 waits for an admin) stops the ones after
                       #   it. Adding a seed model needs a migration - stored
                       #   `aiModels` is read verbatim, never unioned with the
-                      #   defaults, so a seed reaches fresh installs only.
+                      #   defaults, so a seed reaches fresh installs only. The
+                      #   chain is 001, 003-006: 002 seeded the browser-chat
+                      #   models and went with them, and the runner skips any
+                      #   version it has passed, so the gap is harmless. Never
+                      #   reuse a retired number.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service
   middleware/         # auth, and turning an AI failure into a useful status
   routes/             # one file per /api/* area
-  scripts/            # operator tools, each behind an npm script: browser:debug,
-                      #   browser:doctor, mail:doctor, sheets:login, sheets:doctor,
-                      #   migrate:legacy, ai:rollback. The doctors share one shape -
+  scripts/            # operator tools, each behind an npm script: mail:doctor,
+                      #   sheets:login, sheets:doctor, migrate:legacy,
+                      #   ai:rollback. The doctors share one shape -
                       #   walk the real chain in order, stop at the first break,
                       #   name the remedy - because each diagnoses a failure whose
                       #   single error message covers several causes.
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart). One LANE
-                      #   per real resource - browsers, the Claude seat, the
-                      #   Codex seat - each sized from its own variable. A task
+                      #   per real resource - the Claude seat, which also
+                      #   carries the metered APIs, and the Codex seat - each
+                      #   sized from its own variable. A restored row naming a
+                      #   lane this build lacks is moved to one it has. A task
                       #   row's `data` is a hand-picked PROJECTION built by
                       #   index.ts's `taskRow`, not the Task serialized, so a new
                       #   field must be named there AND in the restore mapper or
@@ -201,15 +207,28 @@ install reads its prompts, skills and templates from the database.
 Every model call goes through `backend/src/services/ai`. A provider is one
 directory implementing `AIProviderAdapter`; the registry is keyed on the
 provider catalog, so a missing entry is a compile error. Providers:
-`claude-web` and `chatgpt-web` (drive a chat tab in a debug Chrome you start
-yourself — free, no key, and the only two that need a display, so they cannot
-work on a headless box), `claude-cli` and `codex-cli` (subscription seats via
-the local `claude` and `codex` binaries; both work headless, and `codex login
+`claude-cli` (the default) and `codex-cli` (subscription seats via the local
+`claude` and `codex` binaries; both work headless, and `codex login
 --device-auth` needs no browser on the server), and `claude` / `openai` /
 `deepseek` (metered API keys). `AI_LOCKED_PROVIDERS` in `.env` marks a provider
-this machine cannot run; nothing is locked out of the box. `browserChatEnabled`
-under Admin → Settings withdraws the two browser ones outright — gated inside
-`isProviderEnabled`, so "not shown" and "not reachable" are one statement.
+this machine cannot run; nothing is locked out of the box. A locked Claude seat
+moves the default to Codex, and with both seats locked the default is a metered
+API model - so nothing keyless is left, and the default bills per token.
+
+Two browser-chat providers were deleted: `claude-web` and `chatgpt-web` drove
+claude.ai and chatgpt.com in a debug Chrome over DevTools. **They are retired,
+not aliased** - their records carry `modelName: 'chat'`, which no seat has, so
+unlike `openrouter` in `LEGACY_PROVIDER_ALIASES` they map onto nothing.
+`RETIRED_PROVIDER_IDS` and `RETIRED_MODEL_IDS` (`free-hybrid`,
+`claude-web-chat`, `chatgpt-web-chat`) in `config/providerCatalog.ts` let a
+stored row, a profile, a prompt override or a stale tab that names them read as
+"the default" instead of throwing, and they are permanent for the reason the
+alias map is: a restored backup, a hand-edited row or `ai:rollback` can bring
+the ids back at any time. Migration 006 strips them from the database once and
+keeps a verbatim settings snapshot; the read-time tolerance has to stand on its
+own, because 006 sits after 003 in the chain and waits with it until an
+administrator exists. A deleted model that was never a browser one is still an
+error - do not widen the tolerance to "any unknown id".
 
 Both CLI providers share the spawn seam in `services/ai/providers/cli/`:
 `runner.ts` is the only module under `services/ai` that imports
@@ -231,13 +250,13 @@ more "fix what the adversarial review found" commits, so expect review passes
 to be part of the work rather than an afterthought.
 
 Commit subjects are written as sentences saying what changed and why it
-matters — "Pass over a browser that cannot take the prompt, and use the next
-one", not "fix(browser): retry". Match that voice.
+matters — "Stop link-sharing every new spreadsheet, and let an operator ask for
+it back", not "fix(sheets): visibility". Match that voice.
 
 The README's Troubleshooting table is long and genuinely load-bearing: most
 failures you can hit here already have a row explaining the cause. Read it
-before debugging a browser, Chrome, database-directory or provider problem, and
-add a row when you fix a new class of failure.
+before debugging a PDF-rendering Chrome, database-directory, seat or provider
+problem, and add a row when you fix a new class of failure.
 
 ## Platform notes
 
