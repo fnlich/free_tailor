@@ -473,8 +473,9 @@ test('the whole walk, as reported: an expired sign-in gets the sign-in advice', 
       assert.match(out, /sheets settings in effect: SHEET_TIMEZONE/);
       assert.match(
         out,
-        /present but EMPTY - not in effect, and blanking any shell value: GOOGLE_CREDENTIALS_PATH, GOOGLE_SERVICE_ACCOUNT_KEY_PATH/
+        /present but EMPTY - not in effect: GOOGLE_CREDENTIALS_PATH, GOOGLE_SERVICE_ACCOUNT_KEY_PATH/
       );
+      assert.doesNotMatch(out, /overridden by the environment/, 'nothing is exported here');
       assert.doesNotMatch(out, /GOOGLE_CLIENT_ID/, "the sign-in button's client is not this credential");
       assert.match(out, /kind: +your own Google account/);
       assert.match(out, /FAIL 3\. Mint an access token/);
@@ -485,6 +486,38 @@ test('the whole walk, as reported: an expired sign-in gets the sign-in advice', 
       assert.doesNotMatch(out, /OK +4\./, 'the walk stops at the first break');
     },
     { fakeFetch }
+  );
+});
+
+test('a setting the environment exports is named as overriding the file, never by value', async () => {
+  // The environment beats the .env now, so a bare GOOGLE_CREDENTIALS_PATH= in
+  // the file no longer blanks one exported in the shell - and the doctor says
+  // which of the file's lines is not the one in effect.
+  const { fakeFetch } = tokenEndpointSays(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
+  await withCredentials(
+    { 'google-oauth-credentials.json': USER_CREDENTIAL },
+    async ({ dir, doctor }) => {
+      const envPath = path.join(dir, '.env');
+      fs.writeFileSync(envPath, 'GOOGLE_CREDENTIALS_PATH=\nGOOGLE_SERVICE_ACCOUNT_KEY_PATH=\n');
+
+      const printed = [];
+      const realLog = console.log;
+      console.log = (...args) => printed.push(args.join(' '));
+      try {
+        await doctor.main(envPath);
+      } finally {
+        console.log = realLog;
+      }
+      const out = printed.join('\n');
+
+      assert.match(out, /in the file but overridden by the environment: GOOGLE_CREDENTIALS_PATH/);
+      assert.match(out, /present but EMPTY - not in effect: GOOGLE_SERVICE_ACCOUNT_KEY_PATH$/m);
+      assert.match(out, /kind: +your own Google account/, 'the exported path is the one used');
+      // Names only: the .env step never prints the exported value.
+      const envStep = out.split('Find the Google credentials')[0];
+      assert.equal(envStep.includes('google-oauth-credentials.json'), false);
+    },
+    { fakeFetch, env: { GOOGLE_CREDENTIALS_PATH: '<dir>/google-oauth-credentials.json' } }
   );
 });
 

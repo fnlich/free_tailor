@@ -22,7 +22,7 @@ import {
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
-import { Card, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import { Card, ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { seatHolds } from '@/lib/seatHolds';
 import styles from './page.module.css';
@@ -268,6 +268,13 @@ function AdminSettingsPageBody() {
   const [savingSection, setSavingSection] = useState<SaveSection | null>(null);
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
   const [error, setError] = useState('');
+  /**
+   * Why the settings could not be read, kept whole rather than as text, so the
+   * notice can show the server's sentence, its reference and - this page being
+   * an administrator's - the cause. Separate from `error`, which is about a
+   * save on a page that did load.
+   */
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [successMessage, setSuccessMessage] = useState('');
 
   const [health, setHealth] = useState<ProviderHealthReport | null>(null);
@@ -293,6 +300,7 @@ function AdminSettingsPageBody() {
     try {
       setIsLoading(true);
       setError('');
+      setLoadError(null);
       const [settingsData, groupsData, profilesData] = await Promise.all([
         adminApi.getSettings(),
         groupsApi.getAll().catch(() => []),
@@ -303,7 +311,7 @@ function AdminSettingsPageBody() {
       setProfiles(profilesData.filter((profile) => !profile.disabled));
       setForm(toFormState(settingsData));
     } catch (err) {
-      setError(messageWithDetail(err, 'Failed to load settings'));
+      setLoadError(err);
     } finally {
       setIsLoading(false);
     }
@@ -421,8 +429,28 @@ function AdminSettingsPageBody() {
     );
   };
 
-  if (isLoading || !form || !settings) {
+  if (isLoading) {
     return <Spinner />;
+  }
+  /*
+   * Loaded, and nothing to show. This used to be the same branch as loading,
+   * so a read the server refused - a settings row that does not parse, say -
+   * left the spinner turning for ever, with the reason rendered below it where
+   * it could never appear.
+   */
+  if (!form || !settings) {
+    return (
+      <div>
+        <header>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">General</h2>
+        </header>
+        <ErrorNotice className="mt-6" error={loadError ?? 'Failed to load settings'} fallback="Failed to load settings">
+          <button type="button" onClick={() => void loadSettings()} className="tl-button-quiet mt-4">
+            Try again
+          </button>
+        </ErrorNotice>
+      </div>
+    );
   }
 
   const providerEnabled = form.providersEnabled;

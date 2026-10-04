@@ -11,6 +11,7 @@ import type {
   CompletionRequest,
   CompletionResult,
   DroppedParam,
+  HealthOptions,
   ProviderCapabilities,
   ProviderHealth,
 } from '../../types';
@@ -121,8 +122,10 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     }
   }
 
-  function health(): Promise<ProviderHealth> {
-    if (cachedHealth && now() - cachedHealth.at < 60_000) return Promise.resolve(cachedHealth.value);
+  function health(healthOptions: HealthOptions = {}): Promise<ProviderHealth> {
+    if (!healthOptions.fresh && cachedHealth && now() - cachedHealth.at < 60_000) {
+      return Promise.resolve(cachedHealth.value);
+    }
     pendingHealth ??= checkHealth().finally(() => {
       pendingHealth = null;
     });

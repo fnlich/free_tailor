@@ -41,7 +41,7 @@ function makeRequest(overrides = {}) {
   };
 }
 
-function makeAdapter(runner, config = {}) {
+function makeAdapter(runner, config = {}, extra = {}) {
   return createClaudeCliAdapter({
     runner,
     config: {
@@ -62,7 +62,30 @@ function makeAdapter(runner, config = {}) {
       checkedAt: new Date().toISOString(),
       detail: 'stub',
     }),
+    ...extra,
   });
+}
+
+/** `claude auth status` as the health check reads it: signed in, and with what. */
+function signedInHealth(authMethod = 'oauth_token') {
+  return {
+    ok: true,
+    loggedIn: true,
+    binary: '/nonexistent/claude',
+    version: 'test',
+    authMethod,
+    checkedAt: new Date().toISOString(),
+    detail: 'stub',
+  };
+}
+
+/** A promise and the switch that settles it, for a step that must wait on the test. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 // -- argv ------------------------------------------------------------------ //
@@ -447,6 +470,50 @@ test('the outage table holds, expires, and reports why', () => {
   assert.ok(table.check('opus').waitMs <= 30 * 60_000 + 1);
 });
 
+test('each hold records what it is for, and only a sign-in hold set before a check is lifted by it', () => {
+  let now = 1_000_000;
+  const table = new limits.OutageTable(() => now, 10 * 60_000);
+
+  table.noteAuth('Invalid authentication. Please run /login');
+  assert.equal(table.check('sonnet').kind, 'auth');
+
+  // A check that started at the same moment as the refusal, or after it, is
+  // not news about it: only one that began after the hold was set can lift it.
+  assert.equal(table.clearAuth(now), false);
+  assert.ok(table.check('sonnet').waitMs > 0);
+  now += 1_000;
+  assert.equal(table.clearAuth(now), true);
+  assert.equal(table.check('sonnet').waitMs, 0);
+  assert.deepEqual(table.snapshot(), []);
+
+  // A refusal that RENEWS the hold moves its time on, so an older check
+  // cannot lift the newer refusal.
+  const probeStartedAt = now;
+  now += 1_000;
+  table.noteAuth('Invalid authentication. Please run /login');
+  assert.equal(table.clearAuth(probeStartedAt), false);
+  assert.ok(table.check('sonnet').waitMs > 0);
+
+  // Signing in fixes neither a spent window nor a refused model.
+  table.clear();
+  table.noteLimit('*', null, 'weekly limit');
+  table.noteUnavailable('sonnet', 'overloaded');
+  now += 1_000;
+  assert.equal(table.clearAuth(now), false);
+  assert.equal(table.check('opus').kind, 'rateLimited');
+  assert.ok(table.check('sonnet').waitMs > 0);
+  table.clear();
+  table.noteUnavailable('sonnet', 'overloaded');
+  assert.equal(table.check('sonnet').kind, 'unavailable');
+  assert.equal(table.check('opus').kind, null);
+
+  // An expired hold is only tidied away: nothing to lift, nothing to log.
+  table.clear();
+  table.noteAuth('signed out');
+  now += 31 * 60_000;
+  assert.equal(table.clearAuth(now), false);
+});
+
 // -- the adapter end to end ------------------------------------------------ //
 
 test('a healthy call returns the answer, the usage and the resolved model', async () => {
@@ -537,6 +604,124 @@ test('a signed-out seat is reported as an auth problem with an admin action', as
     () => makeAdapter(runner).complete(makeRequest()),
     (error) => error.kind === 'auth'
   );
+});
+
+test('a call turned away by a sign-in hold is auth, not a busy seat, before and after the slot', async () => {
+  // The CLI's own words, "Invalid authentication. Please run /login", do not
+  // say "signed in" - and the held call was classified by sniffing for that
+  // phrase, so the seat read as rate-limited for half an hour.
+  const before = makeFakeCliRunner({ lines: readCliFixture('auth-failure') });
+  const adapter = makeAdapter(before);
+  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
+  const held = await adapter.complete(makeRequest()).catch((error) => error);
+  assert.equal(held.kind, 'auth');
+  assert.equal(held.httpStatus, 503);
+  assert.equal(held.publicFailure, 'contactAdmin');
+  assert.match(held.adminAction, /claude auth login/);
+  assert.ok(held.retryAfterSeconds > 0);
+  assert.equal(before.calls.length, 1, 'the held call did not spawn');
+
+  // A call that queued for the slot while another found the seat signed out
+  // is turned away by the re-check - as auth too, not as "rate limited".
+  const gate = deferred();
+  const after = makeFakeCliRunner(async () => {
+    await gate.promise;
+    return { lines: readCliFixture('auth-failure') };
+  });
+  const single = makeAdapter(after, { concurrency: 1 });
+  const first = single.complete(makeRequest()).catch((error) => error);
+  const queued = single.complete(makeRequest()).catch((error) => error);
+  await new Promise((resolve) => setImmediate(resolve));
+  gate.resolve();
+  assert.equal((await first).kind, 'auth');
+  const second = await queued;
+  assert.equal(second.kind, 'auth');
+  assert.match(second.adminAction, /claude auth login/);
+  assert.equal(after.calls.length, 1, 'the queued call did not spawn');
+});
+
+test('a fresh health check that finds the subscription signed in lifts a sign-in hold', async () => {
+  // The hold is cleared by a success, and turns away every call before one can
+  // succeed - so an operator who signed the CLI back in still had the seat
+  // refused for half an hour. The seat check is what lifts it now.
+  let clock = Date.parse('2026-10-04T12:00:00Z');
+  let signedIn = false;
+  const runner = makeFakeCliRunner(() => ({ lines: readCliFixture(signedIn ? 'success-text' : 'auth-failure') }));
+  const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: async () => signedInHealth() });
+
+  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
+  assert.equal(adapter.outages().length, 1);
+
+  signedIn = true; // `claude auth login`, as the service user
+  clock += 2 * 60_000;
+  const health = await adapter.health();
+  assert.equal(health.ok, true);
+  assert.deepEqual(adapter.outages(), []);
+
+  const result = await adapter.complete(makeRequest());
+  assert.equal(result.text, '{"capital": "Paris"}');
+  assert.equal(runner.calls.length, 2, 'the next call spawned');
+});
+
+test('a usage-limit hold is not lifted by a health check', async () => {
+  let clock = Date.parse('2026-10-04T12:00:00Z');
+  const runner = makeFakeCliRunner({ lines: readCliFixture('rate-limited') });
+  const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: async () => signedInHealth() });
+
+  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'rateLimited');
+  clock += 60_000;
+  await adapter.health({ fresh: true });
+  assert.equal(adapter.outages().length, 1, 'signing in does not refill a spent window');
+  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'rateLimited');
+  assert.equal(runner.calls.length, 1);
+});
+
+test('a hold set while the probe was running, or a cached probe, lifts nothing', async () => {
+  let clock = Date.parse('2026-10-04T12:00:00Z');
+  let gate = deferred();
+  let probes = 0;
+  const runner = makeFakeCliRunner({ lines: readCliFixture('auth-failure') });
+  const adapter = makeAdapter(runner, {}, {
+    now: () => clock,
+    healthCheck: async () => {
+      probes += 1;
+      await gate.promise;
+      return signedInHealth();
+    },
+  });
+
+  // The probe starts, and while it runs a call is refused for the sign-in.
+  const probe = adapter.health();
+  clock += 1_000;
+  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
+  gate.resolve();
+  await probe;
+  assert.equal(adapter.outages().length, 1, 'a refusal newer than the probe stands');
+
+  // A minute-old reading is not a check at all.
+  clock += 1_000;
+  gate = deferred();
+  gate.resolve();
+  await adapter.health();
+  assert.equal(probes, 1, 'served from the cache');
+  assert.equal(adapter.outages().length, 1);
+
+  // Asked for fresh - as the admin Settings page asks - it is a new check, and lifts it.
+  await adapter.health({ fresh: true });
+  assert.equal(probes, 2);
+  assert.deepEqual(adapter.outages(), []);
+});
+
+test('a sign-in that is not the subscription lifts nothing', async () => {
+  let clock = Date.parse('2026-10-04T12:00:00Z');
+  for (const health of [signedInHealth('api_key'), signedInHealth(null), { ...signedInHealth(), loggedIn: false, ok: false }]) {
+    const runner = makeFakeCliRunner({ lines: readCliFixture('auth-failure') });
+    const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: async () => health });
+    await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
+    clock += 60_000;
+    await adapter.health({ fresh: true });
+    assert.equal(adapter.outages().length, 1, `authMethod ${health.authMethod}, loggedIn ${health.loggedIn}`);
+  }
 });
 
 test('an API key reaching the child aborts the call rather than billing silently', async () => {

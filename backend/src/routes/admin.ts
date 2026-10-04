@@ -38,12 +38,15 @@ router.post('/logout', (req: Request, res: Response) => {
 });
 
 // Get admin settings (protected)
-router.get(['/settings', '/ai-models'], requireAdmin, async (_req: Request, res: Response) => {
+router.get(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: Response) => {
   try {
     const settings = await getAdminAppSettings();
     res.json(settings);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to load settings' });
+    // Through sendPublicError, not a bare 500: it swallowed the cause, so a
+    // settings row that does not parse left the administrator - the one
+    // person who can fix it - with no ref, no detail and nothing in the log.
+    sendPublicError(req, res, error, 'Failed to load settings');
   }
 });
 
@@ -90,11 +93,11 @@ router.put(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: 
   }
 });
 
-router.get('/models', requireAdmin, async (_req: Request, res: Response) => {
+router.get('/models', requireAdmin, async (req: Request, res: Response) => {
   try {
     res.json({ models: await listAdminAIModels() });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to load AI models' });
+    sendPublicError(req, res, error, 'Failed to load AI models');
   }
 });
 

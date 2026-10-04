@@ -9,6 +9,7 @@ import type {
   CompletionRequest,
   CompletionResult,
   DroppedParam,
+  HealthOptions,
   ProviderCapabilities,
   ProviderHealth,
 } from '../../types';
@@ -17,7 +18,7 @@ import { buildChildEnv } from './env';
 import { createEventReducer, createTurnState, readTurnText } from './events';
 import { classifyCliFailure } from './classify';
 import { checkClaudeCliHealth, type ClaudeCliHealth } from './health';
-import { interpretRateLimitEvent, OutageTable } from './limits';
+import { interpretRateLimitEvent, OutageTable, type OutageKind } from './limits';
 import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './options';
 import { createSpawnRunner, ensureCliWorkdir, type CliRunner, type CliRunOutcome } from '../cli/runner';
 import { CLAUDE_CLI_BINARY_HINTS } from './hints';
@@ -87,17 +88,29 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     return new AIProviderError({ provider: PROVIDER_ID, kind, detail, ...extra });
   }
 
-  async function health(): Promise<ProviderHealth> {
-    if (cachedHealth && now() - cachedHealth.at < 60_000) {
+  async function health(healthOptions: HealthOptions = {}): Promise<ProviderHealth> {
+    if (!healthOptions.fresh && cachedHealth && now() - cachedHealth.at < 60_000) {
       return cachedHealth.value;
     }
     const check = options.healthCheck ?? checkClaudeCliHealth;
+    // Taken BEFORE the probe: only a sign-in hold older than the probe can be
+    // lifted by what it finds, so a call refused while it ran stays held.
+    const probeStartedAt = now();
     try {
       const value = await check({
         binary: config.binary,
         env: buildChildEnv(process.env),
       });
       cachedHealth = { value, at: now() };
+      // The only thing that lifts a sign-in hold early. A success would clear
+      // it too, but the hold turns every call away before one can succeed,
+      // so without this an operator who signed the CLI back in still saw the
+      // seat refused for up to half an hour. Only the subscription counts: a
+      // key sign-in is what the hold may be about. If the stored token is in
+      // fact dead, the next call finds out in one fast failure and holds again.
+      if (value.loggedIn && value.authMethod === 'oauth_token') {
+        outages.clearAuth(probeStartedAt);
+      }
       return value;
     } catch (error) {
       return {
@@ -106,6 +119,20 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         checkedAt: new Date().toISOString(),
       };
     }
+  }
+
+  /** A call turned away by a hold, as what the hold is for. */
+  function heldFailure(held: { waitMs: number; reason: string; kind: OutageKind | null }, detail: string): AIProviderError {
+    const retryAfterSeconds = Math.ceil(held.waitMs / 1000);
+    if (held.kind === 'auth') {
+      return fail('auth', detail, {
+        retryAfterSeconds,
+        adminAction:
+          'Run `claude auth login` as the user this server runs as, then open admin Settings: its seat check ' +
+          'lifts the hold once it finds the subscription signed in.',
+      });
+    }
+    return fail('rateLimited', detail, { retryAfterSeconds });
   }
 
   async function complete(request: CompletionRequest): Promise<CompletionResult> {
@@ -134,11 +161,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     // let it spend its whole budget rediscovering the same fact.
     const known = outages.check(model);
     if (known.waitMs > 0) {
-      throw fail(
-        known.reason.includes('signed in') ? 'auth' : 'rateLimited',
-        `${known.reason}; retrying in about ${Math.ceil(known.waitMs / 60_000)} minute(s)`,
-        { retryAfterSeconds: Math.ceil(known.waitMs / 1000) }
-      );
+      throw heldFailure(known, `${known.reason}; retrying in about ${Math.ceil(known.waitMs / 60_000)} minute(s)`);
     }
 
     // The slot is taken INSIDE the caller's deadline. Acquired outside one, a
@@ -151,9 +174,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       // passed by another that marked this model out meanwhile.
       const stillOut = outages.check(model);
       if (stillOut.waitMs > 0) {
-        throw fail('rateLimited', stillOut.reason, {
-          retryAfterSeconds: Math.ceil(stillOut.waitMs / 1000),
-        });
+        throw heldFailure(stillOut, stillOut.reason);
       }
 
       if (!workdirReady) {
@@ -228,11 +249,9 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       // stop reads as a cancellation. No switch to accept it: the app runs on
       // subscription seats only.
       if (billedToKey(state.apiKeySource)) {
-        // Held as an outage too. Failing only this call leaves the operator
-        // free to retry straight into another billed request; every call until
-        // the environment is fixed would be metered. Worded "signed in" so the
-        // calls the hold turns away read as the sign-in problem it is, not as
-        // a busy seat.
+        // Held as an outage too, as a sign-in hold. Failing only this call
+        // leaves the operator free to retry straight into another billed
+        // request; every call until the environment is fixed would be metered.
         outages.noteAuth(`the CLI is signed in with ${state.apiKeySource}, not the subscription`);
         throw fail(
           'auth',

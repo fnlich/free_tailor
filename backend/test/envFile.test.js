@@ -127,3 +127,76 @@ test('a bare NAME= is listed as empty, because it is in the file and sets no val
     assert.ok(!summary.empty.includes('SMTP_USER'), encoding);
   }
 });
+
+// -- which wins: the environment or the file -------------------------------- //
+
+test('the environment beats the file, and a key only in the file is applied', () => {
+  const { applyEnvFile } = loadFresh('../dist/config/envFile');
+  // `DB_DIR=/tmp/ft-db PORT=3001 node backend/dist/index.js` - the command
+  // CLAUDE.md documents - was silently ignored whenever the file set either.
+  const env = { PORT: '4000', DB_DIR: '/tmp/ft-db' };
+  const outcome = applyEnvFile({ PORT: '3001', DB_DIR: '/data/db', SMTP_HOST: 'smtp.example.com' }, env);
+
+  assert.deepEqual(env, { PORT: '4000', DB_DIR: '/tmp/ft-db', SMTP_HOST: 'smtp.example.com' });
+  assert.deepEqual(outcome.applied, ['SMTP_HOST']);
+  assert.deepEqual(outcome.shadowed, ['PORT', 'DB_DIR']);
+});
+
+test('an exported empty value still counts as set, as it does for the frontend', () => {
+  // frontend/scripts/next.mjs skips any `key in process.env`; the two halves
+  // must not disagree about a variable exported empty on purpose.
+  const { applyEnvFile } = loadFresh('../dist/config/envFile');
+  const env = { SMTP_HOST: '' };
+  const outcome = applyEnvFile({ SMTP_HOST: 'smtp.example.com' }, env);
+  assert.equal(env.SMTP_HOST, '');
+  assert.deepEqual(outcome.applied, []);
+  assert.deepEqual(outcome.shadowed, ['SMTP_HOST']);
+
+  // And a bare `NAME=` in the file no longer blanks a value exported in a shell.
+  const shell = { GOOGLE_CREDENTIALS_PATH: '/srv/creds.json' };
+  applyEnvFile({ GOOGLE_CREDENTIALS_PATH: '' }, shell);
+  assert.equal(shell.GOOGLE_CREDENTIALS_PATH, '/srv/creds.json');
+});
+
+test('a key set to the SAME value in both is not news, and an inherited name is not "set"', () => {
+  const { applyEnvFile } = loadFresh('../dist/config/envFile');
+  const outcome = applyEnvFile({ PORT: '3001', constructor: 'x' }, { PORT: '3001' });
+  assert.deepEqual(outcome.shadowed, []);
+  // A plain object inherits `constructor`; only an OWN name counts as set.
+  assert.deepEqual(outcome.applied, ['constructor']);
+});
+
+test('a key set to a different value in both is named as shadowed, and no value appears', () => {
+  const file = writeFixture('.env', Buffer.from(BODY, 'utf8'));
+  const { summarizeEnvFile } = loadFresh('../dist/config/envFile');
+
+  // Read against the environment as it is after the load: SMTP_USER and
+  // SMTP_PASS were applied from the file and hold its values; SMTP_HOST was
+  // exported with another value and kept it.
+  const env = { SMTP_HOST: 'smtp.other.example', SMTP_USER: 'resend', SMTP_PASS: SECRET };
+  const summary = summarizeEnvFile(file, env);
+  assert.deepEqual(summary.shadowed, ['SMTP_HOST']);
+
+  const serialized = JSON.stringify(summary);
+  assert.ok(!serialized.includes('smtp.other.example'), 'the environment value is never in it either');
+  assert.ok(!serialized.includes(SECRET));
+
+  // With nothing exported, nothing is shadowed; a missing file shadows nothing.
+  assert.deepEqual(summarizeEnvFile(file, {}).shadowed, []);
+  assert.deepEqual(summarizeEnvFile(path.join(os.tmpdir(), 'definitely-not-here', '.env'), env).shadowed, []);
+});
+
+test('both loaders keep the rule: the backend applies the file through applyEnvFile, next.mjs skips what is set', () => {
+  // Neither is run here - config/env.ts loads the real .env on import, and a
+  // test never spawns next.mjs - so the rule is pinned in their source, which
+  // is where it regressed before: the backend copied every key over
+  // process.env while the frontend skipped them.
+  const backend = fs.readFileSync(path.join(__dirname, '..', 'dist', 'config', 'env.js'), 'utf8');
+  assert.match(backend, /applyEnvFile\)?\(/);
+  assert.doesNotMatch(backend, /process\.env\[key\]\s*=/);
+  assert.match(backend, /set both in the environment and in/);
+
+  const frontend = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'scripts', 'next.mjs'), 'utf8');
+  assert.match(frontend, /if \(key in process\.env\) \{/);
+  assert.match(frontend, /set both in the environment and in/);
+});

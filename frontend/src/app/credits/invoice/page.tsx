@@ -84,17 +84,27 @@ function InvoiceBody() {
   }, [payment]);
 
   if (!paymentId) {
-    return <Message title="No invoice named">Open an invoice from the order list on the Credits page.</Message>;
+    return (
+      <Frame>
+        <Message title="No invoice named">Open an invoice from the order list on the Credits page.</Message>
+      </Frame>
+    );
   }
   if (!current) {
     return (
-      <Message title="Loading invoice" back={false}>
-        <span className="inline-block h-8 w-8 animate-spin rounded-full border-b-2 border-accent" aria-hidden />
-      </Message>
+      <Frame>
+        <Message title="Loading invoice" back={false}>
+          <span className="inline-block h-8 w-8 animate-spin rounded-full border-b-2 border-accent" aria-hidden />
+        </Message>
+      </Frame>
     );
   }
   if (!payment) {
-    return <Message title="Invoice unavailable">{'error' in current ? current.error : ''}</Message>;
+    return (
+      <Frame>
+        <Message title="Invoice unavailable">{'error' in current ? current.error : ''}</Message>
+      </Frame>
+    );
   }
 
   /*
@@ -106,13 +116,15 @@ function InvoiceBody() {
    */
   if (!isPaymentSettled(payment)) {
     return (
-      <Message
-        title="No invoice yet"
-        action={{ href: `/credits/return?payment=${encodeURIComponent(payment.id)}`, label: 'See this order' }}
-      >
-        Order {payment.reference} {UNSETTLED_WORDS[payment.state] ?? 'has not been paid'}. An invoice is issued
-        once the payment completes.
-      </Message>
+      <Frame>
+        <Message
+          title="No invoice yet"
+          action={{ href: `/credits/return?payment=${encodeURIComponent(payment.id)}`, label: 'See this order' }}
+        >
+          Order {payment.reference} {UNSETTLED_WORDS[payment.state] ?? 'has not been paid'}. An invoice is issued
+          once the payment completes.
+        </Message>
+      </Frame>
     );
   }
 
@@ -128,98 +140,100 @@ function InvoiceBody() {
   const spent = net - payment.refundedCredits;
 
   return (
-    <article className={styles.card}>
-      <p className="text-2xl font-extrabold tracking-tight text-accent-ink">TAILOR</p>
+    <Frame printable>
+      <article className={styles.card}>
+        <p className="text-2xl font-extrabold tracking-tight text-accent-ink">TAILOR</p>
 
-      <div className="mt-10 grid gap-8 sm:grid-cols-3">
-        <div>
-          <Term>Billed To</Term>
-          {account?.name && <p className="mt-2 text-sm text-ink">{account.name}</p>}
-          <p className={`${account?.name ? '' : 'mt-2 '}text-sm text-muted break-all`}>{account?.email}</p>
-        </div>
-        <div>
-          <Term>Invoice Number</Term>
-          <p className="mt-2 text-sm text-ink">{payment.reference}</p>
-          <Term className="mt-6">Date of Issue</Term>
-          <p className="mt-2 text-sm text-ink">
-            {formatDate(payment.creditedAt || payment.createdAt, { style: 'date' })}
-          </p>
-        </div>
-        <div>
-          <Term>Invoice Status</Term>
-          <p className="mt-2 text-sm text-ink">{STATUS_WORDS[payment.state] ?? payment.state}</p>
-          <Term className="mt-6">Payment Method</Term>
-          <p className="mt-2 text-sm text-ink">
-            {payment.method === 'crypto' ? 'Crypto' : 'Credit/Debit Card'}
-          </p>
-        </div>
-      </div>
-
-      <table className={`${styles.lines} mt-12`}>
-        <thead>
-          <tr>
-            <th scope="col">Description</th>
-            <th scope="col" className={styles.amount}>
-              Amount Due
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>
-              {payment.credits} Credits at {formatAmount(payment.unitPriceCents, payment.currency)} each
-            </td>
-            <td className={styles.amount}>{formatAmount(lineCents, payment.currency)}</td>
-          </tr>
-          {roundingCents > 0 && (
-            <tr>
-              <td>Rounding (less than one credit)</td>
-              <td className={styles.amount}>{formatAmount(roundingCents, payment.currency)}</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-
-      <dl className={`${styles.totals} mt-6`}>
-        <div>
-          <dt className="text-muted">Transaction Fees</dt>
-          <dd className="text-ink">{formatAmount(payment.feeCents, payment.currency)}</dd>
-        </div>
-        <div className={styles.strong}>
-          <dt className="text-ink">Total</dt>
-          <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
-        </div>
-        <div>
-          <dt className="text-muted">Amount Paid</dt>
-          <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
-        </div>
-        {payment.state === 'refunded' && (
+        <div className="mt-10 grid gap-8 sm:grid-cols-3">
           <div>
-            {/* A refund returns the whole charge - the fee included. */}
-            <dt className="text-muted">Amount Refunded</dt>
+            <Term>Billed To</Term>
+            {account?.name && <p className="mt-2 text-sm text-ink">{account.name}</p>}
+            <p className={`${account?.name ? '' : 'mt-2 '}text-sm text-muted break-all`}>{account?.email}</p>
+          </div>
+          <div>
+            <Term>Invoice Number</Term>
+            <p className="mt-2 text-sm text-ink">{payment.reference}</p>
+            <Term className="mt-6">Date of Issue</Term>
+            <p className="mt-2 text-sm text-ink">
+              {formatDate(payment.creditedAt || payment.createdAt, { style: 'date' })}
+            </p>
+          </div>
+          <div>
+            <Term>Invoice Status</Term>
+            <p className="mt-2 text-sm text-ink">{STATUS_WORDS[payment.state] ?? payment.state}</p>
+            <Term className="mt-6">Payment Method</Term>
+            <p className="mt-2 text-sm text-ink">
+              {payment.method === 'crypto' ? 'Crypto' : 'Credit/Debit Card'}
+            </p>
+          </div>
+        </div>
+
+        <table className={`${styles.lines} mt-12`}>
+          <thead>
+            <tr>
+              <th scope="col">Description</th>
+              <th scope="col" className={styles.amount}>
+                Amount Due
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                {payment.credits} Credits at {formatAmount(payment.unitPriceCents, payment.currency)} each
+              </td>
+              <td className={styles.amount}>{formatAmount(lineCents, payment.currency)}</td>
+            </tr>
+            {roundingCents > 0 && (
+              <tr>
+                <td>Rounding (less than one credit)</td>
+                <td className={styles.amount}>{formatAmount(roundingCents, payment.currency)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+
+        <dl className={`${styles.totals} mt-6`}>
+          <div>
+            <dt className="text-muted">Transaction Fees</dt>
+            <dd className="text-ink">{formatAmount(payment.feeCents, payment.currency)}</dd>
+          </div>
+          <div className={styles.strong}>
+            <dt className="text-ink">Total</dt>
             <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
           </div>
-        )}
-        <div className={styles.strong}>
-          <dt className="text-ink">Net Credits</dt>
-          <dd className="text-ink">{net}</dd>
-        </div>
-      </dl>
+          <div>
+            <dt className="text-muted">Amount Paid</dt>
+            <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
+          </div>
+          {payment.state === 'refunded' && (
+            <div>
+              {/* A refund returns the whole charge - the fee included. */}
+              <dt className="text-muted">Amount Refunded</dt>
+              <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
+            </div>
+          )}
+          <div className={styles.strong}>
+            <dt className="text-ink">Net Credits</dt>
+            <dd className="text-ink">{net}</dd>
+          </div>
+        </dl>
 
-      {/*
-        The money and the credits are two figures, and only the money is always
-        whole: a credit already spent on a resume cannot be taken back, so the
-        reversal can be short of what was granted. It said "Refunded: 40
-        credits" before, which read as the refund itself being 40 credits.
-      */}
-      {payment.state === 'refunded' && (
-        <p className="mt-8 text-sm text-ink">
-          Refunded{payment.refundedAt ? ` on ${formatDate(payment.refundedAt, { style: 'date' })}` : ''}. Credits
-          reversed: {payment.refundedCredits} of {net}
-          {spent > 0 ? ` - the other ${spent} had already been spent.` : '.'}
-        </p>
-      )}
-    </article>
+        {/*
+          The money and the credits are two figures, and only the money is always
+          whole: a credit already spent on a resume cannot be taken back, so the
+          reversal can be short of what was granted. It said "Refunded: 40
+          credits" before, which read as the refund itself being 40 credits.
+        */}
+        {payment.state === 'refunded' && (
+          <p className="mt-8 text-sm text-ink">
+            Refunded{payment.refundedAt ? ` on ${formatDate(payment.refundedAt, { style: 'date' })}` : ''}. Credits
+            reversed: {payment.refundedCredits} of {net}
+            {spent > 0 ? ` - the other ${spent} had already been spent.` : '.'}
+          </p>
+        )}
+      </article>
+    </Frame>
   );
 }
 
@@ -284,20 +298,40 @@ function PrintIcon() {
   );
 }
 
+/**
+ * The page under the toolbar, and the toolbar itself only when there is a
+ * document to print. It used to sit in InvoicePage, above the Suspense
+ * boundary, which cannot see whether the body found an invoice - so "Print"
+ * was offered over "not found", over a spinner and over an unpaid order.
+ */
+function Frame({ printable = false, children }: { printable?: boolean; children: ReactNode }) {
+  return (
+    <>
+      {printable && (
+        <div className={styles.toolbar}>
+          <button type="button" className={styles.print} onClick={() => window.print()} aria-label="Print invoice">
+            <PrintIcon />
+          </button>
+        </div>
+      )}
+      <main className={styles.frame}>{children}</main>
+    </>
+  );
+}
+
 export default function InvoicePage() {
   return (
     <div className={styles.page}>
-      <div className={styles.toolbar}>
-        <button type="button" className={styles.print} onClick={() => window.print()} aria-label="Print invoice">
-          <PrintIcon />
-        </button>
-      </div>
-      <main className={styles.frame}>
-        {/* `useSearchParams` needs a Suspense boundary to prerender. */}
-        <Suspense fallback={<div className={styles.card} />}>
-          <InvoiceBody />
-        </Suspense>
-      </main>
+      {/* `useSearchParams` needs a Suspense boundary to prerender. */}
+      <Suspense
+        fallback={
+          <main className={styles.frame}>
+            <div className={styles.card} />
+          </main>
+        }
+      >
+        <InvoiceBody />
+      </Suspense>
     </div>
   );
 }

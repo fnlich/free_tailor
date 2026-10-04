@@ -602,14 +602,76 @@ test('an API error fails the turn with the CLI\'s message', async () => {
   assert.match(error.detail, /^\[API Error:/);
 });
 
-test('a response cut off by the output limit is NOT detectable, and is returned as the CLI reports it', async () => {
+test('a response cut off by the output limit is NOT detectable by the envelope, and is returned as the CLI reports it', async () => {
   // Captured: MAX_TOKENS comes back as status "success" with the fragment, and
   // nothing in the envelope says so. Pinned so that the day the CLI starts
-  // reporting it, this test fails and the adapter learns to refuse it. The
-  // fragment is left to downstream JSON parsing, which fails on it.
+  // reporting it, this test fails and the adapter learns to refuse it. With no
+  // sentinel in it there is nothing else to go on; a JSON answer that opened
+  // its sentinels is caught by them (below).
   const runner = makeFakeCliRunner({ lines: lines('constructed-max-tokens-truncated.ndjson') });
   const result = await makeAdapter(runner).adapter.complete(makeRequest());
   assert.equal(result.text, '{"capital": "Par');
+});
+
+/**
+ * A successful turn whose answer is `chunks`, as assistant deltas: the real
+ * envelope from constructed-success.ndjson around the given text.
+ */
+function answeredWith(...chunks) {
+  const [init, echo, , , result] = lines('constructed-success.ndjson');
+  const deltas = chunks.map((content, index) =>
+    JSON.stringify({
+      type: 'message',
+      timestamp: `2026-10-04T12:54:16.3${30 + index}Z`,
+      role: 'assistant',
+      content,
+      delta: true,
+    })
+  );
+  return { lines: [init, echo, ...deltas, result] };
+}
+
+test('a JSON answer that opens the sentinel and never closes it is refused as truncated, and the seat is not held', async () => {
+  // What a structured answer cut off at the output limit looks like through
+  // this CLI: status "success", and the document stops mid-object. Returned,
+  // the extractor's balanced scan took the first complete INNER object -
+  // {"company": "Acme"} - as the whole answer.
+  const runner = makeFakeCliRunner(
+    answeredWith('@@BEGIN_JSON@@\n{"summary": "x", "experience": [{"company": "Acme"}, ', '{"comp')
+  );
+  const { adapter } = makeAdapter(runner);
+  const error = await failureOf(adapter.complete(makeRequest({ responseFormat: 'json' })));
+  assert.equal(error.kind, 'truncated');
+  assert.equal(error.retryable, true, 'built again, as a cut-off Claude answer is');
+  assert.equal(error.publicFailure, 'retry');
+  assert.match(error.detail, /never closed it/);
+  assert.deepEqual(adapter.outages(), [], 'a long answer is not a reason to hold the seat');
+});
+
+test('a complete sentinel answer passes, and so does one that quotes the opening marker first', async () => {
+  const whole = makeFakeCliRunner(answeredWith('@@BEGIN_JSON@@\n{"capital": "Paris"}\n', '@@END_JSON@@'));
+  const result = await makeAdapter(whole).adapter.complete(makeRequest({ responseFormat: 'json' }));
+  assert.equal(result.text, '@@BEGIN_JSON@@\n{"capital": "Paris"}\n@@END_JSON@@');
+
+  // Judged by the LAST opening marker, as the extractor reads it.
+  const quoted = makeFakeCliRunner(
+    answeredWith('I will wrap it in @@BEGIN_JSON@@ as asked.\n@@BEGIN_JSON@@\n{"capital": "Paris"}\n@@END_JSON@@')
+  );
+  await makeAdapter(quoted).adapter.complete(makeRequest({ responseFormat: 'json' }));
+
+  // And the reverse: an end marker from the quoted instruction does not
+  // vouch for a real answer opened after it.
+  const reopened = makeFakeCliRunner(
+    answeredWith('Between @@BEGIN_JSON@@ and @@END_JSON@@, then:\n@@BEGIN_JSON@@\n{"capital": "Pa')
+  );
+  const error = await failureOf(makeAdapter(reopened).adapter.complete(makeRequest({ responseFormat: 'json' })));
+  assert.equal(error.kind, 'truncated');
+});
+
+test('a text request is not judged by sentinels', async () => {
+  const runner = makeFakeCliRunner(answeredWith('Use @@BEGIN_JSON@@ to open the block, and then'));
+  const result = await makeAdapter(runner).adapter.complete(makeRequest({ responseFormat: 'text' }));
+  assert.equal(result.text, 'Use @@BEGIN_JSON@@ to open the block, and then');
 });
 
 test('the truncation the CLI DOES report is classified as truncated', async () => {
@@ -697,6 +759,147 @@ test('exit 41 with a sign-in on disk is held briefly, and only a repeat makes it
   const after = await failureOf(adapter.complete(makeRequest()));
   assert.equal(after.kind, 'auth');
   assert.ok(after.retryAfterSeconds > 20 * 60, `${after.retryAfterSeconds}s`);
+});
+
+/**
+ * A seat whose health check reads the sign-in in its own home, as the real one
+ * does, and names the file it read.
+ */
+function makeSignInSeat(runner, clock) {
+  let home = null;
+  const made = makeAdapter(runner, {}, {
+    now: () => clock.now,
+    healthCheck: async () => ({
+      ok: true,
+      loggedIn: fs.existsSync(path.join(home, '.gemini', 'oauth_creds.json')),
+      binary: '/nonexistent/gemini',
+      version: 'test',
+      authMethod: 'oauth-personal',
+      checkedAt: new Date().toISOString(),
+      detail: 'Signed in with Google.',
+      meta: { home, credentialsFile: path.join(home, '.gemini', 'oauth_creds.json') },
+    }),
+  });
+  home = made.home;
+  return made;
+}
+
+/** Sets the sign-in file's modification time, which is what signing in again does. */
+function touchSignIn(home, at) {
+  const file = path.join(home, '.gemini', 'oauth_creds.json');
+  fs.utimesSync(file, new Date(at), new Date(at));
+}
+
+const SIGNED_OUT = () => ({ lines: [], exitCode: 41, stderr: stderrTail('recorded-signed-out.stderr.txt') });
+
+test('a sign-in written after the hold lifts it, at the next seat check', async () => {
+  // A sign-in hold turned away the one success that would clear it, so a seat
+  // signed back in stayed refused for half an hour.
+  const clock = { now: Date.now() };
+  let signedIn = false;
+  const runner = makeFakeCliRunner(() => (signedIn ? { lines: lines('constructed-success.ndjson') } : SIGNED_OUT()));
+  const { adapter, home } = makeSignInSeat(runner, clock);
+
+  const error = await failureOf(adapter.complete(makeRequest()));
+  assert.equal(error.kind, 'auth');
+  assert.equal(adapter.outages().length, 1);
+
+  // `NO_BROWSER=true gemini`, signed in: the file is written after the hold.
+  clock.now += 60_000;
+  writeSignIn(home);
+  touchSignIn(home, clock.now);
+  signedIn = true;
+  clock.now += 1_000;
+
+  await adapter.health();
+  assert.deepEqual(adapter.outages(), []);
+  assert.equal((await adapter.complete(makeRequest())).text, '{"capital": "Paris"}');
+  assert.equal(runner.calls.length, 2);
+});
+
+test('the escalated hold for a revoked token stays while the sign-in file is unchanged', async () => {
+  // The check only READS the file, so it says "signed in" for a token Google
+  // has revoked - which is exactly what three unvalidated sign-ins in a row
+  // are taken to be. Only a sign-in written after that hold may lift it.
+  const clock = { now: Date.now() };
+  const runner = makeFakeCliRunner(SIGNED_OUT);
+  const { adapter, home } = makeSignInSeat(runner, clock);
+  writeSignIn(home);
+  touchSignIn(home, clock.now - 24 * 60 * 60_000);
+
+  const kinds = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    clock.now += 3 * 60_000;
+    kinds.push((await failureOf(adapter.complete(makeRequest()))).kind);
+  }
+  assert.deepEqual(kinds, ['unavailable', 'unavailable', 'auth']);
+
+  clock.now += 60_000;
+  const health = await adapter.health({ fresh: true });
+  assert.equal(health.loggedIn, true, 'the file still reads as a sign-in');
+  assert.equal(adapter.outages().length, 1, 'and the hold stays');
+  assert.equal((await failureOf(adapter.complete(makeRequest()))).kind, 'auth');
+  assert.equal(runner.calls.length, 3);
+
+  // Signed in again: the file is rewritten, and the next check lifts the hold.
+  clock.now += 60_000;
+  touchSignIn(home, clock.now);
+  clock.now += 1_000;
+  await adapter.health({ fresh: true });
+  assert.deepEqual(adapter.outages(), []);
+});
+
+test('a quota hold is untouched by a fresh sign-in', async () => {
+  const clock = { now: Date.now() };
+  const runner = makeFakeCliRunner({
+    lines: [...OPENING, apiErrorResult('[API Error: You have exhausted your capacity on this model. Please retry in 600s.]')],
+    exitCode: 173,
+  });
+  const { adapter, home } = makeSignInSeat(runner, clock);
+
+  assert.equal((await failureOf(adapter.complete(makeRequest()))).kind, 'rateLimited');
+  clock.now += 1_000;
+  writeSignIn(home);
+  touchSignIn(home, clock.now);
+  clock.now += 1_000;
+  await adapter.health({ fresh: true });
+  assert.equal(adapter.outages().length, 1, 'signing in does not refill a quota');
+  assert.equal((await failureOf(adapter.complete(makeRequest()))).kind, 'rateLimited');
+});
+
+test('the outage table: a sign-in after the hold lifts it, one before it does not, and other kinds stay', () => {
+  let now = 1_000_000;
+  const table = new classify.GeminiOutageTable(() => now);
+
+  table.noteAuth('signed out');
+  assert.equal(table.clearAuth(now - 1), false, 'a sign-in older than the hold');
+  assert.equal(table.clearAuth(now), false, 'one at the same moment is not after it');
+  assert.equal(table.clearAuth(Number.NaN), false);
+  assert.equal(table.check('auto').kind, 'auth');
+  assert.equal(table.clearAuth(now + 1), true);
+  assert.equal(table.check('auto').waitMs, 0);
+
+  table.noteLimit(60, 'quota');
+  table.noteModelUnavailable('pro', 'not for this account');
+  assert.equal(table.clearAuth(now + 10_000), false);
+  assert.equal(table.check('auto').kind, 'rateLimited');
+  assert.equal(table.check('pro').waitMs > 0, true);
+
+  // Two unvalidated sign-ins, then a sign-in written after them: the count
+  // starts again, so the next blip is a short hold, not the 30-minute one.
+  const fresh = new classify.GeminiOutageTable(() => now);
+  assert.equal(fresh.noteSignInUnverified('blip'), false);
+  now += 1_000;
+  assert.equal(fresh.noteSignInUnverified('blip'), false);
+  fresh.clearAuth(now + 1);
+  now += 1_000;
+  assert.equal(fresh.noteSignInUnverified('blip'), false, 'the count started again');
+  // But a sign-in from before them forgets nothing.
+  now += 1_000;
+  fresh.clearAuth(now - 60_000);
+  assert.equal(fresh.noteSignInUnverified('blip'), false);
+  assert.equal(fresh.noteSignInUnverified('blip'), true, 'the third in a row since that sign-in');
+  assert.equal(fresh.check('auto').kind, 'auth');
 });
 
 test('no auth method, or a refused type, is auth at once even with a sign-in on disk', async () => {

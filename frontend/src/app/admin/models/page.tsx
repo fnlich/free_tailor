@@ -18,7 +18,7 @@ import {
   LOCK_ICON,
   MAX_CREDITS_PER_RESUME,
 } from '@/lib/api';
-import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import { ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { blankDraftChoice, displayNameOwner, firstModelName, isTaken, optionsFor } from './modelDraft';
 
@@ -79,6 +79,8 @@ function ModelsPageBody() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
+  /** Why the models could not be read, whole, for the notice's reference and cause. */
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [status, setStatus] = useState('');
 
   useEffect(() => {
@@ -89,13 +91,14 @@ function ModelsPageBody() {
     try {
       setIsLoading(true);
       setError('');
+      setLoadError(null);
       const loaded = await adminApi.getSettings();
       setSettings(loaded);
       // The blank form needs the seat lists to pick its model name from, and
       // they arrive with the settings.
       setDraft(emptyDraft(loaded));
     } catch (err) {
-      setError(messageWithDetail(err, 'Failed to load models'));
+      setLoadError(err);
     } finally {
       setIsLoading(false);
     }
@@ -236,16 +239,21 @@ function ModelsPageBody() {
     }
   };
 
-  if (isLoading || !settings) {
+  if (isLoading) {
+    return <Spinner />;
+  }
+  if (!settings) {
     return (
-      <>
-        {error && (
-          <Notice tone="error" role="alert">
-            {error}
-          </Notice>
-        )}
-        {isLoading && <Spinner />}
-      </>
+      <div>
+        <header>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Models</h2>
+        </header>
+        <ErrorNotice className="mt-6" error={loadError ?? 'Failed to load models'} fallback="Failed to load models">
+          <button type="button" onClick={() => void loadSettings()} className="tl-button-quiet mt-4">
+            Try again
+          </button>
+        </ErrorNotice>
+      </div>
     );
   }
 

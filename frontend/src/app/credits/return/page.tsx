@@ -4,6 +4,8 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { ApiResponseError } from '@/lib/api';
+import { keepPolling, pollDelay, SLOW_AFTER_MS, type PollOutcome } from '@/lib/paymentPoll';
 import {
   formatAmount,
   isPaymentPending,
@@ -26,7 +28,9 @@ import { messageWithDetail } from '@/lib/userMessage';
  *
  * Usually that is over before the redirect finishes. For crypto it can be
  * minutes, because the network has to confirm the transfer - which is why the
- * waiting copy says so rather than spinning silently.
+ * waiting copy says so rather than spinning silently. The poll slows down once
+ * the copy changes, pauses while the tab is hidden, and stops for good on a
+ * payment that is settled or that the server does not know (lib/paymentPoll).
  */
 function ReturnBody() {
   const search = useSearchParams();
@@ -38,21 +42,17 @@ function ReturnBody() {
   const [error, setError] = useState('');
   const [waitedTooLong, setWaitedTooLong] = useState(false);
 
-  const pending = useRef(false);
-  useEffect(() => {
-    pending.current = payment ? isPaymentPending(payment) : true;
-  }, [payment]);
-
   const latestRequest = useRef(0);
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<PollOutcome> => {
     if (!paymentId) {
       setLoading(false);
-      return;
+      return 'gone';
     }
     const token = ++latestRequest.current;
     try {
       const response = await paymentsApi.get(paymentId);
-      if (token !== latestRequest.current) return;
+      // Superseded by a newer look, which decides; this one asks for nothing more.
+      if (token !== latestRequest.current) return 'settled';
       setPayment(response.payment);
       setError('');
       /*
@@ -66,32 +66,76 @@ function ReturnBody() {
        * panel and the credit history all still show the pre-purchase figure
        * until a full reload.
        *
-       * `isPaymentPending` goes false on this state, so the poll below stops
-       * right after and this fires once.
+       * A paid payment is settled, so the poll below stops right after and
+       * this fires once.
        */
       if (response.payment.state === 'paid') void refresh();
+      return isPaymentPending(response.payment) ? 'pending' : 'settled';
     } catch (err) {
-      if (token !== latestRequest.current) return;
+      if (token !== latestRequest.current) return 'settled';
       setError(messageWithDetail(err, 'Could not find that payment.'));
+      // A 404 is final - no such payment, or not this account's. Anything
+      // else (offline, a restart) is worth asking again.
+      return err instanceof ApiResponseError && err.status === 404 ? 'gone' : 'retry';
     } finally {
       if (token === latestRequest.current) setLoading(false);
     }
   }, [paymentId, refresh]);
 
+  /*
+   * One look now, then a chain of timeouts rather than an interval: the next
+   * look is booked only once this one has answered, at a pace set by how long
+   * the page has waited. A hidden tab books nothing; coming back to it (the
+   * tab shown again, or the window focused) looks at once and starts the
+   * chain again. A settled or vanished payment ends it for good.
+   */
   useEffect(() => {
-    void load();
-  }, [load]);
+    const startedAt = Date.now();
+    let live = true;
+    let finished = false;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (pending.current) void load();
-    }, 2000);
-    return () => clearInterval(timer);
+    const look = async () => {
+      clearTimeout(timer);
+      timer = undefined;
+      if (!live || finished || inFlight) return;
+      inFlight = true;
+      const outcome = await load();
+      inFlight = false;
+      if (!live) return;
+      if (!keepPolling(outcome)) {
+        finished = true;
+        return;
+      }
+      if (document.visibilityState === 'hidden') return;
+      timer = setTimeout(() => {
+        // Hidden since it was booked: wait for the tab to come back instead.
+        if (document.visibilityState === 'hidden') {
+          timer = undefined;
+          return;
+        }
+        void look();
+      }, pollDelay(Date.now() - startedAt));
+    };
+    const comeBack = () => {
+      if (document.visibilityState !== 'hidden') void look();
+    };
+
+    void look();
+    document.addEventListener('visibilitychange', comeBack);
+    window.addEventListener('focus', comeBack);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', comeBack);
+      window.removeEventListener('focus', comeBack);
+    };
   }, [load]);
 
   // After two minutes, stop implying it is about to happen and say what to do.
   useEffect(() => {
-    const timer = setTimeout(() => setWaitedTooLong(true), 120_000);
+    const timer = setTimeout(() => setWaitedTooLong(true), SLOW_AFTER_MS);
     return () => clearTimeout(timer);
   }, []);
 

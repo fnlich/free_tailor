@@ -166,6 +166,18 @@ db.exec(`
   );
 `);
 
+/*
+ * Each source belongs to the account that saved it. The table had no owner -
+ * the Bid Assistant was a single-user tool - so any signed-in account could
+ * rename or delete anybody's. Added the way question_order was, in place: a
+ * row saved before this has no owner, is listed for everybody as it always
+ * was, and only an administrator may change it.
+ */
+const googleSheetColumns = db.prepare(`PRAGMA table_info(google_sheets)`).all();
+if (!googleSheetColumns.some((column) => column.name === 'account_id')) {
+  db.exec(`ALTER TABLE google_sheets ADD COLUMN account_id TEXT`);
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_settings (
     key        TEXT PRIMARY KEY,
@@ -313,14 +325,17 @@ const deleteJobStatement = db.prepare(`
   WHERE id = ?
 `);
 
-const listGoogleSheetsStatement = db.prepare(`
+// One account's sources and the ones saved before sources had owners.
+const listGoogleSheetsForAccountStatement = db.prepare(`
   SELECT
     id,
     label,
     sheet_id,
+    account_id,
     created_at,
     updated_at
   FROM google_sheets
+  WHERE account_id = ? OR account_id IS NULL
   ORDER BY label COLLATE NOCASE ASC, id ASC
 `);
 
@@ -329,6 +344,7 @@ const getGoogleSheetByIdStatement = db.prepare(`
     id,
     label,
     sheet_id,
+    account_id,
     created_at,
     updated_at
   FROM google_sheets
@@ -340,12 +356,14 @@ const createGoogleSheetStatement = db.prepare(`
     label,
     sheet_id,
     sheet_gid,
+    account_id,
     created_at,
     updated_at
   ) VALUES (
     @label,
     @sheet_id,
     @sheet_gid,
+    @account_id,
     @created_at,
     @updated_at
   )
@@ -623,23 +641,26 @@ function deleteAnswer(jobId, profileId, question) {
   });
 }
 
-// Returns all saved Google Sheet sources.
-function getGoogleSheets() {
-  return listGoogleSheetsStatement.all();
+// Returns one account's saved Google Sheet sources, and the owner-less ones
+// saved before sources had owners. Each row carries `account_id`; the route
+// decides what the reader may do with it and never sends it on.
+function getGoogleSheetsForAccount(accountId) {
+  return listGoogleSheetsForAccountStatement.all(String(accountId));
 }
 
-// Returns one Google Sheet source by id.
+// Returns one Google Sheet source by id, whoever owns it.
 function getGoogleSheetById(id) {
   return getGoogleSheetByIdStatement.get(id) || null;
 }
 
-// Creates a saved Google Sheet source record.
-function createGoogleSheet(sheet) {
+// Creates a saved Google Sheet source record, owned by `accountId`.
+function createGoogleSheet(sheet, accountId) {
   const timestamp = new Date().toISOString();
   const result = createGoogleSheetStatement.run({
     label: sheet.label.trim(),
     sheet_id: sheet.sheet_id.trim(),
     sheet_gid: '',
+    account_id: accountId ? String(accountId) : null,
     created_at: timestamp,
     updated_at: timestamp
   });
@@ -699,7 +720,7 @@ module.exports = {
   getAnswerById,
   getAnswersByJobId,
   deleteAnswer,
-  getGoogleSheets,
+  getGoogleSheetsForAccount,
   getGoogleSheetById,
   createGoogleSheet,
   updateGoogleSheet,

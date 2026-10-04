@@ -39,7 +39,47 @@ export type EnvFileSummary = {
    * comments are read exactly as the loader reads them. NAMES ONLY, as above.
    */
   empty: string[];
+  /**
+   * Names the file sets that the ENVIRONMENT overrides: set there too, to a
+   * different value. The environment wins (config/env.ts), so for these the
+   * file's line is not what is in effect. NAMES ONLY, as above.
+   */
+  shadowed: string[];
 };
+
+/**
+ * Copies a parsed `.env` into `env`, leaving every name `env` already has.
+ *
+ * The environment wins: a name already present keeps its value, and that
+ * includes one exported EMPTY, which counts as set - the same rule as
+ * frontend/scripts/next.mjs's `key in process.env`, so the two halves cannot
+ * disagree about a variable. Returns the names it applied, and the names it
+ * left because the environment holds a DIFFERENT value (one holding the same
+ * value is not news). Names only, never values.
+ */
+export function applyEnvFile(
+  parsed: Record<string, string>,
+  env: NodeJS.ProcessEnv
+): { applied: string[]; shadowed: string[] } {
+  const applied: string[] = [];
+  const shadowed: string[] = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    if (Object.prototype.hasOwnProperty.call(env, key)) {
+      if (env[key] !== value) shadowed.push(key);
+      continue;
+    }
+    env[key] = value;
+    applied.push(key);
+  }
+  return { applied, shadowed };
+}
+
+/** Names `parsed` sets that `env` holds a different value for. */
+function shadowedNames(parsed: Record<string, string>, env: NodeJS.ProcessEnv): string[] {
+  return Object.entries(parsed)
+    .filter(([key, value]) => Object.prototype.hasOwnProperty.call(env, key) && env[key] !== value)
+    .map(([key]) => key);
+}
 
 /** The encoding `readEnvFileText` would decode this file as. */
 function detectEncoding(buffer: Buffer): EnvFileSummary['encoding'] {
@@ -69,7 +109,7 @@ function detectEncoding(buffer: Buffer): EnvFileSummary['encoding'] {
  * which collapses them silently - so the one failure a parsed object cannot
  * express is the one this exists to show.
  */
-export function summarizeEnvFile(filePath: string): EnvFileSummary {
+export function summarizeEnvFile(filePath: string, env: NodeJS.ProcessEnv = process.env): EnvFileSummary {
   let buffer: Buffer;
   try {
     buffer = fs.readFileSync(filePath);
@@ -82,6 +122,7 @@ export function summarizeEnvFile(filePath: string): EnvFileSummary {
       keys: [],
       duplicates: [],
       empty: [],
+      shadowed: [],
     };
   }
 
@@ -100,6 +141,7 @@ export function summarizeEnvFile(filePath: string): EnvFileSummary {
     seen.add(name);
   }
 
+  const parsed = dotenv.parse(text);
   return {
     path: filePath,
     exists: true,
@@ -107,9 +149,13 @@ export function summarizeEnvFile(filePath: string): EnvFileSummary {
     encoding: detectEncoding(buffer),
     keys,
     duplicates: [...duplicates],
-    empty: Object.entries(dotenv.parse(text))
+    empty: Object.entries(parsed)
       .filter(([, value]) => value.trim() === '')
       .map(([name]) => name),
+    // Read against the environment as it is NOW, after config/env.ts loaded
+    // the file: a name it applied holds the file's value and is not listed, and
+    // one the environment kept still differs from the file and is.
+    shadowed: shadowedNames(parsed, env),
   };
 }
 

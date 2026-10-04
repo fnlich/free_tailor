@@ -154,21 +154,30 @@ router.get('/models', async (req: Request, res: Response) => {
   }
 });
 
+/*
+ * The skill library is ONE store, read for every account's resumes, and
+ * managed from the admin Skill Library page. Reading it and confirming a skill
+ * found in use (additive and idempotent - the builder's and the profile
+ * editor's own flow) stay open to every account; adding one with its category
+ * and priority, changing one and deleting one are the library management that
+ * page does, and were open to any signed-in account, which let anybody rename
+ * or remove a skill out of everybody's resumes.
+ */
+
 // Confirm and persist a new skill
 router.post('/skills/confirm', confirmSkill);
-
 
 // List skills
 router.get('/skills', listSkills);
 
 // Add skill
-router.post('/skills', createSkill);
+router.post('/skills', requireAdmin, createSkill);
 
 // Update skill
-router.put('/skills', updateSkillHandler);
+router.put('/skills', requireAdmin, updateSkillHandler);
 
 // Delete skill
-router.delete('/skills', deleteSkillHandler);
+router.delete('/skills', requireAdmin, deleteSkillHandler);
 
 // Analyze job description
 router.post('/analyze', async (req: Request, res: Response) => {

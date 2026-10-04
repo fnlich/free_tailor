@@ -5,6 +5,7 @@ import JobDetail from './components/JobDetail.jsx';
 import AskWindow from './components/AskWindow.jsx';
 import { bidAssistantFetch, readError } from './lib/apiBase.js';
 import { DEFAULT_PROMPT_TEMPLATE } from './lib/promptTemplate.js';
+import { useAuth } from '@/contexts/AuthContext';
 import { messageWithDetail } from '@/lib/userMessage';
 
 const selectedProfileStorageKey = 'selected-profile-id';
@@ -61,19 +62,26 @@ async function updateJobError(jobId, isError, errorReason) {
   });
 }
 
-// Deletes one job and its saved answers from the backend.
+// Deletes one job and every account's saved answers for it - which is why the
+// server lets only an administrator do it.
 async function deleteJob(jobId) {
   return fetchJson(`/api/jobs/${jobId}`, {
     method: 'DELETE'
   });
 }
 
-// Loads the persisted Ask AI prompt template from the backend.
+// Loads the persisted Ask AI prompt template from the backend, and whether
+// this account may change it. It is one template for every account, so only an
+// administrator may; the server says which, and is the one that enforces it.
 async function fetchPromptTemplate() {
   const data = await fetchJson('/api/settings/prompt-template');
-  return typeof data?.promptTemplate === 'string' && data.promptTemplate.trim()
-    ? data.promptTemplate
-    : DEFAULT_PROMPT_TEMPLATE;
+  return {
+    promptTemplate:
+      typeof data?.promptTemplate === 'string' && data.promptTemplate.trim()
+        ? data.promptTemplate
+        : DEFAULT_PROMPT_TEMPLATE,
+    canEdit: data?.canEdit === true
+  };
 }
 
 // Saves the Ask AI prompt template to the backend.
@@ -169,6 +177,7 @@ function saveSelectedProfileId(profileId) {
 
 // Renders the main application layout and coordinates global state.
 export default function App() {
+  const { isAdmin } = useAuth();
   const [jobs, setJobs] = useState([]);
   const [allJobs, setAllJobs] = useState([]);
   const [profiles, setProfiles] = useState([]);
@@ -178,6 +187,7 @@ export default function App() {
   const [filterDate, setFilterDate] = useState('');
   const [askWindowState, setAskWindowState] = useState(null);
   const [promptTemplate, setPromptTemplate] = useState(DEFAULT_PROMPT_TEMPLATE);
+  const [canEditPromptTemplate, setCanEditPromptTemplate] = useState(false);
   const [hasLoadedAllJobs, setHasLoadedAllJobs] = useState(false);
   const [hasInitializedDateFilter, setHasInitializedDateFilter] = useState(false);
   const [answersRefreshToken, setAnswersRefreshToken] = useState(0);
@@ -231,10 +241,11 @@ export default function App() {
 
     async function loadPromptTemplate() {
       try {
-        const nextPromptTemplate = await fetchPromptTemplate();
+        const loaded = await fetchPromptTemplate();
 
         if (!cancelled) {
-          setPromptTemplate(nextPromptTemplate);
+          setPromptTemplate(loaded.promptTemplate);
+          setCanEditPromptTemplate(loaded.canEdit);
         }
       } catch (error) {
         if (!cancelled) {
@@ -524,6 +535,7 @@ export default function App() {
         onGoogleSheetsChanged={handleGoogleSheetsChanged}
         onProfilesChanged={handleProfilesChanged}
         promptTemplate={promptTemplate}
+        canEditPromptTemplate={canEditPromptTemplate}
         onPromptTemplateSaved={handlePromptTemplateSaved}
       />
 
@@ -547,6 +559,7 @@ export default function App() {
           onOpenAskModal={handleOpenAskModal}
           onJobErrorUpdated={handleJobErrorUpdated}
           onJobDeleted={handleJobDeleted}
+          canDeleteJobs={isAdmin}
           answersRefreshToken={answersRefreshToken}
         />
       </div>

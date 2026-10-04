@@ -168,3 +168,72 @@ test('the form names the record that already has a display name, trimmed and in 
   assert.equal(displayNameOwner(settings, 'Claude Sonnet 2', null), null);
   assert.equal(displayNameOwner(settings, '   ', null), null);
 });
+
+// -- the card/crypto return page's poll ------------------------------------- //
+
+test('the payment poll is 2 s for two minutes, then 20 s', () => {
+  const { FAST_POLL_MS, SLOW_AFTER_MS, SLOW_POLL_MS, pollDelay } = loadFrontendModule('lib/paymentPoll.ts');
+  assert.equal(FAST_POLL_MS, 2_000);
+  assert.equal(SLOW_AFTER_MS, 120_000);
+  assert.equal(SLOW_POLL_MS, 20_000);
+
+  assert.equal(pollDelay(0), 2_000);
+  assert.equal(pollDelay(119_999), 2_000);
+  // The same moment the waiting copy changes to say what to do.
+  assert.equal(pollDelay(120_000), 20_000);
+  assert.equal(pollDelay(3_600_000), 20_000);
+
+  // An hour of a crypto invoice from one tab: 60 looks, then 174, where the
+  // fixed two-second interval made 1,800.
+  let elapsed = 0;
+  let looks = 0;
+  while (elapsed < 3_600_000) {
+    elapsed += pollDelay(elapsed);
+    looks += 1;
+  }
+  assert.equal(looks, 60 + 174);
+});
+
+test('polling stops on a settled or vanished payment and continues on a transient failure', () => {
+  const { keepPolling } = loadFrontendModule('lib/paymentPoll.ts');
+  assert.equal(keepPolling('pending'), true);
+  assert.equal(keepPolling('retry'), true, 'offline or a restart is worth asking again');
+  assert.equal(keepPolling('settled'), false);
+  // A 404 - no such payment, or not this account's - used to count as "still
+  // pending" and was asked about every two seconds for as long as the tab lived.
+  assert.equal(keepPolling('gone'), false);
+});
+
+// -- the builder following a running batch ---------------------------------- //
+
+test('twenty empty attaches in a row stop following, one that delivered resets the count, a vanished batch stops at once', () => {
+  const { MAX_IDLE_REATTACHES, nextAttach } = loadFrontendModule('lib/batchFollow.ts');
+  assert.equal(MAX_IDLE_REATTACHES, 20);
+
+  // A healthy long batch behind a proxy that cuts it every minute: every
+  // attach opens with a snapshot, so it is followed however long it runs.
+  let state = { idleInARow: 0, stop: false };
+  for (let attach = 0; attach < 200; attach += 1) {
+    state = nextAttach(state.idleInARow, { delivered: 1, gone: false });
+    assert.equal(state.stop, false);
+  }
+  assert.equal(state.idleInARow, 0);
+
+  // A server refusing the stream outright: the twentieth empty attach stops it.
+  state = { idleInARow: 0, stop: false };
+  for (let attach = 1; attach < MAX_IDLE_REATTACHES; attach += 1) {
+    state = nextAttach(state.idleInARow, { delivered: 0, gone: false });
+    assert.equal(state.stop, false, `attach ${attach}`);
+  }
+  assert.equal(state.idleInARow, MAX_IDLE_REATTACHES - 1);
+  assert.equal(nextAttach(state.idleInARow, { delivered: 0, gone: false }).stop, true);
+
+  // Nineteen empty, then one that delivered: the count starts again.
+  const reset = nextAttach(state.idleInARow, { delivered: 3, gone: false });
+  assert.deepEqual(reset, { idleInARow: 0, stop: false });
+  assert.equal(nextAttach(reset.idleInARow, { delivered: 0, gone: false }).stop, false);
+
+  // A 404 - restarted or expired - stops it at once, delivered or not.
+  assert.equal(nextAttach(0, { delivered: 0, gone: true }).stop, true);
+  assert.equal(nextAttach(0, { delivered: 5, gone: true }).stop, true);
+});

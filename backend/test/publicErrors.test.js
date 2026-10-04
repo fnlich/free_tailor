@@ -289,6 +289,8 @@ test('the routes that leak an installation\'s workings are administrator-only', 
     app.use('/api/generation', require('../dist/routes/generation').default);
     app.use('/api/prompts', require('../dist/routes/prompts').default);
     app.use('/api/resume', require('../dist/routes/resume').default);
+    const bid = require('../dist/routes/bidAssistant');
+    app.use('/api/bid-assistant', bid.default ?? bid);
   });
   try {
     for (const [method, route, body] of [
@@ -297,6 +299,15 @@ test('the routes that leak an installation\'s workings are administrator-only', 
       ['POST', '/api/prompts/validate', { content: 'x' }],
       ['POST', '/api/prompts/preview', { content: 'x' }],
       ['POST', '/api/resume/analyze-prompt-test', { jobDescription: 'x'.repeat(60) }],
+      // The skill library is one store read for every account's resumes;
+      // managing it is the admin Skill Library page's job.
+      ['POST', '/api/resume/skills', { type: 'soft', skill: 'Nope' }],
+      ['PUT', '/api/resume/skills', { type: 'soft', original: 'Teamwork', skill: 'Nope' }],
+      ['DELETE', '/api/resume/skills', { type: 'soft', skill: 'Teamwork' }],
+      // One Ask AI template for every account, and a shared job board whose
+      // jobs take every account's answers with them.
+      ['PUT', '/api/bid-assistant/settings/prompt-template', { promptTemplate: 'Nope' }],
+      ['DELETE', '/api/bid-assistant/jobs/1'],
     ]) {
       const refused = await server.call('alice', method, route, body);
       assert.equal(refused.status, 403, `${method} ${route}`);
@@ -304,7 +315,58 @@ test('the routes that leak an installation\'s workings are administrator-only', 
     }
     const queues = await server.call('admin', 'GET', '/api/generation/queues');
     assert.equal(queues.status, 200);
+
+    // What every account still does: confirm a skill found in use, which adds
+    // it with its category and priority inferred. The profile editor's way of
+    // adding a hard skill - the admin endpoint refused it without metadata.
+    const confirmed = await server.call('alice', 'POST', '/api/resume/skills/confirm', { type: 'hard', skill: 'Terraform' });
+    assert.equal(confirmed.status, 200);
+    assert.deepEqual(confirmed.body, { added: true, skill: 'Terraform', type: 'hard' });
+    const listed = await server.call('alice', 'GET', '/api/resume/skills?type=hard');
+    assert.ok(listed.body.skills.includes('Terraform'));
+    const again = await server.call('alice', 'POST', '/api/resume/skills/confirm', { type: 'hard', skill: 'terraform' });
+    assert.equal(again.body.added, false, 'idempotent');
+
+    // And reads the Bid Assistant prompt, told whether it may change it.
+    const template = await server.call('alice', 'GET', '/api/bid-assistant/settings/prompt-template');
+    assert.equal(template.status, 200);
+    assert.equal(template.body.canEdit, false);
+    assert.match(template.body.promptTemplate, /\{\{question\}\}/);
+    const asAdmin = await server.call('admin', 'GET', '/api/bid-assistant/settings/prompt-template');
+    assert.equal(asAdmin.body.canEdit, true);
+    const saved = await server.call('admin', 'PUT', '/api/bid-assistant/settings/prompt-template', { promptTemplate: 'Answer {{question}}' });
+    assert.equal(saved.status, 200);
+    assert.equal((await server.call('alice', 'GET', '/api/bid-assistant/settings/prompt-template')).body.promptTemplate, 'Answer {{question}}');
   } finally {
+    server.close();
+  }
+});
+
+test('an administrator reading a settings row that does not parse gets the cause and a ref', async () => {
+  // It answered `500 {"error":"Failed to load settings"}` - no ref, no
+  // detail, nothing logged - to the one person who could fix the row, and the
+  // Settings page waited on it for ever.
+  const server = await serve('admin-settings', (app) => {
+    app.use('/api/admin', require('../dist/routes/admin').default);
+  });
+  const { writeSettingRaw } = require('./helpers');
+  writeSettingRaw(server.dbDir, 'app-settings', '{ this is not json');
+  config.invalidateSettingsCache();
+  try {
+    for (const [route, fallback] of [
+      ['/api/admin/settings', 'Failed to load settings'],
+      ['/api/admin/ai-models', 'Failed to load settings'],
+      ['/api/admin/models', 'Failed to load AI models'],
+    ]) {
+      const { result, lines } = await captureErrorLog(() => server.call('admin', 'GET', route));
+      assert.equal(result.status, 500, route);
+      assert.equal(result.body.error, `${fallback}. Please try again, or contact your administrator.`, route);
+      assert.match(result.body.ref, REF, route);
+      assert.ok(result.body.detail, `${route}: an administrator gets the cause`);
+      assert.ok(lines.some((line) => line.includes(`[error ${result.body.ref}]`) && line.includes(`GET ${route}`)), route);
+    }
+  } finally {
+    config.invalidateSettingsCache();
     server.close();
   }
 });

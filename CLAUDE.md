@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~22s with the tsc step, 1065 tests)
+npm test                       # backend node:test suite (~22s with the tsc step, 1097 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -36,7 +36,7 @@ Facts worth knowing before you build:
   JavaScript.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
-  `src/bid-assistant/App.jsx` (lines 259, 293, 369; `src/app/page.tsx`
+  `src/bid-assistant/App.jsx` (lines 270, 304, 380; `src/app/page.tsx`
   contributes none), and no warnings.
   Not a build gate: `next build` does not run ESLint. Do not treat a red lint as
   something your change caused without checking `git stash` first.
@@ -69,7 +69,8 @@ DB_DIR=/tmp/ft-db PORT=3001 node backend/dist/index.js
 curl http://127.0.0.1:3001/api/health
 ```
 
-Unset, `DB_DIR` defaults to `/data/db` on Linux/macOS (often not writable — the
+A variable on the command line like that beats the same one in `.env`. Unset,
+`DB_DIR` defaults to `/data/db` on Linux/macOS (often not writable — the
 most common first-run failure) and `%LOCALAPPDATA%\free_tailor\db` on Windows.
 The backend prints the resolved path, the Chrome it will print with, and a
 readiness line per AI seat at startup; a CLI that is missing or signed out is
@@ -88,10 +89,17 @@ backend/src/
   config/             # env loading (.env, UTF-16 aware), browser resolution.
                       #   ENV_PATH resolves from the COMPILED module, so it is
                       #   always <repo root>/.env regardless of cwd - a file at
-                      #   backend/.env is ignored. envFile.ts's summarizeEnvFile
-                      #   reports a file's path, encoding and key NAMES (never
-                      #   values) so the doctors can say why a setting that is in
-                      #   the file is not in effect. A NEW setting is read through
+                      #   backend/.env is ignored. The ENVIRONMENT beats .env on
+                      #   both halves (envFile.ts's applyEnvFile here, the same
+                      #   `key in process.env` skip in frontend/scripts/next.mjs -
+                      #   change the two together): the file fills in only what
+                      #   is unset, an exported empty value counts as set, and a
+                      #   name set in both with different values is warned about
+                      #   once at startup, by NAME only. envFile.ts's
+                      #   summarizeEnvFile reports a file's path, encoding and key
+                      #   NAMES (never values), including the ones the environment
+                      #   overrides (`shadowed`), so the doctors can say why a
+                      #   setting that is in the file is not in effect. A NEW setting is read through
                       #   envValue.ts (envInt/envList/...: empty = default, junk
                       #   warns once, out of range clamps, never throws) and, if
                       #   it is operational - a timeout, cap, pool width, model
@@ -106,7 +114,11 @@ backend/src/
                       #   retired ids; providerModels.ts each seat's model-name
                       #   list; creditsPerResume.ts the price field's rules;
                       #   modelErrors.ts the two model refusals.
-  controllers/        # one file, the skills handlers routes/resume.ts mounts
+  controllers/        # one file, the skills handlers routes/resume.ts mounts.
+                      #   The library is one store for every account: reading it
+                      #   and POST /skills/confirm (additive, idempotent) are
+                      #   everybody's; adding with metadata, editing and deleting
+                      #   are requireAdmin.
   database/           # better-sqlite3, one repository per table
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that
                       #   defers (003 waits for an admin; 006 and 007 for a
@@ -143,7 +155,13 @@ backend/src/
                       #   there AND in the restore mapper or it silently does
                       #   not persist. The payload persists whole, which is why
                       #   a task's price lives on it (`payload.creditCost`).
-  bidAssistant/       # the Bid Assistant's own prompt building
+  bidAssistant/       # the Bid Assistant's own prompt building, and database.js.
+                      #   Its job board is SHARED (deleting a job, which takes
+                      #   every account's answers, and the one Ask AI template
+                      #   are requireAdmin); sheet sources carry an `account_id`
+                      #   (added in place, PRAGMA + ALTER - an owner-less legacy
+                      #   row is listed for all, changed by an admin); answers
+                      #   are scoped through the reader's own profiles.
   types/, utils/      # shared types; path, storage and filename helpers
 backend/
   scrapers/           # NOT under src/, and the bulk of the backend's
@@ -153,7 +171,7 @@ backend/
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 87 files; fixtures/cli, codex and gemini
+  test/               # node:test, 89 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -373,10 +391,24 @@ escaped - a bare `@name` resolves inside the operator's own
 `context.includeDirectories`, which no workspace setting can clear - and the
 `\@` the escape puts before an email is taken back out of the answer. The turn
 dir and the CLI's session transcript are removed afterwards. A "Using AI
-Credits" notice or any tool call fails the turn. Exit 41 with a sign-in still
+Credits" notice or any tool call fails the turn, and so does a JSON answer that
+opened `@@BEGIN_JSON@@` and never wrote `@@END_JSON@@` (as `truncated`, retried,
+the seat not held): the envelope names no finish reason once text arrived, and
+the extractor's balanced scan would take the first complete inner object of
+the cut-off document as the answer. Exit 41 with a sign-in still
 on disk is usually the CLI's per-start token check failing on the network, so
 it is held for two minutes as `unavailable` and becomes the 30-minute sign-in
-hold only on the third in a row. Its health check sends no prompt: `gemini
+hold only on the third in a row. A sign-in hold - this one or any other - is
+lifted early only by a sign-in file written AFTER it (`clearAuth`, keyed on
+`oauth_creds.json`'s mtime, read by a fresh health check): the check only reads
+the file, so it says "signed in" for a revoked token too. The Claude seat's
+holds record their kind (`auth`, `rateLimited`, `unavailable`) - a held call
+reports that kind, never a guess from the reason's wording - and its sign-in
+hold is lifted by a fresh `claude auth status` on `oauth_token` that STARTED
+after the hold was set. The admin Settings page's seat check
+(`GET /api/admin/ai/health`) asks every seat with `health({ fresh: true })`,
+skipping the minute's cache, which is what makes it the place to lift a hold;
+Codex keeps no holds. Its health check sends no prompt: `gemini
 --version`, then the sign-in files under the CLI's home.
 
 Tests never spawn a browser, a subprocess or a network call: each CLI provider

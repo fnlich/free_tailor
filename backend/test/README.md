@@ -53,17 +53,29 @@ Coverage currently focuses on:
   a route's AI failure over HTTP, for stored task and order-item errors read
   back by their owner, and for the routes and projections that were leaking
   the installation's workings (AI health, the queues, prompt bodies, the
-  sign-in options); the payment method reasons and the scraper actors are
+  sign-in options, the skill library's writes, the Bid Assistant template and
+  job deletion); an administrator's settings read that fails carrying its
+  cause and a ref; the payment method reasons and the scraper actors are
   pinned beside their routes (`paymentRoutes.test.js`, `scraperWiring.test.js`)
+- whose Bid Assistant data is whose (`bidAssistantScoping.test.js`): a saved
+  sheet source is its owner's and a legacy owner-less one an administrator's to
+  change, answers are read and deleted through the reader's own profiles, and
+  the shared job board's deletions are an administrator's
+- the batch progress stream's bare-newline heartbeat, which keeps a proxy's
+  idle timeout from cutting a long batch (`batchStream.test.js`)
 - the three CLI seats, each with no binary, no subprocess and no network:
   the Claude provider - argv, child environment, event reduction, failure
-  classification, rate limits, outages and concurrency (`claudeCli.test.js`);
+  classification, rate limits, outages and concurrency, and a sign-in hold
+  lifted by a fresh seat check that finds the subscription signed in
+  (`claudeCli.test.js`);
   the Codex provider, including a CLI signed in with an API key reading as not
   signed in (`codexCli.test.js`); and the Gemini provider - argv and the
   forbidden flags, the pinned-empty key variables, the workspace settings and
   deny-all policy, the stream reduction that answers only on a `success`
-  result, failure classification and holds, the paid-credits and tool-call
-  refusals, the prompt guards and the per-turn cleanup (`geminiCli.test.js`)
+  result, failure classification and holds (a sign-in hold lifted only by a
+  sign-in written after it), a JSON answer that opened its sentinels and never
+  closed them refused as truncated, the paid-credits and tool-call refusals,
+  the prompt guards and the per-turn cleanup (`geminiCli.test.js`)
 - the platform-dependent decisions - the default database directory, Windows
   binary resolution, the Windows command-line budget and the path characters
   Windows reserves. Each of those takes its platform as an argument rather than
@@ -74,6 +86,8 @@ Coverage currently focuses on:
 - array utilities
 - output path safety helpers
 - current auth middleware behavior
+- which wins, the environment or `.env`: the environment, on both halves, with
+  any name set in both reported by name only (`envFile.test.js`)
 - the operational settings read from `.env`: the shared readers and their
   policy - empty means default, junk warns once and falls back, out of range
   clamps (`envValue.test.js`); every setting's default, bounds and the startup
@@ -107,10 +121,11 @@ NDJSON event streams from `test/fixtures/cli/`, `test/fixtures/codex/` and
 `test/fixtures/gemini/`. The health checks stub `child_process.execFile`
 instead.
 
-The Claude and Gemini suites set `AI_CLI_BIN` and `AI_GEMINI_BIN` to paths
-that do not exist, so a code path that accidentally reached a real spawn fails
-loudly rather than passing by accident on a developer machine that has the CLI
-installed; the Codex suite hands its fake runner to every adapter it builds.
+All three suites set `AI_CLI_BIN`, `AI_CODEX_BIN` and `AI_GEMINI_BIN` - and
+the binary every adapter they build is configured with - to paths that do not
+exist, so a code path that accidentally reached a real spawn fails loudly
+rather than passing by accident on a developer machine that has the CLI
+installed.
 
 A fixture's name says what it is, because a fixture that LOOKS recorded is how
 a test ends up agreeing with an assumption: `recorded-` is a real capture;

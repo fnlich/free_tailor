@@ -330,6 +330,7 @@ export default function JobDetail({
   onOpenAskModal,
   onJobErrorUpdated,
   onJobDeleted,
+  canDeleteJobs,
   answersRefreshToken
 }) {
   const [activeModal, setActiveModal] = useState(null);
@@ -448,7 +449,7 @@ export default function JobDetail({
 
   async function handleDeleteJob() {
     try {
-      const isConfirmed = window.confirm('Delete this job, its link, and all saved answers?');
+      const isConfirmed = window.confirm("Delete this job, its link, and every account's saved answers for it?");
 
       if (!isConfirmed) {
         return;
@@ -563,9 +564,13 @@ export default function JobDetail({
           <button className="tl-button-quiet" data-tone="danger" onClick={openJobErrorModal}>
             Set Error
           </button>
-          <button className="tl-button-quiet" data-tone="danger" onClick={handleDeleteJob} disabled={isDeletingJob}>
-            {isDeletingJob ? 'Deleting...' : 'Delete Job'}
-          </button>
+          {/* The job board is shared, and a job takes every account's saved
+              answers with it, so deleting one is the administrator's call. */}
+          {canDeleteJobs && (
+            <button className="tl-button-quiet" data-tone="danger" onClick={handleDeleteJob} disabled={isDeletingJob}>
+              {isDeletingJob ? 'Deleting...' : 'Delete Job'}
+            </button>
+          )}
           <button className="tl-button-quiet" onClick={() => setActiveModal('job')}>
             See Job Detail
           </button>

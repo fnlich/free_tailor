@@ -347,6 +347,7 @@ async function main() {
     const invoiceChrome = await page.evaluate(() => ({
       bars: document.querySelectorAll('.tl-topbar').length,
       rails: document.querySelectorAll('.tl-sidebar').length,
+      print: document.querySelectorAll('[aria-label="Print invoice"]').length,
       text: document.body.innerText,
     }));
     check(
@@ -358,6 +359,11 @@ async function main() {
       "user /credits/invoice: somebody else's or a made-up payment is not found",
       /not found/i.test(invoiceChrome.text),
       invoiceChrome.text.slice(0, 200)
+    );
+    check(
+      'user /credits/invoice: no Print button when there is no invoice to print',
+      invoiceChrome.print === 0,
+      `print buttons: ${invoiceChrome.print}`
     );
 
     check(
@@ -460,6 +466,42 @@ async function main() {
     );
 
     await page.screenshot({ path: `${SHOTS}/shell-1-user-light.png` });
+
+    /*
+     * The Bid Assistant's shared pieces: one prompt template for every
+     * account, and a job board whose Delete takes every account's answers
+     * with it. Both are the administrator's, so an ordinary user reads the
+     * template and is offered no way to save it or to delete a job.
+     */
+    await page.goto(`${APP}/bid-assistant`, { waitUntil: 'networkidle2' });
+    await wait(500);
+    await page.evaluate(() => {
+      Array.from(document.querySelectorAll('.top-bar button'))
+        .find((button) => button.textContent.trim() === 'Prompt')
+        ?.click();
+    });
+    await wait(300);
+    const assistantControls = await page.evaluate(() => {
+      const text = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
+      const editor = document.querySelector('.prompt-modal textarea');
+      return {
+        opened: Boolean(editor),
+        readOnly: editor?.readOnly ?? null,
+        canSave: text.includes('Save Prompt'),
+        canDeleteJob: text.includes('Delete Job'),
+      };
+    });
+    check(
+      'user /bid-assistant: the prompt template is shown read-only, with no Save',
+      assistantControls.opened && assistantControls.readOnly === true && !assistantControls.canSave,
+      JSON.stringify(assistantControls)
+    );
+    check(
+      'user /bid-assistant: no Delete Job',
+      !assistantControls.canDeleteJob,
+      JSON.stringify(assistantControls)
+    );
+    await page.evaluate(() => document.querySelector('.prompt-modal .bid-close')?.click());
 
     /* ------------------------------------------------- dark, then phone */
     await setTheme(page, 'dark');
@@ -749,6 +791,29 @@ async function main() {
       body: JSON.stringify({ name: 'Nope' }),
     });
     check('api: an ordinary user cannot create a template', makeTemplate.status === 403, `got ${makeTemplate.status}`);
+
+    // The skill library is every account's, and managed from an admin page;
+    // an ordinary account adds to it only by confirming a skill in use.
+    const addSkill = await asUser('/resume/skills', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'soft', skill: 'Nope' }),
+    });
+    check('api: an ordinary user cannot add to the skill library', addSkill.status === 403, `got ${addSkill.status}`);
+
+    const assistantPrompt = await asUser('/bid-assistant/settings/prompt-template');
+    const assistantPromptBody = await assistantPrompt.json().catch(() => null);
+    check(
+      'api: an ordinary user reads the Bid Assistant prompt, told it cannot edit it',
+      assistantPrompt.status === 200 && assistantPromptBody?.canEdit === false,
+      `got ${assistantPrompt.status} ${JSON.stringify(assistantPromptBody)?.slice(0, 120)}`
+    );
+    const savePrompt = await asUser('/bid-assistant/settings/prompt-template', {
+      method: 'PUT',
+      body: JSON.stringify({ promptTemplate: 'Nope' }),
+    });
+    check('api: ...and cannot save it', savePrompt.status === 403, `got ${savePrompt.status}`);
+    const deleteJob = await asUser('/bid-assistant/jobs/999999999', { method: 'DELETE' });
+    check('api: an ordinary user cannot delete a Bid Assistant job', deleteJob.status === 403, `got ${deleteJob.status}`);
 
     const disabled = await asUser('/templates?includeDisabled=true');
     check('api: an ordinary user asking for disabled templates is answered', disabled.status === 200);

@@ -4,7 +4,7 @@ import { AIProviderError } from './errors';
 import { createClaudeCliAdapter, type ClaudeCliAdapter } from './providers/claudeCli';
 import { createCodexCliAdapter } from './providers/codexCli';
 import { createGeminiCliAdapter, type GeminiCliAdapter } from './providers/geminiCli';
-import type { AIProviderAdapter, ProviderCapabilities, ProviderHealth } from './types';
+import type { AIProviderAdapter, HealthOptions, ProviderCapabilities, ProviderHealth } from './types';
 
 /**
  * Provider lookup.
@@ -93,7 +93,7 @@ export function listProviderCapabilities(): ProviderCapabilities[] {
 
 export type ProviderHealthReport = ProviderHealth & { provider: AIProvider };
 
-export async function checkProviderHealth(id: AIProvider): Promise<ProviderHealthReport> {
+export async function checkProviderHealth(id: AIProvider, options: HealthOptions = {}): Promise<ProviderHealthReport> {
   // Answered without touching the adapter. Probing a locked provider costs
   // something real - the CLI check spawns a binary and waits on it - to learn
   // a fact that could not change the answer, and it would report "not signed
@@ -109,7 +109,7 @@ export async function checkProviderHealth(id: AIProvider): Promise<ProviderHealt
     };
   }
 
-  const health = await getAdapter(id).health();
+  const health = await getAdapter(id).health(options);
   return { ...health, provider: id };
 }
 

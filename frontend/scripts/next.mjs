@@ -123,12 +123,34 @@ function keysOwnedByFrontendEnvFiles() {
   return owned;
 }
 
+/*
+ * The ENVIRONMENT beats the root `.env`: a variable already exported keeps its
+ * value, an empty one included. backend/src/config/env.ts applies the same
+ * rule to the same file (applyEnvFile in config/envFile.ts), so the two halves
+ * agree about every variable - before it did, `PORT=4000` in a shell moved the
+ * frontend's derived API URL to 4000 while the backend stayed on the file's
+ * port, and every call failed. Change the two together. A name set in both
+ * with different values is said once, by NAME only, exactly as the backend
+ * says it.
+ */
 const frontendOwned = keysOwnedByFrontendEnvFiles();
-for (const [key, value] of Object.entries(parseEnvFile(join(repoRoot, '.env')))) {
-  if (key in process.env || frontendOwned.has(key)) {
+const rootEnvPath = join(repoRoot, '.env');
+const shadowed = [];
+for (const [key, value] of Object.entries(parseEnvFile(rootEnvPath))) {
+  if (key in process.env) {
+    if (process.env[key] !== value) shadowed.push(key);
+    continue;
+  }
+  if (frontendOwned.has(key)) {
     continue;
   }
   process.env[key] = value;
+}
+if (shadowed.length > 0) {
+  console.warn(
+    `[env] ${shadowed.join(', ')} ${shadowed.length === 1 ? 'is' : 'are'} set both in the environment and in ` +
+      `${rootEnvPath}; the environment's value is used.`
+  );
 }
 
 /**

@@ -83,8 +83,8 @@ function findFirstBalancedJson(text: string): string | null {
  *
  * Duplicated here rather than imported so this utility stays free of the AI
  * layer - it is called from places that have no business loading a provider
- * registry. `promptAssembly.ts` owns the canonical pair and a test pins the two
- * together, so they cannot drift apart silently.
+ * registry. `services/ai/jsonSentinels.ts` owns the canonical pair and a test
+ * pins the two together, so they cannot drift apart silently.
  */
 const BEGIN_SENTINEL = '@@BEGIN_JSON@@';
 const END_SENTINEL = '@@END_JSON@@';

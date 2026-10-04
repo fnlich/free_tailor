@@ -425,7 +425,11 @@ export default function ProfileForm({
 
     if (!librarySkill) {
       try {
-        await resumeApi.addSkill({ type: 'hard', skill: value });
+        // Confirm, not the library's own add: that one is the administrator's
+        // Skill Library page, needs a category and a priority this form never
+        // asks for (so it refused every new skill here), and is admin-only.
+        // Confirm infers both, exactly as the builder does for a skill it finds.
+        await resumeApi.confirmSkill({ type: 'hard', skill: value });
         setHardSkillLibrary((skills) => [...skills, value].sort((a, b) => a.localeCompare(b)));
       } catch (err) {
         setError(err ?? 'Failed to add the skill.');
@@ -527,7 +531,11 @@ export default function ProfileForm({
 
     if (!librarySkill) {
       try {
-        await resumeApi.addSkill({ type: 'hard', skill: value });
+        // Confirm, not the library's own add: that one is the administrator's
+        // Skill Library page, needs a category and a priority this form never
+        // asks for (so it refused every new skill here), and is admin-only.
+        // Confirm infers both, exactly as the builder does for a skill it finds.
+        await resumeApi.confirmSkill({ type: 'hard', skill: value });
         setHardSkillLibrary((skills) => [...skills, value].sort((a, b) => a.localeCompare(b)));
       } catch (err) {
         setError(err ?? 'Failed to add the skill.');

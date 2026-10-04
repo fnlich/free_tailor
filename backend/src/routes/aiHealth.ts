@@ -35,7 +35,10 @@ router.get('/health', async (req: Request, res: Response) => {
     const providers = await Promise.all(
       AI_PROVIDER_IDS.map(async (id) => {
         const descriptor = getProviderDescriptor(id);
-        const health = await checkProviderHealth(id);
+        // Fresh, never the minute-old cached reading: this page is where an
+        // operator looks after signing a seat back in, and a fresh check that
+        // finds it signed in is what lifts the seat's sign-in hold.
+        const health = await checkProviderHealth(id, { fresh: true });
         return {
           id,
           label: descriptor.label,

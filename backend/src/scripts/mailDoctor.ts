@@ -99,18 +99,21 @@ async function main(): Promise<number> {
         const dupes = file.duplicates.filter(
           (key) => key.startsWith('SMTP_') || key === 'ADMIN_EMAILS'
         );
+        // The environment beats this file, so a name exported with another
+        // value is not what the file's line says - name it, never the value.
+        const shadowed = mailKeys.filter((key) => file.shadowed.includes(key));
         // A bare `NAME=`, which is how .env.example ships every one of these,
-        // sets the variable to EMPTY - and since this .env overrides the real
-        // environment, blanks the same variable set in a shell. Not "found".
-        const inEffect = mailKeys.filter((key) => !file.empty.includes(key));
-        const empty = mailKeys.filter((key) => file.empty.includes(key));
+        // sets the variable to EMPTY. Not "found".
+        const empty = mailKeys.filter((key) => file.empty.includes(key) && !shadowed.includes(key));
+        const inEffect = mailKeys.filter((key) => !empty.includes(key) && !shadowed.includes(key));
 
         return (
           `${file.path}\n` +
           `    ${file.bytes} bytes, ${file.encoding}\n` +
           `    mail settings in effect: ${inEffect.length ? inEffect.join(', ') : 'none'}` +
-          (empty.length
-            ? `\n    present but EMPTY - not in effect, and blanking any shell value: ${empty.join(', ')}`
+          (empty.length ? `\n    present but EMPTY - not in effect: ${empty.join(', ')}` : '') +
+          (shadowed.length
+            ? `\n    in the file but overridden by the environment: ${shadowed.join(', ')}`
             : '') +
           (dupes.length
             ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}`
@@ -125,7 +128,9 @@ async function main(): Promise<number> {
         '    2. your editor saved it;\n' +
         '    3. the encoding above is utf8 or utf16le - a UTF-16 file written WITHOUT a\n' +
         '       byte-order mark decodes to nonsense, and PowerShell\'s > writes UTF-16;\n' +
-        '    4. no key is listed as duplicated, since the last assignment silently wins.',
+        '    4. no key is listed as duplicated, since the last assignment silently wins;\n' +
+        '    5. no key is listed as overridden: a variable exported in the environment (a\n' +
+        '       shell, a service unit, a container) beats the file.',
     },
     {
       title: 'Read the SMTP configuration',

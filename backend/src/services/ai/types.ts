@@ -125,13 +125,22 @@ export type ProviderHealth = {
   readonly meta?: Readonly<Record<string, unknown>>;
 };
 
+export type HealthOptions = {
+  /** Ask the CLI again even when a check from the last minute is cached. */
+  readonly fresh?: boolean;
+};
+
 export interface AIProviderAdapter {
   readonly id: AIProvider;
   readonly capabilities: ProviderCapabilities;
   /** The model used when neither the prompt nor the caller names one. */
   defaultModelName(): string;
-  /** Cheap, cached, never billable, never throws. Boot preflight + admin UI. */
-  health(): Promise<ProviderHealth>;
+  /**
+   * Cheap, cached, never billable, never throws. Boot preflight + admin UI.
+   * `fresh` skips the cache: the admin Settings page asks for it, because a
+   * fresh check that finds a seat signed in is what lifts its sign-in hold.
+   */
+  health(options?: HealthOptions): Promise<ProviderHealth>;
   /** Rejects with AIProviderError - never a bare Error. Honours the deadline. */
   complete(request: CompletionRequest): Promise<CompletionResult>;
 }

@@ -257,26 +257,29 @@ export async function main(envPath: string = ENV_PATH): Promise<number> {
 
         // A bare `NAME=` - which is how .env.example ships every one of
         // these - sets the variable to EMPTY, and reporting it as "found" said
-        // otherwise. Worse than nothing, in fact: this .env overrides the real
-        // environment, so the line blanks the same variable set in a shell.
+        // otherwise. And the environment beats this file, so a name exported
+        // with another value is not what the file's line says either.
         const named = file.keys.filter(isSheetsSetting);
-        const inEffect = named.filter((key) => !file.empty.includes(key));
-        const empty = named.filter((key) => file.empty.includes(key));
+        const shadowed = named.filter((key) => file.shadowed.includes(key));
+        const empty = named.filter((key) => file.empty.includes(key) && !shadowed.includes(key));
+        const inEffect = named.filter((key) => !empty.includes(key) && !shadowed.includes(key));
         const dupes = file.duplicates.filter(isSheetsSetting);
 
         return (
           `${file.path}\n` +
           `    ${file.bytes} bytes, ${file.encoding}\n` +
           `    sheets settings in effect: ${inEffect.length ? inEffect.join(', ') : 'none'}` +
-          (empty.length
-            ? `\n    present but EMPTY - not in effect, and blanking any shell value: ${empty.join(', ')}`
+          (empty.length ? `\n    present but EMPTY - not in effect: ${empty.join(', ')}` : '') +
+          (shadowed.length
+            ? `\n    in the file but overridden by the environment: ${shadowed.join(', ')}`
             : '') +
           (dupes.length ? `\n    DUPLICATED, and the LAST one wins: ${dupes.join(', ')}` : '')
         );
       },
       remedy: () =>
         'The path above is the only .env this app reads, and it is the repository root\n' +
-        '  rather than backend/ - a file beside these scripts is ignored.',
+        '  rather than backend/ - a file beside these scripts is ignored. A variable exported\n' +
+        '  in the environment beats the file.',
     },
     {
       title: 'Find the Google credentials',

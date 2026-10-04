@@ -123,7 +123,14 @@ export function interpretRateLimitEvent(
   return { ...none, scope, resetsAt, utilization };
 }
 
-type Outage = { until: number; reason: string };
+/**
+ * What a hold is FOR, recorded when it is set. A call the hold turns away
+ * reports this kind; guessing it back from the reason's wording read the
+ * CLI's own "Invalid authentication. Please run /login" as a busy seat.
+ */
+export type OutageKind = 'auth' | 'rateLimited' | 'unavailable';
+
+type Outage = { until: number; reason: string; kind: OutageKind; since: number };
 
 /** How long a signed-out seat is left alone: signing in is an operator action. */
 const AUTH_HOLD_MS = 30 * 60_000;
@@ -138,6 +145,12 @@ const MIN_LIMIT_HOLD_MS = 5 * 60_000;
  * Recovery is passive: a hold expires and the next real request is the probe.
  * Nothing polls. The 30-minute clamp on a limit means a lifted limit, a wrong
  * clock or an upgraded plan costs at most one stalled request to rediscover.
+ *
+ * The one exception is a sign-in hold, which a success would clear - except
+ * that the hold turns every call away before one can succeed. So a sign-in
+ * check that finds the seat signed in lifts it (`clearAuth`): that is the one
+ * thing an operator does about it, and waiting half an hour after doing it
+ * reads as the fix not having worked.
  */
 export class OutageTable {
   private readonly entries = new Map<string, Outage>();
@@ -147,11 +160,12 @@ export class OutageTable {
     private readonly recoveryMs: number = 10 * 60_000
   ) {}
 
-  /** Milliseconds this model is known to be out, and why. 0 when it is not. */
-  check(model: string): { waitMs: number; reason: string } {
+  /** Milliseconds this model is known to be out, why, and as what. 0 when it is not. */
+  check(model: string): { waitMs: number; reason: string; kind: OutageKind | null } {
     const now = this.now();
     let waitMs = 0;
     let reason = '';
+    let kind: OutageKind | null = null;
     for (const key of ['*', model]) {
       const entry = this.entries.get(key);
       if (!entry) continue;
@@ -163,16 +177,19 @@ export class OutageTable {
       if (remaining > waitMs) {
         waitMs = remaining;
         reason = entry.reason;
+        kind = entry.kind;
       }
     }
-    return { waitMs, reason };
+    return { waitMs, reason, kind };
   }
 
-  private set(key: string, until: number, reason: string): void {
+  private set(key: string, until: number, reason: string, kind: OutageKind): void {
     const existing = this.entries.get(key);
     // Log an outage once, not once per request that discovers it.
     const isNew = !existing || existing.until <= this.now() || Math.abs(existing.until - until) > 60_000;
-    this.entries.set(key, { until, reason });
+    // `since` is the LATEST time it was set, so a sign-in check that started
+    // before a fresh refusal cannot lift the hold that refusal renewed.
+    this.entries.set(key, { until, reason, kind, since: this.now() });
     if (isNew) {
       const minutes = Math.max(1, Math.round((until - this.now()) / 60_000));
       const what = key === '*' ? 'the Claude subscription' : `model "${key}"`;
@@ -181,18 +198,35 @@ export class OutageTable {
   }
 
   noteAuth(reason: string): void {
-    this.set('*', this.now() + AUTH_HOLD_MS, reason || 'the CLI reported it is not signed in');
+    this.set('*', this.now() + AUTH_HOLD_MS, reason || 'the CLI reported it is not signed in', 'auth');
+  }
+
+  /**
+   * Lift a sign-in hold that was set BEFORE `probeStartedAt`, when a sign-in
+   * check that started then found the seat signed in to the subscription.
+   * A hold set while the check ran stays - that refusal is newer news than
+   * the check - and so does every other kind: a spent window is not fixed by
+   * signing in. True when it lifted one.
+   */
+  clearAuth(probeStartedAt: number): boolean {
+    const entry = this.entries.get('*');
+    if (!entry || entry.kind !== 'auth' || entry.since >= probeStartedAt) return false;
+    this.entries.delete('*');
+    // An expired one is only tidied away; there was nothing left to lift.
+    if (entry.until <= this.now()) return false;
+    console.warn('[ai] Lifting the hold on the Claude subscription: a sign-in check found it signed in');
+    return true;
   }
 
   noteLimit(scope: string, resetsAtSeconds: number | null, reason: string): void {
     const now = this.now();
     const requested = resetsAtSeconds ? resetsAtSeconds * 1000 : now + MIN_LIMIT_HOLD_MS;
     const until = Math.min(Math.max(requested, now + MIN_LIMIT_HOLD_MS), now + MAX_LIMIT_HOLD_MS);
-    this.set(scope || '*', until, reason || 'the usage limit was reached');
+    this.set(scope || '*', until, reason || 'the usage limit was reached', 'rateLimited');
   }
 
   noteUnavailable(model: string, reason: string): void {
-    this.set(model, this.now() + this.recoveryMs, reason || 'the service refused this model');
+    this.set(model, this.now() + this.recoveryMs, reason || 'the service refused this model', 'unavailable');
   }
 
   noteSuccess(model: string): void {

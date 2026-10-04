@@ -601,6 +601,24 @@ async function main() {
     });
     const pendingInvoice = String(pending.body?.redirectUrl ?? '').split('/').pop();
 
+    /*
+     * An unpaid order has no invoice, so nothing to print either. The Print
+     * button used to sit above whatever the page found, this included.
+     */
+    const readInvoice = () =>
+      page.evaluate(() => ({
+        print: document.querySelectorAll('[aria-label="Print invoice"]').length,
+        text: document.body.innerText,
+      }));
+    await page.goto(`${APP}/credits/invoice?payment=${pending.body.paymentId}`, { waitUntil: 'networkidle2' });
+    await wait(500);
+    const unpaidInvoice = await readInvoice();
+    check(
+      'an unpaid order has no invoice and no Print button',
+      unpaidInvoice.print === 0 && /No invoice yet/i.test(unpaidInvoice.text),
+      `print buttons: ${unpaidInvoice.print}; ${unpaidInvoice.text.slice(0, 200)}`
+    );
+
     // Land FIRST, unpaid, exactly as the redirect does.
     await page.goto(`${APP}/credits/return?payment=${pending.body.paymentId}`, {
       waitUntil: 'networkidle2',
@@ -622,6 +640,16 @@ async function main() {
       'the top-bar pill follows a payment that credits while the page is open',
       afterReturn > beforeReturn && pillAfter.includes(String(afterReturn)),
       `pill "${pillBefore}" -> "${pillAfter}", balance ${beforeReturn} -> ${afterReturn}`
+    );
+
+    // Once paid, the same order is an invoice, and the one thing to do with it is print it.
+    await page.goto(`${APP}/credits/invoice?payment=${pending.body.paymentId}`, { waitUntil: 'networkidle2' });
+    await wait(500);
+    const paidInvoice = await readInvoice();
+    check(
+      'a paid order is an invoice with a Print button',
+      paidInvoice.print === 1 && /Invoice Number/i.test(paidInvoice.text),
+      `print buttons: ${paidInvoice.print}; ${paidInvoice.text.slice(0, 200)}`
     );
 
     console.log('\n=== Crypto: the hand-off ===');

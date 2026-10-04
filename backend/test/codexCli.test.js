@@ -28,6 +28,15 @@ const { loadFresh, useTempStorage } = require('./helpers');
  * covered by reading a file.
  */
 
+/*
+ * AI_CODEX_BIN, and every binary below, point at a path that does not exist -
+ * as the Claude and Gemini suites do - so a code path that reached a real spawn
+ * would fail loudly rather than pass by accident on a machine that has Codex
+ * installed. The runner and the sign-in check are injected regardless.
+ */
+process.env.AI_CODEX_BIN = '/nonexistent/codex';
+const BINARY = '/nonexistent/codex';
+
 const FIXTURES = path.join(__dirname, 'fixtures', 'codex');
 
 function fixture(name) {
@@ -63,7 +72,7 @@ function replay(lines, outcome = {}) {
 const SIGNED_IN_WITH_CHATGPT = async () => ({
   ok: true,
   loggedIn: true,
-  binary: 'codex',
+  binary: BINARY,
   detail: 'Logged in using ChatGPT',
   checkedAt: new Date(0).toISOString(),
 });
@@ -77,7 +86,7 @@ function makeAdapter(t, { lines = [], answer = '', outcome = {}, config = {}, he
   const adapter = createCodexCliAdapter({
     runner,
     readAnswerFile: () => answer,
-    config: { binary: 'codex', ...config },
+    config: { binary: BINARY, ...config },
     healthCheck,
   });
   return { adapter, seen };
@@ -307,7 +316,7 @@ async function codexHealthSaying(said) {
     return { pid: 0 };
   };
   try {
-    return await checkCodexCliHealth({ binary: 'codex', env: {}, timeoutMs: 1_000 });
+    return await checkCodexCliHealth({ binary: BINARY, env: {}, timeoutMs: 1_000 });
   } finally {
     childProcess.execFile = real;
   }
@@ -364,7 +373,7 @@ test('a Codex sign-in check that fails or says nothing never blocks the seat', a
     async () => {
       throw new Error('spawn codex ETIMEDOUT');
     },
-    async () => ({ ok: false, loggedIn: false, binary: 'codex', detail: 'said nothing', checkedAt: '' }),
+    async () => ({ ok: false, loggedIn: false, binary: BINARY, detail: 'said nothing', checkedAt: '' }),
   ]) {
     const { adapter, seen } = makeAdapter(null, {
       lines: fixture('constructed-success.ndjson'),

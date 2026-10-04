@@ -227,7 +227,7 @@ export function classifyGeminiFailure(input: GeminiClassifyInput): GeminiFailure
 
 export type GeminiHoldKind = 'auth' | 'rateLimited' | 'modelUnavailable' | 'unavailable';
 
-type Hold = { until: number; reason: string; kind: GeminiHoldKind };
+type Hold = { until: number; reason: string; kind: GeminiHoldKind; since: number };
 
 /** Signing in is an operator's action, so a signed-out seat is left alone for a while. */
 const AUTH_HOLD_MS = 30 * 60_000;
@@ -261,11 +261,15 @@ const SIGN_IN_UNVERIFIED_LIMIT = 3;
  * is ACCOUNT-wide (scope '*') whatever the model, the delays come from the
  * error text rather than a rate-limit event, and each hold records its kind so
  * a turned-away call reports the right one. Recovery is passive: a hold expires
- * and the next real request is the probe.
+ * and the next real request is the probe - except a sign-in hold, which turns
+ * away the very success that would clear it, and is lifted instead by a sign-in
+ * written after it (`clearAuth`).
  */
 export class GeminiOutageTable {
   private readonly holds = new Map<string, Hold>();
   private unverifiedInARow = 0;
+  /** When the latest sign-in the CLI could not validate was noted. */
+  private lastUnverifiedAt = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -295,7 +299,9 @@ export class GeminiOutageTable {
     const existing = this.holds.get(key);
     // Logged once per hold, not once per request that runs into it.
     const isNew = !existing || existing.until <= this.now() || Math.abs(existing.until - until) > 60_000;
-    this.holds.set(key, { until, reason, kind });
+    // `since` is the latest time it was set: only a sign-in written after that
+    // may lift it.
+    this.holds.set(key, { until, reason, kind, since: this.now() });
     if (isNew) {
       const seconds = Math.max(1, Math.round((until - this.now()) / 1000));
       const span = seconds >= 120 ? `${Math.round(seconds / 60)} minute(s)` : `${seconds} second(s)`;
@@ -330,6 +336,7 @@ export class GeminiOutageTable {
    */
   noteSignInUnverified(reason: string): boolean {
     this.unverifiedInARow += 1;
+    this.lastUnverifiedAt = this.now();
     if (this.unverifiedInARow >= SIGN_IN_UNVERIFIED_LIMIT) {
       this.unverifiedInARow = 0;
       this.noteAuth(`${reason}; ${SIGN_IN_UNVERIFIED_LIMIT} times in a row, so treated as signed out`);
@@ -343,6 +350,25 @@ export class GeminiOutageTable {
     this.holds.delete(model);
     this.holds.delete('*');
     this.unverifiedInARow = 0;
+  }
+
+  /**
+   * A sign-in written at `signedInAt` (the credential file's modification
+   * time) lifts a sign-in hold set BEFORE it, and forgets the unvalidated
+   * sign-ins counted before it. Keyed on the file, not on a check finding it:
+   * the check only reads the file, so it says "signed in" for a token Google
+   * has revoked too - which is exactly the escalated hold. Only signing in
+   * again writes the file. True when it lifted a hold.
+   */
+  clearAuth(signedInAt: number): boolean {
+    if (!Number.isFinite(signedInAt)) return false;
+    if (signedInAt > this.lastUnverifiedAt) this.unverifiedInARow = 0;
+    const hold = this.holds.get('*');
+    if (!hold || hold.kind !== 'auth' || signedInAt <= hold.since) return false;
+    this.holds.delete('*');
+    if (hold.until <= this.now()) return false;
+    console.warn('[ai] Lifting the hold on the Gemini seat: it was signed in again after the hold began');
+    return true;
   }
 
   snapshot(): Array<{ scope: string; reason: string; expiresAt: string }> {

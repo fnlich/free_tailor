@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
-import { readEnvFileText } from './envFile';
+import { applyEnvFile, readEnvFileText } from './envFile';
 
 /**
  * Loads the repository `.env`, and does it FIRST.
@@ -12,8 +12,18 @@ import { readEnvFileText } from './envFile';
  * `process.env.AI_CLI_MODEL` in aiModelCatalog never saw the file at all.
  * Putting the load in its own module makes "first import wins" do the work.
  *
- * `override: true` semantics are preserved below: the checked-in `.env` beats
- * whatever the shell happens to export.
+ * The ENVIRONMENT beats the file: a variable already set when the process
+ * starts keeps its value, and the file fills in only what is missing. That is
+ * dotenv's own default, how systemd's Environment=, `docker run -e` and
+ * compose's `environment:` are meant to work, and what the frontend half has
+ * always done (frontend/scripts/next.mjs, which must agree with this - change
+ * the two together). It used to be the other way round here, inherited from
+ * the first single-file service, so `DB_DIR=/tmp/x node dist/index.js` was
+ * silently ignored whenever the file set DB_DIR, and `PORT=4000` moved the
+ * frontend to port 4000 while the backend stayed on the file's 3001.
+ *
+ * A name set in both with different values is said once at startup, by NAME
+ * only, so an install that relied on the file winning sees the change.
  */
 
 /**
@@ -24,8 +34,10 @@ import { readEnvFileText } from './envFile';
  */
 export const ENV_PATH = path.join(__dirname, '../../../.env');
 
-const parsed = dotenv.parse(readEnvFileText(ENV_PATH));
-for (const [key, value] of Object.entries(parsed)) {
-  process.env[key] = value;
+const { shadowed } = applyEnvFile(dotenv.parse(readEnvFileText(ENV_PATH)), process.env);
+if (shadowed.length > 0) {
+  console.warn(
+    `[env] ${shadowed.join(', ')} ${shadowed.length === 1 ? 'is' : 'are'} set both in the environment and in ` +
+      `${ENV_PATH}; the environment's value is used.`
+  );
 }
-

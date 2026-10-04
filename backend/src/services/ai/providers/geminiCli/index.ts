@@ -1,15 +1,18 @@
 import crypto from 'crypto';
+import fs from 'fs';
 
 import { getProviderLabel } from '../../../../config/providerCatalog';
 import type { AIProvider } from '../../../../types/template';
 import { AIProviderError, asAIProviderError, type AIErrorKind } from '../../errors';
 import { acquireSlot, getProviderSemaphore } from '../../concurrency';
+import { JSON_BEGIN_SENTINEL, JSON_END_SENTINEL } from '../../jsonSentinels';
 import { warnOnce } from '../../telemetry';
 import type {
   AIProviderAdapter,
   CompletionRequest,
   CompletionResult,
   DroppedParam,
+  HealthOptions,
   ProviderCapabilities,
   ProviderHealth,
 } from '../../types';
@@ -50,6 +53,17 @@ import {
 } from './workspace';
 
 const PROVIDER_ID = 'gemini-cli' satisfies AIProvider;
+
+/**
+ * Whether the LAST begin sentinel has no end sentinel after it - the same
+ * "last begin, first end after it" reading the extractor takes, so a model
+ * that quotes the instruction before obeying it is judged by its real answer.
+ */
+function openedSentinelNeverClosed(text: string): boolean {
+  const begin = text.lastIndexOf(JSON_BEGIN_SENTINEL);
+  if (begin === -1) return false;
+  return !text.includes(JSON_END_SENTINEL, begin + JSON_BEGIN_SENTINEL.length);
+}
 
 export type GeminiCliAdapterOptions = {
   /** Injected in tests so the suite never spawns a process. */
@@ -123,12 +137,20 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     return buildGeminiChildEnv(process.env, { home: config.home });
   }
 
-  async function health(): Promise<ProviderHealth> {
-    if (cachedHealth && now() - cachedHealth.at < 60_000) return cachedHealth.value;
+  async function health(healthOptions: HealthOptions = {}): Promise<ProviderHealth> {
+    if (!healthOptions.fresh && cachedHealth && now() - cachedHealth.at < 60_000) return cachedHealth.value;
     const check = options.healthCheck ?? checkGeminiCliHealth;
     try {
       const value = await check({ binary: config.binary, env: baseEnv() });
       cachedHealth = { value, at: now() };
+      // A sign-in hold turns away the success that would clear it, so a sign-in
+      // written after the hold lifts it instead. By the file's time, not by
+      // this check saying "signed in": the check only reads the file, and says
+      // that for a revoked token too.
+      if (value.loggedIn === true) {
+        const signedInAt = credentialsWrittenAt(value.meta?.credentialsFile);
+        if (signedInAt !== null) outages.clearAuth(signedInAt);
+      }
       return value;
     } catch (error) {
       return {
@@ -136,6 +158,16 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
         detail: error instanceof Error ? error.message : String(error),
         checkedAt: new Date().toISOString(),
       };
+    }
+  }
+
+  /** When the sign-in file the check read was last written, or null. */
+  function credentialsWrittenAt(file: unknown): number | null {
+    if (typeof file !== 'string' || !file) return null;
+    try {
+      return fs.statSync(file).mtimeMs;
+    } catch {
+      return null;
     }
   }
 
@@ -369,12 +401,27 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
         throw fail('malformedOutput', 'the model returned an empty response');
       }
 
-      // Said once: the envelope reports a response cut off by the output limit
-      // as an ordinary success (verified), so nothing here can catch one.
+      // The envelope reports a response cut off by the output limit as an
+      // ordinary success (verified), and names no finish reason once any text
+      // arrived. A JSON answer still gives it away: this seat has no JSON mode,
+      // so it is always asked to wrap the document in sentinels, and one that
+      // opened them and never closed them stopped mid-document. Refused here,
+      // as Claude's truncation is, because downstream it does NOT fail: the
+      // extractor's balanced scan finds the first complete inner object and
+      // returns that fragment as the answer.
+      if (request.responseFormat === 'json' && openedSentinelNeverClosed(text)) {
+        throw fail(
+          'truncated',
+          `the answer opened ${JSON_BEGIN_SENTINEL} and never closed it, so it was cut off at the output limit`
+        );
+      }
+
+      // Said once: a PROSE answer cut short has no such marker, so nothing here
+      // can catch one.
       warnOnce(
         'gemini-no-truncation-signal',
-        'The Gemini CLI reports a response cut off by the model output limit as a success, so this seat ' +
-          'cannot detect one. Downstream JSON parsing is the remaining guard.'
+        'The Gemini CLI reports a response cut off by the model output limit as a success. A JSON answer ' +
+          'that never closes its sentinels is refused as truncated; a text answer cut short cannot be detected.'
       );
 
       outages.noteSuccess(model);

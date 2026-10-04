@@ -72,6 +72,7 @@ export default function TopBar({
   onGoogleSheetsChanged,
   onProfilesChanged,
   promptTemplate,
+  canEditPromptTemplate,
   onPromptTemplateSaved
 }) {
   const [showImportModal, setShowImportModal] = useState(false);
@@ -535,11 +536,16 @@ export default function TopBar({
               <IconClose />
             </button>
 
+            {/* One template for every account, so the server lets only an
+                administrator change it and says which this is (canEdit).
+                Everybody else reads what Ask AI will send. */}
             <div className="section-header modal-header">
               <div className="modal-header-copy">
                 <h2>Prompt Template</h2>
                 <p className="muted-text">
-                  Edit the global Ask AI prompt here. The Ask AI modal will use this template automatically.
+                  {canEditPromptTemplate
+                    ? 'Edit the global Ask AI prompt here. The Ask AI modal will use this template automatically.'
+                    : 'The Ask AI modal uses this prompt for every account. Only an administrator can change it.'}
                 </p>
               </div>
             </div>
@@ -547,6 +553,7 @@ export default function TopBar({
             <textarea
               className="tl-input prompt-editor"
               value={promptTemplateDraft}
+              readOnly={!canEditPromptTemplate}
               onChange={(event) => {
                 setPromptTemplateDraft(event.target.value);
                 setPromptMessage('');
@@ -556,11 +563,13 @@ export default function TopBar({
               spellCheck={false}
             />
 
-            <div className="form-actions">
-              <button className="tl-button" onClick={handleSavePromptTemplate} disabled={isSavingPrompt}>
-                {isSavingPrompt ? 'Saving...' : 'Save Prompt'}
-              </button>
-            </div>
+            {canEditPromptTemplate && (
+              <div className="form-actions">
+                <button className="tl-button" onClick={handleSavePromptTemplate} disabled={isSavingPrompt}>
+                  {isSavingPrompt ? 'Saving...' : 'Save Prompt'}
+                </button>
+              </div>
+            )}
 
             <p className="muted-text prompt-hint">
               Available placeholders: {promptTokenText}
@@ -704,21 +713,26 @@ export default function TopBar({
                         <strong>{sheet.label}</strong>
                         <span>{sheet.sheet_id}</span>
                       </button>
-                      <div className="source-row-actions">
-                        <button
-                          className="text-button"
-                          onClick={() => startEditingSheet(sheet)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="text-button danger-text"
-                          onClick={() => handleDeleteSheet(sheet.id)}
-                          disabled={isDeletingSheet}
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      {/* The server says which rows this account may change:
+                          its own, or any for an administrator. A source saved
+                          before sources had owners is the administrator's. */}
+                      {sheet.canEdit === true && (
+                        <div className="source-row-actions">
+                          <button
+                            className="text-button"
+                            onClick={() => startEditingSheet(sheet)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="text-button danger-text"
+                            onClick={() => handleDeleteSheet(sheet.id)}
+                            disabled={isDeletingSheet}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
 

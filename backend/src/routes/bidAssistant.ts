@@ -5,7 +5,7 @@ const Papa = require('papaparse');
 const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
 const profileRepository = require('../database/profileRepository');
-const { requireUser } = require('../middleware/auth');
+const { isAdmin, requireAdmin, requireUser } = require('../middleware/auth');
 const { isPublicError, PublicError, sendPublicError } = require('../middleware/publicError');
 const {
   assertSheetNotOwnedByAnotherAccount,
@@ -38,7 +38,7 @@ const {
   getAnswerById,
   getAnswersByJobId,
   deleteAnswer,
-  getGoogleSheets,
+  getGoogleSheetsForAccount,
   getGoogleSheetById,
   createGoogleSheet,
   updateGoogleSheet,
@@ -509,6 +509,55 @@ function validateImportRange(payload) {
   };
 }
 
+/*
+ * Saved sources belong to the account that saved them.
+ *
+ * They had no owner - this was a single-user tool - so any signed-in account
+ * could rename or delete anybody's. Now an account sees its own and the
+ * owner-less ones saved before sources had owners; it may change its own, and
+ * only an administrator may change an owner-less one (or, by id, anybody's -
+ * the list shows an administrator the same two kinds). A source somebody else
+ * owns is "not found", not "forbidden", as a profile is: a 403 would confirm
+ * that a source with that id exists. The owner's id never leaves the server.
+ */
+class SourceNotFoundError extends PublicError {
+  constructor() {
+    super('Google Sheet source not found.', { status: 404 });
+    this.name = 'SourceNotFoundError';
+  }
+}
+
+class SourceNotEditableError extends PublicError {
+  constructor() {
+    super('This Google Sheet source was saved before sources had owners, so only an administrator can change it.', {
+      status: 403,
+    });
+    this.name = 'SourceNotEditableError';
+  }
+}
+
+function canSeeSource(req, sheet) {
+  return !sheet.account_id || sheet.account_id === String(req.user?.id) || isAdmin(req);
+}
+
+function canEditSource(req, sheet) {
+  return isAdmin(req) || (Boolean(sheet.account_id) && sheet.account_id === String(req.user?.id));
+}
+
+// A source as its reader receives it: what they may do with it, never whose it is.
+function sourceForReader(req, sheet) {
+  const { account_id: _owner, ...rest } = sheet;
+  return { ...rest, canEdit: canEditSource(req, sheet) };
+}
+
+// One source by id, if the reader may see it (and, with `edit`, change it).
+function readSource(req, id, { edit = false } = {}) {
+  const sheet = Number.isInteger(id) ? getGoogleSheetById(id) : null;
+  if (!sheet || !canSeeSource(req, sheet)) throw new SourceNotFoundError();
+  if (edit && !canEditSource(req, sheet)) throw new SourceNotEditableError();
+  return sheet;
+}
+
 // Imports a batch of jobs into SQLite.
 router.post('/import-jobs', async (req, res) => {
   try {
@@ -520,10 +569,10 @@ router.post('/import-jobs', async (req, res) => {
   }
 });
 
-// Returns all saved Google Sheet sources.
+// Returns the reader's saved Google Sheet sources, and the owner-less ones.
 router.get('/google-sheets', async (req, res) => {
   try {
-    res.json(getGoogleSheets());
+    res.json(getGoogleSheetsForAccount(req.user.id).map((sheet) => sourceForReader(req, sheet)));
   } catch (error) {
     sendPublicError(req, res, error, 'Could not load the Google Sheet sources');
   }
@@ -532,12 +581,7 @@ router.get('/google-sheets', async (req, res) => {
 // Returns the available tabs for one saved Google Sheet source.
 router.get('/google-sheets/:id/tabs', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const sheet = getGoogleSheetById(id);
-
-    if (!sheet) {
-      return res.status(404).json({ error: 'Google Sheet source not found.' });
-    }
+    const sheet = readSource(req, Number(req.params.id));
 
     // Checked on the way out as well as on the way in: a row saved before this
     // guard existed, or before its spreadsheet was allocated to somebody, would
@@ -560,8 +604,8 @@ router.post('/google-sheets', async (req, res) => {
     // source would be a way to read somebody else's sheet through a feature
     // that never had an owner concept.
     assertSheetNotOwnedByAnotherAccount(req.user, payload.sheet_id);
-    const sheet = createGoogleSheet(payload);
-    res.json(sheet);
+    const sheet = createGoogleSheet(payload, req.user.id);
+    res.json(sourceForReader(req, sheet));
   } catch (error) {
     sendPublicError(req, res, publicSourceError(error), 'Could not save that Google Sheet source');
   }
@@ -570,17 +614,12 @@ router.post('/google-sheets', async (req, res) => {
 // Updates one saved Google Sheet source.
 router.put('/google-sheets/:id', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const existingSheet = getGoogleSheetById(id);
-
-    if (!existingSheet) {
-      return res.status(404).json({ error: 'Google Sheet source not found.' });
-    }
+    const existingSheet = readSource(req, Number(req.params.id), { edit: true });
 
     const payload = validateGoogleSheetPayload(req.body || {});
     assertSheetNotOwnedByAnotherAccount(req.user, payload.sheet_id);
-    const sheet = updateGoogleSheet(id, payload);
-    res.json(sheet);
+    const sheet = updateGoogleSheet(existingSheet.id, payload);
+    res.json(sourceForReader(req, sheet));
   } catch (error) {
     sendPublicError(req, res, publicSourceError(error), 'Could not save that Google Sheet source');
   }
@@ -589,14 +628,9 @@ router.put('/google-sheets/:id', async (req, res) => {
 // Deletes one saved Google Sheet source.
 router.delete('/google-sheets/:id', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const existingSheet = getGoogleSheetById(id);
+    const existingSheet = readSource(req, Number(req.params.id), { edit: true });
 
-    if (!existingSheet) {
-      return res.status(404).json({ error: 'Google Sheet source not found.' });
-    }
-
-    deleteGoogleSheet(id);
+    deleteGoogleSheet(existingSheet.id);
     res.json({ message: 'Google Sheet source deleted successfully.' });
   } catch (error) {
     sendPublicError(req, res, error, 'Could not delete that Google Sheet source');
@@ -606,12 +640,7 @@ router.delete('/google-sheets/:id', async (req, res) => {
 // Imports jobs from a saved Google Sheet source.
 router.post('/google-sheets/:id/import', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    const sheet = getGoogleSheetById(id);
-
-    if (!sheet) {
-      return res.status(404).json({ error: 'Google Sheet source not found.' });
-    }
+    const sheet = readSource(req, Number(req.params.id));
 
     assertSheetNotOwnedByAnotherAccount(req.user, sheet.sheet_id);
     const tabName = validateImportTabName(req.body || {});
@@ -662,8 +691,10 @@ router.get('/jobs/copy-links', async (req, res) => {
   }
 });
 
-// Deletes one job and all saved answers attached to it.
-router.delete('/jobs/:jobId', async (req, res) => {
+// Deletes one job and all saved answers attached to it. The board is shared,
+// and a job takes every account's saved answers for it with it, so this is the
+// administrator's call; marking a job as an error stays open to everybody.
+router.delete('/jobs/:jobId', requireAdmin, async (req, res) => {
   try {
     const jobId = Number(req.params.jobId);
 
@@ -702,17 +733,21 @@ router.put('/jobs/:jobId/error', async (req, res) => {
   }
 });
 
-// Returns the persisted Ask AI prompt template.
+// Returns the persisted Ask AI prompt template, and whether the reader may
+// change it. It is ONE template, the default for every account's Ask AI - the
+// page calls it "the global Ask AI prompt" - so it is changed the way every
+// other prompt in the app is: by an administrator. Anybody may still send a
+// template of their own with a single /ask.
 router.get('/settings/prompt-template', async (req, res) => {
   try {
-    res.json(getPromptTemplateSetting());
+    res.json({ ...getPromptTemplateSetting(), canEdit: isAdmin(req) });
   } catch (error) {
     sendPublicError(req, res, error, 'Could not load the prompt template');
   }
 });
 
 // Saves the Ask AI prompt template as a persistent app setting.
-router.put('/settings/prompt-template', async (req, res) => {
+router.put('/settings/prompt-template', requireAdmin, async (req, res) => {
   try {
     const promptTemplate = validatePromptTemplatePayload(req.body || {});
     const savedSetting = setAppSetting(promptTemplateSettingKey, promptTemplate);
@@ -774,12 +809,16 @@ router.delete('/profiles/:profileId', (req, res) => {
   }
 });
 
-// Returns saved answers for one job grouped by profile id.
+// Returns saved answers for one job grouped by profile id - the READER's
+// profiles only. The job board is shared, but the answers are written for a
+// profile, and profiles belong to accounts: unfiltered, this handed every
+// account everybody's answers, keyed by profile id.
 router.get('/answers/:jobId', async (req, res) => {
   try {
     const jobId = Number(req.params.jobId);
     const answers = getAnswersByJobId(jobId);
-    res.json(answers);
+    const own = new Set(readAllProfiles(req.user).map((profile) => profile.id));
+    res.json(Object.fromEntries(Object.entries(answers).filter(([profileId]) => own.has(profileId))));
   } catch (error) {
     sendPublicError(req, res, error, 'Could not load the saved answers');
   }
@@ -800,6 +839,9 @@ router.delete('/answers/:jobId', async (req, res) => {
       return res.status(400).json({ error: 'Profile id and question are required.' });
     }
 
+    // Resolved through the reader first, so this cannot delete an answer
+    // written for somebody else's profile.
+    readProfile(profileId, req.user);
     deleteAnswer(jobId, profileId, question);
     res.json({ message: 'Answer deleted successfully.' });
   } catch (error) {

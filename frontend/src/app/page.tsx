@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import {
   adminApi,
+  ApiResponseError,
   profilesApi,
   groupsApi,
   resumeApi,
@@ -39,6 +40,7 @@ import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
 import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
+import { nextAttach } from '@/lib/batchFollow';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
@@ -786,22 +788,38 @@ export default function Home() {
      * connection rather than the run.
      *
      * Every line is a complete snapshot, so rejoining costs nothing and needs no
-     * reconciliation. Bounded so a batch the server has genuinely forgotten
-     * cannot spin here for ever.
+     * reconciliation. Bounded by attaches that brought NOTHING, in a row
+     * (lib/batchFollow): every attach that connects opens with a snapshot, so a
+     * long batch behind a proxy that cuts it every minute follows to the end,
+     * while a server refusing the stream outright stops it after twenty. A 404
+     * - restarted or expired - stops it at once: asking again cannot help.
      */
-    const MAX_REATTACHES = 20;
-    for (let attempt = 0; attempt <= MAX_REATTACHES; attempt += 1) {
+    let idleInARow = 0;
+    for (;;) {
+      let delivered = 0;
       try {
-        await generationApi.follow(batchId, show);
+        await generationApi.follow(batchId, (snapshot) => {
+          delivered += 1;
+          show(snapshot);
+        });
       } catch {
         // A dropped stream is not a failed batch - the work is the server's.
         // Fall through to the snapshot below, which is the authority.
       }
 
-      last = (await generationApi.snapshot(batchId).catch(() => last)) ?? last;
+      let gone = false;
+      try {
+        last = await generationApi.snapshot(batchId);
+      } catch (error) {
+        // Anything but a 404 (offline, a restart in progress) keeps the last
+        // snapshot and tries again.
+        gone = error instanceof ApiResponseError && error.status === 404;
+      }
       if (!last || last.state !== 'running') break;
 
-      if (attempt === MAX_REATTACHES) break;
+      const next = nextAttach(idleInARow, { delivered, gone });
+      if (next.stop) break;
+      idleInARow = next.idleInARow;
       // A short pause, so a server that is refusing the stream outright does
       // not turn this into a tight loop.
       await new Promise((resolve) => setTimeout(resolve, 1000));

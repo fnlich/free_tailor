@@ -7,18 +7,10 @@ import {
   type RenderedPromptSegment,
 } from '../promptService';
 
-/**
- * The sentinels a provider with no JSON mode is asked to wrap its JSON in.
- *
- * Deliberately not markdown. A fence is the obvious choice and a weak one: a
- * model fences an example as readily as it fences the answer, and nothing about
- * a fence says which one it is. These are ordinary text - no character in them
- * means anything to a markdown parser, so nothing that renders or reformats the
- * reply can strip them - and they are ugly enough that no model emits them by
- * accident, so what lies between them is the answer by construction.
- */
-export const JSON_BEGIN_SENTINEL = '@@BEGIN_JSON@@';
-export const JSON_END_SENTINEL = '@@END_JSON@@';
+// The sentinels live in a module of their own, with nothing behind it, so a
+// provider can read them without loading the prompt store this file needs.
+import { JSON_BEGIN_SENTINEL, JSON_END_SENTINEL } from './jsonSentinels';
+export { JSON_BEGIN_SENTINEL, JSON_END_SENTINEL };
 
 /**
  * What to say to a provider that ENFORCES JSON.
