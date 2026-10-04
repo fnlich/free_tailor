@@ -130,8 +130,9 @@ function keysOwnedByFrontendEnvFiles() {
  * agree about every variable - before it did, `PORT=4000` in a shell moved the
  * frontend's derived API URL to 4000 while the backend stayed on the file's
  * port, and every call failed. Change the two together. A name set in both
- * with different values is said once, by NAME only, exactly as the backend
- * says it.
+ * with different values is said once, by NAME only, in the sentence the
+ * backend's describeShadowed (config/envFile.ts) builds - this cannot import
+ * that, so the two copies must stay alike.
  */
 const frontendOwned = keysOwnedByFrontendEnvFiles();
 const rootEnvPath = join(repoRoot, '.env');

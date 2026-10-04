@@ -66,7 +66,7 @@ function addressOf(from: string): string {
   return (angled ? angled[1] : from).trim();
 }
 
-async function main(): Promise<number> {
+export async function main(envPath: string = ENV_PATH): Promise<number> {
   console.log('Mail doctor\n');
 
   const steps: Step[] = [
@@ -82,7 +82,7 @@ async function main(): Promise<number> {
        */
       title: 'Locate the .env',
       run: async () => {
-        const file = summarizeEnvFile(ENV_PATH);
+        const file = summarizeEnvFile(envPath);
         if (!file.exists) {
           throw new Error(`No file at ${file.path}`);
         }
@@ -275,6 +275,9 @@ async function main(): Promise<number> {
 }
 
 /*
+ * Only when run as a script, so a test can import this and walk it against a
+ * .env of its own without sending anything.
+ *
  * `exitCode` rather than `process.exit()`: on Windows, exiting outright just
  * after network I/O races Node's teardown and aborts with "Assertion failed:
  * !(handle->flags & UV_HANDLE_CLOSING)" - see the same block in sheetsDoctor.ts.
@@ -289,15 +292,17 @@ async function main(): Promise<number> {
  * process open forever after the report printed. Unref'd: it never delays a
  * clean exit, and by the time it fires the teardown race is long past.
  */
-main()
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((error) => {
-    console.error('The doctor itself failed:', error);
-    process.exitCode = 1;
-  })
-  .finally(() => {
-    closeMailTransport();
-    setTimeout(() => process.exit(), 3_000).unref();
-  });
+if (require.main === module) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      console.error('The doctor itself failed:', error);
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      closeMailTransport();
+      setTimeout(() => process.exit(), 3_000).unref();
+    });
+}

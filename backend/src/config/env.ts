@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
-import { applyEnvFile, readEnvFileText } from './envFile';
+import { applyEnvFile, describeShadowed, readEnvFileText } from './envFile';
 
 /**
  * Loads the repository `.env`, and does it FIRST.
@@ -35,9 +35,5 @@ import { applyEnvFile, readEnvFileText } from './envFile';
 export const ENV_PATH = path.join(__dirname, '../../../.env');
 
 const { shadowed } = applyEnvFile(dotenv.parse(readEnvFileText(ENV_PATH)), process.env);
-if (shadowed.length > 0) {
-  console.warn(
-    `[env] ${shadowed.join(', ')} ${shadowed.length === 1 ? 'is' : 'are'} set both in the environment and in ` +
-      `${ENV_PATH}; the environment's value is used.`
-  );
-}
+const shadowedLine = describeShadowed(shadowed, ENV_PATH);
+if (shadowedLine) console.warn(shadowedLine);

@@ -74,6 +74,22 @@ export function applyEnvFile(
   return { applied, shadowed };
 }
 
+/**
+ * The startup line for names set both in the environment and in the file, or
+ * null when there are none.
+ *
+ * It takes NAMES and nothing else, so it cannot print a value: the line goes to
+ * a terminal and a log, and one of these is a key. frontend/scripts/next.mjs,
+ * which cannot import this, prints the same sentence - change the two together.
+ */
+export function describeShadowed(names: string[], envPath: string): string | null {
+  if (names.length === 0) return null;
+  return (
+    `[env] ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} set both in the environment and in ` +
+    `${envPath}; the environment's value is used.`
+  );
+}
+
 /** Names `parsed` sets that `env` holds a different value for. */
 function shadowedNames(parsed: Record<string, string>, env: NodeJS.ProcessEnv): string[] {
   return Object.entries(parsed)

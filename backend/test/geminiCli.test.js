@@ -817,6 +817,36 @@ test('a sign-in written after the hold lifts it, at the next seat check', async 
   assert.equal(runner.calls.length, 2);
 });
 
+test('a cached seat check lifts nothing; only a fresh one, as the admin Settings page asks for, does', async () => {
+  // The hold is lifted on the uncached branch alone, so a reading from the
+  // last minute - the startup check, an earlier page load - must not stand in
+  // for the fresh one the page asks for after the operator signs back in.
+  const clock = { now: Date.now() };
+  let signedIn = false;
+  const runner = makeFakeCliRunner(() => (signedIn ? { lines: lines('constructed-success.ndjson') } : SIGNED_OUT()));
+  const { adapter, home } = makeSignInSeat(runner, clock);
+
+  await adapter.health();
+  const error = await failureOf(adapter.complete(makeRequest()));
+  assert.equal(error.kind, 'auth');
+  assert.equal(adapter.outages().length, 1);
+
+  clock.now += 10_000;
+  writeSignIn(home);
+  touchSignIn(home, clock.now);
+  signedIn = true;
+  clock.now += 10_000;
+
+  await adapter.health();
+  assert.equal(adapter.outages().length, 1, 'a reading from within the minute lifts nothing');
+  assert.equal((await failureOf(adapter.complete(makeRequest()))).kind, 'auth');
+
+  await adapter.health({ fresh: true });
+  assert.deepEqual(adapter.outages(), []);
+  assert.equal((await adapter.complete(makeRequest())).text, '{"capital": "Paris"}');
+  assert.equal(runner.calls.length, 2);
+});
+
 test('the escalated hold for a revoked token stays while the sign-in file is unchanged', async () => {
   // The check only READS the file, so it says "signed in" for a token Google
   // has revoked - which is exactly what three unvalidated sign-ins in a row
@@ -878,6 +908,17 @@ test('the outage table: a sign-in after the hold lifts it, one before it does no
   assert.equal(table.check('auto').kind, 'auth');
   assert.equal(table.clearAuth(now + 1), true);
   assert.equal(table.check('auto').waitMs, 0);
+
+  // A refusal while the hold is LIVE renews it, and moves its time on: a
+  // sign-in written between the first refusal and the second is not news
+  // about the second, and must not lift it.
+  table.noteAuth('signed out');
+  const signedInAt = now + 1_000;
+  now += 2_000;
+  table.noteAuth('signed out');
+  assert.equal(table.clearAuth(signedInAt), false, 'a sign-in from before the renewal');
+  assert.equal(table.check('auto').kind, 'auth');
+  assert.equal(table.clearAuth(now + 1), true, 'one after it still does');
 
   table.noteLimit(60, 'quota');
   table.noteModelUnavailable('pro', 'not for this account');

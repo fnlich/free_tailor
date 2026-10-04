@@ -486,13 +486,16 @@ test('each hold records what it is for, and only a sign-in hold set before a che
   assert.equal(table.check('sonnet').waitMs, 0);
   assert.deepEqual(table.snapshot(), []);
 
-  // A refusal that RENEWS the hold moves its time on, so an older check
-  // cannot lift the newer refusal.
-  const probeStartedAt = now;
-  now += 1_000;
+  // A refusal while the hold is LIVE renews it, and moves its time on: a
+  // check that started between the first refusal and the second is not news
+  // about the second, and must not lift it.
+  table.noteAuth('Invalid authentication. Please run /login');
+  const probeStartedAt = now + 1_000;
+  now += 2_000;
   table.noteAuth('Invalid authentication. Please run /login');
   assert.equal(table.clearAuth(probeStartedAt), false);
   assert.ok(table.check('sonnet').waitMs > 0);
+  assert.equal(table.clearAuth(now + 1), true, 'a check that started after the renewal still lifts it');
 
   // Signing in fixes neither a spent window nor a refused model.
   table.clear();

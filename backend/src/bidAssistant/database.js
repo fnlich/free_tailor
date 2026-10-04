@@ -155,6 +155,22 @@ db.exec(`
   WHERE question_order IS NULL;
 `);
 
+/*
+ * Answers whose profile is gone. Deleting a profile deletes its answers now
+ * (profileRepository.deleteProfile); before that they stayed, keyed by an id a
+ * new profile may take - the Bid Assistant accepts a chosen id and an import
+ * keeps any free one - and that profile's account then read them as its own.
+ * Swept on every start, which after the first finds nothing.
+ */
+const orphanedAnswerCount = db.prepare(`
+  DELETE FROM answers
+  WHERE NOT EXISTS (SELECT 1 FROM profiles WHERE profiles.id = answers.profile_id)
+`).run().changes;
+
+if (orphanedAnswerCount > 0) {
+  console.log(`[bid-assistant] Removed ${orphanedAnswerCount} saved answer(s) whose profile no longer exists.`);
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS google_sheets (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,14 +230,23 @@ const insertJobStatement = db.prepare(`
   )
 `);
 
-const listJobsStatement = db.prepare(`
-  SELECT
-    jobs.*,
+/*
+ * `has_answers` is the READER's: answered by one of the profiles in
+ * @profileIds, a JSON array. The board is shared and the answers are not, so
+ * counting every account's answers marked a job "Answered" for somebody who
+ * had none on it, and told them which jobs other accounts had answered.
+ */
+const READER_HAS_ANSWERS = `
     EXISTS(
       SELECT 1
       FROM answers
       WHERE answers.job_id = jobs.id
-    ) AS has_answers
+        AND answers.profile_id IN (SELECT value FROM json_each(@profileIds))
+    ) AS has_answers`;
+
+const listJobsStatement = db.prepare(`
+  SELECT
+    jobs.*,${READER_HAS_ANSWERS}
   FROM jobs
   WHERE
     (
@@ -339,6 +364,30 @@ const listGoogleSheetsForAccountStatement = db.prepare(`
   ORDER BY label COLLATE NOCASE ASC, id ASC
 `);
 
+/*
+ * The same for an administrator, plus the sources of accounts that have been
+ * deleted. Deleting an account leaves its rows (nothing of somebody's is
+ * deleted with their login), and with no owner left to list them they were in
+ * nobody's list while their labels, unique across the table, stayed taken.
+ * Listed here they are the administrator's to change or delete, as an
+ * orphaned profile is. Not made owner-less: that would list them for everybody.
+ */
+const listGoogleSheetsForAdminStatement = db.prepare(`
+  SELECT
+    google_sheets.id,
+    google_sheets.label,
+    google_sheets.sheet_id,
+    google_sheets.account_id,
+    google_sheets.created_at,
+    google_sheets.updated_at
+  FROM google_sheets
+  LEFT JOIN users ON users.id = google_sheets.account_id
+  WHERE google_sheets.account_id = ?
+    OR google_sheets.account_id IS NULL
+    OR users.id IS NULL
+  ORDER BY google_sheets.label COLLATE NOCASE ASC, google_sheets.id ASC
+`);
+
 const getGoogleSheetByIdStatement = db.prepare(`
   SELECT
     id,
@@ -386,15 +435,16 @@ const deleteGoogleSheetStatement = db.prepare(`
 
 const getJobByIdStatement = db.prepare(`
   SELECT
-    jobs.*,
-    EXISTS(
-      SELECT 1
-      FROM answers
-      WHERE answers.job_id = jobs.id
-    ) AS has_answers
+    jobs.*,${READER_HAS_ANSWERS}
   FROM jobs
-  WHERE jobs.id = ?
+  WHERE jobs.id = @jobId
   LIMIT 1
+`);
+
+const hasJobStatement = db.prepare(`
+  SELECT 1
+  FROM jobs
+  WHERE id = ?
 `);
 
 const updateJobErrorStatement = db.prepare(`
@@ -475,12 +525,19 @@ function importJobs(jobs) {
   return insertMany(jobs);
 }
 
-// Returns jobs filtered by search text and posted date.
-function getJobs(search = '', date = '') {
+// The reader's profile ids as the statements take them. None, and no job reads as answered.
+function profileIdsParameter(profileIds) {
+  return JSON.stringify(Array.isArray(profileIds) ? profileIds.map(String) : []);
+}
+
+// Returns jobs filtered by search text and posted date, `has_answers` meaning
+// answered by one of `profileIds` - the reader's own profiles.
+function getJobs(search = '', date = '', profileIds = []) {
   return listJobsStatement.all({
     search,
     searchLike: `%${search}%`,
-    date
+    date,
+    profileIds: profileIdsParameter(profileIds)
   }).map((job) => ({
     ...job,
     is_error: Boolean(job.is_error),
@@ -488,9 +545,9 @@ function getJobs(search = '', date = '') {
   }));
 }
 
-// Returns one job row by id.
-function getJobById(jobId) {
-  const job = getJobByIdStatement.get(jobId);
+// Returns one job row by id, `has_answers` as getJobs reads it.
+function getJobById(jobId, profileIds = []) {
+  const job = getJobByIdStatement.get({ jobId, profileIds: profileIdsParameter(profileIds) });
 
   if (!job) {
     return null;
@@ -503,21 +560,20 @@ function getJobById(jobId) {
   };
 }
 
-// Updates the error marker and reason for one job row.
-function updateJobError(jobId, isError, errorReason) {
+// Updates the error marker and reason for one job row, and returns it as the
+// reader with `profileIds` reads it.
+function updateJobError(jobId, isError, errorReason, profileIds = []) {
   updateJobErrorStatement.run({
     id: jobId,
     is_error: isError ? 1 : 0,
     error_reason: isError ? errorReason : null
   });
 
-  return getJobById(jobId);
+  return getJobById(jobId, profileIds);
 }
 
 const deleteJobTransaction = db.transaction((jobId) => {
-  const existingJob = getJobByIdStatement.get(jobId);
-
-  if (!existingJob) {
+  if (!hasJobStatement.get(jobId)) {
     return false;
   }
 
@@ -648,6 +704,11 @@ function getGoogleSheetsForAccount(accountId) {
   return listGoogleSheetsForAccountStatement.all(String(accountId));
 }
 
+// The same for an administrator, with the sources of deleted accounts too.
+function getGoogleSheetsForAdmin(accountId) {
+  return listGoogleSheetsForAdminStatement.all(String(accountId));
+}
+
 // Returns one Google Sheet source by id, whoever owns it.
 function getGoogleSheetById(id) {
   return getGoogleSheetByIdStatement.get(id) || null;
@@ -721,6 +782,7 @@ module.exports = {
   getAnswersByJobId,
   deleteAnswer,
   getGoogleSheetsForAccount,
+  getGoogleSheetsForAdmin,
   getGoogleSheetById,
   createGoogleSheet,
   updateGoogleSheet,

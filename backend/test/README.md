@@ -24,7 +24,8 @@ Coverage currently focuses on:
   removals - the browser chat providers (006, `browserChatRemoval.test.js`) and
   the metered API providers (007, `meteredRemoval.test.js`) - each pinned both
   as the migration and as the read-time tolerance that stands without it
-- the Gemini seat wired in - catalog, registry, health card, operational
+- the Gemini seat wired in - catalog, registry, health card (which asks every
+  seat for a fresh check, the one that can lift a hold), operational
   settings, fresh-install seeds - and migration 008, which gives an upgraded
   model list the Gemini model and renames untouched seed names
   (`geminiSeat.test.js`)
@@ -58,9 +59,11 @@ Coverage currently focuses on:
   cause and a ref; the payment method reasons and the scraper actors are
   pinned beside their routes (`paymentRoutes.test.js`, `scraperWiring.test.js`)
 - whose Bid Assistant data is whose (`bidAssistantScoping.test.js`): a saved
-  sheet source is its owner's and a legacy owner-less one an administrator's to
-  change, answers are read and deleted through the reader's own profiles, and
-  the shared job board's deletions are an administrator's
+  sheet source is its owner's, and a legacy owner-less one or a deleted
+  account's an administrator's to change; answers are read and deleted
+  through the reader's own profiles, go with the profile - so an account that
+  later takes its id reads none - and are all a job's "Answered" flag counts;
+  and the shared job board's deletions are an administrator's
 - the batch progress stream's bare-newline heartbeat, which keeps a proxy's
   idle timeout from cutting a long batch (`batchStream.test.js`)
 - the three CLI seats, each with no binary, no subprocess and no network:
@@ -87,7 +90,8 @@ Coverage currently focuses on:
 - output path safety helpers
 - current auth middleware behavior
 - which wins, the environment or `.env`: the environment, on both halves, with
-  any name set in both reported by name only (`envFile.test.js`)
+  any name set in both reported by name only (`envFile.test.js`), and the mail
+  doctor naming such a setting as overriding the file (`mailDoctor.test.js`)
 - the operational settings read from `.env`: the shared readers and their
   policy - empty means default, junk warns once and falls back, out of range
   clamps (`envValue.test.js`); every setting's default, bounds and the startup

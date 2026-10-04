@@ -39,6 +39,7 @@ const {
   getAnswersByJobId,
   deleteAnswer,
   getGoogleSheetsForAccount,
+  getGoogleSheetsForAdmin,
   getGoogleSheetById,
   createGoogleSheet,
   updateGoogleSheet,
@@ -153,6 +154,12 @@ function readAllProfiles(viewer) {
   return profileRepository
     .listProfilesFor(viewer ?? null, { includeDisabled: true })
     .sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)));
+}
+
+// The reader's own profile ids: what their answers are reached through, and
+// what a job's `has_answers` is counted over.
+function readerProfileIds(req) {
+  return readAllProfiles(req.user).map((profile) => profile.id);
 }
 
 function assertProfilePayload(payload) {
@@ -516,9 +523,11 @@ function validateImportRange(payload) {
  * could rename or delete anybody's. Now an account sees its own and the
  * owner-less ones saved before sources had owners; it may change its own, and
  * only an administrator may change an owner-less one (or, by id, anybody's -
- * the list shows an administrator the same two kinds). A source somebody else
- * owns is "not found", not "forbidden", as a profile is: a 403 would confirm
- * that a source with that id exists. The owner's id never leaves the server.
+ * the list shows an administrator the same two kinds, plus the sources of
+ * deleted accounts, which would otherwise be in nobody's list while their
+ * labels stayed taken). A source somebody else owns is "not found", not
+ * "forbidden", as a profile is: a 403 would confirm that a source with that id
+ * exists. The owner's id never leaves the server.
  */
 class SourceNotFoundError extends PublicError {
   constructor() {
@@ -569,10 +578,12 @@ router.post('/import-jobs', async (req, res) => {
   }
 });
 
-// Returns the reader's saved Google Sheet sources, and the owner-less ones.
+// Returns the reader's saved Google Sheet sources, and the owner-less ones -
+// and, for an administrator, those of accounts since deleted.
 router.get('/google-sheets', async (req, res) => {
   try {
-    res.json(getGoogleSheetsForAccount(req.user.id).map((sheet) => sourceForReader(req, sheet)));
+    const sheets = isAdmin(req) ? getGoogleSheetsForAdmin(req.user.id) : getGoogleSheetsForAccount(req.user.id);
+    res.json(sheets.map((sheet) => sourceForReader(req, sheet)));
   } catch (error) {
     sendPublicError(req, res, error, 'Could not load the Google Sheet sources');
   }
@@ -661,12 +672,13 @@ router.post('/google-sheets/:id/import', async (req, res) => {
   }
 });
 
-// Returns jobs with optional search and date filtering.
+// Returns jobs with optional search and date filtering. `has_answers` is the
+// reader's: answered by one of their own profiles, not by anybody's.
 router.get('/jobs', async (req, res) => {
   try {
     const search = typeof req.query.search === 'string' ? req.query.search : '';
     const date = typeof req.query.date === 'string' ? req.query.date : '';
-    const jobs = getJobs(search, date);
+    const jobs = getJobs(search, date, readerProfileIds(req));
     res.json(jobs);
   } catch (error) {
     sendPublicError(req, res, error, 'Could not load the jobs');
@@ -725,7 +737,7 @@ router.put('/jobs/:jobId/error', async (req, res) => {
     }
 
     const { isError, errorReason } = validateJobErrorPayload(req.body || {});
-    const updatedJob = updateJobError(jobId, isError, errorReason);
+    const updatedJob = updateJobError(jobId, isError, errorReason, readerProfileIds(req));
 
     res.json(updatedJob);
   } catch (error) {
@@ -817,7 +829,7 @@ router.get('/answers/:jobId', async (req, res) => {
   try {
     const jobId = Number(req.params.jobId);
     const answers = getAnswersByJobId(jobId);
-    const own = new Set(readAllProfiles(req.user).map((profile) => profile.id));
+    const own = new Set(readerProfileIds(req));
     res.json(Object.fromEntries(Object.entries(answers).filter(([profileId]) => own.has(profileId))));
   } catch (error) {
     sendPublicError(req, res, error, 'Could not load the saved answers');

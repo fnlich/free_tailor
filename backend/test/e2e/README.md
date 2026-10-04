@@ -95,7 +95,7 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 100 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 103 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
 leave behind. Over HTTP: each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
@@ -117,7 +117,9 @@ right now. Please contact your administrator.* with no setting named. On the cre
 stacked narrow, both histories opening on five rows and saying how many there
 are, Older and Newer moving between real pages, and a page whose request FAILS
 keeping its rows while the count sentence still describes them - a failed press
-used to leave rows 1-5 under "6-10 of 12". It screenshots each step.
+used to leave rows 1-5 under "6-10 of 12". On the invoice page: an unpaid
+order says *No invoice yet* and offers no Print button, and the same order once
+paid is an invoice with exactly one. It screenshots each step.
 
 `buy-credits.js` also drives a whole crypto payment through the fake Cryptomus:
 one button rather than a row per coin, the hand-off panel naming whose page

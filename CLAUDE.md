@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~22s with the tsc step, 1097 tests)
+npm test                       # backend node:test suite (~22s with the tsc step, 1105 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -95,7 +95,9 @@ backend/src/
                       #   change the two together): the file fills in only what
                       #   is unset, an exported empty value counts as set, and a
                       #   name set in both with different values is warned about
-                      #   once at startup, by NAME only. envFile.ts's
+                      #   once at startup, by NAME only (describeShadowed builds
+                      #   the line; next.mjs keeps a copy, pinned by
+                      #   test/envFile.test.js). envFile.ts's
                       #   summarizeEnvFile reports a file's path, encoding and key
                       #   NAMES (never values), including the ones the environment
                       #   overrides (`shadowed`), so the doctors can say why a
@@ -160,8 +162,13 @@ backend/src/
                       #   every account's answers, and the one Ask AI template
                       #   are requireAdmin); sheet sources carry an `account_id`
                       #   (added in place, PRAGMA + ALTER - an owner-less legacy
-                      #   row is listed for all, changed by an admin); answers
-                      #   are scoped through the reader's own profiles.
+                      #   row is listed for all, changed by an admin, and a
+                      #   deleted account's is listed to admins only); answers
+                      #   are scoped through the reader's own profiles, and so
+                      #   is a job's `has_answers`. Answers are keyed by profile
+                      #   id alone and ids are reusable, so deleting a profile
+                      #   deletes its answers (profileRepository.deleteProfile)
+                      #   and loading database.js sweeps any left orphaned.
   types/, utils/      # shared types; path, storage and filename helpers
 backend/
   scrapers/           # NOT under src/, and the bulk of the backend's
@@ -171,7 +178,7 @@ backend/
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 89 files; fixtures/cli, codex and gemini
+  test/               # node:test, 90 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/

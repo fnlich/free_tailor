@@ -222,6 +222,60 @@ test('the admin health card lists the three seats, and the Gemini seat\'s holds'
   });
 });
 
+test('the admin health card asks every seat for a FRESH check, which is what lets it lift a hold', async () => {
+  // A seat lifts a sign-in hold only on an uncached reading, so a card that
+  // took the minute-old one - the route or the registry dropping the option -
+  // would leave a seat that was signed back in held, with every test green.
+  useTempStorage('gemini-seat-health-fresh');
+  useAdminEmails('admin@example.com');
+  const users = loadFresh('../dist/database/userRepository');
+  const admin = users.createUser({ email: 'admin@example.com' });
+  const token = users.createSession(admin.id);
+
+  const ai = require('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+  const asked = {};
+  const stub = (id) => () => ({
+    id,
+    capabilities: { id, label: `${id} stub`, temperature: false, maxOutputTokens: false, nativeJsonMode: 'none', systemBlocks: true, maxConcurrency: 1 },
+    defaultModelName: () => 'default',
+    health: async (options) => {
+      asked[id] = options;
+      return { ok: true, detail: `${id} ready`, checkedAt: new Date().toISOString() };
+    },
+    seatUsage: () => ({ utilization: null, resetsAt: null, observedAt: null }),
+    outages: () => [],
+    complete: async () => {
+      throw new Error('not here');
+    },
+  });
+  for (const id of ['claude-cli', 'codex-cli', 'gemini-cli']) ai.registerAdapter(id, stub(id));
+
+  const savedLocks = process.env.AI_LOCKED_PROVIDERS;
+  delete process.env.AI_LOCKED_PROVIDERS;
+  const { attachUser } = loadFresh('../dist/middleware/auth');
+  const app = express();
+  app.use(attachUser);
+  app.use('/api/admin/ai', loadFresh('../dist/routes/aiHealth').default);
+  const server = app.listen(0);
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/ai/health`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(asked, {
+      'claude-cli': { fresh: true },
+      'codex-cli': { fresh: true },
+      'gemini-cli': { fresh: true },
+    });
+  } finally {
+    server.close();
+    ai.resetRegistryForTests();
+    if (savedLocks === undefined) delete process.env.AI_LOCKED_PROVIDERS;
+    else process.env.AI_LOCKED_PROVIDERS = savedLocks;
+  }
+});
+
 /* ---------------------------------------------------------- operational */
 
 test('every AI_GEMINI_* setting is in the operational table, and a changed one is on the startup line', () => {

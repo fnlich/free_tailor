@@ -169,6 +169,42 @@ async function inspectTopBar(page) {
 /** A pause, for the ticks React needs to mount or unmount a panel. */
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
+
+/** A fetch against the API, signed in with `token`. */
+const apiAs = (token) => (route, init = {}) =>
+  fetch(`${API}${route}`, {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+      ...(init.headers ?? {}),
+    },
+  });
+
+/**
+ * Opens the Bid Assistant on the job this walkthrough put on the board, and
+ * reads the job's own buttons. Every date is listed first, so the job is found
+ * whatever else is on the board and whichever date the page opens on.
+ */
+async function openSeededJob(page, company) {
+  await page.goto(`${APP}/bid-assistant`, { waitUntil: 'networkidle2' });
+  await page.waitForSelector('.job-card', { timeout: 10_000 }).catch(() => null);
+  const [, dateFilter] = await page.$$('.top-bar-left select');
+  if (dateFilter) await dateFilter.select('');
+  await wait(600);
+  const found = await page.evaluate((needle) => {
+    const card = Array.from(document.querySelectorAll('.job-card')).find((c) => c.textContent.includes(needle));
+    card?.click();
+    return Boolean(card);
+  }, company);
+  await wait(400);
+  const buttons = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('.workspace-actions button')).map((b) => b.textContent.trim())
+  );
+  return { found, buttons };
+}
+
 /** What the shell looks like from inside the page. */
 async function inspect(page) {
   return page.evaluate(() => {
@@ -260,6 +296,45 @@ async function main() {
 
   const userToken = users.createSession(user.id);
   const adminToken = users.createSession(admin.id);
+
+  /*
+   * One job on the Bid Assistant board, for the Delete Job checks to have a
+   * job to be offered on. With none, no job is selected and no job's buttons
+   * are drawn for anybody, so "no Delete Job" passed with the gate removed.
+   * Put there through the user's own import, and taken off again at the end by
+   * the administrator: the board is shared.
+   */
+  const today = new Date();
+  const seededJob = { company: `E2E shell ${stamp}`, url: `https://example.com/e2e-shell/${stamp}` };
+  const seeded = await apiAs(userToken)('/bid-assistant/import-jobs', {
+    method: 'POST',
+    body: JSON.stringify([
+      {
+        company_name: seededJob.company,
+        job_title: 'Shell walkthrough job',
+        job_url: seededJob.url,
+        posted_date: `${today.getMonth() + 1}/${today.getDate()}/${today.getFullYear()}`,
+      },
+    ]),
+  });
+  const seededBody = await seeded.json().catch(() => null);
+  check(
+    'setup: a job is put on the Bid Assistant board',
+    seeded.status === 200 && seededBody?.addedCount === 1,
+    `got ${seeded.status} ${JSON.stringify(seededBody)}`
+  );
+  let seededJobGone = false;
+  const removeSeededJob = async () => {
+    const asAdmin = apiAs(adminToken);
+    const listed = await (await asAdmin(`/bid-assistant/jobs?search=${encodeURIComponent(seededJob.company)}`))
+      .json()
+      .catch(() => null);
+    const row = Array.isArray(listed) ? listed.find((job) => job.job_url === seededJob.url) : null;
+    if (!row) return 'not listed';
+    const response = await asAdmin(`/bid-assistant/jobs/${row.id}`, { method: 'DELETE' });
+    if (response.status === 200) seededJobGone = true;
+    return response.status;
+  };
 
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
 
@@ -473,8 +548,19 @@ async function main() {
      * with it. Both are the administrator's, so an ordinary user reads the
      * template and is offered no way to save it or to delete a job.
      */
-    await page.goto(`${APP}/bid-assistant`, { waitUntil: 'networkidle2' });
-    await wait(500);
+    const userJob = await openSeededJob(page, seededJob.company);
+    // Set Error is everybody's, so seeing it proves a job is open and its
+    // buttons drawn - without that, a missing Delete Job proves nothing.
+    check(
+      "user /bid-assistant: the seeded job is open, with the job's buttons",
+      userJob.found && userJob.buttons.includes('Set Error'),
+      JSON.stringify(userJob)
+    );
+    check(
+      'user /bid-assistant: no Delete Job',
+      userJob.buttons.includes('Set Error') && !userJob.buttons.includes('Delete Job'),
+      JSON.stringify(userJob)
+    );
     await page.evaluate(() => {
       Array.from(document.querySelectorAll('.top-bar button'))
         .find((button) => button.textContent.trim() === 'Prompt')
@@ -488,17 +574,11 @@ async function main() {
         opened: Boolean(editor),
         readOnly: editor?.readOnly ?? null,
         canSave: text.includes('Save Prompt'),
-        canDeleteJob: text.includes('Delete Job'),
       };
     });
     check(
       'user /bid-assistant: the prompt template is shown read-only, with no Save',
       assistantControls.opened && assistantControls.readOnly === true && !assistantControls.canSave,
-      JSON.stringify(assistantControls)
-    );
-    check(
-      'user /bid-assistant: no Delete Job',
-      !assistantControls.canDeleteJob,
       JSON.stringify(assistantControls)
     );
     await page.evaluate(() => document.querySelector('.prompt-modal .bid-close')?.click());
@@ -714,6 +794,15 @@ async function main() {
     );
     check('admin /orders: no settings tabs outside the hub', !offSettings);
 
+    // The other side of the user's check: the same job offers the
+    // administrator Delete Job.
+    const adminJob = await openSeededJob(adminPage, seededJob.company);
+    check(
+      'admin /bid-assistant: the seeded job offers Delete Job',
+      adminJob.found && adminJob.buttons.includes('Set Error') && adminJob.buttons.includes('Delete Job'),
+      JSON.stringify(adminJob)
+    );
+
     await adminPage.screenshot({ path: `${SHOTS}/shell-5-admin-light.png` });
 
     // Post a notification as the admin, and confirm the bell shows it.
@@ -769,16 +858,7 @@ async function main() {
     await reader.close();
 
     /* ------------------------------- hiding is not the protection */
-    const api = process.env.E2E_API || 'http://127.0.0.1:3001/api';
-    const asUser = (path, init = {}) =>
-      fetch(`${api}${path}`, {
-        ...init,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${userToken}`,
-          ...(init.headers ?? {}),
-        },
-      });
+    const asUser = apiAs(userToken);
 
     const postNotice = await asUser('/admin/notifications', {
       method: 'POST',
@@ -814,6 +894,10 @@ async function main() {
     check('api: ...and cannot save it', savePrompt.status === 403, `got ${savePrompt.status}`);
     const deleteJob = await asUser('/bid-assistant/jobs/999999999', { method: 'DELETE' });
     check('api: an ordinary user cannot delete a Bid Assistant job', deleteJob.status === 403, `got ${deleteJob.status}`);
+    // ...and the administrator can, which also takes the seeded job back off
+    // the shared board.
+    const removed = await removeSeededJob();
+    check('api: the administrator deletes a Bid Assistant job', removed === 200, `got ${removed}`);
 
     const disabled = await asUser('/templates?includeDisabled=true');
     check('api: an ordinary user asking for disabled templates is answered', disabled.status === 200);
@@ -824,6 +908,8 @@ async function main() {
       'a disabled template leaked to a non-admin'
     );
   } finally {
+    // Off the shared board even when the walk stopped short of deleting it.
+    if (!seededJobGone) await removeSeededJob().catch(() => {});
     await browser.close();
   }
 

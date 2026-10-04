@@ -194,9 +194,37 @@ test('both loaders keep the rule: the backend applies the file through applyEnvF
   const backend = fs.readFileSync(path.join(__dirname, '..', 'dist', 'config', 'env.js'), 'utf8');
   assert.match(backend, /applyEnvFile\)?\(/);
   assert.doesNotMatch(backend, /process\.env\[key\]\s*=/);
-  assert.match(backend, /set both in the environment and in/);
+  // The startup line is describeShadowed's, handed the names applyEnvFile
+  // returned and printed when there is one - tested below, where it can be.
+  assert.match(backend, /describeShadowed\)\(shadowed, exports\.ENV_PATH\)/);
+  assert.match(backend, /if \(shadowedLine\)\s*console\.warn\(shadowedLine\)/);
 
   const frontend = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'scripts', 'next.mjs'), 'utf8');
   assert.match(frontend, /if \(key in process\.env\) \{/);
-  assert.match(frontend, /set both in the environment and in/);
+  // Its own copy of the sentence, whole, under the guard: a dead guard or a
+  // line that printed values would still pass a bare grep for the words.
+  const warning = /if \(shadowed\.length > 0\) \{\s*console\.warn\(\s*`\[env\] \$\{shadowed\.join\(', '\)\} \$\{shadowed\.length === 1 \? 'is' : 'are'\} set both in the environment and in ` \+\s*`\$\{rootEnvPath\}; the environment's value is used\.`\s*\);\s*\}/;
+  assert.match(frontend, warning);
+});
+
+test('the startup line names what the environment overrides, by name only, and says nothing when nothing is', () => {
+  const { applyEnvFile, describeShadowed } = loadFresh('../dist/config/envFile');
+  const envPath = '/srv/tailor/.env';
+  assert.equal(describeShadowed([], envPath), null);
+  assert.equal(
+    describeShadowed(['PORT'], envPath),
+    "[env] PORT is set both in the environment and in /srv/tailor/.env; the environment's value is used."
+  );
+  assert.equal(
+    describeShadowed(['PORT', 'DB_DIR'], envPath),
+    "[env] PORT, DB_DIR are set both in the environment and in /srv/tailor/.env; the environment's value is used."
+  );
+
+  // Through the loader's own rule: a secret exported in a shell and a
+  // different one in the file are named, and neither value is in the line.
+  const env = { SMTP_PASS: SECRET, PORT: '4000' };
+  const { shadowed } = applyEnvFile({ SMTP_PASS: 'from-the-file', PORT: '4000', SMTP_HOST: 'smtp.example.com' }, env);
+  const line = describeShadowed(shadowed, envPath);
+  assert.match(line, /^\[env\] SMTP_PASS is set both/);
+  assert.ok(!line.includes(SECRET) && !line.includes('from-the-file'), line);
 });

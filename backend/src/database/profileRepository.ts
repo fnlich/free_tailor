@@ -95,8 +95,32 @@ export function saveProfiles(batch: Profile[]): Profile[] {
   return profiles.saveAll(batch);
 }
 
+/**
+ * Deletes a profile and the Bid Assistant answers written for it, together.
+ *
+ * Those answers are keyed by profile id alone, and an id can come back: the
+ * Bid Assistant creates a profile with an id the client chose, and an import
+ * keeps any id that is free. So an answer that outlived its profile was read,
+ * and could be deleted, as its own by whichever account next took that id.
+ * Both delete routes come through here, which is why it is done here.
+ *
+ * Plain SQL rather than through bidAssistant/database: that module takes its
+ * connection when it is first loaded and creates its tables as it loads, and
+ * the answers table exists only once it has. Without it there is nothing to
+ * delete. The orphans an earlier build left are swept when it loads.
+ */
 export function deleteProfile(id: string): boolean {
-  return profiles.delete(id);
+  const db = getDb();
+  return db.transaction(() => {
+    const deleted = profiles.delete(id);
+    const hasAnswers = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'answers'")
+      .get();
+    if (deleted && hasAnswers) {
+      db.prepare('DELETE FROM answers WHERE profile_id = ?').run(id);
+    }
+    return deleted;
+  })();
 }
 
 /* ------------------------------------------------------------- the plan cap */
