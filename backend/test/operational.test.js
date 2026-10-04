@@ -139,11 +139,9 @@ test('the bounds the plan fixed, so a change to one is a decision and not a slip
   assert.deepEqual(bounds('CALENDAR_DETAIL_CONCURRENCY'), [1, 32]);
 });
 
-test('the derived getters use the same reader as their base', () => {
+test('the derived getter uses the same reader as its base', () => {
   assert.equal(op.sessionTtlMs({}), 30 * 24 * 60 * 60 * 1000);
   assert.equal(op.sessionTtlMs({ SESSION_TTL_DAYS: '7' }), 7 * 24 * 60 * 60 * 1000);
-  assert.equal(op.uploadMaxBytes({}), 10 * 1024 * 1024);
-  assert.equal(op.uploadMaxBytes({ UPLOAD_MAX_MB: '25' }), 25 * 1024 * 1024);
 });
 
 /* ====================================================================== PORT */
@@ -165,24 +163,39 @@ test('PORT: a valid port is used, anything else warns and uses 3001 - never a cr
 /* ================================================================== AI URLs */
 
 test('the three metered base URLs default to the vendor endpoints', () => {
-  assert.equal(op.claudeBaseUrl({}), 'https://api.anthropic.com');
-  assert.equal(op.deepseekBaseUrl({}), 'https://api.deepseek.com');
-  assert.equal(op.openaiBaseUrl({}), 'https://api.openai.com/v1');
+  assert.deepEqual(op.claudeBaseUrl({}), { ok: true, url: 'https://api.anthropic.com' });
+  assert.deepEqual(op.deepseekBaseUrl({}), { ok: true, url: 'https://api.deepseek.com' });
+  assert.deepEqual(op.openaiBaseUrl({}), { ok: true, url: 'https://api.openai.com/v1' });
+  assert.deepEqual(op.openaiBaseUrl({ OPENAI_BASE_URL: '' }), { ok: true, url: 'https://api.openai.com/v1' });
 });
 
 test('a base URL override is validated and normalized', () => {
-  assert.equal(op.claudeBaseUrl({ CLAUDE_BASE_URL: 'https://gateway.example/anthropic/' }), 'https://gateway.example/anthropic');
-  assert.equal(op.deepseekBaseUrl({ DEEPSEEK_BASE_URL: 'http://127.0.0.1:4000' }), 'http://127.0.0.1:4000');
-  assert.equal(op.openaiBaseUrl({ OPENAI_BASE_URL: 'https://llm.example/v1' }), 'https://llm.example/v1');
+  assert.equal(op.claudeBaseUrl({ CLAUDE_BASE_URL: 'https://gateway.example/anthropic/' }).url, 'https://gateway.example/anthropic');
+  assert.equal(op.deepseekBaseUrl({ DEEPSEEK_BASE_URL: 'http://127.0.0.1:4000' }).url, 'http://127.0.0.1:4000');
+  assert.equal(op.openaiBaseUrl({ OPENAI_BASE_URL: 'https://llm.example/v1' }).url, 'https://llm.example/v1');
 
   const http = withWarnings(() => op.claudeBaseUrl({ CLAUDE_BASE_URL: 'http://gateway.example' }));
-  assert.equal(http.value, 'http://gateway.example', 'an operator-set endpoint is never swapped for the vendor');
+  assert.equal(http.value.url, 'http://gateway.example', 'an operator-set endpoint is never swapped for the vendor');
   assert.equal(http.warnings.length, 1);
   assert.match(http.warnings[0], /CLAUDE_BASE_URL/);
 });
 
+test('a base URL that is set but refused is not the vendor endpoint: it is a refusal', () => {
+  for (const [read, name, vendor] of [
+    [op.claudeBaseUrl, 'CLAUDE_BASE_URL', 'https://api.anthropic.com'],
+    [op.deepseekBaseUrl, 'DEEPSEEK_BASE_URL', 'https://api.deepseek.com'],
+    [op.openaiBaseUrl, 'OPENAI_BASE_URL', 'https://api.openai.com/v1'],
+  ]) {
+    const { value, warnings } = withWarnings(() => read({ [name]: 'gateway.corp:8443' }));
+    assert.equal(value.ok, false, name);
+    assert.match(value.problem, new RegExp(`^${name}[ =]`));
+    assert.ok(value.remedy.includes(vendor), `${name}: the remedy says what removing it would mean`);
+    assert.equal(warnings.length, 1, name);
+  }
+});
+
 test('CLAUDE_BASE_URL is its own name: ANTHROPIC_BASE_URL belongs to the claude CLI child', () => {
-  assert.equal(op.claudeBaseUrl({ ANTHROPIC_BASE_URL: 'https://elsewhere.example' }), 'https://api.anthropic.com');
+  assert.equal(op.claudeBaseUrl({ ANTHROPIC_BASE_URL: 'https://elsewhere.example' }).url, 'https://api.anthropic.com');
 });
 
 /* ============================================================ AI timeouts */
@@ -222,6 +235,57 @@ test('a CLI budget is compared the way the provider reads it: clamped to 3600000
   assert.match(warning, /AI_CLI_TIMEOUT_MS=3600000/);
 });
 
+test('a CLI budget the provider reads loosely is reported the same - 600000ms is 600000 to both', () => {
+  // The providers have always read these with parseInt. A stricter reader here
+  // skipped `600000ms`, which the provider uses as 600000 and the request
+  // deadline then silently caps - the exact case this warning is for.
+  for (const raw of ['600000ms', '600000.5', ' 600000 ']) {
+    assert.equal(op.cliTimeoutMs('AI_CLI_TIMEOUT_MS_TAILOR', { AI_CLI_TIMEOUT_MS_TAILOR: raw }), 600_000, raw);
+    const warnings = op.describeAiTimeoutsAboveRequestDeadline({ AI_CLI_TIMEOUT_MS_TAILOR: raw });
+    assert.equal(warnings.length, 1, raw);
+    assert.match(warnings[0], /AI_CLI_TIMEOUT_MS_TAILOR=600000 is longer than AI_REQUEST_TIMEOUT_MS=300000/, raw);
+  }
+  const [codex] = op.describeAiTimeoutsAboveRequestDeadline({ AI_CODEX_TIMEOUT_MS_TAILOR: '600000ms' });
+  assert.match(codex, /AI_CODEX_TIMEOUT_MS_TAILOR=600000/);
+});
+
+test('a CLI budget left at its own default is not reported under a lowered deadline', () => {
+  // Older copies of .env.example wrote all six budgets out at their defaults,
+  // so a .env made from one has them. Lowering AI_REQUEST_TIMEOUT_MS there is
+  // the same legitimate cap as on an install that never wrote them, and a
+  // warning would tell the operator to undo it.
+  const copiedFromOlderExample = {
+    AI_CLI_TIMEOUT_MS: '180000',
+    AI_CLI_TIMEOUT_MS_TAILOR: '300000',
+    AI_CLI_TIMEOUT_MS_FILTER: '60000',
+    AI_CODEX_TIMEOUT_MS: '180000',
+    AI_CODEX_TIMEOUT_MS_TAILOR: '300000',
+    AI_CODEX_TIMEOUT_MS_FILTER: '60000',
+  };
+  assert.deepEqual(
+    op.describeAiTimeoutsAboveRequestDeadline({ ...copiedFromOlderExample, AI_REQUEST_TIMEOUT_MS: '120000' }),
+    []
+  );
+  assert.deepEqual(
+    op.describeAiTimeoutsAboveRequestDeadline({ AI_CLI_TIMEOUT_MS_TAILOR: '300000', AI_REQUEST_TIMEOUT_MS: '120000' }),
+    []
+  );
+  // A budget actually raised is still reported.
+  assert.equal(op.describeAiTimeoutsAboveRequestDeadline({ AI_CLI_TIMEOUT_MS_TAILOR: '600000' }).length, 1);
+});
+
+test('only the six budgets a provider reads are reported - not every name that looks like one', () => {
+  assert.deepEqual(op.describeAiTimeoutsAboveRequestDeadline({ AI_CLI_TIMEOUT_MS_COVER: '600000' }), []);
+  assert.deepEqual(Object.keys(op.CLI_TIMEOUT_DEFAULTS_MS).sort(), [
+    'AI_CLI_TIMEOUT_MS',
+    'AI_CLI_TIMEOUT_MS_FILTER',
+    'AI_CLI_TIMEOUT_MS_TAILOR',
+    'AI_CODEX_TIMEOUT_MS',
+    'AI_CODEX_TIMEOUT_MS_FILTER',
+    'AI_CODEX_TIMEOUT_MS_TAILOR',
+  ]);
+});
+
 /* =============================================================== job pages */
 
 test('JOB_PAGE_USER_AGENT: the pinned Chrome 131 string by default, a single line when set', () => {
@@ -235,6 +299,23 @@ test('JOB_PAGE_USER_AGENT: the pinned Chrome 131 string by default, a single lin
   const long = withWarnings(() => op.jobPageUserAgent({ JOB_PAGE_USER_AGENT: 'x'.repeat(513) }));
   assert.match(long.value, /Chrome\/131/);
   assert.equal(long.warnings.length, 1);
+});
+
+test('JOB_PAGE_USER_AGENT: a character fetch cannot send in a header warns and uses the default', () => {
+  // Pasted from a web page: an ellipsis (U+2026) or a line separator (U+2028).
+  // Node's fetch throws on either, and the job-page reader would then send
+  // every link to headless Chrome without saying why.
+  for (const raw of ['Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML\u2026', 'A\u2028B']) {
+    const { value, warnings } = withWarnings(() => op.jobPageUserAgent({ JOB_PAGE_USER_AGENT: raw }));
+    assert.match(value, /Chrome\/131/, raw);
+    assert.equal(warnings.length, 1, raw);
+    assert.match(warnings[0], /printable-ASCII/);
+  }
+  // What it guards against, pinned so the pattern is not loosened by accident:
+  // fetch builds its headers this way, and throws the same.
+  assert.throws(() => new Headers({ 'User-Agent': 'KHTML\u2026' }), /ByteString/);
+  // And what is accepted is sendable.
+  assert.equal(op.jobPageUserAgent({ JOB_PAGE_USER_AGENT: 'Mozilla/5.0 (Custom; rv:1) Gecko/2' }), 'Mozilla/5.0 (Custom; rv:1) Gecko/2');
 });
 
 /* ================================================================ scrapers */
@@ -278,18 +359,21 @@ test('SCRAPER_MAX_RESULTS: unset means no cap, and so does junk', () => {
 });
 
 test('APIFY_ACTOR_*: the shipped actors by default, owner/name, owner~name or an id when set', () => {
-  const getters = {
-    APIFY_ACTOR_INDEED: [op.apifyActorIndeed, 'misceres/indeed-scraper'],
-    APIFY_ACTOR_JOBBOARD: [op.apifyActorJobboard, 'openclawai/job-board-scraper'],
-    APIFY_ACTOR_WELLFOUND: [op.apifyActorWellfound, 'blackfalcondata/wellfound-scraper'],
-    APIFY_ACTOR_LEVER: [op.apifyActorLever, 'deadlyaccurate/lever-jobs-scraper'],
-    APIFY_ACTOR_HIRINGCAFE: [op.apifyActorHiringcafe, 'manojachari/hiring-cafe-scraper'],
-    APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS: [op.apifyActorHiringcafeCrawlerbros, 'crawlerbros/hiring-cafe-scraper'],
-    APIFY_ACTOR_HIRINGCAFE_MEMO23: [op.apifyActorHiringcafeMemo23, 'memo23/apify-hiring-cafe-scraper'],
+  // The literals the scrapers had, written out rather than read from the table.
+  const shipped = {
+    APIFY_ACTOR_INDEED: 'misceres/indeed-scraper',
+    APIFY_ACTOR_JOBBOARD: 'openclawai/job-board-scraper',
+    APIFY_ACTOR_WELLFOUND: 'blackfalcondata/wellfound-scraper',
+    APIFY_ACTOR_LEVER: 'deadlyaccurate/lever-jobs-scraper',
+    APIFY_ACTOR_HIRINGCAFE: 'manojachari/hiring-cafe-scraper',
+    APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS: 'crawlerbros/hiring-cafe-scraper',
+    APIFY_ACTOR_HIRINGCAFE_MEMO23: 'memo23/apify-hiring-cafe-scraper',
   };
-  for (const [name, [read, literal]] of Object.entries(getters)) {
+  assert.deepEqual(Object.keys(op.APIFY_ACTOR_DEFAULTS).sort(), Object.keys(shipped).sort());
+  for (const [name, literal] of Object.entries(shipped)) {
+    const read = (env) => op.apifyActorId(name, env);
     assert.equal(read({}), literal, `${name} default`);
-    assert.equal(op.apifyActorId(name, {}), literal);
+    assert.equal(op.APIFY_ACTOR_DEFAULTS[name], literal);
     assert.equal(read({ [name]: 'me/my-fork' }), 'me/my-fork');
     assert.equal(read({ [name]: 'me~my.fork_2' }), 'me~my.fork_2');
     assert.equal(read({ [name]: 'aBcDeFgHiJkLmNoPq' }), 'aBcDeFgHiJkLmNoPq');
@@ -373,4 +457,18 @@ test('the startup line names every non-default setting once, with its EFFECTIVE 
   assert.match(line, /SCRAPER_MAX_RESULTS=200/);
   assert.doesNotMatch(line, /CALENDAR_API_TIMEOUT_MS/);
   assert.equal(line.split('\n').length, 1, 'one line');
+});
+
+test('the startup line lists a refused base URL as refused - never at the default, never with its value', () => {
+  // A refused base URL leaves its provider unavailable, so leaving it off the
+  // line would read as "not set, using the vendor", which is the opposite.
+  const { value: line } = withWarnings(() =>
+    op.describeNonDefaultOperationalSettings({
+      OPENAI_BASE_URL: 'https://user:hunter2@gw.example/v1',
+      DEEPSEEK_BASE_URL: 'https://ds.example/',
+    })
+  );
+  assert.match(line, /OPENAI_BASE_URL=\(refused\)/);
+  assert.match(line, /DEEPSEEK_BASE_URL=https:\/\/ds\.example(,|$)/);
+  assert.doesNotMatch(line, /hunter2/);
 });

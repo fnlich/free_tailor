@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getProviderApiKey } from '../../../config/aiModelConfig';
+import type { EnvUrl } from '../../../config/envValue';
 import { deepseekBaseUrl, openaiBaseUrl } from '../../../config/operational';
 import {
   getProviderDescriptor,
@@ -32,17 +33,23 @@ type OpenAICompatibleOptions = {
 
 /**
  * Where each provider's API lives: OPENAI_BASE_URL and DEEPSEEK_BASE_URL, each
- * defaulting to the vendor endpoint and validated by envUrl (https unless the
- * host is loopback), since the API key is sent to whatever they name.
+ * defaulting to the vendor endpoint when unset and validated by envUrl, since
+ * the API key is sent to whatever they name. An absolute http(s) URL is used as
+ * set - plain http to another host warns but is used. A value envUrl REFUSES
+ * (no scheme, `user:password@`, a query or fragment) makes the provider
+ * unavailable: `getClient` throws before a client exists and `health` reports
+ * it, so nothing is sent - least of all to the vendor the setting was there to
+ * route around.
  *
  * Keyed on the id, so a third OpenAI-compatible provider cannot be added
  * without deciding its endpoint. OPENAI_BASE_URL is passed EXPLICITLY even
  * though the SDK would read it by itself: that way it is validated, shown on
  * the startup line beside the other two, and - the point for DeepSeek - an
  * explicit `baseURL` is what keeps the SDK's own read of that variable from
- * ever applying to the wrong vendor.
+ * ever applying to the wrong vendor. For the same reason a refusal is never
+ * "pass no baseURL": the SDK would read OPENAI_BASE_URL again, unchecked.
  */
-const BASE_URL: Record<OpenAICompatibleId, () => string> = {
+const BASE_URL: Record<OpenAICompatibleId, () => EnvUrl> = {
   openai: openaiBaseUrl,
   deepseek: deepseekBaseUrl,
 };
@@ -88,7 +95,25 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
     maxConcurrency: Number.POSITIVE_INFINITY,
   };
 
+  /** The error for an endpoint envUrl refused: raised before any client or request exists. */
+  function refusedEndpoint(endpoint: Extract<EnvUrl, { ok: false }>): AIProviderError {
+    return new AIProviderError({
+      provider: options.id,
+      kind: 'misconfigured',
+      detail: endpoint.problem,
+      adminAction: endpoint.remedy,
+    });
+  }
+
   async function getClient(): Promise<OpenAI> {
+    // Read per call so a test can change it; the client is rebuilt only when
+    // the key or the endpoint actually changed, which in a running server is
+    // never - `.env` is loaded once at boot. Checked FIRST: a refused endpoint
+    // means nothing is sent, whatever else is or is not configured.
+    const endpoint = BASE_URL[options.id]();
+    if (!endpoint.ok) {
+      throw refusedEndpoint(endpoint);
+    }
     const apiKey = await getProviderApiKey(options.id);
     if (!apiKey) {
       throw new AIProviderError({
@@ -100,10 +125,7 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
           'environment only.',
       });
     }
-    // Read per call so a test can change it; the client is rebuilt only when
-    // the key or the endpoint actually changed, which in a running server is
-    // never - `.env` is loaded once at boot.
-    const baseURL = BASE_URL[options.id]();
+    const baseURL = endpoint.url;
     const key = `${baseURL}\n${apiKey}`;
     if (!client || clientKey !== key) {
       // No per-request `timeout`, so the SDK's own (10 minutes per attempt,
@@ -122,6 +144,10 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
 
     async health(): Promise<ProviderHealth> {
       const checkedAt = new Date().toISOString();
+      const endpoint = BASE_URL[options.id]();
+      if (!endpoint.ok) {
+        return { ok: false, detail: `${endpoint.problem}, so nothing is sent.`, checkedAt, warning: endpoint.remedy };
+      }
       try {
         const apiKey = await getProviderApiKey(options.id);
         return apiKey

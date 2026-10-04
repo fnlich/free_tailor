@@ -15,11 +15,11 @@ import { IconClose } from '@/components/icons';
 import { EmptyState, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
-import { pdfTooLargeMessage } from '@/lib/upload';
+import { pdfSizeRefusal } from '@/lib/upload';
 
 export default function ProfilesPage() {
   // uploadMaxMb is the server's UPLOAD_MAX_MB, served on /auth/me - see lib/upload.ts.
-  const { account, loading: authLoading, refresh, uploadMaxMb } = useAuth();
+  const { account, loading: authLoading, refresh, uploadMaxMb, refreshUploadMaxMb } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -118,7 +118,7 @@ export default function ProfilesPage() {
       setError('Please upload a PDF file');
       return;
     }
-    const tooLarge = pdfTooLargeMessage(file, uploadMaxMb);
+    const tooLarge = await pdfSizeRefusal(file, uploadMaxMb, refreshUploadMaxMb);
     if (tooLarge) {
       setError(tooLarge);
       if (fileInputRef.current) fileInputRef.current.value = '';

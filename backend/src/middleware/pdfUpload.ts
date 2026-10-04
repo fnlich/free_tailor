@@ -36,11 +36,17 @@ export function pdfUploadLimitMb(): number {
 /**
  * Middleware accepting one PDF in `field`, into `req.file.buffer`.
  *
- * A file over the cap answers 413 with the limit in the message. multer's own
- * error says only "File too large", and that reached the generic handler as a
- * 500 - which told the person neither that the size was the problem nor what
+ * A file at or over the cap answers 413 with the limit in the message. multer's
+ * own error says only "File too large", and that reached the generic handler as
+ * a 500 - which told the person neither that the size was the problem nor what
  * size would do. Every other multer error goes on to the error handlers as
  * before.
+ *
+ * AT or over: busboy raises the limit as soon as a file reaches `fileSize`, so a
+ * file of exactly LIMIT_MB is refused, as it always was. The wording says so,
+ * and from "this server accepts" on it is the upload pages' own pre-check
+ * sentence (frontend/src/lib/upload.ts), so either refusal finds the same
+ * README row.
  */
 export function pdfUpload(field: string): RequestHandler {
   const single = upload.single(field);
@@ -49,7 +55,7 @@ export function pdfUpload(field: string): RequestHandler {
       if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
         res.status(413).json({
           error:
-            `That PDF is larger than ${LIMIT_MB} MB, the most this server accepts. ` +
+            `That PDF is ${LIMIT_MB} MB or larger; this server accepts PDFs under ${LIMIT_MB} MB. ` +
             'Upload a smaller file, or ask the administrator to raise UPLOAD_MAX_MB.',
           code: 'upload-too-large',
           limitMb: LIMIT_MB,

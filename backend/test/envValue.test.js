@@ -209,16 +209,31 @@ test('envList: the default is copied, so a caller cannot mutate it', () => {
 
 /* ------------------------------------------------------------------ envUrl */
 
+/** envUrl's answer when it is used, for the cases that are about the URL itself. */
+const usedUrl = (raw) => {
+  const resolved = envUrl('U', 'https://default.example', {}, { U: raw });
+  assert.equal(resolved.ok, true, `${raw} was refused: ${resolved.problem}`);
+  return resolved.url;
+};
+
+test('envUrl: unset or empty is the fallback', () => {
+  for (const env of [{}, { U: '' }, { U: '   ' }]) {
+    const { value, warnings } = withWarnings(() => envUrl('U', 'https://d.example', {}, env));
+    assert.deepEqual(value, { ok: true, url: 'https://d.example' });
+    assert.deepEqual(warnings, []);
+  }
+});
+
 test('envUrl: an https URL is used, trailing slashes stripped and the host normalized', () => {
-  assert.equal(envUrl('U', 'https://default.example', {}, { U: 'https://GW.example.com/v1/' }), 'https://gw.example.com/v1');
-  assert.equal(envUrl('U', 'https://default.example', {}, { U: 'https://gw.example.com//' }), 'https://gw.example.com');
-  assert.equal(envUrl('U', 'https://default.example', {}, { U: 'https://gw.example.com:8443' }), 'https://gw.example.com:8443');
+  assert.equal(usedUrl('https://GW.example.com/v1/'), 'https://gw.example.com/v1');
+  assert.equal(usedUrl('https://gw.example.com//'), 'https://gw.example.com');
+  assert.equal(usedUrl('https://gw.example.com:8443'), 'https://gw.example.com:8443');
 });
 
 test('envUrl: plain http is used as set, with a warning off this machine', () => {
   for (const local of ['http://localhost:4000', 'http://127.0.0.1:4000/v1', 'http://[::1]:4000', 'http://gw.localhost']) {
     const { value, warnings } = withWarnings(() => envUrl('U', 'https://d.example', {}, { U: local }));
-    assert.equal(value, local.replace(/\/+$/, ''), local);
+    assert.deepEqual(value, { ok: true, url: local.replace(/\/+$/, '') }, local);
     assert.deepEqual(warnings, [], local);
   }
 
@@ -226,33 +241,74 @@ test('envUrl: plain http is used as set, with a warning off this machine', () =>
   // worth a warning - but never a quiet switch to the vendor's endpoint, which
   // would send the traffic somewhere the operator did not choose.
   const remote = withWarnings(() => envUrl('U', 'https://d.example', {}, { U: 'http://gw.example.com/' }));
-  assert.equal(remote.value, 'http://gw.example.com');
+  assert.deepEqual(remote.value, { ok: true, url: 'http://gw.example.com' });
   assert.equal(remote.warnings.length, 1);
   assert.match(remote.warnings[0], /travels unencrypted/);
 });
 
-test('envUrl: junk, other schemes, credentials, queries and fragments all fall back', () => {
-  const cases = [
-    'gw.example.com',
-    'not a url',
-    'ftp://gw.example.com',
-    'https://user:secret@gw.example.com',
-    'https://gw.example.com/v1?key=1',
-    'https://gw.example.com/#x',
-  ];
-  for (const raw of cases) {
+/** Every shape envUrl refuses, and what the refusal must say. */
+const REFUSED = [
+  ['gw.example.com', /not an absolute http\(s\) URL/],
+  ['localhost:11434/v1', /not an absolute http\(s\) URL/], // parses, as the scheme "localhost:"
+  ['192.168.1.10:11434/v1', /not an absolute http\(s\) URL/],
+  ['"http://ollama:11434/v1"', /not an absolute http\(s\) URL/], // quotes kept by docker --env-file
+  ['not a url', /not an absolute http\(s\) URL/],
+  ['ftp://gw.example.com', /not an absolute http\(s\) URL/],
+  ['https://user:secret@gw.example.com', /"@"/],
+  ['https://gw.example.com/v1?key=1', /query string or fragment/],
+  ['https://gw.example.com/#x', /query string or fragment/],
+];
+
+test('envUrl: a value that is set but unusable is REFUSED - never replaced by the fallback', () => {
+  // The fallback is a vendor's endpoint. A gateway the operator named, typed
+  // without its scheme, must not become "send it all to the vendor instead".
+  for (const [raw, reason] of REFUSED) {
     const { value, warnings } = withWarnings(() => envUrl('U', 'https://d.example', {}, { U: raw }));
-    assert.equal(value, 'https://d.example', raw);
+    assert.equal(value.ok, false, raw);
+    assert.equal(value.url, undefined, `${raw}: a refusal carries no URL to use`);
+    assert.match(value.problem, /^U[ =]/, `${raw}: the problem names the variable`);
+    assert.match(value.problem, reason, raw);
+    assert.match(value.remedy, /Fix U in the root \.env, or remove it to use https:\/\/d\.example/, raw);
     assert.equal(warnings.length, 1, raw);
+    assert.match(warnings[0], /refused, and NOT replaced by https:\/\/d\.example/, raw);
   }
-  // The warning says why, and masks the password rather than copying it into
-  // the log.
+});
+
+test('envUrl: a refusal is warned about once per name, like every other junk value', () => {
+  const { warnings } = withWarnings(() => {
+    envUrl('U', 'https://d.example', {}, { U: 'gw.example.com' });
+    envUrl('U', 'https://d.example', {}, { U: 'gw.example.com' });
+  });
+  assert.equal(warnings.length, 1);
+});
+
+test('envUrl: the warning and the refusal never repeat a secret from the value', () => {
+  // Generated passwords contain `/`, `#` and `?`, which stop the URL parsing at
+  // all; some gateways take their key as a query parameter. None of it may
+  // reach the log, or the error an adapter raises from `problem`.
+  const secrets = [
+    'https://user:pa/ss-SECRET1@gw.example/v1',
+    'https://user:p#ss-SECRET1@gw.example/v1',
+    'https://user:p?ss-SECRET1@gw.example/v1',
+    'https://user:SECRET1@gw.example/v1',
+    'https://user:123/SECRET1@gw.example', // parses, with the host "user" and port 123
+    'https://gw.example/v1?api_key=sk-SECRET1',
+    'https://gw.example/v1#SECRET1',
+    'sk-SECRET1:anything',
+  ];
+  for (const raw of secrets) {
+    const { value, warnings } = withWarnings(() => envUrl('OPENAI_BASE_URL', 'https://d.example', {}, { OPENAI_BASE_URL: raw }));
+    assert.equal(value.ok, false, raw);
+    assert.equal(warnings.length, 1, raw);
+    for (const text of [warnings[0], value.problem, value.remedy]) {
+      assert.doesNotMatch(text, /SECRET1/, `${raw} leaked into: ${text}`);
+    }
+  }
+  // What is safe to show still is: a query is cut off, the rest of the URL kept.
   const { warnings } = withWarnings(() =>
-    envUrl('U', 'https://d.example', {}, { U: 'https://user:secret@gw.example.com' })
+    envUrl('U', 'https://d.example', {}, { U: 'https://gw.example/v1?api_key=sk-x' })
   );
-  assert.match(warnings[0], /has credentials in it/);
-  assert.doesNotMatch(warnings[0], /secret/);
-  assert.match(warnings[0], /https:\/\/\*\*\*@gw\.example\.com/);
+  assert.match(warnings[0], /U="https:\/\/gw\.example\/v1" has a query string or fragment/);
 });
 
 test('isLoopbackHost', () => {

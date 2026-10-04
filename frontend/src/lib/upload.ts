@@ -32,14 +32,44 @@ export function readUploadMaxMb(value: unknown): number {
  *
  * Checked before sending, because the server only says so once the upload has
  * reached the cap - on a slow connection, after a long wait for a refusal the
- * page could have given at once. The comparison is the server's: a file of
- * exactly the cap is accepted. The server still enforces it either way.
+ * page could have given at once. The comparison is the server's: busboy, under
+ * multer, refuses a file the moment it REACHES the cap, so a file of exactly
+ * N MB is refused and the largest accepted is one byte under. The server still
+ * enforces it either way.
  */
 export function pdfTooLargeMessage(
   file: { name: string; size: number },
   limitMb: number
 ): string | null {
-  if (file.size <= limitMb * BYTES_PER_MB) return null;
-  // The server's own 413 wording, so the refusal reads the same from either side.
-  return `${file.name} is larger than ${limitMb} MB, the most this server accepts. Choose a smaller PDF.`;
+  if (file.size < limitMb * BYTES_PER_MB) return null;
+  // From "this server accepts" on, the server's own 413 wording
+  // (middleware/pdfUpload.ts), so either refusal finds the same README row.
+  return `${file.name} is ${limitMb} MB or larger; this server accepts PDFs under ${limitMb} MB. Choose a smaller PDF.`;
+}
+
+/**
+ * The size refusal for `file`, checked against the cap the page has and, before
+ * refusing, against a fresh one.
+ *
+ * The cap a page holds was read when the app loaded. UPLOAD_MAX_MB changes with
+ * a backend restart, which signs nobody out, so a tab left open would go on
+ * refusing - without sending - a file the restarted server now takes, naming
+ * the old limit. So the cached number only ever lets a file THROUGH on its own;
+ * a refusal is confirmed against `readFreshLimitMb` first. That costs a request
+ * only on the refusal path, and if it fails the cached number stands. The
+ * server's 413 remains the authority either way.
+ */
+export async function pdfSizeRefusal(
+  file: { name: string; size: number },
+  cachedLimitMb: number,
+  readFreshLimitMb: () => Promise<number>
+): Promise<string | null> {
+  if (pdfTooLargeMessage(file, cachedLimitMb) === null) return null;
+  let limitMb = cachedLimitMb;
+  try {
+    limitMb = await readFreshLimitMb();
+  } catch {
+    // Unreachable just now: refuse on what the page already knew.
+  }
+  return pdfTooLargeMessage(file, limitMb);
 }

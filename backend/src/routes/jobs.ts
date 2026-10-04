@@ -28,7 +28,7 @@ import {
 import { extractJobPageContent } from '../services/jobPageContent';
 import { scraperDefaultLocation, scraperMaxResults } from '../config/operational';
 import {
-  describeScraperCatalog,
+  describeScraperSettings,
   isSupportedScraperSource,
   listScraperProviderCatalog,
   resolveScraperProvider,
@@ -380,7 +380,7 @@ function applySourceSpecificScraperDefaults(
   filters: UnifiedScraperFilters
 ): UnifiedScraperFilters {
   // SCRAPER_DEFAULT_LOCATION, read per request. The jobs page pre-fills its
-  // location field with the same value (GET /scrapers/providers), so this
+  // location field with the same value (GET /scrapers/settings), so this
   // applies when the user clears the field or a client sends none.
   if (!filters.location) {
     return {
@@ -522,12 +522,20 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
 });
 
 /**
- * The providers, and the deployment settings the jobs page shows: the default
- * location (SCRAPER_DEFAULT_LOCATION), the run timeout (APIFY_RUN_TIMEOUT_S) and,
- * per provider, the most results a run returns (SCRAPER_MAX_RESULTS folded in).
+ * The providers - a bare array, as it has always been - each with the most
+ * results a run returns (SCRAPER_MAX_RESULTS folded in).
  */
 router.get('/scrapers/providers', (_req: Request, res: Response) => {
-  res.json(describeScraperCatalog());
+  res.json(listScraperProviderCatalog());
+});
+
+/**
+ * The deployment settings the jobs page shows: the default location
+ * (SCRAPER_DEFAULT_LOCATION) and the run timeout (APIFY_RUN_TIMEOUT_S). Beside
+ * the providers rather than inside them - see `ScraperSettings` for why.
+ */
+router.get('/scrapers/settings', (_req: Request, res: Response) => {
+  res.json(describeScraperSettings());
 });
 
 router.post('/scrapers/export', async (req: Request, res: Response) => {

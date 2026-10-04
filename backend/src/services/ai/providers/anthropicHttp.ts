@@ -91,6 +91,10 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
 
     async health(): Promise<ProviderHealth> {
       const checkedAt = new Date().toISOString();
+      const base = claudeBaseUrl();
+      if (!base.ok) {
+        return { ok: false, detail: `${base.problem}, so nothing is sent.`, checkedAt, warning: base.remedy };
+      }
       const apiKey = await getProviderApiKey(PROVIDER_ID);
       return apiKey
         ? { ok: true, detail: 'An API key is configured.', checkedAt }
@@ -104,6 +108,26 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
 
     async complete(request: CompletionRequest): Promise<CompletionResult> {
       const startedAt = Date.now();
+      // CLAUDE_BASE_URL, for an LLM gateway or regional relay in front of the
+      // API. Deliberately NOT ANTHROPIC_BASE_URL: claudeCli/env.ts passes that
+      // name through to the `claude` child on purpose, so reading it here as
+      // well would make one setting move the metered API AND the subscription
+      // seat. CLAUDE_* is stripped from that child, so this one cannot reach it.
+      // Validated by envUrl, because the API key is sent to whatever it names:
+      // an absolute http(s) URL is used as set (plain http to another host warns
+      // but is used), trailing slash stripped; a value it refuses - no scheme,
+      // `user:password@`, a query or fragment - fails here, before anything is
+      // sent, rather than quietly reaching api.anthropic.com in its place. Read
+      // once per call, not per attempt: one call goes to one endpoint.
+      const base = claudeBaseUrl();
+      if (!base.ok) {
+        throw new AIProviderError({
+          provider: PROVIDER_ID,
+          kind: 'misconfigured',
+          detail: base.problem,
+          adminAction: base.remedy,
+        });
+      }
       const apiKey = await getProviderApiKey(PROVIDER_ID);
       if (!apiKey) {
         throw new AIProviderError({
@@ -136,19 +160,11 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
         messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: request.userBody || ' ' }] }],
       };
 
-      // Both read once per call, not per attempt: one call goes to one endpoint,
-      // and the "attempt n/N" in the retry line has to be the N the loop uses.
-      //
-      // CLAUDE_BASE_URL, for an LLM gateway or regional relay in front of the
-      // API. Deliberately NOT ANTHROPIC_BASE_URL: claudeCli/env.ts passes that
-      // name through to the `claude` child on purpose, so reading it here as
-      // well would make one setting move the metered API AND the subscription
-      // seat. CLAUDE_* is stripped from that child, so this one cannot reach it.
-      // Validated by envUrl (https unless loopback, no trailing slash), because
-      // the API key is sent to whatever it names.
-      const endpoint = `${claudeBaseUrl()}/v1/messages`;
+      const endpoint = `${base.url}/v1/messages`;
       // CLAUDE_MAX_ATTEMPTS counts the first try, so 1 means "never retry".
       // Only this adapter loops; openai and deepseek retry inside their SDK.
+      // Read once per call, like the endpoint: the "attempt n/N" in the retry
+      // line has to be the N the loop uses.
       const maxAttempts = claudeMaxAttempts();
 
       let lastError: unknown = null;

@@ -4,11 +4,12 @@
  * The deployment settings a scraper run is handed, and the check that they
  * were handed in.
  *
- * Nothing in this directory reads the environment. services/scraperProviders.ts
- * resolves APIFY_ACTOR_*, APIFY_RUN_TIMEOUT_S, APIFY_PROXY_GROUPS,
- * SCRAPER_COUNTRY, SCRAPER_DEFAULT_LOCATION and SCRAPER_MAX_RESULTS through
- * config/operational.ts - validated, defaulted, warned about once - and passes
- * the values in as one `settings` object:
+ * Apart from apify.js, which reads the token (APIFY_API_TOKEN, or the older
+ * APIFY_API_KEY), nothing in this directory reads the environment.
+ * services/scraperProviders.ts resolves APIFY_ACTOR_*, APIFY_RUN_TIMEOUT_S,
+ * APIFY_PROXY_GROUPS, SCRAPER_COUNTRY, SCRAPER_DEFAULT_LOCATION and
+ * SCRAPER_MAX_RESULTS through config/operational.ts - validated, defaulted,
+ * warned about once - and passes the values in as one `settings` object:
  *
  *   actorId          the Apify actor to run ('owner/name')
  *   runTimeoutS      the run timeout, which is also how long we wait for it

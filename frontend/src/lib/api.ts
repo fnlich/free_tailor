@@ -1,3 +1,5 @@
+import { readScraperCatalog, readScraperSettings } from './scraperForm';
+
 const DEFAULT_LOCAL_API_BASE = 'http://localhost:3001/api';
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || DEFAULT_LOCAL_API_BASE;
 const CONFIGURED_FALLBACK_API_BASE = (process.env.NEXT_PUBLIC_FALLBACK_API_URL || '').replace(/\/$/, '');
@@ -499,16 +501,16 @@ export interface ScraperSourceProviderCatalog {
 }
 
 /**
- * GET /jobs/scrapers/providers. The deployment's scraper settings are served
- * here rather than compiled in as NEXT_PUBLIC_ values, so the form always shows
- * what the server will actually apply.
+ * GET /jobs/scrapers/settings. The deployment's scraper settings are served
+ * rather than compiled in as NEXT_PUBLIC_ values, so the form always shows what
+ * the server will actually apply. Null where the server did not say - one that
+ * predates the endpoint - and the server's own default then applies unnamed.
  */
-export interface ScraperCatalog {
+export interface ScraperSettings {
   /** SCRAPER_DEFAULT_LOCATION: what an empty location searches. */
-  defaultLocation: string;
+  defaultLocation: string | null;
   /** APIFY_RUN_TIMEOUT_S: how long one run may take. */
-  runTimeoutS: number;
-  sources: ScraperSourceProviderCatalog[];
+  runTimeoutS: number | null;
 }
 
 export interface JobSheetExportSummary {
@@ -1213,7 +1215,12 @@ export type JobSheetDestination = {
 };
 
 export const jobsApi = {
-  getScraperProviders: () => apiFetch<ScraperCatalog>('/jobs/scrapers/providers'),
+  // Both normalised (lib/scraperForm.ts), so a backend on another version than
+  // this page degrades the form instead of crashing it.
+  getScraperProviders: () =>
+    apiFetch<unknown>('/jobs/scrapers/providers').then((body) => readScraperCatalog(body)),
+  getScraperSettings: () =>
+    apiFetch<unknown>('/jobs/scrapers/settings').then((body) => readScraperSettings(body)),
 
   runScraper: (data: ScraperRunFilters & { source: ScraperSource; provider?: string }) =>
     apiFetch<ScraperRunResponse>('/jobs/scrapers/run', {

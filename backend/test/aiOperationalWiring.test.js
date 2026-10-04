@@ -173,39 +173,44 @@ test('a caller that names its own timeout still wins over the setting', async ()
   assert.equal(requests[0].deadline.totalMs, 12_000);
 });
 
-test('the request deadline caps a CLI budget set above it - the case the startup warning is about', async () => {
-  // AI_CLI_TIMEOUT_MS_TAILOR=600000 is read by the provider and then never
-  // reached: the child is given the smaller of the two. operational.ts's
-  // describeAiTimeoutsAboveRequestDeadline says so at startup; this pins that
-  // what it says is true of the real adapter.
-  useTempStorage('ai-deadline-cli');
-  const { createClaudeCliAdapter } = require('../dist/services/ai/providers/claudeCli/index');
-  const { describeAiTimeoutsAboveRequestDeadline } = require('../dist/config/operational');
-  const runner = makeFakeCliRunner({ lines: readCliFixture('success-text') });
+for (const budget of ['600000', '600000ms']) {
+  test(`the request deadline caps a CLI budget set above it (${budget}) - the case the startup warning is about`, async () => {
+    // AI_CLI_TIMEOUT_MS_TAILOR=600000 is read by the provider and then never
+    // reached: the child is given the smaller of the two. operational.ts's
+    // describeAiTimeoutsAboveRequestDeadline says so at startup; this pins that
+    // what it says is true of the real adapter.
+    useTempStorage('ai-deadline-cli');
+    const { createClaudeCliAdapter } = require('../dist/services/ai/providers/claudeCli/index');
+    const { describeAiTimeoutsAboveRequestDeadline } = require('../dist/config/operational');
+    const runner = makeFakeCliRunner({ lines: readCliFixture('success-text') });
 
-  await withEnv({ AI_REQUEST_TIMEOUT_MS: '60000', AI_CLI_TIMEOUT_MS_TAILOR: '600000' }, async () => {
-    const seat = createClaudeCliAdapter({
-      runner,
-      config: { binary: '/nonexistent/claude', workdir: process.env.TMPDIR || '/tmp', firstEventMs: 1_000 },
-    });
-    const ai = loadFacadeWith(seat);
-    await ai.createRawCompletion({
-      callSite: 'tailor-resume',
-      system: 'Be terse.',
-      user: 'hi',
-      provider: 'claude-cli',
-      responseFormat: 'text',
+    await withEnv({ AI_REQUEST_TIMEOUT_MS: '60000', AI_CLI_TIMEOUT_MS_TAILOR: budget }, async () => {
+      // The provider reads `600000ms` as 600000 too, so the warning must as well.
+      const { readClaudeCliConfig, resolveTimeoutMs } = require('../dist/services/ai/providers/claudeCli/options');
+      assert.equal(resolveTimeoutMs(readClaudeCliConfig(), 'tailor-resume'), 600_000);
+      const seat = createClaudeCliAdapter({
+        runner,
+        config: { binary: '/nonexistent/claude', workdir: process.env.TMPDIR || '/tmp', firstEventMs: 1_000 },
+      });
+      const ai = loadFacadeWith(seat);
+      await ai.createRawCompletion({
+        callSite: 'tailor-resume',
+        system: 'Be terse.',
+        user: 'hi',
+        provider: 'claude-cli',
+        responseFormat: 'text',
+      });
+
+      const [warning, ...rest] = describeAiTimeoutsAboveRequestDeadline();
+      assert.deepEqual(rest, []);
+      assert.match(warning, /AI_CLI_TIMEOUT_MS_TAILOR=600000 is longer than AI_REQUEST_TIMEOUT_MS=60000/);
     });
 
-    const [warning, ...rest] = describeAiTimeoutsAboveRequestDeadline();
-    assert.deepEqual(rest, []);
-    assert.match(warning, /AI_CLI_TIMEOUT_MS_TAILOR=600000 is longer than AI_REQUEST_TIMEOUT_MS=60000/);
+    assert.equal(runner.calls.length, 1);
+    assert.ok(runner.calls[0].deadlineMs <= 60_000, `child budget ${runner.calls[0].deadlineMs}ms`);
+    assert.ok(runner.calls[0].deadlineMs > 55_000, `child budget ${runner.calls[0].deadlineMs}ms`);
   });
-
-  assert.equal(runner.calls.length, 1);
-  assert.ok(runner.calls[0].deadlineMs <= 60_000, `child budget ${runner.calls[0].deadlineMs}ms`);
-  assert.ok(runner.calls[0].deadlineMs > 55_000, `child budget ${runner.calls[0].deadlineMs}ms`);
-});
+}
 
 /* ==================================================== the `claude` HTTP API */
 
@@ -415,6 +420,104 @@ test('an OPENAI_BASE_URL at a LAN box over plain http still goes there - never t
 
   const [local] = await compatibleCalls('openai', { OPENAI_BASE_URL: 'http://localhost:11434/v1' });
   assert.equal(local.url, 'http://localhost:11434/v1/chat/completions');
+});
+
+/**
+ * The base-URL shapes envUrl refuses, as an operator actually writes them:
+ * no scheme (the common Ollama slip), quotes kept by `docker --env-file`,
+ * basic auth in front of a LAN box, a password with a `/` in it, a gateway's
+ * query string or fragment, and another scheme.
+ */
+const REFUSED_BASE_URLS = [
+  'localhost:11434/v1',
+  '192.168.1.10:11434/v1',
+  '"http://ollama:11434/v1"',
+  'http://user:pass@192.168.1.10:11434/v1',
+  'https://user:pa/ss@gw.example/v1',
+  'https://gw.example/v1?api-version=2024',
+  'https://gw.example/v1#frag',
+  'ftp://gw.example/v1',
+];
+
+/** Runs one completion with every fetch recorded; resolves to the calls and the error. */
+async function refusedRun(adapter, vars) {
+  let failure = null;
+  const { value: calls, warnings } = await captureWarnings(() =>
+    withEnv(vars, () =>
+      withFetch(chatOk, async () => {
+        failure = await adapter.complete(httpRequest()).then(
+          () => assert.fail('a refused endpoint answered'),
+          (error) => error
+        );
+      })
+    )
+  );
+  return { calls, failure, warnings };
+}
+
+for (const [id, name] of [
+  ['openai', 'OPENAI_BASE_URL'],
+  ['deepseek', 'DEEPSEEK_BASE_URL'],
+]) {
+  test(`${name} set but refused sends NOTHING - not to the vendor, not anywhere`, async () => {
+    for (const raw of REFUSED_BASE_URLS) {
+      const { calls, failure, warnings } = await refusedRun(compatibleAdapter(id), {
+        ...CLEAN_OPENAI_ENV,
+        [name]: raw,
+      });
+      assert.deepEqual(calls, [], `${raw}: a request left the process`);
+      assert.equal(failure.kind, 'misconfigured', raw);
+      assert.equal(failure.retryable, false, `${raw}: the same value is refused the same way next time`);
+      assert.match(failure.detail, new RegExp(`^${name}[ =]`), raw);
+      assert.match(failure.adminAction, new RegExp(`Fix ${name} in the root \\.env`), raw);
+      assert.equal(envWarnings(warnings).length, 1, raw);
+    }
+  });
+
+  test(`a refused ${name} makes ${id}'s health check say so`, async () => {
+    const health = await withEnv({ ...CLEAN_OPENAI_ENV, [name]: 'localhost:11434/v1' }, () =>
+      captureWarnings(() => compatibleAdapter(id).health())
+    );
+    assert.equal(health.value.ok, false);
+    assert.match(health.value.detail, new RegExp(`^${name} .*nothing is sent`));
+    assert.match(health.value.warning, /remove it to use https:\/\//);
+  });
+}
+
+test('a CLAUDE_BASE_URL that is set but refused sends NOTHING, and the health check says so', async () => {
+  for (const raw of [...REFUSED_BASE_URLS, 'gateway.corp:8443']) {
+    let failure = null;
+    const { value: calls } = await captureWarnings(() =>
+      withEnv({ ANTHROPIC_API_KEY: 'sk-ant-test', CLAUDE_BASE_URL: raw }, () =>
+        withFetch(anthropicOk, async () => {
+          failure = await anthropicAdapter().complete(httpRequest()).then(
+            () => assert.fail('a refused endpoint answered'),
+            (error) => error
+          );
+        })
+      )
+    );
+    assert.deepEqual(calls, [], `${raw}: a request left the process`);
+    assert.equal(failure.kind, 'misconfigured', raw);
+    assert.match(failure.detail, /^CLAUDE_BASE_URL[ =]/, raw);
+  }
+
+  const health = await withEnv({ ANTHROPIC_API_KEY: 'sk-ant-test', CLAUDE_BASE_URL: 'gateway.corp:8443' }, () =>
+    captureWarnings(() => anthropicAdapter().health())
+  );
+  assert.equal(health.value.ok, false);
+  assert.match(health.value.detail, /^CLAUDE_BASE_URL .*nothing is sent/);
+});
+
+test('a refused base URL is the reason preflight gives, even with a key configured', async () => {
+  const { checkProviderHealth, resetRegistryForTests } = require('../dist/services/ai/registry');
+  resetRegistryForTests();
+  const report = await withEnv({ ...CLEAN_OPENAI_ENV, OPENAI_BASE_URL: 'localhost:11434/v1' }, () =>
+    captureWarnings(() => checkProviderHealth('openai'))
+  );
+  resetRegistryForTests();
+  assert.equal(report.value.ok, false);
+  assert.match(report.value.detail, /OPENAI_BASE_URL is not an absolute http\(s\) URL/);
 });
 
 test('OPENAI_ORG_ID and OPENAI_PROJECT_ID reach OpenAI and never DeepSeek', async () => {

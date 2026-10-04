@@ -262,19 +262,49 @@ test('uploadMaxMb: the served number, or the old fixed 10 from a server that doe
   assert.equal(readUploadMaxMb(Number.NaN), 10);
 });
 
-test('a PDF over the cap is refused before it is sent, with the server\'s rule and the cap named', () => {
+test('a PDF at or over the cap is refused before it is sent, with the server\'s rule and the cap named', () => {
   const { pdfTooLargeMessage } = loadFrontendModule('lib/upload.ts');
   const MB = 1024 * 1024;
 
   assert.equal(pdfTooLargeMessage({ name: 'cv.pdf', size: 3 * MB }, 10), null);
-  // multer's rule: exactly the cap is accepted, one byte more is not.
-  assert.equal(pdfTooLargeMessage({ name: 'cv.pdf', size: 10 * MB }, 10), null);
-  const refused = pdfTooLargeMessage({ name: 'scan.pdf', size: 10 * MB + 1 }, 10);
-  assert.match(refused, /scan\.pdf is larger than 10 MB/);
+  // busboy's rule, under multer: a file that REACHES the cap is refused - the
+  // limit fires at fileSize === fileSizeLimit - and one byte under is accepted.
+  // operationalWiring.test.js pins the server side of the same boundary.
+  assert.equal(pdfTooLargeMessage({ name: 'cv.pdf', size: 10 * MB - 1 }, 10), null);
+  const exact = pdfTooLargeMessage({ name: 'scan.pdf', size: 10 * MB }, 10);
+  assert.match(exact, /scan\.pdf is 10 MB or larger; this server accepts PDFs under 10 MB/);
+  assert.match(pdfTooLargeMessage({ name: 'scan.pdf', size: 10 * MB + 1 }, 10), /10 MB or larger/);
 
   // The cap is the served one, not a constant.
   assert.equal(pdfTooLargeMessage({ name: 'scan.pdf', size: 30 * MB }, 40), null);
-  assert.match(pdfTooLargeMessage({ name: 'scan.pdf', size: 30 * MB }, 25), /larger than 25 MB/);
+  assert.match(pdfTooLargeMessage({ name: 'scan.pdf', size: 30 * MB }, 25), /under 25 MB/);
+});
+
+test('a refusal on the cached cap is confirmed against a fresh one first', async () => {
+  // A backend restarted with a higher UPLOAD_MAX_MB signs nobody out, so an
+  // open tab still holds the old number. Refusing on it alone would turn away
+  // a file the server now takes, naming the old limit.
+  const { pdfSizeRefusal } = loadFrontendModule('lib/upload.ts');
+  const MB = 1024 * 1024;
+  const scan = { name: 'scan.pdf', size: 15 * MB };
+  let asked = 0;
+  const fresh = (limit) => async () => {
+    asked += 1;
+    return limit;
+  };
+
+  assert.equal(await pdfSizeRefusal({ name: 'cv.pdf', size: MB }, 10, fresh(25)), null);
+  assert.equal(asked, 0, 'a file under the cached cap costs no request');
+
+  assert.equal(await pdfSizeRefusal(scan, 10, fresh(25)), null, 'raised to 25: let through');
+  assert.equal(asked, 1);
+  assert.match(await pdfSizeRefusal(scan, 10, fresh(12)), /under 12 MB/, 'refused, naming the fresh cap');
+
+  // The server cannot be asked: refuse on what the page already had.
+  const unreachable = async () => {
+    throw new Error('Failed to fetch');
+  };
+  assert.match(await pdfSizeRefusal(scan, 10, unreachable), /under 10 MB/);
 });
 
 /*

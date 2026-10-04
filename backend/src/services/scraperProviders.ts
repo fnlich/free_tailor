@@ -78,19 +78,27 @@ export type ScraperSourceProviderCatalog = {
 };
 
 /**
- * GET /api/jobs/scrapers/providers: the providers, and the deployment settings
- * the jobs page needs to describe a run.
+ * GET /api/jobs/scrapers/settings: the deployment settings the jobs page needs
+ * to describe a run.
  *
  * SERVED rather than mirrored as NEXT_PUBLIC_ values: the server is what applies
  * them, and a copy compiled into the bundle could only disagree with it after
  * the next edit to `.env`.
+ *
+ * On an endpoint of their own, NOT folded into GET /scrapers/providers: that
+ * one has always answered a bare array, and a jobs page that is not rebuilt
+ * when the backend is - `npm run dev:poll` restarts the backend on a pull and
+ * keeps serving the old frontend - iterates it. Wrapping it in an object
+ * crashed that page outright, and the newer page on an older backend the same
+ * way. The array only gains fields (a provider's `maxResults`), which an older
+ * page ignores; an older backend answers this one 404, and the page then runs
+ * on the server's defaults without naming them.
  */
-export type ScraperCatalog = {
+export type ScraperSettings = {
   /** SCRAPER_DEFAULT_LOCATION: what an empty location searches, and the form's initial value. */
   defaultLocation: string;
   /** APIFY_RUN_TIMEOUT_S: how long one run - and so the request - may take. */
   runTimeoutS: number;
-  sources: ScraperSourceProviderCatalog[];
 };
 
 /**
@@ -254,12 +262,11 @@ export function listScraperProviderCatalog(env: EnvSource = process.env): Scrape
   }));
 }
 
-/** The body of GET /api/jobs/scrapers/providers. */
-export function describeScraperCatalog(env: EnvSource = process.env): ScraperCatalog {
+/** The body of GET /api/jobs/scrapers/settings. GET /scrapers/providers is `listScraperProviderCatalog`. */
+export function describeScraperSettings(env: EnvSource = process.env): ScraperSettings {
   return {
     defaultLocation: scraperDefaultLocation(env),
     runTimeoutS: apifyRunTimeoutS(env),
-    sources: listScraperProviderCatalog(env),
   };
 }
 

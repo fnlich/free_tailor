@@ -40,6 +40,13 @@ type AuthState = {
    * server too old to send it.
    */
   uploadMaxMb: number;
+  /**
+   * Re-reads the upload cap and resolves with it - for an upload page about to
+   * refuse a file on the number above, which may be from before a backend
+   * restart changed UPLOAD_MAX_MB (see lib/upload.ts `pdfSizeRefusal`). Resolves
+   * with the number it already had when the server cannot be asked.
+   */
+  refreshUploadMaxMb: () => Promise<number>;
   /** Re-reads the account, for after a change that alters plan or profile use. */
   refresh: () => Promise<void>;
   /** Records a sign-in that already happened, without a second round trip. */
@@ -54,6 +61,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploadMaxMb, setUploadMaxMb] = useState(DEFAULT_UPLOAD_MAX_MB);
+  // The same number, for refreshUploadMaxMb's fallback: a callback that read
+  // the state would see the value from when it was created.
+  const uploadMaxMbRef = useRef(DEFAULT_UPLOAD_MAX_MB);
 
   // Guards against a refresh that resolves after the component is gone, which
   // React warns about and which would also overwrite a newer sign-in.
@@ -70,7 +80,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { account: next, uploadMaxMb: limit } = await authApi.me();
       if (!alive.current) return;
       setAccount(next);
-      setUploadMaxMb(readUploadMaxMb(limit));
+      uploadMaxMbRef.current = readUploadMaxMb(limit);
+      setUploadMaxMb(uploadMaxMbRef.current);
       setError(null);
     } catch (caught) {
       if (!alive.current) return;
@@ -88,6 +99,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const refreshUploadMaxMb = useCallback(async () => {
+    try {
+      const { uploadMaxMb: limit } = await authApi.me();
+      const fresh = readUploadMaxMb(limit);
+      uploadMaxMbRef.current = fresh;
+      if (alive.current) setUploadMaxMb(fresh);
+      return fresh;
+    } catch {
+      return uploadMaxMbRef.current;
+    }
+  }, []);
 
   /**
    * A 401 from anywhere drops the account.
@@ -118,11 +141,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAdmin: account?.role === 'admin',
       signedIn: account !== null,
       uploadMaxMb,
+      refreshUploadMaxMb,
       refresh,
       adopt,
       signOut,
     }),
-    [account, loading, error, uploadMaxMb, refresh, adopt, signOut]
+    [account, loading, error, uploadMaxMb, refreshUploadMaxMb, refresh, adopt, signOut]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

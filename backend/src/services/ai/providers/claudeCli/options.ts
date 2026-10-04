@@ -1,4 +1,5 @@
 import path from 'path';
+import { cliTimeoutMs } from '../../../../config/operational';
 
 /**
  * Environment-driven configuration for the Claude CLI provider.
@@ -100,7 +101,10 @@ function defaultWorkdir(): string {
 }
 
 export function readClaudeCliConfig(): ClaudeCliConfig {
-  const defaultTimeoutMs = intFlag('AI_CLI_TIMEOUT_MS', 180_000, 5_000, 3_600_000);
+  // The per-call budgets go through operational.ts's reader - the same parse,
+  // bounds and defaults as intFlag - so the startup warning about a budget the
+  // request deadline caps reads them exactly as this does.
+  const defaultTimeoutMs = cliTimeoutMs('AI_CLI_TIMEOUT_MS');
 
   /*
    * A junk value warns and falls back rather than reaching the CLI.
@@ -135,8 +139,8 @@ export function readClaudeCliConfig(): ClaudeCliConfig {
     firstEventMs: intFlag('AI_CLI_FIRST_EVENT_MS', 30_000, 1_000, 300_000),
     defaultTimeoutMs,
     timeoutMsByCallSite: {
-      'tailor-resume': intFlag('AI_CLI_TIMEOUT_MS_TAILOR', 300_000, 5_000, 3_600_000),
-      'filter-google-sheet-job': intFlag('AI_CLI_TIMEOUT_MS_FILTER', 60_000, 5_000, 3_600_000),
+      'tailor-resume': cliTimeoutMs('AI_CLI_TIMEOUT_MS_TAILOR'),
+      'filter-google-sheet-job': cliTimeoutMs('AI_CLI_TIMEOUT_MS_FILTER'),
     },
     workdir: flag('AI_CLI_WORKDIR', '') || defaultWorkdir(),
     allowApiKey: boolFlag('AI_CLI_ALLOW_API_KEY', false),

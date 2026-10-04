@@ -1,4 +1,13 @@
-import { envInt, envList, envRaw, envString, envUrl, type EnvIntOptions, type EnvSource } from './envValue';
+import {
+  envInt,
+  envList,
+  envRaw,
+  envString,
+  envUrl,
+  type EnvIntOptions,
+  type EnvSource,
+  type EnvUrl,
+} from './envValue';
 
 /**
  * The operational settings that used to be literals in the code.
@@ -15,7 +24,9 @@ import { envInt, envList, envRaw, envString, envUrl, type EnvIntOptions, type En
  *   - The default is exactly the literal it replaced. An installation that sets
  *     none of these behaves as it did before they existed.
  *   - Nothing here can stop the server from starting. Junk warns once and uses
- *     the default; out of range is clamped and warns once (`envValue.ts`).
+ *     the default; out of range is clamped and warns once (`envValue.ts`). The
+ *     base URLs are the one exception to "uses the default": a refused one
+ *     leaves its provider unavailable rather than pointed at the vendor.
  *   - The unit is in the name, and only the suffixes the codebase already used:
  *     _MS, _S, _DAYS, _MB, _BYTES.
  *
@@ -77,7 +88,6 @@ function readInt(name: IntName, env: EnvSource): number {
 /* ======================================================== server limits */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MB = 1024 * 1024;
 
 /**
  * How long a sign-in lasts, in days.
@@ -100,28 +110,28 @@ export function sessionTtlMs(env: EnvSource = process.env): number {
 /**
  * The largest JSON body any /api route accepts, in MB.
  *
- * Batch requests and profile/template imports are the large ones, and how
- * large depends on the operator's batches, not on the code. Read once, where
- * the parser is built.
+ * Batch requests and profile imports are the large ones, and how large depends
+ * on the operator's batches, not on the code. Read once, where the parser is
+ * built. Not the template JSON import, which is a multipart file upload with a
+ * fixed 2 MB of its own (routes/templates.ts), nor the payment webhooks' 1 MB.
  */
 export function jsonBodyMaxMb(env: EnvSource = process.env): number {
   return readInt('JSON_BODY_MAX_MB', env);
 }
 
 /**
- * The largest resume or template PDF an upload may be, in MB.
+ * The PDF upload cap, in MB: a resume or template PDF must be UNDER it - busboy
+ * refuses a file the moment it reaches the limit, so exactly this size is
+ * refused, as it always was.
  *
  * Scanned PDFs are routinely bigger than a typed one. Read once, where the
- * multer instances are built, and served to the browser by GET /api/auth/me
+ * multer instance is built (middleware/pdfUpload.ts, which works out the bytes
+ * from that one read), and served to the browser by GET /api/auth/me
  * (`uploadMaxMb`) rather than duplicated as a NEXT_PUBLIC_ value that could
  * disagree with what the server enforces.
  */
 export function uploadMaxMb(env: EnvSource = process.env): number {
   return readInt('UPLOAD_MAX_MB', env);
-}
-
-export function uploadMaxBytes(env: EnvSource = process.env): number {
-  return uploadMaxMb(env) * MB;
 }
 
 /**
@@ -170,6 +180,14 @@ export function aiRequestTimeoutMs(env: EnvSource = process.env): number {
   return readInt('AI_REQUEST_TIMEOUT_MS', env);
 }
 
+/*
+ * The three metered endpoints. Each answers an EnvUrl, not a string: unset is
+ * the vendor's endpoint, but a value that is set and refused (no scheme,
+ * `user:password@`, a query...) is NOT - the provider is unavailable until it
+ * is fixed, and sends nothing. See `envUrl` for why the vendor is never the
+ * stand-in for an endpoint the operator named.
+ */
+
 /**
  * The endpoint of the metered `claude` provider; the adapter appends /v1/messages.
  *
@@ -178,12 +196,12 @@ export function aiRequestTimeoutMs(env: EnvSource = process.env): number {
  * subscription seat. CLAUDE_* is scrubbed from the child and matches
  * CLAUDE_MODEL.
  */
-export function claudeBaseUrl(env: EnvSource = process.env): string {
+export function claudeBaseUrl(env: EnvSource = process.env): EnvUrl {
   return envUrl('CLAUDE_BASE_URL', 'https://api.anthropic.com', {}, env);
 }
 
 /** The endpoint of the `deepseek` provider (an OpenAI-compatible client). */
-export function deepseekBaseUrl(env: EnvSource = process.env): string {
+export function deepseekBaseUrl(env: EnvSource = process.env): EnvUrl {
   return envUrl('DEEPSEEK_BASE_URL', 'https://api.deepseek.com', {}, env);
 }
 
@@ -192,13 +210,20 @@ export function deepseekBaseUrl(env: EnvSource = process.env): string {
  *
  * The openai SDK has always read OPENAI_BASE_URL by itself; it is read here so
  * the value is validated (an absolute http(s) URL; plain http off this machine
- * is used as set, with a warning), shows up in the startup line,
- * and is documented beside CLAUDE_BASE_URL and DEEPSEEK_BASE_URL. The default is
- * the SDK's own.
+ * is used as set, with a warning; anything unusable leaves the provider
+ * unavailable rather than pointed at OpenAI), shows up in the startup line, and
+ * is documented beside CLAUDE_BASE_URL and DEEPSEEK_BASE_URL. The default is the
+ * SDK's own.
  */
-export function openaiBaseUrl(env: EnvSource = process.env): string {
+export function openaiBaseUrl(env: EnvSource = process.env): EnvUrl {
   return envUrl('OPENAI_BASE_URL', 'https://api.openai.com/v1', {}, env);
 }
+
+/** How the startup line shows a base URL: the one in use, or that the one set was refused. */
+const shownUrl = (read: (env: EnvSource) => EnvUrl) => (env: EnvSource): string => {
+  const resolved = read(env);
+  return resolved.ok ? resolved.url : '(refused)';
+};
 
 /**
  * Attempts, counting the first, for the `claude` HTTP provider on 429/5xx/529
@@ -219,8 +244,38 @@ export function aiCodexHealthTimeoutMs(env: EnvSource = process.env): number {
   return readInt('AI_CODEX_HEALTH_TIMEOUT_MS', env);
 }
 
-/** The CLI per-call budgets: AI_CLI_TIMEOUT_MS, AI_CLI_TIMEOUT_MS_TAILOR, AI_CODEX_TIMEOUT_MS_FILTER, ... */
-const CLI_TIMEOUT_NAME = /^AI_(?:CLI|CODEX)_TIMEOUT_MS(?:_[A-Z0-9_]+)?$/;
+/**
+ * The CLI per-call budgets, in ms: the six variables claudeCli/options.ts and
+ * codexCli/options.ts read for a call's own time limit, with the defaults they
+ * use. Not in OPERATIONAL_VARIABLES - they predate it and keep their own,
+ * looser reading (below) - but kept here so the providers and the startup
+ * warning about them read one list and one set of numbers.
+ */
+export const CLI_TIMEOUT_DEFAULTS_MS = {
+  AI_CLI_TIMEOUT_MS: 180_000,
+  AI_CLI_TIMEOUT_MS_TAILOR: 300_000,
+  AI_CLI_TIMEOUT_MS_FILTER: 60_000,
+  AI_CODEX_TIMEOUT_MS: 180_000,
+  AI_CODEX_TIMEOUT_MS_TAILOR: 300_000,
+  AI_CODEX_TIMEOUT_MS_FILTER: 60_000,
+} as const;
+
+export type CliTimeoutVariable = keyof typeof CLI_TIMEOUT_DEFAULTS_MS;
+
+/**
+ * One CLI budget, read the way those providers have always read it.
+ *
+ * `parseInt`, so `600000ms` is 600000 and `600000.5` is 600000; clamped to
+ * 5000..3600000; the default for anything with no leading number - all without
+ * a word, which is older than envValue.ts and left as it was so no install's
+ * budgets move. The ONE reader of these six: the providers call it, and so does
+ * the warning below, which therefore cannot disagree with them about a value.
+ */
+export function cliTimeoutMs(name: CliTimeoutVariable, env: EnvSource = process.env): number {
+  const parsed = Number.parseInt((env[name] ?? '').trim(), 10);
+  if (!Number.isFinite(parsed)) return CLI_TIMEOUT_DEFAULTS_MS[name];
+  return Math.min(3_600_000, Math.max(5_000, parsed));
+}
 
 /**
  * The CLI budgets that are set above the request deadline, and so do nothing.
@@ -230,20 +285,23 @@ const CLI_TIMEOUT_NAME = /^AI_(?:CLI|CODEX)_TIMEOUT_MS(?:_[A-Z0-9_]+)?$/;
  * 300000 is accepted, read, and then capped at five minutes without a word -
  * the operator raised a limit and nothing changed. Said once at startup instead.
  *
- * Only variables that are actually SET are reported. Lowering the request
- * deadline below a CLI default is a legitimate way to cap everything, and
- * warning about defaults nobody wrote would be noise. The value is read the way
- * the CLI providers read it (a whole number, clamped to 5000..3600000); one
- * that is not a number is the provider's warning to give, not this one's.
+ * Only a budget that is SET, and set to something other than its own default,
+ * is reported. Lowering the request deadline below a CLI default is a
+ * legitimate way to cap everything, and a budget AT its default is one nobody
+ * chose: older copies of .env.example wrote all six out uncommented, so a
+ * `.env` made from one has them, and warning about those would tell the
+ * operator to undo the cap they had just set. The value is read with
+ * `cliTimeoutMs`, exactly as the providers read it; one with no leading number
+ * is their default to them, silently, and so is not reported here either.
  */
 export function describeAiTimeoutsAboveRequestDeadline(env: EnvSource = process.env): string[] {
   const deadline = aiRequestTimeoutMs(env);
   const warnings: string[] = [];
 
-  for (const name of Object.keys(env).filter((key) => CLI_TIMEOUT_NAME.test(key)).sort()) {
-    const raw = envRaw(name, env);
-    if (raw === null || !/^[+-]?\d+$/.test(raw)) continue;
-    const value = Math.min(3_600_000, Math.max(5_000, Number(raw)));
+  for (const name of Object.keys(CLI_TIMEOUT_DEFAULTS_MS) as CliTimeoutVariable[]) {
+    if (envRaw(name, env) === null) continue;
+    const value = cliTimeoutMs(name, env);
+    if (value === CLI_TIMEOUT_DEFAULTS_MS[name]) continue;
     if (value > deadline) {
       warnings.push(
         `[ai] ${name}=${value} is longer than AI_REQUEST_TIMEOUT_MS=${deadline}, which bounds every AI call, ` +
@@ -344,14 +402,23 @@ const DEFAULT_JOB_PAGE_USER_AGENT =
  * The User-Agent of the job-page fetch and of the Chrome page behind it.
  *
  * Configurable because it is pinned to one Chrome release, and sites block a
- * user agent once it is old enough. At most 512 characters and never a line
- * break - it is sent as a header.
+ * user agent once it is old enough. At most 512 characters of printable ASCII -
+ * it is sent as a header. Not only no line break: Node's fetch throws on a
+ * header character above U+00FF, and an ellipsis or a U+2028 pasted from a web
+ * page is exactly that. The job-page reader takes any fetch failure as "this
+ * page needs JavaScript", so such a value would have sent every job link to
+ * headless Chrome without a word; refused here, it warns once and the default
+ * is used.
  */
 export function jobPageUserAgent(env: EnvSource = process.env): string {
   return envString(
     'JOB_PAGE_USER_AGENT',
     DEFAULT_JOB_PAGE_USER_AGENT,
-    { maxLength: 512, expected: 'a single-line User-Agent of at most 512 characters' },
+    {
+      maxLength: 512,
+      pattern: /^[\x20-\x7e]+$/,
+      expected: 'a single-line, printable-ASCII User-Agent of at most 512 characters',
+    },
     env
   );
 }
@@ -361,7 +428,7 @@ export function jobPageUserAgent(env: EnvSource = process.env): string {
 /**
  * The location a scraper is given when the user leaves it empty, the fixed
  * memo23 location, and the jobs form's initial value. The deployment's job
- * market. Served to the jobs page by GET /api/jobs/scrapers/providers.
+ * market. Served to the jobs page by GET /api/jobs/scrapers/settings.
  */
 export function scraperDefaultLocation(env: EnvSource = process.env): string {
   return envString(
@@ -452,21 +519,6 @@ export function apifyActorId(name: ApifyActorVariable, env: EnvSource = process.
     env
   );
 }
-
-export const apifyActorIndeed = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_INDEED', env);
-export const apifyActorJobboard = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_JOBBOARD', env);
-export const apifyActorWellfound = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_WELLFOUND', env);
-export const apifyActorLever = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_LEVER', env);
-export const apifyActorHiringcafe = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_HIRINGCAFE', env);
-export const apifyActorHiringcafeCrawlerbros = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS', env);
-export const apifyActorHiringcafeMemo23 = (env: EnvSource = process.env): string =>
-  apifyActorId('APIFY_ACTOR_HIRINGCAFE_MEMO23', env);
 
 /* ================================================================ payments */
 
@@ -583,15 +635,15 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     side: 'backend',
     readAt: 'per-call',
     readIn: 'services/ai/providers/anthropicHttp.ts',
-    current: claudeBaseUrl,
+    current: shownUrl(claudeBaseUrl),
   },
   {
     name: 'DEEPSEEK_BASE_URL',
     defaultValue: 'https://api.deepseek.com',
     side: 'backend',
     readAt: 'per-call',
-    readIn: 'services/ai/registry.ts',
-    current: deepseekBaseUrl,
+    readIn: 'services/ai/providers/openaiCompatible.ts',
+    current: shownUrl(deepseekBaseUrl),
   },
   {
     name: 'OPENAI_BASE_URL',
@@ -599,7 +651,7 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     side: 'backend',
     readAt: 'per-call',
     readIn: 'services/ai/providers/openaiCompatible.ts',
-    current: openaiBaseUrl,
+    current: shownUrl(openaiBaseUrl),
   },
   intEntry('CLAUDE_MAX_ATTEMPTS', 'per-call', 'services/ai/providers/anthropicHttp.ts', claudeMaxAttempts),
 
@@ -622,7 +674,7 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     defaultValue: 'United States',
     side: 'backend',
     readAt: 'per-call',
-    readIn: 'routes/jobs.ts, services/scraperProviders.ts',
+    readIn: 'routes/jobs.ts, services/scraperProviders.ts (served on GET /api/jobs/scrapers/settings)',
     current: scraperDefaultLocation,
   },
   {
@@ -639,7 +691,9 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     bounds: { min: 1, max: 10_000 },
     side: 'backend',
     readAt: 'per-call',
-    readIn: 'routes/jobs.ts',
+    readIn:
+      'routes/jobs.ts, services/scraperProviders.ts -> scrapers/filters.js ' +
+      '(served on GET /api/jobs/scrapers/providers)',
     current: (env) => String(scraperMaxResults(env) ?? ''),
   },
   {
@@ -653,7 +707,12 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
       return groups.length === 0 ? 'auto' : groups.join(',');
     },
   },
-  intEntry('APIFY_RUN_TIMEOUT_S', 'per-call', 'services/scraperProviders.ts -> scrapers/*.js', apifyRunTimeoutS),
+  intEntry(
+    'APIFY_RUN_TIMEOUT_S',
+    'per-call',
+    'services/scraperProviders.ts -> scrapers/*.js (served on GET /api/jobs/scrapers/settings)',
+    apifyRunTimeoutS
+  ),
   actorEntry('APIFY_ACTOR_INDEED', 'scrapers/indeed.js'),
   actorEntry('APIFY_ACTOR_JOBBOARD', 'scrapers/jobboard.js'),
   actorEntry('APIFY_ACTOR_WELLFOUND', 'scrapers/wellfound.js'),
@@ -709,10 +768,12 @@ function formatSetting(name: string, value: string): string {
  *
  * Effective values, not raw ones: a value that was clamped is shown as the
  * number actually in use, and one that was junk (and warned about) is at its
- * default and so is not listed. That makes this line the answer to "what is
- * this install actually running with", which is the question an operator has
- * when something is slower or larger than they expected. Frontend entries are
- * skipped - this process does not apply them.
+ * default and so is not listed. A base URL that was refused is the exception:
+ * it is at no default - its provider is unavailable - so it is listed as
+ * `NAME=(refused)`, never with the value, which may hold a secret. That makes
+ * this line the answer to "what is this install actually running with", which
+ * is the question an operator has when something is slower or larger than they
+ * expected. Frontend entries are skipped - this process does not apply them.
  */
 export function describeNonDefaultOperationalSettings(env: EnvSource = process.env): string | null {
   const changed: string[] = [];

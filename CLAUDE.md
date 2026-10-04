@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~20s with the tsc step, 891 tests)
+npm test                       # backend node:test suite (~20s with the tsc step, 916 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -92,7 +92,9 @@ backend/src/
                       #   values) so the doctors can say why a setting that is in
                       #   the file is not in effect. A NEW setting is read through
                       #   envValue.ts (envInt/envUrl/...: empty = default, junk
-                      #   warns once, out of range clamps, never throws) and, if
+                      #   warns once, out of range clamps, never throws - but a
+                      #   refused envUrl is NOT the vendor default: the provider
+                      #   it configures sends nothing until it is fixed) and, if
                       #   it is operational - a timeout, cap, pool width,
                       #   endpoint - added to operational.ts, the ONE table of
                       #   name, default, range and getter, AND to .env.example

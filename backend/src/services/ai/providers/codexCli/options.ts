@@ -1,4 +1,5 @@
 import path from 'path';
+import { cliTimeoutMs } from '../../../../config/operational';
 
 /**
  * Environment-driven configuration for the Codex CLI provider.
@@ -64,7 +65,9 @@ function defaultWorkdir(): string {
 }
 
 export function readCodexCliConfig(): CodexCliConfig {
-  const defaultTimeoutMs = intFlag('AI_CODEX_TIMEOUT_MS', 180_000, 5_000, 3_600_000);
+  // Read by operational.ts's reader, like the Claude seat's: the startup
+  // warning about a budget the request deadline caps has to read it this way.
+  const defaultTimeoutMs = cliTimeoutMs('AI_CODEX_TIMEOUT_MS');
 
   return {
     binary: flag('AI_CODEX_BIN', 'codex'),
@@ -84,8 +87,8 @@ export function readCodexCliConfig(): CodexCliConfig {
     firstEventMs: intFlag('AI_CODEX_FIRST_EVENT_MS', 60_000, 1_000, 300_000),
     defaultTimeoutMs,
     timeoutMsByCallSite: {
-      'tailor-resume': intFlag('AI_CODEX_TIMEOUT_MS_TAILOR', 300_000, 5_000, 3_600_000),
-      'filter-google-sheet-job': intFlag('AI_CODEX_TIMEOUT_MS_FILTER', 60_000, 5_000, 3_600_000),
+      'tailor-resume': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_TAILOR'),
+      'filter-google-sheet-job': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_FILTER'),
     },
     workdir: flag('AI_CODEX_WORKDIR') || defaultWorkdir(),
     /*

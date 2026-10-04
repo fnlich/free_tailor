@@ -6,7 +6,8 @@ const { ApifyClient } = require('apify-client');
 const { loadFresh, useAdminEmails, useTempStorage } = require('./helpers');
 const { resetEnvWarningsForTests } = require('../dist/config/envValue');
 const {
-  describeScraperCatalog,
+  describeScraperSettings,
+  listScraperProviderCatalog,
   resolveScraperProvider,
 } = require('../dist/services/scraperProviders');
 
@@ -393,16 +394,22 @@ test('a runner called without its settings refuses before it starts an actor', a
 
 function providerCaps(catalog) {
   return Object.fromEntries(
-    catalog.sources.flatMap((entry) => entry.providers.map((provider) => [provider.id, provider.maxResults]))
+    catalog.flatMap((entry) => entry.providers.map((provider) => [provider.id, provider.maxResults]))
   );
 }
 
-test('the catalog serves the default location, the run timeout and each provider\'s result cap', () => {
-  const shipped = describeScraperCatalog({});
-  assert.equal(shipped.defaultLocation, 'United States');
-  assert.equal(shipped.runTimeoutS, 300);
+test('the settings serve the default location and the run timeout', () => {
+  assert.deepEqual(describeScraperSettings({}), { defaultLocation: 'United States', runTimeoutS: 300 });
   assert.deepEqual(
-    shipped.sources.map((entry) => [entry.source, entry.defaultProviderId]),
+    describeScraperSettings({ SCRAPER_DEFAULT_LOCATION: 'United Kingdom', APIFY_RUN_TIMEOUT_S: '600' }),
+    { defaultLocation: 'United Kingdom', runTimeoutS: 600 }
+  );
+});
+
+test('the catalog serves each provider\'s result cap', () => {
+  const shipped = listScraperProviderCatalog({});
+  assert.deepEqual(
+    shipped.map((entry) => [entry.source, entry.defaultProviderId]),
     [
       ['indeed', 'apify-misceres'],
       ['jobboard', 'apify-jobboard'],
@@ -422,13 +429,7 @@ test('the catalog serves the default location, the run timeout and each provider
     'apify-memo23': 50,
   });
 
-  const configured = describeScraperCatalog({
-    SCRAPER_DEFAULT_LOCATION: 'United Kingdom',
-    APIFY_RUN_TIMEOUT_S: '600',
-    SCRAPER_MAX_RESULTS: '75',
-  });
-  assert.equal(configured.defaultLocation, 'United Kingdom');
-  assert.equal(configured.runTimeoutS, 600);
+  const configured = listScraperProviderCatalog({ SCRAPER_MAX_RESULTS: '75' });
   assert.deepEqual(providerCaps(configured), {
     'apify-misceres': 75,
     'apify-jobboard': 75,
@@ -487,27 +488,42 @@ function leverItems(count) {
   }));
 }
 
-test('GET /scrapers/providers serves the catalog the jobs page reads', async () => {
+test('GET /scrapers/providers is still the bare array every jobs page iterates', async () => {
+  // A jobs page and a backend on different versions is ordinary here (dev:poll
+  // restarts the backend on a pull and keeps the built frontend). An older
+  // page iterates this body, so it stays an array and only gains fields.
   const server = await serveJobs('scraper-catalog');
   try {
     await withEnv(SCRAPER_ENV_UNSET, async () => {
       const shipped = await server.get('/scrapers/providers');
       assert.equal(shipped.status, 200);
-      assert.equal(shipped.body.defaultLocation, 'United States');
-      assert.equal(shipped.body.runTimeoutS, 300);
-      assert.equal(shipped.body.sources.length, 5);
+      assert.ok(Array.isArray(shipped.body), 'an array, as before');
+      assert.equal(shipped.body.length, 5);
       assert.equal(providerCaps(shipped.body)['apify-jobboard'], 100);
       assert.equal(providerCaps(shipped.body)['apify-wellfound'], null);
     });
 
-    await withEnv(
-      { ...SCRAPER_ENV_UNSET, SCRAPER_DEFAULT_LOCATION: 'Deutschland', SCRAPER_MAX_RESULTS: '40' },
-      async () => {
-        const configured = await server.get('/scrapers/providers');
-        assert.equal(configured.body.defaultLocation, 'Deutschland');
-        assert.equal(providerCaps(configured.body)['apify-wellfound'], 40);
-      }
-    );
+    await withEnv({ ...SCRAPER_ENV_UNSET, SCRAPER_MAX_RESULTS: '40' }, async () => {
+      const configured = await server.get('/scrapers/providers');
+      assert.equal(providerCaps(configured.body)['apify-wellfound'], 40);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /scrapers/settings serves the default location and the run timeout beside it', async () => {
+  const server = await serveJobs('scraper-settings');
+  try {
+    await withEnv(SCRAPER_ENV_UNSET, async () => {
+      const shipped = await server.get('/scrapers/settings');
+      assert.equal(shipped.status, 200);
+      assert.deepEqual(shipped.body, { defaultLocation: 'United States', runTimeoutS: 300 });
+    });
+    await withEnv({ ...SCRAPER_ENV_UNSET, SCRAPER_DEFAULT_LOCATION: 'Deutschland', APIFY_RUN_TIMEOUT_S: '600' }, async () => {
+      const configured = await server.get('/scrapers/settings');
+      assert.deepEqual(configured.body, { defaultLocation: 'Deutschland', runTimeoutS: 600 });
+    });
   } finally {
     server.close();
   }

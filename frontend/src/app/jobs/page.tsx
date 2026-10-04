@@ -23,7 +23,7 @@ import {
   ScraperSourceProviderCatalog,
   ScraperTimePosted,
 } from '@/lib/api';
-import { formatRunTimeout, limitOptionsFor, resultCapFor } from '@/lib/scraperForm';
+import { formatRunTimeout, limitOptionsFor, readScraperSettings, resultCapFor } from '@/lib/scraperForm';
 
 const SCRAPER_OPTIONS: Array<{
   value: ScraperSource;
@@ -229,21 +229,23 @@ export default function JobsPage() {
 
     const loadInitialData = async () => {
       try {
-        const [settings, catalog] = await Promise.all([
+        const [settings, providers, scraperSettings] = await Promise.all([
           resumeApi.getModels(),
           jobsApi.getScraperProviders(),
+          // A backend older than this endpoint answers 404: the form then runs
+          // on the server's defaults without naming them, rather than failing.
+          jobsApi.getScraperSettings().catch(() => readScraperSettings(null)),
         ]);
         if (!isMounted) {
           return;
         }
 
-        const providers = catalog.sources;
         setSheetSources(settings.googleSheetsSources);
         setProviderCatalog(providers);
-        setDefaultLocation(catalog.defaultLocation);
-        setRunTimeoutS(catalog.runTimeoutS);
+        setDefaultLocation(scraperSettings.defaultLocation);
+        setRunTimeoutS(scraperSettings.runTimeoutS);
         // Only into an untouched field: whatever the user typed meanwhile wins.
-        setLocation((current) => current || catalog.defaultLocation);
+        setLocation((current) => current || scraperSettings.defaultLocation || '');
         setSelectedProviders((current) => {
           const next = { ...current };
 
@@ -459,12 +461,7 @@ export default function JobsPage() {
       <form onSubmit={handleSubmit}>
         <Section
           title="Job Scrapers"
-          description={
-            <>
-              LinkedIn now uses only `bebity/linkedin-jobs-scraper` with fixed location, proxy, publishedAt, and remote settings.
-              The other categories remain available with their existing source-specific inputs.
-            </>
-          }
+          description="Pick a source, then fill in what that source takes. Each runs on its own."
         >
           <fieldset disabled={isLoading} className="min-w-0">
             <legend className="tl-label">Category</legend>

@@ -23,6 +23,10 @@
  *   - A number outside its bounds is clamped to the nearest bound and warns once,
  *     so a value that is merely too big still moves things in the direction the
  *     operator meant.
+ *   - The one exception is a URL (`envUrl`): its default is a vendor's endpoint,
+ *     so "use the default" for a value set to somewhere else would send the
+ *     traffic where the operator chose it not to go. A bad one is refused and
+ *     the caller is told, rather than handed the default.
  *
  * Every primitive takes `(name, fallback, opts, env = process.env)`. The `env`
  * argument is the test seam: a test hands in a plain object and never has to
@@ -300,21 +304,45 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
+ * What a URL setting resolved to.
+ *
+ * A refusal is its own outcome, never the fallback in disguise: see `envUrl`.
+ * `problem` names the variable and says what is wrong without repeating the
+ * value; `remedy` is the sentence to give an administrator.
+ */
+export type EnvUrl = { ok: true; url: string } | { ok: false; problem: string; remedy: string };
+
+/**
  * An absolute http(s) base URL, with the trailing slash stripped.
  *
- * Plain http is HONOURED, whatever the host, with one warning when the host is
- * not this machine. Every URL read through here is somewhere an API key is
- * sent, so http on a real network hands that key to anybody on the path - but
- * refusing it is worse. The refusal fell back to the vendor's endpoint, so an
- * operator who pointed OPENAI_BASE_URL at an Ollama or LM Studio box on the LAN
- * - which the openai SDK always honoured - would have had every resume sent to
- * OpenAI instead, without having asked for that. Where the traffic goes is the
- * operator's decision; the warning makes sure it is an informed one.
+ * Unset or empty is the fallback - the vendor's endpoint. A value that is SET
+ * is the operator's statement of where the traffic goes, and both ways of
+ * second-guessing it would send it somewhere they did not name:
  *
- * Credentials, a query string and a fragment are refused too. Callers APPEND a
- * path (`${base}/v1/messages`), which a query or fragment would break; Node's
- * fetch refuses a URL with credentials in it outright; and the effective value
- * is printed in the startup line, which must never carry a secret.
+ *   - Plain http is HONOURED, whatever the host, with one warning when the host
+ *     is not this machine. An API key goes with every request, so http on a
+ *     real network hands it to anybody on the path - but an operator who
+ *     pointed OPENAI_BASE_URL at an Ollama or LM Studio box on the LAN, which
+ *     the openai SDK always honoured, means that box.
+ *   - A value that cannot be used is REFUSED, and the refusal is returned to
+ *     the caller rather than replaced by the fallback. Every caller is an AI
+ *     provider, and its fallback is the vendor: `localhost:11434/v1` (no
+ *     scheme) or a gateway written with `user:password@` would otherwise send
+ *     the prompt, the resume and the key to the very vendor the setting exists
+ *     to route around - where before the openai SDK either failed the request
+ *     or sent it to the operator's own host. So the provider that reads it
+ *     sends nothing at all until the value is fixed or removed, and its health
+ *     check says so. Nothing refuses to boot.
+ *
+ * Refused: anything that is not an absolute http(s) URL, an `@` anywhere (it
+ * reads as `user:password@`, which Node's fetch refuses outright - and a
+ * password with a `/` in it does not even parse as one), a query string and a
+ * fragment (callers APPEND a path, `${base}/v1/messages`, which either breaks).
+ *
+ * The warning never repeats a refused value: it may hold a password or a key,
+ * and the log is not where those belong. When the value parsed as http(s) and
+ * has no `@`, its scheme, host and path are shown - what a valid value would
+ * show on the startup line anyway.
  *
  * The slash is stripped so `https://gw.example/` and `https://gw.example` join
  * the same way.
@@ -324,9 +352,9 @@ export function envUrl(
   fallback: string,
   _opts: Record<string, never> = {},
   env: EnvSource = process.env
-): string {
+): EnvUrl {
   const raw = envRaw(name, env);
-  if (raw === null) return fallback;
+  if (raw === null) return { ok: true, url: fallback };
 
   let url: URL | null = null;
   try {
@@ -334,23 +362,30 @@ export function envUrl(
   } catch {
     url = null;
   }
+  const isHttp = url !== null && (url.protocol === 'http:' || url.protocol === 'https:');
 
-  const problem = !url
-    ? 'is not an absolute URL'
-    : url.protocol !== 'http:' && url.protocol !== 'https:'
-      ? 'is not an http(s) URL'
-      : url.username || url.password
-          ? 'has credentials in it'
-          : url.search || url.hash
-            ? 'has a query string or fragment'
-            : null;
+  const problem = raw.includes('@')
+    ? `${name} has an "@" in it, which reads as user:password@ credentials`
+    : !url || !isHttp
+      ? `${name} is not an absolute http(s) URL - it has to start with http:// or https://`
+      : url.search || url.hash
+        ? `${name}=${quote(`${url.protocol}//${url.host}${url.pathname}`)} has a query string or fragment`
+        : null;
 
   if (problem || !url) {
-    // Any `user:password@` is masked before the value is quoted: the warning
-    // goes to the log, and the log is not where a password should end up.
-    const shown = raw.replace(/\/\/[^/?#\s]*@/, '//***@');
-    warnOnce(name, `${name}=${quote(shown)} ${problem}; using ${fallback}.`);
-    return fallback;
+    const refusal = {
+      ok: false as const,
+      problem: problem ?? `${name} is not an absolute http(s) URL`,
+      remedy: `Fix ${name} in the root .env, or remove it to use ${fallback}, and restart the backend.`,
+    };
+    // Only the query-string case shows anything of the value, and never that part.
+    const withheld = problem?.includes('query string') ? 'neither is shown here' : 'the value is not repeated here';
+    warnOnce(
+      name,
+      `${refusal.problem} (${withheld}). It is refused, and NOT replaced by ${fallback}: whatever it ` +
+        'configures sends nothing until it is fixed or removed.'
+    );
+    return refusal;
   }
 
   const value = `${url.origin}${url.pathname}`.replace(/\/+$/, '');
@@ -362,5 +397,5 @@ export function envUrl(
         'localhost tunnel if that network is not one you trust.'
     );
   }
-  return value;
+  return { ok: true, url: value };
 }

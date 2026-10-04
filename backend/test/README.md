@@ -35,11 +35,14 @@ Coverage currently focuses on:
 - current auth middleware behavior
 - the operational settings read from `.env`: the shared readers and their
   policy - empty means default, junk warns once and falls back, out of range
-  clamps (`envValue.test.js`); every setting's default, bounds and the startup
+  clamps, and a URL that is set but unusable is refused rather than replaced by
+  the vendor's endpoint, with no secret from it in the warning
+  (`envValue.test.js`); every setting's default, bounds and the startup
   line (`operational.test.js`); and that each setting reaches the thing it
   controls, with fetch, nodemailer and puppeteer's launch stubbed
   (`operationalWiring.test.js`), and the same for the AI layer's own - the
-  request deadline, the metered base URLs and attempt count, the headers
+  request deadline, the metered base URLs (and that a refused one sends no
+  request anywhere and fails the health check) and attempt count, the headers
   DeepSeek is sent and the CLI health-probe timeouts - with fetch and
   `execFile` stubbed (`aiOperationalWiring.test.js`)
 - the job scrapers' SCRAPER_* and APIFY_* settings: the actor inputs each
@@ -52,7 +55,9 @@ Coverage currently focuses on:
 - the documentation of those settings: `.env.example` and the README's
   Configuration table checked against the table in `config/operational.ts` -
   every setting documented, shipped commented out with the code's own default
-  and range, and tagged with when it is read (`envExample.test.js`)
+  and range, and tagged with when it is read - and its README row showing the
+  same default, range and tag; plus the CLI budgets shipped commented out
+  (`envExample.test.js`)
 
 ## Testing the Claude CLI provider
 

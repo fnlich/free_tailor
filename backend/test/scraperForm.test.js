@@ -32,7 +32,14 @@ function loadScraperForm() {
   return module.exports;
 }
 
-const { LIMIT_OPTIONS, formatRunTimeout, limitOptionsFor, resultCapFor } = loadScraperForm();
+const {
+  LIMIT_OPTIONS,
+  formatRunTimeout,
+  limitOptionsFor,
+  readScraperCatalog,
+  readScraperSettings,
+  resultCapFor,
+} = loadScraperForm();
 
 test('uncapped, the Results menu offers every count, as it always did', () => {
   assert.deepEqual(limitOptionsFor(null), [25, 100, 250, 500, 1000]);
@@ -69,4 +76,31 @@ test('the run timeout reads the way the page header always said it', () => {
   assert.equal(formatRunTimeout(600), '10-minute');
   assert.equal(formatRunTimeout(90), '90-second');
   assert.equal(formatRunTimeout(30), '30-second');
+});
+
+/* ======================================= a backend on another version */
+
+const ENTRY = { source: 'jobboard', defaultProviderId: 'apify-jobboard', providers: [{ id: 'apify-jobboard' }] };
+
+test('the providers are read as an array whatever the backend sent, never an exception', () => {
+  // The frontend and the backend restart separately, so the page can meet a
+  // backend from before or after it. An object where the page expected the
+  // array used to crash the whole app.
+  assert.deepEqual(readScraperCatalog([ENTRY]), [ENTRY]);
+  assert.deepEqual(readScraperCatalog({ defaultLocation: 'X', runTimeoutS: 300, sources: [ENTRY] }), [ENTRY]);
+  for (const junk of [null, undefined, {}, 'oops', 42, { sources: 'no' }]) {
+    assert.deepEqual(readScraperCatalog(junk), [], String(junk));
+  }
+  assert.deepEqual(readScraperCatalog([ENTRY, null, { source: 'lever' }, 7]), [ENTRY], 'unusable entries dropped');
+});
+
+test('the settings are null where the backend did not say, so the server default applies unnamed', () => {
+  assert.deepEqual(readScraperSettings({ defaultLocation: 'United Kingdom', runTimeoutS: 600 }), {
+    defaultLocation: 'United Kingdom',
+    runTimeoutS: 600,
+  });
+  // An older backend (a 404 the page catches) or a malformed answer.
+  for (const junk of [null, undefined, {}, { defaultLocation: '  ', runTimeoutS: 0 }, { defaultLocation: 5, runTimeoutS: '300' }]) {
+    assert.deepEqual(readScraperSettings(junk), { defaultLocation: null, runTimeoutS: null }, JSON.stringify(junk));
+  }
 });

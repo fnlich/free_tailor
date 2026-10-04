@@ -17,6 +17,7 @@ export type AIErrorKind =
   | 'malformedOutput'
   | 'disabled'
   | 'locked'
+  | 'misconfigured'
   | 'failed';
 
 export const HTTP_STATUS_BY_KIND: Record<AIErrorKind, number> = {
@@ -31,6 +32,7 @@ export const HTTP_STATUS_BY_KIND: Record<AIErrorKind, number> = {
   malformedOutput: 502,
   disabled: 409,
   locked: 409,
+  misconfigured: 503,
   failed: 502,
 };
 
@@ -60,6 +62,10 @@ export const USER_MESSAGE_BY_KIND: Record<AIErrorKind, string> = {
   // Distinct from `disabled` because the fix is different: an admin can untick
   // and re-tick a disabled provider, and no amount of clicking unlocks one.
   locked: 'This AI provider is locked in this installation. Pick one of the unlocked models instead.',
+  // A setting in .env that cannot be used, refused before anything was sent.
+  // Not retryable: the same value is refused the same way until it is fixed.
+  misconfigured:
+    'This AI provider is not set up correctly on the server. An administrator needs to check its settings in .env.',
   failed: 'The AI request failed. Please try again.',
 };
 

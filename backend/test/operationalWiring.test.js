@@ -200,8 +200,34 @@ test('a resume PDF over UPLOAD_MAX_MB is a 413 that names the limit, not a 500',
       const body = await response.json();
       assert.equal(body.code, 'upload-too-large');
       assert.equal(body.limitMb, 1);
-      assert.match(body.error, /larger than 1 MB/);
+      assert.match(body.error, /1 MB or larger; this server accepts PDFs under 1 MB/);
     } finally {
+      server.close();
+    }
+  });
+});
+
+test('a PDF of exactly UPLOAD_MAX_MB is refused and one byte under is not - the rule the pages check', async () => {
+  // busboy raises the limit as soon as a file reaches fileSize, so exactly the
+  // cap is a 413 - as it always was. frontend/src/lib/upload.ts refuses at the
+  // same size (frontendEnv.test.js), so the page never sends a file only for
+  // the server to turn it away.
+  await withEnv({ UPLOAD_MAX_MB: '1' }, async () => {
+    const server = await serveUploads('wiring-upload-boundary');
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      const exact = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.alloc(1024 * 1024, 0x41));
+      assert.equal(exact.status, 413);
+      assert.equal((await exact.json()).limitMb, 1);
+
+      // Under the cap multer hands the bytes on; they are no real PDF, so the
+      // parser fails after it - anything but a 413.
+      const under = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.alloc(1024 * 1024 - 1, 0x41));
+      assert.notEqual(under.status, 413);
+      await under.text();
+    } finally {
+      console.error = realError;
       server.close();
     }
   });

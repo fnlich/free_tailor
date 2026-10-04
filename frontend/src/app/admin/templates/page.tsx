@@ -7,7 +7,7 @@ import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
 import { EmptyState, Field, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
-import { pdfTooLargeMessage } from '@/lib/upload';
+import { pdfSizeRefusal } from '@/lib/upload';
 
 /**
  * The preview document's own size, in CSS pixels: A4 at 96 DPI, the page
@@ -186,7 +186,7 @@ function ButtonSpinner() {
 
 function TemplatesPageBody() {
   // uploadMaxMb is the server's UPLOAD_MAX_MB, served on /auth/me - see lib/upload.ts.
-  const { isAdmin, uploadMaxMb } = useAuth();
+  const { isAdmin, uploadMaxMb, refreshUploadMaxMb } = useAuth();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -229,14 +229,14 @@ function TemplatesPageBody() {
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.type !== 'application/pdf') {
         setUploadError('Please select a PDF file');
         return;
       }
-      const tooLarge = pdfTooLargeMessage(file, uploadMaxMb);
+      const tooLarge = await pdfSizeRefusal(file, uploadMaxMb, refreshUploadMaxMb);
       if (tooLarge) {
         setUploadError(tooLarge);
         return;
