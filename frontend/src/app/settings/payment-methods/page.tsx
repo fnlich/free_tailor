@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 
 import { MarkCardBrand } from '@/components/icons/marks';
-import { Notice, Section, SettingsPage, Status, settingsStyles } from '@/components/settings/SettingsParts';
+import { Notice, Section, SettingsPage, Status } from '@/components/settings/SettingsParts';
 import { formatDate } from '@/lib/format';
 import { describeCard, paymentsApi, type SavedCard } from '@/lib/payments';
 
@@ -119,7 +119,7 @@ export default function PaymentMethodsSettingsPage() {
 
         {state.status === 'ready' && state.cards.length > 0 && (
           <>
-            <ul className={settingsStyles.rows}>
+            <ul className="tl-rows">
               {state.cards.map((card) => {
                 const label = describeCard(card);
                 const expiry = `${String(card.expMonth).padStart(2, '0')}/${card.expYear}`;
@@ -173,7 +173,8 @@ export default function PaymentMethodsSettingsPage() {
                             type="button"
                             disabled={busyId !== null}
                             onClick={() => void remove(card)}
-                            className={`tl-button ${settingsStyles.danger}`}
+                            className="tl-button"
+                            data-tone="danger"
                           >
                             {busy ? 'Removing...' : 'Remove card'}
                           </button>

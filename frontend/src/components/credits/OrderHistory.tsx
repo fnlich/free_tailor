@@ -4,7 +4,6 @@ import { useCallback } from 'react';
 import Link from 'next/link';
 import TablePager from './TablePager';
 import { usePagedList } from './usePagedList';
-import styles from './history.module.css';
 import { formatDate } from '@/lib/format';
 import {
   formatAmount,
@@ -88,7 +87,7 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
       </div>
 
       {list.failed && list.loaded && (
-        <p className={`${styles.notice} mt-4`} data-tone="warn" role="status">
+        <p className="tl-notice mt-4" data-tone="warn" role="status">
           That page could not be loaded, so these are the rows from before.{' '}
           <button type="button" onClick={list.retry} className="font-semibold underline">
             Try again
@@ -171,7 +170,7 @@ function OrderRow({ payment }: { payment: Payment }) {
         {settled ? payment.creditsGranted || payment.credits : '—'}
       </td>
       <td>
-        <span className={styles.pill} data-tone={status.tone}>
+        <span className="tl-pill" data-tone={status.tone}>
           {status.label}
         </span>
       </td>

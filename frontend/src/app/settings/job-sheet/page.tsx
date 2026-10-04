@@ -9,7 +9,6 @@ import {
   Section,
   SettingsPage,
   StaticValue,
-  settingsStyles,
 } from '@/components/settings/SettingsParts';
 import { operatorDetail } from '@/lib/api';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
@@ -152,7 +151,7 @@ export default function JobSheetSettingsPage() {
             {VISIBILITY_OPTIONS.map((option) => {
               const current = sheet.visibility === option.value;
               return (
-                <label key={option.value} className={settingsStyles.choice} data-on={current}>
+                <label key={option.value} className="tl-choice" data-on={current}>
                   <input
                     type="radio"
                     name="sheet-visibility"

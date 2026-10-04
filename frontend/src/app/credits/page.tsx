@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import BuyCreditsDialog from '@/components/credits/BuyCreditsDialog';
 import CreditHistory from '@/components/credits/CreditHistory';
 import OrderHistory from '@/components/credits/OrderHistory';
-import styles from '@/components/credits/history.module.css';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
 import { paymentsApi, type PaymentOptions } from '@/lib/payments';
 
@@ -166,7 +165,7 @@ function CreditsBody() {
         )}
 
         {error && (
-          <p className={styles.notice} data-tone="error" role="alert">
+          <p className="tl-notice" data-tone="error" role="alert">
             {error}
           </p>
         )}
@@ -183,7 +182,7 @@ function CreditsBody() {
           would be a claim nobody checked.
         */}
         {options && !anyMethod && (
-          <div className={styles.box}>
+          <div className="tl-card p-6">
             <p className="text-lg font-semibold text-ink">No payment method is set up</p>
             <p className="mt-2 text-sm text-muted">
               This installation cannot take payments yet. An administrator can turn one on:

@@ -854,6 +854,368 @@ html.dark .shadow-2xl {
   border-bottom: 0;
 }
 
+/*
+ * ---------------------------------------------------------------- the kit
+ *
+ * The pieces every page is built from, after the reference design: a bordered
+ * card, a label, a link, notices and status lines, pills, choice boxes, a list
+ * of rows in a box, and a dialog. Global classes rather than per-page modules
+ * so a page in the JSX bid assistant can use them as readily as a TSX one, and
+ * so there is one place each colour is decided - in BOTH themes, stated here
+ * against html.dark, because the shim names some status utilities
+ * (bg-green-50, text-red-700) and not others (amber, sky) and half a set of
+ * pills following it while half did not is how dark mode went wrong before.
+ * components/ui/kit.tsx wraps these as components.
+ */
+
+/* A bordered box: a group of controls, a panel in a workspace, an empty state. */
+.tl-card {
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+}
+
+/* A card's title row, ruled off from its body. */
+.tl-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.tl-label {
+  display: block;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.tl-link {
+  color: var(--accent-ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tl-link:hover {
+  color: var(--accent-hover);
+}
+
+/* A destructive primary: Delete, Remove for good. */
+.tl-button[data-tone='danger'] {
+  background: #dc2626;
+}
+
+.tl-button[data-tone='danger']:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.tl-button-quiet[data-tone='danger'] {
+  color: #b91c1c;
+}
+
+html.dark .tl-button-quiet[data-tone='danger'] {
+  color: #fca5a5;
+}
+
+/* Small, for a toolbar or a table row. */
+.tl-button[data-size='sm'],
+.tl-button-quiet[data-size='sm'] {
+  min-height: 2rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+}
+
+/* Visible focus on every kit control, keyboard only. */
+.tl-button:focus-visible,
+.tl-button-quiet:focus-visible,
+.tl-tab:focus-visible,
+.tl-subtab:focus-visible,
+.tl-nav-item:focus-visible,
+.tl-icon-button:focus-visible,
+.tl-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Checkboxes and radios in the accent, wherever they sit. */
+.tl-check {
+  height: 1rem;
+  width: 1rem;
+  accent-color: var(--accent);
+}
+
+/* A framed message: what is wrong, what to do, or what happened. */
+.tl-notice {
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.tl-notice[data-tone='info'] {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #075985;
+}
+
+.tl-notice[data-tone='success'] {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.tl-notice[data-tone='warn'] {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.tl-notice[data-tone='error'] {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+html.dark .tl-notice[data-tone='info'] {
+  border-color: rgba(56, 189, 248, 0.32);
+  background: rgba(14, 165, 233, 0.12);
+  color: #bae6fd;
+}
+
+html.dark .tl-notice[data-tone='success'] {
+  border-color: rgba(74, 222, 128, 0.3);
+  background: rgba(34, 197, 94, 0.12);
+  color: #bbf7d0;
+}
+
+html.dark .tl-notice[data-tone='warn'] {
+  border-color: rgba(251, 191, 36, 0.34);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fde68a;
+}
+
+html.dark .tl-notice[data-tone='error'] {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(239, 68, 68, 0.14);
+  color: #fecaca;
+}
+
+/* One line under a control, saying what just happened to it. */
+.tl-status {
+  font-size: 0.875rem;
+}
+
+.tl-status[data-tone='ok'] {
+  color: #15803d;
+}
+
+.tl-status[data-tone='error'] {
+  color: #b91c1c;
+}
+
+html.dark .tl-status[data-tone='ok'] {
+  color: #7be0b7;
+}
+
+html.dark .tl-status[data-tone='error'] {
+  color: #ffb4be;
+}
+
+/* A small labelled state: Completed, Pending, Built-in, Admin. */
+.tl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  white-space: nowrap;
+  --pill-bg: #f9fafb;
+  --pill-ink: #4b5563;
+  --pill-ring: rgba(107, 114, 128, 0.2);
+  box-shadow: inset 0 0 0 1px var(--pill-ring);
+  background: var(--pill-bg);
+  color: var(--pill-ink);
+}
+
+.tl-pill[data-tone='green'] {
+  --pill-bg: #f0fdf4;
+  --pill-ink: #15803d;
+  --pill-ring: rgba(22, 163, 74, 0.2);
+}
+
+.tl-pill[data-tone='amber'] {
+  --pill-bg: #fffbeb;
+  --pill-ink: #b45309;
+  --pill-ring: rgba(217, 119, 6, 0.25);
+}
+
+.tl-pill[data-tone='red'] {
+  --pill-bg: #fef2f2;
+  --pill-ink: #b91c1c;
+  --pill-ring: rgba(220, 38, 38, 0.15);
+}
+
+.tl-pill[data-tone='sky'] {
+  --pill-bg: #f0f9ff;
+  --pill-ink: #0369a1;
+  --pill-ring: rgba(3, 105, 161, 0.18);
+}
+
+.tl-pill[data-tone='violet'] {
+  --pill-bg: #f5f3ff;
+  --pill-ink: #6d28d9;
+  --pill-ring: rgba(109, 40, 217, 0.18);
+}
+
+html.dark .tl-pill {
+  --pill-bg: rgba(148, 163, 184, 0.1);
+  --pill-ink: #cbd5e1;
+  --pill-ring: rgba(148, 163, 184, 0.25);
+}
+
+html.dark .tl-pill[data-tone='green'] {
+  --pill-bg: rgba(74, 222, 128, 0.1);
+  --pill-ink: #4ade80;
+  --pill-ring: rgba(34, 197, 94, 0.25);
+}
+
+html.dark .tl-pill[data-tone='amber'] {
+  --pill-bg: rgba(251, 191, 36, 0.1);
+  --pill-ink: #fbbf24;
+  --pill-ring: rgba(251, 191, 36, 0.25);
+}
+
+html.dark .tl-pill[data-tone='red'] {
+  --pill-bg: rgba(248, 113, 113, 0.1);
+  --pill-ink: #f87171;
+  --pill-ring: rgba(248, 113, 113, 0.25);
+}
+
+html.dark .tl-pill[data-tone='sky'] {
+  --pill-bg: rgba(56, 189, 248, 0.1);
+  --pill-ink: #38bdf8;
+  --pill-ring: rgba(56, 189, 248, 0.3);
+}
+
+html.dark .tl-pill[data-tone='violet'] {
+  --pill-bg: rgba(167, 139, 250, 0.12);
+  --pill-ink: #c4b5fd;
+  --pill-ring: rgba(167, 139, 250, 0.3);
+}
+
+/*
+ * A choice drawn as a box, so its explanation sits inside the thing being
+ * chosen. Put data-on="true" on the selected one; the border stays the same
+ * width either way so choosing never nudges the layout.
+ */
+.tl-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+  cursor: pointer;
+}
+
+.tl-choice:hover {
+  background: var(--surface-muted);
+}
+
+.tl-choice[data-on='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tl-choice input {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.125rem;
+  accent-color: var(--accent);
+}
+
+fieldset:disabled .tl-choice {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* Rows in one bordered box, a hairline between each: a list of records. */
+.tl-rows {
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+}
+
+.tl-rows > * + * {
+  border-top: 1px solid var(--line-subtle);
+}
+
+.tl-rows > li {
+  padding: 1rem;
+}
+
+/*
+ * A dialog and what dims the page behind it. Both at the modal layer, which
+ * outranks the fixed app chrome - see --layer-app-modal.
+ */
+.tl-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-app-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(2, 6, 23, 0.5);
+}
+
+.tl-dialog {
+  width: 100%;
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.75rem;
+  background: var(--surface-secondary);
+  color: var(--foreground);
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.28);
+}
+
+/* A spinning ring for a load in progress, in the accent. */
+.tl-spinner {
+  display: inline-block;
+  height: 1.25rem;
+  width: 1.25rem;
+  border: 2px solid var(--line-subtle);
+  border-top-color: var(--accent);
+  border-radius: 9999px;
+  animation: tl-spin 0.8s linear infinite;
+}
+
+@keyframes tl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 /* A setting: heading and one line of explanation, then its fields. */
 .tl-section {
   padding-block: 2rem;
@@ -896,6 +1258,18 @@ html.dark .shadow-2xl {
 .tl-input:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
+}
+
+/* The same class on a <textarea> or a <select>. */
+textarea.tl-input {
+  min-height: 6rem;
+  line-height: 1.5;
+}
+
+.tl-input:disabled {
+  background: var(--surface-muted);
+  color: var(--text-subtle);
+  cursor: not-allowed;
 }
 
 @media (max-width: 767.98px) {

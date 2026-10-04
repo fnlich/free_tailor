@@ -41,7 +41,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
       </div>
 
       {list.failed && list.loaded && (
-        <p className={`${styles.notice} mt-4`} data-tone="warn" role="status">
+        <p className="tl-notice mt-4" data-tone="warn" role="status">
           That page could not be loaded, so these are the rows from before.{' '}
           <button type="button" onClick={list.retry} className="font-semibold underline">
             Try again
