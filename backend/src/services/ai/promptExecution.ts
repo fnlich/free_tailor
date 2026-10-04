@@ -2,12 +2,15 @@ import {
   getAIModelSettings,
   getDefaultEnabledProvider,
   isProviderEnabled,
+  resolveRequestedAIModel,
 } from '../../config/aiModelConfig';
 import {
+  AI_PROVIDER_IDS,
   coerceProviderId,
   getProviderLabel,
   getProviderLockReason,
   isProviderLocked,
+  providerRequiresApiKey,
 } from '../../config/providerCatalog';
 import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
@@ -161,6 +164,9 @@ async function runAssembled(
 ): Promise<CompletionResult> {
   const settings = await getAIModelSettings();
   let provider = config.provider;
+  // The model a reroute runs on, when it lands on the app's default model
+  // rather than on a provider's own default. See below.
+  let reroutedModelName: string | undefined;
 
   if (!isProviderEnabled(provider, settings)) {
     const lockReason = getProviderLockReason(provider);
@@ -184,7 +190,25 @@ async function runAssembled(
     // Nobody chose this provider - it was only the default. Reroute rather
     // than fail, so a caller with no provider setting of its own does not
     // become unusable the moment an admin unticks a box.
-    const alternative = getDefaultEnabledProvider(settings);
+    //
+    // A keyless seat first, so unticking one seat moves these calls onto the
+    // other rather than onto a metered default. With no keyless seat left - both
+    // locked here, say - the call runs on the app's default MODEL, the one the
+    // settings page shows and every other call that names nothing runs on.
+    // Catalog order alone would put it on whichever metered provider sorts
+    // first, which is not the default anybody chose: it billed a provider
+    // nobody picked, or failed asking for a sign-in on a seat that is locked.
+    let alternative = AI_PROVIDER_IDS.find(
+      (id) => isProviderEnabled(id, settings) && !providerRequiresApiKey(id)
+    );
+    if (!alternative) {
+      const fallback = await resolveRequestedAIModel().catch(() => null);
+      if (fallback && isProviderEnabled(fallback.provider, settings)) {
+        alternative = fallback.provider;
+        reroutedModelName = fallback.modelName;
+      }
+    }
+    alternative ??= getDefaultEnabledProvider(settings);
     if (!isProviderEnabled(alternative, settings)) {
       throw new AIProviderError({
         provider,
@@ -205,7 +229,8 @@ async function runAssembled(
     : assembled.userBody;
 
   const adapter = getAdapter(provider);
-  const modelName = config.explicit && config.modelName ? config.modelName : adapter.defaultModelName();
+  const modelName =
+    (config.explicit && config.modelName) || reroutedModelName || adapter.defaultModelName();
 
   // A provider with no system channel gets everything in one turn, so no
   // instruction is silently dropped for it. The previous flat Anthropic path

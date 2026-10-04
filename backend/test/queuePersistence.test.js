@@ -292,14 +292,25 @@ test('attempts already spent survive a restart, through the real persistence pat
   batch.tasks[0].error = 'the first two goes failed';
   queueModule.persistNewBatch(batch);
 
-  // The restart.
+  // The restart. Restoring is asynchronous - it may resolve a model again for a
+  // task first - so by the time it returns the dispatcher can already have
+  // picked the task up. A runner that holds it is what lets its state be read
+  // while it is being built again.
   queueModule.resetGenerationQueueForTests();
   const restored = loadFresh('../dist/services/queue/index');
-  restored.restoreGenerationQueue();
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  restored.registerTaskRunner('restart-attempts', () => held.then(() => ({})));
+  await restored.restoreGenerationQueue();
 
   const snapshot = restored.getGenerationQueue().snapshot('bat_attempts');
   assert.ok(snapshot, 'the batch comes back');
-  assert.equal(snapshot.tasks[0].state, 'queued', 'a task that was running is built again');
+  assert.ok(
+    ['queued', 'running'].includes(snapshot.tasks[0].state),
+    `a task that was running is built again (${snapshot.tasks[0].state})`
+  );
   assert.equal(
     snapshot.tasks[0].attempts,
     3,
@@ -307,6 +318,8 @@ test('attempts already spent survive a restart, through the real persistence pat
   );
   assert.equal(snapshot.maxAttempts, 3, 'the ceiling is reported so a page need not hard-code it');
 
+  release();
+  restored.resetGenerationQueueForTests();
   delete process.env.GENERATION_MAX_ATTEMPTS;
 });
 
@@ -530,7 +543,7 @@ test('a task queued on the removed browser lane is restored onto a live lane, an
     return { profileId: payload.profileId };
   });
 
-  const report = queueModule.restoreGenerationQueue();
+  const report = await queueModule.restoreGenerationQueue();
   assert.equal(report.batches, 1);
   assert.equal(report.requeued, 1, 'the task that was mid-build is built again');
 
@@ -592,7 +605,7 @@ test('one batch that cannot be restored does not cost the others theirs', async 
   console.warn = (message) => warnings.push(String(message));
   let report;
   try {
-    report = queueModule.restoreGenerationQueue();
+    report = await queueModule.restoreGenerationQueue();
   } finally {
     console.warn = warn;
   }
@@ -609,5 +622,87 @@ test('one batch that cannot be restored does not cost the others theirs', async 
   for (const id of ['bat_first', 'bat_last']) {
     const snapshot = await untilSettled(queue, id);
     assert.equal(snapshot.tasks[0].state, 'done', `${id} ran`);
+  }
+});
+
+test('a restored task that named a browser site goes in the lane of the provider it now runs on', async () => {
+  // Placed by the stored provider, it went to the Claude seat's lane, and then
+  // ran on whatever its profile resolved to - with the Claude seat locked, the
+  // Codex seat. Four such tasks then held four Claude-lane slots while queueing
+  // at a Codex semaphore one wide, deadlines running: the oversubscription the
+  // lane split exists to prevent. Resolved before they are placed, they wait in
+  // the Codex lane instead, one at a time.
+  useTempStorage('queue-persistence-retired-lane');
+  process.env.AI_LOCKED_PROVIDERS = 'claude-cli';
+  delete process.env.AI_UNLOCKED_PROVIDERS;
+  process.env.AI_CLI_CONCURRENCY = '4';
+  process.env.AI_CODEX_CONCURRENCY = '1';
+  try {
+    const { buildNewProfile } = loadFresh('../dist/services/profileService');
+    loadFresh('../dist/database/profileRepository').saveProfile(
+      buildNewProfile(
+        {
+          name: 'Ada',
+          title: 'Engineer',
+          skills: ['C#'],
+          contact: { email: 'a@b.c', phone: '1', location: 'X' },
+          summary: 's',
+          experience: [],
+          strengths: [],
+          education: [],
+        },
+        'p-default'
+      )
+    );
+
+    const store = loadFresh('../dist/database/generationRepository');
+    store.saveBatchWithTasks(
+      legacyBatchRow('bat_lane', 4),
+      [0, 1, 2, 3].map((seq) =>
+        legacyTaskRow('bat_lane', `tsk_${seq}`, seq, seq === 0 ? 'running' : 'queued', {
+          queue: 'browser',
+          sites: ['claude-web', 'chatgpt-web'],
+          payload: { batchId: 'bat_lane', profileId: 'p-default', jobIndex: 0, choice: HYBRID_CHOICE },
+        })
+      )
+    );
+
+    const queueModule = loadFresh('../dist/services/queue/index');
+    queueModule.resetGenerationQueueForTests();
+    const queue = queueModule.getGenerationQueue();
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const started = [];
+    queueModule.registerTaskRunner(queueModule.RESUME_TASK_KIND, async (payload, assignment) => {
+      started.push({ lane: assignment.queue, provider: payload.choice.provider });
+      await held;
+      return {};
+    });
+
+    await queueModule.restoreGenerationQueue();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const stats = queue.stats();
+    assert.equal(stats.cli.queued + stats.cli.running, 0, 'nothing waits in the Claude seat\'s lane');
+    assert.equal(stats.codex.queued + stats.codex.running, 4, 'all four are Codex work, in the Codex lane');
+    assert.equal(stats.codex.running, 1, 'one at a time, as AI_CODEX_CONCURRENCY says');
+    assert.deepEqual(started, [{ lane: 'codex', provider: 'codex-cli' }]);
+
+    // The fresh choice is written back, so a second restart reads it as stored.
+    const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
+    for (const task of row.tasks) {
+      assert.equal(task.data.queue, 'codex', `${task.id} is stored on the lane it runs on`);
+      assert.equal(task.data.payload.choice.provider, 'codex-cli');
+      assert.equal('route' in task.data.payload.choice, false);
+    }
+
+    release();
+    queueModule.resetGenerationQueueForTests();
+  } finally {
+    delete process.env.AI_LOCKED_PROVIDERS;
+    delete process.env.AI_CLI_CONCURRENCY;
+    delete process.env.AI_CODEX_CONCURRENCY;
   }
 });

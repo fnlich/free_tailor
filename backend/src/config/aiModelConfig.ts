@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
-import { getSetting, setSetting } from '../database/settingsRepository';
+import { getSetting, getSettingRaw, setSetting } from '../database/settingsRepository';
+import { SETTINGS_BACKUP_KEY as BROWSER_CHAT_SNAPSHOT_KEY } from '../database/migrations/006_remove_browser_chat';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
 import { CODEX_DEFAULT_MODEL } from '../services/ai/providers/codexCli/options';
@@ -697,8 +698,11 @@ function normalizeAIModelProvider(value: unknown): AIProvider | null {
  * Only for the life of the process, and only ever added to. That is enough
  * while the records are still in the row, which is exactly while a reference to
  * one can be outstanding: migration 006 clears the references in the same pass
- * that deletes the records. It deliberately does not grow into "any id that is
- * missing falls back" - a model an administrator deleted is still an error.
+ * that deletes the records, and it runs before an administrator's first save
+ * could normalize them away - on the boot or the sign-in that makes the first
+ * administrator (see `applyConfiguredAdmins`). It deliberately does not grow
+ * into "any id that is missing falls back" - a model an administrator deleted
+ * is still an error.
  */
 const droppedRetiredModelIds = new Set<string>();
 
@@ -874,10 +878,11 @@ export function getRunnableModels(settings: AIModelSettings & Pick<AppSettings, 
  * rather than a settings row that fails `assertAtLeastOneProviderEnabled`);
  * and, failing both, the fallback.
  *
- * Keys for a retired provider are ignored, with the same carry-over for the
- * same reason: a row whose only switched-on providers were the browser chat
- * ones comes back with the subscription seat on, rather than with nothing
- * enabled and every settings read refused.
+ * Keys for a retired provider are ignored. A row whose only switched-on
+ * providers were the browser chat ones is given one that runs by
+ * `rescueRetiredProviderRow`, when it is read from the database - not here,
+ * because this also normalizes an administrator's save, where nothing enabled
+ * is a mistake to report rather than repair.
  */
 function normalizeProvidersEnabled(
   source: Record<string, unknown>,
@@ -921,21 +926,6 @@ function normalizeProvidersEnabled(
 
     result[id] = fallback[id] ?? true;
   }
-
-  if (!AI_PROVIDER_IDS.some((id) => result[id])) {
-    const retiredOn = Object.keys(record ?? {}).filter(
-      (key) => isRetiredProviderId(key) && record?.[key] === true
-    );
-    if (retiredOn.length > 0) {
-      result['claude-cli'] = true;
-      warnRetiredResidueOnce(
-        'only-retired-providers',
-        '[ai] The stored settings have no provider switched on apart from the removed browser chat ' +
-          `ones (${retiredOn.join(', ')}); reading the subscription provider (claude-cli) as switched on ` +
-          'instead. Review it under Admin -> Settings.'
-      );
-    }
-  }
   return result;
 }
 
@@ -969,76 +959,169 @@ function normalizeBoundedInteger(
 
 
 /**
- * Keeps a stored row that ran ONLY on a retired provider readable.
+ * Whether a stored row is one the browser chat removal may have left with
+ * nothing to run on: it still names a browser provider, or migration 006
+ * cleaned it - which the snapshot 006 keeps of every row it rewrote says, long
+ * after the row itself stopped saying it.
  *
- * Dropping the browser chat records can leave an install with nothing that can
- * run: an operator who used the free chat sites alone, with every other model
- * switched off or never added. The asserts in `readSettings` would then refuse
- * every settings read - the model list, every generation, and the Settings page
- * an administrator would repair it from. So the subscription seat is put back:
- * switched on, and its seed models added where missing. That is the repair
- * migration 006 writes, made for the reason 001 switched the seat on for an
- * install that had run only on OpenRouter.
+ * Asked only once a row has already failed to offer anything runnable, so the
+ * extra read costs nothing on any read that succeeds.
+ */
+function rowRanRetiredProviders(source: Record<string, unknown>): boolean {
+  const flags = source.providersEnabled;
+  if (typeof flags === 'object' && flags !== null && Object.keys(flags).some((key) => isRetiredProviderId(key))) {
+    return true;
+  }
+  if (
+    Array.isArray(source.aiModels) &&
+    source.aiModels.some(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        isRetiredProviderId((entry as Record<string, unknown>).provider)
+    )
+  ) {
+    return true;
+  }
+  try {
+    return getSettingRaw(BROWSER_CHAT_SNAPSHOT_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keeps a stored row that ran on the browser chat providers readable once they
+ * are gone.
+ *
+ * Without them an install can be left with nothing it can run: an operator who
+ * used the free chat sites alone, or whose seats are locked on this machine
+ * (`AI_LOCKED_PROVIDERS`) - which is exactly what moved many installs onto the
+ * browsers. The asserts in `readSettings` would then refuse every settings read:
+ * the model list, every generation, and the Settings page an administrator
+ * would repair it from. So one provider this machine CAN run is read as
+ * switched on, and given a model that runs:
+ *
+ *   - not locked here - a locked seat switched on would repair nothing;
+ *   - a keyless seat before a metered API, so the repair does not start billing;
+ *   - one the operator left switched on before one that has to be switched on,
+ *     and one with a model already switched on before one without;
+ *   - a seat's missing seed models added and, failing that, one of its own
+ *     switched back on; a metered API's own model switched back on, and its
+ *     seeds only when it has none.
+ *
+ * That is the repair migration 006 writes, made for the reason 001 switched the
+ * seat on for an install that had run only on OpenRouter - and it is needed
+ * after 006 too, because a lock can be added at any time and 006 runs once.
+ *
+ * Only for a row that ran browser chat (`rowRanRetiredProviders`). Any other
+ * row an operator left with nothing runnable - every provider they ticked
+ * since locked in .env - still fails by name, pointing at the lock they set,
+ * which is the place to undo it. And nothing is possible when every provider
+ * is locked: the assert names the locks.
  *
  * In memory only. Nothing here writes; 006, or the next save from the admin
  * page, persists it - so 006 still finds the residue and snapshots the row
  * before it changes anything. `providersEnabled` is the caller's freshly
  * normalized record and is updated in place.
  */
-function rescueRetiredOnlyModels(
+function rescueRetiredProviderRow(
   source: Record<string, unknown>,
   providersEnabled: ProvidersEnabled,
   aiModels: AIModelRecord[]
 ): AIModelRecord[] {
-  const stored = Array.isArray(source.aiModels) ? (source.aiModels as unknown[]) : [];
-  const droppedAny = stored.some(
-    (entry) =>
-      typeof entry === 'object' &&
-      entry !== null &&
-      isRetiredProviderId((entry as Record<string, unknown>).provider)
-  );
-  if (!droppedAny || getRunnableModels({ providersEnabled, aiModels }).length > 0) {
+  const anyProvider = AI_PROVIDER_IDS.some((id) => isProviderEnabled(id, { providersEnabled }));
+  if (anyProvider && getRunnableModels({ providersEnabled, aiModels }).length > 0) {
+    return aiModels;
+  }
+  if (!rowRanRetiredProviders(source)) {
     return aiModels;
   }
 
-  providersEnabled['claude-cli'] = true;
-  const presentIds = new Set(aiModels.map((model) => model.id));
-  const presentKeys = new Set(aiModels.map((model) => `${model.provider}:${model.modelName.toLowerCase()}`));
-  const seeds = DEFAULT_MODEL_RECORDS.filter(
-    (model) =>
-      model.provider === 'claude-cli' &&
-      !presentIds.has(model.id) &&
-      !presentKeys.has(`${model.provider}:${model.modelName.toLowerCase()}`)
-  ).map((model) => ({ ...model }));
-  let rescued = [...seeds, ...aiModels];
+  // Lowest first, catalog order breaking ties: keyless over metered, then
+  // switched on over off, then one with a model already switched on.
+  const rank = (id: AIProvider): number =>
+    (providerRequiresApiKey(id) ? 4 : 0) +
+    (providersEnabled[id] === true ? 0 : 2) +
+    (aiModels.some((model) => model.provider === id && model.enabled) ? 0 : 1);
+  const target = AI_PROVIDER_IDS.filter((id) => !isProviderLocked(id)).sort((a, b) => rank(a) - rank(b))[0];
+  if (!target) {
+    return aiModels;
+  }
 
-  // The seat's models were there all along but switched off. One is switched
-  // back on - the default one where it exists - because a row that cannot be
-  // read at all is worse than an administrator's untick being undone, and the
-  // warning below says which it was.
+  const switchedOn = providersEnabled[target] !== true;
+  providersEnabled[target] = true;
+
+  let rescued = aiModels;
+  const added: string[] = [];
+  let revived = '';
   if (getRunnableModels({ providersEnabled, aiModels: rescued }).length === 0) {
-    const seatModels = rescued.filter((model) => model.provider === 'claude-cli');
-    const revive =
-      seatModels.find((model) => model.modelName.toLowerCase() === DEFAULT_CLAUDE_CLI_MODEL.toLowerCase()) ??
-      seatModels[0];
-    if (revive) {
-      rescued = rescued.map((model) => (model === revive ? { ...model, enabled: true } : model));
+    const seeds = DEFAULT_MODEL_RECORDS.filter((model) => model.provider === target);
+    const own = () => rescued.filter((model) => model.provider === target);
+    // A seat gets its missing seed models, as 006 gives it them; a metered API
+    // that already has models of its own gets one of THOSE back rather than
+    // key-billed models nobody added. By id AND by provider and model name: the
+    // reader refuses two records for one pair, so a seed beside a record the
+    // operator created under their own id would break the row it is repairing.
+    if (!providerRequiresApiKey(target) || own().length === 0) {
+      const presentIds = new Set(rescued.map((model) => model.id));
+      const presentKeys = new Set(rescued.map((model) => `${model.provider}:${model.modelName.toLowerCase()}`));
+      const fresh = seeds
+        .filter(
+          (model) =>
+            !presentIds.has(model.id) && !presentKeys.has(`${model.provider}:${model.modelName.toLowerCase()}`)
+        )
+        .map((model) => ({ ...model }));
+      rescued = [...fresh, ...rescued];
+      added.push(...fresh.map((model) => model.id));
+    }
+    // Its models were there all along but switched off. One is switched back
+    // on - its seed default where it has that one - because a row that cannot
+    // be read at all is worse than an administrator's untick being undone, and
+    // the warning below says which it was.
+    if (getRunnableModels({ providersEnabled, aiModels: rescued }).length === 0) {
+      const seedDefault = seeds[0];
+      const revive =
+        own().find(
+          (model) =>
+            seedDefault !== undefined &&
+            (model.id === seedDefault.id || model.modelName.toLowerCase() === seedDefault.modelName.toLowerCase())
+        ) ?? own()[0];
+      if (revive) {
+        rescued = rescued.map((model) => (model === revive ? { ...model, enabled: true } : model));
+        revived = revive.id;
+      }
     }
   }
 
+  const locked = listLockedProviderIds();
   warnRetiredResidueOnce(
-    'only-retired-models',
-    '[ai] The stored settings had no runnable model apart from the removed browser chat ones; reading ' +
-      'the subscription provider (claude-cli) as switched on with its models instead. Review it under ' +
-      'Admin -> Settings and Admin -> Models, and save to keep it.'
+    `rescued:${target}`,
+    '[ai] Nothing in the stored settings can run on this machine without the removed browser chat ' +
+      `providers${locked.length ? ` (locked here: ${locked.join(', ')})` : ''}; reading ` +
+      `"${getCatalogProviderLabel(target)}" as ` +
+      [
+        switchedOn ? 'switched on' : '',
+        added.length ? `given its models (${added.join(', ')})` : '',
+        revived ? `with ${revived} switched back on` : '',
+      ]
+        .filter(Boolean)
+        .join(', ') +
+      ' instead. Review it under Admin -> Settings and Admin -> Models, and save to keep it.'
   );
   return rescued;
 }
 
+/**
+ * `storedRow` marks the one caller that reads the row from the database, as
+ * opposed to normalizing an administrator's save or a row about to be written:
+ * only a stored row is repaired in memory or reported as browser chat residue.
+ */
 function normalizeSettings(
   input: unknown,
   fallback: AppSettings = DEFAULT_SETTINGS,
-  strict = false
+  strict = false,
+  storedRow = false
 ): AppSettings {
   if (strict && (typeof input !== 'object' || input === null)) {
     throw new Error('Settings file must contain a JSON object');
@@ -1052,11 +1135,11 @@ function normalizeSettings(
   const providersEnabled = normalizeProvidersEnabled(source, fallback.providersEnabled, strict);
 
   const normalizedModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
-  // Only for a STORED row, which is what strict means here. A save from the
-  // admin page that leaves nothing runnable is refused by name instead, and
-  // repairing it behind the operator's back would hide the mistake they made.
-  const aiModels = strict
-    ? rescueRetiredOnlyModels(source, providersEnabled, normalizedModels)
+  // Only for a STORED row. A save from the admin page that leaves nothing
+  // runnable is refused by name instead, and repairing it behind the
+  // operator's back would hide the mistake they made.
+  const aiModels = storedRow
+    ? rescueRetiredProviderRow(source, providersEnabled, normalizedModels)
     : normalizedModels;
   const defaultModelId = resolveDefaultModelId(
     source.defaultModelId,
@@ -1064,6 +1147,20 @@ function normalizeSettings(
     { providersEnabled },
     fallback.defaultModelId
   );
+  // A stored default that named a browser model is replaced like any default
+  // that no longer resolves - but this one is residue with a known cause, so it
+  // is said once, as a stored profile preference or prompt override naming one
+  // is. After the records are normalized, so an administrator's own browser
+  // model, whose id only its dropped record could name, is recognised too.
+  const storedDefault = typeof source.defaultModelId === 'string' ? source.defaultModelId.trim() : '';
+  if (storedRow && storedDefault && isRetiredModelReference(storedDefault)) {
+    warnRetiredResidueOnce(
+      `default:${storedDefault}`,
+      `[ai] The stored default model is "${storedDefault}", a model on the browser chat providers, which ` +
+        `were removed; "${defaultModelId}" is the default instead. Migration 006 repoints it, and saving ` +
+        'Admin -> Settings writes the new one.'
+    );
+  }
 
   return {
     providersEnabled,
@@ -1314,7 +1411,7 @@ async function readSettings(): Promise<AppSettings> {
     return defaults;
   }
 
-  const settings = normalizeSettings(stored, cloneDefaultSettings(), true);
+  const settings = normalizeSettings(stored, cloneDefaultSettings(), true, true);
   // A database written before keys moved to the environment still holds them.
   // Normalizing drops them from what this process uses, but the row on disk
   // would keep the secrets indefinitely with nothing left that can manage

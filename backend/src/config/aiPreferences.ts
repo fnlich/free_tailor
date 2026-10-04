@@ -39,23 +39,6 @@ export function normalizeAiPreferences(raw: unknown): AiPreferences {
 }
 
 /**
- * Later layers win, field by field.
- *
- * Field by field rather than object by object. It reads as overkill with one
- * field, and it is the shape that stays correct when a second one is added -
- * a whole-object precedence silently throws away everything the later layer
- * did not mention.
- */
-export function mergeAiPreferences(...layers: Array<AiPreferences | undefined>): AiPreferences {
-  const merged: AiPreferences = {};
-  for (const layer of layers) {
-    if (!layer) continue;
-    if (layer.modelId) merged.modelId = layer.modelId;
-  }
-  return merged;
-}
-
-/**
  * A resolved choice: what the model layer is actually asked for.
  *
  * Bundled rather than passed as four positional arguments, because it travels

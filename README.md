@@ -867,34 +867,56 @@ Existing database records are never overwritten.
 
 The `claude-web` and `chatgpt-web` providers - **Claude (browser)**,
 **ChatGPT (browser)**, and the **Default (browser)** entry that spread a run over
-both - are gone, along with the debug Chrome they drove. On the first start
-after upgrading, migration 006 tidies the database once:
+both - are gone, and nothing in the app drives a debug Chrome any more. On the
+first start after upgrading, migration 006 tidies the database once:
 
 - It removes their model records, their enable switches, and the browser-chat
   settings (the master switch and the registered debug ports).
 - It repoints whatever named them. The stored default moves to the Claude
-  seat's Sonnet, or to the first model this machine can run when that seat is
-  locked; a profile's model choice and a prompt's model override are cleared,
-  which means "use the default".
-- It keeps a verbatim copy of the settings row first, in `app_settings` under
-  `app-settings.backup.pre-browser-chat-removal`, and the prompt rows it changed
-  in a side table, `prompts_backup_pre_browser_chat_removal`. Nothing restores
-  these automatically - `npm run ai:rollback` is for the older provider
-  migration - they are there to read.
+  seat's Sonnet - or, when that seat is locked on this machine
+  (`AI_LOCKED_PROVIDERS`), to the Codex seat, and to a metered model only when
+  both seats are locked. That follows the locks as they are when the migration
+  runs: lifting one later does not move the default back, so pick it again
+  under Admin -> Settings if you want it. A profile's model choice and a
+  prompt's model override are cleared, which means "use the default".
+- An install that ran only on the browsers - every other provider unticked or
+  locked here, or every other model switched off - gets one back: a seat this
+  machine can run, switched on with its models, or else a metered model it
+  already had, switched back on. The backend log says which; review it under
+  Admin -> Settings and Admin -> Models.
+- It keeps a copy of the settings row first, in `app_settings` under
+  `app-settings.backup.pre-browser-chat-removal` - verbatim, except that an API
+  key store an older release left in the row is not copied, since keys come
+  from `.env` only - and the prompt rows it changed in a side table,
+  `prompts_backup_pre_browser_chat_removal`. The profile choices it cleared are
+  listed in `migration-log.provider-schema-6`. Nothing restores these
+  automatically - `npm run ai:rollback` is for the older provider migration -
+  they are there to read.
 
 Nothing depends on that migration having run, which matters because it can be
-held back: it comes after the one that waits for the first administrator. A
-record that still names a browser provider - from a restored backup, a
-hand-edited row, or a page left open from before the upgrade - is read as the
-default, never as an error, and the backend log says so once per name. A run
-that was queued across the upgrade still finishes: a resume that was waiting
-for a browser is built on whatever its profile resolves to now - the profile's
-own model, or the app default - and is not charged again.
+held back: it comes after the one that waits for the first administrator (an
+account that `ADMIN_EMAILS` promotes at start-up lets it run at once), and it
+waits as well while the settings row is not valid JSON. A record that still
+names a browser provider - from a restored backup, a hand-edited row, or a page
+left open from before the upgrade - is read as the default, never as an error,
+and the backend log says so once per name; an install left with nothing it can
+run is read with the same repair the migration makes, in memory, until an
+administrator saves Settings. A run that was queued across the upgrade still
+finishes: a resume that was waiting for a browser is built on whatever its
+profile resolves to now - the profile's own model, or the app default - and is
+not charged again.
 
 `npm run browser:debug`, `npm run browser:doctor` and every `AI_WEB_*` variable
 no longer exist. A leftover `AI_WEB_*` line in `.env` is ignored and can be
 deleted. The Chrome that prints PDFs is a different thing and is unaffected -
 see **A Chrome to print with** under Prerequisites.
+
+Debug browsers you started with `npm run browser:debug` are still running, and
+nothing uses them any more. Close those Chrome windows: each one listens on a
+loopback remote-debugging port (9222 by default; the ports you registered are
+in `browserChatEndpoints` in the settings snapshot above). Their profiles,
+`~/.free-tailor-chrome-<port>` or the directory you gave `--profile`, are still
+signed in to claude.ai and chatgpt.com - delete them.
 
 ---
 
@@ -1341,7 +1363,7 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
 | A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. Nothing is locked by default, so this means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart, or pick a model from another provider. |
-| **Claude (browser)**, **ChatGPT (browser)** or **Default (browser)** is missing from the model menus | Removed, along with the debug Chrome they drove - see [Upgrading an install that used browser chat](#5-upgrading-an-install-that-used-browser-chat). A stored default, profile or prompt that named one now runs on the default model, which is the Claude seat unless that is locked here, and the backend log says so once per name. `npm run browser:debug`, `npm run browser:doctor` and the `AI_WEB_*` variables no longer exist; a leftover `AI_WEB_*` line in `.env` is ignored. |
+| **Claude (browser)**, **ChatGPT (browser)** or **Default (browser)** is missing from the model menus | Removed, along with the debug Chrome they drove - see [Upgrading an install that used browser chat](#5-upgrading-an-install-that-used-browser-chat). A stored default, profile or prompt that named one now runs on the default model, which is the Claude seat unless that is locked here, and the backend log says so once per name. Debug Chrome windows started for them are still running on a remote-debugging port, and their `~/.free-tailor-chrome-<port>` profiles are still signed in: close the windows and delete the profiles. `npm run browser:debug`, `npm run browser:doctor` and the `AI_WEB_*` variables no longer exist; a leftover `AI_WEB_*` line in `.env` is ignored. |
 | A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |

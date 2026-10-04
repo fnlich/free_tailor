@@ -1777,8 +1777,8 @@ function stripUnsafeResumeSentences(value: string, company?: string): string {
  *   nothing to a model rewriting a summary.
  * - `profileSettings` is the operator's own configuration: which prompt
  *   records to use, their output file-name templates, and which AI model they
- *   pay for. Sending it typed the operator's tooling choices into somebody
- *   else's chat history for no purpose whatever.
+ *   pay for. Sending it put the operator's tooling choices into a third
+ *   party's model input for no purpose whatever.
  * - `contact` is a phone number, an email address and social links. This call
  *   rewrites the summary, the experience and the skills; it is never asked for
  *   contact details and the rendered resume takes them straight from the

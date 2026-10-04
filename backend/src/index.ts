@@ -26,7 +26,7 @@ import sheetRoutes from './routes/sheet';
 import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { describeAdminIdentity } from './config/adminIdentity';
-import { promoteConfiguredAdmins } from './database/userRepository';
+import { applyConfiguredAdmins } from './services/auth/authService';
 import { attachUser, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
@@ -310,11 +310,16 @@ const server = app.listen(PORT, HOST, () => {
   // Picks up a generation run the last process was part way through. Whatever
   // was mid-build when it stopped is built again, and whatever was queued
   // carries on - which is the whole point of the queue being on disk.
-  restoreGenerationQueue();
-  // After the queue, not before: restore requeues what was mid-flight, and a
-  // reservation whose tasks are about to run again must not be released as
-  // abandoned in between.
-  reconcileCredits();
+  //
+  // Then the credits, and only once the restore has FINISHED: restore requeues
+  // what was mid-flight, and a reservation whose tasks are about to run again
+  // must not be released as abandoned in between. The restore resolves a model
+  // again for a task queued on a provider that has since been removed, which
+  // is a settings read and so asynchronous; chaining on it keeps the order.
+  // Neither ever rejects.
+  void restoreGenerationQueue().then(() => {
+    reconcileCredits();
+  });
   // Reachable whenever ADMIN_EMAILS is set and somebody else signs in first -
   // that path never falls back to the first-account rule, so the install can
   // genuinely end up with nobody who can administer it.
@@ -322,7 +327,8 @@ const server = app.listen(PORT, HOST, () => {
   // by ADMIN_EMAILS or SMTP_USER becomes an administrator here, and warning
   // first would report a problem this line is about to fix.
   try {
-    const promoted = promoteConfiguredAdmins();
+    // And runs the migrations that were waiting for an administrator, at once.
+    const promoted = applyConfiguredAdmins();
     if (promoted > 0) console.log(`[auth] ${describeAdminIdentity()}`);
   } catch (error) {
     console.warn('[auth] Could not apply the configured administrator.', error);

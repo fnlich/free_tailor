@@ -19,32 +19,43 @@ import type Database from 'better-sqlite3';
  * true when it was written, and the catalog no longer knows these ids at all.
  *
  * A convenience, not a prerequisite - exactly as 001 is. It sits behind 003 in
- * the chain, which waits for the first administrator, and `npm run ai:rollback`
- * can put back a snapshot from before it and clear the version stamp. So every
- * read path tolerates the rows this rewrites (see `RETIRED_PROVIDER_IDS` in
+ * the chain, which waits for the first administrator, and a restored backup or a
+ * hand-edited row can bring the residue back after it has run. So every read
+ * path tolerates the rows this rewrites (see `RETIRED_PROVIDER_IDS` in
  * config/providerCatalog), and what this adds is that the residue goes for good,
  * with a record of what it was. It is idempotent by inspection rather than by
- * stamp for the same reason: after a rollback it runs again, and must find
- * nothing to do on rows it has already cleaned.
+ * stamp for the same reason: `npm run ai:rollback` clears the version stamp (it
+ * restores only 001's snapshot, which is older than browser chat), so this runs
+ * again after it, and must find nothing to do on rows it has already cleaned -
+ * or, when something written since put residue back, clean that and add to its
+ * log rather than replace it.
  *
  * What it changes, in one transaction:
  *
  *   1. App settings. The browser chat model records, their enable flags, and the
  *      browser-mode switch and debug-browser list go. A default that named one of
  *      them is repointed, and an install left with no enabled provider or no
- *      runnable model gets the subscription seat back. A verbatim snapshot of the
- *      row is taken first, once, under `SETTINGS_BACKUP_KEY`.
+ *      runnable model gets one back - a subscription seat where one is not
+ *      locked on this machine. A snapshot of the row is taken first, once, under
+ *      `SETTINGS_BACKUP_KEY`: verbatim, apart from any API key store an older
+ *      release left in it, which the settings reader deletes from the row and
+ *      which must not outlive it here.
  *   2. Prompts. A model override naming a removed provider is cleared - cleared
  *      means "use the model chosen for the run" - after the row is copied into
  *      `PROMPTS_BACKUP_TABLE`.
  *   3. Profiles. A stored model preference naming a removed model is cleared;
- *      the previous values are kept in the migration log.
+ *      the previous values are kept in the migration log, which a later run
+ *      appends to and never overwrites.
+ *
+ * A settings row that is not valid JSON but plainly names a browser provider
+ * makes the whole step wait, as 003 waits for an administrator: the ids of an
+ * administrator's own browser models are only in that row, and stamping the
+ * version past it would mean they were never learned once the row is repaired.
  *
  * Queued generation tasks are deliberately NOT touched. Their rows are transient
- * and only running batches are ever restored; the restore path puts a task from
- * the old browser lane in a lane this build has, and the runner resolves its
- * model again before it starts - which covers a task restored before this step
- * has run, too.
+ * and only running batches are ever restored; the restore path resolves a model
+ * again for a task that named a browser provider and puts it in the lane of what
+ * it resolves to - which covers a task restored before this step has run, too.
  */
 
 export const BROWSER_CHAT_REMOVAL_SCHEMA_VERSION = 6;
@@ -79,34 +90,86 @@ const PROVIDERS: ReadonlyArray<{ id: string; legacyFlags: string[]; keyless: boo
   { id: 'deepseek', legacyFlags: ['deepseekEnabled'], keyless: false },
 ];
 
-const SEAT_PROVIDER = 'claude-cli';
-const SEAT_DEFAULT_MODEL = 'sonnet';
 const SEAT_DEFAULT_MODEL_ID = 'claude-cli-sonnet';
 
-/** As 001 seeds them, so a model this restores reads exactly like a fresh install's. */
-const SEAT_SEED_MODELS = [
-  {
-    id: 'claude-cli-sonnet',
-    name: 'Claude Sonnet (subscription)',
-    provider: SEAT_PROVIDER,
-    modelName: 'sonnet',
-    description: 'Balanced default for tailoring, analysis and extraction on the subscription seat.',
+type SeedModel = { id: string; name: string; provider: string; modelName: string; description: string };
+
+/**
+ * What each subscription seat is restored with, and which of its models a
+ * revived seat switches back on. The Claude seat's as 001 seeds them and the
+ * Codex seat's as 005 does, so a model this restores reads exactly like a fresh
+ * install's. The metered providers have no entry: a key-billed model is never
+ * ADDED behind the operator's back, only one they already had switched back on.
+ */
+const SEAT_SEEDS: Readonly<Record<string, { defaultModelName: string; models: SeedModel[] }>> = {
+  'claude-cli': {
+    defaultModelName: 'sonnet',
+    models: [
+      {
+        id: 'claude-cli-sonnet',
+        name: 'Claude Sonnet (subscription)',
+        provider: 'claude-cli',
+        modelName: 'sonnet',
+        description: 'Balanced default for tailoring, analysis and extraction on the subscription seat.',
+      },
+      {
+        id: 'claude-cli-opus',
+        name: 'Claude Opus (subscription)',
+        provider: 'claude-cli',
+        modelName: 'opus',
+        description: 'Highest-capability model on the subscription seat, for the most demanding prompts.',
+      },
+      {
+        id: 'claude-cli-haiku',
+        name: 'Claude Haiku (subscription)',
+        provider: 'claude-cli',
+        modelName: 'haiku',
+        description: 'Fastest model on the subscription seat, for classification and short extractions.',
+      },
+    ],
   },
-  {
-    id: 'claude-cli-opus',
-    name: 'Claude Opus (subscription)',
-    provider: SEAT_PROVIDER,
-    modelName: 'opus',
-    description: 'Highest-capability model on the subscription seat, for the most demanding prompts.',
+  'codex-cli': {
+    defaultModelName: 'default',
+    models: [
+      {
+        id: 'codex-cli-default',
+        name: 'Codex (subscription)',
+        provider: 'codex-cli',
+        modelName: 'default',
+        description:
+          "Runs on your ChatGPT subscription through the local codex CLI - no API key, nothing metered. Uses " +
+          'whatever model that account is configured with.',
+      },
+    ],
   },
-  {
-    id: 'claude-cli-haiku',
-    name: 'Claude Haiku (subscription)',
-    provider: SEAT_PROVIDER,
-    modelName: 'haiku',
-    description: 'Fastest model on the subscription seat, for classification and short extractions.',
-  },
-];
+};
+
+/**
+ * The provider lock, read the way config/providerCatalog reads it: two env
+ * lists, comma or space separated, with the unlock winning.
+ *
+ * The one machine fact this reads, and it has to. A lock is how an operator
+ * says a seat cannot run here, and a repair that switched on - or repointed the
+ * default onto - a locked seat would write a row the settings reader still
+ * refuses, then stamp the version so nothing ever looked at it again. Spelled
+ * out rather than imported, by the rule every migration here keeps. No provider
+ * is locked by the catalog itself, so the environment is the whole answer.
+ */
+function envProviderList(name: string): Set<string> {
+  const raw = process.env[name];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(/[,\s]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+function lockedHere(id: string): boolean {
+  if (envProviderList('AI_UNLOCKED_PROVIDERS').has(id)) return false;
+  return envProviderList('AI_LOCKED_PROVIDERS').has(id);
+}
 
 type Json = Record<string, unknown>;
 
@@ -236,6 +299,11 @@ export function hasBrowserChatResidue(db: Database.Database): boolean {
 
 export type BrowserChatRemovalReport = {
   ran: boolean;
+  /**
+   * True when the settings row names a browser provider but cannot be parsed:
+   * the step waits, unstamped, for the row to be repaired. See `migrate006`.
+   */
+  deferred: boolean;
   settingsRewritten: boolean;
   /** Browser chat model records deleted from the settings row. */
   removedModels: number;
@@ -304,12 +372,35 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
   const settings: Json = parsed;
 
   // Verbatim, before anything is rewritten, so recovering it is a copy rather
-  // than a reconstruction. Written once: a second run - after a rollback, say -
-  // must not overwrite the original with a row that was already cleaned.
-  db.prepare(
-    `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(key) DO NOTHING`
-  ).run(SETTINGS_BACKUP_KEY, raw, new Date().toISOString());
+  // than a reconstruction. Written once: a second run - after the stamp is
+  // cleared, say - must not overwrite the original with a row that was already
+  // cleaned.
+  //
+  // Verbatim except for one key. A row an older release wrote can still hold
+  // the API key store, which the settings reader deletes from the live row on
+  // its first read because keys come from the environment only. On a normal
+  // boot this runs BEFORE that read, so a verbatim copy would be the one place
+  // those secrets survived - a permanent plaintext credential under a key
+  // nobody reads and nothing ever deletes.
+  const hasKeyStore = Object.prototype.hasOwnProperty.call(settings, 'apiKeys');
+  let snapshot = raw;
+  if (hasKeyStore) {
+    const { apiKeys: _discarded, ...withoutKeys } = settings;
+    snapshot = JSON.stringify(withoutKeys);
+  }
+  const snapshotWritten =
+    db
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO NOTHING`
+      )
+      .run(SETTINGS_BACKUP_KEY, snapshot, new Date().toISOString()).changes > 0;
+  if (hasKeyStore && snapshotWritten) {
+    report.notes.push(
+      `The copy of the settings row under "${SETTINGS_BACKUP_KEY}" leaves out its stored API keys; keys ` +
+        'come from the environment only, and the settings reader deletes them from the row itself.'
+    );
+  }
 
   const now = new Date().toISOString();
 
@@ -350,70 +441,117 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
   // 3. Something must still run. An operator who used the browsers alone - the
   //    seats and the APIs unticked, or their models switched off - would
   //    otherwise come back to a row the settings reader refuses outright, and
-  //    with it the Settings page they would fix it from. The subscription seat
-  //    is what comes back, as it did in 001 for an install that ran only on
-  //    OpenRouter.
+  //    with it the Settings page they would fix it from. A subscription seat is
+  //    what comes back, as the Claude seat did in 001 for an install that ran
+  //    only on OpenRouter.
+  //
+  //    "Can run" is the reader's test, lock included. A seat locked on this
+  //    machine is exactly what pushed many installs onto the browsers in the
+  //    first place, and switching it back on would repair nothing: the reader
+  //    would still refuse the row, and the stamp written after this would stop
+  //    anything from looking at it again.
+  const usable = (id: string): boolean => providerOn(settings, providersEnabled, id) && !lockedHere(id);
+
   const switchOn = (id: string): void => {
     if (providerOn(settings, providersEnabled, id)) return;
     providersEnabled[id] = true;
     report.enabledProviders.push(id);
   };
 
-  if (!PROVIDERS.some((provider) => providerOn(settings, providersEnabled, provider.id))) {
-    switchOn(SEAT_PROVIDER);
-    report.notes.push(
-      'No provider would have been left enabled once the browser chat providers were removed, so the ' +
-        'subscription provider (claude-cli) was switched on. Review it under Admin > Settings.'
-    );
-  }
-
   const runnable = (model: unknown): model is Json =>
     isObject(model) &&
     model.enabled !== false &&
     typeof model.provider === 'string' &&
     PROVIDERS.some((provider) => provider.id === model.provider) &&
-    providerOn(settings, providersEnabled, model.provider);
+    usable(model.provider);
+
+  /**
+   * The provider to bring back: one not locked here; a keyless seat before a
+   * metered API; one already switched on before one that has to be; one with a
+   * model already switched on before one without; catalog order after that.
+   * The settings reader repairs a row it reads by the same rule. A metered
+   * provider qualifies only when the row already has a model for it, because
+   * this never adds a key-billed model nobody chose - only switches one of
+   * theirs back on.
+   */
+  const repairTarget = (): string | null => {
+    const ownModels = (id: string): Json[] =>
+      hasExplicitModels ? models.filter((model): model is Json => isObject(model) && model.provider === id) : [];
+    const candidates = PROVIDERS.filter(
+      (provider) =>
+        !lockedHere(provider.id) && (provider.keyless || !hasExplicitModels || ownModels(provider.id).length > 0)
+    );
+    const rank = (provider: (typeof PROVIDERS)[number]): number =>
+      (provider.keyless ? 0 : 4) +
+      (providerOn(settings, providersEnabled, provider.id) ? 0 : 2) +
+      (!hasExplicitModels || ownModels(provider.id).some((model) => model.enabled !== false) ? 0 : 1);
+    return [...candidates].sort((a, b) => rank(a) - rank(b))[0]?.id ?? null;
+  };
+
+  const lockedNote =
+    'nothing this migration may bring back can run on this machine - the subscription seats are locked ' +
+    '(AI_LOCKED_PROVIDERS), and it adds no metered model nobody chose - so the row was left that way. The ' +
+    'settings reader repairs it in memory where it can, and names the locks where it cannot.';
+
+  if (!PROVIDERS.some((provider) => usable(provider.id))) {
+    const target = repairTarget();
+    if (target) {
+      switchOn(target);
+      report.notes.push(
+        'No provider this machine can run would have been left enabled once the browser chat providers ' +
+          `were removed, so ${target} was switched on. Review it under Admin > Settings.`
+      );
+    } else {
+      report.notes.push(`No provider would have been left enabled, and ${lockedNote}`);
+    }
+  }
 
   if (hasExplicitModels && !models.some(runnable)) {
-    switchOn(SEAT_PROVIDER);
-    // By id AND by provider and model name. The settings reader refuses a row
-    // with two records for one provider/model pair, so a seed added beside a
-    // seat model the operator created under their own id would break the very
-    // row this is repairing.
-    const presentIds = new Set(models.filter(isObject).map((model) => modelIdOf(model)));
-    const presentPairs = new Set(
-      models
-        .filter(isObject)
-        .map((model) => `${String(model.provider)}:${String(model.modelName ?? '').trim().toLowerCase()}`)
-    );
-    const seeds = SEAT_SEED_MODELS.filter(
-      (seed) => !presentIds.has(seed.id) && !presentPairs.has(`${seed.provider}:${seed.modelName}`)
-    ).map((seed) => ({ ...seed, enabled: true, createdAt: now, updatedAt: now }));
-    report.seededModels = seeds.length;
-    models = [...seeds, ...models];
-
-    // The seat's models were there all along and switched off. One comes back
-    // on - the default one where it exists - because a row nothing can run on
-    // is worse than an untick being undone, and the note says which.
-    if (!models.some(runnable)) {
-      const seatModels = models.filter(
-        (model): model is Json => isObject(model) && model.provider === SEAT_PROVIDER
+    const target = repairTarget();
+    if (target) {
+      switchOn(target);
+      const seat = SEAT_SEEDS[target];
+      // By id AND by provider and model name. The settings reader refuses a row
+      // with two records for one provider/model pair, so a seed added beside a
+      // seat model the operator created under their own id would break the very
+      // row this is repairing.
+      const presentIds = new Set(models.filter(isObject).map((model) => modelIdOf(model)));
+      const presentPairs = new Set(
+        models
+          .filter(isObject)
+          .map((model) => `${String(model.provider)}:${String(model.modelName ?? '').trim().toLowerCase()}`)
       );
-      const revive =
-        seatModels.find((model) => String(model.modelName ?? '').trim().toLowerCase() === SEAT_DEFAULT_MODEL) ??
-        seatModels[0];
-      if (revive) {
-        models = models.map((model) => (model === revive ? { ...revive, enabled: true, updatedAt: now } : model));
-        report.reenabledModels.push(modelIdOf(revive));
-      }
-    }
+      const seeds = (seat?.models ?? [])
+        .filter((seed) => !presentIds.has(seed.id) && !presentPairs.has(`${seed.provider}:${seed.modelName}`))
+        .map((seed) => ({ ...seed, enabled: true, createdAt: now, updatedAt: now }));
+      report.seededModels = seeds.length;
+      models = [...seeds, ...models];
 
-    report.notes.push(
-      'No model would have been left runnable once the browser chat models were removed, so the ' +
-        `subscription models were restored (${report.seededModels} added` +
-        (report.reenabledModels.length ? `, ${report.reenabledModels.join(', ')} switched back on` : '') +
-        '). Review them under Admin > Models.'
-    );
+      // The provider's models were there all along and switched off. One comes
+      // back on - the seat's default one where it exists - because a row
+      // nothing can run on is worse than an untick being undone, and the note
+      // says which.
+      if (!models.some(runnable)) {
+        const ownModels = models.filter((model): model is Json => isObject(model) && model.provider === target);
+        const revive =
+          ownModels.find(
+            (model) => String(model.modelName ?? '').trim().toLowerCase() === seat?.defaultModelName
+          ) ?? ownModels[0];
+        if (revive) {
+          models = models.map((model) => (model === revive ? { ...revive, enabled: true, updatedAt: now } : model));
+          report.reenabledModels.push(modelIdOf(revive));
+        }
+      }
+
+      report.notes.push(
+        'No model this machine can run would have been left once the browser chat models were removed, ' +
+          `so ${target}'s models were restored (${report.seededModels} added` +
+          (report.reenabledModels.length ? `, ${report.reenabledModels.join(', ')} switched back on` : '') +
+          '). Review them under Admin > Models.'
+      );
+    } else {
+      report.notes.push(`No model would have been left runnable, and ${lockedNote}`);
+    }
   }
 
   if (hasExplicitModels) settings.aiModels = models;
@@ -431,8 +569,10 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
   //    Repointed rather than left for the reader's fallback, because that
   //    fallback takes the first runnable model in list order - which on an
   //    upgraded install can be a metered API model, quietly billing tokens for
-  //    a default nobody chose. The seat's default model first, then any keyless
-  //    model, and a metered one only when nothing else can run.
+  //    a default nobody chose. The Claude seat's default model first, then any
+  //    keyless model, and a metered one only when nothing else can run - all of
+  //    them models this machine can run, so a locked Claude seat lands on the
+  //    Codex seat, as a fresh install with that lock does.
   const currentDefault = typeof settings.defaultModelId === 'string' ? settings.defaultModelId.trim() : '';
   if (currentDefault && (RETIRED_MODEL_IDS.has(currentDefault) || removedIds.has(currentDefault))) {
     let replacement = '';
@@ -445,10 +585,14 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
         candidates.find(keyless) ??
         candidates[0];
       replacement = pick ? modelIdOf(pick) : '';
-    } else if (providerOn(settings, providersEnabled, SEAT_PROVIDER)) {
-      // No explicit list: the row inherits the seed models, which include the
+    } else {
+      // No explicit list: the row inherits the seed models, which include each
       // seat's default.
-      replacement = SEAT_DEFAULT_MODEL_ID;
+      const seat = PROVIDERS.find((provider) => provider.keyless && usable(provider.id));
+      const seed = seat
+        ? SEAT_SEEDS[seat.id]?.models.find((model) => model.modelName === SEAT_SEEDS[seat.id]?.defaultModelName)
+        : undefined;
+      replacement = seed?.id ?? '';
     }
 
     if (replacement) {
@@ -506,6 +650,47 @@ function migrateProfiles(db: Database.Database, report: BrowserChatRemovalReport
 }
 
 /**
+ * What a run is recorded under: the first run's report, with every later run
+ * appended to it.
+ *
+ * Appended, never replaced, because this log is the ONLY record of the profile
+ * preferences a run clears. A later run - the stamp cleared, and residue written
+ * since, say a page left open from before the upgrade saving a profile - finds
+ * the earlier profiles already clean; a report that replaced the first would
+ * lose what they were for good. A log row somebody edited into something that
+ * is not an object is left alone, and the run goes under its own dated key.
+ */
+function writeMigrationLog(db: Database.Database, report: BrowserChatRemovalReport): void {
+  const at = new Date().toISOString();
+  const entry = { ...report, at };
+  const existing = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(MIGRATION_LOG_KEY) as
+    | { value?: string }
+    | undefined;
+
+  let key = MIGRATION_LOG_KEY;
+  let value: Json = entry;
+  if (existing?.value !== undefined) {
+    let previous: unknown;
+    try {
+      previous = JSON.parse(existing.value);
+    } catch {
+      previous = null;
+    }
+    if (isObject(previous)) {
+      const laterRuns = Array.isArray(previous.laterRuns) ? previous.laterRuns : [];
+      value = { ...previous, laterRuns: [...laterRuns, entry] };
+    } else {
+      key = `${MIGRATION_LOG_KEY}.${at}`;
+    }
+  }
+
+  db.prepare(
+    `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(key, JSON.stringify(value), at);
+}
+
+/**
  * Applies the browser chat removal. Idempotent by inspection as well as by
  * version stamp, because a stamp can be cleared - `ai:rollback` does exactly
  * that - while the data it describes cannot be.
@@ -513,6 +698,7 @@ function migrateProfiles(db: Database.Database, report: BrowserChatRemovalReport
 export function migrate006(db: Database.Database): BrowserChatRemovalReport {
   const report: BrowserChatRemovalReport = {
     ran: false,
+    deferred: false,
     settingsRewritten: false,
     removedModels: 0,
     removedModelIds: [],
@@ -529,6 +715,31 @@ export function migrate006(db: Database.Database): BrowserChatRemovalReport {
 
   if (!hasBrowserChatResidue(db)) {
     return report;
+  }
+
+  // A settings row that names a browser provider but does not parse. Nothing is
+  // written - `getSetting` refuses such a row so that corruption surfaces, and
+  // a repaired blob over it would destroy whatever it holds - and the step
+  // WAITS rather than running without it. The ids of an administrator's own
+  // browser models are in that row and nowhere else; stamped past it, this
+  // would never learn them once the operator repaired the row, and a profile
+  // pinned to one would fail as "not found" from then on.
+  const raw = readSettingsRow(db);
+  if (raw !== null && settingsHaveResidue(raw)) {
+    let parses = true;
+    try {
+      JSON.parse(raw);
+    } catch {
+      parses = false;
+    }
+    if (!parses) {
+      report.deferred = true;
+      report.notes.push(
+        'The settings row names a browser chat provider but is not valid JSON, so the browser chat ' +
+          'removal waits until it is repaired and runs on the first start after that.'
+      );
+      return report;
+    }
   }
 
   // Every model id that meant a browser: the three shipped ones, and whatever
@@ -549,14 +760,7 @@ export function migrate006(db: Database.Database): BrowserChatRemovalReport {
           `app_settings["${MIGRATION_LOG_KEY}"].`
       );
     }
-    db.prepare(
-      `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run(
-      MIGRATION_LOG_KEY,
-      JSON.stringify({ ...report, at: new Date().toISOString() }),
-      new Date().toISOString()
-    );
+    writeMigrationLog(db, report);
   })();
 
   return report;

@@ -144,6 +144,15 @@ async function resolveTemplate(
 }
 
 /**
+ * True for a stored choice that names a removed provider, or the "either site"
+ * route they offered - the choices `currentChoice` resolves again.
+ */
+export function namesRetiredProvider(choice: unknown): choice is AiChoice {
+  const stored = choice as { provider?: unknown; route?: unknown } | null | undefined;
+  return Boolean(stored) && (isRetiredProviderId(stored?.provider) || stored?.route === 'hybrid');
+}
+
+/**
  * The task's choice, or a fresh one when it names a retired provider.
  *
  * A choice is resolved when the batch is submitted and written to disk with
@@ -154,10 +163,14 @@ async function resolveTemplate(
  * The credit paid for a resume, not for a model, so the choice is resolved
  * again from the profile exactly as a new submission would resolve it: the
  * profile's own model, or the app default.
+ *
+ * The restore does this first, so such a task is placed in the lane of the
+ * provider it will actually run on (see `restoreGenerationQueue`); asking again
+ * here covers a task whose profile could not be read at that moment.
  */
-async function currentChoice(choice: AiChoice, profile: Profile): Promise<AiChoice> {
+export async function currentChoice(choice: AiChoice, profile: Profile): Promise<AiChoice> {
   const stored = choice as (AiChoice & { route?: unknown }) | undefined;
-  if (!stored || (!isRetiredProviderId(stored.provider) && stored.route !== 'hybrid')) return choice;
+  if (!namesRetiredProvider(stored)) return choice;
 
   const fresh = await resolveAiChoice(undefined, profile);
   warnOnce(

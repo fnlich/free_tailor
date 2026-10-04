@@ -255,3 +255,45 @@ test('with only the Claude seat locked, the default is the other seat rather tha
   assert.equal(settings.defaultModelId, 'codex-cli-default');
   assert.equal(config.getDefaultEnabledProvider(await config.getAIModelSettings()), 'codex-cli');
 });
+
+test('a call that names no provider runs on the app default once no seat is left', async () => {
+  // The bid assistant names no provider, so every call it makes is rerouted
+  // off the locked seat. A keyless seat still wins when one is left; with both
+  // locked there is none, and catalog order alone put the call on the Anthropic
+  // API while the app default was an OpenAI model - billing a provider nobody
+  // picked, or failing with a sign-in message for a seat that is locked. It
+  // runs on what the settings page shows as the default instead.
+  useTempStorage('lock-raw-default');
+  lockSeat();
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const ai = loadFresh('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+
+  const calls = [];
+  const stub = (id) => () => ({
+    id,
+    capabilities: {
+      id, label: 'stub', temperature: false, maxOutputTokens: false,
+      nativeJsonMode: 'json-schema', systemBlocks: true, requiresApiKey: false,
+      credentialKind: 'api-key', maxConcurrency: 4,
+    },
+    defaultModelName: () => `${id}-own-default`,
+    health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
+    async complete(request) {
+      calls.push({ provider: id, modelName: request.modelName });
+      return { text: '{"ok":true}', resolvedModel: request.modelName, providerId: id, droppedParams: [], latencyMs: 1 };
+    },
+  });
+  for (const id of ['codex-cli', 'claude', 'openai', 'deepseek']) ai.registerAdapter(id, stub(id));
+
+  const expected = await config.resolveRequestedAIModel();
+  assert.equal(expected.provider, 'openai', 'the default with both seats locked');
+  await ai.createRawCompletion({ callSite: 'bid-assistant', system: 'Be brief.', user: 'Hello.' });
+  assert.deepEqual(calls, [{ provider: 'openai', modelName: expected.modelName }]);
+
+  // One seat left: the free seat beats the metered default, on its own model.
+  withLock({ locked: 'claude-cli' });
+  calls.length = 0;
+  await ai.createRawCompletion({ callSite: 'bid-assistant', system: 'Be brief.', user: 'Hello.' });
+  assert.deepEqual(calls, [{ provider: 'codex-cli', modelName: 'codex-cli-own-default' }]);
+});

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m10s, 890 tests)
+npm test                       # backend node:test suite (~20s with the tsc step, 749 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -94,7 +94,8 @@ backend/src/
   controllers/        # one file, the skills handlers routes/resume.ts mounts
   database/           # better-sqlite3, one repository per table
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that
-                      #   defers (003 waits for an admin) stops the ones after
+                      #   defers (003 waits for an admin, 006 for a settings
+                      #   row that does not parse) stops the ones after
                       #   it. Adding a seed model needs a migration - stored
                       #   `aiModels` is read verbatim, never unioned with the
                       #   defaults, so a seed reaches fresh installs only. The
@@ -133,7 +134,7 @@ backend/
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 74 files; fixtures/cli replays real streams
+  test/               # node:test, 70 files; fixtures/cli replays real streams
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
                       #   /orders, /credits (+ /credits/invoice, drawn with no
@@ -223,11 +224,13 @@ unlike `openrouter` in `LEGACY_PROVIDER_ALIASES` they map onto nothing.
 `claude-web-chat`, `chatgpt-web-chat`) in `config/providerCatalog.ts` let a
 stored row, a profile, a prompt override or a stale tab that names them read as
 "the default" instead of throwing, and they are permanent for the reason the
-alias map is: a restored backup, a hand-edited row or `ai:rollback` can bring
-the ids back at any time. Migration 006 strips them from the database once and
-keeps a verbatim settings snapshot; the read-time tolerance has to stand on its
-own, because 006 sits after 003 in the chain and waits with it until an
-administrator exists. A deleted model that was never a browser one is still an
+alias map is: a restored backup, a hand-edited row or a page left open from
+before the upgrade can bring the ids back at any time. Migration 006 strips
+them from the database once and keeps a settings snapshot (minus any stored
+API keys); the read-time tolerance - including the in-memory repair, onto a
+provider not locked here, of a row left with nothing it can run - has to
+stand on its own, because 006 sits after 003 in the chain and waits with it
+until an administrator exists. A deleted model that was never a browser one is still an
 error - do not widen the tolerance to "any unknown id".
 
 Both CLI providers share the spawn seam in `services/ai/providers/cli/`:

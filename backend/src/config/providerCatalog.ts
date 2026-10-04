@@ -284,12 +284,11 @@ export const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, AIProvider>> = Obj
  * override, and a stored preference falls back to the app default.
  *
  * PERMANENT, for the reason the alias map above is. Migration 006 removes them
- * from the database once, but a restored backup, a hand-edited row or
- * `npm run ai:rollback` (which restores a snapshot from before 006 and clears
- * the version stamp) can put them back at any time - and 006 itself sits behind
- * 003 in the migration chain, which waits for the first administrator. Tolerating
- * them on read is what keeps any of those from taking every settings read down
- * with "invalid provider".
+ * from the database once, but a restored backup, a hand-edited row or a page
+ * left open from before the upgrade can put them back at any time - and 006
+ * itself sits behind 003 in the migration chain, which waits for the first
+ * administrator. Tolerating them on read is what keeps any of those from taking
+ * every settings read down with "invalid provider".
  */
 export const RETIRED_PROVIDER_IDS: readonly string[] = Object.freeze(['claude-web', 'chatgpt-web']);
 

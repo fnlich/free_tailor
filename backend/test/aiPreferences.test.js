@@ -3,9 +3,9 @@ const test = require('node:test');
 
 const {
   describeAiChoice,
-  mergeAiPreferences,
   normalizeAiPreferences,
 } = require('../dist/config/aiPreferences');
+const { loadFresh, useTempStorage } = require('./helpers');
 const { buildChildEnv } = require('../dist/services/ai/providers/claudeCli/env');
 const { normalizeProfileSettings } = require('../dist/services/profileService');
 
@@ -34,14 +34,23 @@ test('a profile still storing a dead knob is read without it', () => {
   assert.deepEqual(normalizeAiPreferences({ effort: 'ludicrous', thinking: 'nonsense' }), {});
 });
 
-test('an absent field inherits rather than resetting the layer beneath it', () => {
-  // A later layer that names nothing must not wipe the one beneath it.
-  assert.deepEqual(
-    mergeAiPreferences({ modelId: 'from-profile' }, { modelId: 'from-request' }),
-    { modelId: 'from-request' }
+test('an absent field inherits rather than resetting the layer beneath it', async () => {
+  // Through `resolveAiChoice`, which is where the layers meet: a request that
+  // names nothing must not wipe the profile's choice, and a profile that names
+  // nothing must not wipe the app default.
+  useTempStorage('ai-preferences-inherit');
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const { resolveAiChoice } = loadFresh('../dist/config/aiPreferences');
+  const profile = { profileSettings: { ai: { modelId: 'openai-gpt-5-1' } } };
+
+  assert.equal((await resolveAiChoice({ modelId: 'openai-gpt-5' }, profile)).modelId, 'openai-gpt-5');
+  assert.equal((await resolveAiChoice({}, profile)).modelId, 'openai-gpt-5-1', 'an empty request inherits');
+  assert.equal((await resolveAiChoice(undefined, profile)).modelId, 'openai-gpt-5-1');
+  assert.equal(
+    (await resolveAiChoice({}, { profileSettings: { ai: {} } })).modelId,
+    (await config.getPublicAppSettings()).defaultModelId,
+    'and with neither naming a model, the app default'
   );
-  assert.deepEqual(mergeAiPreferences({ modelId: 'only-a-model' }, {}), { modelId: 'only-a-model' });
-  assert.deepEqual(mergeAiPreferences(undefined, undefined), {});
 });
 
 /**

@@ -174,7 +174,12 @@ const MIGRATIONS: readonly MigrationStep[] = [
     label: 'Browser chat removal',
     apply: (db) => {
       const report = migrate006(db);
-      return { ran: report.ran, notes: report.notes, summary: describeBrowserChatRemoval(report) };
+      return {
+        ran: report.ran,
+        deferred: report.deferred,
+        notes: report.notes,
+        summary: describeBrowserChatRemoval(report),
+      };
     },
   },
 ];
@@ -207,6 +212,12 @@ export function runDataMigrations(db: Database.Database): void {
         }
       }
       if (report.deferred) {
+        // A step that waits on something only the operator can fix says what,
+        // every boot until it is fixed; one that waits for an administrator has
+        // nothing to say here, because the no-administrator warning says it.
+        for (const note of report.notes) {
+          console.warn(`[db] ${migration.label} is waiting: ${note}`);
+        }
         // Not done, and not a failure: it is waiting on something a later boot
         // will have. STOP rather than skip - the version is a single monotonic
         // number, so letting a LATER migration run and write its own higher

@@ -10,6 +10,7 @@ import {
   LOGIN_CODE_TTL_MS,
   markSignedIn,
   normalizeEmail,
+  promoteConfiguredAdmins,
   promoteIfConfiguredAdmin,
   storeLoginCode,
 } from '../../database/userRepository';
@@ -96,6 +97,36 @@ function completeSignIn(input: {
   });
 
   return { token: createSession(account.id), account, created };
+}
+
+/**
+ * The startup promotion, and the migrations that were waiting for it.
+ *
+ * An account named by ADMIN_EMAILS or SMTP_USER that already exists becomes an
+ * administrator here, at boot - which is the moment the migration chain, run a
+ * few lines earlier by `getDb()`, stopped at 003 for want of one. Without
+ * running it again now, the chain would stay stopped for the life of the
+ * process: that administrator signing in later is promoted already, so
+ * `completeSignIn` has no reason to run it either.
+ *
+ * And it must not wait that long. Every later step sits behind 003, and 006
+ * among them has to see the settings row BEFORE an administrator's first save
+ * normalizes the browser chat records out of it: the ids of an administrator's
+ * own browser models are only in those records, and a profile pinned to one is
+ * cleared by 006 only if 006 learned the id. Saved first, the profile would
+ * fail every generation as a model that "was not found".
+ */
+export function applyConfiguredAdmins(): number {
+  const promoted = promoteConfiguredAdmins();
+  if (promoted > 0) {
+    try {
+      runDataMigrations(getDb());
+    } catch (error) {
+      // Never fatal, as on sign-in: the next restart runs them.
+      console.warn('[auth] Could not run the migrations waiting for an administrator.', error);
+    }
+  }
+  return promoted;
 }
 
 export async function signInWithGoogle(idToken: string): Promise<SignInResult> {

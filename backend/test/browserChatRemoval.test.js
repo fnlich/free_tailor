@@ -34,9 +34,10 @@ const {
  *   - Migration 006 removes it from the database, once, with a verbatim
  *     snapshot to come back to.
  *   - Every read path tolerates it without 006, permanently. 006 waits behind
- *     003 for the first administrator, and a restored backup or
- *     `npm run ai:rollback` can put the residue back after it has run - so a
- *     read that threw on it would take the settings page down with it.
+ *     003 for the first administrator, and a restored backup, a hand-edited row
+ *     or a page left open from before the upgrade can put the residue back
+ *     after it has run - so a read that threw on it would take the settings
+ *     page down with it.
  *
  * Raw rows throughout, as in the other migration suites: a test that goes
  * through the validators only proves something about rows that did not need
@@ -477,17 +478,22 @@ test('006 runs once: again, even with the version stamp gone, it changes nothing
   assert.equal(readSettingRaw(dbDir, SNAPSHOT_KEY), original);
 });
 
-test('006 keeps the FIRST snapshot when a rollback brings the residue back', () => {
-  // What `ai:rollback` does: restore a snapshot from before the migration and
-  // clear the stamp. The residue is back, so 006 runs again - and must not
-  // overwrite the original with a row it had already cleaned once.
+test('006 keeps the FIRST snapshot and every log entry when residue comes back', () => {
+  // `ai:rollback` clears the stamp, so 006 runs again - but it restores only
+  // 001's snapshot, which is older than browser chat. What brings residue back
+  // is something written since: a restored backup, or a page left open from
+  // before the upgrade saving a profile. The second run must not overwrite the
+  // original snapshot with a row it had already cleaned once - nor the log,
+  // which is the only record of the profile preferences the FIRST run cleared.
   const { dbDir } = freshStorage('rollback');
   const original = plantSettings(dbDir, browserEraSettings());
   const db = openDb(dbDir);
   try {
+    plantProfile(db, 'p-first', { modelId: 'free-hybrid' });
     migrate006()(db);
     const restored = plantSettings(dbDir, browserEraSettings({ defaultMode: 'generate' }));
     assert.notEqual(restored, original);
+    plantProfile(db, 'p-second', { modelId: 'claude-web-chat' });
 
     assert.equal(migrate006()(db).ran, true, 'the restored residue is removed again');
   } finally {
@@ -495,6 +501,12 @@ test('006 keeps the FIRST snapshot when a rollback brings the residue back', () 
   }
   assert.equal(readSettingRaw(dbDir, SNAPSHOT_KEY), original, 'the snapshot is the row as it was first found');
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY).includes('claude-web'), false);
+
+  const log = JSON.parse(readSettingRaw(dbDir, LOG_KEY));
+  assert.deepEqual(log.clearedProfilePreferences, [{ profileId: 'p-first', modelId: 'free-hybrid' }], 'the first run, kept');
+  assert.equal(log.laterRuns.length, 1, 'the second run, appended');
+  assert.deepEqual(log.laterRuns[0].clearedProfilePreferences, [{ profileId: 'p-second', modelId: 'claude-web-chat' }]);
+  assert.ok(log.laterRuns[0].at);
 });
 
 test('006 on a fresh install finds nothing, and writes nothing', () => {
@@ -512,18 +524,38 @@ test('006 on a fresh install finds nothing, and writes nothing', () => {
   assert.equal(readSettingRaw(dbDir, LOG_KEY), null);
 });
 
-test('006 leaves an unparseable settings row exactly as it found it', () => {
+test('006 leaves an unparseable settings row as it found it, and waits for it to be repaired', () => {
   // `getSetting` throws on invalid JSON so that corruption surfaces. Writing a
-  // repaired row over it would destroy whatever it holds.
+  // repaired row over it would destroy whatever it holds. And running past it
+  // would stamp the version without ever reading the row - so the ids of an
+  // administrator's own browser models, which only that row holds, would never
+  // be learned, and a profile pinned to one would fail once it was repaired.
   const { dbDir } = freshStorage('invalid');
-  writeSettingRaw(dbDir, APP_SETTINGS_KEY, '{ "providersEnabled": { "claude-web": true ');
+  const broken = JSON.stringify(browserEraSettings()) + '#';
+  writeSettingRaw(dbDir, APP_SETTINGS_KEY, broken);
   const db = openDb(dbDir);
   try {
-    migrate006()(db);
+    plantProfile(db, 'p-operator-model', { modelId: OPERATOR_BROWSER_MODEL_ID });
+    const report = migrate006()(db);
+    assert.equal(report.deferred, true);
+    assert.equal(report.ran, false);
+    assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), broken);
+
+    // Through the chain, with an administrator: it stops at 6 unstamped...
+    useAdminEmails('admin@example.com');
+    loadFresh('../dist/database/userRepository').createUser({ email: 'admin@example.com' });
+    loadFresh('../dist/database/migrations/index').runDataMigrations(db);
+    assert.equal(readVersion(dbDir), '5', 'waiting, not done');
+    assert.equal(readRow(db, 'profiles', 'p-operator-model').profileSettings.ai.modelId, OPERATOR_BROWSER_MODEL_ID);
+
+    // ...and runs on the first start after the operator repairs the row.
+    plantSettings(dbDir, browserEraSettings());
+    loadFresh('../dist/database/migrations/index').runDataMigrations(db);
+    assert.equal(readVersion(dbDir), '6');
+    assert.deepEqual(readRow(db, 'profiles', 'p-operator-model').profileSettings.ai, {}, 'the id was learned');
   } finally {
     db.close();
   }
-  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), '{ "providersEnabled": { "claude-web": true ');
 });
 
 test('006 waits behind 003 like the rest of the chain, and runs on the boot after it can', async () => {
@@ -868,4 +900,272 @@ test('a queued choice naming a browser provider is resolved again; any other run
 
   const pinned = { provider: 'codex-cli', modelName: 'default', modelId: 'codex-cli-default', modelLabel: 'Codex' };
   assert.equal(await __currentChoiceForTests(pinned, profile('openai-gpt-5-1')), pinned, 'the same object, untouched');
+});
+
+/* ---------------------------------------------- with a seat locked here */
+
+/**
+ * Runs `fn` with `locked` locked on this machine, the way an operator's .env
+ * would, and puts this file's both-seats-unlocked setting back afterwards.
+ * The lock lists are read on every call, so nothing needs reloading for it.
+ */
+async function withLocks(locked, fn) {
+  const unlocked = process.env.AI_UNLOCKED_PROVIDERS;
+  delete process.env.AI_UNLOCKED_PROVIDERS;
+  process.env.AI_LOCKED_PROVIDERS = locked;
+  try {
+    return await fn();
+  } finally {
+    delete process.env.AI_LOCKED_PROVIDERS;
+    process.env.AI_UNLOCKED_PROVIDERS = unlocked;
+  }
+}
+
+/** What 002 left an install whose Claude seat was locked: the seat, and the browsers. */
+const SEAT_AND_BROWSERS = {
+  'claude-cli': true,
+  'codex-cli': false,
+  claude: false,
+  openai: false,
+  deepseek: false,
+  'claude-web': true,
+  'chatgpt-web': true,
+};
+
+/**
+ * A seat-locked desktop install that ran on the free browser models, with
+ * every other model switched off - which the old build accepted, because the
+ * browser ones were runnable. Every provider is ticked: this is the MODEL check
+ * failing, not the provider one.
+ */
+function browserModelsOnly() {
+  return browserEraSettings({
+    providersEnabled: {
+      'claude-cli': true, 'codex-cli': true, claude: true, openai: true, deepseek: true,
+      'claude-web': true, 'chatgpt-web': true,
+    },
+    aiModels: [
+      model('claude-cli-sonnet', 'claude-cli', 'sonnet'),
+      model('codex-cli-default', 'codex-cli', 'default', { enabled: false }),
+      model('openai-gpt-5-1', 'openai', 'gpt-5.1', { enabled: false }),
+      model('anthropic-sonnet', 'claude', 'claude-sonnet-4-20250514', { enabled: false }),
+      model('claude-web-chat', 'claude-web', 'chat'),
+      model('chatgpt-web-chat', 'chatgpt-web', 'chat'),
+    ],
+  });
+}
+
+test('an install whose only unlocked providers were the browsers still reads, on a provider it can run', async () => {
+  // The locked seat is what pushed these installs onto the browsers. Reading
+  // the seat as "switched on" repaired nothing - it is locked - and every
+  // settings read failed, the admin page that would fix it included.
+  const { dbDir } = freshStorage('lock-provider');
+  const original = plantSettings(dbDir, browserEraSettings({ providersEnabled: SEAT_AND_BROWSERS }));
+
+  await withLocks('claude-cli', async () => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const admin = await config.getAdminAppSettings();
+    assert.equal(admin.providersEnabled['codex-cli'], true, 'the seat that is left, keyless');
+    assert.equal(admin.providersEnabled.openai, false, 'and nothing metered');
+    assert.equal(admin.defaultModelId, 'codex-cli-default');
+    assert.equal((await config.resolveRequestedAIModel()).provider, 'codex-cli');
+  });
+
+  await withLocks('claude-cli,codex-cli', async () => {
+    // No seat left: a metered provider it already has a model for.
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const admin = await config.getAdminAppSettings();
+    assert.equal(admin.providersEnabled.openai, true);
+    assert.equal(admin.defaultModelId, 'openai-gpt-5-1');
+    assert.equal((await config.getPublicAppSettings()).defaultModelId, 'openai-gpt-5-1');
+  });
+
+  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), original, 'repaired in memory only');
+});
+
+test('an install whose only runnable models were the browsers still reads, with a seat locked', async () => {
+  const { dbDir } = freshStorage('lock-models');
+  const original = plantSettings(dbDir, browserModelsOnly());
+
+  await withLocks('claude-cli', async () => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const admin = await config.getAdminAppSettings();
+    assert.equal(admin.aiModels.find((entry) => entry.id === 'codex-cli-default').enabled, true, 'switched back on');
+    assert.equal(admin.defaultModelId, 'codex-cli-default');
+    assert.deepEqual((await config.listAvailableAIModels()).map((entry) => entry.id), ['codex-cli-default']);
+    // The way out through the app works too: every one of these reads first.
+    await config.updateAIModel('openai-gpt-5-1', { enabled: true });
+  });
+
+  plantSettings(dbDir, browserModelsOnly());
+  await withLocks('claude-cli,codex-cli', async () => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const publicSettings = await config.getPublicAppSettings();
+    assert.equal(publicSettings.aiModels.length, 1, 'one metered model of its own, switched back on');
+    assert.equal(publicSettings.aiModels[0].id, 'anthropic-sonnet');
+    assert.equal(publicSettings.defaultModelId, 'anthropic-sonnet');
+  });
+  assert.notEqual(original, null);
+});
+
+test('006 repairs onto a provider this machine can run, and repoints the default to one', async () => {
+  // Lock-blind, it switched on - and stored as the default - the locked seat,
+  // then stamped the version, so nothing looked at the row again.
+  for (const [locked, settings, expected] of [
+    ['claude-cli', browserEraSettings({ providersEnabled: SEAT_AND_BROWSERS }), 'codex-cli-default'],
+    ['claude-cli', browserModelsOnly(), 'codex-cli-default'],
+    ['claude-cli,codex-cli', browserModelsOnly(), 'anthropic-sonnet'],
+  ]) {
+    const { dbDir } = freshStorage(`lock-006-${expected}`);
+    plantSettings(dbDir, settings);
+    await withLocks(locked, async () => {
+      const db = openDb(dbDir);
+      let report;
+      try {
+        report = migrate006()(db);
+      } finally {
+        db.close();
+      }
+      assert.deepEqual(report.repointedDefaultModel, { from: 'claude-web-chat', to: expected }, locked);
+
+      const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
+      assert.equal(stored.defaultModelId, expected);
+      const target = stored.aiModels.find((entry) => entry.id === expected);
+      assert.equal(target.enabled, true, `${expected} is stored switched on`);
+      assert.equal(stored.providersEnabled[target.provider], true, `and so is ${target.provider}`);
+      assert.equal(
+        report.enabledProviders.includes('claude-cli') || report.reenabledModels.includes('claude-cli-sonnet'),
+        false,
+        'the locked seat is never what comes back'
+      );
+
+      // Stored, so the reader has nothing left to repair.
+      const config = loadFresh('../dist/config/aiModelConfig');
+      assert.equal((await config.getAdminAppSettings()).defaultModelId, expected);
+    });
+  }
+});
+
+test('a row the lock-blind 006 already cleaned and stamped still reads', async () => {
+  // Such a row has no residue left to say it ran browser chat; the snapshot 006
+  // kept of it does. And 006 will not run on it again.
+  const { dbDir } = freshStorage('lock-after-old-006');
+  const cleaned = {
+    ...browserEraSettings({
+      providersEnabled: { 'claude-cli': true, 'codex-cli': false, claude: false, openai: false, deepseek: false },
+      defaultModelId: 'claude-cli-sonnet',
+      aiModels: [
+        model('claude-cli-sonnet', 'claude-cli', 'sonnet'),
+        model('codex-cli-default', 'codex-cli', 'default'),
+        model('openai-gpt-5-1', 'openai', 'gpt-5.1'),
+      ],
+    }),
+  };
+  for (const key of ['browserChatEnabled', 'browserChatEndpoints', 'browserChatDebugPort']) delete cleaned[key];
+  plantSettings(dbDir, cleaned);
+  setVersion(dbDir, 6);
+
+  await withLocks('claude-cli', async () => {
+    // Without the snapshot this is an install that never ran browser chat and
+    // whose operator locked the one provider they ticked: that still fails, by
+    // name, pointing at the lock they set - which is where it is undone.
+    await assert.rejects(
+      () => loadFresh('../dist/config/aiModelConfig').getAdminAppSettings(),
+      /unlocked AI provider must remain enabled/
+    );
+
+    writeSettingRaw(dbDir, SNAPSHOT_KEY, JSON.stringify(browserEraSettings({ providersEnabled: SEAT_AND_BROWSERS })));
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const admin = await config.getAdminAppSettings();
+    assert.equal(admin.providersEnabled['codex-cli'], true);
+    assert.equal(admin.defaultModelId, 'codex-cli-default');
+  });
+});
+
+/* ------------------------------------------------- the rest of the upgrade */
+
+test('an administrator promoted at boot gets the waiting migrations before any save can strip the records', async () => {
+  // ADMIN_EMAILS naming an account that already exists makes it an
+  // administrator at boot - after the chain has already stopped at 003 for
+  // want of one. Left stopped, the first admin save normalized the browser
+  // records out of the row, 006 never learned the id of the operator's own
+  // browser model, and a profile pinned to it failed every generation.
+  const { dbDir } = freshStorage('boot-promotion');
+  plantSettings(dbDir, browserEraSettings());
+  const users = loadFresh('../dist/database/userRepository');
+  users.createUser({ email: 'ops@example.com' });
+  const db = openDb(dbDir);
+  try {
+    plantProfile(db, 'p-uuid', { modelId: OPERATOR_BROWSER_MODEL_ID });
+  } finally {
+    db.close();
+  }
+  assert.equal(readVersion(dbDir), '1', 'no administrator yet');
+
+  useAdminEmails('ops@example.com');
+  const { applyConfiguredAdmins } = loadFresh('../dist/services/auth/authService');
+  assert.equal(applyConfiguredAdmins(), 1);
+  assert.equal(readVersion(dbDir), '6', 'the chain ran on promotion, not on the next restart');
+  assert.ok(readSettingRaw(dbDir, SNAPSHOT_KEY), 'with its snapshot');
+
+  // The administrator's first save, then a restart.
+  await loadFresh('../dist/config/aiModelConfig').updateAppSettings({ defaultMode: 'generate' });
+  loadFresh('../dist/config/aiModelConfig');
+  const preferences = loadFresh('../dist/config/aiPreferences');
+  const profile = loadFresh('../dist/database/profileRepository').getProfile('p-uuid');
+  assert.equal(profile.profileSettings.ai.modelId, undefined, '006 cleared it');
+  assert.equal((await preferences.resolveAiChoice(undefined, profile)).modelId, 'claude-cli-sonnet');
+});
+
+test('006 keeps no copy of an API key store the settings reader deletes', async () => {
+  // On a normal boot 006 runs before the first settings read, which is what
+  // deletes the store from the row - so a verbatim snapshot was the one place
+  // the secrets would have survived, for good.
+  const { dbDir } = freshStorage('api-keys');
+  plantSettings(dbDir, browserEraSettings({ apiKeys: { openai: { entries: [{ key: 'sk-REAL-SECRET' }] } } }));
+  const db = openDb(dbDir);
+  let report;
+  try {
+    report = migrate006()(db);
+  } finally {
+    db.close();
+  }
+
+  const snapshot = readSettingRaw(dbDir, SNAPSHOT_KEY);
+  assert.equal(snapshot.includes('sk-REAL-SECRET'), false);
+  assert.equal('apiKeys' in JSON.parse(snapshot), false);
+  assert.deepEqual(JSON.parse(snapshot), browserEraSettings(), 'and everything else as it was');
+  assert.ok(report.notes.some((note) => /API keys/.test(note)), 'which the log says');
+
+  await loadFresh('../dist/config/aiModelConfig').getAdminAppSettings();
+  for (const key of [APP_SETTINGS_KEY, SNAPSHOT_KEY]) {
+    assert.equal(readSettingRaw(dbDir, key).includes('sk-REAL-SECRET'), false, `${key} holds no key`);
+  }
+});
+
+test('a stored default naming a browser model is said once, as the other retired choices are', async () => {
+  const { dbDir } = freshStorage('default-warning');
+  plantSettings(
+    dbDir,
+    browserEraSettings({
+      aiModels: [model('claude-cli-sonnet', 'claude-cli', 'sonnet'), model('openai-gpt-5-1', 'openai', 'gpt-5.1')],
+      defaultModelId: 'free-hybrid',
+    })
+  );
+
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    assert.equal((await config.getPublicAppSettings()).defaultModelId, 'claude-cli-sonnet');
+    config.invalidateSettingsCache();
+    await config.getPublicAppSettings();
+  } finally {
+    console.warn = warn;
+  }
+  const lines = warnings.filter((line) => line.includes('"free-hybrid"'));
+  assert.equal(lines.length, 1, 'once, however many reads');
+  assert.match(lines[0], /stored default model/);
+  assert.match(lines[0], /claude-cli-sonnet/, 'naming what runs instead');
 });

@@ -22,7 +22,14 @@ import {
   type Task,
   type TaskState,
 } from './taskQueue';
-import { makeResumeRunner, RESUME_TASK_KIND, type ResumeJob } from './resumeTask';
+import type { AiChoice } from '../../config/aiPreferences';
+import {
+  currentChoice,
+  makeResumeRunner,
+  namesRetiredProvider,
+  RESUME_TASK_KIND,
+  type ResumeJob,
+} from './resumeTask';
 
 export { TaskQueue, registerTaskRunner, newBatchId, isQueueName, QUEUE_NAMES } from './taskQueue';
 export type {
@@ -248,21 +255,60 @@ export type RestoreReport = {
   pruned: number;
 };
 
+/** The lane `routeFor` gives new work on `provider`: Codex's own, else `cli`. */
+function laneFor(provider: unknown): QueueName {
+  return provider === 'codex-cli' ? 'codex' : 'cli';
+}
+
 /**
  * The lane a restored task goes back in.
  *
  * Its stored lane, when this build has it. Otherwise - a lane from an earlier
  * build (the browser chat providers had one of their own), no lane at all, or
  * anything unrecognisable - the lane is worked out again from the provider the
- * task was resolved to, the way `routeFor` places new work: the Codex seat's
- * lane for Codex, `cli` for everything else. That includes a task whose
- * provider has itself been retired since; the runner resolves it a model again
- * before it starts (see `makeResumeRunner`).
+ * task was resolved to, the way `routeFor` places new work.
  */
 function restoredLane(stored: unknown, payload: unknown): QueueName {
   if (isQueueName(stored)) return stored;
-  const provider = (payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider;
-  return provider === 'codex-cli' ? 'codex' : 'cli';
+  return laneFor((payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider);
+}
+
+/**
+ * The payload of a task that will run, with a choice naming a removed provider
+ * resolved again from its profile - and so the lane it belongs in.
+ *
+ * Done HERE, before the task is placed, rather than only when it starts. The
+ * lane is the provider's resource: placed by the stale provider, a task that
+ * now resolves to the Codex seat would sit in a Claude-seat slot, report that
+ * seat as what it runs on, and queue at the Codex semaphore with its deadline
+ * already running - beside the Codex lane's own work, past the limit the lane
+ * split exists to keep. The fresh choice is written back with the batch, so a
+ * second restart reads it as stored.
+ *
+ * Resolved once per profile, which is what a batch's tasks usually share. A
+ * profile that cannot be read leaves the task as it was: the runner resolves it
+ * again at start, or reports the profile missing, which is its job.
+ */
+async function refreshRetiredChoice(
+  payload: unknown,
+  resolved: Map<string, Promise<AiChoice | null>>
+): Promise<{ payload: unknown; lane: QueueName } | null> {
+  const stored = payload as { profileId?: unknown; choice?: unknown } | null | undefined;
+  if (!stored || typeof stored.profileId !== 'string' || !namesRetiredProvider(stored.choice)) return null;
+  const profileId = stored.profileId;
+  const storedChoice = stored.choice;
+
+  let pending = resolved.get(profileId);
+  if (!pending) {
+    pending = (async () => {
+      const profile = getProfile(profileId);
+      return profile ? currentChoice(storedChoice, profile) : null;
+    })().catch(() => null);
+    resolved.set(profileId, pending);
+  }
+  const choice = await pending;
+  if (!choice) return null;
+  return { payload: { ...stored, choice }, lane: laneFor(choice.provider) };
 }
 
 /**
@@ -286,10 +332,10 @@ function restoredLane(stored: unknown, payload: unknown): QueueName {
  * batches after it too, holding their credits until the reconciler gave up on
  * them hours later.
  *
- * Never throws. A queue that could not be restored must not stop the server from
- * starting - the admin pages are how an operator would find out why.
+ * Never rejects. A queue that could not be restored must not stop the server
+ * from starting - the admin pages are how an operator would find out why.
  */
-export function restoreGenerationQueue(): RestoreReport {
+export async function restoreGenerationQueue(): Promise<RestoreReport> {
   const report: RestoreReport = { batches: 0, requeued: 0, pruned: 0 };
 
   let rows: ReturnType<typeof loadBatchRows>;
@@ -306,6 +352,7 @@ export function restoreGenerationQueue(): RestoreReport {
     return report;
   }
 
+  const resolvedChoices = new Map<string, Promise<AiChoice | null>>();
   for (const row of rows) {
     if (row.state !== 'running') continue;
     if (row.tasks.length === 0) continue;
@@ -323,43 +370,52 @@ export function restoreGenerationQueue(): RestoreReport {
       // restoring only the remainder would shrink its total and drop the
       // finished resumes out of its results.
       let requeued = 0;
-      const entries = [...row.tasks]
-        .sort((a, b) => a.seq - b.seq)
-        .map((task) => {
-          // `data` is whatever the build that wrote it projected, so every field
-          // is read as possibly absent. An earlier build also wrote a list of
-          // chat sites here; it is not read, and the next write drops it.
-          const taskData = task.data as {
-            queue?: unknown;
-            label?: Task['label'];
-            kind?: string;
-            payload?: unknown;
-            value?: unknown;
-            error?: string;
-            attempts?: number;
-          };
-          if (task.state === 'running') requeued += 1;
-          return {
-            id: task.id,
-            seq: task.seq,
-            state: task.state as TaskState,
-            queue: restoredLane(taskData.queue, taskData.payload),
-            label: taskData.label ?? {
-              profileId: '',
-              profileName: 'Unknown',
-              companyName: 'Unknown',
-              role: '',
-            },
-            kind: taskData.kind ?? RESUME_TASK_KIND,
-            payload: taskData.payload,
-            ...(taskData.value !== undefined ? { value: taskData.value } : {}),
-            ...(taskData.error ? { error: taskData.error } : {}),
-            // Carried across the restart, so the attempts already spent still
-            // count against the cap. A task requeued here is on its NEXT go,
-            // not its first.
-            ...(taskData.attempts ? { attempts: taskData.attempts } : {}),
-          };
+      const entries = [];
+      for (const task of [...row.tasks].sort((a, b) => a.seq - b.seq)) {
+        // `data` is whatever the build that wrote it projected, so every field
+        // is read as possibly absent. An earlier build also wrote a list of
+        // chat sites here; it is not read, and the next write drops it.
+        const taskData = task.data as {
+          queue?: unknown;
+          label?: Task['label'];
+          kind?: string;
+          payload?: unknown;
+          value?: unknown;
+          error?: string;
+          attempts?: number;
+        };
+        if (task.state === 'running') requeued += 1;
+        // Only work that will run again needs a model it can run on; a
+        // finished task keeps the choice it was built with. Awaited only for
+        // a choice that needs it, so a restore with none - every one, once the
+        // upgrade's own queue has drained - finishes before any request can
+        // queue work ahead of it, as it did when it was synchronous.
+        const refreshed =
+          (task.state === 'queued' || task.state === 'running') &&
+          namesRetiredProvider((taskData.payload as { choice?: unknown } | null | undefined)?.choice)
+            ? await refreshRetiredChoice(taskData.payload, resolvedChoices)
+            : null;
+        entries.push({
+          id: task.id,
+          seq: task.seq,
+          state: task.state as TaskState,
+          queue: refreshed ? refreshed.lane : restoredLane(taskData.queue, taskData.payload),
+          label: taskData.label ?? {
+            profileId: '',
+            profileName: 'Unknown',
+            companyName: 'Unknown',
+            role: '',
+          },
+          kind: taskData.kind ?? RESUME_TASK_KIND,
+          payload: refreshed ? refreshed.payload : taskData.payload,
+          ...(taskData.value !== undefined ? { value: taskData.value } : {}),
+          ...(taskData.error ? { error: taskData.error } : {}),
+          // Carried across the restart, so the attempts already spent still
+          // count against the cap. A task requeued here is on its NEXT go,
+          // not its first.
+          ...(taskData.attempts ? { attempts: taskData.attempts } : {}),
         });
+      }
 
       // Restored under its OWN id, so the payloads still point at the right
       // batch for their jobs and the rows on disk stay the rows for this batch.
