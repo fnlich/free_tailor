@@ -693,7 +693,7 @@ export default function JobsPage() {
                     already there, and jobs already in the tab are skipped.
                   </>
                 ) : (
-                  'Rows go to your own job sheet, on today\'s tab. Open the account page if you want to see it.'
+                  'Rows go to your own job sheet, on today\'s tab. Settings > Job Sheet has the link if you want to see it.'
                 )}
               </div>
             ) : (

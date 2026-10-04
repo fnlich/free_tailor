@@ -210,6 +210,15 @@ export function isPaymentPending(payment: Payment): boolean {
   return payment.state === 'pending';
 }
 
+/**
+ * True once money moved and credits landed - including a payment since
+ * refunded, which was still paid for. What an invoice can be issued for, and
+ * when a "credits received" figure means anything.
+ */
+export function isPaymentSettled(payment: Payment): boolean {
+  return payment.state === 'paid' || payment.state === 'refunding' || payment.state === 'refunded';
+}
+
 /** What may be asked for. A count, never an amount. */
 export type CheckoutRequest = {
   method: PaymentMethod;
@@ -242,10 +251,13 @@ export const paymentsApi = {
    * `total` is what lets the page say how many it is not showing. The
    * parameters are optional at the API, so an older tab that sends neither
    * keeps getting the newest 50 exactly as it did.
+   *
+   * `method` narrows both the rows and `total` to card or crypto. Left out,
+   * the list spans both.
    */
-  list: (offset = 0, limit = 0) =>
+  list: (offset = 0, limit = 0, method?: PaymentMethod) =>
     apiFetch<{ payments: Payment[]; total: number; offset: number }>(
-      `/payments?offset=${offset}${limit ? `&limit=${limit}` : ''}`
+      `/payments?offset=${offset}${limit ? `&limit=${limit}` : ''}${method ? `&method=${method}` : ''}`
     ),
   get: (id: string) =>
     apiFetch<{ payment: Payment }>(`/payments/${id}`),

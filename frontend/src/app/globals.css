@@ -718,21 +718,43 @@ html.dark .shadow-2xl {
   color: var(--accent-ink);
 }
 
-/* Between two groups of tabs - Settings' own, and the administrator's. */
-.tl-tabs-group {
+/*
+ * The second level under one tab - the installation's pages under
+ * Administration. Smaller and unruled, lit by colour and a soft wash, so it
+ * reads as belonging to the tab above rather than as a rival row of tabs.
+ */
+.tl-subtabs {
   display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.tl-subtabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tl-subtab {
   flex: 0 0 auto;
-  align-items: center;
-  gap: 0.5rem;
-  padding-left: 1.5rem;
-  border-left: 1px solid var(--line-subtle);
-  margin-block: 0.75rem 0.875rem;
-  color: var(--text-subtle);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 500;
   white-space: nowrap;
+}
+
+.tl-subtab:hover {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+
+.tl-subtab[data-active='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
 }
 
 /*
@@ -1001,11 +1023,16 @@ html.dark .shadow-2xl {
     width: var(--tl-drawer-w);
     transform: translateX(-100%);
     transition: transform 180ms ease;
-    box-shadow: 0 18px 48px rgba(2, 6, 23, 0.28);
   }
 
+  /*
+   * The shadow only while it is open. A drawer parked off the left edge still
+   * casts one, and a 48px blur reaches back onto the screen as a grey smear
+   * down the page's left side.
+   */
   .tl-shell[data-drawer='open'] .tl-sidebar {
     transform: none;
+    box-shadow: 0 18px 48px rgba(2, 6, 23, 0.28);
   }
 }
 

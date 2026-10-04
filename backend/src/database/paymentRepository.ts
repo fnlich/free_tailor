@@ -241,22 +241,52 @@ export function getPaymentByProviderRef(provider: PaymentProvider, providerRef: 
  * `listAllPayments` below: `created_at` is a second-resolution string, so
  * without it two payments made in the same second can swap places between two
  * requests, and one of them is returned on neither page.
+ *
+ * `method` narrows it to card or crypto, the credits page's two order tabs.
  */
-export function listPaymentsForUser(userId: string, limit = 50, offset = 0): Payment[] {
-  const rows = getDb()
-    .prepare(
-      `SELECT ${PAYMENT_COLUMNS} FROM payments
-       WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
-    )
-    .all(userId, limit, offset) as PaymentRow[];
+export function listPaymentsForUser(
+  userId: string,
+  limit = 50,
+  offset = 0,
+  method?: PaymentMethod
+): Payment[] {
+  /*
+   * Two fixed statements rather than one with a clause spliced in. `method` is
+   * bound either way; keeping the SQL text constant means there is no string
+   * here a future caller could widen into something that is not a parameter.
+   */
+  const rows = (
+    method
+      ? getDb()
+          .prepare(
+            `SELECT ${PAYMENT_COLUMNS} FROM payments
+             WHERE user_id = ? AND method = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
+          )
+          .all(userId, method, limit, offset)
+      : getDb()
+          .prepare(
+            `SELECT ${PAYMENT_COLUMNS} FROM payments
+             WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
+          )
+          .all(userId, limit, offset)
+  ) as PaymentRow[];
   return rows.map(toPayment);
 }
 
-/** How many that account has, so a page can say what it is not showing. */
-export function countPaymentsForUser(userId: string): number {
-  const row = getDb()
-    .prepare('SELECT COUNT(*) AS total FROM payments WHERE user_id = ?')
-    .get(userId) as { total: number };
+/**
+ * How many that account has, so a page can say what it is not showing.
+ *
+ * Filtered exactly as the list is, or "1-10 of 23" counts card payments under
+ * a table that only shows crypto ones.
+ */
+export function countPaymentsForUser(userId: string, method?: PaymentMethod): number {
+  const row = (
+    method
+      ? getDb()
+          .prepare('SELECT COUNT(*) AS total FROM payments WHERE user_id = ? AND method = ?')
+          .get(userId, method)
+      : getDb().prepare('SELECT COUNT(*) AS total FROM payments WHERE user_id = ?').get(userId)
+  ) as { total: number };
   return row.total;
 }
 

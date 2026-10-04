@@ -628,6 +628,12 @@ async function main() {
         a.textContent.trim()
       ),
       active: document.querySelector('nav.tl-tabs[aria-label="Settings"] .tl-tab[data-active="true"]')?.textContent.trim(),
+      subtabs: Array.from(document.querySelectorAll('nav.tl-subtabs[aria-label="Administration"] .tl-subtab')).map((a) =>
+        a.textContent.trim()
+      ),
+      subActive: document
+        .querySelector('nav.tl-subtabs[aria-label="Administration"] .tl-subtab[data-active="true"]')
+        ?.textContent.trim(),
       settingsRowLit: Boolean(
         Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item[data-active="true"]')).find(
           (a) => a.textContent.trim() === 'Settings'
@@ -635,13 +641,28 @@ async function main() {
       ),
     }));
     check('admin /admin/prompts: the settings tabs are shown', onSettings.subnav);
+    /*
+     * Two levels. One row of all thirteen ran off the end of a 1440px window
+     * with four of them out of sight, so the installation's pages are a second
+     * row under one Administration tab.
+     */
     check(
-      "admin: the account's tabs, then the installation's",
-      onSettings.tabs.slice(0, 5).join(' / ') === 'Profile / Job Sheet / Payment Methods / Plan / General' &&
-        onSettings.tabs.includes('Accounts'),
+      "admin: the account's four tabs, then Administration",
+      onSettings.tabs.join(' / ') === 'Profile / Job Sheet / Payment Methods / Plan / Administration',
       onSettings.tabs.join(', ')
     );
-    check('admin /admin/prompts: Prompts is the active tab', onSettings.active === 'Prompts', String(onSettings.active));
+    check('admin /admin/prompts: Administration is the lit tab', onSettings.active === 'Administration', String(onSettings.active));
+    check(
+      "admin /admin/prompts: the installation's pages are the second row, Accounts among them",
+      onSettings.subtabs[0] === 'General' && onSettings.subtabs.includes('Accounts') && onSettings.subtabs.includes('Prompt Test'),
+      onSettings.subtabs.join(', ')
+    );
+    check('admin /admin/prompts: Prompts is the lit page', onSettings.subActive === 'Prompts', String(onSettings.subActive));
+    const allVisible = await adminPage.evaluate(() => {
+      const row = document.querySelector('nav.tl-subtabs[aria-label="Administration"]');
+      return Boolean(row) && row.scrollWidth <= row.clientWidth + 1;
+    });
+    check('admin wide: every Administration page is on screen without scrolling the row', allVisible);
     check('admin /admin/prompts: the Settings sidebar row stays lit', onSettings.settingsRowLit);
 
     await adminPage.goto(`${APP}/orders`, { waitUntil: 'networkidle2' });

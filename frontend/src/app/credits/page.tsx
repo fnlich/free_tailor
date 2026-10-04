@@ -1,23 +1,26 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
-import CreditLedger from '@/components/CreditLedger';
-import Paginator, { PAGE_SIZES, type PageState } from '@/components/Paginator';
+import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import BuyCreditsDialog from '@/components/credits/BuyCreditsDialog';
-import { PRIMARY } from '@/components/credits/chrome';
-import { creditsApi, type CreditStatus, type LedgerEntry } from '@/lib/credits';
-import {
-  formatAmount,
-  paymentsApi,
-  STATE_LABELS,
-  STATE_STYLES,
-  type Payment,
-  type PaymentOptions,
-} from '@/lib/payments';
-import { formatDate } from '@/lib/format';
-import { CARD, LABEL } from '@/components/pageChrome';
+import CreditHistory from '@/components/credits/CreditHistory';
+import OrderHistory from '@/components/credits/OrderHistory';
+import styles from '@/components/credits/history.module.css';
+import { creditsApi, type CreditStatus } from '@/lib/credits';
+import { paymentsApi, type PaymentOptions } from '@/lib/payments';
+
+type Tab = 'card' | 'crypto' | 'history';
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'card', label: 'Card' },
+  { id: 'crypto', label: 'Crypto' },
+  { id: 'history', label: 'Credit History' },
+];
+
+/** Anything the page does not recognise is the default tab, not an error. */
+function readTab(value: string | null | undefined): Tab {
+  return value === 'crypto' || value === 'history' ? value : 'card';
+}
 
 /**
  * The balance, what has been bought, and a button that opens the purchase.
@@ -26,102 +29,33 @@ import { CARD, LABEL } from '@/components/pageChrome';
  * apply to it are known before an amount is typed. This page is the account's
  * own record and nothing else.
  */
-export default function BuyCreditsPage() {
+function CreditsBody() {
+  const router = useRouter();
   const search = useSearchParams();
   const cancelled = search?.get('cancelled');
+  /*
+   * The tab lives in the URL and only there, so a link to ?tab=history lands
+   * on it, and so does following one while already on this page - local state
+   * initialised from the URL would miss the second case and show one tab under
+   * an address that names another.
+   */
+  const tab = readTab(search?.get('tab'));
 
   const [options, setOptions] = useState<PaymentOptions | null>(null);
   const [status, setStatus] = useState<CreditStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [buying, setBuying] = useState(false);
-
   /*
-   * The two histories page themselves, and they do it SEPARATELY. One loader
-   * for all four requests would mean pressing Older on the payment list
-   * refetched the payment options and blanked the balance - the one number
-   * somebody came here for.
+   * Bumped when the purchase dialog closes, which sends the visible list back
+   * to its first page and reloads it - see `usePagedList`. The histories page
+   * themselves, SEPARATELY from this: one loader for everything would mean
+   * pressing Next on the order list refetched the payment options and blanked
+   * the balance, the one number somebody came here for.
    */
-  /*
-   * `page` is what was ASKED FOR; `shown` is what the rows on screen are.
-   *
-   * A page request that fails leaves the rows alone on purpose - see the
-   * loaders below - but the request state has already moved. Feeding the
-   * paginator from THAT puts rows 1-5 on screen under "6-10 of 12 payments",
-   * with both buttons live off an offset no row corresponds to. `shown` comes
-   * from the server's own `offset`, so the sentence always describes the list.
-   */
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [paymentPage, setPaymentPage] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
-  const [paymentShown, setPaymentShown] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
-  const [paymentTotal, setPaymentTotal] = useState(0);
-  const [paymentFailed, setPaymentFailed] = useState(false);
+  const [epoch, setEpoch] = useState(0);
 
-  const [ledger, setLedger] = useState<LedgerEntry[]>([]);
-  const [ledgerPage, setLedgerPage] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
-  const [ledgerShown, setLedgerShown] = useState<PageState>({ offset: 0, pageSize: PAGE_SIZES[0] });
-  const [ledgerTotal, setLedgerTotal] = useState(0);
-  const [ledgerFailed, setLedgerFailed] = useState(false);
-
-  /*
-   * One guard token per list, not one for the page.
-   *
-   * Each of these is its own race: pressing Older twice quickly leaves two
-   * requests in flight and the slower one must not win. A single shared token
-   * would also let a ledger request cancel a payments one, which is a list
-   * that silently stops updating.
-   */
   const latestRequest = useRef(0);
-  const latestPayments = useRef(0);
-  const latestLedger = useRef(0);
-
-  const loadPayments = useCallback(async (page: PageState) => {
-    const token = ++latestPayments.current;
-    try {
-      const response = await paymentsApi.list(page.offset, page.pageSize);
-      if (token !== latestPayments.current) return;
-      setPayments(response.payments);
-      // The server's own offset, not the one that was asked for. They agree
-      // unless it clamped something, and its answer is the one that describes
-      // the rows it sent.
-      setPaymentShown({
-        offset: typeof response.offset === 'number' ? response.offset : page.offset,
-        pageSize: page.pageSize,
-      });
-      setPaymentFailed(false);
-      // Guarded, so an older server that does not send it cannot zero the
-      // count and take the controls off the screen.
-      if (typeof response.total === 'number') setPaymentTotal(response.total);
-    } catch {
-      /*
-       * The rows are left as they were, deliberately: a failed page is not an
-       * empty history, and replacing them with nothing would say it was. What
-       * is NOT left alone is the claim that a press did something - `shown`
-       * still describes these rows, and the line below says why they did not
-       * move.
-       */
-      if (token === latestPayments.current) setPaymentFailed(true);
-    }
-  }, []);
-
-  const loadLedger = useCallback(async (page: PageState) => {
-    const token = ++latestLedger.current;
-    try {
-      const response = await creditsApi.ledger(page.offset, page.pageSize);
-      if (token !== latestLedger.current) return;
-      setLedger(response.entries);
-      setLedgerShown({
-        offset: typeof response.offset === 'number' ? response.offset : page.offset,
-        pageSize: page.pageSize,
-      });
-      setLedgerFailed(false);
-      if (typeof response.total === 'number') setLedgerTotal(response.total);
-    } catch {
-      /* As above. */
-      if (token === latestLedger.current) setLedgerFailed(true);
-    }
-  }, []);
-
   const load = useCallback(async () => {
     const token = ++latestRequest.current;
     try {
@@ -135,6 +69,7 @@ export default function BuyCreditsPage() {
 
       if (optionsResult.status === 'fulfilled') {
         setOptions(optionsResult.value);
+        setError('');
       } else {
         setError('Could not load the payment options.');
       }
@@ -148,223 +83,199 @@ export default function BuyCreditsPage() {
     void load();
   }, [load]);
 
-  useEffect(() => {
-    void loadPayments(paymentPage);
-  }, [loadPayments, paymentPage]);
+  const selectTab = useCallback(
+    (next: Tab) => {
+      // Every other parameter is kept; only `tab` is this control's to change.
+      const params = new URLSearchParams(search?.toString() ?? '');
+      if (next === 'card') params.delete('tab');
+      else params.set('tab', next);
+      const query = params.toString();
+      router.replace(query ? `/credits?${query}` : '/credits', { scroll: false });
+    },
+    [router, search]
+  );
 
-  useEffect(() => {
-    void loadLedger(ledgerPage);
-  }, [loadLedger, ledgerPage]);
+  // Arrow keys move along the row, as the ARIA tabs pattern expects.
+  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
+  const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = -1;
+    if (event.key === 'ArrowRight') next = (index + 1) % TABS.length;
+    else if (event.key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = TABS.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    tabRefs.current.get(TABS[next].id)?.focus();
+    selectTab(TABS[next].id);
+  };
 
   const anyMethod = options?.targets.some((target) => target.available) ?? false;
+  const purchaseBlocked = loading
+    ? 'Loading the payment options.'
+    : !options
+      ? 'The payment options could not be loaded.'
+      : !anyMethod
+        ? 'No payment method is set up on this installation yet.'
+        : '';
 
-  /*
-   * Wider only once there is room for two columns, and `xl` rather than `lg`.
-   *
-   * At `max-w-3xl` throughout, a 1440px window put two histories in a 768px
-   * column with half the screen empty beside them. But the split cannot happen
-   * at `lg`: the rail takes 240px of the window, so a 1024px screen leaves a
-   * 784px well and two 347px columns - narrow enough that every payment row
-   * wraps its status pill onto a second line. Measured at 1280 the columns are
-   * about 490px and the rows sit on one line, which is where the split earns
-   * itself. Below that it stays one column and the rows stay readable.
-   *
-   * The balance card above needs no change of its own: it is already
-   * `flex-wrap items-end justify-between`, so it reads correctly at any width.
-   */
   return (
-    <main className="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6 lg:px-8 xl:max-w-6xl">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Buy credits</h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-          One credit builds one resume. Previews are always free.
-        </p>
+    <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-center gap-x-10 gap-y-5">
+        <h1 className="text-3xl font-bold tracking-tight text-ink">Credits</h1>
+
+        {/* `border-l-4` is not one of the shim's names; the bare `border-l` is. */}
+        <div className="border-l-4 border-coin pl-4">
+          <p className="text-sm text-ink">Current Balance</p>
+          {loading ? (
+            <div className="mt-1 h-7 w-16 animate-pulse rounded bg-surface-muted" role="status" aria-label="Loading balance" />
+          ) : (
+            <p className="text-xl font-semibold tracking-wide text-ink tabular-nums">
+              {/* Unknown is not zero: a balance that failed to load says so. */}
+              {status ? status.balance : '—'}
+            </p>
+          )}
+          {status && status.held > 0 && (
+            <p className="mt-0.5 text-xs text-muted">{status.held} held by a run in progress.</p>
+          )}
+        </div>
+
+        <div className="ml-auto">
+          {/*
+            Always on screen, disabled with the reason when it cannot work. The
+            reason for the operator - which keys are missing - is in the card
+            below; the title is the short form for whoever hovers here.
+          */}
+          <button
+            type="button"
+            className="tl-button"
+            data-shape="pill"
+            onClick={() => setBuying(true)}
+            disabled={Boolean(purchaseBlocked)}
+            title={purchaseBlocked || undefined}
+          >
+            Purchase Credits
+          </button>
+        </div>
       </div>
 
-      {cancelled && (
-        <div className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700">
-          That payment was cancelled. Nothing was charged.
-        </div>
-      )}
+      <div className="mt-6 space-y-3 empty:hidden">
+        {cancelled && (
+          <p className="rounded-lg bg-accent-soft px-4 py-3 text-sm text-accent-ink">
+            That payment was cancelled. Nothing was charged.
+          </p>
+        )}
 
-      {error && (
-        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-      )}
+        {error && (
+          <p className={styles.notice} data-tone="error" role="alert">
+            {error}
+          </p>
+        )}
 
-      {loading ? (
-        <div className={CARD}>
-          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-        </div>
-      ) : (
-        <>
-          <div className={CARD}>
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <div className={LABEL}>Your balance</div>
-                <div className="mt-1 text-3xl font-semibold text-gray-900 dark:text-white">
-                  {status?.balance ?? 0}
-                </div>
-                {status && status.held > 0 && (
-                  <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-                    {status.held} held by a run in progress.
-                  </p>
-                )}
-              </div>
-              {anyMethod && options && (
-                <button type="button" onClick={() => setBuying(true)} className={PRIMARY}>
-                  Buy credits
-                </button>
-              )}
-            </div>
-            {status?.exempt && (
-              <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700">
-                Administrators do not spend credits, so you do not need to buy any.
-              </p>
-            )}
+        {status?.exempt && (
+          <p className="rounded-lg bg-accent-soft px-4 py-3 text-sm text-accent-ink">
+            Administrators do not spend credits, so you do not need to buy any.
+          </p>
+        )}
+
+        {/*
+          Only once the options have actually arrived. When they failed to load
+          the error above says so, and "this installation cannot take payments"
+          would be a claim nobody checked.
+        */}
+        {options && !anyMethod && (
+          <div className={styles.box}>
+            <p className="text-lg font-semibold text-ink">No payment method is set up</p>
+            <p className="mt-2 text-sm text-muted">
+              This installation cannot take payments yet. An administrator can turn one on:
+            </p>
+            <ul className="mt-3 space-y-1 text-sm text-muted">
+              {options.methods.map((entry) => (
+                <li key={entry.method}>
+                  <span className="font-medium text-ink">{entry.label}</span> &mdash; {entry.reason}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-sm text-muted">
+              Until then, an administrator can add credits to your account directly.
+            </p>
           </div>
+        )}
+      </div>
 
-          {!anyMethod && (
-            <div className={CARD}>
-              <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                No payment method is set up
-              </p>
-              <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
-                This installation cannot take payments yet. An administrator can turn one on:
-              </p>
-              <ul className="mt-3 space-y-1 text-sm text-gray-600 dark:text-slate-300">
-                {options?.methods.map((entry) => (
-                  <li key={entry.method}>
-                    <span className="font-medium">{entry.label}</span> &mdash; {entry.reason}
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-3 text-sm text-gray-600 dark:text-slate-300">
-                Until then, an administrator can add credits to your account directly.
-              </p>
-            </div>
-          )}
-
-          {/*
-            Side by side once there is room, stacked below it.
-
-            `items-start` so a short column does not stretch to the height of a
-            tall one - with both lists on the same page size they are usually
-            level, but a run of long notes in the ledger makes them differ and a
-            stretched card is a card with empty space inside its border.
-          */}
-          <div className="grid items-start gap-6 xl:grid-cols-2">
-            {/*
-              Rendered whether or not there is anything in it, where it used to
-              appear only once a payment existed. A card that comes and goes
-              takes its own paging controls with it and drops the grid to one
-              column - and an account with no payments yet is worth saying out
-              loud rather than leaving a gap where an explanation should be.
-            */}
-            <div className={CARD}>
-              <h2 className="text-base font-semibold text-gray-900 dark:text-white">Payment history</h2>
-              {payments.length === 0 ? (
-                <p className="mt-3 text-sm text-gray-600 dark:text-slate-300">
-                  No payments yet. Anything you buy will be listed here, with a link to the order.
-                </p>
-              ) : (
-              <ul className="mt-3 divide-y divide-gray-200 dark:divide-slate-800">
-                {payments.map((payment) => (
-                  <li key={payment.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                    <div>
-                      <Link
-                        href={`/credits/return?payment=${payment.id}`}
-                        className="font-mono text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-                      >
-                        {payment.reference}
-                      </Link>
-                      <p className="text-xs text-gray-500 dark:text-slate-400">
-                        {/*
-                          What was GRANTED, falling back to what was quoted for
-                          every row written before a fee could reduce it. The
-                          two differ only when a fee was taken, and showing the
-                          quote there would credit the account, on screen, with
-                          credits it never received.
-                        */}
-                        {payment.creditsGranted || payment.credits} credits &middot;{' '}
-                        {formatAmount(payment.amountCents, payment.currency)} &middot;{' '}
-                        {formatDate(payment.createdAt)}
-                      </p>
-                    </div>
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-semibold ${STATE_STYLES[payment.state]}`}
-                    >
-                      {STATE_LABELS[payment.state]}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              )}
-              {paymentFailed && (
-                <p className="mt-3 text-xs text-amber-700 dark:text-amber-300" role="status">
-                  That page could not be loaded, so these are the rows from before.
-                </p>
-              )}
-              <Paginator
-                total={paymentTotal}
-                offset={paymentShown.offset}
-                pageSize={paymentShown.pageSize}
-                noun="payments"
-                onChange={setPaymentPage}
-              />
-            </div>
-
-            <div className={CARD}>
-              <h2 className="text-base font-semibold text-gray-900 dark:text-white">Credit history</h2>
-              <div className="mt-3">
-                <CreditLedger entries={ledger} />
-              </div>
-              {ledgerFailed && (
-                <p className="mt-3 text-xs text-amber-700 dark:text-amber-300" role="status">
-                  That page could not be loaded, so these are the rows from before.
-                </p>
-              )}
-              <Paginator
-                total={ledgerTotal}
-                offset={ledgerShown.offset}
-                pageSize={ledgerShown.pageSize}
-                noun="movements"
-                onChange={setLedgerPage}
-              />
-            </div>
-          </div>
-
-          {/*
-            Mounted only while it is open, so the wizard's state - which step,
-            which method, how many credits, which order is open at the provider
-            - resets by unmounting rather than by a reset action somebody has to
-            remember to dispatch on the second purchase.
-          */}
-          {buying && options && (
-            <BuyCreditsDialog
-              options={options}
-              onClose={() => {
-                setBuying(false);
-                /*
-                 * The page's own panels, which the auth refresh does not
-                 * cover: YOUR BALANCE and the credit history are loaded here
-                 * once on mount, so after a purchase they kept showing the
-                 * pre-purchase figures until a full reload.
-                 *
-                 * Back to the first page of both, not a refresh in place. The
-                 * row a buyer wants to see is the one they just made, and it
-                 * is at the top - refreshing page three would leave them
-                 * looking at last month with a new balance above it. Setting
-                 * the state to a fresh object re-runs the loader even when
-                 * the offset was already zero, which is the case that matters.
-                 */
-                void load();
-                setPaymentPage((page) => ({ offset: 0, pageSize: page.pageSize }));
-                setLedgerPage((page) => ({ offset: 0, pageSize: page.pageSize }));
+      <div role="tablist" aria-label="Credits" className="tl-tabs mt-8">
+        {TABS.map((entry, index) => {
+          const active = entry.id === tab;
+          return (
+            <button
+              key={entry.id}
+              ref={(node) => {
+                if (node) tabRefs.current.set(entry.id, node);
+                else tabRefs.current.delete(entry.id);
               }}
-            />
-          )}
-        </>
+              type="button"
+              role="tab"
+              id={`credits-tab-${entry.id}`}
+              aria-selected={active}
+              aria-controls="credits-panel"
+              tabIndex={active ? 0 : -1}
+              data-active={active}
+              className="tl-tab"
+              onClick={() => selectTab(entry.id)}
+              onKeyDown={(event) => onTabKey(event, index)}
+            >
+              {entry.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/*
+        Only the active tab's list is mounted, so only it loads. Keyed on the
+        tab, so switching starts the other list fresh on its first page.
+      */}
+      <div id="credits-panel" role="tabpanel" aria-labelledby={`credits-tab-${tab}`} className="mt-8">
+        {tab === 'history' ? (
+          <CreditHistory key="history" epoch={epoch} />
+        ) : (
+          <OrderHistory key={tab} method={tab} epoch={epoch} />
+        )}
+      </div>
+
+      {/*
+        Mounted only while it is open, so the wizard's state - which step,
+        which method, how many credits, which order is open at the provider -
+        resets by unmounting rather than by a reset action somebody has to
+        remember to dispatch on the second purchase.
+      */}
+      {buying && options && (
+        <BuyCreditsDialog
+          options={options}
+          onClose={() => {
+            setBuying(false);
+            /*
+             * The page's own panels, which the auth refresh does not cover: the
+             * balance and the histories are loaded here, so after a purchase
+             * they kept showing the pre-purchase figures until a full reload.
+             *
+             * Back to the first page, not a refresh in place. The row a buyer
+             * wants to see is the one they just made, and it is at the top -
+             * refreshing page three would leave them looking at last month
+             * with a new balance above it.
+             */
+            void load();
+            setEpoch((value) => value + 1);
+          }}
+        />
       )}
     </main>
+  );
+}
+
+export default function CreditsPage() {
+  return (
+    // `useSearchParams` needs a Suspense boundary to prerender.
+    <Suspense fallback={<main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8" />}>
+      <CreditsBody />
+    </Suspense>
   );
 }

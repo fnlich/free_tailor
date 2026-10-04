@@ -447,7 +447,7 @@ export async function resolveAddressableSheet(
   if (!asked) {
     if (!own) {
       throw new SheetAccessError(
-        'Your job sheet is not ready yet. Open the account page to finish setting it up.',
+        'Your job sheet is not ready yet. Open Settings > Job Sheet to finish setting it up.',
         503
       );
     }

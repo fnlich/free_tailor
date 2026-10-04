@@ -286,7 +286,7 @@ export default function Home() {
   const sheetImportNotice =
     accountSheet && !accountSheet.configured
       ? accountSheet.message ?? 'Google Sheets is not set up on this server yet.'
-      : 'Your job sheet is not ready yet. Open the Account page and try again.';
+      : 'Your job sheet is not ready yet. Open Settings > Job Sheet and try again.';
   const selectedSheetsProfileName = sheetsTargetMode === 'single'
     ? profiles.find((profile) => profile.id === selectedSheetsProfileId)?.name ?? ''
     : '';

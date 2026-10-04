@@ -101,7 +101,7 @@ async function serve() {
      * makes possible and that a real installation hits every time two people
      * buy at once.
      */
-    seedPayments: (userId, count) => {
+    seedPayments: (userId, count, method = 'card') => {
       const made = [];
       for (let index = 0; index < count; index += 1) {
         const at = new Date(Date.UTC(2026, 0, 1, 12, Math.floor(index / PER_SECOND)));
@@ -109,8 +109,8 @@ async function serve() {
           payments.createPayment(
             {
               userId,
-              method: 'card',
-              provider: 'stripe',
+              method,
+              provider: method === 'crypto' ? 'cryptomus' : 'stripe',
               credits: 10,
               amountCents: 500,
               currency: 'usd',
@@ -291,6 +291,109 @@ test('an offset is not a way around whose payments these are', async () => {
     // And walking off the end of your own list does not walk into theirs.
     const past = await server.get('/api/payments?limit=5&offset=6', server.bobToken);
     assert.deepEqual(past.body.payments, []);
+  } finally {
+    server.close();
+  }
+});
+
+/* ------------------------------------------------------- filter by method */
+
+/*
+ * The credits page shows card and crypto orders on separate tabs, each with
+ * its own "1-10 of N". So the filter has to narrow the count as well as the
+ * page - a total taken over both methods would put pages of nothing at the end
+ * of the shorter tab.
+ */
+
+test('method=card answers card payments only, and counts only those', async () => {
+  const server = await serve();
+  try {
+    const cards = server.seedPayments(server.alice.id, 7, 'card');
+    server.seedPayments(server.alice.id, 4, 'crypto');
+
+    const page = await server.get('/api/payments?method=card&limit=5&offset=0');
+    assert.equal(page.status, 200);
+    assert.equal(page.body.payments.length, 5);
+    assert.ok(page.body.payments.every((payment) => payment.method === 'card'));
+    assert.equal(page.body.total, 7, 'the count includes the other method');
+
+    const rest = await server.get('/api/payments?method=card&limit=5&offset=5');
+    assert.equal(rest.body.payments.length, 2, 'the short last page of card payments');
+    assert.deepEqual(
+      [...page.body.payments, ...rest.body.payments].map((payment) => payment.id).sort(),
+      cards.map((payment) => payment.id).sort()
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('method=crypto answers crypto payments only, and counts only those', async () => {
+  const server = await serve();
+  try {
+    server.seedPayments(server.alice.id, 7, 'card');
+    const coins = server.seedPayments(server.alice.id, 4, 'crypto');
+
+    const page = await server.get('/api/payments?method=crypto&limit=10');
+    assert.equal(page.status, 200);
+    assert.equal(page.body.total, 4);
+    assert.deepEqual(
+      page.body.payments.map((payment) => payment.id).sort(),
+      coins.map((payment) => payment.id).sort()
+    );
+    assert.ok(page.body.payments.every((payment) => payment.method === 'crypto'));
+  } finally {
+    server.close();
+  }
+});
+
+test('the filter is still scoped to the account asking', async () => {
+  const server = await serve();
+  try {
+    server.seedPayments(server.alice.id, 3, 'crypto');
+    server.seedPayments(server.bob.id, 2, 'crypto');
+
+    const bobs = await server.get('/api/payments?method=crypto&limit=100', server.bobToken);
+    assert.equal(bobs.body.total, 2, "the count is this account's crypto payments, not the table's");
+    assert.ok(bobs.body.payments.every((payment) => payment.userId === server.bob.id));
+  } finally {
+    server.close();
+  }
+});
+
+test('a method that is neither card nor crypto is refused, not ignored', async () => {
+  const server = await serve();
+  try {
+    server.seedPayments(server.alice.id, 3, 'card');
+    /*
+     * Ignoring it would answer every method, which on the crypto tab is a list
+     * of card payments under a heading that says otherwise. Repeating the
+     * parameter arrives as an array, and is refused for the same reason.
+     */
+    for (const query of ['method=paypal', 'method=CARD', 'method=', 'method=card&method=crypto']) {
+      const response = await server.get(`/api/payments?${query}`);
+      assert.equal(response.status, 400, `${query} answered ${response.status}`);
+      assert.match(response.body.error, /card.*crypto/, query);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('with no method the list and the count span both, as before', async () => {
+  const server = await serve();
+  try {
+    server.seedPayments(server.alice.id, 3, 'card');
+    server.seedPayments(server.alice.id, 2, 'crypto');
+
+    const all = await server.get('/api/payments?limit=100');
+    assert.equal(all.status, 200);
+    assert.equal(all.body.total, 5);
+    assert.equal(all.body.payments.length, 5);
+    assert.deepEqual(
+      new Set(all.body.payments.map((payment) => payment.method)),
+      new Set(['card', 'crypto'])
+    );
   } finally {
     server.close();
   }

@@ -15,6 +15,7 @@ import {
   countPaymentsForUser,
   listAllPayments,
   listPaymentsForUser,
+  type PaymentMethod,
 } from '../database/paymentRepository';
 import { readPage } from './paging';
 import { detachCard, getCardForUser, listCardsForUser } from '../database/savedCardRepository';
@@ -246,12 +247,23 @@ router.delete('/cards/:id', async (req: Request<{ id: string }>, res: Response) 
  *
  * Both parameters are optional and the defaults are the old behaviour, so a
  * browser tab loaded before this shipped keeps working unchanged.
+ *
+ * `method` is optional too, and filters the count as well as the page. Unlike
+ * a junk offset it is refused rather than ignored: an unknown method quietly
+ * becoming "every method" would fill the crypto tab with card payments, and
+ * nothing on screen would say why.
  */
 router.get('/', (req: Request, res: Response) => {
   const { limit, offset } = readPage(req, 50, 100);
+  const asked = req.query.method;
+  if (asked !== undefined && asked !== 'card' && asked !== 'crypto') {
+    res.status(400).json({ error: 'The method filter must be "card" or "crypto".' });
+    return;
+  }
+  const method: PaymentMethod | undefined = asked;
   res.json({
-    payments: listPaymentsForUser(req.user!.id, limit, offset),
-    total: countPaymentsForUser(req.user!.id),
+    payments: listPaymentsForUser(req.user!.id, limit, offset, method),
+    total: countPaymentsForUser(req.user!.id, method),
     offset,
   });
 });
