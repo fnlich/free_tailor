@@ -1,1019 +1,1105 @@
+/*
+ * The Bid Assistant: a JSX island with its own stylesheet, drawn to read like
+ * the rest of the app - the white canvas, hairline-ruled cards, the kit's
+ * buttons, inputs, pills and dialogs (.tl-* in globals.css, used directly in
+ * the JSX), in light and dark alike.
+ *
+ * EVERY rule here is scoped under .bid-assistant-page, and that is not tidiness.
+ * app/bid-assistant/page.tsx imports this file as global CSS, and Next keeps a
+ * page's stylesheet loaded after you navigate away from it. So the bare
+ * `a { color: inherit }`, `* { ... }` and `button, input, select, textarea
+ * { font: inherit }` this file used to open with restyled every page visited
+ * AFTER the Bid Assistant - and because they were unlayered they beat every
+ * Tailwind utility, which is how a link's `text-blue-600` or an editor's
+ * `font-mono` quietly stopped working elsewhere. Tailwind's preflight already
+ * does all three, inside its layer, so nothing is lost by their going.
+ *
+ * Colours are the app's own tokens (--foreground, --text-muted, --accent,
+ * --line-subtle...), read rather than redeclared. This file used to set
+ * --accent, --text-muted and --text-subtle on the page root, which shadowed
+ * the app's values for everything inside it - kit classes included - and gave
+ * the page a second blue and no dark mode at all.
+ */
+
 .bid-assistant-page {
-  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
-  font-size: 14px;
-  color: #101828;
-  background: #f3f4f6;
-  line-height: 1.5;
-  font-weight: 400;
-  --bg: #f3f4f6;
-  --panel: #ffffff;
-  --panel-muted: #f8fafc;
-  --border: #d0d5dd;
-  --border-strong: #98a2b3;
-  --text: #101828;
-  --text-muted: #475467;
-  --text-subtle: #667085;
-  --accent: #175cd3;
-  --accent-hover: #1849a9;
-  --accent-soft: #eff4ff;
-  --success: #027a48;
-  --success-soft: #ecfdf3;
-  --danger: #b42318;
-  --danger-soft: #fef3f2;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
   /*
-   * Deliberately page-level, not the 10000/20000 this used to carry.  This
+   * Deliberately page-level, not the 10000/20000 this used to carry. The
    * toolbar sits inside the app's content column, below a fixed top bar and
    * beside a fixed sidebar, so anything that outranks those paints over
-   * navigation.  The overlay aliases the app's modal tier so a dialog here
+   * navigation. The overlay aliases the app's modal tier so a dialog here
    * behaves like a dialog anywhere else in the app.
    */
-  --bid-layer-base: 0;
   --bid-layer-toolbar: 10;
   --bid-layer-toolbar-menu: 11;
   --bid-layer-overlay: var(--layer-app-modal, 1200);
-}
+  --bid-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Consolas, monospace;
 
-* {
-  box-sizing: border-box;
-}
-
-.bid-assistant-page {
   position: relative;
   min-height: calc(100dvh - var(--tl-topbar-h, 3.5rem));
-  background:
-    linear-gradient(180deg, rgba(16, 24, 40, 0.02), rgba(16, 24, 40, 0)),
-    var(--bg);
+  background: var(--canvas);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
+/* ------------------------------------------------------------ the frame */
 
-button {
-  cursor: pointer;
-}
-
-a {
-  color: inherit;
-}
-
-.app-shell {
+.bid-assistant-page .app-shell {
   height: calc(100dvh - var(--tl-topbar-h, 3.5rem));
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.top-bar {
+/*
+ * The page's header, as the kit's PageHeader lays one out: the name and one
+ * line on the left, the actions on the right, and the filters as a bar of
+ * their own underneath. The filters come first in the markup, so `order`
+ * puts them last.
+ */
+.bid-assistant-page .top-bar {
   position: sticky;
   top: 0;
   z-index: var(--bid-layer-toolbar);
-  overflow: visible;
-  isolation: isolate;
-  display: grid;
-  grid-template-columns: minmax(240px, 1.1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.85rem;
-  padding: 0.8rem 1.1rem;
-  background: #111827;
-  border-bottom: 1px solid #1f2937;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--canvas);
 }
 
-.top-bar [role="menu"],
-.top-bar [data-menu],
-.top-bar [data-dropdown],
-.top-bar [class*="dropdown"],
-.top-bar [class*="menu"] {
+.bid-assistant-page .top-bar [role="menu"],
+.bid-assistant-page .top-bar [data-menu],
+.bid-assistant-page .top-bar [data-dropdown],
+.bid-assistant-page .top-bar [class*="dropdown"],
+.bid-assistant-page .top-bar [class*="menu"] {
   z-index: var(--bid-layer-toolbar-menu) !important;
 }
 
-.brand-block {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
+.bid-assistant-page .brand-block {
+  flex: 1 1 15rem;
   min-width: 0;
 }
 
-.brand-mark {
-  width: 2rem;
-  height: 2rem;
-  flex-shrink: 0;
+.bid-assistant-page .brand-title {
+  color: var(--foreground);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 2rem;
+  letter-spacing: -0.025em;
 }
 
-.brand-copy {
-  min-width: 0;
-}
-
-.brand-title {
-  font-size: 0.94rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: #f9fafb;
-}
-
-.brand-subtitle {
-  margin-top: 0.15rem;
-  font-size: 0.72rem;
-  color: #98a2b3;
-  white-space: nowrap;
+.bid-assistant-page .brand-subtitle {
+  margin-top: 0.125rem;
   overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.875rem;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.top-bar-left,
-.top-bar-right {
+.bid-assistant-page .top-bar-left,
+.bid-assistant-page .top-bar-right {
   display: flex;
-  align-items: center;
-  gap: 0.65rem;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.field-group,
-.stacked-field {
+.bid-assistant-page .top-bar-right {
+  order: 2;
+}
+
+.bid-assistant-page .top-bar-left {
+  order: 3;
+  flex: 1 0 100%;
+  gap: 0.75rem 1.5rem;
+}
+
+.bid-assistant-page .field-group {
   display: flex;
-  gap: 0.4rem;
   align-items: center;
+  gap: 0.5rem;
 }
 
-.field-group {
-  color: #e5e7eb;
-  font-size: 0.82rem;
+.bid-assistant-page .field-group > span {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 
-.stacked-field {
-  flex-direction: column;
-  align-items: flex-start;
-  color: var(--text);
+.bid-assistant-page .field-group select {
+  width: auto;
+  min-width: 9rem;
+  min-height: 2.25rem;
+  padding-block: 0.375rem;
 }
 
-.field-group span,
-.stacked-field span,
-.profile-grid span,
-.char-limit-field span {
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--text-subtle);
-}
-
-.field-group span {
-  color: #d0d5dd;
-}
-
-.bid-assistant-page input,
-.bid-assistant-page select,
-.bid-assistant-page textarea {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  padding: 0.52rem 0.65rem;
-  background: #fff;
-  color: var(--text);
-  font-size: 0.9rem;
-  outline: none;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.bid-assistant-page input:focus,
-.bid-assistant-page select:focus,
-.bid-assistant-page textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(23, 92, 211, 0.12);
-}
-
-.field-group select {
-  min-width: 132px;
-  background: #f9fafb;
-}
-
-.primary-button,
-.secondary-button,
-.text-button,
-.icon-button {
-  border: 1px solid transparent;
-  border-radius: 0;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-}
-
-.primary-button {
-  padding: 0.52rem 0.8rem;
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  font-size: 0.84rem;
-}
-
-.primary-button:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-
-.secondary-button {
-  padding: 0.52rem 0.8rem;
-  background: #fff;
-  border-color: var(--border);
-  color: var(--text);
-  font-weight: 600;
-  font-size: 0.84rem;
-}
-
-.secondary-button:hover,
-.icon-button:hover {
-  background: #f9fafb;
-}
-
-.secondary-button.danger-button {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #fff;
-}
-
-.secondary-button.danger-button:hover {
-  background: #912018;
-  border-color: #912018;
-}
-
-.primary-button:disabled,
-.secondary-button:disabled,
-.text-button:disabled,
-.icon-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.text-button {
-  padding: 0;
-  background: transparent;
-  color: var(--accent);
-  font-weight: 600;
-  font-size: 0.8rem;
-}
-
-.text-button:hover {
-  color: var(--accent-hover);
-}
-
-.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.8rem;
-  height: 1.8rem;
-  background: #fff;
-  border-color: var(--border);
-  color: var(--text-subtle);
-  font-size: 0.82rem;
-}
-
-.icon-button.subtle {
-  position: static;
-}
-
-.danger-text {
-  color: var(--danger);
-}
-
-.content-shell {
+.bid-assistant-page .content-shell {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
 
-.job-list-panel {
-  width: 292px;
+/* ------------------------------------------------------------ the job list */
+
+.bid-assistant-page .job-list-panel {
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 0.85rem;
-  border-right: 1px solid var(--border);
-  background: #eef2f6;
-}
-
-.job-list-header {
-  display: grid;
-  gap: 0.55rem;
-  margin-bottom: 0.9rem;
-}
-
-.job-list-stats {
-  display: flex;
-  gap: 0.45rem;
-  align-items: center;
-  flex-wrap: wrap;
-  color: var(--text-subtle);
-  font-size: 0.76rem;
-}
-
-.job-list-inline-status {
-  font-size: 0.7rem;
-  white-space: nowrap;
-}
-
-.job-list-scroll {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 0.75rem;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.search-input {
-  background: #fff;
-}
-
-.job-card {
-  width: 100%;
-  text-align: left;
-  padding: 0.85rem;
-  border: 1px solid var(--border);
-  border-left: 4px solid transparent;
-  border-radius: 0;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.job-card:hover {
-  border-color: var(--border-strong);
-}
-
-.job-card.selected {
-  border-color: #b2ddff;
-  border-left-color: var(--accent);
-  background: #f8fbff;
-}
-
-.job-card-top,
-.answer-card-top,
-.section-header,
-.hero-meta,
-.source-panel-header,
-.source-row-actions,
-.form-actions,
-.import-block {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  align-items: center;
-}
-
-.job-card-badges {
-  display: flex;
-  gap: 0.45rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.job-card-title {
-  margin-top: 0.35rem;
-  font-size: 0.88rem;
-  font-weight: 500;
-  color: var(--text);
-}
-
-.job-card-meta {
-  display: grid;
-  gap: 0.15rem;
-  margin-top: 0.55rem;
-  color: var(--text-subtle);
-  font-size: 0.76rem;
-}
-
-.answered-badge {
-  padding: 0.15rem 0.45rem;
-  border: 1px solid #abefc6;
-  border-radius: 0;
-  background: var(--success-soft);
-  color: var(--success);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.error-badge {
-  padding: 0.15rem 0.45rem;
-  border: 1px solid #fecdca;
-  border-radius: 0;
-  background: var(--danger-soft);
-  color: var(--danger);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.job-detail-panel {
-  flex: 1;
+  width: 18.5rem;
   min-height: 0;
   padding: 1rem;
+  border-right: 1px solid var(--line-subtle);
+  background: var(--canvas);
+}
+
+.bid-assistant-page .job-list-header {
+  display: grid;
+  gap: 0.625rem;
+  margin-bottom: 0.875rem;
+}
+
+.bid-assistant-page .job-list-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  color: var(--text-subtle);
+  font-size: 0.8125rem;
+}
+
+.bid-assistant-page .job-list-stats strong {
+  color: var(--foreground);
+}
+
+.bid-assistant-page .job-list-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
   overflow-y: auto;
 }
 
-.workspace-hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 1.5rem;
-  align-items: flex-start;
-}
-
-.workspace-copy {
-  min-width: 0;
+/* One job. Chosen the way the kit's .tl-choice is: accent ring, soft wash. */
+.bid-assistant-page .job-card {
   width: 100%;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+  color: var(--foreground);
+  text-align: left;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.workspace-title-row {
+.bid-assistant-page .job-card:hover {
+  border-color: var(--border-color);
+  background: var(--surface-muted);
+}
+
+.bid-assistant-page .job-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.bid-assistant-page .job-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.bid-assistant-page .job-card-top {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.bid-assistant-page .job-card-top strong {
   min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
-.workspace-copy h1 {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 1.72rem;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-  flex: 1;
-}
-
-.workspace-summary {
-  margin: 0.45rem 0 0;
-  color: var(--text-muted);
-  font-size: 1rem;
-  font-weight: 500;
-}
-
-.workspace-nav-buttons {
+.bid-assistant-page .job-card-badges {
   display: flex;
-  gap: 0.45rem;
-  flex-shrink: 0;
-}
-
-.workspace-actions {
-  display: flex;
-  gap: 0.55rem;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
+  gap: 0.375rem;
 }
 
-.nav-arrow-button {
-  min-width: 2.35rem;
-  padding: 0.52rem 0.55rem;
-  font-size: 1rem;
-  line-height: 1;
+/* An error reason can be a sentence; let it wrap inside the card. */
+.bid-assistant-page .job-card .tl-pill {
+  white-space: normal;
+  text-align: left;
 }
 
-.empty-detail {
+.bid-assistant-page .job-card-title {
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.bid-assistant-page .job-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem 0.75rem;
+  margin-top: 0.5rem;
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+}
+
+/* ------------------------------------------------------------ the workspace */
+
+.bid-assistant-page .job-detail-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.bid-assistant-page .empty-detail {
   display: grid;
   place-items: center;
   color: var(--text-subtle);
 }
 
-.detail-section {
-  margin-bottom: 0.85rem;
-  padding: 1rem;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.hero-section {
-  display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+/* The selected job's title row - a page header, not a card. */
+.bid-assistant-page .workspace-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 1.5rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--line-subtle);
 }
 
-.eyebrow {
-  margin: 0 0 0.35rem;
-  color: var(--accent);
-  font-size: 0.68rem;
+/*
+ * width: 100% matters once the hero stacks on a phone: a column flex item
+ * otherwise sizes to its content, and the un-wrappable job link then pushes
+ * the whole page sideways.
+ */
+.bid-assistant-page .workspace-copy {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+.bid-assistant-page .workspace-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.bid-assistant-page .workspace-copy h1 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 1.875rem;
   font-weight: 700;
+  line-height: 2.25rem;
+  letter-spacing: -0.025em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bid-assistant-page .workspace-summary {
+  margin-top: 0.375rem;
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.bid-assistant-page .workspace-nav-buttons {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.375rem;
+}
+
+.bid-assistant-page .workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  max-width: 27rem;
+}
+
+/* A quiet kit button holding only an icon. */
+.bid-assistant-page .bid-square {
+  width: 2.25rem;
+  padding: 0;
+}
+
+.bid-assistant-page .bid-square svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.bid-assistant-page .eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.hero-copy h1,
-.detail-section h2,
-.modal-card h2,
-.source-panel h3,
-.results-section h3 {
-  margin: 0;
-  color: var(--text);
-}
-
-.hero-copy h1 {
-  font-size: 1.42rem;
-  line-height: 1.2;
-}
-
-.hero-meta,
-.job-link,
-.muted-text {
+.bid-assistant-page .hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1.25rem;
+  margin-top: 0.5rem;
   color: var(--text-subtle);
+  font-size: 0.875rem;
 }
 
-.job-link {
-  display: block;
-  max-width: 100%;
-  width: 100%;
-  margin-top: 0.65rem;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.job-link:hover {
-  color: var(--accent);
-}
-.job-link-row {
+.bid-assistant-page .job-link-row {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  max-width: 100%;
-  margin-top: 0.65rem;
+  gap: 0.5rem;
   min-width: 0;
+  max-width: 100%;
+  margin-top: 0.75rem;
 }
 
-.job-link-row .job-link {
+.bid-assistant-page .job-link {
+  display: block;
+  max-width: 100%;
+  margin-top: 0.75rem;
+  overflow: hidden;
+  color: var(--accent-ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.bid-assistant-page .job-link:hover {
+  color: var(--accent-hover);
+}
+
+.bid-assistant-page .job-link-row .job-link {
   flex: 1;
   min-width: 0;
   margin-top: 0;
 }
 
-.job-link-copy-button {
+.bid-assistant-page .job-link-copy-button {
   flex-shrink: 0;
-  width: 1.9rem;
-  height: 1.9rem;
-  padding: 0;
 }
 
-.job-link-copy-button svg {
-  width: 1rem;
-  height: 1rem;
+/* A bordered card, like the kit's .tl-card. */
+.bid-assistant-page .detail-section {
+  padding: 1.25rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
 }
 
-.job-description {
+.bid-assistant-page .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.bid-assistant-page .detail-section h2,
+.bid-assistant-page .source-panel h3 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.bid-assistant-page .job-description {
   margin: 0;
   color: var(--text-muted);
   white-space: pre-wrap;
 }
 
-.profile-grid,
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
+.bid-assistant-page .section-header + .job-description {
+  margin-top: 0.5rem;
 }
 
-.profile-overview-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
+/* Saved Answers: a card with a ruled title row and one row per answer. */
+.bid-assistant-page .answers-section {
+  padding: 0;
 }
 
-.profile-overview-item {
-  display: grid;
-  gap: 0.2rem;
+.bid-assistant-page .answers-header {
+  align-items: flex-start;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--line-subtle);
 }
 
-.profile-overview-item strong {
-  color: var(--text);
+.bid-assistant-page .answer-card {
+  padding: 1rem 1.25rem;
 }
 
-.compact-grid {
-  margin-top: 1rem;
+.bid-assistant-page .answer-card + .answer-card {
+  border-top: 1px solid var(--line-subtle);
 }
 
-.profile-grid label,
-.char-limit-field {
+.bid-assistant-page .answer-card-top {
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
-.answer-card {
-  margin-top: 0.8rem;
-  padding: 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--panel-muted);
+.bid-assistant-page .answer-card-top > strong {
+  min-width: 0;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+  font-weight: 600;
 }
 
-.job-error-form {
-  display: grid;
-  gap: 0.85rem;
-  margin-top: 0.9rem;
+.bid-assistant-page .answer-card-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
 }
 
-.answer-card p,
-.empty-state,
-.error-text,
-.success-text,
-.muted-text {
-  margin-bottom: 0;
+/* Apart, so Delete is not a slip of the hand from Resubmit. */
+.bid-assistant-page .answer-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 1.75rem;
+  margin-left: 0.5rem;
 }
 
-.answer-copy-target {
+.bid-assistant-page .char-badge {
+  font-variant-numeric: tabular-nums;
+}
+
+.bid-assistant-page .answer-copy-target {
+  margin-top: 0.5rem;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
-.answer-copy-target.copied {
-  color: var(--accent);
+.bid-assistant-page .answer-copy-target:hover {
+  color: var(--foreground);
 }
 
-.answer-card-actions {
-  display: flex;
-  gap: 0.85rem;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.bid-assistant-page .answer-copy-target.copied {
+  color: var(--accent-ink);
 }
 
-.answer-action-buttons {
-  display: flex;
-  gap: 2.75rem;
-  align-items: center;
-  margin-left: 1rem;
-  padding-left: 0.35rem;
-}
-
-.char-badge {
-  padding: 0.12rem 0.4rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0;
-  background: #fff;
-  color: var(--text-subtle);
-  font-size: 0.7rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--bid-layer-overlay);
+.bid-assistant-page .answer-empty-state {
   display: grid;
-  place-items: center;
-  padding: 1.5rem;
-  background: rgba(17, 24, 39, 0.54);
-}
-
-.modal-card {
-  position: relative;
-  width: min(1120px, 100%);
-  max-height: 92vh;
-  overflow-y: auto;
-  padding: 1.2rem;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: #fff;
-  box-shadow: 0 20px 40px rgba(16, 24, 40, 0.18);
-}
-
-.modal-card .icon-button {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-}
-
-.modal-card .icon-button.subtle {
-  position: static;
-  top: auto;
-  right: auto;
-}
-
-.detail-modal {
-  width: min(980px, 100%);
-}
-
-.import-modal {
-  width: min(1180px, 100%);
-}
-
-.prompt-modal {
-  width: min(960px, 100%);
-}
-
-.copy-range-modal {
-  width: min(460px, 100%);
-}
-
-.job-error-modal {
-  width: min(520px, 100%);
-}
-
-.ask-modal {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-  width: min(1240px, 100%);
-}
-
-.source-manager-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr);
-  gap: 0.85rem;
-  margin-top: 1rem;
-}
-
-.source-panel {
-  padding: 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--panel-muted);
-}
-
-.source-list,
-.checkbox-list,
-.question-list,
-.results-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-}
-
-.source-list {
-  margin-top: 1rem;
-}
-
-.source-row {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  gap: 0.8rem;
-  align-items: flex-start;
-  padding: 0.75rem 0.85rem;
-  border: 1px solid var(--border);
-  border-left: 4px solid transparent;
-  border-radius: 0;
-  background: #fff;
-  text-align: left;
-}
-
-.source-row:hover {
-  border-color: var(--border-strong);
-}
-
-.source-row.active {
-  border-left-color: var(--accent);
-  background: #f8fbff;
-}
-
-.source-row-main {
-  display: grid;
-  gap: 0.15rem;
-  min-width: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  text-align: left;
-}
-
-.source-row-main strong {
-  color: var(--text);
-}
-
-.source-row-main span {
-  color: var(--text-subtle);
-  font-size: 0.8rem;
-  overflow-wrap: anywhere;
-}
-
-.source-row-actions {
-  flex-shrink: 0;
-}
-
-.import-block {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
-}
-
-.import-block-copy {
-  display: grid;
-  gap: 0.15rem;
-}
-
-.import-block-copy span {
-  color: var(--text-subtle);
-  font-size: 0.84rem;
-}
-
-.form-actions {
-  justify-content: flex-start;
-  margin-top: 1rem;
-}
-
-.checkbox-row {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-}
-
-.profile-checkbox-list {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 0.8rem 1.25rem;
-}
-
-.profile-checkbox-list .checkbox-row {
-  min-width: 180px;
-}
-
-.checkbox-row input {
-  width: auto;
-}
-
-.question-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px auto auto;
-  gap: 0.6rem;
-  align-items: end;
-}
-
-.question-item {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.modal-header {
-  align-items: flex-start;
-}
-
-.modal-header-copy {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.prompt-editor {
-  min-height: 300px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 0.84rem;
-  line-height: 1.5;
-  resize: vertical;
-}
-
-.prompt-hint {
-  overflow-wrap: anywhere;
-}
-
-.answers-section {
-  display: grid;
+  justify-items: start;
   gap: 0.75rem;
+  margin: 1.25rem;
+  padding: 1rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 0.5rem;
+  background: var(--surface-muted);
 }
 
-.answers-header {
-  align-items: flex-start;
+/* ------------------------------------------------------------ text */
+
+.bid-assistant-page .muted-text {
+  margin-top: 0.75rem;
+  color: var(--text-muted);
 }
 
-.answers-summary {
+.bid-assistant-page .empty-state {
+  color: var(--text-subtle);
+}
+
+.bid-assistant-page .job-list-scroll > .empty-state {
+  padding: 1.5rem 0.5rem;
+  text-align: center;
+}
+
+.bid-assistant-page .success-text,
+.bid-assistant-page .error-text {
+  margin-top: 0.75rem;
+}
+
+.bid-assistant-page .success-text {
+  color: #15803d;
+}
+
+.bid-assistant-page .error-text {
+  color: #b91c1c;
+}
+
+html.dark .bid-assistant-page .success-text {
+  color: #7be0b7;
+}
+
+html.dark .bid-assistant-page .error-text {
+  color: #ffb4be;
+}
+
+.bid-assistant-page .job-list-inline-status {
   margin: 0;
-  max-width: 380px;
+  font-size: 0.75rem;
+}
+
+.bid-assistant-page .answers-summary {
+  max-width: 24rem;
+  margin: 0;
+  color: var(--text-subtle);
   text-align: right;
 }
 
-.answer-empty-state {
-  display: grid;
-  gap: 0.75rem;
-  justify-items: start;
-  padding: 0.9rem;
-  border: 1px dashed var(--border-strong);
-  background: #f8fbff;
+/* A link-weight action inside a row: Edit, Use, Resubmit, Copy Links. */
+.bid-assistant-page .text-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
-.json-editor {
-  min-height: 460px;
-  margin-top: 0.8rem;
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 0.84rem;
-  white-space: pre;
+.bid-assistant-page .text-button:hover:not(:disabled) {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
-.question-input {
-  min-width: 0;
-  width: 100%;
+.bid-assistant-page .text-button:disabled {
+  opacity: 0.45;
 }
 
-.question-mode-button {
-  min-width: 46px;
-  padding: 0.52rem 0.55rem;
+.bid-assistant-page .text-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.question-mode-button.active {
-  background: var(--accent-soft);
-  border-color: #b2ddff;
-  color: var(--accent);
+.bid-assistant-page .danger-text {
+  color: #b91c1c;
 }
 
-.manual-answer-input {
-  width: 100%;
-  min-height: 98px;
-  resize: vertical;
+html.dark .bid-assistant-page .danger-text {
+  color: #fca5a5;
 }
 
-.char-limit-field input {
-  width: 72px;
-}
-
-.success-text {
-  color: var(--success);
-}
-
-.error-text,
-.error-banner {
-  color: var(--danger);
-}
-
-.error-banner {
+/* The page-wide error, as a notice pinned to the corner. */
+.bid-assistant-page .error-banner {
   position: fixed;
   right: 1rem;
   bottom: 1rem;
   z-index: var(--bid-layer-overlay);
-  padding: 0.85rem 1rem;
-  border: 1px solid #fecdca;
-  border-radius: 0;
-  background: var(--danger-soft);
-  box-shadow: var(--shadow);
+  max-width: min(28rem, calc(100vw - 2rem));
+  box-shadow: 0 12px 32px rgba(2, 6, 23, 0.16);
 }
 
-@media (max-width: 1180px) {
-  .top-bar {
-    grid-template-columns: 1fr;
-  }
+/* ------------------------------------------------------------ dialogs */
 
-  .source-manager-grid {
+/* On top of the kit's .tl-dialog: padding, room for the close button, widths. */
+.bid-assistant-page .modal-card {
+  position: relative;
+  width: min(1120px, 100%);
+  padding: 1.5rem;
+}
+
+.bid-assistant-page .modal-card > h2,
+.bid-assistant-page .modal-header h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* The profile dialog's name is its title, sized like every other dialog's. */
+.bid-assistant-page .modal-card .detail-section:first-of-type .section-header h2 {
+  font-size: 1.25rem;
+  letter-spacing: -0.01em;
+}
+
+.bid-assistant-page .modal-card h2,
+.bid-assistant-page .modal-card .hero-copy h1 {
+  padding-right: 2.5rem;
+}
+
+.bid-assistant-page .bid-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+}
+
+.bid-assistant-page .modal-card > .muted-text {
+  margin-top: 0.375rem;
+}
+
+/* A card inside a dialog is only a block of it, ruled from the next one. */
+.bid-assistant-page .modal-card .detail-section {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.bid-assistant-page .modal-card .detail-section + .detail-section {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line-subtle);
+}
+
+.bid-assistant-page .detail-modal {
+  width: min(980px, 100%);
+}
+
+.bid-assistant-page .import-modal {
+  width: min(1180px, 100%);
+}
+
+.bid-assistant-page .prompt-modal {
+  width: min(960px, 100%);
+}
+
+.bid-assistant-page .copy-range-modal {
+  width: min(460px, 100%);
+}
+
+.bid-assistant-page .job-error-modal {
+  width: min(520px, 100%);
+}
+
+.bid-assistant-page .ask-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: min(1240px, 100%);
+}
+
+.bid-assistant-page .ask-modal > .tl-button {
+  align-self: flex-start;
+}
+
+.bid-assistant-page .modal-header {
+  align-items: flex-start;
+}
+
+.bid-assistant-page .modal-header-copy {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.bid-assistant-page .modal-header-copy .muted-text {
+  margin-top: 0;
+}
+
+/* The job, opened from "See Job Detail". */
+.bid-assistant-page .hero-section {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  gap: 1.5rem;
+}
+
+.bid-assistant-page .hero-copy h1 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 2rem;
+  letter-spacing: -0.02em;
+}
+
+.bid-assistant-page .profile-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem 1.5rem;
+  margin-top: 1rem;
+}
+
+.bid-assistant-page .profile-overview-item {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.bid-assistant-page .profile-overview-item > span {
+  color: var(--text-subtle);
+  font-size: 0.8125rem;
+}
+
+.bid-assistant-page .profile-overview-item strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+/* Profile Manager and Google Sheet Sources: two panels side by side. */
+.bid-assistant-page .source-manager-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr);
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.bid-assistant-page .source-panel {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+}
+
+.bid-assistant-page .source-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+/* Saved records as rows in one box, the current one lit like the app's rail. */
+.bid-assistant-page .source-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+}
+
+.bid-assistant-page .source-list > .empty-state {
+  padding: 0.75rem 1rem;
+}
+
+.bid-assistant-page .source-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: var(--surface-secondary);
+  text-align: left;
+}
+
+.bid-assistant-page .source-row + .source-row {
+  border-top: 1px solid var(--line-subtle);
+}
+
+.bid-assistant-page .source-row:hover {
+  background: var(--rail-hover);
+}
+
+.bid-assistant-page .source-row.active {
+  background: var(--rail-active);
+}
+
+.bid-assistant-page .source-row.active .source-row-main strong {
+  color: var(--accent-ink);
+}
+
+.bid-assistant-page .source-row-main {
+  display: grid;
+  flex: 1;
+  gap: 0.125rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.bid-assistant-page .source-row-main strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.bid-assistant-page .source-row-main span {
+  color: var(--text-subtle);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.bid-assistant-page .source-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.bid-assistant-page .import-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line-subtle);
+}
+
+.bid-assistant-page .import-block-copy {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.bid-assistant-page .import-block-copy span {
+  color: var(--text-subtle);
+  font-size: 0.8125rem;
+}
+
+/* ------------------------------------------------------------ forms */
+
+.bid-assistant-page .form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.bid-assistant-page .profile-grid,
+.bid-assistant-page .form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.bid-assistant-page .stacked-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.375rem;
+  color: var(--foreground);
+}
+
+/* A label over its control, as the kit's .tl-label. */
+.bid-assistant-page .stacked-field > span {
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.bid-assistant-page .job-error-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.bid-assistant-page .checkbox-list,
+.bid-assistant-page .question-list {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 0.625rem;
+}
+
+.bid-assistant-page .profile-checkbox-list {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+}
+
+.bid-assistant-page .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--foreground);
+}
+
+.bid-assistant-page .profile-checkbox-list .checkbox-row {
+  min-width: 11rem;
+}
+
+.bid-assistant-page .question-list {
+  gap: 0.75rem;
+}
+
+.bid-assistant-page .question-item {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.bid-assistant-page .question-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.5rem auto auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+/* Level with the inputs beside them. */
+.bid-assistant-page .question-row .tl-button-quiet {
+  min-height: 2.5rem;
+}
+
+.bid-assistant-page .question-row .bid-square {
+  width: 2.5rem;
+}
+
+.bid-assistant-page .char-limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.bid-assistant-page .char-limit-field > span {
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.bid-assistant-page .question-mode-button {
+  min-width: 3rem;
+}
+
+.bid-assistant-page .question-mode-button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.bid-assistant-page .manual-answer-input {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.bid-assistant-page .prompt-editor,
+.bid-assistant-page .json-editor {
+  margin-top: 1rem;
+  font-family: var(--bid-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.bid-assistant-page .prompt-editor {
+  min-height: 300px;
+}
+
+.bid-assistant-page .json-editor {
+  min-height: 460px;
+  white-space: pre;
+}
+
+.bid-assistant-page .prompt-hint {
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ narrower */
+
+@media (max-width: 1180px) {
+  .bid-assistant-page .source-manager-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 960px) {
-  .app-shell {
+  .bid-assistant-page .app-shell {
     height: auto;
     overflow: visible;
   }
 
-  /* The page scrolls now, and the app's own bar is fixed above this one. */
-  .top-bar {
-    top: var(--tl-topbar-h, 3.5rem);
+  /*
+   * Not sticky once the page itself scrolls. Wrapped onto a phone the title
+   * row is a third of the screen tall, and pinned under the app's own bar it
+   * would leave the job beneath it a strip to read through.
+   */
+  .bid-assistant-page .top-bar {
+    position: relative;
+    padding: 1rem;
   }
 
-  .content-shell {
+  .bid-assistant-page .content-shell {
     flex-direction: column;
     height: auto;
     overflow: visible;
   }
 
-  .job-detail-panel {
+  .bid-assistant-page .job-detail-panel {
     order: 1;
+    padding: 1rem;
+    overflow: visible;
   }
 
-  .job-list-panel {
+  .bid-assistant-page .job-list-panel {
     order: 2;
     width: 100%;
     min-height: auto;
-    border-right: none;
-    border-top: 1px solid var(--border);
-    border-bottom: none;
+    border-right: 0;
+    border-top: 1px solid var(--line-subtle);
   }
 
-  .hero-section,
-  .workspace-hero,
-  .profile-grid,
-  .profile-overview-grid,
-  .form-grid {
+  .bid-assistant-page .hero-section,
+  .bid-assistant-page .profile-grid,
+  .bid-assistant-page .profile-overview-grid,
+  .bid-assistant-page .form-grid {
     grid-template-columns: 1fr;
   }
 
-  .workspace-hero {
+  .bid-assistant-page .workspace-hero {
     flex-direction: column;
+    gap: 1rem;
   }
 
-  .answers-header {
+  .bid-assistant-page .workspace-actions {
+    justify-content: flex-start;
+    width: 100%;
+    max-width: none;
+  }
+
+  .bid-assistant-page .answers-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .workspace-actions {
-    width: 100%;
+  .bid-assistant-page .answers-summary {
+    max-width: none;
+    text-align: left;
+  }
+}
+
+@media (max-width: 640px) {
+  .bid-assistant-page .modal-card {
+    padding: 1.25rem;
+  }
+
+  .bid-assistant-page .workspace-copy h1 {
+    font-size: 1.5rem;
+    line-height: 2rem;
+  }
+
+  .bid-assistant-page .answer-card-top {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .bid-assistant-page .answer-card-actions {
     justify-content: flex-start;
   }
 
-  .answers-summary {
-    max-width: none;
-    text-align: left;
+  .bid-assistant-page .answer-action-buttons {
+    margin-left: 0.25rem;
+  }
+
+  /* The question on a line of its own; its limit and buttons under it. */
+  .bid-assistant-page .question-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .bid-assistant-page .question-row .question-input {
+    grid-column: 1 / -1;
+  }
+
+  .bid-assistant-page .import-block {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

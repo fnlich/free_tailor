@@ -2,6 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { templatesApi, Template, ManualTemplateConfigStored } from '@/lib/api';
+import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import { IconClose } from '@/components/icons';
+import { Card, Field, Notice } from '@/components/ui/kit';
 
 const SECTIONS = [
   { id: 'summary', label: 'Summary' },
@@ -105,6 +108,15 @@ function parseSectionStyles(
 
   return parsed;
 }
+
+/** One control in an open style panel: a short caption, then the control. */
+const STYLE_ROW = 'flex items-center gap-3';
+const STYLE_CAPTION = 'w-16 shrink-0 text-sm text-muted';
+/**
+ * The box a short select sits in. `.tl-input` is `width: 100%` and unlayered,
+ * so a width utility on the select itself would lose; its parent sets it.
+ */
+const STYLE_NARROW = 'w-32';
 
 export default function ManualTemplateEditor({
   onSuccess,
@@ -296,7 +308,7 @@ export default function ManualTemplateEditor({
   ) => {
     if (col === 'single') {
       return (
-        <ul className="border border-gray-300 rounded-md divide-y divide-gray-200 min-h-[80px]">
+        <ul className={chrome.dragList}>
           {order.map((sectionId, index) => {
             const section = SECTIONS.find((s) => s.id === sectionId);
             if (!section) return null;
@@ -317,9 +329,9 @@ export default function ManualTemplateEditor({
                   setDraggedIndex(null);
                 }}
                 onDragEnd={handleDragEnd}
-                className={`flex items-center gap-2 px-3 py-2 bg-white hover:bg-gray-50 cursor-grab active:cursor-grabbing ${draggedIndex === index ? 'opacity-50' : ''}`}
+                className={`flex cursor-grab items-center gap-3 bg-surface px-3 py-2.5 text-sm text-ink hover:bg-surface-muted active:cursor-grabbing ${draggedIndex === index ? 'opacity-50' : ''}`}
               >
-                <span className="text-gray-400 select-none" aria-hidden>⋮⋮</span>
+                <span className="select-none text-subtle" aria-hidden>⋮⋮</span>
                 <span className="flex-1">{section.label}</span>
               </li>
             );
@@ -330,9 +342,8 @@ export default function ManualTemplateEditor({
     const isOver = dragOverColumn === col;
     return (
       <ul
-        className={`border rounded-md divide-y divide-gray-200 min-h-[80px] transition-colors ${
-          isOver ? 'border-blue-400 bg-blue-50/50' : 'border-gray-300'
-        }`}
+        className={chrome.dragList}
+        data-over={isOver}
         onDragOver={(e) => handleColumnDragOver(e, col)}
         onDragLeave={handleDragLeave}
         onDrop={(e) => handleColumnDrop(e, col)}
@@ -359,11 +370,11 @@ export default function ManualTemplateEditor({
                 );
               }}
               onDragEnd={handleDragEnd}
-              className={`flex items-center gap-2 px-3 py-2 bg-white hover:bg-gray-50 cursor-grab active:cursor-grabbing ${
+              className={`flex cursor-grab items-center gap-3 bg-surface px-3 py-2.5 text-sm text-ink hover:bg-surface-muted active:cursor-grabbing ${
                 draggedIndex === index && draggedColumn === col ? 'opacity-50' : ''
-              } ${dragOverIndex === index && draggedColumn !== col ? 'ring-2 ring-blue-400' : ''}`}
+              } ${dragOverIndex === index && draggedColumn !== col ? 'ring-2 ring-inset ring-accent' : ''}`}
             >
-              <span className="text-gray-400 select-none" aria-hidden>⋮⋮</span>
+              <span className="select-none text-subtle" aria-hidden>⋮⋮</span>
               <span className="flex-1">{section.label}</span>
             </li>
           );
@@ -411,293 +422,329 @@ export default function ManualTemplateEditor({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[var(--layer-app-modal)] p-4 overflow-y-auto">
-      <div className="bg-white rounded-xl max-w-2xl w-full p-6 my-8 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold">{initialTemplate ? 'Edit Manual Template' : 'Add Manual Template'}</h2>
+    <div className="tl-backdrop">
+      <div
+        className="tl-dialog max-w-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manual-template-title"
+      >
+        <div className={chrome.dialogHead}>
+          <h2 id="manual-template-title" className="text-xl font-bold tracking-tight text-ink">
+            {initialTemplate ? 'Edit Manual Template' : 'Add Manual Template'}
+          </h2>
           <button
             type="button"
             onClick={onCancel}
-            className="text-gray-500 hover:text-gray-700 p-1"
+            className="tl-icon-button"
             aria-label="Close"
           >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            <IconClose className="h-5 w-5" />
           </button>
         </div>
 
-        <p className="text-sm text-gray-600 mb-4">
-          Create a template with custom colors, font sizes, and section order. Header (name, title, contact) is fixed at the top.
-        </p>
+        <div className="p-6">
+          <p className="text-sm text-muted">
+            Create a template with custom colors, font sizes, and section order. Header (name, title, contact) is fixed at the top.
+          </p>
 
-        {error && (
-          <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
-            {error}
-          </div>
-        )}
+          {error && (
+            <Notice tone="error" role="alert" className="mt-4">
+              {error}
+            </Notice>
+          )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Template Name *</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., My Custom Template"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+          <form onSubmit={handleSubmit} className="mt-6 space-y-6">
+            <Field label="Template Name *" htmlFor="manual-template-name">
+              <input
+                id="manual-template-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g., My Custom Template"
+                className="tl-input"
+              />
+            </Field>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Optional description"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+            <Field label="Description" htmlFor="manual-template-description">
+              <input
+                id="manual-template-description"
+                type="text"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Optional description"
+                className="tl-input"
+              />
+            </Field>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Layout</label>
-            <select
-              value={columns}
-              onChange={(e) => {
-                const val = Number(e.target.value) as 1 | 2;
-                if (val === 2) {
-                  setLeftSectionOrder(sectionOrder.filter((s) => DEFAULT_LEFT.includes(s)));
-                  setRightSectionOrder(sectionOrder.filter((s) => DEFAULT_RIGHT.includes(s)));
-                } else {
-                  setSectionOrder([...leftSectionOrder, ...rightSectionOrder]);
-                }
-                setColumns(val);
-              }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value={1}>One column</option>
-              <option value={2}>Two columns (Left: Summary+Experience | Right: Strengths+Skills+Education)</option>
-            </select>
-          </div>
+            <Field label="Layout" htmlFor="manual-template-layout">
+              <select
+                id="manual-template-layout"
+                value={columns}
+                onChange={(e) => {
+                  const val = Number(e.target.value) as 1 | 2;
+                  if (val === 2) {
+                    setLeftSectionOrder(sectionOrder.filter((s) => DEFAULT_LEFT.includes(s)));
+                    setRightSectionOrder(sectionOrder.filter((s) => DEFAULT_RIGHT.includes(s)));
+                  } else {
+                    setSectionOrder([...leftSectionOrder, ...rightSectionOrder]);
+                  }
+                  setColumns(val);
+                }}
+                className="tl-input"
+              >
+                <option value={1}>One column</option>
+                <option value={2}>Two columns (Left: Summary+Experience | Right: Strengths+Skills+Education)</option>
+              </select>
+            </Field>
 
-          <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-            <h4 className="font-medium text-gray-900 mb-3">Style per element</h4>
-            <p className="text-xs text-gray-500 mb-3">Click an item to edit its color and font style</p>
-            <div className="space-y-2">
-              {(['name', 'title', 'contact'] as const).map((item) => (
-                <div key={item}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedStyleItem(selectedStyleItem === item ? null : item)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-left text-sm font-medium transition-colors ${
-                      selectedStyleItem === item ? 'bg-blue-100 text-blue-800 ring-1 ring-blue-300' : 'bg-white hover:bg-gray-100 text-gray-700'
-                    }`}
-                  >
-                    <span>
-                      {item === 'name' ? 'Name' : item === 'title' ? 'Title' : 'Contact info'}
-                    </span>
-                    <span className="text-gray-400">{selectedStyleItem === item ? '▲' : '▼'}</span>
-                  </button>
-                  {selectedStyleItem === item && (
-                    <div className="mt-2 p-3 bg-white rounded-md border border-gray-200 space-y-3">
-                      {item === 'name' && (
-                        <>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Color</span>
-                            <input type="color" value={nameStyle.color} onChange={(e) => setNameStyle({ ...nameStyle, color: e.target.value })} className="w-8 h-8 rounded border cursor-pointer" />
-                            <input type="text" value={nameStyle.color} onChange={(e) => setNameStyle({ ...nameStyle, color: e.target.value })} className="flex-1 px-2 py-1 text-sm font-mono" />
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Size</span>
-                            <select value={nameStyle.fontSizePt} onChange={(e) => setNameStyle({ ...nameStyle, fontSizePt: Number(e.target.value) })} className="px-2 py-1 border rounded">
-                              {[18, 20, 24, 28].map((n) => <option key={n} value={n}>{n}pt</option>)}
-                            </select>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Font</span>
-                            <select value={nameStyle.fontFamily} onChange={(e) => setNameStyle({ ...nameStyle, fontFamily: e.target.value })} className="flex-1 px-2 py-1 border rounded">
-                              {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
-                            </select>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Weight</span>
-                            <select value={nameStyle.fontWeight} onChange={(e) => setNameStyle({ ...nameStyle, fontWeight: e.target.value as 'normal' | 'bold' })} className="px-2 py-1 border rounded">
-                              <option value="normal">Normal</option>
-                              <option value="bold">Bold</option>
-                            </select>
-                          </div>
-                        </>
-                      )}
-                      {item === 'title' && (
-                        <>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Color</span>
-                            <input type="color" value={headerTitleStyle.color} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, color: e.target.value })} className="w-8 h-8 rounded border cursor-pointer" />
-                            <input type="text" value={headerTitleStyle.color} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, color: e.target.value })} className="flex-1 px-2 py-1 text-sm font-mono" />
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Size</span>
-                            <select value={headerTitleStyle.fontSizePt} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, fontSizePt: Number(e.target.value) })} className="px-2 py-1 border rounded">
-                              {[9, 10, 11, 12].map((n) => <option key={n} value={n}>{n}pt</option>)}
-                            </select>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Font</span>
-                            <select value={headerTitleStyle.fontFamily} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, fontFamily: e.target.value })} className="flex-1 px-2 py-1 border rounded">
-                              {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
-                            </select>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Weight</span>
-                            <select value={headerTitleStyle.fontWeight} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, fontWeight: e.target.value as 'normal' | 'bold' })} className="px-2 py-1 border rounded">
-                              <option value="normal">Normal</option>
-                              <option value="bold">Bold</option>
-                            </select>
-                          </div>
-                        </>
-                      )}
-                      {item === 'contact' && (
-                        <>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Color</span>
-                            <input type="color" value={contactStyle.color} onChange={(e) => setContactStyle({ ...contactStyle, color: e.target.value })} className="w-8 h-8 rounded border cursor-pointer" />
-                            <input type="text" value={contactStyle.color} onChange={(e) => setContactStyle({ ...contactStyle, color: e.target.value })} className="flex-1 px-2 py-1 text-sm font-mono" />
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Size</span>
-                            <select value={contactStyle.fontSizePt} onChange={(e) => setContactStyle({ ...contactStyle, fontSizePt: Number(e.target.value) })} className="px-2 py-1 border rounded">
-                              {[7, 8, 9, 10].map((n) => <option key={n} value={n}>{n}pt</option>)}
-                            </select>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Font</span>
-                            <select value={contactStyle.fontFamily} onChange={(e) => setContactStyle({ ...contactStyle, fontFamily: e.target.value })} className="flex-1 px-2 py-1 border rounded">
-                              {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
-                            </select>
-                          </div>
-                          <div className="flex gap-2 items-center">
-                            <span className="text-xs w-16">Weight</span>
-                            <select value={contactStyle.fontWeight} onChange={(e) => setContactStyle({ ...contactStyle, fontWeight: e.target.value as 'normal' | 'bold' })} className="px-2 py-1 border rounded">
-                              <option value="normal">Normal</option>
-                              <option value="bold">Bold</option>
-                            </select>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {Object.keys(SECTION_LABELS).map((sectionId) => {
-                const elements = SECTION_ELEMENTS[sectionId] ?? [];
-                const isExpanded = expandedSection === sectionId;
-                return (
-                  <div key={sectionId}>
+            <Card title="Style per element" description="Click an item to edit its color and font style">
+              <div className="space-y-2">
+                {(['name', 'title', 'contact'] as const).map((item) => (
+                  <div key={item}>
                     <button
                       type="button"
-                      onClick={() => setExpandedSection(isExpanded ? null : sectionId)}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-left text-sm font-medium transition-colors ${
-                        isExpanded ? 'bg-gray-100 text-gray-800' : 'bg-white hover:bg-gray-100 text-gray-700'
-                      }`}
+                      onClick={() => setSelectedStyleItem(selectedStyleItem === item ? null : item)}
+                      className={chrome.styleRow}
+                      data-open={selectedStyleItem === item}
                     >
-                      <span>{SECTION_LABELS[sectionId]}</span>
-                      <span className="text-gray-400">{isExpanded ? '▲' : '▼'}</span>
+                      <span>
+                        {item === 'name' ? 'Name' : item === 'title' ? 'Title' : 'Contact info'}
+                      </span>
+                      <span className="text-xs text-subtle">{selectedStyleItem === item ? '▲' : '▼'}</span>
                     </button>
-                    {isExpanded && (
-                      <div className="mt-1 ml-3 space-y-1 border-l-2 border-gray-200 pl-3">
-                        {elements.map((elementId) => {
-                          const key = `${sectionId}.${elementId}`;
-                          const style = getSectionElementStyle(sectionId, elementId);
-                          const isSelected = selectedStyleItem === key;
-                          return (
-                            <div key={key}>
-                              <button
-                                type="button"
-                                onClick={() => setSelectedStyleItem(isSelected ? null : key)}
-                                className={`w-full flex items-center justify-between px-3 py-1.5 rounded-md text-left text-sm transition-colors ${
-                                  isSelected ? 'bg-blue-100 text-blue-800 ring-1 ring-blue-300' : 'bg-white hover:bg-gray-50 text-gray-600'
-                                }`}
-                              >
-                                <span>{ELEMENT_LABELS[elementId] ?? elementId}</span>
-                                <span className="text-gray-400">{isSelected ? '▲' : '▼'}</span>
-                              </button>
-                              {isSelected && (
-                                <div className="mt-2 p-3 bg-white rounded-md border border-gray-200 space-y-3">
-                                  <div className="flex gap-2 items-center">
-                                    <span className="text-xs w-16">Color</span>
-                                    <input type="color" value={style.color} onChange={(e) => setSectionElementStyle(sectionId, elementId, { color: e.target.value })} className="w-8 h-8 rounded border cursor-pointer" />
-                                    <input type="text" value={style.color} onChange={(e) => setSectionElementStyle(sectionId, elementId, { color: e.target.value })} className="flex-1 px-2 py-1 text-sm font-mono" />
-                                  </div>
-                                  <div className="flex gap-2 items-center">
-                                    <span className="text-xs w-16">Size</span>
-                                    <select value={style.fontSizePt} onChange={(e) => setSectionElementStyle(sectionId, elementId, { fontSizePt: Number(e.target.value) })} className="px-2 py-1 border rounded">
-                                      {[8, 9, 10, 11].map((n) => <option key={n} value={n}>{n}pt</option>)}
-                                    </select>
-                                  </div>
-                                  <div className="flex gap-2 items-center">
-                                    <span className="text-xs w-16">Font</span>
-                                    <select value={style.fontFamily} onChange={(e) => setSectionElementStyle(sectionId, elementId, { fontFamily: e.target.value })} className="flex-1 px-2 py-1 border rounded">
-                                      {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
-                                    </select>
-                                  </div>
-                                  <div className="flex gap-2 items-center">
-                                    <span className="text-xs w-16">Weight</span>
-                                    <select value={style.fontWeight} onChange={(e) => setSectionElementStyle(sectionId, elementId, { fontWeight: e.target.value as 'normal' | 'bold' })} className="px-2 py-1 border rounded">
-                                      <option value="normal">Normal</option>
-                                      <option value="bold">Bold</option>
-                                    </select>
-                                  </div>
-                                </div>
-                              )}
+                    {selectedStyleItem === item && (
+                      <div className={`${chrome.stylePanel} space-y-3`}>
+                        {item === 'name' && (
+                          <>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Color</span>
+                              <input type="color" value={nameStyle.color} onChange={(e) => setNameStyle({ ...nameStyle, color: e.target.value })} className={chrome.swatch} />
+                              <div className="min-w-0 flex-1">
+                                <input type="text" value={nameStyle.color} onChange={(e) => setNameStyle({ ...nameStyle, color: e.target.value })} className="tl-input font-mono" />
+                              </div>
                             </div>
-                          );
-                        })}
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Size</span>
+                              <div className={STYLE_NARROW}>
+                                <select value={nameStyle.fontSizePt} onChange={(e) => setNameStyle({ ...nameStyle, fontSizePt: Number(e.target.value) })} className="tl-input">
+                                  {[18, 20, 24, 28].map((n) => <option key={n} value={n}>{n}pt</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Font</span>
+                              <div className="min-w-0 flex-1">
+                                <select value={nameStyle.fontFamily} onChange={(e) => setNameStyle({ ...nameStyle, fontFamily: e.target.value })} className="tl-input">
+                                  {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Weight</span>
+                              <div className={STYLE_NARROW}>
+                                <select value={nameStyle.fontWeight} onChange={(e) => setNameStyle({ ...nameStyle, fontWeight: e.target.value as 'normal' | 'bold' })} className="tl-input">
+                                  <option value="normal">Normal</option>
+                                  <option value="bold">Bold</option>
+                                </select>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                        {item === 'title' && (
+                          <>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Color</span>
+                              <input type="color" value={headerTitleStyle.color} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, color: e.target.value })} className={chrome.swatch} />
+                              <div className="min-w-0 flex-1">
+                                <input type="text" value={headerTitleStyle.color} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, color: e.target.value })} className="tl-input font-mono" />
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Size</span>
+                              <div className={STYLE_NARROW}>
+                                <select value={headerTitleStyle.fontSizePt} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, fontSizePt: Number(e.target.value) })} className="tl-input">
+                                  {[9, 10, 11, 12].map((n) => <option key={n} value={n}>{n}pt</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Font</span>
+                              <div className="min-w-0 flex-1">
+                                <select value={headerTitleStyle.fontFamily} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, fontFamily: e.target.value })} className="tl-input">
+                                  {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Weight</span>
+                              <div className={STYLE_NARROW}>
+                                <select value={headerTitleStyle.fontWeight} onChange={(e) => setHeaderTitleStyle({ ...headerTitleStyle, fontWeight: e.target.value as 'normal' | 'bold' })} className="tl-input">
+                                  <option value="normal">Normal</option>
+                                  <option value="bold">Bold</option>
+                                </select>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                        {item === 'contact' && (
+                          <>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Color</span>
+                              <input type="color" value={contactStyle.color} onChange={(e) => setContactStyle({ ...contactStyle, color: e.target.value })} className={chrome.swatch} />
+                              <div className="min-w-0 flex-1">
+                                <input type="text" value={contactStyle.color} onChange={(e) => setContactStyle({ ...contactStyle, color: e.target.value })} className="tl-input font-mono" />
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Size</span>
+                              <div className={STYLE_NARROW}>
+                                <select value={contactStyle.fontSizePt} onChange={(e) => setContactStyle({ ...contactStyle, fontSizePt: Number(e.target.value) })} className="tl-input">
+                                  {[7, 8, 9, 10].map((n) => <option key={n} value={n}>{n}pt</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Font</span>
+                              <div className="min-w-0 flex-1">
+                                <select value={contactStyle.fontFamily} onChange={(e) => setContactStyle({ ...contactStyle, fontFamily: e.target.value })} className="tl-input">
+                                  {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className={STYLE_ROW}>
+                              <span className={STYLE_CAPTION}>Weight</span>
+                              <div className={STYLE_NARROW}>
+                                <select value={contactStyle.fontWeight} onChange={(e) => setContactStyle({ ...contactStyle, fontWeight: e.target.value as 'normal' | 'bold' })} className="tl-input">
+                                  <option value="normal">Normal</option>
+                                  <option value="bold">Bold</option>
+                                </select>
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Section Order (drag to reorder)
-            </label>
-            {columns === 1 ? (
-              renderDraggableList(sectionOrder, setSectionOrder, 'single')
-            ) : (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Left column (drag between columns)</label>
-                  {renderDraggableList(leftSectionOrder, setLeftSectionOrder, 'left')}
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Right column</label>
-                  {renderDraggableList(rightSectionOrder, setRightSectionOrder, 'right')}
-                </div>
+                ))}
+                {Object.keys(SECTION_LABELS).map((sectionId) => {
+                  const elements = SECTION_ELEMENTS[sectionId] ?? [];
+                  const isExpanded = expandedSection === sectionId;
+                  return (
+                    <div key={sectionId}>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSection(isExpanded ? null : sectionId)}
+                        className={chrome.styleRow}
+                        data-open={isExpanded ? 'section' : 'false'}
+                      >
+                        <span>{SECTION_LABELS[sectionId]}</span>
+                        <span className="text-xs text-subtle">{isExpanded ? '▲' : '▼'}</span>
+                      </button>
+                      {isExpanded && (
+                        <div className={`${chrome.styleBranch} space-y-1`}>
+                          {elements.map((elementId) => {
+                            const key = `${sectionId}.${elementId}`;
+                            const style = getSectionElementStyle(sectionId, elementId);
+                            const isSelected = selectedStyleItem === key;
+                            return (
+                              <div key={key}>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedStyleItem(isSelected ? null : key)}
+                                  className={`${chrome.styleRow} ${chrome.styleRowChild}`}
+                                  data-open={isSelected}
+                                >
+                                  <span>{ELEMENT_LABELS[elementId] ?? elementId}</span>
+                                  <span className="text-xs text-subtle">{isSelected ? '▲' : '▼'}</span>
+                                </button>
+                                {isSelected && (
+                                  <div className={`${chrome.stylePanel} space-y-3`}>
+                                    <div className={STYLE_ROW}>
+                                      <span className={STYLE_CAPTION}>Color</span>
+                                      <input type="color" value={style.color} onChange={(e) => setSectionElementStyle(sectionId, elementId, { color: e.target.value })} className={chrome.swatch} />
+                                      <div className="min-w-0 flex-1">
+                                        <input type="text" value={style.color} onChange={(e) => setSectionElementStyle(sectionId, elementId, { color: e.target.value })} className="tl-input font-mono" />
+                                      </div>
+                                    </div>
+                                    <div className={STYLE_ROW}>
+                                      <span className={STYLE_CAPTION}>Size</span>
+                                      <div className={STYLE_NARROW}>
+                                        <select value={style.fontSizePt} onChange={(e) => setSectionElementStyle(sectionId, elementId, { fontSizePt: Number(e.target.value) })} className="tl-input">
+                                          {[8, 9, 10, 11].map((n) => <option key={n} value={n}>{n}pt</option>)}
+                                        </select>
+                                      </div>
+                                    </div>
+                                    <div className={STYLE_ROW}>
+                                      <span className={STYLE_CAPTION}>Font</span>
+                                      <div className="min-w-0 flex-1">
+                                        <select value={style.fontFamily} onChange={(e) => setSectionElementStyle(sectionId, elementId, { fontFamily: e.target.value })} className="tl-input">
+                                          {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f.split(',')[0].trim()}</option>)}
+                                        </select>
+                                      </div>
+                                    </div>
+                                    <div className={STYLE_ROW}>
+                                      <span className={STYLE_CAPTION}>Weight</span>
+                                      <div className={STYLE_NARROW}>
+                                        <select value={style.fontWeight} onChange={(e) => setSectionElementStyle(sectionId, elementId, { fontWeight: e.target.value as 'normal' | 'bold' })} className="tl-input">
+                                          <option value="normal">Normal</option>
+                                          <option value="bold">Bold</option>
+                                        </select>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            )}
-          </div>
+            </Card>
 
-          <div className="flex justify-end gap-3 pt-4 border-t">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSubmitting ? 'Creating...' : 'Create Template'}
-            </button>
-          </div>
-        </form>
+            <div>
+              <p className="tl-label">
+                Section Order (drag to reorder)
+              </p>
+              <div className="mt-2">
+                {columns === 1 ? (
+                  renderDraggableList(sectionOrder, setSectionOrder, 'single')
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <p className="mb-1.5 text-xs font-medium text-muted">Left column (drag between columns)</p>
+                      {renderDraggableList(leftSectionOrder, setLeftSectionOrder, 'left')}
+                    </div>
+                    <div>
+                      <p className="mb-1.5 text-xs font-medium text-muted">Right column</p>
+                      {renderDraggableList(rightSectionOrder, setRightSectionOrder, 'right')}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className={chrome.dialogFoot}>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="tl-button-quiet"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="tl-button"
+              >
+                {isSubmitting ? 'Creating...' : 'Create Template'}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   );

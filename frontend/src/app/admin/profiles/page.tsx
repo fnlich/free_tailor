@@ -10,6 +10,9 @@ import {
   CreateProfileDTO,
 } from '@/lib/api';
 import ProfileForm from '@/components/admin/ProfileForm';
+import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import { IconClose } from '@/components/icons';
+import { EmptyState, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
 
@@ -227,151 +230,128 @@ export default function ProfilesPage() {
       : '';
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <Spinner label="Loading profiles..." />;
   }
 
+  /*
+   * No <main> or <Page> here: app/admin/layout.tsx already wraps every
+   * /admin/* route in one, with the gutters and the width.
+   */
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Profiles</h1>
-          {liveAccount && (
-            <p className="mt-1 text-sm text-gray-600">
+      <PageHeader
+        title="Profiles"
+        description={
+          liveAccount && (
+            <>
               {describeProfileUsage(liveAccount)} profiles used
               {liveAccount.role === 'admin' ? ' (administrators have no limit)' : ` on ${liveAccount.planLabel}`}
+            </>
+          )
+        }
+        actions={
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <button
+              onClick={triggerFileUpload}
+              disabled={isUploading || addBlocked}
+              title={addBlocked ? blockedReason : undefined}
+              className="tl-button-quiet"
+            >
+              {isUploading ? (
+                <>
+                  <span className="tl-spinner" aria-hidden />
+                  Extracting...
+                </>
+              ) : (
+                'Upload Resume PDF'
+              )}
+            </button>
+            <input
+              ref={jsonInputRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={handleJsonImport}
+              className="hidden"
+            />
+            <button
+              onClick={triggerJsonImport}
+              disabled={isUploading || addBlocked}
+              title={addBlocked ? blockedReason : 'Create profiles from a profile JSON file'}
+              className="tl-button-quiet"
+            >
+              Import JSON
+            </button>
+            <button
+              onClick={openCreateForm}
+              disabled={addBlocked}
+              title={addBlocked ? blockedReason : undefined}
+              className="tl-button"
+              data-shape="pill"
+            >
+              New Profile
+            </button>
+          </>
+        }
+      />
+
+      <div className="mb-6 space-y-3 empty:hidden">
+        {uploadProgress && (
+          <Notice tone="info" role="status" className="flex items-center gap-3">
+            <span className="tl-spinner" aria-hidden />
+            {uploadProgress}
+          </Notice>
+        )}
+
+        {atLimit && liveAccount && (
+          <Notice tone="warn">
+            <p className="font-semibold">
+              You are using all {liveAccount.profileLimit} profile
+              {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.planLabel} plan.
             </p>
-          )}
-        </div>
-        <div className="flex gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
-          <button
-            onClick={triggerFileUpload}
-            disabled={isUploading || addBlocked}
-            title={addBlocked ? blockedReason : undefined}
-            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            {isUploading ? (
-              <>
-                <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Extracting...
-              </>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                </svg>
-                Upload Resume PDF
-              </>
-            )}
-          </button>
-          <input
-            ref={jsonInputRef}
-            type="file"
-            accept=".json,application/json"
-            onChange={handleJsonImport}
-            className="hidden"
-          />
-          <button
-            onClick={triggerJsonImport}
-            disabled={isUploading || addBlocked}
-            title={addBlocked ? blockedReason : 'Create profiles from a profile JSON file'}
-            className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            Import JSON
-          </button>
-          <button
-            onClick={openCreateForm}
-            disabled={addBlocked}
-            title={addBlocked ? blockedReason : undefined}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Add Manually
-          </button>
-        </div>
+            <p className="mt-1">
+              Delete one below to make room, or ask an administrator of this installation to move your
+              account to a larger plan.{' '}
+              <Link href="/settings/plan" className="font-medium underline underline-offset-2">
+                See your plan
+              </Link>
+              .
+            </p>
+          </Notice>
+        )}
+
+        {notice && <Notice tone="success">{notice}</Notice>}
+
+        {error && (
+          <Notice tone="error" role="alert">
+            {error}
+          </Notice>
+        )}
       </div>
 
-      {uploadProgress && (
-        <div className="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded-md mb-4 flex items-center gap-2">
-          <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
-          {uploadProgress}
-        </div>
-      )}
-
-      {atLimit && liveAccount && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-md mb-4">
-          <p className="font-medium">
-            You are using all {liveAccount.profileLimit} profile
-            {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.planLabel} plan.
-          </p>
-          <p className="mt-1 text-sm">
-            Delete one below to make room, or ask an administrator of this installation to move your
-            account to a larger plan.{' '}
-            <Link href="/settings/plan" className="underline">
-              See your plan
-            </Link>
-            .
-          </p>
-        </div>
-      )}
-
-      {notice && (
-        <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-md mb-4">
-          {notice}
-        </div>
-      )}
-
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md mb-4">
-          {error}
-        </div>
-      )}
-
       {showForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[var(--layer-app-modal)] p-4">
-          <div className="bg-white rounded-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-bold">
-                  {editingProfile ? 'Edit Profile' : 'Create Profile'}
-                </h2>
-                <button
-                  onClick={closeForm}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  <svg
-                    className="w-6 h-6"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
-                </button>
-              </div>
+        <div className="tl-backdrop">
+          <div
+            className="tl-dialog max-w-4xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-form-title"
+          >
+            <div className={chrome.dialogHead}>
+              <h2 id="profile-form-title" className="text-xl font-bold tracking-tight text-ink">
+                {editingProfile ? 'Edit Profile' : 'Create Profile'}
+              </h2>
+              <button type="button" onClick={closeForm} className="tl-icon-button" aria-label="Close">
+                <IconClose className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 pb-6">
               <ProfileForm
                 initialData={editingProfile || undefined}
                 onSubmit={editingProfile ? handleUpdate : handleCreate}
@@ -383,76 +363,60 @@ export default function ProfilesPage() {
       )}
 
       {profiles.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-lg shadow">
-          <svg
-            className="mx-auto h-12 w-12 text-gray-400"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-            />
-          </svg>
-          <h3 className="mt-2 text-sm font-medium text-gray-900">No profiles</h3>
-          <p className="mt-1 text-sm text-gray-500">
-            Get started by creating a new profile.
-          </p>
-          <div className="mt-6">
-            <button
-              onClick={openCreateForm}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
+        <EmptyState
+          title="No profiles"
+          action={
+            <button onClick={openCreateForm} className="tl-button">
               Add Profile
             </button>
-          </div>
-        </div>
+          }
+        >
+          Get started by creating a new profile.
+        </EmptyState>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <ul className="tl-rows">
           {profiles.map((profile) => (
-            <div
+            <li
               key={profile.id}
-              className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow"
+              className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3"
             >
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    {profile.name}
-                  </h3>
-                  {profile.disabled && (
-                    <span className="inline-block mt-1 px-2 py-0.5 bg-gray-200 text-gray-700 text-xs rounded">
-                      Disabled
-                    </span>
-                  )}
+              {/* At least 12rem, so on a phone the buttons drop under the
+                  name instead of squeezing the title down to "Full-st...". */}
+              <div className="min-w-[12rem] flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base font-semibold text-ink">{profile.name}</h3>
+                  {profile.disabled && <Pill tone="grey">Disabled</Pill>}
                 </div>
+                {profile.title && <p className="mt-0.5 truncate text-sm text-muted">{profile.title}</p>}
               </div>
 
-              <div className="flex justify-end space-x-2 pt-4 border-t">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => openEditForm(profile)}
-                  className="px-3 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded"
+                  className="tl-button-quiet"
+                  data-size="sm"
                 >
                   Edit
                 </button>
                 <button
                   onClick={() => handleToggleDisabled(profile)}
-                  className="px-3 py-1 text-sm text-amber-700 hover:bg-amber-50 rounded"
+                  className="tl-button-quiet"
+                  data-size="sm"
                 >
                   {profile.disabled ? 'Enable' : 'Disable'}
                 </button>
                 <button
                   onClick={() => handleDelete(profile.id)}
-                  className="px-3 py-1 text-sm text-red-600 hover:bg-red-50 rounded"
+                  className="tl-button-quiet"
+                  data-size="sm"
+                  data-tone="danger"
                 >
                   Delete
                 </button>
               </div>
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );

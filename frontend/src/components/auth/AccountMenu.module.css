@@ -1,0 +1,21 @@
+/*
+ * The one colour in the account menu that is not a theme token: Log out, in
+ * the kit's danger red, stated for both themes. A module because `text-red-600`
+ * is a utility the html.dark shim remaps on its own terms.
+ */
+
+.signOut {
+  color: #b91c1c;
+}
+
+.signOut:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+:global(html.dark) .signOut {
+  color: #fca5a5;
+}
+
+:global(html.dark) .signOut:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.14);
+}

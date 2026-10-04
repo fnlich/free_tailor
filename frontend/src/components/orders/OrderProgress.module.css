@@ -1,0 +1,50 @@
+/*
+ * The progress bar's three colours, in both themes.
+ *
+ * A module rather than utilities because the track used to be `bg-gray-200`,
+ * which the html.dark shim in globals.css remaps, while the two fills were
+ * colours it has never heard of - so half of one bar followed the theme and
+ * half did not. Stated here, against html.dark, all three move together. The
+ * fills are the same green and red the kit's pills use for done and failed.
+ */
+
+.track {
+  display: flex;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: var(--surface-strong);
+}
+
+.done,
+.stopped {
+  height: 100%;
+  transition: width 300ms ease-out;
+}
+
+.done {
+  background: #16a34a;
+}
+
+.stopped {
+  background: #f87171;
+}
+
+:global(html.dark) .track {
+  background: var(--surface-strong);
+}
+
+:global(html.dark) .done {
+  background: #22c55e;
+}
+
+:global(html.dark) .stopped {
+  background: #f87171;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .done,
+  .stopped {
+    transition: none;
+  }
+}

@@ -5,7 +5,9 @@ import Link from 'next/link';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import { isOrderLive, orderZipUrl, ordersApi, type Order } from '@/lib/orders';
 import { formatDate } from '@/lib/format';
-import { CARD, LABEL } from '@/components/pageChrome';
+import { EmptyState, Notice, Page, PageHeader, Spinner } from '@/components/ui/kit';
+
+const COLUMNS = ['Date', 'Order #', 'Label', 'Resumes', 'Status', 'Action(s)'];
 
 /** Whether anything on the page is still moving, and therefore worth polling for. */
 function anyLive(orders: Order[]): boolean {
@@ -77,81 +79,86 @@ export default function OrdersPage() {
   }, [load]);
 
   return (
-    <main className="mx-auto max-w-4xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">
-          Order status &amp; built resumes
-        </h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
-          Every Google Sheet import is placed as an order. Files are kept for a few days, then
-          deleted automatically - download anything you want to keep.
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Orders"
+        description="Every Google Sheet import is placed as an order. Files are kept for a few days, then deleted automatically - download anything you want to keep."
+      />
 
       {error && (
-        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+        <Notice tone="error" className="mb-6">
           {error}
-        </div>
+        </Notice>
       )}
 
       {loading ? (
-        <div className={CARD}>
-          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-        </div>
+        <Spinner />
       ) : orders.length === 0 ? (
-        <div className={CARD}>
-          <p className="text-lg font-semibold text-gray-900 dark:text-white">No orders yet</p>
-          <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
-            Import jobs from your Google Sheet on the{' '}
-            <Link href="/" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
-              Builder
-            </Link>{' '}
-            and the resumes will appear here as they are built.
-          </p>
-        </div>
+        <EmptyState title="No orders yet">
+          Import jobs from your Google Sheet on the{' '}
+          <Link href="/" className="tl-link">
+            Builder
+          </Link>{' '}
+          and the resumes will appear here as they are built.
+        </EmptyState>
       ) : (
-        <div className="space-y-4">
-          {orders.map((order) => (
-            <div key={order.id} className={CARD}>
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <div className={LABEL}>Order number</div>
-                  <Link
-                    href={`/orders/${order.id}`}
-                    className="mt-1 block font-mono text-sm font-semibold text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    {order.number}
-                  </Link>
-                  <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">{order.label}</p>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                    Placed {formatDate(order.createdAt, { style: 'short' })} &middot; {describeExpiry(order)}
-                  </p>
-                </div>
-                <OrderStatePill state={order.state} />
-              </div>
-
-              <OrderProgress counts={order.counts} className="mt-4" />
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link
-                  href={`/orders/${order.id}`}
-                  className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
-                >
-                  View resumes
-                </Link>
-                {order.hasFiles && order.state !== 'expired' && (
-                  <a
-                    href={orderZipUrl(order.id)}
-                    className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-                  >
-                    Download all as .zip
-                  </a>
-                )}
-              </div>
-            </div>
-          ))}
+        /*
+         * The same bordered table as the order history on /credits. A colour
+         * on a cell goes on an inner span: `.tl-table td` is unlayered and
+         * beats a utility on the td itself.
+         */
+        <div className="tl-table-box">
+          <table className="tl-table">
+            <caption className="sr-only">Order status &amp; built resumes</caption>
+            <thead>
+              <tr>
+                {COLUMNS.map((column) => (
+                  <th key={column} scope="col">
+                    {column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((order) => (
+                <tr key={order.id}>
+                  <td className="whitespace-nowrap">
+                    <span className="block text-ink">{formatDate(order.createdAt, { style: 'short' })}</span>
+                    <span className="mt-0.5 block text-xs text-subtle">{describeExpiry(order)}</span>
+                  </td>
+                  <td className="whitespace-nowrap">
+                    <Link
+                      href={`/orders/${order.id}`}
+                      className="font-medium text-accent-ink underline underline-offset-2"
+                    >
+                      {order.number}
+                    </Link>
+                  </td>
+                  <td className="min-w-48">{order.label}</td>
+                  <td>
+                    <OrderProgress counts={order.counts} className="min-w-40" />
+                  </td>
+                  <td>
+                    <OrderStatePill state={order.state} />
+                  </td>
+                  <td>
+                    <div className="flex flex-col gap-2">
+                      <Link href={`/orders/${order.id}`} className="tl-button-quiet">
+                        View resumes
+                      </Link>
+                      {order.hasFiles && order.state !== 'expired' && (
+                        <a href={orderZipUrl(order.id)} className="tl-button-quiet">
+                          Download all as .zip
+                        </a>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-    </main>
+    </Page>
   );
 }

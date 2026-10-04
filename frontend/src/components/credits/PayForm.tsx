@@ -8,6 +8,8 @@ import {
   useCheckoutElements,
 } from '@stripe/react-stripe-js/checkout';
 import { formatAmount } from '@/lib/payments';
+import { Spinner } from '@/components/ui/kit';
+import { PANEL, PRIMARY, QUIET } from './chrome';
 import { forgetStripe, stripeFor } from './stripeLoader';
 
 /**
@@ -26,8 +28,6 @@ import { forgetStripe, stripeFor } from './stripeLoader';
  * webhook, exactly as the redirect version did.
  */
 
-const PANEL =
-  'rounded-xl border border-gray-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900';
 
 function Inner({
   amountCents,
@@ -49,13 +49,9 @@ function Inner({
     // two waits somebody is stuck in.
     return (
       <div className={PANEL}>
-        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600" />
-        <div className="mt-3 text-center">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-sm font-medium text-gray-600 hover:underline dark:text-slate-300"
-          >
+        <Spinner />
+        <div className="text-center">
+          <button type="button" onClick={onCancel} className={QUIET}>
             Cancel
           </button>
         </div>
@@ -66,14 +62,10 @@ function Inner({
   if (state.type === 'error') {
     return (
       <div className={PANEL}>
-        <p className="text-sm text-red-700 dark:text-red-300">
+        <p className="tl-status" data-tone="error">
           The payment form could not be loaded. {state.error.message}
         </p>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="mt-3 text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-        >
+        <button type="button" onClick={onCancel} className={`${QUIET} mt-4`}>
           Start again
         </button>
       </div>
@@ -124,7 +116,7 @@ function Inner({
       </div>
 
       {problem && (
-        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+        <div className="tl-notice" data-tone="error">
           {problem}
         </div>
       )}
@@ -134,7 +126,7 @@ function Inner({
           type="button"
           onClick={() => void pay()}
           disabled={paying}
-          className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
+          className={PRIMARY}
         >
           {paying ? 'Paying…' : `Pay ${formatAmount(amountCents, currency)}`}
         </button>
@@ -142,13 +134,13 @@ function Inner({
           type="button"
           onClick={onCancel}
           disabled={paying}
-          className="text-sm font-medium text-gray-600 hover:underline disabled:opacity-50 dark:text-slate-300"
+          className={QUIET}
         >
           Cancel
         </button>
       </div>
 
-      <p className="text-xs text-gray-500 dark:text-slate-400">
+      <p className="text-xs text-subtle">
         Card details are entered in a form served by Stripe and go straight to them. This server
         never sees them, and your credits arrive once the payment is confirmed.
       </p>
@@ -232,18 +224,14 @@ export default function PayForm(props: {
   if (load.status === 'failed') {
     return (
       <div className={PANEL}>
-        <p className="text-sm font-semibold text-gray-900 dark:text-white">
+        <p className="text-sm font-semibold text-ink">
           The payment form could not be loaded.
         </p>
-        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+        <p className="mt-1 text-sm text-muted">
           Stripe&apos;s script did not load. A script blocker or an offline moment will do it -
           nothing was charged, and your card was never entered.
         </p>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="mt-3 text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-        >
+        <button type="button" onClick={onCancel} className={`${QUIET} mt-4`}>
           Start again
         </button>
       </div>
@@ -253,15 +241,11 @@ export default function PayForm(props: {
   if (load.status === 'loading') {
     return (
       <div className={PANEL}>
-        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600" />
+        <Spinner />
         {/* A way out while it loads. Somebody who pressed Pay by mistake should
             not have to wait for a script they did not ask for. */}
-        <div className="mt-3 text-center">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-sm font-medium text-gray-600 hover:underline dark:text-slate-300"
-          >
+        <div className="text-center">
+          <button type="button" onClick={onCancel} className={QUIET}>
             Cancel
           </button>
         </div>

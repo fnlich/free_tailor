@@ -58,9 +58,9 @@ async function main() {
   console.log('\n=== The buy page ===');
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
   const heading = await page.locator('h1').first().innerText();
-  check('the buy page loads', heading.includes('Buy credits'), heading);
+  check('the buy page loads', heading.includes('Credits'), heading);
 
-  const balanceShown = await page.locator('text=Your balance').locator('..').innerText();
+  const balanceShown = await page.locator('text=Current Balance').locator('..').innerText();
   check('it shows a balance of zero to start', /\b0\b/.test(balanceShown), balanceShown.replace(/\n/g, ' | '));
 
   const cardButton = page.getByRole('button', { name: /pay by credit or debit card/i });
@@ -145,7 +145,7 @@ async function main() {
 
   console.log('\n=== Back on the buy page ===');
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
-  const balanceAfter = await page.locator('text=Your balance').locator('..').innerText();
+  const balanceAfter = await page.locator('text=Current Balance').locator('..').innerText();
   check('the balance has the credits on it', /\b40\b/.test(balanceAfter), balanceAfter.replace(/\n/g, ' | '));
   // 'Payment history' since the credits page was reworked; this said 'Your
   // payments' for three commits after the heading changed, and the script needs
@@ -201,7 +201,7 @@ async function main() {
   await adminPage.screenshot({ path: `${SHOTS}/7-refunded.png`, fullPage: true });
 
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
-  const finalBalance = await page.locator('text=Your balance').locator('..').innerText();
+  const finalBalance = await page.locator('text=Current Balance').locator('..').innerText();
   check('and the buyer\'s balance comes back down', /\b0\b/.test(finalBalance), finalBalance.replace(/\n/g, ' | '));
 
   // js.stripe.com is unreachable from this sandbox, and the page reporting that

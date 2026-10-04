@@ -35,13 +35,16 @@ type Props = {
   idPrefix: string;
 };
 
-const SELECT_CLASS =
-  'w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 ' +
-  'focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500 ' +
-  'dark:bg-gray-800 dark:border-gray-600 dark:text-gray-100';
+/*
+ * The kit's field, label and hint (globals.css .tl-input / .tl-label, and the
+ * subtle token), with no `dark:` variants: the html.dark shim beats every one
+ * of them, and the kit's names are ones it never touches, so these read the
+ * same in both themes on the profile form and in the builder.
+ */
+const SELECT_CLASS = 'tl-input';
 
-const LABEL_CLASS = 'block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1';
-const HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
+const LABEL_CLASS = 'tl-label mb-2';
+const HINT_CLASS = 'mt-2 text-sm text-subtle';
 /**
  * The locked-provider note, as plain running text.
  *
@@ -53,7 +56,7 @@ const HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
  * says that; a coloured box shouting at somebody who has done nothing wrong
  * does not.
  */
-const LOCK_HINT_CLASS = 'mt-1 text-xs text-gray-500 dark:text-gray-400';
+const LOCK_HINT_CLASS = 'mt-1 text-sm text-subtle';
 
 /**
  * The model select.

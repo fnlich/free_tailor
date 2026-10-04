@@ -311,7 +311,9 @@ export default function BuyCreditsDialog({
       onClose={onClose}
     >
       {error && (
-        <div className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+        <div className="tl-notice mb-4" data-tone="error">
+          {error}
+        </div>
       )}
 
       {step.name === 'options' && (

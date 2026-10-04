@@ -1,41 +1,52 @@
 /**
  * The class strings the purchase dialog shares, and one rule worth knowing.
  *
+ * They point at the shared kit (.tl-card, .tl-choice, .tl-button,
+ * .tl-button-quiet, .tl-input in globals.css), so the dialog is drawn with the
+ * same boxes, choices and buttons as every other page after the redesign.
+ *
  * **Nothing here carries a `dark:` variant, and that is not a style choice.**
  * The `html.dark` shim at the end of `globals.css` is UNLAYERED while every
  * Tailwind utility lives inside `@layer utilities`, and unlayered CSS beats
  * layered CSS on cascade layer - which nothing but `!important` can out-bid.
  * So `bg-white dark:bg-slate-900` resolves to the shim's colour in dark mode
- * and the `dark:` half is simply ignored. The `@theme inline` tokens
- * (`bg-surface`, `border-line`, `text-ink`, `text-muted`, `text-subtle`,
- * `bg-accent-soft`) sidestep it: they re-resolve against whatever `html.dark`
- * set, in one class, and the shim has never heard of them.
+ * and the `dark:` half is simply ignored. The kit's classes and the `@theme
+ * inline` tokens (`text-ink`, `text-muted`, `text-subtle`) sidestep it: they
+ * state both themes themselves, and the shim has never heard of them.
  *
- * The same trap has a second face. The shim rewrites the border COLOUR of the
- * bare `.border` (and `.border-t/r/b/l`), so `border border-accent` comes out
- * neutral in dark mode. It does not touch `.border-2`. Hence the rule below:
+ * The same layering has a second face, and it is the one to remember when
+ * adding a utility to one of these: **the kit classes are unlayered too, so
+ * they beat a utility that sets the same property.** `${PRIMARY} px-3` keeps
+ * the button's own padding, `${FIELD} w-24` stays full width, `${CHOICE}
+ * items-center` stays top-aligned. Size a button with `data-size="sm"`, narrow
+ * a field by wrapping it, and set anything else on an inner element or an
+ * attribute the kit reads. Utilities for properties the class does not set -
+ * margins, `min-w-0`, `text-left`, `relative` - work as usual.
  *
- *   - a neutral hairline      -> `border border-line`  (both resolve to the
- *                                same variable, so the shim agrees with it)
- *   - a border whose COLOUR   -> `border-2`, always
- *     carries meaning
- *
- * Status colours are likewise limited to the ones the shim actually covers -
- * red, blue and emerald at 50/200/700. Amber has no dark-mode rule at all,
- * which is why the panels below are red and blue rather than red and amber.
+ * Status colours come from the kit as well (.tl-notice, .tl-status), which
+ * states amber for both themes - so the refunds panel is a warning again
+ * rather than the red it had to borrow while amber had no dark-mode rule.
  */
 
 /** A framed region inside the dialog. */
-export const PANEL = 'rounded-xl border border-line bg-surface p-4';
-
-/** A small uppercase caption, as used across the rest of the app. */
-export const LABEL = 'text-xs font-medium uppercase tracking-wide text-subtle';
+export const PANEL = 'tl-card p-4';
 
 /**
- * A choice: a payment method, a preset amount, a saved card.
+ * A caption over a group: "Card", "Choose an amount", "Paying with".
  *
- * `border-2` even when unselected, so selecting one changes a colour and never
- * a size - a chip that grows by 1px on selection nudges every chip after it.
+ * The kit's label look written as utilities rather than `.tl-label`, because
+ * that class is `display: block` - unlayered - and the payment options step
+ * lays this heading out as a flex row with the price range at its far end.
+ */
+export const LABEL = 'text-sm font-medium text-ink';
+
+/**
+ * A choice: a payment method, a preset amount.
+ *
+ * `.tl-choice` draws the box and its selected state, which it reads from
+ * `data-on="true"` on the element. Its border is the same width either way, so
+ * selecting one changes a colour and never a size - a chip that grows by 1px
+ * on selection nudges every chip after it.
  *
  * **`min-w-0` is load-bearing, and it is not the same `min-w-0` as the one
  * inside the chip.** Every one of these sits in a `grid`, and a grid item's
@@ -50,25 +61,22 @@ export const LABEL = 'text-xs font-medium uppercase tracking-wide text-subtle';
  * Measured on the crypto row with its setup instructions: a 398px track held a
  * 1291px button whose right edge was 868px past the dialog.
  */
-export const CHOICE =
-  'min-w-0 rounded-xl border-2 border-line bg-surface p-3 text-left transition-colors ' +
-  'hover:border-line-strong disabled:cursor-not-allowed disabled:opacity-55 ' +
-  'disabled:hover:border-line';
+export const CHOICE = 'tl-choice min-w-0 text-left disabled:opacity-55';
 
-export const CHOICE_ON =
-  'min-w-0 rounded-xl border-2 border-accent bg-accent-soft p-3 text-left';
+/**
+ * The selected choice. The same class: `.tl-choice` draws the selection from
+ * `data-on="true"`, so a selected chip carries that attribute as well.
+ */
+export const CHOICE_ON = CHOICE;
 
 /** The one button on each step that moves the purchase forward. */
-export const PRIMARY =
-  'rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white transition-opacity ' +
-  'hover:opacity-90 disabled:cursor-not-allowed disabled:bg-gray-400 disabled:hover:opacity-100';
+export const PRIMARY = 'tl-button';
 
 /** Back, Close, Cancel: present, but not competing with PRIMARY. */
-export const QUIET =
-  'rounded-xl border border-line px-4 py-2.5 text-sm font-medium text-muted ' +
-  'transition-colors hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-55';
+export const QUIET = 'tl-button-quiet';
 
-/** A text field or a number box. The shim styles bare inputs in dark mode. */
-export const FIELD =
-  'rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 ' +
-  'focus:ring-blue-500';
+/**
+ * A text field or a number box. Full width, like every `.tl-input` - narrow
+ * one by wrapping it in a box of the width wanted.
+ */
+export const FIELD = 'tl-input';

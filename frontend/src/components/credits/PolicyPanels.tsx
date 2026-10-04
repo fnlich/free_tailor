@@ -32,33 +32,24 @@
  * true of a provider whose page quotes and matches on its own.
  */
 
-const TONES = {
-  info: {
-    box: 'rounded-xl border border-blue-200 bg-blue-50 p-4',
-    head: 'text-sm font-semibold text-blue-700',
-    body: 'mt-2 space-y-1.5 text-xs leading-relaxed text-blue-700',
-  },
-  warn: {
-    box: 'rounded-xl border border-red-200 bg-red-50 p-4',
-    head: 'text-sm font-semibold text-red-700',
-    body: 'mt-2 space-y-1.5 text-xs leading-relaxed text-red-700',
-  },
-} as const;
-
+/**
+ * One panel, as the kit's notice, which states both themes itself. The
+ * refunds panel is a warning in amber: it used to be red only because amber
+ * had no rule in the dark-mode shim, and `.tl-notice` has one.
+ */
 function Panel({
   tone,
   title,
   points,
 }: {
-  tone: keyof typeof TONES;
+  tone: 'info' | 'warn';
   title: string;
   points: string[];
 }) {
-  const style = TONES[tone];
   return (
-    <div className={style.box}>
-      <p className={style.head}>{title}</p>
-      <ul className={style.body}>
+    <div className="tl-notice" data-tone={tone}>
+      <p className="font-semibold">{title}</p>
+      <ul className="mt-2 space-y-1.5 text-xs leading-relaxed">
         {points.map((point) => (
           <li key={point} className="flex gap-2">
             <span aria-hidden>&bull;</span>

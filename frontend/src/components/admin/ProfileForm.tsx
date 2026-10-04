@@ -25,6 +25,8 @@ import {
   normalizeAiPreferences,
 } from '@/lib/api';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
+import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import { Card, Field, Notice, Section } from '@/components/ui/kit';
 
 interface ProfileFormProps {
   initialData?: Profile;
@@ -546,47 +548,38 @@ export default function ProfileForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className={chrome.sectionedForm}>
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md">
+        <Notice tone="error" role="alert" className="mt-6">
           {error}
-        </div>
+        </Notice>
       )}
 
       {/* Basic Info */}
-      <div className="space-y-4">
-        <h3 className="text-lg font-medium text-gray-900 border-b pb-2">
-          Basic Information
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Full Name
-            </label>
+      <Section title="Basic Information">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Field label="Full Name" htmlFor="profile-name">
             <input
+              id="profile-name"
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Professional Title
-            </label>
+          </Field>
+          <Field label="Professional Title" htmlFor="profile-title">
             <input
+              id="profile-title"
               type="text"
               value={formData.title}
               onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
               placeholder="e.g., Senior Backend Engineer | Django | FastAPI"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Total Years of Experience
-            </label>
+          </Field>
+          <Field label="Total Years of Experience" htmlFor="profile-years">
             <input
+              id="profile-years"
               type="number"
               min="0"
               step="0.5"
@@ -594,20 +587,22 @@ export default function ProfileForm({
               onChange={(e) =>
                 setFormData({ ...formData, totalYearsExperience: e.target.value })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
               placeholder="e.g., 4"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Default Template
-            </label>
+          </Field>
+          <Field
+            label="Default Template"
+            htmlFor="profile-template"
+            hint="When set, this template is used automatically when building resumes for this profile."
+          >
             <select
+              id="profile-template"
               value={formData.preferredTemplate}
               onChange={(e) =>
                 setFormData({ ...formData, preferredTemplate: e.target.value })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             >
               <option value="">None (select in builder)</option>
               {templates.map((t) => {
@@ -624,22 +619,15 @@ export default function ProfileForm({
                 );
               })}
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              When set, this template is used automatically when building resumes for this profile.
-            </p>
-          </div>
+          </Field>
         </div>
-      </div>
+      </Section>
 
       {/* AI defaults for this profile */}
-      <div className="space-y-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
-        <div className="border-b border-gray-200 pb-2">
-          <h3 className="text-lg font-medium text-gray-900">AI Defaults</h3>
-          <p className="mt-1 text-xs text-gray-500">
-            Used whenever this profile is generated. Any of them can be overridden for a single
-            run on the builder page.
-          </p>
-        </div>
+      <Section
+        title="AI Defaults"
+        description="Used whenever this profile is generated. Any of them can be overridden for a single run on the builder page."
+      >
         <AiPreferenceFields
           idPrefix="profile-ai"
           value={formData.profileSettings.ai}
@@ -653,22 +641,17 @@ export default function ProfileForm({
               'the first enabled model',
           }}
         />
-      </div>
+      </Section>
 
       {/* Profile Settings */}
-      <div className="space-y-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
-        <div className="border-b border-gray-200 pb-2">
-          <h3 className="text-lg font-medium text-gray-900">Profile Settings</h3>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Building Prompt
-            </label>
+      <Section title="Profile Settings">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Field label="Building Prompt" htmlFor="profile-resume-prompt">
             <select
+              id="profile-resume-prompt"
               value={formData.profileSettings.resumePromptId}
               onChange={(e) => updateProfileSetting('resumePromptId', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             >
               {!resumePrompts.some((prompt) => prompt.id === formData.profileSettings.resumePromptId) && (
                 <option value={formData.profileSettings.resumePromptId}>
@@ -683,15 +666,13 @@ export default function ProfileForm({
                 </option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Extracting Prompt
-            </label>
+          </Field>
+          <Field label="Extracting Prompt" htmlFor="profile-analyze-prompt">
             <select
+              id="profile-analyze-prompt"
               value={formData.profileSettings.analyzeJobPromptId}
               onChange={(e) => updateProfileSetting('analyzeJobPromptId', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             >
               {!analyzeJobPrompts.some((prompt) => prompt.id === formData.profileSettings.analyzeJobPromptId) && (
                 <option value={formData.profileSettings.analyzeJobPromptId}>
@@ -706,45 +687,45 @@ export default function ProfileForm({
                 </option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Resume File Name
-            </label>
+          </Field>
+          <Field
+            label="Resume File Name"
+            htmlFor="profile-resume-file-name"
+            hint={<>Available tokens: {FILE_NAME_TOKENS}</>}
+          >
             <input
+              id="profile-resume-file-name"
               type="text"
               value={formData.profileSettings.resumeFileNameTemplate}
               onChange={(e) => updateProfileSetting('resumeFileNameTemplate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
               placeholder={DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              Available tokens: {FILE_NAME_TOKENS}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Cover Letter File Name
-            </label>
+          </Field>
+          <Field
+            label="Cover Letter File Name"
+            htmlFor="profile-cover-letter-file-name"
+            hint={<>Available tokens: {FILE_NAME_TOKENS}</>}
+          >
             <input
+              id="profile-cover-letter-file-name"
               type="text"
               value={formData.profileSettings.coverLetterFileNameTemplate}
               onChange={(e) => updateProfileSetting('coverLetterFileNameTemplate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
               placeholder={DEFAULT_PROFILE_SETTINGS.coverLetterFileNameTemplate}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              Available tokens: {FILE_NAME_TOKENS}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Hard Skill Ordering
-            </label>
+          </Field>
+          <Field
+            label="Hard Skill Ordering"
+            htmlFor="profile-hard-skill-ordering"
+            hint={HARD_SKILL_ORDERING_OPTIONS.find((option) => option.value === formData.profileSettings.hardSkillOrdering)?.description}
+          >
             <select
+              id="profile-hard-skill-ordering"
               value={formData.profileSettings.hardSkillOrdering}
               onChange={(e) => updateProfileSetting('hardSkillOrdering', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             >
               {HARD_SKILL_ORDERING_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -752,18 +733,21 @@ export default function ProfileForm({
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              {HARD_SKILL_ORDERING_OPTIONS.find((option) => option.value === formData.profileSettings.hardSkillOrdering)?.description}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Technical Skills Layout
-            </label>
+          </Field>
+          <Field
+            label="Technical Skills Layout"
+            htmlFor="profile-technical-skills-layout"
+            hint={
+              TECHNICAL_SKILLS_LAYOUT_OPTIONS.find(
+                (option) => option.value === formData.profileSettings.technicalSkillsLayout
+              )?.description
+            }
+          >
             <select
+              id="profile-technical-skills-layout"
               value={formData.profileSettings.technicalSkillsLayout}
               onChange={(e) => updateProfileSetting('technicalSkillsLayout', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             >
               {TECHNICAL_SKILLS_LAYOUT_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -771,43 +755,30 @@ export default function ProfileForm({
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              {
-                TECHNICAL_SKILLS_LAYOUT_OPTIONS.find(
-                  (option) => option.value === formData.profileSettings.technicalSkillsLayout
-                )?.description
-              }
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Company Folder Name
-            </label>
+          </Field>
+          <Field
+            label="Company Folder Name"
+            htmlFor="profile-company-folder-name"
+            hint={<>Available tokens: {FOLDER_NAME_TOKENS}</>}
+          >
             <input
+              id="profile-company-folder-name"
               type="text"
               value={formData.profileSettings.companyFolderNameTemplate}
               onChange={(e) => updateProfileSetting('companyFolderNameTemplate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
               placeholder={DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              Available tokens: {FOLDER_NAME_TOKENS}
-            </p>
-          </div>
+          </Field>
         </div>
-      </div>
+      </Section>
 
       {/* Contact Info */}
-      <div className="space-y-4">
-        <h3 className="text-lg font-medium text-gray-900 border-b pb-2">
-          Contact Information
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Email
-            </label>
+      <Section title="Contact Information">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Field label="Email" htmlFor="profile-email">
             <input
+              id="profile-email"
               type="email"
               value={formData.contact.email}
               onChange={(e) =>
@@ -816,14 +787,12 @@ export default function ProfileForm({
                   contact: { ...formData.contact, email: e.target.value },
                 })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Phone
-            </label>
+          </Field>
+          <Field label="Phone" htmlFor="profile-phone">
             <input
+              id="profile-phone"
               type="tel"
               value={formData.contact.phone}
               onChange={(e) =>
@@ -832,14 +801,12 @@ export default function ProfileForm({
                   contact: { ...formData.contact, phone: e.target.value },
                 })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Location
-            </label>
+          </Field>
+          <Field label="Location" htmlFor="profile-location">
             <input
+              id="profile-location"
               type="text"
               value={formData.contact.location}
               onChange={(e) =>
@@ -848,15 +815,13 @@ export default function ProfileForm({
                   contact: { ...formData.contact, location: e.target.value },
                 })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
               placeholder="e.g., San Francisco, CA"
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              LinkedIn URL
-            </label>
+          </Field>
+          <Field label="LinkedIn URL" htmlFor="profile-linkedin">
             <input
+              id="profile-linkedin"
               type="url"
               value={formData.contact.linkedin || ''}
               onChange={(e) =>
@@ -865,186 +830,190 @@ export default function ProfileForm({
                   contact: { ...formData.contact, linkedin: e.target.value },
                 })
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             />
-          </div>
+          </Field>
         </div>
-      </div>
+      </Section>
 
       {/* Summary */}
-      <div className="space-y-4">
-        <h3 className="text-lg font-medium text-gray-900 border-b pb-2">
-          Professional Summary
-        </h3>
+      <Section title="Professional Summary">
         <textarea
           rows={4}
           value={formData.summary}
           onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="tl-input"
+          aria-label="Professional Summary"
           placeholder="Write a compelling professional summary..."
         />
-      </div>
+      </Section>
 
       {/* Experience */}
-      <div className="space-y-4">
-        <div className="flex justify-between items-center border-b pb-2">
-          <h3 className="text-lg font-medium text-gray-900">Experience</h3>
+      <Section
+        title="Experience"
+        description="For manual entry, you can add only role/company/duration. Missing role brief and key achievements will be generated from job description during tailoring."
+        actions={
           <button
             type="button"
             onClick={addExperience}
-            className="text-sm text-blue-600 hover:text-blue-700"
+            className="tl-button-quiet"
+            data-size="sm"
           >
             + Add Experience
           </button>
-        </div>
-        <p className="text-sm text-gray-500">
-          For manual entry, you can add only role/company/duration. Missing role brief and key achievements will be generated from job description during tailoring.
-        </p>
+        }
+      >
         {formData.experience.map((exp, index) => (
-          <div key={index} className="p-4 border rounded-md space-y-3 bg-gray-50">
-            <div className="flex justify-between">
-              <span className="font-medium">Experience {index + 1}</span>
+          <Card
+            key={index}
+            title={`Experience ${index + 1}`}
+            actions={
               <button
                 type="button"
                 onClick={() => removeExperience(index)}
-                className="text-red-600 text-sm"
+                className="tl-button-quiet"
+                data-size="sm"
+                data-tone="danger"
               >
                 Remove
               </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input
-                type="text"
-                placeholder="Job Title"
-                value={exp.title}
-                onChange={(e) => updateExperience(index, 'title', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              />
-              <input
-                type="text"
-                placeholder="Company"
-                value={exp.company}
-                onChange={(e) => updateExperience(index, 'company', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              />
-              <input
-                type="text"
-                placeholder="Start Date (MM/YYYY)"
-                value={exp.startDate}
-                onChange={(e) => updateExperience(index, 'startDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              />
-              <input
-                type="text"
-                placeholder="End Date (MM/YYYY or Present)"
-                value={exp.endDate}
-                onChange={(e) => updateExperience(index, 'endDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              />
-              <input
-                type="text"
-                placeholder="Location"
-                value={exp.location}
-                onChange={(e) => updateExperience(index, 'location', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md md:col-span-2"
-              />
-            </div>
-            <textarea
-              placeholder="Brief description of the role"
-              value={exp.description}
-              onChange={(e) => updateExperience(index, 'description', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              rows={2}
-            />
-            <div className="space-y-2">
-              <label className="block text-sm text-gray-600">
-                Skills
-              </label>
-              <div className="flex gap-2">
+            }
+          >
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <input
                   type="text"
-                  list={`experience-skill-library-${index}`}
-                  value={experienceSkillInputs[index] || ''}
-                  onChange={(e) =>
-                    setExperienceSkillInputs({
-                      ...experienceSkillInputs,
-                      [index]: e.target.value,
-                    })
-                  }
-                  onKeyPress={(e) =>
-                    e.key === 'Enter' && (e.preventDefault(), addExperienceSkill(index))
-                  }
-                  placeholder="Select or add a hard skill"
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
+                  placeholder="Job Title"
+                  value={exp.title}
+                  onChange={(e) => updateExperience(index, 'title', e.target.value)}
+                  className="tl-input"
                 />
-                <datalist id={`experience-skill-library-${index}`}>
-                  {hardSkillLibrary.map((skill) => (
-                    <option key={skill} value={skill} />
-                  ))}
-                </datalist>
-                <button
-                  type="button"
-                  onClick={() => addExperienceSkill(index)}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-                >
-                  Add
-                </button>
+                <input
+                  type="text"
+                  placeholder="Company"
+                  value={exp.company}
+                  onChange={(e) => updateExperience(index, 'company', e.target.value)}
+                  className="tl-input"
+                />
+                <input
+                  type="text"
+                  placeholder="Start Date (MM/YYYY)"
+                  value={exp.startDate}
+                  onChange={(e) => updateExperience(index, 'startDate', e.target.value)}
+                  className="tl-input"
+                />
+                <input
+                  type="text"
+                  placeholder="End Date (MM/YYYY or Present)"
+                  value={exp.endDate}
+                  onChange={(e) => updateExperience(index, 'endDate', e.target.value)}
+                  className="tl-input"
+                />
+                <div className="md:col-span-2">
+                  <input
+                    type="text"
+                    placeholder="Location"
+                    value={exp.location}
+                    onChange={(e) => updateExperience(index, 'location', e.target.value)}
+                    className="tl-input"
+                  />
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {(exp.skills || []).map((skill) => (
-                  <span
-                    key={skill}
-                    className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full flex items-center gap-2"
-                  >
-                    {skill}
-                    <button
-                      type="button"
-                      onClick={() => removeExperienceSkill(index, skill)}
-                      className="hover:text-blue-900"
-                    >
-                      x
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">
-                Achievements (one per line)
-              </label>
               <textarea
-                placeholder="Led a team of 5 engineers...&#10;Improved performance by 50%..."
-                value={exp.achievements.join('\n')}
-                onChange={(e) =>
-                  updateExperience(
-                    index,
-                    'achievements',
-                    e.target.value.split('\n').filter((a) => a.trim())
-                  )
-                }
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                rows={4}
+                placeholder="Brief description of the role"
+                value={exp.description}
+                onChange={(e) => updateExperience(index, 'description', e.target.value)}
+                className="tl-input"
+                rows={2}
               />
+              <Field label="Skills" htmlFor={`experience-skill-input-${index}`}>
+                <div className="flex gap-2">
+                  <input
+                    id={`experience-skill-input-${index}`}
+                    type="text"
+                    list={`experience-skill-library-${index}`}
+                    value={experienceSkillInputs[index] || ''}
+                    onChange={(e) =>
+                      setExperienceSkillInputs({
+                        ...experienceSkillInputs,
+                        [index]: e.target.value,
+                      })
+                    }
+                    onKeyPress={(e) =>
+                      e.key === 'Enter' && (e.preventDefault(), addExperienceSkill(index))
+                    }
+                    placeholder="Select or add a hard skill"
+                    className="tl-input"
+                  />
+                  <datalist id={`experience-skill-library-${index}`}>
+                    {hardSkillLibrary.map((skill) => (
+                      <option key={skill} value={skill} />
+                    ))}
+                  </datalist>
+                  <button
+                    type="button"
+                    onClick={() => addExperienceSkill(index)}
+                    className="tl-button-quiet"
+                  >
+                    Add
+                  </button>
+                </div>
+                {(exp.skills || []).length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {(exp.skills || []).map((skill) => (
+                      <span key={skill} className="tl-pill" data-tone="sky">
+                        {skill}
+                        <button
+                          type="button"
+                          onClick={() => removeExperienceSkill(index, skill)}
+                          aria-label={`Remove ${skill}`}
+                          className="-mr-1 px-0.5 text-sm leading-none opacity-70 hover:opacity-100"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </Field>
+              <Field label="Achievements (one per line)" htmlFor={`experience-achievements-${index}`}>
+                <textarea
+                  id={`experience-achievements-${index}`}
+                  placeholder="Led a team of 5 engineers...&#10;Improved performance by 50%..."
+                  value={exp.achievements.join('\n')}
+                  onChange={(e) =>
+                    updateExperience(
+                      index,
+                      'achievements',
+                      e.target.value.split('\n').filter((a) => a.trim())
+                    )
+                  }
+                  className="tl-input"
+                  rows={4}
+                />
+              </Field>
             </div>
-          </div>
+          </Card>
         ))}
-      </div>
+      </Section>
 
       {/* Hard Skills */}
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b pb-2">
-          <h3 className="text-lg font-medium text-gray-900">Hard Skills</h3>
+      <Section
+        title="Hard Skills"
+        actions={
           <button
             type="button"
             onClick={() => setShowSkillCategories((shown) => !shown)}
-            className="text-sm text-blue-600 hover:text-blue-800"
+            className="tl-button-quiet"
+            data-size="sm"
           >
             {showSkillCategories ? 'Hide headings' : 'Assign headings'}
           </button>
-        </div>
+        }
+      >
         {showSkillCategories && (
-          <p className="text-sm text-gray-600">
-            A skill left on <span className="font-medium">Work it out</span> is filed by the shared
+          <p className="text-sm text-muted">
+            A skill left on <span className="font-medium text-ink">Work it out</span> is filed by the shared
             skill library. Set one here when the library would put it somewhere else — it has no way
             to know that your Vault is infrastructure rather than a library.
             {formData.profileSettings.technicalSkillsLayout === 'flat' && (
@@ -1065,7 +1034,8 @@ export default function ProfileForm({
             onChange={(e) => setHardSkillInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addHardSkill())}
             placeholder="Add a hard skill"
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
+            aria-label="Add a hard skill"
+            className="tl-input"
           />
           <datalist id="profile-hard-skill-library">
             {hardSkillLibrary.map((skill) => (
@@ -1075,50 +1045,49 @@ export default function ProfileForm({
           <button
             type="button"
             onClick={addHardSkill}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+            className="tl-button-quiet"
           >
             Add
           </button>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {formData.hardSkills.map((skill) => (
-            <span
-              key={skill}
-              className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full flex items-center gap-2"
-            >
-              {skill}
-              {showSkillCategories && (
-                <select
-                  value={skillCategoryBySkill[skill] ?? ''}
-                  onChange={(e) =>
-                    setSkillCategoryBySkill((current) => ({ ...current, [skill]: e.target.value }))
-                  }
-                  aria-label={`Heading for ${skill}`}
-                  className="max-w-[12rem] rounded border border-blue-200 bg-white px-1 py-0.5 text-xs text-gray-700"
+        {formData.hardSkills.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {formData.hardSkills.map((skill) => (
+              <span key={skill} className="tl-pill" data-tone="sky">
+                {skill}
+                {showSkillCategories && (
+                  <select
+                    value={skillCategoryBySkill[skill] ?? ''}
+                    onChange={(e) =>
+                      setSkillCategoryBySkill((current) => ({ ...current, [skill]: e.target.value }))
+                    }
+                    aria-label={`Heading for ${skill}`}
+                    className={chrome.chipSelect}
+                  >
+                    <option value="">Work it out</option>
+                    {headingOptions.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeHardSkill(skill)}
+                  aria-label={`Remove ${skill}`}
+                  className="-mr-1 px-0.5 text-sm leading-none opacity-70 hover:opacity-100"
                 >
-                  <option value="">Work it out</option>
-                  {headingOptions.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button
-                type="button"
-                onClick={() => removeHardSkill(skill)}
-                className="hover:text-blue-900"
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      </div>
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </Section>
 
       {/* Soft Skills */}
-      <div className="space-y-4">
-        <h3 className="text-lg font-medium text-gray-900 border-b pb-2">Soft Skills</h3>
+      <Section title="Soft Skills">
         <div className="flex gap-2">
           <input
             type="text"
@@ -1126,155 +1095,172 @@ export default function ProfileForm({
             onChange={(e) => setSoftSkillInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addSoftSkill())}
             placeholder="Add a soft skill"
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
+            aria-label="Add a soft skill"
+            className="tl-input"
           />
           <button
             type="button"
             onClick={addSoftSkill}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+            className="tl-button-quiet"
           >
             Add
           </button>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {formData.softSkills.map((skill) => (
-            <span
-              key={skill}
-              className="px-3 py-1 bg-green-100 text-green-700 rounded-full flex items-center gap-2"
-            >
-              {skill}
-              <button
-                type="button"
-                onClick={() => removeSoftSkill(skill)}
-                className="hover:text-green-900"
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      </div>
+        {formData.softSkills.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {formData.softSkills.map((skill) => (
+              <span key={skill} className="tl-pill" data-tone="green">
+                {skill}
+                <button
+                  type="button"
+                  onClick={() => removeSoftSkill(skill)}
+                  aria-label={`Remove ${skill}`}
+                  className="-mr-1 px-0.5 text-sm leading-none opacity-70 hover:opacity-100"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </Section>
 
       {/* Strengths */}
-      <div className="space-y-4">
-        <div className="flex justify-between items-center border-b pb-2">
-          <h3 className="text-lg font-medium text-gray-900">Strengths</h3>
+      <Section
+        title="Strengths"
+        actions={
           <button
             type="button"
             onClick={addStrength}
-            className="text-sm text-blue-600 hover:text-blue-700"
+            className="tl-button-quiet"
+            data-size="sm"
           >
             + Add Strength
           </button>
-        </div>
+        }
+      >
         {formData.strengths.map((strength, index) => (
-          <div key={index} className="p-4 border rounded-md space-y-3 bg-gray-50">
-            <div className="flex justify-between">
-              <span className="font-medium">Strength {index + 1}</span>
+          <Card
+            key={index}
+            title={`Strength ${index + 1}`}
+            actions={
               <button
                 type="button"
                 onClick={() => removeStrength(index)}
-                className="text-red-600 text-sm"
+                className="tl-button-quiet"
+                data-size="sm"
+                data-tone="danger"
               >
                 Remove
               </button>
+            }
+          >
+            <div className="space-y-4">
+              <input
+                type="text"
+                placeholder="Strength Title (e.g., Customer-Centric)"
+                value={strength.title}
+                onChange={(e) => updateStrength(index, 'title', e.target.value)}
+                className="tl-input"
+              />
+              <textarea
+                placeholder="Description with metrics if possible"
+                value={strength.description}
+                onChange={(e) => updateStrength(index, 'description', e.target.value)}
+                className="tl-input"
+                rows={2}
+              />
             </div>
-            <input
-              type="text"
-              placeholder="Strength Title (e.g., Customer-Centric)"
-              value={strength.title}
-              onChange={(e) => updateStrength(index, 'title', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md"
-            />
-            <textarea
-              placeholder="Description with metrics if possible"
-              value={strength.description}
-              onChange={(e) => updateStrength(index, 'description', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md"
-              rows={2}
-            />
-          </div>
+          </Card>
         ))}
-      </div>
+      </Section>
 
       {/* Education */}
-      <div className="space-y-4">
-        <div className="flex justify-between items-center border-b pb-2">
-          <h3 className="text-lg font-medium text-gray-900">Education</h3>
+      <Section
+        title="Education"
+        actions={
           <button
             type="button"
             onClick={addEducation}
-            className="text-sm text-blue-600 hover:text-blue-700"
+            className="tl-button-quiet"
+            data-size="sm"
           >
             + Add Education
           </button>
-        </div>
+        }
+      >
         {formData.education.map((edu, index) => (
-          <div key={index} className="p-4 border rounded-md space-y-3 bg-gray-50">
-            <div className="flex justify-between">
-              <span className="font-medium">Education {index + 1}</span>
+          <Card
+            key={index}
+            title={`Education ${index + 1}`}
+            actions={
               <button
                 type="button"
                 onClick={() => removeEducation(index)}
-                className="text-red-600 text-sm"
+                className="tl-button-quiet"
+                data-size="sm"
+                data-tone="danger"
               >
                 Remove
               </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            }
+          >
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <input
                 type="text"
                 placeholder="Degree (e.g., Bachelor's in Computer Science)"
                 value={edu.degree}
                 onChange={(e) => updateEducation(index, 'degree', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                className="tl-input"
               />
               <input
                 type="text"
                 placeholder="Institution"
                 value={edu.institution}
                 onChange={(e) => updateEducation(index, 'institution', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                className="tl-input"
               />
               <input
                 type="text"
                 placeholder="Start Date (MM/YYYY)"
                 value={edu.startDate}
                 onChange={(e) => updateEducation(index, 'startDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                className="tl-input"
               />
               <input
                 type="text"
                 placeholder="End Date (MM/YYYY)"
                 value={edu.endDate}
                 onChange={(e) => updateEducation(index, 'endDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                className="tl-input"
               />
-              <input
-                type="text"
-                placeholder="Location"
-                value={edu.location}
-                onChange={(e) => updateEducation(index, 'location', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md md:col-span-2"
-              />
+              <div className="md:col-span-2">
+                <input
+                  type="text"
+                  placeholder="Location"
+                  value={edu.location}
+                  onChange={(e) => updateEducation(index, 'location', e.target.value)}
+                  className="tl-input"
+                />
+              </div>
             </div>
-          </div>
+          </Card>
         ))}
-      </div>
+      </Section>
 
       {/* Actions */}
-      <div className="flex justify-end space-x-3 pt-4 border-t">
+      <div className={chrome.dialogFoot}>
         <button
           type="button"
           onClick={onCancel}
-          className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+          className="tl-button-quiet"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={isSubmitting}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+          className="tl-button"
         >
           {isSubmitting ? 'Saving...' : initialData ? 'Update Profile' : 'Create Profile'}
         </button>

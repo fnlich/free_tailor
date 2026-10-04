@@ -4,6 +4,7 @@ import {
   PROMPT_TOKENS
 } from '../lib/promptTemplate.js';
 import { bidAssistantFetch } from '../lib/apiBase.js';
+import { IconClose } from '@/components/icons';
 
 // Returns the empty form state for creating a new Google Sheet source.
 function createEmptySheetForm() {
@@ -478,7 +479,6 @@ export default function TopBar({
     <>
       <header className="top-bar">
         <div className="brand-block">
-          <img className="brand-mark" src="/app-icon.svg" alt="" />
           <div className="brand-copy">
             <div className="brand-title">Bid Assistant</div>
             <div className="brand-subtitle">Professional pipeline for job tracking and answer generation</div>
@@ -489,6 +489,7 @@ export default function TopBar({
           <label className="field-group">
             <span>Profile:</span>
             <select
+              className="tl-input"
               value={selectedProfileId}
               onChange={(event) => onProfileChange(event.target.value)}
             >
@@ -502,7 +503,7 @@ export default function TopBar({
 
           <label className="field-group">
             <span>Date:</span>
-            <select value={filterDate} onChange={(event) => onDateChange(event.target.value)}>
+            <select className="tl-input" value={filterDate} onChange={(event) => onDateChange(event.target.value)}>
               <option value="">All dates</option>
               {availableDates.map((date) => (
                 <option key={date} value={date}>
@@ -514,23 +515,23 @@ export default function TopBar({
         </div>
 
         <div className="top-bar-right">
-          <button className="secondary-button" onClick={openPromptModal}>
+          <button className="tl-button-quiet" onClick={openPromptModal}>
             Prompt
           </button>
-          <button className="secondary-button" onClick={() => setShowProfileModal(true)}>
+          <button className="tl-button-quiet" onClick={() => setShowProfileModal(true)}>
             Manage Profiles
           </button>
-          <button className="primary-button" onClick={() => setShowImportModal(true)}>
+          <button className="tl-button" data-shape="pill" onClick={() => setShowImportModal(true)}>
             Import from Google Sheets
           </button>
         </div>
       </header>
 
       {showPromptModal && (
-        <div className="modal-backdrop" onClick={() => setShowPromptModal(false)}>
-          <div className="modal-card prompt-modal" onClick={(event) => event.stopPropagation()}>
-            <button className="icon-button" onClick={() => setShowPromptModal(false)}>
-              x
+        <div className="tl-backdrop" onClick={() => setShowPromptModal(false)}>
+          <div className="tl-dialog modal-card prompt-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="tl-icon-button bid-close" onClick={() => setShowPromptModal(false)} aria-label="Close">
+              <IconClose />
             </button>
 
             <div className="section-header modal-header">
@@ -543,7 +544,7 @@ export default function TopBar({
             </div>
 
             <textarea
-              className="prompt-editor"
+              className="tl-input prompt-editor"
               value={promptTemplateDraft}
               onChange={(event) => {
                 setPromptTemplateDraft(event.target.value);
@@ -555,7 +556,7 @@ export default function TopBar({
             />
 
             <div className="form-actions">
-              <button className="primary-button" onClick={handleSavePromptTemplate} disabled={isSavingPrompt}>
+              <button className="tl-button" onClick={handleSavePromptTemplate} disabled={isSavingPrompt}>
                 {isSavingPrompt ? 'Saving...' : 'Save Prompt'}
               </button>
             </div>
@@ -571,10 +572,10 @@ export default function TopBar({
       )}
 
       {showProfileModal && (
-        <div className="modal-backdrop" onClick={() => setShowProfileModal(false)}>
-          <div className="modal-card import-modal" onClick={(event) => event.stopPropagation()}>
-            <button className="icon-button" onClick={() => setShowProfileModal(false)}>
-              x
+        <div className="tl-backdrop" onClick={() => setShowProfileModal(false)}>
+          <div className="tl-dialog modal-card import-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="tl-icon-button bid-close" onClick={() => setShowProfileModal(false)} aria-label="Close">
+              <IconClose />
             </button>
 
             <h2>Profile Manager</h2>
@@ -587,7 +588,7 @@ export default function TopBar({
               <section className="source-panel">
                 <div className="source-panel-header">
                   <h3>Profiles</h3>
-                  <button className="secondary-button" onClick={startCreatingProfile}>
+                  <button className="tl-button-quiet" data-size="sm" onClick={startCreatingProfile}>
                     New Profile
                   </button>
                 </div>
@@ -640,17 +641,17 @@ export default function TopBar({
                 </div>
 
                 <textarea
-                  className="json-editor"
+                  className="tl-input json-editor"
                   value={profileJsonText}
                   onChange={(event) => setProfileJsonText(event.target.value)}
                   spellCheck={false}
                 />
 
                 <div className="form-actions">
-                  <button className="primary-button" onClick={handleSaveProfile} disabled={isSavingProfile}>
+                  <button className="tl-button" onClick={handleSaveProfile} disabled={isSavingProfile}>
                     {isSavingProfile ? 'Saving...' : profileEditorMode === 'edit' ? 'Update Profile' : 'Create Profile'}
                   </button>
-                  <button className="secondary-button" onClick={startCreatingProfile}>
+                  <button className="tl-button-quiet" onClick={startCreatingProfile}>
                     Reset
                   </button>
                 </div>
@@ -668,10 +669,10 @@ export default function TopBar({
       )}
 
       {showImportModal && (
-        <div className="modal-backdrop" onClick={() => setShowImportModal(false)}>
-          <div className="modal-card import-modal" onClick={(event) => event.stopPropagation()}>
-            <button className="icon-button" onClick={() => setShowImportModal(false)}>
-              x
+        <div className="tl-backdrop" onClick={() => setShowImportModal(false)}>
+          <div className="tl-dialog modal-card import-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="tl-icon-button bid-close" onClick={() => setShowImportModal(false)} aria-label="Close">
+              <IconClose />
             </button>
 
             <h2>Google Sheet Sources</h2>
@@ -684,7 +685,7 @@ export default function TopBar({
               <section className="source-panel">
                 <div className="source-panel-header">
                   <h3>Saved Sources</h3>
-                  <button className="secondary-button" onClick={resetSheetForm}>
+                  <button className="tl-button-quiet" data-size="sm" onClick={resetSheetForm}>
                     New Source
                   </button>
                 </div>
@@ -731,7 +732,7 @@ export default function TopBar({
                     <span>{activeSheet ? 'Select a tab, then import that job list.' : 'Select a source first.'}</span>
                   </div>
                   <button
-                    className="primary-button"
+                    className="tl-button"
                     onClick={handleImport}
                     disabled={isImporting || !activeSheetId || !selectedTabName}
                   >
@@ -743,6 +744,7 @@ export default function TopBar({
                   <label className="stacked-field">
                     <span>Tab</span>
                     <select
+                      className="tl-input"
                       value={selectedTabName}
                       onChange={(event) => setSelectedTabName(event.target.value)}
                       disabled={isLoadingTabs || tabs.length === 0}
@@ -761,6 +763,7 @@ export default function TopBar({
                   <label className="stacked-field">
                     <span>From row</span>
                     <input
+                      className="tl-input"
                       type="number"
                       min="1"
                       value={importRange.fromRow}
@@ -771,6 +774,7 @@ export default function TopBar({
                   <label className="stacked-field">
                     <span>To row</span>
                     <input
+                      className="tl-input"
                       type="number"
                       min="1"
                       value={importRange.toRow}
@@ -798,6 +802,7 @@ export default function TopBar({
                   <label className="stacked-field">
                     <span>Label</span>
                     <input
+                      className="tl-input"
                       value={sheetForm.label}
                       onChange={(event) => updateSheetForm('label', event.target.value)}
                       placeholder="Remote roles"
@@ -807,6 +812,7 @@ export default function TopBar({
                   <label className="stacked-field">
                     <span>Google Sheet ID</span>
                     <input
+                      className="tl-input"
                       value={sheetForm.sheetId}
                       onChange={(event) => updateSheetForm('sheetId', event.target.value)}
                       placeholder="1AbCdEf..."
@@ -816,10 +822,10 @@ export default function TopBar({
                 </div>
 
                 <div className="form-actions">
-                  <button className="primary-button" onClick={handleSaveSheet} disabled={isSavingSheet}>
+                  <button className="tl-button" onClick={handleSaveSheet} disabled={isSavingSheet}>
                     {isSavingSheet ? 'Saving...' : sheetForm.id ? 'Update Source' : 'Create Source'}
                   </button>
-                  <button className="secondary-button" onClick={resetSheetForm}>
+                  <button className="tl-button-quiet" onClick={resetSheetForm}>
                     Clear
                   </button>
                 </div>

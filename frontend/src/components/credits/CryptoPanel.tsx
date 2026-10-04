@@ -1,5 +1,6 @@
 'use client';
 
+import { Spinner } from '@/components/ui/kit';
 import { PANEL, PRIMARY, QUIET } from './chrome';
 import type { Order } from './order';
 import { formatAmount, type PaymentTarget } from '@/lib/payments';
@@ -32,8 +33,7 @@ export default function CryptoPanel({
   if (order.status === 'none' || order.status === 'starting') {
     return (
       <div className={PANEL}>
-        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600" />
-        <p className="mt-3 text-center text-sm text-muted">Preparing your order…</p>
+        <Spinner label="Preparing your order…" />
       </div>
     );
   }
@@ -53,11 +53,11 @@ export default function CryptoPanel({
         <p className="text-sm font-semibold text-ink">This order could not be started.</p>
         <p className="mt-1 text-sm text-muted">{order.message}</p>
         <p className="mt-1 text-xs text-subtle">Nothing was sent and nothing was charged.</p>
-        <div className="mt-3 flex gap-2">
-          <button type="button" onClick={onRetry} className={`${PRIMARY} px-4 py-2`}>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button type="button" onClick={onRetry} className={PRIMARY}>
             Try again
           </button>
-          <button type="button" onClick={onCancel} className={`${QUIET} px-4 py-2`}>
+          <button type="button" onClick={onCancel} className={QUIET}>
             Change the amount
           </button>
         </div>
@@ -79,7 +79,7 @@ export default function CryptoPanel({
           </span>{' '}
           worth of it to the address they show you.
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap gap-3">
           <button
             type="button"
             // A full navigation: the destination is somebody else's domain.
@@ -112,7 +112,7 @@ export default function CryptoPanel({
         Nothing was sent. Order <span className="font-mono">{started.reference}</span> is left
         unpaid and will expire on its own.
       </p>
-      <button type="button" onClick={onRetry} className={`${PRIMARY} mt-3 px-4 py-2`}>
+      <button type="button" onClick={onRetry} className={`${PRIMARY} mt-3`}>
         Try again
       </button>
     </div>

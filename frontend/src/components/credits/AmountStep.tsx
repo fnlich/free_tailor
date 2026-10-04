@@ -2,7 +2,7 @@
 
 import { useId } from 'react';
 import { IconCheck, IconPlus } from '@/components/icons';
-import { CHOICE, CHOICE_ON, FIELD, LABEL } from './chrome';
+import { CHOICE, CHOICE_ON, FIELD, LABEL, QUIET } from './chrome';
 import { formatAmount, type PaymentTarget } from '@/lib/payments';
 
 /**
@@ -80,17 +80,22 @@ export default function AmountStep({
                 key={preset.credits}
                 type="button"
                 aria-pressed={on}
+                // `.tl-choice` draws the selected state from this attribute.
+                data-on={on}
                 onClick={() => onCredits(preset.credits)}
                 className={`${on ? CHOICE_ON : CHOICE} relative`}
               >
-                <span className="block text-sm font-semibold text-ink">
-                  {formatAmount(preset.amountCents, currency)}
-                </span>
-                <span className="block text-xs text-subtle">
-                  {preset.credits} {preset.credits === 1 ? 'credit' : 'credits'}
+                {/* One block for the two lines: `.tl-choice` is a flex ROW with a gap. */}
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-ink">
+                    {formatAmount(preset.amountCents, currency)}
+                  </span>
+                  <span className="block text-xs text-subtle">
+                    {preset.credits} {preset.credits === 1 ? 'credit' : 'credits'}
+                  </span>
                 </span>
                 {on && (
-                  <IconCheck className="absolute right-2 top-2 h-3.5 w-3.5 text-accent" />
+                  <IconCheck className="absolute right-2 top-2 h-3.5 w-3.5 text-accent-ink" />
                 )}
               </button>
             );
@@ -115,7 +120,7 @@ export default function AmountStep({
               aria-label={`Fewer credits, ${step} at a time`}
               disabled={credits <= target.minCredits}
               onClick={() => onCredits(clamp(credits - step, target))}
-              className="tl-icon-button border border-line disabled:opacity-40"
+              className={QUIET}
             >
               {/* No minus icon in the set, and one path is not worth adding
                   one for: a rotated plus is the same two strokes. */}
@@ -128,25 +133,28 @@ export default function AmountStep({
           <label htmlFor={fieldId} className="sr-only">
             Number of credits
           </label>
-          <input
-            id={fieldId}
-            type="number"
-            inputMode="numeric"
-            min={target.minCredits}
-            max={target.maxCredits}
-            value={credits}
-            onChange={(event) => {
-              const next = Number.parseInt(event.target.value, 10);
-              // An empty or half-typed box must not throw the amount away, so
-              // a value that is not a number leaves the last good one alone.
-              if (Number.isInteger(next)) onCredits(next);
-            }}
-            // Clamped on the way OUT, not on the way in: clamping each
-            // keystroke makes "12" unreachable when the minimum is 7 and the
-            // maximum 9 - the 1 snaps to 9 before the 2 is typed.
-            onBlur={() => onCredits(clamp(credits, target))}
-            className={`${FIELD} w-24 text-center`}
-          />
+          {/* The width is on a box around it: `.tl-input` is always full width. */}
+          <div className="w-24">
+            <input
+              id={fieldId}
+              type="number"
+              inputMode="numeric"
+              min={target.minCredits}
+              max={target.maxCredits}
+              value={credits}
+              onChange={(event) => {
+                const next = Number.parseInt(event.target.value, 10);
+                // An empty or half-typed box must not throw the amount away, so
+                // a value that is not a number leaves the last good one alone.
+                if (Number.isInteger(next)) onCredits(next);
+              }}
+              // Clamped on the way OUT, not on the way in: clamping each
+              // keystroke makes "12" unreachable when the minimum is 7 and the
+              // maximum 9 - the 1 snaps to 9 before the 2 is typed.
+              onBlur={() => onCredits(clamp(credits, target))}
+              className={`${FIELD} text-center`}
+            />
+          </div>
 
           {target.custom === 'stepper' && (
             <button
@@ -154,7 +162,7 @@ export default function AmountStep({
               aria-label={`More credits, ${step} at a time`}
               disabled={credits >= target.maxCredits}
               onClick={() => onCredits(clamp(credits + step, target))}
-              className="tl-icon-button border border-line disabled:opacity-40"
+              className={QUIET}
             >
               <IconPlus className="h-4 w-4" />
             </button>
@@ -182,7 +190,7 @@ export default function AmountStep({
         )}
 
         {outOfRange && (
-          <p className="mt-3 text-sm text-red-700">
+          <p className="tl-status mt-3" data-tone="error">
             {credits < target.minCredits
               ? `The smallest purchase is ${target.minCredits} credits. ${buying} will be bought.`
               : `The largest purchase is ${target.maxCredits} credits. ${buying} will be bought.`}

@@ -9,10 +9,24 @@ import {
   isPaymentPending,
   paymentsApi,
   STATE_LABELS,
-  STATE_STYLES,
   type Payment,
+  type PaymentState,
 } from '@/lib/payments';
-import { CARD } from '@/components/pageChrome';
+import { EmptyState, Notice, Pill, Spinner, type PillTone } from '@/components/ui/kit';
+
+/**
+ * The kit's pill colour for each state - the same ones the order history on
+ * /credits gives them, so a payment reads alike on both pages. The words stay
+ * `STATE_LABELS`, which say "Waiting for payment" where the table says one word.
+ */
+const STATE_TONES: Record<PaymentState, PillTone> = {
+  paid: 'green',
+  pending: 'amber',
+  failed: 'red',
+  expired: 'grey',
+  refunding: 'sky',
+  refunded: 'grey',
+};
 
 /**
  * Where a provider sends the browser back to.
@@ -96,49 +110,45 @@ function ReturnBody() {
 
   if (loading) {
     return (
-      <div className={CARD}>
-        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+      <div className="tl-card">
+        <Spinner />
       </div>
     );
   }
 
   if (!payment) {
     return (
-      <div className={CARD}>
-        <p className="text-lg font-semibold text-gray-900 dark:text-white">Payment not found</p>
-        <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
-          {error || 'It may belong to another account.'}
-        </p>
-        <Link
-          href="/credits"
-          className="mt-4 inline-block text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-        >
-          Back to credits
-        </Link>
-      </div>
+      <EmptyState
+        title="Payment not found"
+        action={
+          <Link href="/credits" className="tl-button">
+            Back to credits
+          </Link>
+        }
+      >
+        {error || 'It may belong to another account.'}
+      </EmptyState>
     );
   }
 
   const waiting = isPaymentPending(payment);
 
   return (
-    <div className="space-y-6">
-      <div className={CARD}>
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="font-mono text-xl font-semibold text-gray-900 dark:text-white">
+    <div className="tl-card">
+      <div className="p-6 sm:p-8">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <h1 className="break-all text-2xl font-bold tracking-tight text-ink">
             {payment.reference}
           </h1>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATE_STYLES[payment.state]}`}>
-            {STATE_LABELS[payment.state]}
-          </span>
+          <Pill tone={STATE_TONES[payment.state] ?? 'grey'}>{STATE_LABELS[payment.state]}</Pill>
         </div>
 
-        <p className="mt-2 text-sm text-gray-600 dark:text-slate-300">
+        <p className="mt-2 text-base text-muted">
           {payment.credits} credits for {formatAmount(payment.amountCents, payment.currency)}.
         </p>
 
         {payment.state === 'paid' && (
-          <div className="mt-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-100">
+          <Notice tone="success" className="mt-6">
             <p className="font-semibold">Paid. Your credits are on your balance.</p>
             <p className="mt-1">
               <Link href="/" className="font-semibold underline">
@@ -150,43 +160,49 @@ function ReturnBody() {
               </Link>
               .
             </p>
-          </div>
+          </Notice>
         )}
 
         {waiting && (
-          <div className="mt-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:bg-blue-900/30 dark:text-blue-100">
-            <p className="font-semibold">Waiting for the payment to be confirmed.</p>
+          <Notice tone="info" className="mt-6">
+            <div className="flex items-start gap-3">
+              {/* Said and drawn: this page is genuinely still waiting. */}
+              <span className="tl-spinner mt-0.5 shrink-0" aria-hidden />
+              <div className="min-w-0">
+                <p className="font-semibold">Waiting for the payment to be confirmed.</p>
 
-            <p className="mt-1">
-              {/*
-                Careful not to promise. Landing here proves only that a browser
-                followed a redirect - somebody who started a 3-D Secure step and
-                abandoned it arrives at exactly this page, in exactly this
-                state, and telling them their credits are on the way would be
-                false. So the sentence is conditional, and the two-minute note
-                below says what to do when it stays that way.
-              */}
-              {payment.method === 'crypto'
-                ? 'A crypto payment has to be confirmed by the network, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
-                : 'This usually takes a second or two. If the payment went through, your credits will be added even if you close this page.'}
-            </p>
-            {waitedTooLong && (
-              <p className="mt-2">
-                Still waiting. If you did not finish paying - closing the card&apos;s
-                confirmation step will do it - nothing was charged and you can{' '}
-                <Link href="/credits" className="font-semibold underline">
-                  start again
-                </Link>
-                . If you were charged and this does not clear shortly, quote{' '}
-                <span className="font-mono font-semibold">{payment.reference}</span> to an
-                administrator.
-              </p>
-            )}
-          </div>
+                <p className="mt-1">
+                  {/*
+                    Careful not to promise. Landing here proves only that a browser
+                    followed a redirect - somebody who started a 3-D Secure step and
+                    abandoned it arrives at exactly this page, in exactly this
+                    state, and telling them their credits are on the way would be
+                    false. So the sentence is conditional, and the two-minute note
+                    below says what to do when it stays that way.
+                  */}
+                  {payment.method === 'crypto'
+                    ? 'A crypto payment has to be confirmed by the network, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
+                    : 'This usually takes a second or two. If the payment went through, your credits will be added even if you close this page.'}
+                </p>
+                {waitedTooLong && (
+                  <p className="mt-2">
+                    Still waiting. If you did not finish paying - closing the card&apos;s
+                    confirmation step will do it - nothing was charged and you can{' '}
+                    <Link href="/credits" className="font-semibold underline">
+                      start again
+                    </Link>
+                    . If you were charged and this does not clear shortly, quote{' '}
+                    <span className="font-mono font-semibold">{payment.reference}</span> to an
+                    administrator.
+                  </p>
+                )}
+              </div>
+            </div>
+          </Notice>
         )}
 
         {(payment.state === 'failed' || payment.state === 'expired') && (
-          <div className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-100">
+          <Notice tone="error" className="mt-6">
             <p className="font-semibold">
               {payment.state === 'expired' ? 'That checkout expired.' : 'That payment did not go through.'}
             </p>
@@ -205,14 +221,21 @@ function ReturnBody() {
             <Link href="/credits" className="mt-2 inline-block font-semibold underline">
               Try again
             </Link>
-          </div>
+          </Notice>
         )}
 
         {payment.state === 'refunded' && (
-          <div className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+          <Notice tone="warn" className="mt-6">
             This payment was refunded.
-          </div>
+          </Notice>
         )}
+      </div>
+
+      {/* The way back, ruled off below the state like a dialog's footer. */}
+      <div className="flex justify-end border-t-[1px] border-[color:var(--line-subtle)] px-6 py-4 sm:px-8">
+        <Link href="/credits" className="tl-button">
+          Back to credits
+        </Link>
       </div>
     </div>
   );
@@ -220,12 +243,13 @@ function ReturnBody() {
 
 export default function PaymentReturnPage() {
   return (
-    <main className="mx-auto max-w-2xl px-4 py-8 sm:px-6 lg:px-8">
+    // Centred on the canvas, narrower than a page: this is one card saying one thing.
+    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-16 lg:px-8">
       {/* `useSearchParams` needs a Suspense boundary to prerender. */}
       <Suspense
         fallback={
-          <div className={CARD}>
-            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
+          <div className="tl-card">
+            <Spinner />
           </div>
         }
       >

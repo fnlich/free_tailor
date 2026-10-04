@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DEFAULT_PROMPT_TEMPLATE } from '../lib/promptTemplate.js';
 import { bidAssistantFetch } from '../lib/apiBase.js';
+import { IconClose } from '@/components/icons';
 
 // Creates a blank question row with a default character limit.
 function createQuestionRow(overrides = {}) {
@@ -238,7 +239,7 @@ export default function AskWindow({
 
       <label className="stacked-field">
         <span>Focus Profile:</span>
-        <select value={focusProfileId} onChange={(event) => setFocusProfileId(event.target.value)}>
+        <select className="tl-input" value={focusProfileId} onChange={(event) => setFocusProfileId(event.target.value)}>
           {profiles.map((profile) => (
             <option key={profile.id} value={profile.id}>
               {getProfileDisplayName(profile)}
@@ -253,6 +254,7 @@ export default function AskWindow({
           {profiles.map((profile) => (
             <label key={profile.id} className="checkbox-row">
               <input
+                className="tl-check"
                 type="checkbox"
                 checked={targetProfileIds.includes(profile.id)}
                 onChange={() => toggleTargetProfile(profile.id)}
@@ -270,7 +272,7 @@ export default function AskWindow({
             <div key={index} className="question-item">
               <div className="question-row">
                 <input
-                  className="question-input"
+                  className="tl-input question-input"
                   value={item.question}
                   onChange={(event) => updateQuestion(index, 'question', event.target.value)}
                   placeholder="Enter a job application question"
@@ -278,6 +280,7 @@ export default function AskWindow({
                 <label className="char-limit-field">
                   <span>max chars</span>
                   <input
+                    className="tl-input"
                     type="number"
                     min="1"
                     value={item.charLimit}
@@ -286,7 +289,9 @@ export default function AskWindow({
                 </label>
                 <button
                   type="button"
-                  className={`secondary-button question-mode-button ${item.isManualAnswer ? 'active' : ''}`}
+                  className={`tl-button-quiet question-mode-button ${item.isManualAnswer ? 'active' : ''}`}
+                  aria-pressed={item.isManualAnswer}
+                  title="Manual answer"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -297,20 +302,22 @@ export default function AskWindow({
                 </button>
                 <button
                   type="button"
-                  className="icon-button subtle"
+                  className="tl-button-quiet bid-square"
+                  aria-label="Remove question"
+                  title="Remove question"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
                     removeQuestion(index);
                   }}
                 >
-                  x
+                  <IconClose />
                 </button>
               </div>
 
               {item.isManualAnswer && (
                 <textarea
-                  className="manual-answer-input"
+                  className="tl-input manual-answer-input"
                   value={item.manualAnswer}
                   onChange={(event) => updateQuestion(index, 'manualAnswer', event.target.value)}
                   placeholder="Type the manual answer to save for all selected profiles"
@@ -335,7 +342,7 @@ export default function AskWindow({
 
       <button
         type="button"
-        className="primary-button"
+        className="tl-button"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -352,7 +359,7 @@ export default function AskWindow({
 
   return createPortal(
     <div
-      className="modal-backdrop"
+      className="tl-backdrop"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           handleClose(event);
@@ -365,7 +372,7 @@ export default function AskWindow({
       }}
     >
       <div
-        className="modal-card ask-modal"
+        className="tl-dialog modal-card ask-modal"
         onMouseDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
       >

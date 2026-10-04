@@ -1,6 +1,8 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { Pill } from '@/components/ui/kit';
+import styles from '@/components/builder.module.css';
 
 interface ResumePreviewProps {
   html: string;
@@ -26,27 +28,27 @@ export default function ResumePreview({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[var(--layer-app-modal)] bg-black/40 backdrop-blur-sm">
-      <div className="absolute inset-4 bg-white rounded-xl shadow-2xl flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b bg-gray-50">
-          <div className="flex items-center gap-2">
-            <h3 className="text-lg font-semibold text-gray-900">Resume Preview</h3>
+    <div className="tl-backdrop">
+      <div className={`tl-dialog ${styles.sheet}`}>
+        <div className="tl-card-header">
+          <div className="flex flex-wrap items-center gap-3">
+            <h3 className="text-lg font-semibold text-ink">Resume Preview</h3>
             {isTailored && (
-              <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
+              <Pill tone="green">
                 ATS OPTIMIZATION
-              </span>
+              </Pill>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={onGenerate}
               disabled={isGenerating}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed font-medium transition-colors"
+              className={`tl-button ${styles.wrap}`}
             >
               {isGenerating ? (
                 <span className="flex items-center">
                   <svg
-                    className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                    className="animate-spin -ml-1 mr-2 h-4 w-4 shrink-0"
                     fill="none"
                     viewBox="0 0 24 24"
                   >
@@ -74,24 +76,35 @@ export default function ResumePreview({
               type="button"
               onClick={onClose}
               disabled={isGenerating}
-              className="px-3 py-2 text-sm bg-white text-gray-700 border border-gray-200 rounded-md hover:bg-gray-50 disabled:text-gray-400"
+              className="tl-button-quiet"
             >
               Close
             </button>
           </div>
         </div>
 
-        <div className={sidebar ? 'flex-1 grid grid-cols-2 overflow-hidden' : 'flex-1 overflow-y-auto bg-gray-100 p-6'}>
-          <div className={sidebar ? 'h-full overflow-y-auto bg-gray-100 p-6' : ''}>
+        {/*
+          Two panes side by side from lg up, each scrolling on its own; below
+          that, one column that scrolls as a whole - two half-width panes on a
+          phone left the resume about 150px wide.
+        */}
+        <div
+          className={
+            sidebar
+              ? 'min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-2 lg:overflow-hidden'
+              : 'min-h-0 flex-1 overflow-y-auto bg-surface-muted p-4 sm:p-6'
+          }
+        >
+          <div className={sidebar ? 'bg-surface-muted p-4 sm:p-6 lg:h-full lg:overflow-y-auto' : ''}>
             {html ? (
-              <div className="resume-paper-shell bg-white shadow-lg mx-auto max-w-[816px]">
+              <div className={`resume-paper-shell ${styles.paper} mx-auto max-w-[816px]`}>
                 <iframe srcDoc={html} className="w-full h-[1056px] border-0" title="Resume Preview" />
               </div>
             ) : (
-              <div className="flex items-center justify-center h-[600px] text-gray-500">
+              <div className="flex items-center justify-center h-[600px] text-muted">
                 <div className="text-center">
                   <svg
-                    className="mx-auto h-16 w-16 text-gray-400"
+                    className="mx-auto h-16 w-16 text-subtle"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -103,7 +116,7 @@ export default function ResumePreview({
                       d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
                     />
                   </svg>
-                  <p className="mt-4 text-lg font-medium">No Preview Available</p>
+                  <p className="mt-4 text-lg font-medium text-ink">No Preview Available</p>
                   <p className="mt-2 text-sm">
                     Select a profile and template, then click &quot;Generate Resume&quot;
                   </p>
@@ -111,7 +124,9 @@ export default function ResumePreview({
               </div>
             )}
           </div>
-          {sidebar && <div className="h-full overflow-y-auto border-l p-6 space-y-6">{sidebar}</div>}
+          {sidebar && (
+            <div className="space-y-6 p-4 sm:p-6 lg:h-full lg:overflow-y-auto">{sidebar}</div>
+          )}
         </div>
       </div>
     </div>

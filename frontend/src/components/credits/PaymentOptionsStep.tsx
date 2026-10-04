@@ -58,15 +58,17 @@ function Choice({
   return (
     <button
       type="button"
-      className={`${CHOICE} flex gap-3 ${
-        /*
-         * Centred while the row is one or two lines, top-aligned once it is
-         * not. An unavailable row carries setup instructions that run to
-         * several lines in this dialog, and a mark centred against five lines
-         * of text sits opposite nothing.
-         */
-        target.available ? 'items-center' : 'items-start'
-      }`}
+      className={CHOICE}
+      /*
+       * Centred while the row is one or two lines, top-aligned once it is
+       * not. An unavailable row carries setup instructions that run to
+       * several lines in this dialog, and a mark centred against five lines
+       * of text sits opposite nothing.
+       *
+       * Inline, because `.tl-choice` sets `align-items` itself and is
+       * unlayered, so an `items-center` utility here would lose to it.
+       */
+      style={{ alignItems: target.available ? 'center' : 'flex-start' }}
       disabled={!target.available}
       onClick={() => onChoose(target)}
       // The reason is on the element as well as in the text below it, so it

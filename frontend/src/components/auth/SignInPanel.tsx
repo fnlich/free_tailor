@@ -1,8 +1,10 @@
 'use client';
 
+import Image from 'next/image';
 import Script from 'next/script';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { Field, Notice } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, type SignInOptions } from '@/lib/auth';
 
@@ -15,17 +17,12 @@ import { authApi, type SignInOptions } from '@/lib/auth';
  * because the alternative is a page with no way forward and no explanation.
  */
 
-const CARD =
-  'w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 shadow-sm ' +
-  'dark:border-gray-700 dark:bg-gray-800';
-const LABEL = 'block text-sm font-medium text-gray-700 dark:text-gray-200';
-const INPUT =
-  'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 ' +
-  'placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ' +
-  'disabled:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:disabled:bg-gray-800';
-const BUTTON =
-  'w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white ' +
-  'hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400';
+/*
+ * Drawn with the shared kit (.tl-card, .tl-input, .tl-button, .tl-notice) and
+ * the theme tokens, like every page behind it - so the first screen anybody
+ * sees is already the app's own, in both themes, rather than a grey card the
+ * dark-mode shim has to repaint.
+ */
 
 declare global {
   interface Window {
@@ -145,7 +142,7 @@ export default function SignInPanel() {
     options !== null && !options.google.available && !options.email.available;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 dark:bg-gray-900">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4 py-12">
       {options?.google.available && (
         <Script
           src="https://accounts.google.com/gsi/client"
@@ -154,52 +151,62 @@ export default function SignInPanel() {
         />
       )}
 
-      <div className={CARD}>
-        <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-50">Sign in</h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-          Tailor keeps your profiles to your own account.
-        </p>
+      {/* The product's mark and name, set as the top bar sets them. */}
+      <div className="mb-8 flex items-center gap-2.5 text-ink">
+        <Image
+          src="/tailor-icon.svg"
+          alt=""
+          width={40}
+          height={40}
+          className="rounded-lg"
+          priority
+          data-darkreader-ignore
+          suppressHydrationWarning
+        />
+        <span className="tl-wordmark">Tailor</span>
+      </div>
+
+      <div className="tl-card w-full max-w-md p-6 sm:p-8">
+        <h1 className="text-2xl font-bold tracking-tight text-ink">Sign in</h1>
+        <p className="mt-2 text-sm text-muted">Tailor keeps your profiles to your own account.</p>
 
         {optionsError && (
-          <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-200">
+          <Notice tone="error" className="mt-6">
             {optionsError}
-          </p>
+          </Notice>
         )}
 
         {nothingConfigured && (
-          <div className="mt-4 rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-900 dark:bg-amber-900/30 dark:text-amber-100">
+          <Notice tone="warn" className="mt-6">
             <p className="font-medium">This server has no way to sign anybody in yet.</p>
-            <p className="mt-1">
+            <p className="mt-1 break-words">
               Set <code>GOOGLE_CLIENT_ID</code> for Google sign-in, or{' '}
               <code>{options?.email.missing.join(', ') || 'SMTP_HOST, SMTP_USER, SMTP_PASS'}</code> to
               send codes by email, then restart the backend.
             </p>
-          </div>
+          </Notice>
         )}
 
         {options?.google.available && (
           <div className="mt-6">
             <div ref={googleButtonRef} className="flex justify-center" />
             {!googleScriptReady && (
-              <p className="text-center text-sm text-gray-500">Loading Google sign-in...</p>
+              <p className="text-center text-sm text-subtle">Loading Google sign-in...</p>
             )}
           </div>
         )}
 
         {options?.google.available && options.email.available && (
           <div className="my-6 flex items-center gap-3">
-            <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
-            <span className="text-xs uppercase tracking-wide text-gray-400">or</span>
-            <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+            <span className="h-px flex-1 bg-[var(--line-subtle)]" />
+            <span className="text-xs uppercase tracking-wide text-subtle">or</span>
+            <span className="h-px flex-1 bg-[var(--line-subtle)]" />
           </div>
         )}
 
         {options?.email.available && stage === 'address' && (
-          <form onSubmit={sendCode} className="mt-4 space-y-4">
-            <div>
-              <label className={LABEL} htmlFor="signin-email">
-                Email address
-              </label>
+          <form onSubmit={sendCode} className="mt-6 space-y-5">
+            <Field label="Email address" htmlFor="signin-email">
               <input
                 id="signin-email"
                 type="email"
@@ -208,22 +215,19 @@ export default function SignInPanel() {
                 value={email}
                 disabled={busy}
                 onChange={(event) => setEmail(event.target.value)}
-                className={INPUT}
+                className="tl-input"
                 placeholder="you@example.com"
               />
-            </div>
-            <button type="submit" disabled={busy || !email} className={BUTTON}>
+            </Field>
+            <button type="submit" disabled={busy || !email} className="tl-button w-full">
               {busy ? 'Sending...' : 'Email me a code'}
             </button>
           </form>
         )}
 
         {options?.email.available && stage === 'code' && (
-          <form onSubmit={verifyCode} className="mt-4 space-y-4">
-            <div>
-              <label className={LABEL} htmlFor="signin-code">
-                Six-digit code
-              </label>
+          <form onSubmit={verifyCode} className="mt-6 space-y-5">
+            <Field label="Six-digit code" htmlFor="signin-code">
               <input
                 id="signin-code"
                 // `inputMode` and `autoComplete` together are what let a phone
@@ -237,26 +241,31 @@ export default function SignInPanel() {
                 value={code}
                 disabled={busy}
                 onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                className={`${INPUT} text-center text-2xl tracking-[0.5em]`}
+                // Inline, because `.tl-input` sets its own font size and is
+                // unlayered, so a `text-2xl` utility here would lose to it.
+                style={{ fontSize: '1.5rem', lineHeight: '2rem', letterSpacing: '0.5em' }}
+                className="tl-input text-center"
                 placeholder="000000"
               />
+            </Field>
+            <div className="space-y-3">
+              <button type="submit" disabled={busy || code.length !== 6} className="tl-button w-full">
+                {busy ? 'Checking...' : 'Sign in'}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setStage('address');
+                  setCode('');
+                  setError(null);
+                  setNotice(null);
+                }}
+                className="tl-button-quiet w-full"
+              >
+                Use a different address
+              </button>
             </div>
-            <button type="submit" disabled={busy || code.length !== 6} className={BUTTON}>
-              {busy ? 'Checking...' : 'Sign in'}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setStage('address');
-                setCode('');
-                setError(null);
-                setNotice(null);
-              }}
-              className="w-full text-sm text-gray-600 hover:text-gray-900 dark:text-gray-300"
-            >
-              Use a different address
-            </button>
           </form>
         )}
 
@@ -271,14 +280,14 @@ export default function SignInPanel() {
            * phone off the side of the window, taking the page's horizontal
            * scroll with it. It starts going wrong at 39 characters.
            */
-          <p className="mt-4 break-words rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:bg-blue-900/30 dark:text-blue-100">
+          <Notice tone="info" className="mt-5 break-words">
             {notice}
-          </p>
+          </Notice>
         )}
         {error && (
-          <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-200">
+          <Notice tone="error" className="mt-5">
             {error}
-          </p>
+          </Notice>
         )}
       </div>
     </div>

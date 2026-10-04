@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { HARD_SKILL_CATEGORIES, resumeApi, type HardSkillCategory } from '@/lib/api';
+import { Field, Notice, Spinner } from '@/components/ui/kit';
 
 type SkillType = 'hard' | 'soft';
 type SortOption = 'az' | 'za';
@@ -182,119 +183,131 @@ function SkillsPageBody() {
     pageSize: number
   ) => (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-[160px_120px]">
-        <select
-          value={sort}
-          onChange={(e) => {
-            const nextSort = e.target.value as SortOption;
-            if (type === 'hard') {
-              setTechSort(nextSort);
-              setTechPage(1);
-            } else {
-              setSoftSort(nextSort);
-              setSoftPage(1);
-            }
-          }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-        >
-          <option value="az">Sort: A to Z</option>
-          <option value="za">Sort: Z to A</option>
-        </select>
-        <select
-          value={String(pageSize)}
-          onChange={(e) => {
-            const nextPageSize = Number(e.target.value);
-            if (type === 'hard') {
-              setTechPageSize(nextPageSize);
-              setTechPage(1);
-            } else {
-              setSoftPageSize(nextPageSize);
-              setSoftPage(1);
-            }
-          }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-        >
-          {PAGE_SIZE_OPTIONS.map((option) => (
-            <option key={`${type}-page-size-${option}`} value={option}>
-              {option}/page
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="flex items-center justify-between text-xs text-gray-500">
-        <span>
-          {visibleSkills.length} {searchQuery.trim() ? 'matching' : 'visible'} skills
-        </span>
-        <span>{allSkills.length} total</span>
-      </div>
-
-      {visibleSkills.length === 0 && (
-        <div className="text-sm text-gray-500">
-          {searchQuery.trim() ? 'No skills match your search.' : 'No skills yet.'}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:w-[18rem]">
+          <select
+            value={sort}
+            onChange={(e) => {
+              const nextSort = e.target.value as SortOption;
+              if (type === 'hard') {
+                setTechSort(nextSort);
+                setTechPage(1);
+              } else {
+                setSoftSort(nextSort);
+                setSoftPage(1);
+              }
+            }}
+            aria-label={type === 'hard' ? 'Sort tech skills' : 'Sort soft skills'}
+            className="tl-input"
+          >
+            <option value="az">Sort: A to Z</option>
+            <option value="za">Sort: Z to A</option>
+          </select>
+          <select
+            value={String(pageSize)}
+            onChange={(e) => {
+              const nextPageSize = Number(e.target.value);
+              if (type === 'hard') {
+                setTechPageSize(nextPageSize);
+                setTechPage(1);
+              } else {
+                setSoftPageSize(nextPageSize);
+                setSoftPage(1);
+              }
+            }}
+            aria-label={type === 'hard' ? 'Tech skills per page' : 'Soft skills per page'}
+            className="tl-input"
+          >
+            {PAGE_SIZE_OPTIONS.map((option) => (
+              <option key={`${type}-page-size-${option}`} value={option}>
+                {option}/page
+              </option>
+            ))}
+          </select>
         </div>
-      )}
 
-      {pageItems.map((skill) => {
-        const isEditing = editing?.type === type && editing?.original === skill;
-        return (
-          <div key={`${type}-${skill}`} className="flex items-center gap-2">
-            {isEditing ? (
-              <input
-                type="text"
-                value={editing?.value ?? ''}
-                onChange={(e) => setEditing({ type, original: skill, value: e.target.value })}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm"
-              />
-            ) : (
-              <span className="flex-1 text-sm text-gray-800">{skill}</span>
-            )}
-            {isEditing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => updateSkill(type, skill, editing?.value ?? '')}
-                  disabled={isSaving}
-                  className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditing(null)}
-                  disabled={isSaving}
-                  className="px-3 py-1.5 text-xs bg-white text-gray-700 border border-gray-200 rounded-md hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setEditing({ type, original: skill, value: skill })}
-                  disabled={isSaving}
-                  className="px-3 py-1.5 text-xs bg-white text-gray-700 border border-gray-200 rounded-md hover:bg-gray-50"
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => deleteSkill(type, skill)}
-                  disabled={isSaving}
-                  className="px-3 py-1.5 text-xs bg-red-600 text-white rounded-md hover:bg-red-700 disabled:bg-red-300"
-                >
-                  Delete
-                </button>
-              </>
-            )}
+        <div className="flex items-center gap-3 text-xs text-subtle">
+          <span>
+            {visibleSkills.length} {searchQuery.trim() ? 'matching' : 'visible'} skills
+          </span>
+          <span>{allSkills.length} total</span>
+        </div>
+      </div>
+
+      <div className="tl-rows">
+        {visibleSkills.length === 0 && (
+          <div className="px-4 py-6 text-center text-sm text-muted">
+            {searchQuery.trim() ? 'No skills match your search.' : 'No skills yet.'}
           </div>
-        );
-      })}
+        )}
+
+        {pageItems.map((skill) => {
+          const isEditing = editing?.type === type && editing?.original === skill;
+          return (
+            <div key={`${type}-${skill}`} className="flex items-center gap-2 px-4 py-2">
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={editing?.value ?? ''}
+                  onChange={(e) => setEditing({ type, original: skill, value: e.target.value })}
+                  aria-label={`Rename ${skill}`}
+                  className="tl-input min-w-0 flex-1"
+                />
+              ) : (
+                <span className="min-w-0 flex-1 break-words text-sm text-ink">{skill}</span>
+              )}
+              {isEditing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => updateSkill(type, skill, editing?.value ?? '')}
+                    disabled={isSaving}
+                    className="tl-button"
+                    data-size="sm"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(null)}
+                    disabled={isSaving}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setEditing({ type, original: skill, value: skill })}
+                    disabled={isSaving}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteSkill(type, skill)}
+                    disabled={isSaving}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                    data-tone="danger"
+                  >
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       {visibleSkills.length > 0 && (
-        <div className="flex items-center justify-between border-t border-gray-200 pt-3">
-          <div className="text-xs text-gray-500">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs text-subtle">
             Page {page} of {totalPages}
           </div>
           <div className="flex items-center gap-2">
@@ -305,7 +318,8 @@ function SkillsPageBody() {
                 else setSoftPage((current) => Math.max(1, current - 1));
               }}
               disabled={page <= 1}
-              className="px-3 py-1.5 text-xs bg-white text-gray-700 border border-gray-200 rounded-md hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400"
+              className="tl-button-quiet"
+              data-size="sm"
             >
               Previous
             </button>
@@ -316,7 +330,8 @@ function SkillsPageBody() {
                 else setSoftPage((current) => Math.min(totalPages, current + 1));
               }}
               disabled={page >= totalPages}
-              className="px-3 py-1.5 text-xs bg-white text-gray-700 border border-gray-200 rounded-md hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400"
+              className="tl-button-quiet"
+              data-size="sm"
             >
               Next
             </button>
@@ -327,22 +342,24 @@ function SkillsPageBody() {
   );
 
   return (
-    <div className="max-w-6xl">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Skill Library</h1>
-        <button
-          type="button"
-          onClick={loadSkills}
-          className="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-md hover:bg-gray-50"
-        >
+    <div className="space-y-6 pb-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Skill Library</h2>
+          <p className="mt-1 text-sm text-muted">
+            The tech and soft skills every account&apos;s resumes draw on, shared across the installation.
+          </p>
+        </div>
+        <button type="button" onClick={loadSkills} className="tl-button-quiet">
           Refresh
         </button>
       </div>
 
-      <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4">
-        <label htmlFor="skill-library-search" className="mb-2 block text-sm font-medium text-gray-700">
-          Search skills
-        </label>
+      <Field
+        label="Search skills"
+        htmlFor="skill-library-search"
+        hint={`Showing ${techVisibleSkills.length + softVisibleSkills.length} of ${techSkills.length + softSkills.length} skills.`}
+      >
         <div className="flex gap-2">
           <input
             id="skill-library-search"
@@ -354,7 +371,7 @@ function SkillsPageBody() {
               setSoftPage(1);
             }}
             placeholder="Search tech and soft skills"
-            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            className="tl-input"
           />
           {searchQuery && (
             <button
@@ -364,108 +381,112 @@ function SkillsPageBody() {
                 setTechPage(1);
                 setSoftPage(1);
               }}
-              className="shrink-0 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              className="tl-button-quiet shrink-0"
+              style={{ minHeight: '2.5rem' }}
             >
               Clear
             </button>
           )}
         </div>
-        <p className="mt-2 text-xs text-gray-500">
-          Showing {techVisibleSkills.length + softVisibleSkills.length} of {techSkills.length + softSkills.length} skills.
-        </p>
-      </div>
+      </Field>
 
       {error && (
-        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+        <Notice tone="error" role="alert">
           {error}
-        </div>
+        </Notice>
       )}
       {success && (
-        <div className="mb-4 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
+        <Notice tone="success" role="status">
           {success}
-        </div>
+        </Notice>
       )}
 
       {isLoading ? (
-        <div className="text-sm text-gray-500">Loading skills...</div>
+        <Spinner label="Loading skills..." />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <section className="bg-white border border-gray-200 rounded-lg p-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">Tech Skills</h2>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <section className="tl-card min-w-0">
+            <div className="tl-card-header">
+              <h3 className="text-base font-semibold text-ink">Tech Skills</h3>
             </div>
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_220px_120px_auto]">
-              <input
-                type="text"
-                value={newTech}
-                onChange={(e) => setNewTech(e.target.value)}
-                placeholder="Add a tech skill"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-              />
-              <select
-                value={newTechCategory}
-                onChange={(e) => setNewTechCategory(e.target.value as HardSkillCategory)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
-                aria-label="Tech skill category"
-              >
-                {HARD_SKILL_CATEGORIES.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={String(newTechPriority)}
-                onChange={(e) => setNewTechPriority(Number(e.target.value))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
-                aria-label="Tech skill priority"
-              >
-                {PRIORITY_OPTIONS.map((priority) => (
-                  <option key={priority} value={priority}>
-                    Priority {priority}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => addSkill('hard', newTech, { category: newTechCategory, priority: newTechPriority })}
-                disabled={isSaving || !newTech.trim()}
-                className="px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300"
-              >
-                Add
-              </button>
+            <div className="space-y-5 p-5">
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7.5rem_auto] sm:items-start">
+                <input
+                  type="text"
+                  value={newTech}
+                  onChange={(e) => setNewTech(e.target.value)}
+                  placeholder="Add a tech skill"
+                  aria-label="New tech skill"
+                  className="tl-input sm:col-span-3"
+                />
+                <div>
+                  <select
+                    value={newTechCategory}
+                    onChange={(e) => setNewTechCategory(e.target.value as HardSkillCategory)}
+                    className="tl-input"
+                    aria-label="Tech skill category"
+                  >
+                    {HARD_SKILL_CATEGORIES.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-subtle">Category required</p>
+                </div>
+                <div>
+                  <select
+                    value={String(newTechPriority)}
+                    onChange={(e) => setNewTechPriority(Number(e.target.value))}
+                    className="tl-input"
+                    aria-label="Tech skill priority"
+                  >
+                    {PRIORITY_OPTIONS.map((priority) => (
+                      <option key={priority} value={priority}>
+                        Priority {priority}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-subtle">1 is highest</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => addSkill('hard', newTech, { category: newTechCategory, priority: newTechPriority })}
+                  disabled={isSaving || !newTech.trim()}
+                  className="tl-button"
+                >
+                  Add
+                </button>
+              </div>
+              {renderList('hard', techSkills, techVisibleSkills, techPageItems, techSort, safeTechPage, techTotalPages, techPageSize)}
             </div>
-            <div className="grid gap-1 text-xs text-gray-500 sm:grid-cols-[minmax(0,1fr)_220px_120px_auto]">
-              <span />
-              <span>Category required</span>
-              <span>1 is highest</span>
-              <span />
-            </div>
-            {renderList('hard', techSkills, techVisibleSkills, techPageItems, techSort, safeTechPage, techTotalPages, techPageSize)}
           </section>
 
-          <section className="bg-white border border-gray-200 rounded-lg p-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">Soft Skills</h2>
+          <section className="tl-card min-w-0">
+            <div className="tl-card-header">
+              <h3 className="text-base font-semibold text-ink">Soft Skills</h3>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={newSoft}
-                onChange={(e) => setNewSoft(e.target.value)}
-                placeholder="Add a soft skill"
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm"
-              />
-              <button
-                type="button"
-                onClick={() => addSkill('soft', newSoft)}
-                disabled={isSaving || !newSoft.trim()}
-                className="px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300"
-              >
-                Add
-              </button>
+            <div className="space-y-5 p-5">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newSoft}
+                  onChange={(e) => setNewSoft(e.target.value)}
+                  placeholder="Add a soft skill"
+                  aria-label="New soft skill"
+                  className="tl-input min-w-0 flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => addSkill('soft', newSoft)}
+                  disabled={isSaving || !newSoft.trim()}
+                  className="tl-button"
+                >
+                  Add
+                </button>
+              </div>
+              {renderList('soft', softSkills, softVisibleSkills, softPageItems, softSort, safeSoftPage, softTotalPages, softPageSize)}
             </div>
-            {renderList('soft', softSkills, softVisibleSkills, softPageItems, softSort, safeSoftPage, softTotalPages, softPageSize)}
           </section>
         </div>
       )}

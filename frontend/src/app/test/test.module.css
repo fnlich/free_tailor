@@ -1,0 +1,14 @@
+/*
+ * The raw JSON, as code on a dark panel in both themes. Its own colours rather
+ * than `bg-gray-950 text-slate-100`, which the dark-mode shim leaves alone
+ * today only because it happens not to name them.
+ */
+.json {
+  background: #0b1220;
+  color: #e2e8f0;
+}
+
+:global(html.dark) .json {
+  background: #050b16;
+  border: 1px solid var(--line-subtle);
+}

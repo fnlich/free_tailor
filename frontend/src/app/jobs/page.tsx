@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
+import { EmptyState, Field, Notice, Page, PageHeader, Pill, Section, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   parsePositiveWholeNumber,
@@ -429,68 +430,59 @@ export default function JobsPage() {
     searchMeta?.filters.keywords || searchMeta?.filters.startUrl || 'custom search';
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-      <section className="rounded-3xl border border-slate-200 bg-white/90 p-6 shadow-sm backdrop-blur sm:p-8">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-4">
-            <div className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-blue-700 uppercase">
-              Job Scrapers
-            </div>
-            <div className="space-y-3">
-              <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-                Run job scrapers one source at a time
-              </h1>
-              <p className="text-sm leading-7 text-gray-600 sm:text-base">
-                LinkedIn now uses only `bebity/linkedin-jobs-scraper` with fixed location, proxy, publishedAt, and remote settings.
-                The other categories remain available with their existing source-specific inputs.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {['Independent runs', 'Source-specific inputs', '5-minute scraper timeout', 'Google Sheets export'].map((label) => (
-                <span
-                  key={label}
-                  className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700"
-                >
-                  {label}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
-            <div className="font-semibold text-gray-900">{selectedSource.badge}</div>
-            <div className="mt-1">{selectedSource.description}</div>
-            {selectedProvider && (
-              <div className="mt-2 text-xs text-gray-500">
-                Provider: <span className="font-semibold text-gray-700">{selectedProvider.label}</span>
-              </div>
-            )}
-          </div>
+    <Page>
+      <PageHeader title="Job Search" description="Run job scrapers one source at a time.">
+        <div className="flex flex-wrap gap-2">
+          {['Independent runs', 'Source-specific inputs', '5-minute scraper timeout', 'Google Sheets export'].map((label) => (
+            <Pill key={label} tone="sky">
+              {label}
+            </Pill>
+          ))}
         </div>
-      </section>
+      </PageHeader>
 
-      <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-        <form className="space-y-6" onSubmit={handleSubmit}>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700">Category</span>
-              <select
-                value={source}
-                onChange={(event) => setSource(event.target.value as ScraperSource)}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                disabled={isLoading}
-              >
-                {SCRAPER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+      <form onSubmit={handleSubmit}>
+        <Section
+          title="Job Scrapers"
+          description={
+            <>
+              LinkedIn now uses only `bebity/linkedin-jobs-scraper` with fixed location, proxy, publishedAt, and remote settings.
+              The other categories remain available with their existing source-specific inputs.
+            </>
+          }
+        >
+          <fieldset disabled={isLoading} className="min-w-0">
+            <legend className="tl-label">Category</legend>
+            <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {SCRAPER_OPTIONS.map((option) => {
+                const isSelected = source === option.value;
+                return (
+                  <label key={option.value} className="tl-choice" data-on={isSelected}>
+                    <input
+                      type="radio"
+                      name="scraper-source"
+                      value={option.value}
+                      checked={isSelected}
+                      onChange={() => setSource(option.value)}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-ink">{option.label}</span>
+                      <span className="mt-0.5 block text-sm text-muted">{option.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
 
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700">Provider</span>
+          <div className="grid gap-x-4 gap-y-6 md:grid-cols-2 xl:grid-cols-3">
+            <Field
+              label="Provider"
+              htmlFor="jobs-provider"
+              hint={selectedProvider ? selectedProvider.description : undefined}
+            >
               <select
+                id="jobs-provider"
                 value={selectedProviderId}
                 onChange={(event) =>
                   setSelectedProviders((current) => ({
@@ -498,7 +490,7 @@ export default function JobsPage() {
                     [source]: event.target.value,
                   }))
                 }
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                className="tl-input"
                 disabled={isLoading || !selectedSourceProviderCatalog || selectedSourceProviderCatalog.providers.length <= 1}
               >
                 {(selectedSourceProviderCatalog?.providers ?? []).map((provider) => (
@@ -507,61 +499,63 @@ export default function JobsPage() {
                   </option>
                 ))}
               </select>
-              {selectedProvider && (
-                <div className="text-xs text-gray-500">{selectedProvider.description}</div>
-              )}
-            </label>
+            </Field>
 
             {isStartUrlOnlyScraper ? (
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Start URL</span>
-                <input
-                  type="url"
-                  value={startUrl}
-                  onChange={(event) => setStartUrl(event.target.value)}
-                  placeholder={isIndeedStartUrlOnlySource ? 'https://www.indeed.com/jobs/?q=...' : 'https://hiring.cafe/?searchState=...'}
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
-                  disabled={isLoading}
-                  required
-                />
-                <div className="text-xs text-gray-500">
-                  {isIndeedStartUrlOnlySource
-                    ? 'Indeed runs from a single Indeed URL. The backend sends the rest of the actor input as fixed values.'
-                    : '`Apify: memo23` runs from a single Hiring Cafe URL. The backend sends the rest of the actor input as fixed values.'}
-                </div>
-              </label>
+              <div className="md:col-span-1 xl:col-span-2">
+                <Field
+                  label="Start URL"
+                  htmlFor="jobs-start-url"
+                  hint={
+                    isIndeedStartUrlOnlySource
+                      ? 'Indeed runs from a single Indeed URL. The backend sends the rest of the actor input as fixed values.'
+                      : '`Apify: memo23` runs from a single Hiring Cafe URL. The backend sends the rest of the actor input as fixed values.'
+                  }
+                >
+                  <input
+                    id="jobs-start-url"
+                    type="url"
+                    value={startUrl}
+                    onChange={(event) => setStartUrl(event.target.value)}
+                    placeholder={isIndeedStartUrlOnlySource ? 'https://www.indeed.com/jobs/?q=...' : 'https://hiring.cafe/?searchState=...'}
+                    className="tl-input"
+                    disabled={isLoading}
+                    required
+                  />
+                </Field>
+              </div>
             ) : (
               <>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Keyword</span>
+                <Field label="Keyword" htmlFor="jobs-keywords">
                   <input
+                    id="jobs-keywords"
                     type="text"
                     value={keywords}
                     onChange={(event) => setKeywords(event.target.value)}
                     placeholder="software engineer, data analyst, product manager..."
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
+                    className="tl-input"
                     disabled={isLoading}
                   />
-                </label>
+                </Field>
 
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Location</span>
+                <Field label="Location" htmlFor="jobs-location">
                   <input
+                    id="jobs-location"
                     type="text"
                     value={location}
                     onChange={(event) => setLocation(event.target.value)}
                     placeholder="United States, Berlin, London..."
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-blue-500"
+                    className="tl-input"
                     disabled={isLoading}
                   />
-                </label>
+                </Field>
 
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Posted within</span>
+                <Field label="Posted within" htmlFor="jobs-posted-within">
                   <select
+                    id="jobs-posted-within"
                     value={timePosted}
                     onChange={(event) => setTimePosted(event.target.value as ScraperTimePosted)}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                    className="tl-input"
                     disabled={isLoading}
                   >
                     {TIME_POSTED_OPTIONS.map((option) => (
@@ -570,14 +564,14 @@ export default function JobsPage() {
                       </option>
                     ))}
                   </select>
-                </label>
+                </Field>
 
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Job type</span>
+                <Field label="Job type" htmlFor="jobs-job-type">
                   <select
+                    id="jobs-job-type"
                     value={jobType}
                     onChange={(event) => setJobType(event.target.value as ScraperJobType | '')}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                    className="tl-input"
                     disabled={isLoading}
                   >
                     <option value="">Any supported type</option>
@@ -587,14 +581,18 @@ export default function JobsPage() {
                       </option>
                     ))}
                   </select>
-                </label>
+                </Field>
 
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-gray-700">Results</span>
+                <Field
+                  label="Results"
+                  htmlFor="jobs-results-limit"
+                  hint={source === 'jobboard' ? 'Job Board scraper supports up to 100 results per run.' : undefined}
+                >
                   <select
+                    id="jobs-results-limit"
                     value={limit}
                     onChange={(event) => setLimit(Number(event.target.value))}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
+                    className="tl-input"
                     disabled={isLoading}
                   >
                     {availableLimitOptions.map((value) => (
@@ -603,404 +601,366 @@ export default function JobsPage() {
                       </option>
                     ))}
                   </select>
-                  {source === 'jobboard' && (
-                    <div className="text-xs text-amber-700">
-                      Job Board scraper supports up to 100 results per run.
-                    </div>
-                  )}
-                </label>
+                </Field>
               </>
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
             {!isStartUrlOnlyScraper && (
-              <label className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700">
+              <label className="inline-flex items-center gap-3 text-sm font-medium text-ink">
                 <input
                   type="checkbox"
                   checked={remoteOnly}
                   onChange={(event) => setRemoteOnly(event.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                  className="tl-check"
                   disabled={isLoading}
                 />
                 Remote only
               </label>
             )}
 
-            <label
-              className="inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700"
-            >
+            <label className="inline-flex items-center gap-3 text-sm font-medium text-ink">
               <input
                 type="checkbox"
                 checked={writeToGoogleSheet}
                 onChange={(event) => setWriteToGoogleSheet(event.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                className="tl-check"
                 disabled={isLoading}
               />
               Write to Google Sheet
             </label>
           </div>
+        </Section>
 
-          <div className="rounded-3xl border border-gray-200 bg-gray-50 p-5">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <div className="text-base font-semibold text-gray-900">Google Sheets export</div>
-                <div className="mt-1 text-sm text-gray-600">
-                  Choose the spreadsheet, tab, columns, and start row. Duplicate jobs already present in the sheet
-                  are skipped before writing.
-                </div>
-              </div>
-            </div>
-
-            {/* Ordinary accounts have exactly one destination, so there is
-                nothing to choose. An administrator can still write into a
-                shared source they configured. */}
-            {isAdmin && (
-              <div className="mt-5 flex flex-wrap gap-2">
-                {(['mine', 'shared'] as const).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => setExportTarget(option)}
-                    disabled={isLoading}
-                    className={`rounded-xl border px-4 py-2 text-sm font-medium ${
-                      exportTarget === option
-                        ? 'border-blue-500 bg-blue-600 text-white'
-                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {exportTarget === 'mine' ? (
-              <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-                {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
-                  <>
-                    Rows go to{' '}
-                    <a
-                      className="font-semibold underline"
-                      href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      your job sheet
-                    </a>
-                    , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
-                    Company, Job Title, Job Link and Job Description. New rows are added after the ones
-                    already there, and jobs already in the tab are skipped.
-                  </>
-                ) : (
-                  'Rows go to your own job sheet, on today\'s tab. Settings > Job Sheet has the link if you want to see it.'
-                )}
-              </div>
-            ) : (
-            <>
-            <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Google Sheet</span>
-                <select
-                  value={sheetExportForm.sheetId}
-                  onChange={(event) => {
-                    setSheetField('sheetId', event.target.value);
-                    setSheetField('tabName', '');
-                    setSheetTabs([]);
-                    setSheetTitle('');
-                  }}
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading}
-                >
-                  <option value="">
-                    {sheetSources.length ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
-                  </option>
-                  {sheetSources.map((sheetSource) => (
-                    <option key={sheetSource.id} value={sheetSource.sheetId}>
-                      {sheetSource.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Sheet tab</span>
-                <select
-                  value={sheetExportForm.tabName}
-                  onChange={(event) => setSheetField('tabName', event.target.value)}
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
-                >
-                  <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
-                  {sheetTabs.map((tab) => (
-                    <option key={tab.sheetId} value={tab.title}>
-                      {tab.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="flex items-end">
+        <Section
+          title="Google Sheets export"
+          description="Choose the spreadsheet, tab, columns, and start row. Duplicate jobs already present in the sheet are skipped before writing."
+        >
+          {/* Ordinary accounts have exactly one destination, so there is
+              nothing to choose. An administrator can still write into a
+              shared source they configured. */}
+          {isAdmin && (
+            <div className="tl-card inline-flex flex-wrap gap-1 p-1">
+              {(['mine', 'shared'] as const).map((option) => (
                 <button
+                  key={option}
                   type="button"
-                  onClick={handleLoadSheetTabs}
-                  disabled={isLoading || isLoadingTabs || !sheetExportForm.sheetId.trim()}
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400"
+                  onClick={() => setExportTarget(option)}
+                  disabled={isLoading}
+                  className="tl-subtab"
+                  data-active={exportTarget === option}
+                  aria-pressed={exportTarget === option}
                 >
-                  {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
+                  {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
                 </button>
-              </div>
+              ))}
             </div>
+          )}
 
-            {sheetTitle && (
-              <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                Connected to <span className="font-semibold">{sheetTitle}</span>.
-              </div>
-            )}
+          {exportTarget === 'mine' ? (
+            <Notice tone="neutral">
+              {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
+                <>
+                  Rows go to{' '}
+                  <a
+                    className="tl-link"
+                    href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    your job sheet
+                  </a>
+                  , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
+                  Company, Job Title, Job Link and Job Description. New rows are added after the ones
+                  already there, and jobs already in the tab are skipped.
+                </>
+              ) : (
+                'Rows go to your own job sheet, on today\'s tab. Settings > Job Sheet has the link if you want to see it.'
+              )}
+            </Notice>
+          ) : (
+          <>
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto] lg:items-end">
+            <Field label="Google Sheet" htmlFor="jobs-export-sheet">
+              <select
+                id="jobs-export-sheet"
+                value={sheetExportForm.sheetId}
+                onChange={(event) => {
+                  setSheetField('sheetId', event.target.value);
+                  setSheetField('tabName', '');
+                  setSheetTabs([]);
+                  setSheetTitle('');
+                }}
+                className="tl-input"
+                disabled={isLoading}
+              >
+                <option value="">
+                  {sheetSources.length ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
+                </option>
+                {sheetSources.map((sheetSource) => (
+                  <option key={sheetSource.id} value={sheetSource.sheetId}>
+                    {sheetSource.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Company column</span>
-                <input
-                  type="text"
-                  value={sheetExportForm.companyNameCol}
-                  onChange={(event) => setSheetField('companyNameCol', event.target.value.toUpperCase())}
-                  placeholder="D"
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading}
-                />
-              </label>
+            <Field label="Sheet tab" htmlFor="jobs-export-tab">
+              <select
+                id="jobs-export-tab"
+                value={sheetExportForm.tabName}
+                onChange={(event) => setSheetField('tabName', event.target.value)}
+                className="tl-input"
+                disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
+              >
+                <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
+                {sheetTabs.map((tab) => (
+                  <option key={tab.sheetId} value={tab.title}>
+                    {tab.title}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Job title column</span>
-                <input
-                  type="text"
-                  value={sheetExportForm.jobTitleCol}
-                  onChange={(event) => setSheetField('jobTitleCol', event.target.value.toUpperCase())}
-                  placeholder="E"
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading}
-                />
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Job link column</span>
-                <input
-                  type="text"
-                  value={sheetExportForm.jobLinkCol}
-                  onChange={(event) => setSheetField('jobLinkCol', event.target.value.toUpperCase())}
-                  placeholder="F"
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading}
-                />
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Description column</span>
-                <input
-                  type="text"
-                  value={sheetExportForm.jobDescriptionCol}
-                  onChange={(event) => setSheetField('jobDescriptionCol', event.target.value.toUpperCase())}
-                  placeholder="G"
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading}
-                />
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-gray-700">Start row</span>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={sheetExportForm.startRow}
-                  onChange={(event) => setSheetField('startRow', event.target.value)}
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none ring-0 focus:border-blue-500"
-                  disabled={isLoading}
-                />
-              </label>
-            </div>
-            </>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-3">
             <button
-              type="submit"
-              disabled={isLoading}
-              className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-blue-300"
+              type="button"
+              onClick={handleLoadSheetTabs}
+              disabled={isLoading || isLoadingTabs || !sheetExportForm.sheetId.trim()}
+              className="tl-button-quiet w-full lg:w-auto"
             >
-              {isLoading
-                ? writeToGoogleSheet
-                  ? `Running ${selectedSource.label} and writing to sheet...`
-                  : `Running ${selectedSource.label}...`
-                : writeToGoogleSheet
-                  ? `Run ${selectedSource.label} + Fill Sheet`
-                  : `Run ${selectedSource.label}`}
+              {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
             </button>
           </div>
-        </form>
 
-        {error && (
-          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
+          {sheetTitle && (
+            <Notice tone="success">
+              Connected to <span className="font-semibold">{sheetTitle}</span>.
+            </Notice>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <Field label="Company column" htmlFor="jobs-export-company-col">
+              <input
+                id="jobs-export-company-col"
+                type="text"
+                value={sheetExportForm.companyNameCol}
+                onChange={(event) => setSheetField('companyNameCol', event.target.value.toUpperCase())}
+                placeholder="D"
+                className="tl-input"
+                disabled={isLoading}
+              />
+            </Field>
+
+            <Field label="Job title column" htmlFor="jobs-export-title-col">
+              <input
+                id="jobs-export-title-col"
+                type="text"
+                value={sheetExportForm.jobTitleCol}
+                onChange={(event) => setSheetField('jobTitleCol', event.target.value.toUpperCase())}
+                placeholder="E"
+                className="tl-input"
+                disabled={isLoading}
+              />
+            </Field>
+
+            <Field label="Job link column" htmlFor="jobs-export-link-col">
+              <input
+                id="jobs-export-link-col"
+                type="text"
+                value={sheetExportForm.jobLinkCol}
+                onChange={(event) => setSheetField('jobLinkCol', event.target.value.toUpperCase())}
+                placeholder="F"
+                className="tl-input"
+                disabled={isLoading}
+              />
+            </Field>
+
+            <Field label="Description column" htmlFor="jobs-export-description-col">
+              <input
+                id="jobs-export-description-col"
+                type="text"
+                value={sheetExportForm.jobDescriptionCol}
+                onChange={(event) => setSheetField('jobDescriptionCol', event.target.value.toUpperCase())}
+                placeholder="G"
+                className="tl-input"
+                disabled={isLoading}
+              />
+            </Field>
+
+            <Field label="Start row" htmlFor="jobs-export-start-row">
+              <input
+                id="jobs-export-start-row"
+                type="number"
+                min={1}
+                step={1}
+                value={sheetExportForm.startRow}
+                onChange={(event) => setSheetField('startRow', event.target.value)}
+                className="tl-input"
+                disabled={isLoading}
+              />
+            </Field>
           </div>
-        )}
+          </>
+          )}
+        </Section>
+
+        <div className="flex flex-wrap gap-3 pt-6">
+          <button type="submit" disabled={isLoading} className="tl-button">
+            {isLoading
+              ? writeToGoogleSheet
+                ? `Running ${selectedSource.label} and writing to sheet...`
+                : `Running ${selectedSource.label}...`
+              : writeToGoogleSheet
+                ? `Run ${selectedSource.label} + Fill Sheet`
+                : `Run ${selectedSource.label}`}
+          </button>
+        </div>
+      </form>
+
+      <div className="mt-8 space-y-4 empty:hidden">
+        {error && <Notice tone="error">{error}</Notice>}
 
         {searchMeta && !error && (
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-sm text-muted">
             <span>
-              Found <span className="font-semibold text-gray-900">{results.length}</span> {formatSourceLabel(searchMeta.source)} job
-              {results.length === 1 ? '' : 's'} for <span className="font-semibold text-gray-900">{searchSummaryValue}</span> via{' '}
-              <span className="font-semibold text-gray-900">{searchMeta.providerLabel}</span>.
+              Found <span className="font-semibold text-ink">{results.length}</span> {formatSourceLabel(searchMeta.source)} job
+              {results.length === 1 ? '' : 's'} for <span className="font-semibold text-ink">{searchSummaryValue}</span> via{' '}
+              <span className="font-semibold text-ink">{searchMeta.providerLabel}</span>.
             </span>
-            <span>Fetched {formatFetchedAt(searchMeta.fetchedAt)}</span>
-            {(searchMeta.filters.rawResultCount ?? 0) > 0 && (
-              <span>
-                Raw {searchMeta.filters.rawResultCount}
-                {typeof searchMeta.filters.remoteFilteredCount === 'number' && searchMeta.filters.remoteFilteredCount > 0
-                  ? `, filtered out ${searchMeta.filters.remoteFilteredCount} by remote rules`
-                  : ''}
-              </span>
-            )}
+            <span className="flex flex-wrap gap-x-6 gap-y-1">
+              <span>Fetched {formatFetchedAt(searchMeta.fetchedAt)}</span>
+              {(searchMeta.filters.rawResultCount ?? 0) > 0 && (
+                <span>
+                  Raw {searchMeta.filters.rawResultCount}
+                  {typeof searchMeta.filters.remoteFilteredCount === 'number' && searchMeta.filters.remoteFilteredCount > 0
+                    ? `, filtered out ${searchMeta.filters.remoteFilteredCount} by remote rules`
+                    : ''}
+                </span>
+              )}
+            </span>
           </div>
         )}
 
         {exportMeta && !error && (
-          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
-            <div className="font-semibold text-emerald-900">
+          <Notice tone="success">
+            <p className="font-semibold">
               Wrote {exportMeta.rowsWritten} jobs to {exportMeta.spreadsheetTitle} / {exportMeta.selectedTab}
-            </div>
-            <div className="mt-1">
+            </p>
+            <p className="mt-1">
               Rows {exportMeta.startRow} to {exportMeta.endRow}.
-            </div>
-            <div className="mt-1">
+            </p>
+            <p className="mt-1">
               {exportMeta.unresolvedJobLinks === 0
                 ? 'Every exported row had a usable apply link.'
                 : `${exportMeta.unresolvedJobLinks} exported job-link cells were blank because no apply URL was available.`}
-            </div>
+            </p>
             {typeof exportMeta.beforeExportResultCount === 'number' && (
-              <div className="mt-1">
+              <p className="mt-1">
                 {exportMeta.beforeExportResultCount} job{exportMeta.beforeExportResultCount === 1 ? '' : 's'} remained after scraper filtering before sheet duplicate checks.
-              </div>
+              </p>
             )}
-            <div className="mt-1">
+            <p className="mt-1">
               {exportMeta.skippedCompanyDuplicates === 0
                 ? 'No jobs were skipped as duplicates.'
                 : `Skipped ${exportMeta.skippedCompanyDuplicates} job${exportMeta.skippedCompanyDuplicates === 1 ? '' : 's'} because the same job already existed in the destination sheet or had already been queued in this run.`}
-            </div>
-          </div>
+            </p>
+          </Notice>
         )}
-      </section>
 
-      <section className="mt-6 space-y-4">
         {isLoading && (
-          <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
-            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-            <div className="mt-4 text-sm text-gray-600">
-              {writeToGoogleSheet
-                ? `${selectedSource.label} is running on the backend and rows will be written to Google Sheets after filtering duplicate jobs.`
-                : `${selectedSource.label} is running on the backend.`}
-            </div>
+          <div className="tl-card">
+            <Spinner
+              label={
+                writeToGoogleSheet
+                  ? `${selectedSource.label} is running on the backend and rows will be written to Google Sheets after filtering duplicate jobs.`
+                  : `${selectedSource.label} is running on the backend.`
+              }
+            />
           </div>
         )}
 
         {!isLoading && searched && !error && results.length === 0 && (
-          <div className="rounded-3xl border border-gray-200 bg-white px-6 py-10 text-center shadow-sm">
-            <div className="text-lg font-semibold text-gray-900">No jobs matched this run</div>
-            <div className="mt-2 text-sm text-gray-600">
-              Try a broader keyword, a wider time window, or a different scraper.
-            </div>
-          </div>
+          <EmptyState title="No jobs matched this run">
+            Try a broader keyword, a wider time window, or a different scraper.
+          </EmptyState>
         )}
 
-        {!isLoading &&
-          results.map((job) => {
-            const meta = getJobMeta(job);
-            const postedDate = formatPostedDate(job.posted_at);
-            const salaryRange = formatSalaryRange(job);
-            const nativeLink = getNativeJobLink(job);
+        {!isLoading && results.length > 0 && (
+          // Colours on a .tl-table cell go on an inner element - the unlayered
+          // `td` rule beats a utility on the cell itself.
+          <div className="tl-table-box">
+            <table className="tl-table">
+              <thead>
+                <tr>
+                  <th scope="col">Job</th>
+                  <th scope="col">Details</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((job) => {
+                  const meta = getJobMeta(job);
+                  const postedDate = formatPostedDate(job.posted_at);
+                  const salaryRange = formatSalaryRange(job);
+                  const nativeLink = getNativeJobLink(job);
 
-            return (
-              <article
-                key={`${job.source}-${job.id}`}
-                className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm transition hover:border-blue-200 hover:shadow-md"
-              >
-                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
-                          {formatSourceLabel(job.source)}
-                        </span>
-                        {job.job_type && (
-                          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                            {job.job_type}
-                          </span>
-                        )}
-                        {job.equity && (
-                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-                            Equity {job.equity}
-                          </span>
-                        )}
-                        {salaryRange && (
-                          <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
-                            {salaryRange}
-                          </span>
-                        )}
-                      </div>
-
-                      <div>
-                        <h2 className="text-2xl font-semibold tracking-tight text-gray-900">{job.title}</h2>
-                        {meta.length > 0 && (
-                          <p className="mt-2 text-sm text-gray-600">{meta.join(' • ')}</p>
-                        )}
-                        {postedDate && (
-                          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-gray-500">
-                            Posted date {postedDate}
+                  return (
+                    <tr key={`${job.source}-${job.id}`} className="align-top">
+                      <td className="min-w-[18rem]">
+                        <h2 className="text-base font-semibold text-ink">{job.title}</h2>
+                        {meta.length > 0 && <p className="mt-1 text-sm text-muted">{meta.join(' • ')}</p>}
+                        {job.description && (
+                          <p className="mt-2 max-w-3xl text-sm leading-6 text-subtle">
+                            {truncateDescription(job.description)}
                           </p>
                         )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex shrink-0 flex-wrap gap-3">
-                    {job.apply_url ? (
-                      <a
-                        href={job.apply_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
-                      >
-                        Open apply link
-                      </a>
-                    ) : (
-                      <span className="rounded-xl bg-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-600">
-                        Apply link unavailable
-                      </span>
-                    )}
-                    {nativeLink && nativeLink !== job.apply_url && (
-                      <a
-                        href={nativeLink}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-                      >
-                        Open source listing
-                      </a>
-                    )}
-                  </div>
-                </div>
-
-                {job.description && (
-                  <p className="mt-5 text-sm leading-7 text-gray-700">
-                    {truncateDescription(job.description)}
-                  </p>
-                )}
-              </article>
-            );
-          })}
-      </section>
-    </main>
+                      </td>
+                      <td className="min-w-[11rem]">
+                        <div className="flex flex-wrap gap-1.5">
+                          <Pill>{formatSourceLabel(job.source)}</Pill>
+                          {job.job_type && <Pill tone="sky">{job.job_type}</Pill>}
+                          {job.equity && <Pill tone="green">Equity {job.equity}</Pill>}
+                          {salaryRange && <Pill tone="amber">{salaryRange}</Pill>}
+                        </div>
+                        {postedDate && <p className="mt-2 text-xs text-subtle">Posted date {postedDate}</p>}
+                      </td>
+                      <td>
+                        <div className="flex flex-col items-start gap-2">
+                          {job.apply_url ? (
+                            <a
+                              href={job.apply_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="tl-button-quiet"
+                              data-size="sm"
+                            >
+                              Open apply link
+                            </a>
+                          ) : (
+                            <span className="whitespace-nowrap text-sm text-subtle">Apply link unavailable</span>
+                          )}
+                          {nativeLink && nativeLink !== job.apply_url && (
+                            <a
+                              href={nativeLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="tl-button-quiet"
+                              data-size="sm"
+                            >
+                              Open source listing
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Page>
   );
 }

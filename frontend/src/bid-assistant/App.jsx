@@ -565,7 +565,11 @@ export default function App() {
         />
       )}
 
-      {errorMessage && <div className="error-banner">{errorMessage}</div>}
+      {errorMessage && (
+        <div className="tl-notice error-banner" data-tone="error" role="alert">
+          {errorMessage}
+        </div>
+      )}
     </div>
   );
 }

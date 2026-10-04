@@ -15,6 +15,9 @@ import {
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { AdminOnly } from '@/components/auth/AuthGate';
+import { Card, Field, Notice, Pill, Section } from '@/components/ui/kit';
+
+import styles from './test.module.css';
 
 type HighlightKind = 'required' | 'preferred' | 'keyword' | 'industry' | 'domain' | 'soft';
 
@@ -357,125 +360,129 @@ function TestPageBody() {
   const hasAnyProvider = enabledProviders.length > 0;
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Job Keyword Prompt Test</h1>
-          <p className="mt-2 max-w-3xl text-sm text-gray-600">
+    <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Job Keyword Prompt Test</h2>
+          <p className="mt-1 max-w-3xl text-sm text-muted">
             Paste a job description, run the analyzer, and compare the raw JSON against highlighted extracted terms.
           </p>
         </div>
-        <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm">
+        <Pill tone={analysis ? 'sky' : 'grey'}>
           {analysis ? `${matches.length} visible matches from ${highlightTerms.length} extracted terms` : 'No analysis yet'}
-        </div>
+        </Pill>
       </div>
 
-      <form onSubmit={handleAnalyze} className="mb-6 grid gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm lg:grid-cols-[minmax(0,1fr)_240px_220px_auto] lg:items-end">
-        <label className="block">
-          <span className="mb-2 block text-sm font-medium text-gray-700">Job description</span>
-          <textarea
-            value={jobDescription}
-            onChange={(event) => setJobDescription(event.target.value)}
-            placeholder="Paste the job description here..."
-            className="min-h-40 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-          />
-        </label>
+      <Section title="Analyzer" description="The job description to run, the analyze prompt to run it through, and the provider to run it on.">
+        <form onSubmit={handleAnalyze} className="space-y-6">
+          <Field label="Job description" htmlFor="prompt-test-description">
+            <textarea
+              id="prompt-test-description"
+              value={jobDescription}
+              onChange={(event) => setJobDescription(event.target.value)}
+              placeholder="Paste the job description here..."
+              className="tl-input"
+              // Inline: `textarea.tl-input` is unlayered and outranks a min-h utility.
+              style={{ minHeight: '10rem' }}
+            />
+          </Field>
 
-        <label className="block">
-          <span className="mb-2 block text-sm font-medium text-gray-700">Analyze prompt</span>
-          <select
-            value={selectedPromptId}
-            onChange={(event) => setSelectedPromptId(event.target.value)}
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            disabled={isAnalyzing}
-          >
-            {analyzePrompts.length === 0 && (
-              <option value="analyze-job-description">Built-in analyzer</option>
-            )}
-            {analyzePrompts.map((prompt) => (
-              <option key={prompt.id} value={prompt.id}>
-                {prompt.name}{prompt.isBuiltIn ? ' (built-in)' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
+          <div className="grid gap-6 sm:grid-cols-2">
+            <Field label="Analyze prompt" htmlFor="prompt-test-prompt">
+              <select
+                id="prompt-test-prompt"
+                value={selectedPromptId}
+                onChange={(event) => setSelectedPromptId(event.target.value)}
+                className="tl-input"
+                disabled={isAnalyzing}
+              >
+                {analyzePrompts.length === 0 && (
+                  <option value="analyze-job-description">Built-in analyzer</option>
+                )}
+                {analyzePrompts.map((prompt) => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {prompt.name}{prompt.isBuiltIn ? ' (built-in)' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
-        <label className="block">
-          <span className="mb-2 block text-sm font-medium text-gray-700">Model provider</span>
-          <select
-            value={selectedModel}
-            onChange={(event) => setSelectedModel(coerceProvider(event.target.value) ?? selectedModel)}
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            disabled={!hasAnyProvider || isAnalyzing}
-          >
-            {enabledProviders.map((provider) => (
-              <option key={provider} value={provider}>
-                {getAIProviderLabel(provider)}
-              </option>
-            ))}
-          </select>
-        </label>
+            <Field label="Model provider" htmlFor="prompt-test-provider">
+              <select
+                id="prompt-test-provider"
+                value={selectedModel}
+                onChange={(event) => setSelectedModel(coerceProvider(event.target.value) ?? selectedModel)}
+                className="tl-input"
+                disabled={!hasAnyProvider || isAnalyzing}
+              >
+                {enabledProviders.map((provider) => (
+                  <option key={provider} value={provider}>
+                    {getAIProviderLabel(provider)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
 
-        <button
-          type="submit"
-          disabled={isAnalyzing || !hasAnyProvider}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:bg-gray-400"
-        >
-          <span aria-hidden="true">{"->"}</span>
-          {isAnalyzing ? 'Analyzing...' : 'Analyze'}
-        </button>
-      </form>
-
-      {error && (
-        <div className="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {status && !error && (
-        <div className="mb-6 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          {status}
-        </div>
-      )}
-
-      {Boolean(analysis) && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          {outputKeySummaries.map((summary, index) => (
-            <span
-              key={summary.key}
-              className={`rounded-md px-2.5 py-1 text-xs font-semibold ${OUTPUT_KEY_CLASSES[index % OUTPUT_KEY_CLASSES.length]}`}
+          <div>
+            <button
+              type="submit"
+              disabled={isAnalyzing || !hasAnyProvider}
+              className="tl-button"
             >
-              {summary.key}: {summary.count}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <section className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-700">Highlighted job description</h2>
+              <span aria-hidden="true">{"->"}</span>
+              {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+            </button>
           </div>
-          <div className="max-h-[720px] overflow-auto p-4">
-            <div className="whitespace-pre-wrap break-words rounded-md bg-gray-50 p-4 text-sm leading-7 text-gray-900">
-              {jobDescription
-                ? renderHighlightedText(jobDescription, matches)
-                : 'Paste a job description above to preview highlights here.'}
+
+          {error && (
+            <Notice tone="error" role="alert">
+              {error}
+            </Notice>
+          )}
+
+          {status && !error && (
+            <Notice tone="success" role="status">
+              {status}
+            </Notice>
+          )}
+        </form>
+      </Section>
+
+      <Section title="Results" description="The description with every extracted term marked, beside the JSON the analyzer returned.">
+        {Boolean(analysis) && (
+          <div className="flex flex-wrap gap-2">
+            {outputKeySummaries.map((summary, index) => (
+              <span
+                key={summary.key}
+                className={`rounded-md px-2.5 py-1 text-xs font-semibold ${OUTPUT_KEY_CLASSES[index % OUTPUT_KEY_CLASSES.length]}`}
+              >
+                {summary.key}: {summary.count}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card title="Highlighted job description" padded={false} className="min-w-0">
+            <div className="max-h-[720px] overflow-auto p-5">
+              <div className="whitespace-pre-wrap break-words rounded-md bg-surface-muted p-4 text-sm leading-7 text-ink">
+                {jobDescription
+                  ? renderHighlightedText(jobDescription, matches)
+                  : 'Paste a job description above to preview highlights here.'}
+              </div>
             </div>
-          </div>
-        </div>
+          </Card>
 
-        <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-700">JSON result</h2>
-          </div>
-          <div className="max-h-[720px] overflow-auto p-4">
-            <pre className="whitespace-pre-wrap break-words rounded-md bg-gray-950 p-4 font-mono text-xs leading-6 text-slate-100">
-              {formattedJson}
-            </pre>
-          </div>
+          <Card title="JSON result" padded={false} className="min-w-0">
+            <div className="max-h-[720px] overflow-auto p-5">
+              <pre className={`whitespace-pre-wrap break-words rounded-md p-4 font-mono text-xs leading-6 ${styles.json}`}>
+                {formattedJson}
+              </pre>
+            </div>
+          </Card>
         </div>
-      </section>
+      </Section>
     </main>
   );
 }

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { bidAssistantFetch } from '../lib/apiBase.js';
+import { IconClose } from '@/components/icons';
 
 // Returns the search text used to filter visible jobs.
 function matchesSearch(job, searchText) {
@@ -178,7 +179,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
     <aside className="job-list-panel">
       <div className="job-list-header">
         <input
-          className="search-input"
+          className="tl-input search-input"
           type="text"
           value={searchText}
           onChange={(event) => setSearchText(event.target.value)}
@@ -207,9 +208,9 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
               <strong>{getDisplayCompanyLabel(job)}</strong>
               <div className="job-card-badges">
                 {job.is_error ? (
-                  <span className="error-badge">{getErrorBadgeLabel(job)}</span>
+                  <span className="tl-pill" data-tone="red">{getErrorBadgeLabel(job)}</span>
                 ) : (
-                  job.has_answers && <span className="answered-badge">Answered</span>
+                  job.has_answers && <span className="tl-pill" data-tone="green">Answered</span>
                 )}
               </div>
             </div>
@@ -225,10 +226,10 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
       </div>
 
       {isCopyModalOpen && (
-        <div className="modal-backdrop" onClick={closeCopyModal}>
-          <div className="modal-card copy-range-modal" onClick={(event) => event.stopPropagation()}>
-            <button className="icon-button" onClick={closeCopyModal}>
-              x
+        <div className="tl-backdrop" onClick={closeCopyModal}>
+          <div className="tl-dialog modal-card copy-range-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="tl-icon-button bid-close" onClick={closeCopyModal} aria-label="Close">
+              <IconClose />
             </button>
             <form onSubmit={handleCopyLinks}>
               <div className="modal-header">
@@ -242,6 +243,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
                 <label className="stacked-field">
                   <span>From row</span>
                   <input
+                    className="tl-input"
                     type="number"
                     min="1"
                     value={fromRowInput}
@@ -251,6 +253,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
                 <label className="stacked-field">
                   <span>To row</span>
                   <input
+                    className="tl-input"
                     type="number"
                     min="1"
                     value={toRowInput}
@@ -262,10 +265,10 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
               {copyError && <p className="error-text">{copyError}</p>}
 
               <div className="form-actions">
-                <button type="submit" className="primary-button">
+                <button type="submit" className="tl-button">
                   Copy
                 </button>
-                <button type="button" className="secondary-button" onClick={closeCopyModal}>
+                <button type="button" className="tl-button-quiet" onClick={closeCopyModal}>
                   Cancel
                 </button>
               </div>

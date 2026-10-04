@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { groupsApi, profilesApi, Group, Profile } from '@/lib/api';
 import { RequiresPlan } from '@/components/auth/AuthGate';
+import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import { Card, Field, Notice, PageHeader, Spinner } from '@/components/ui/kit';
 
 function GroupsPageBody() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -101,128 +103,127 @@ function GroupsPageBody() {
   }, [profiles]);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <Spinner label="Loading groups..." />;
   }
 
+  /*
+   * No <main> here: app/admin/layout.tsx already wraps every /admin/* route
+   * in one, with the gutters and the width.
+   */
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Groups</h1>
-      </div>
+    <div className="max-w-5xl">
+      <PageHeader title="Groups" />
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+        <Notice tone="error" role="alert" className="mb-6">
           {error}
-        </div>
+        </Notice>
       )}
 
-      <div className="bg-white rounded-lg border border-gray-200 p-6 space-y-4">
-        <div className="text-lg font-semibold text-gray-900">
-          {editingGroup ? `Edit Group: ${editingGroup.name}` : 'Create Group'}
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Group Name</label>
-          <input
-            type="text"
-            value={formName}
-            onChange={(e) => setFormName(e.target.value)}
-            disabled={isSaving}
-            placeholder="Group name (e.g., Backend Team)"
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Members</label>
-          <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-md p-3 space-y-2">
-            {profiles.map((profile) => {
-              const checked = formProfileIds.includes(profile.id);
-              return (
-                <label key={profile.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setFormProfileIds((prev) => [...prev, profile.id]);
-                      } else {
-                        setFormProfileIds((prev) => prev.filter((id) => id !== profile.id));
-                      }
-                    }}
-                    disabled={isSaving}
-                  />
-                  <span>{profile.name}</span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={isSaving}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-400"
-          >
-            {editingGroup ? 'Save Changes' : 'Create Group'}
-          </button>
-          {editingGroup && (
-            <button
-              type="button"
-              onClick={resetForm}
-              disabled={isSaving}
-              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="p-4 border-b">
-          <h2 className="text-lg font-semibold text-gray-900">Existing Groups</h2>
-        </div>
-        <div className="divide-y">
-          {groups.length === 0 && (
-            <div className="p-4 text-sm text-gray-500">No groups created yet.</div>
-          )}
-          {groups.map((group) => (
-            <div key={group.id} className="p-4 flex items-start justify-between gap-4">
-              <div>
-                <div className="text-sm font-semibold text-gray-900">{group.name}</div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {group.profileIds.length} member(s)
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {group.profileIds
-                    .map((id) => profileLookup.get(id)?.name)
-                    .filter(Boolean)
-                    .join(', ') || 'No members'}
-                </div>
+      <div className="space-y-8">
+        <Card title={editingGroup ? `Edit Group: ${editingGroup.name}` : 'Create Group'}>
+          <div className="space-y-6">
+            <Field label="Group Name" htmlFor="group-name">
+              <input
+                id="group-name"
+                type="text"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                disabled={isSaving}
+                placeholder="Group name (e.g., Backend Team)"
+                className="tl-input"
+              />
+            </Field>
+            <Field label="Members">
+              <div className={`${chrome.checkBox} space-y-2.5`}>
+                {profiles.map((profile) => {
+                  const checked = formProfileIds.includes(profile.id);
+                  return (
+                    <label key={profile.id} className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
+                      <input
+                        type="checkbox"
+                        className="tl-check"
+                        checked={checked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setFormProfileIds((prev) => [...prev, profile.id]);
+                          } else {
+                            setFormProfileIds((prev) => prev.filter((id) => id !== profile.id));
+                          }
+                        }}
+                        disabled={isSaving}
+                      />
+                      <span>{profile.name}</span>
+                    </label>
+                  );
+                })}
               </div>
-              <div className="flex items-center gap-2">
+            </Field>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={isSaving}
+                className="tl-button"
+              >
+                {editingGroup ? 'Save Changes' : 'Create Group'}
+              </button>
+              {editingGroup && (
                 <button
                   type="button"
-                  onClick={() => handleEdit(group)}
-                  className="px-3 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-900"
+                  onClick={resetForm}
+                  disabled={isSaving}
+                  className="tl-button-quiet"
                 >
-                  Edit
+                  Cancel
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(group)}
-                  className="px-3 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700"
-                >
-                  Delete
-                </button>
-              </div>
+              )}
             </div>
-          ))}
-        </div>
+          </div>
+        </Card>
+
+        <Card title="Existing Groups" padded={false}>
+          <div className={chrome.list}>
+            {groups.length === 0 && (
+              <p className="px-5 py-4 text-sm text-muted">No groups created yet.</p>
+            )}
+            {groups.map((group) => (
+              <div key={group.id} className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 px-5 py-4">
+                <div className="min-w-[12rem] flex-1">
+                  <div className="text-sm font-semibold text-ink">{group.name}</div>
+                  <div className="mt-1 text-xs text-subtle">
+                    {group.profileIds.length} member(s)
+                  </div>
+                  <div className="mt-1 text-sm text-muted">
+                    {group.profileIds
+                      .map((id) => profileLookup.get(id)?.name)
+                      .filter(Boolean)
+                      .join(', ') || 'No members'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleEdit(group)}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(group)}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                    data-tone="danger"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
       </div>
     </div>
   );

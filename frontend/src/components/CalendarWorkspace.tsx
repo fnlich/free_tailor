@@ -3,6 +3,7 @@
 import type { CSSProperties, FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import styles from '@/components/CalendarWorkspace.module.css';
+import { Spinner } from '@/components/ui/kit';
 import type { CalendarExtractedLink } from '@/lib/calendar/linkExtractor';
 import type { CalendarApiResponse, CalendarEvent, CalendarMetadata } from '@/lib/calendar/types';
 
@@ -872,12 +873,18 @@ export default function CalendarWorkspace() {
   }
 
   if (isLoadingMeta && !metadata) {
-    return <div className="border border-gray-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-950">Loading calendar...</div>;
+    return (
+      <div className={styles.pageShell}>
+        <div className="tl-card">
+          <Spinner label="Loading calendar..." />
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className={styles.pageShell}>
-      {error ? <div className={styles.errorBanner}>{error}</div> : null}
+      {error ? <div className="tl-notice" data-tone="error">{error}</div> : null}
 
       <section className={styles.appFrame}>
         <aside className={styles.sidebar}>
@@ -889,12 +896,12 @@ export default function CalendarWorkspace() {
                 <div className={styles.shareRow}>
                   <input
                     id="share-link"
-                    className={styles.input}
+                    className="tl-input"
                     value={shareInput}
                     onChange={(event) => setShareInput(event.target.value)}
                     placeholder="https://calendar.online/..."
                   />
-                  <button className={styles.primaryButton} type="submit">Load Calendar</button>
+                  <button className="tl-button" type="submit">Load Calendar</button>
                 </div>
               </div>
             </form>
@@ -903,14 +910,14 @@ export default function CalendarWorkspace() {
           <section className={styles.panel}>
             <div className={styles.panelTitleRow}>
               <h2 className={styles.panelTitle}>Calendar</h2>
-              <span className={styles.pill}>{getTimeZoneLabel(selectedTimeZone)}</span>
+              <span className="tl-pill" data-tone="sky">{getTimeZoneLabel(selectedTimeZone)}</span>
             </div>
             <div className={styles.metaGrid}>
               <div>
                 <span className={styles.metaLabel}>Display Zone</span>
                 <div className={styles.selectWrap}>
                   <select
-                    className={styles.select}
+                    className="tl-input"
                     value={selectedTimeZone}
                     onChange={(event) => setSelectedTimeZone(event.target.value as SupportedTimeZone)}
                   >
@@ -922,15 +929,17 @@ export default function CalendarWorkspace() {
                   </select>
                 </div>
               </div>
-              <div>
-                <span className={styles.metaLabel}>Events This Range</span>
-                <span className={styles.metaValue}>{visibleEvents.length}</span>
-              </div>
-              <div>
-                <span className={styles.metaLabel}>iCal Feed</span>
-                <a className={`${styles.metaValue} ${styles.metaLink}`} href={metadata?.ics} target="_blank" rel="noreferrer">
-                  Open feed
-                </a>
+              <div className={styles.metaPair}>
+                <div>
+                  <span className={styles.metaLabel}>Events This Range</span>
+                  <span className={styles.metaValue}>{visibleEvents.length}</span>
+                </div>
+                <div>
+                  <span className={styles.metaLabel}>iCal Feed</span>
+                  <a className={`${styles.metaValue} ${styles.metaLink}`} href={metadata?.ics} target="_blank" rel="noreferrer">
+                    Open feed
+                  </a>
+                </div>
               </div>
             </div>
           </section>
@@ -939,7 +948,8 @@ export default function CalendarWorkspace() {
             <div className={styles.panelTitleRow}>
               <h2 className={styles.panelTitle}>Sub-calendars</h2>
               <button
-                className={styles.ghostButton}
+                className="tl-button-quiet"
+                data-size="sm"
                 type="button"
                 onClick={() => setActiveSubCalendars(new Set(metadata?.subCalendars.map((item) => item.id) ?? []))}
               >
@@ -956,9 +966,10 @@ export default function CalendarWorkspace() {
                     className={`${styles.legendItem} ${isActive ? styles.legendItemActive : ''}`}
                     onClick={() => toggleSubCalendar(subCalendar.id)}
                     style={legendStyle(subCalendar.color)}
+                    aria-pressed={isActive}
                   >
                     <span className={styles.legendSwatch} />
-                    <span>{subCalendar.name}</span>
+                    <span className={styles.legendName}>{subCalendar.name}</span>
                   </button>
                 );
               })}
@@ -970,7 +981,7 @@ export default function CalendarWorkspace() {
               <h2 className={styles.panelTitle}>Filters</h2>
             </div>
             <input
-              className={styles.searchInput}
+              className={`tl-input ${styles.panelControl}`}
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               placeholder="Search title, notes, person or place"
@@ -981,7 +992,7 @@ export default function CalendarWorkspace() {
             <div className={styles.panelTitleRow}>
               <h2 className={styles.panelTitle}>Availability</h2>
             </div>
-            <button className={styles.primaryButton} type="button" onClick={() => setIsAvailabilityOpen(true)}>
+            <button className={`tl-button-quiet ${styles.panelControl}`} type="button" onClick={() => setIsAvailabilityOpen(true)}>
               Availability
             </button>
           </section>
@@ -990,7 +1001,7 @@ export default function CalendarWorkspace() {
             <div className={styles.panelTitleRow}>
               <h2 className={styles.panelTitle}>Links</h2>
             </div>
-            <button className={styles.primaryButton} type="button" onClick={() => setIsJobLinksOpen(true)}>
+            <button className={`tl-button-quiet ${styles.panelControl}`} type="button" onClick={() => setIsJobLinksOpen(true)}>
               Deep Scrape Links
             </button>
           </section>
@@ -1000,21 +1011,24 @@ export default function CalendarWorkspace() {
           <div className={styles.toolbar}>
             <div className={styles.navGroup}>
               <button
-                className={styles.secondaryButton}
+                className="tl-button-quiet"
+                data-size="sm"
                 type="button"
                 onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1))}
               >
                 Prev
               </button>
               <button
-                className={styles.secondaryButton}
+                className="tl-button-quiet"
+                data-size="sm"
                 type="button"
                 onClick={() => setCurrentMonth(currentMonthStart())}
               >
                 Current
               </button>
               <button
-                className={styles.secondaryButton}
+                className="tl-button-quiet"
+                data-size="sm"
                 type="button"
                 onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1))}
               >
@@ -1027,16 +1041,20 @@ export default function CalendarWorkspace() {
               <span>{isLoadingEvents ? 'Refreshing events...' : `${visibleEvents.length} visible events`}</span>
             </div>
 
-            <div className={styles.viewSwitcher}>
+            <div className={`tl-card ${styles.viewSwitcher}`}>
               <button
-                className={`${styles.secondaryButton} ${currentView === 'month' ? styles.isActive : ''}`}
+                className="tl-subtab"
+                data-active={currentView === 'month'}
+                aria-pressed={currentView === 'month'}
                 type="button"
                 onClick={() => setCurrentView('month')}
               >
                 Month
               </button>
               <button
-                className={`${styles.secondaryButton} ${currentView === 'agenda' ? styles.isActive : ''}`}
+                className="tl-subtab"
+                data-active={currentView === 'agenda'}
+                aria-pressed={currentView === 'agenda'}
                 type="button"
                 onClick={() => setCurrentView('agenda')}
               >
@@ -1117,17 +1135,17 @@ export default function CalendarWorkspace() {
       </section>
 
       {selectedEvent ? (
-        <div className={styles.modalBackdrop} onClick={() => setSelectedEvent(null)} role="presentation">
+        <div className="tl-backdrop" onClick={() => setSelectedEvent(null)} role="presentation">
           <section
-            className={styles.modalPanel}
+            className={`tl-dialog ${styles.modalPanel}`}
             onClick={(event) => event.stopPropagation()}
             role="dialog"
             aria-modal="true"
             aria-labelledby="calendar-event-title"
           >
-            <div className={styles.panelTitleRow}>
-              <h2 className={styles.panelTitle}>Event Details</h2>
-              <button className={styles.ghostButton} type="button" onClick={() => setSelectedEvent(null)}>
+            <div className={styles.modalHeader}>
+              <h2 className={styles.modalTitle}>Event Details</h2>
+              <button className="tl-button-quiet" data-size="sm" type="button" onClick={() => setSelectedEvent(null)}>
                 Close
               </button>
             </div>
@@ -1150,17 +1168,17 @@ export default function CalendarWorkspace() {
       ) : null}
 
       {isAvailabilityOpen ? (
-        <div className={styles.modalBackdrop} onClick={() => setIsAvailabilityOpen(false)} role="presentation">
+        <div className="tl-backdrop" onClick={() => setIsAvailabilityOpen(false)} role="presentation">
           <section
-            className={`${styles.modalPanel} ${styles.availabilityModal}`}
+            className={`tl-dialog ${styles.modalPanel} ${styles.availabilityModal}`}
             onClick={(event) => event.stopPropagation()}
             role="dialog"
             aria-modal="true"
             aria-labelledby="availability-modal-title"
           >
-            <div className={styles.panelTitleRow}>
-              <h2 className={styles.panelTitle} id="availability-modal-title">Availability</h2>
-              <button className={styles.ghostButton} type="button" onClick={() => setIsAvailabilityOpen(false)}>
+            <div className={styles.modalHeader}>
+              <h2 className={styles.modalTitle} id="availability-modal-title">Availability</h2>
+              <button className="tl-button-quiet" data-size="sm" type="button" onClick={() => setIsAvailabilityOpen(false)}>
                 Close
               </button>
             </div>
@@ -1170,7 +1188,7 @@ export default function CalendarWorkspace() {
                 <label className={styles.shareLabel} htmlFor="availability-from-day">From Day</label>
                 <input
                   id="availability-from-day"
-                  className={styles.input}
+                  className="tl-input"
                   type="date"
                   value={availabilityFromDate}
                   onChange={(event) => {
@@ -1183,7 +1201,7 @@ export default function CalendarWorkspace() {
                 <label className={styles.shareLabel} htmlFor="availability-to-day">To Day</label>
                 <input
                   id="availability-to-day"
-                  className={styles.input}
+                  className="tl-input"
                   type="date"
                   value={availabilityToDate}
                   onChange={(event) => {
@@ -1197,7 +1215,7 @@ export default function CalendarWorkspace() {
                   <label className={styles.shareLabel} htmlFor="availability-from-time">From Time</label>
                   <select
                     id="availability-from-time"
-                    className={styles.select}
+                    className="tl-input"
                     value={availabilityFromTime}
                     onChange={(event) => {
                       setAvailabilityFromTime(event.target.value);
@@ -1215,7 +1233,7 @@ export default function CalendarWorkspace() {
                   <label className={styles.shareLabel} htmlFor="availability-to-time">To Time</label>
                   <select
                     id="availability-to-time"
-                    className={styles.select}
+                    className="tl-input"
                     value={availabilityToTime}
                     onChange={(event) => {
                       setAvailabilityToTime(event.target.value);
@@ -1234,7 +1252,7 @@ export default function CalendarWorkspace() {
                 <label className={styles.shareLabel} htmlFor="availability-prepare-time">Prepare Time</label>
                 <select
                   id="availability-prepare-time"
-                  className={styles.select}
+                  className="tl-input"
                   value={String(availabilityPrepareMinutes)}
                   onChange={(event) => {
                     setAvailabilityPrepareMinutes(Number(event.target.value));
@@ -1252,7 +1270,7 @@ export default function CalendarWorkspace() {
                 <label className={styles.shareLabel} htmlFor="availability-minimum-time">Minimum Time</label>
                 <select
                   id="availability-minimum-time"
-                  className={styles.select}
+                  className="tl-input"
                   value={String(availabilityMinimumMinutes)}
                   onChange={(event) => {
                     setAvailabilityMinimumMinutes(Number(event.target.value));
@@ -1271,7 +1289,7 @@ export default function CalendarWorkspace() {
                   <label className={styles.shareLabel} htmlFor="availability-time-zone">Time Zone</label>
                   <select
                     id="availability-time-zone"
-                    className={styles.select}
+                    className="tl-input"
                     value={availabilityTimeZone}
                     onChange={(event) => {
                       setAvailabilityTimeZone(event.target.value as SupportedTimeZone);
@@ -1289,7 +1307,7 @@ export default function CalendarWorkspace() {
                   <label className={styles.shareLabel} htmlFor="availability-view-mode">View</label>
                   <select
                     id="availability-view-mode"
-                    className={styles.select}
+                    className="tl-input"
                     value={availabilityViewMode}
                     onChange={(event) => {
                       setAvailabilityViewMode(event.target.value as 'list' | 'text');
@@ -1307,7 +1325,8 @@ export default function CalendarWorkspace() {
               <div className={styles.panelTitleRow}>
                 <h3 className={styles.panelTitle}>Users</h3>
                 <button
-                  className={styles.ghostButton}
+                  className="tl-button-quiet"
+                  data-size="sm"
                   type="button"
                   onClick={() => {
                     setAvailabilityUserIds(new Set(metadata?.subCalendars.map((item) => item.id) ?? []));
@@ -1325,11 +1344,12 @@ export default function CalendarWorkspace() {
                     <label key={subCalendar.id} className={`${styles.availabilityUserItem} ${isSelected ? styles.availabilityUserItemActive : ''}`}>
                       <input
                         type="checkbox"
+                        className="tl-check"
                         checked={isSelected}
                         onChange={() => toggleAvailabilityUser(subCalendar.id)}
                       />
                       <span className={styles.legendSwatch} style={legendStyle(subCalendar.color)} />
-                      <span>{subCalendar.name}</span>
+                      <span className={styles.legendName}>{subCalendar.name}</span>
                     </label>
                   );
                 })}
@@ -1337,7 +1357,7 @@ export default function CalendarWorkspace() {
             </div>
 
             <div className={styles.availabilityActions}>
-              <button className={styles.primaryButton} type="button" onClick={findAvailability} disabled={isLoadingAvailability}>
+              <button className="tl-button" type="button" onClick={findAvailability} disabled={isLoadingAvailability}>
                 {isLoadingAvailability ? 'Checking...' : 'Find Availability'}
               </button>
               <span className={styles.availabilitySummary}>
@@ -1348,7 +1368,7 @@ export default function CalendarWorkspace() {
             {availabilityUserNames.length > 0 ? (
               <p className={styles.availabilityUsersText}>{availabilityUserNames.join(', ')}</p>
             ) : null}
-            {availabilityError ? <div className={styles.errorBanner}>{availabilityError}</div> : null}
+            {availabilityError ? <div className={`tl-notice ${styles.modalNotice}`} data-tone="error">{availabilityError}</div> : null}
 
             <div className={styles.availabilityResults}>
               {availabilityResults.length === 0 && !isLoadingAvailability && !availabilityError && !hasAvailabilitySearched ? (
@@ -1360,7 +1380,7 @@ export default function CalendarWorkspace() {
                       <h3 className={styles.availabilityDayTitle}>{formatDayLabel(day.date)}</h3>
                       <div className={styles.availabilityWindowList}>
                         {day.windows.map((window) => (
-                          <span key={`${day.dayKey}-${window.startMinutes}-${window.endMinutes}`} className={styles.availabilityWindow}>
+                          <span key={`${day.dayKey}-${window.startMinutes}-${window.endMinutes}`} className="tl-pill" data-tone="sky">
                             {formatMinutes(window.startMinutes)} - {formatMinutes(window.endMinutes)}
                           </span>
                         ))}
@@ -1383,11 +1403,11 @@ export default function CalendarWorkspace() {
               ) : null}
             </div>
 
-            <div className={styles.availabilityFooter}>
+            <div className={styles.modalFooter}>
               {availabilityCopyState === 'copied' ? <span className={styles.availabilityCopyStatus}>Copied</span> : null}
               {availabilityCopyState === 'failed' ? <span className={styles.availabilityCopyStatus}>Copy failed</span> : null}
               <button
-                className={styles.secondaryButton}
+                className="tl-button-quiet"
                 type="button"
                 onClick={copyAvailability}
                 disabled={!availabilityTextOutput}
@@ -1400,17 +1420,17 @@ export default function CalendarWorkspace() {
       ) : null}
 
       {isJobLinksOpen ? (
-        <div className={styles.modalBackdrop} onClick={() => setIsJobLinksOpen(false)} role="presentation">
+        <div className="tl-backdrop" onClick={() => setIsJobLinksOpen(false)} role="presentation">
           <section
-            className={`${styles.modalPanel} ${styles.jobLinksModal}`}
+            className={`tl-dialog ${styles.modalPanel} ${styles.jobLinksModal}`}
             onClick={(event) => event.stopPropagation()}
             role="dialog"
             aria-modal="true"
             aria-labelledby="job-links-modal-title"
           >
-            <div className={styles.panelTitleRow}>
-              <h2 className={styles.panelTitle} id="job-links-modal-title">All Links</h2>
-              <button className={styles.ghostButton} type="button" onClick={() => setIsJobLinksOpen(false)}>
+            <div className={styles.modalHeader}>
+              <h2 className={styles.modalTitle} id="job-links-modal-title">All Links</h2>
+              <button className="tl-button-quiet" data-size="sm" type="button" onClick={() => setIsJobLinksOpen(false)}>
                 Close
               </button>
             </div>
@@ -1420,7 +1440,7 @@ export default function CalendarWorkspace() {
                 <label className={styles.shareLabel} htmlFor="job-links-from-day">From Day</label>
                 <input
                   id="job-links-from-day"
-                  className={styles.input}
+                  className="tl-input"
                   type="date"
                   value={jobLinksFromDate}
                   onChange={(event) => {
@@ -1433,7 +1453,7 @@ export default function CalendarWorkspace() {
                 <label className={styles.shareLabel} htmlFor="job-links-to-day">To Day</label>
                 <input
                   id="job-links-to-day"
-                  className={styles.input}
+                  className="tl-input"
                   type="date"
                   value={jobLinksToDate}
                   onChange={(event) => {
@@ -1445,7 +1465,7 @@ export default function CalendarWorkspace() {
             </div>
 
             <div className={styles.jobLinksActions}>
-              <button className={styles.primaryButton} type="button" onClick={findJobLinks} disabled={isLoadingJobLinks}>
+              <button className="tl-button" type="button" onClick={findJobLinks} disabled={isLoadingJobLinks}>
                 {isLoadingJobLinks ? 'Scraping...' : 'Deep Scrape Links'}
               </button>
               <span className={styles.jobLinksSummary}>
@@ -1453,7 +1473,7 @@ export default function CalendarWorkspace() {
               </span>
             </div>
 
-            {jobLinksError ? <div className={styles.errorBanner}>{jobLinksError}</div> : null}
+            {jobLinksError ? <div className={`tl-notice ${styles.modalNotice}`} data-tone="error">{jobLinksError}</div> : null}
 
             <div className={styles.jobLinksResults}>
               {jobLinkResults.length === 0 && !isLoadingJobLinks && !jobLinksError && !hasJobLinksSearched ? (
@@ -1494,11 +1514,11 @@ export default function CalendarWorkspace() {
               ) : null}
             </div>
 
-            <div className={styles.availabilityFooter}>
+            <div className={styles.modalFooter}>
               {jobLinksCopyState === 'copied' ? <span className={styles.availabilityCopyStatus}>Copied</span> : null}
               {jobLinksCopyState === 'failed' ? <span className={styles.availabilityCopyStatus}>Copy failed</span> : null}
               <button
-                className={styles.secondaryButton}
+                className="tl-button-quiet"
                 type="button"
                 onClick={copyJobLinks}
                 disabled={!jobLinksTextOutput}

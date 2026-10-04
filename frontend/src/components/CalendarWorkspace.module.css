@@ -1,220 +1,217 @@
+/*
+ * The calendar workspace, after the reference design the rest of the app
+ * follows: a bordered side panel ruled into sections, a toolbar, and a month
+ * grid of hairlines with a tinted header row - the same materials as a
+ * .tl-card and a .tl-table.
+ *
+ * Buttons, inputs, pills, notices and dialogs are the kit's own classes
+ * (.tl-button, .tl-input, .tl-pill, .tl-notice, .tl-backdrop + .tl-dialog);
+ * this file only lays them out and draws what the kit has no piece for. Every
+ * colour is a theme variable, so most rules need no dark twin - the ones that
+ * do are at the end, keyed on html.dark. The event colours are the
+ * calendar's own data and are kept as they are.
+ *
+ * Nothing here uses Tailwind's colour utilities, the bare `border` class or a
+ * `shadow*` utility: the unlayered html.dark shim in globals.css rewrites all
+ * three.
+ */
+
 .pageShell {
   display: grid;
-  gap: 0.45rem;
+  gap: 1rem;
   width: 100%;
-  font-size: 0.88rem;
-}
-
-.panel,
-.toolbar,
-.agendaDay,
-.dayCard,
-
-.shareForm {
-  display: grid;
-  gap: 0.45rem;
-  margin-top: 0.5rem;
-}
-
-.shareLabel {
-  display: block;
-  margin-bottom: 0.24rem;
-  color: var(--text-subtle);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.shareRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.35rem;
-}
-
-.input,
-.searchInput,
-.select {
-  width: 100%;
-  border: 1px solid var(--border-color);
-  background: var(--background);
+  padding: 1.5rem 2rem 2rem;
   color: var(--foreground);
-  padding: 0.42rem 0.52rem;
-  font-size: 0.76rem;
-  min-height: 2rem;
-}
-
-.input:focus,
-.searchInput:focus,
-.select:focus {
-  outline: none;
-  border-color: #60a5fa;
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
-}
-
-.primaryButton,
-.secondaryButton,
-.ghostButton,
-.legendItem,
-.eventChip,
-.agendaEvent {
-  cursor: pointer;
-}
-
-.primaryButton,
-.secondaryButton {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  padding: 0.42rem 0.58rem;
-  font-size: 0.74rem;
-  font-weight: 700;
-  min-height: 2rem;
-}
-
-.primaryButton {
-  background: #1d4ed8;
-  color: #fff;
-}
-
-.secondaryButton {
-  background: var(--surface-muted);
-  border-color: var(--border-color);
-  color: var(--foreground);
-}
-
-.errorBanner {
-  border: 1px solid rgba(248, 113, 113, 0.28);
-  background: rgba(254, 242, 242, 0.92);
-  padding: 0.45rem 0.6rem;
-  color: #991b1b;
-  font-size: 0.74rem;
 }
 
 .appFrame {
   display: grid;
-  grid-template-columns: minmax(12rem, 13.5rem) minmax(0, 1fr);
-  gap: 0.45rem;
+  grid-template-columns: 17rem minmax(0, 1fr);
+  gap: 1.5rem;
   align-items: start;
 }
 
-.sidebar,
-.calendarStage {
+/* ------------------------------------------------------------ side panel */
+
+.sidebar {
+  align-self: start;
   min-width: 0;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
 }
 
-.panel,
+.panel {
+  padding: 1rem 1.25rem 1.125rem;
+}
 
-.panel + .panel,
+.panel + .panel {
+  border-top: 1px solid var(--line-subtle);
+}
 
-.panelTitleRow,
-.toolbar {
+.panelTitleRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.45rem;
+  gap: 0.75rem;
+  min-height: 2rem;
 }
 
 .panelTitle {
   margin: 0;
-  font-size: 0.78rem;
-  font-weight: 700;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+  font-weight: 600;
 }
 
-.pill {
-  display: inline-flex;
-  align-items: center;
-  background: var(--surface-muted);
-  padding: 0.18rem 0.4rem;
-  color: #334155;
-  font-size: 0.64rem;
-  font-weight: 700;
+/* A control that is the whole body of its panel: the search, a button. */
+.panelControl {
+  width: 100%;
+  margin-top: 0.75rem;
+}
+
+.shareForm {
+  margin-top: 0.75rem;
+}
+
+/* The label over a field, as .tl-label draws it. */
+.shareLabel {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.shareRow {
+  display: grid;
+  gap: 0.625rem;
 }
 
 .metaGrid {
   display: grid;
-  gap: 0.45rem;
-  margin-top: 0.45rem;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.metaPair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
 }
 
 .metaLabel {
   display: block;
-  color: var(--text-subtle);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
 }
 
 .metaValue {
   display: block;
-  margin-top: 0.15rem;
+  margin-top: 0.25rem;
   color: var(--foreground);
-  font-size: 0.74rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   word-break: break-word;
 }
 
 .metaLink {
-  color: #2563eb;
+  width: fit-content;
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.metaLink:hover {
+  color: var(--accent-hover);
 }
 
 .selectWrap {
-  margin-top: 0.15rem;
+  margin-top: 0.5rem;
 }
 
+/*
+ * A sub-calendar is a toggle: filled swatch and full ink when it is shown,
+ * a hollow swatch and quiet ink when it is hidden.
+ */
 .legendList {
   display: grid;
-  gap: 0.28rem;
-  margin-top: 0.45rem;
+  gap: 0.125rem;
+  margin: 0.625rem -0.5rem 0;
 }
 
 .legendItem {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.625rem;
   width: 100%;
-  border: 1px solid var(--border-color);
-  background: var(--background);
-  padding: 0.42rem 0.5rem;
-  color: var(--foreground);
+  padding: 0.4375rem 0.5rem;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--text-subtle);
+  font-size: 0.875rem;
   text-align: left;
-  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.legendItem:hover {
+  background: var(--surface-muted);
+}
+
+.legendItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .legendItemActive {
-  border-color: rgba(37, 99, 235, 0.32);
-  background: rgba(219, 234, 254, 0.38);
+  color: var(--foreground);
+  font-weight: 500;
 }
 
 .legendSwatch {
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 0.1875rem;
+  box-shadow: inset 0 0 0 2px var(--legend-color);
+}
+
+.legendItemActive .legendSwatch,
+.availabilityUserItem .legendSwatch {
   background: var(--legend-color);
 }
 
-.ghostButton {
-  border: 1px solid var(--border-color);
-  background: var(--background);
-  color: var(--text-muted);
-  padding: 0.35rem 0.5rem;
-  font-size: 0.7rem;
-  font-weight: 700;
-  min-height: 1.8rem;
+.legendName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- stage */
+
+.calendarStage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .toolbar {
-  padding: 0.5rem 0.6rem;
-  margin-bottom: 0.45rem;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
 
-.navGroup,
-.viewSwitcher {
+.navGroup {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.28rem;
+  gap: 0.5rem;
+}
+
+.navGroup button {
+  min-width: 4.25rem;
 }
 
 .toolbarTitle {
@@ -224,143 +221,214 @@
 
 .toolbarTitle h2 {
   margin: 0;
-  font-size: 0.82rem;
+  color: var(--foreground);
+  font-size: 1.5rem;
   font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
 }
 
 .toolbarTitle span {
   display: block;
-  margin-top: 0.12rem;
+  margin-top: 0.25rem;
   color: var(--text-muted);
-  font-size: 0.66rem;
+  font-size: 0.8125rem;
 }
 
-.viewSwitcher button,
-.navGroup button {
-  min-width: 3.9rem;
+/* Month | Agenda: a segmented pair inside one outlined box. */
+.viewSwitcher {
+  display: inline-flex;
+  justify-self: end;
+  gap: 0.25rem;
+  padding: 0.25rem;
 }
 
-.isActive {
-  background: #dbeafe;
-  border-color: rgba(59, 130, 246, 0.3);
-  color: #1e3a8a;
-}
-
+/*
+ * The month: one bordered box of hairlines, the weekday row tinted like a
+ * table header.
+ *
+ * At least as tall as the window leaves under the shell's bar, so the grid
+ * fills the workspace instead of stopping short of the bottom. --tl-topbar-h
+ * is the bar's one measurement - repeating the number is how three copies of
+ * it once disagreed by 12px - and 7.75rem is this workspace's own padding
+ * (3.5rem) plus the toolbar above the grid and its gap (4.25rem).
+ *
+ * The weeks share that height by STRETCHING, not by `1fr`: a grid with only a
+ * min-height sizes `1fr` rows to its tallest row, so one busy day made every
+ * week as tall as it. Auto rows stretch evenly into the min-height instead,
+ * and a day with more events than the share gives it grows to fit them -
+ * alone - rather than clipping them. The weekday row is `max-content` so it
+ * is not stretched with them.
+ */
 .monthGrid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0.2rem;
+  grid-template-rows: max-content;
+  grid-auto-rows: minmax(6.25rem, auto);
+  min-height: calc(100dvh - var(--tl-topbar-h) - 7.75rem);
+  overflow: hidden;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
 }
 
 .monthGridHeader {
-  color: var(--text-subtle);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-align: center;
-  text-transform: uppercase;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--rail);
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .dayCard {
-  display: grid;
-  align-content: start;
-  min-height: 5.5rem;
-  padding: 0.38rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.5rem;
+  border-right: 1px solid var(--line-subtle);
+  border-bottom: 1px solid var(--line-subtle);
 }
 
+.monthGrid > :nth-child(7n) {
+  border-right: 0;
+}
+
+.dayCard:nth-last-child(-n + 7) {
+  border-bottom: 0;
+}
+
+/* Days from the months either side: present for the shape, not the content. */
 .dayCardMuted {
-  opacity: 0.55;
+  background: var(--rail);
+}
+
+.dayCardMuted .dayCardHeader > span {
+  color: var(--text-subtle);
+  font-weight: 500;
 }
 
 .dayCardHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.3rem;
+  gap: 0.375rem;
+  padding: 0 0.125rem;
   color: var(--foreground);
-  font-size: 0.74rem;
-  font-weight: 700;
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .dayCardHeader small {
+  min-width: 1.25rem;
+  padding: 0 0.375rem;
+  border-radius: 9999px;
+  background: var(--surface-muted);
   color: var(--text-muted);
-  font-size: 0.58rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-align: center;
 }
 
 .dayCardEvents {
   display: grid;
-  gap: 0.16rem;
-  margin-top: 0.28rem;
+  gap: 0.25rem;
+  margin-top: 0.375rem;
   overflow: hidden;
 }
 
 .eventChip {
   display: flex;
   align-items: center;
-  gap: 0.28rem;
+  gap: 0.375rem;
   width: 100%;
+  min-width: 0;
+  padding: 0.1875rem 0.4375rem;
   border: 1px solid var(--event-border-color);
+  border-radius: 0.3125rem;
   background: var(--event-background);
-  padding: 0.18rem 0.32rem;
   color: var(--event-text-color);
   text-align: left;
   text-shadow: 0 1px 1px rgba(15, 23, 42, 0.3);
-  min-width: 0;
+  cursor: pointer;
+}
+
+.eventChip:hover,
+.agendaEvent:hover {
+  filter: brightness(1.08);
+}
+
+.eventChip:focus-visible,
+.agendaEvent:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .eventChip strong {
   flex: none;
-  font-size: 0.62rem;
   color: inherit;
+  font-size: 0.6875rem;
+  font-weight: 700;
   white-space: nowrap;
 }
 
 .eventChip span {
   min-width: 0;
   overflow: hidden;
+  color: inherit;
+  font-size: 0.75rem;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.66rem;
-  line-height: 1.15;
-  color: inherit;
 }
 
+/* The agenda: one bordered box per day, its date in a tinted title row. */
 .agendaList {
   display: grid;
-  gap: 0.35rem;
+  align-content: start;
+  gap: 0.75rem;
 }
 
 .agendaDay {
-  padding: 0.55rem;
+  overflow: hidden;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
 }
 
 .agendaDayTitle {
-  margin-bottom: 0.35rem;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--rail);
   color: var(--foreground);
-  font-size: 0.72rem;
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 .agendaDayEvents {
   display: grid;
-  gap: 0.24rem;
+  gap: 0.375rem;
+  padding: 0.75rem;
 }
 
 .agendaEvent {
   display: block;
   width: 100%;
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--event-border-color);
+  border-radius: 0.375rem;
   background: var(--event-background);
-  padding: 0.28rem 0.38rem;
   color: var(--event-text-color);
   text-align: left;
   text-shadow: 0 1px 1px rgba(15, 23, 42, 0.3);
+  cursor: pointer;
 }
 
 .agendaEventContent {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.75rem;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -369,7 +437,7 @@
 .agendaEventTime {
   flex: none;
   color: inherit;
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -377,395 +445,478 @@
 .agendaEventTitle {
   min-width: 0;
   overflow: hidden;
+  color: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: inherit;
 }
 
 .agendaEventMeta {
   min-width: 0;
   overflow: hidden;
+  color: inherit;
+  font-size: 0.8125rem;
+  opacity: 0.9;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: inherit;
-  font-size: 0.64rem;
+}
+
+/* ------------------------------------------------------------- dialogs */
+
+/*
+ * On a .tl-dialog, which brings the surface, border, radius, shadow, the
+ * scrolling and the 100% width - so this sets a MAX width and never `width`,
+ * and the header and footer pin to the dialog's edges while its body scrolls.
+ */
+.modalPanel {
+  max-width: 32rem;
+  padding: 0 1.5rem 1.5rem;
+}
+
+.availabilityModal,
+.jobLinksModal {
+  max-width: 44rem;
+}
+
+.modalHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 -1.5rem 1.25rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--surface-secondary);
+}
+
+.modalTitle {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.modalFooter {
+  position: sticky;
+  bottom: -1.5rem;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.5rem -1.5rem -1.5rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--line-subtle);
+  background: var(--surface-secondary);
+}
+
+.modalNotice {
+  margin-top: 1rem;
 }
 
 .detailsAccent {
-  height: 0.2rem;
-  margin: 0.45rem 0 0.6rem;
+  height: 0.25rem;
+  margin-bottom: 1rem;
+  border-radius: 9999px;
 }
 
 .detailsHeading {
   margin: 0;
-  font-size: 0.94rem;
-  font-weight: 700;
+  color: var(--foreground);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .detailsTime {
-  margin: 0.35rem 0 0;
+  margin: 0.375rem 0 0;
   color: var(--text-muted);
-  font-size: 0.74rem;
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 
 .detailsCopy,
 .detailsMeta {
-  margin: 0.45rem 0 0;
+  margin: 0.625rem 0 0;
   color: var(--foreground);
-  font-size: 0.74rem;
-  line-height: 1.45;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.detailsMeta strong {
+  font-weight: 600;
+}
+
+.detailsCopy {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line-subtle);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .emptyState {
+  margin: 0;
   color: var(--text-muted);
-  font-size: 0.74rem;
+  font-size: 0.875rem;
 }
 
-.modalBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--layer-app-modal);
-  display: grid;
-  place-items: center;
-  background: rgba(2, 6, 23, 0.58);
-  padding: 0.75rem;
-}
-
-.modalPanel {
-  width: min(100%, 32rem);
-  border: 1px solid var(--border-color);
-  background: var(--surface-secondary);
-  box-shadow: 0 16px 44px rgba(15, 23, 42, 0.2);
-  padding: 0.75rem;
-}
-
-.availabilityModal {
-  width: min(100%, 44rem);
-  max-height: min(90vh, 52rem);
-  overflow: auto;
-}
-
-.jobLinksModal {
-  width: min(100%, 44rem);
-  max-height: min(90vh, 48rem);
-  overflow: auto;
-}
-
-.availabilityFields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
-  margin-top: 0.7rem;
-}
-
+.availabilityFields,
 .jobLinksFields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
-  margin-top: 0.7rem;
+  gap: 1rem;
 }
 
-.availabilityTimeRange {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
-  grid-column: 1 / -1;
-}
-
+.availabilityTimeRange,
 .availabilityControlRow {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem;
   grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
 }
 
 .availabilityUsers {
-  margin-top: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line-subtle);
 }
 
 .availabilityUserList {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.4rem;
-  margin-top: 0.45rem;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
+/* A checkbox drawn as a box, the way .tl-choice draws a radio. */
 .availabilityUserItem {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.625rem;
+  min-width: 0;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--border-color);
-  background: var(--background);
-  padding: 0.48rem 0.55rem;
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
   color: var(--foreground);
-  font-size: 0.74rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.availabilityUserItem:hover {
+  background: var(--surface-muted);
 }
 
 .availabilityUserItem input {
+  flex: none;
   margin: 0;
 }
 
-.availabilityUserItemActive {
-  border-color: rgba(37, 99, 235, 0.28);
-  background: rgba(219, 234, 254, 0.4);
+.availabilityUserItemActive,
+.availabilityUserItemActive:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.availabilityActions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.55rem;
-  margin-top: 0.8rem;
-}
-
+.availabilityActions,
 .jobLinksActions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.55rem;
-  margin-top: 0.8rem;
+  gap: 0.5rem 1rem;
+  margin-top: 1.5rem;
 }
 
 .availabilitySummary,
 .availabilityUsersText,
-.jobLinksSummary {
+.jobLinksSummary,
+.availabilityCopyStatus,
+.jobLinksCount {
   color: var(--text-muted);
-  font-size: 0.72rem;
-  line-height: 1.4;
+  font-size: 0.8125rem;
+  line-height: 1.45;
 }
 
-.availabilityUsersText {
-  margin: 0.35rem 0 0;
+.availabilityUsersText,
+.jobLinksCount {
+  margin: 0.625rem 0 0;
 }
 
-.availabilityResults {
-  display: grid;
-  gap: 0.55rem;
-  margin-top: 0.85rem;
-}
-
+.availabilityResults,
 .jobLinksResults {
   display: grid;
-  gap: 0.55rem;
-  margin-top: 0.85rem;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
 }
 
-.availabilityDay {
-  border: 1px solid var(--border-color);
-  background: var(--background);
-  padding: 0.6rem;
+.availabilityDay,
+.jobLinkCard {
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
 }
 
 .availabilityDayTitle {
-  margin: 0 0 0.4rem;
+  margin: 0 0 0.5rem;
   color: var(--foreground);
-  font-size: 0.78rem;
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 .availabilityWindowList {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.375rem;
 }
 
-.availabilityWindow {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid rgba(37, 99, 235, 0.2);
-  background: rgba(219, 234, 254, 0.58);
-  padding: 0.32rem 0.46rem;
-  color: #1e3a8a;
-  font-size: 0.7rem;
-  font-weight: 700;
-}
-
+/* The copyable text: a quiet well, read line by line. */
 .availabilityTextBlock {
-  border: 1px solid var(--border-color);
-  background: var(--background);
-  padding: 0.7rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-muted);
 }
 
 .availabilityTextHeader {
-  margin: 0 0 0.45rem;
+  margin: 0 0 0.5rem;
   color: var(--foreground);
-  font-size: 0.74rem;
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 .availabilityTextLine {
-  margin: 0.22rem 0 0;
+  margin: 0.25rem 0 0;
   color: var(--foreground);
-  font-size: 0.73rem;
-  line-height: 1.45;
-}
-
-.jobLinksCount {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  line-height: 1.45;
-}
-
-.jobLinkCard {
-  border: 1px solid var(--border-color);
-  background: var(--background);
-  padding: 0.7rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
 }
 
 .jobLinkCardHeader {
   display: grid;
-  gap: 0.2rem;
+  gap: 0.25rem;
 }
 
 .jobLinkEventTitle {
   margin: 0;
   color: var(--foreground);
-  font-size: 0.8rem;
-  font-weight: 700;
+  font-size: 0.9375rem;
+  font-weight: 600;
 }
 
 .jobLinkEventTime {
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.8125rem;
   line-height: 1.4;
 }
 
 .jobLinkList {
   display: grid;
-  gap: 0.35rem;
-  margin-top: 0.55rem;
+  gap: 0.375rem;
+  margin-top: 0.625rem;
 }
 
 .jobLinkAnchor {
   display: block;
-  color: #2563eb;
-  font-size: 0.73rem;
+  color: var(--accent-ink);
+  font-size: 0.8125rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 2px;
 }
 
-.availabilityFooter {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 0.55rem;
-  margin-top: 0.85rem;
+.jobLinkAnchor:hover {
+  color: var(--accent-hover);
 }
 
-.availabilityCopyStatus {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  line-height: 1.4;
-}
+/* ---------------------------------------------------------- dark theme */
 
 /*
- * Keyed on the app's theme alone.
+ * Keyed on the app's theme alone, never on prefers-color-scheme: somebody who
+ * switches the app to dark on a light machine must get these too.
  *
- * These used to sit inside `@media (prefers-color-scheme: dark)` as well as
- * the html.dark selector, so somebody who switched the app to dark on a
- * light machine got the base rules and none of these refinements - the one
- * combination the toggle exists to allow.
+ * Almost everything above reads theme variables and needs no twin. What is
+ * left is what the dark canvas changes about the event colours: they are
+ * drawn darker than their swatches for white text, and on a near-black grid a
+ * hairline of the same hue disappears - so the chips get a faint light edge
+ * instead, and the hover lifts less.
  */
-:global(html.dark) .legendItemActive {
-  background: rgba(30, 41, 59, 0.72);
-  color: #bfdbfe;
+:global(html.dark) .eventChip,
+:global(html.dark) .agendaEvent {
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
-:global(html.dark) .pill {
-  background: rgba(148, 163, 184, 0.16);
-  color: #e2e8f0;
+:global(html.dark) .eventChip:hover,
+:global(html.dark) .agendaEvent:hover {
+  filter: brightness(1.15);
 }
 
-:global(html.dark) .metaLink {
-  color: #93c5fd;
+:global(html.dark) .dayCardHeader small {
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
 }
 
-:global(html.dark) .availabilityUserItemActive {
-  background: rgba(30, 41, 59, 0.72);
-  color: #bfdbfe;
+:global(html.dark) .legendItem:hover,
+:global(html.dark) .availabilityUserItem:hover {
+  background: rgba(148, 163, 184, 0.1);
 }
 
-:global(html.dark) .availabilityWindow {
-  background: rgba(30, 64, 175, 0.28);
-  color: #dbeafe;
+:global(html.dark) .availabilityUserItemActive,
+:global(html.dark) .availabilityUserItemActive:hover {
+  background: var(--accent-soft);
 }
 
-:global(html.dark) .metaValue,
-:global(html.dark) .panelTitle,
-:global(html.dark) .toolbarTitle h2,
-:global(html.dark) .dayCardHeader,
-:global(html.dark) .agendaDayTitle,
-:global(html.dark) .availabilityDayTitle,
-:global(html.dark) .availabilityTextHeader,
-:global(html.dark) .availabilityTextLine,
-:global(html.dark) .jobLinkEventTitle,
-:global(html.dark) .detailsHeading,
-:global(html.dark) .detailsMeta strong {
-  color: #f8fafc;
+:global(html.dark) .jobLinkAnchor:hover,
+:global(html.dark) .metaLink:hover {
+  color: #bae6fd;
 }
 
-:global(html.dark) .errorBanner {
-  background: rgba(69, 10, 10, 0.42);
-  color: #fecaca;
-}
-
-:global(html.dark) .isActive {
-  background: rgba(30, 64, 175, 0.3);
-  color: #dbeafe;
-}
-
-:global(html.dark) .modalBackdrop {
-  background: rgba(2, 6, 23, 0.72);
-}
-
-@media (max-width: 1440px) {
-  .appFrame {
-    grid-template-columns: minmax(11rem, 12.5rem) minmax(0, 1fr);
-  }
-}
+/* ------------------------------------------------------------- narrower */
 
 @media (max-width: 1220px) {
   .appFrame {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .toolbar {
-    flex-direction: column;
-    align-items: stretch;
+  /*
+   * One column: the panels stop being one tall box above the calendar and
+   * sit side by side as their own boxes, as many to a row as fit.
+   */
+  .sidebar {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: 0.75rem;
+    border: 0;
+    background: transparent;
   }
 
-  .toolbarTitle {
-    text-align: left;
+  .panel,
+  .panel + .panel {
+    border: 1px solid var(--line-subtle);
+    border-radius: 0.5rem;
+    background: var(--surface-secondary);
+  }
+
+  /* Stacked under the panels, the grid is as tall as its weeks. */
+  .monthGrid {
+    min-height: 0;
+    grid-auto-rows: minmax(5.5rem, auto);
   }
 }
 
-@media (max-width: 1000px) {
-  .shareRow {
-    grid-template-columns: 1fr;
+@media (max-width: 767.98px) {
+  .pageShell {
+    padding: 1rem;
+  }
+
+  /* The month and the view switch on one row, Prev / Current / Next under. */
+  .toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.75rem;
+  }
+
+  .toolbarTitle {
+    grid-column: 1;
+    grid-row: 1;
+    text-align: left;
+  }
+
+  .viewSwitcher {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .navGroup {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .toolbarTitle h2 {
+    font-size: 1.25rem;
+  }
+
+  .navGroup button {
+    flex: 1;
+  }
+
+  .monthGridHeader {
+    padding: 0.5rem 0.25rem;
+    font-size: 0.6875rem;
+    text-align: center;
+  }
+
+  .monthGrid {
+    grid-auto-rows: minmax(4.5rem, auto);
+  }
+
+  .dayCard {
+    padding: 0.25rem;
+  }
+
+  .dayCardHeader {
+    justify-content: center;
+    font-size: 0.75rem;
+  }
+
+  /*
+   * A seventh of a phone is about 50px - room for the time, not for a title
+   * cut to two letters. The title is one tap away in the event's dialog and
+   * in the chip's tooltip. The time itself may break after the hour.
+   */
+  .dayCardHeader small,
+  .eventChip span {
+    display: none;
+  }
+
+  .eventChip {
+    padding: 0.125rem;
+  }
+
+  .eventChip strong {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.625rem;
+    line-height: 1.15;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .agendaEventContent {
+    flex-wrap: wrap;
+    gap: 0.125rem 0.625rem;
+    white-space: normal;
+  }
+
+  .modalPanel {
+    padding: 0 1rem 1rem;
+  }
+
+  .modalHeader {
+    margin: 0 -1rem 1rem;
+    padding: 0.875rem 1rem;
+  }
+
+  .modalFooter {
+    bottom: -1rem;
+    margin: 1.25rem -1rem -1rem;
+    padding: 0.875rem 1rem;
   }
 
   .availabilityFields,
   .jobLinksFields,
-  .availabilityUserList,
   .availabilityTimeRange,
   .availabilityControlRow {
-    grid-template-columns: 1fr;
+    gap: 0.75rem;
   }
 
-  .monthGrid {
-    gap: 0.15rem;
-  }
-
-  .monthGridHeader {
-    font-size: 0.54rem;
-  }
-
-  .dayCard {
-    min-height: 4.8rem;
-    padding: 0.26rem;
+  .availabilityUserList {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

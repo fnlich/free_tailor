@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
 import ThemeToggle from '@/components/ThemeToggle';
+import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { planAtLeast, type AccountPlanId } from '@/lib/plans';
 import SignInPanel from './SignInPanel';
@@ -28,7 +29,7 @@ const PUBLIC_PATHS = new Set<string>([]);
  */
 function Centered({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4 dark:bg-gray-900">
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
       {children}
       <ThemeToggle />
     </div>
@@ -46,7 +47,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   if (loading) {
     return (
       <Centered>
-        <p className="text-sm text-gray-500 dark:text-gray-400">Loading...</p>
+        <Spinner />
       </Centered>
     );
   }
@@ -61,14 +62,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   if (error && !signedIn) {
     return (
       <Centered>
-        <div className="w-full max-w-md rounded-xl border border-red-200 bg-white p-6 text-sm shadow-sm dark:border-red-800 dark:bg-gray-800">
-          <p className="font-semibold text-red-700 dark:text-red-300">Cannot reach the server</p>
-          <p className="mt-2 text-gray-700 dark:text-gray-200">{error}</p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-          >
+        <div className="tl-card w-full max-w-md p-6 sm:p-8">
+          <p className="text-xl font-semibold text-ink">Cannot reach the server</p>
+          <Notice tone="error" className="mt-4 break-words">
+            {error}
+          </Notice>
+          <button type="button" onClick={() => window.location.reload()} className="tl-button mt-6">
             Try again
           </button>
         </div>
@@ -97,11 +96,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 export function AdminOnly({ children }: { children: ReactNode }) {
   const { isAdmin, loading } = useAuth();
 
-  if (loading) return <p className="text-sm text-gray-500">Loading...</p>;
+  if (loading) return <p className="text-sm text-subtle">Loading...</p>;
 
   if (!isAdmin) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-100">
+      <div className="tl-notice m-4 p-6 sm:m-8" data-tone="warn">
         <p className="font-semibold">Administrators only</p>
         <p className="mt-1">
           This page manages settings shared by everybody on this installation, so it is limited to
@@ -138,11 +137,11 @@ export function RequiresPlan({
 }) {
   const { account, loading } = useAuth();
 
-  if (loading) return <p className="text-sm text-gray-500">Loading...</p>;
+  if (loading) return <p className="text-sm text-subtle">Loading...</p>;
 
   if (!planAtLeast(account?.plan, minimum)) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-100">
+      <div className="tl-notice m-4 p-6 sm:m-8" data-tone="warn">
         <p className="font-semibold">Needs a {label} plan</p>
         <p className="mt-1">
           This part of the app is included from {label} upwards. Your account is on{' '}

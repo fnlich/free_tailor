@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from 'react';
 import { IconUser } from '@/components/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage } from '@/lib/auth';
+import { Pill } from '@/components/ui/kit';
+import styles from './AccountMenu.module.css';
 
 /**
  * The account button in the top bar, and what drops out of it.
@@ -15,9 +17,11 @@ import { describeProfileUsage } from '@/lib/auth';
  * more often than anything in it is used.
  */
 
-const ITEM =
-  'block w-full px-4 py-3 text-left text-sm text-gray-700 transition hover:bg-gray-50 ' +
-  'dark:text-slate-200 dark:hover:bg-slate-900';
+/** A row of the menu: full width, lit by the theme's muted surface on hover. */
+const ITEM = 'block w-full px-4 py-2.5 text-left text-sm font-medium text-ink hover:bg-surface-muted';
+
+/** A hairline between the menu's groups - not the bare `border-*` the dark-mode shim recolours. */
+const RULE = 'border-[color:var(--line-subtle)]';
 
 export default function AccountMenu() {
   const { account, isAdmin, signOut } = useAuth();
@@ -95,22 +99,16 @@ export default function AccountMenu() {
       </button>
 
       {open && (
-        <div className="app-top-nav-menu absolute right-0 top-full z-[var(--layer-app-nav-menu)] mt-2 w-72 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-950">
-          <div className="border-b border-gray-200 px-4 py-3 dark:border-slate-800">
-            <p className="truncate text-sm font-semibold text-gray-900 dark:text-white">
+        <div className="tl-panel app-top-nav-menu absolute right-0 top-full mt-2 w-72 overflow-hidden">
+          <div className={`border-b-[1px] ${RULE} px-4 py-4`}>
+            <p className="truncate text-sm font-semibold text-ink">
               {account.name || account.email}
             </p>
-            <p className="truncate text-xs text-gray-500 dark:text-slate-400">{account.email}</p>
+            <p className="truncate text-xs text-subtle">{account.email}</p>
 
-            <div className="mt-3 flex items-center justify-between text-xs">
-              <span className="rounded-full bg-blue-50 px-2 py-1 font-medium text-blue-700 dark:bg-blue-500/15 dark:text-blue-200">
-                {account.planLabel}
-              </span>
-              {isAdmin && (
-                <span className="rounded-full bg-purple-50 px-2 py-1 font-medium text-purple-700 dark:bg-purple-500/15 dark:text-purple-200">
-                  Admin
-                </span>
-              )}
+            <div className="mt-3 flex items-center justify-between">
+              <Pill tone="sky">{account.planLabel}</Pill>
+              {isAdmin && <Pill tone="violet">Admin</Pill>}
             </div>
 
             {/*
@@ -119,41 +117,41 @@ export default function AccountMenu() {
               destination: it dips while a run is in flight, and somebody
               noticing that needs somewhere to find out why.
             */}
-            <div className="mt-3 space-y-1 text-xs text-gray-600 dark:text-slate-300">
+            <div className="mt-3 space-y-1 text-xs text-muted">
               <Link
                 href="/credits"
                 onClick={() => setOpen(false)}
-                className="-mx-1 flex justify-between rounded px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-900"
+                className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
               >
                 <span>Credits</span>
-                <span className="font-medium text-gray-900 dark:text-white">{account.credits}</span>
+                <span className="font-semibold tabular-nums text-ink">{account.credits}</span>
               </Link>
               <Link
                 href="/settings/plan"
                 onClick={() => setOpen(false)}
-                className="-mx-1 flex justify-between rounded px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-900"
+                className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
               >
                 <span>Profiles</span>
-                <span className="font-medium text-gray-900 dark:text-white">
-                  {describeProfileUsage(account)}
-                </span>
+                <span className="font-semibold text-ink">{describeProfileUsage(account)}</span>
               </Link>
             </div>
           </div>
 
-          <Link href="/settings" onClick={() => setOpen(false)} className={ITEM}>
-            Settings
-          </Link>
-          <Link href="/settings/plan" onClick={() => setOpen(false)} className={ITEM}>
-            Plan
-          </Link>
-          {isAdmin && (
-            <Link href="/admin/accounts" onClick={() => setOpen(false)} className={ITEM}>
-              Manage accounts
+          <div className="py-1">
+            <Link href="/settings" onClick={() => setOpen(false)} className={ITEM}>
+              Settings
             </Link>
-          )}
+            <Link href="/settings/plan" onClick={() => setOpen(false)} className={ITEM}>
+              Plan
+            </Link>
+            {isAdmin && (
+              <Link href="/admin/accounts" onClick={() => setOpen(false)} className={ITEM}>
+                Manage accounts
+              </Link>
+            )}
+          </div>
 
-          <div className="border-t border-gray-200 dark:border-slate-800">
+          <div className={`border-t-[1px] ${RULE} py-1`}>
             <button
               type="button"
               disabled={signingOut}
@@ -168,7 +166,7 @@ export default function AccountMenu() {
                   setOpen(false);
                 }
               }}
-              className={`${ITEM} text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-900/30`}
+              className={`${ITEM} ${styles.signOut}`}
             >
               {signingOut ? 'Signing out...' : 'Log out'}
             </button>

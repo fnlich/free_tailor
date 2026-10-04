@@ -32,6 +32,9 @@ import SheetsImportModal, { ImportedSheetJob, type ImportSheetSource } from '@/c
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
+import { Card, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
+import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
+import styles from '@/components/builder.module.css';
 
 type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
@@ -1435,93 +1438,98 @@ export default function Home() {
   const activeMultiplePreview = multiplePreviews[multiplePreviewIndex];
 
   const unconfirmedPanel = (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-4">
-      <div className="text-sm font-medium text-gray-700">Unregistered Skills</div>
-      {unconfirmedHardSkills.length === 0 && unconfirmedSoftSkills.length === 0 && (
-        <div className="text-xs text-gray-500">No unregistered skills found.</div>
-      )}
-      {unconfirmedHardSkills.length > 0 && (
-        <div className="space-y-3">
-          <div className="text-xs font-semibold text-gray-600">Tech Skills</div>
-          <div className="grid grid-cols-2 gap-2">
-            {unconfirmedHardSkills.map((skill) => (
-              <div key={`uh-${skill.original}`} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={skill.value}
-                  onChange={(e) =>
-                    handleUnconfirmedSkillEdit('hard', skill.original, e.target.value)
-                  }
-                  disabled={isGenerating}
-                  className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleConfirmSkill('hard', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs bg-gray-800 text-white rounded-md hover:bg-gray-900 disabled:bg-gray-400"
-                >
-                  Add
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveUnconfirmedSkill('hard', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:text-gray-400"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
+    <div className="tl-card">
+      <div className="tl-card-header">
+        <div className="text-sm font-semibold text-ink">Unregistered Skills</div>
+      </div>
+      <div className="space-y-5 p-4">
+        {unconfirmedHardSkills.length === 0 && unconfirmedSoftSkills.length === 0 && (
+          <div className="text-sm text-subtle">No unregistered skills found.</div>
+        )}
+        {unconfirmedHardSkills.length > 0 && (
+          <div className="space-y-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-subtle">Tech Skills</div>
+            <div className="grid gap-2 xl:grid-cols-2">
+              {unconfirmedHardSkills.map((skill) => (
+                <div key={`uh-${skill.original}`} className="flex min-w-0 items-center gap-2">
+                  <input
+                    type="text"
+                    value={skill.value}
+                    onChange={(e) =>
+                      handleUnconfirmedSkillEdit('hard', skill.original, e.target.value)
+                    }
+                    disabled={isGenerating}
+                    className={`tl-input ${styles.compact} min-w-0 flex-1`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmSkill('hard', skill)}
+                    disabled={isGenerating}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Add
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveUnconfirmedSkill('hard', skill)}
+                    disabled={isGenerating}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
-      {unconfirmedSoftSkills.length > 0 && (
-        <div className="space-y-3">
-          <div className="text-xs font-semibold text-gray-600">Soft Skills</div>
-          <div className="grid grid-cols-2 gap-2">
-            {unconfirmedSoftSkills.map((skill) => (
-              <div key={`us-${skill.original}`} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={skill.value}
-                  onChange={(e) =>
-                    handleUnconfirmedSkillEdit('soft', skill.original, e.target.value)
-                  }
-                  disabled={isGenerating}
-                  className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleConfirmSkill('soft', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs bg-gray-800 text-white rounded-md hover:bg-gray-900 disabled:bg-gray-400"
-                >
-                  Add
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveUnconfirmedSkill('soft', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:text-gray-400"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
+        )}
+        {unconfirmedSoftSkills.length > 0 && (
+          <div className="space-y-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-subtle">Soft Skills</div>
+            <div className="grid gap-2 xl:grid-cols-2">
+              {unconfirmedSoftSkills.map((skill) => (
+                <div key={`us-${skill.original}`} className="flex min-w-0 items-center gap-2">
+                  <input
+                    type="text"
+                    value={skill.value}
+                    onChange={(e) =>
+                      handleUnconfirmedSkillEdit('soft', skill.original, e.target.value)
+                    }
+                    disabled={isGenerating}
+                    className={`tl-input ${styles.compact} min-w-0 flex-1`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleConfirmSkill('soft', skill)}
+                    disabled={isGenerating}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Add
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveUnconfirmedSkill('soft', skill)}
+                    disabled={isGenerating}
+                    className="tl-button-quiet"
+                    data-size="sm"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 
   if (isLoadingData) {
     return (
       <div className="tl-fill flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
+        <Spinner />
       </div>
     );
   }
@@ -1529,465 +1537,492 @@ export default function Home() {
   return (
     <>
       {/* Main Content */}
-      <main className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Generate Resumes</h1>
+      <Page>
+        {/*
+          The page's one primary action lives in the title row, where it always
+          was in spirit - it sat above the fields, not under them. Which action
+          that is depends on the way in: generate (or preview) when building by
+          hand, open the import dialog when building from a sheet. Back, and
+          Open Preview once a preview has been closed, are the quiet ones
+          beside it, shaped to match.
+        */}
+        <PageHeader
+          title="Build Resumes"
+          description="Tailor a resume to a job description, for one profile, a group, or every row of a Google Sheet."
+          actions={
+            builderMode !== null && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBuilderMode(null);
+                    setIsSheetsImportOpen(false);
+                  }}
+                  disabled={isGenerating}
+                  className={`tl-button-quiet ${styles.pill}`}
+                >
+                  Back
+                </button>
+                {builderMode === 'manual' && generateMode === 'single' && previewHtml && !isSinglePreviewOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setIsSinglePreviewOpen(true)}
+                    className={`tl-button-quiet ${styles.pill}`}
+                  >
+                    Open Preview
+                  </button>
+                )}
+                {builderMode === 'manual' ? (
+                  <button
+                    onClick={handleGenerate}
+                    disabled={isGenerating}
+                    className={`tl-button ${styles.wrap}`}
+                    data-shape="pill"
+                  >
+                    {isGenerating ? (
+                      <>
+                        <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"></span>
+                        {generationStep || 'Generating...'}
+                      </>
+                    ) : (
+                      generateMode === 'single'
+                        ? autoGenerate
+                          ? 'Generate Resume'
+                          : 'Analyze & Preview'
+                        : autoGenerate
+                          ? `Generate All (${profiles.length} profiles)`
+                          : 'Analyze & Preview'
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!hasImportableSheet) {
+                        setError(sheetImportNotice);
+                        return;
+                      }
+                      setError('');
+                      setIsSheetsImportOpen(true);
+                    }}
+                    disabled={isGenerating}
+                    className={`tl-button ${styles.wrap}`}
+                    data-shape="pill"
+                  >
+                    {isGenerating ? generationStep || 'Generating...' : 'Import from Google Sheet'}
+                  </button>
+                )}
+              </>
+            )
+          }
+        />
 
-        {error && (
-          <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex justify-between items-center">
-            <span>{error}</span>
-            <button onClick={() => setError('')} className="text-red-700 hover:text-red-900 font-bold">
-              ×
-            </button>
-          </div>
-        )}
+        <div className="mb-6 space-y-3 empty:hidden">
+          {error && (
+            <Notice tone="error" className="flex items-start justify-between gap-4">
+              <span className="min-w-0 break-words">{error}</span>
+              <button
+                onClick={() => setError('')}
+                className="-my-1 shrink-0 px-1 text-lg font-bold leading-none"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </Notice>
+          )}
 
-        {placedOrder && (
-          <div className="mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-green-800">
-            <p className="font-semibold">
-              You ordered successfully: Order number -{' '}
-              <span className="font-mono">{placedOrder.number}</span>
-            </p>
-            <p className="mt-1 text-sm">
-              {placedOrder.total} resume(s) from {placedOrder.jobCount} imported job(s) across{' '}
-              {placedOrder.profileCount} profile(s) are being built. You can close this page - they
-              are waiting for you under{' '}
-              <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline">
-                Order status &amp; built resumes
-              </Link>
-              .{placedOrder.skippedNote}
-            </p>
-          </div>
-        )}
+          {placedOrder && (
+            <Notice tone="success">
+              <p className="font-semibold">
+                You ordered successfully: Order number -{' '}
+                <span className="font-mono">{placedOrder.number}</span>
+              </p>
+              <p className="mt-1">
+                {placedOrder.total} resume(s) from {placedOrder.jobCount} imported job(s) across{' '}
+                {placedOrder.profileCount} profile(s) are being built. You can close this page - they
+                are waiting for you under{' '}
+                <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
+                  Order status &amp; built resumes
+                </Link>
+                .{placedOrder.skippedNote}
+              </p>
+            </Notice>
+          )}
 
-        {successMessage && (
-          <div className="mb-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
-            {successMessage}
-          </div>
-        )}
+          {successMessage && <Notice tone="success">{successMessage}</Notice>}
 
-        {builderMode === 'sheets' && isGenerating && generationProgress && (
-          <GenerationProgress progress={generationProgress} className="mb-6" />
-        )}
+          {builderMode === 'sheets' && isGenerating && generationProgress && (
+            <GenerationProgress progress={generationProgress} />
+          )}
+        </div>
 
         {builderMode === null && (
-          <div className="mb-6 grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2">
           <button
             type="button"
             onClick={() => setBuilderMode('manual')}
             disabled={isGenerating}
-            className={`rounded-xl border px-6 py-6 text-left transition ${
-              builderMode === 'manual'
-                ? 'border-blue-300 bg-blue-50 shadow-sm'
-                : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
-            }`}
+            className={`tl-card ${styles.entry}`}
+            data-on={builderMode === 'manual'}
           >
-            <div className="text-lg font-semibold text-gray-900">Building Manually</div>
-            <div className="mt-2 text-sm text-gray-600">
-              Original builder flow. Enter company, role, and job description manually, then preview or generate.
-            </div>
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-ink">
+              <IconBuild className="h-5 w-5" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-lg font-semibold text-ink">Building Manually</span>
+              <span className="mt-2 block text-sm text-muted">
+                Original builder flow. Enter company, role, and job description manually, then preview or generate.
+              </span>
+            </span>
           </button>
 
           <button
             type="button"
             onClick={() => setBuilderMode('sheets')}
             disabled={isGenerating}
-            className={`rounded-xl border px-6 py-6 text-left transition ${
-              builderMode === 'sheets'
-                ? 'border-blue-300 bg-blue-50 shadow-sm'
-                : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
-            }`}
+            className={`tl-card ${styles.entry}`}
+            data-on={builderMode === 'sheets'}
           >
-            <div className="text-lg font-semibold text-gray-900">Building Automatically from Google Sheet</div>
-            <div className="mt-2 text-sm text-gray-600">
-              Import jobs from Google Sheets, map columns once, then generate every selected profile against every imported row.
-            </div>
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-ink">
+              <IconTemplates className="h-5 w-5" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-lg font-semibold text-ink">Building Automatically from Google Sheet</span>
+              <span className="mt-2 block text-sm text-muted">
+                Import jobs from Google Sheets, map columns once, then generate every selected profile against every imported row.
+              </span>
+            </span>
           </button>
           </div>
         )}
 
         {builderMode !== null && (builderMode === 'manual' ? (
-          <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-4">
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  setBuilderMode(null);
-                  setIsSheetsImportOpen(false);
-                }}
-                disabled={isGenerating}
-                className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                Back
-              </button>
-            </div>
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating}
-              className="w-full py-3 px-4 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {isGenerating ? (
-                <>
-                  <span className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></span>
-                  {generationStep || 'Generating...'}
-                </>
-              ) : (
-                generateMode === 'single'
-                  ? autoGenerate
-                    ? 'Generate Resume'
-                    : 'Analyze & Preview'
-                  : autoGenerate
-                    ? `Generate All (${profiles.length} profiles)`
-                    : 'Analyze & Preview'
-              )}
-            </button>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Generate mode
-              </label>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
+          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <Card title="Job">
+              <div className="space-y-6">
+                <div>
+                  <label className="tl-label">
+                    Company Name <span className={styles.required}>*</span>
+                  </label>
                   <input
-                    type="radio"
-                    name="generateMode"
-                    value="single"
-                    checked={generateMode === 'single'}
-                    onChange={() => setGenerateMode('single')}
+                    type="text"
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
                     disabled={isGenerating}
-                    className="w-4 h-4 text-blue-600"
+                    placeholder="Enter company name"
+                    className="tl-input mt-2"
                   />
-                  <span>Single (one profile)</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="generateMode"
-                    value="multiple"
-                    checked={generateMode === 'multiple'}
-                    onChange={() => setGenerateMode('multiple')}
-                    disabled={isGenerating}
-                    className="w-4 h-4 text-blue-600"
-                  />
-                  <span>Multiple (all profiles)</span>
-                </label>
-              </div>
-            </div>
+                </div>
 
-            {generateMode === 'single' && (
-              <ProfileSelector
-                profiles={profiles}
-                selectedId={selectedProfileId}
-                onChange={setSelectedProfileId}
-                isLoading={false}
-              />
-            )}
-
-            <details className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-              <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">
-                Model
-                {hasAiOverrides && (
-                  <span className="ml-2 rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                    overridden for this run
-                  </span>
-                )}
-              </summary>
-              <div className="mt-4 space-y-3">
-                <AiPreferenceFields
-                  idPrefix="builder-ai"
-                  value={aiOverrides}
-                  onChange={setAiOverrides}
-                  models={modelSettings.aiModels}
-                  providerLocks={modelSettings.providerLocks}
-                  inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
-                  inherited={inheritedChoice}
-                  disabled={isGenerating}
-                />
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {inheritsFromProfile
-                      ? `Defaults come from ${selectedProfile?.name}. Anything set here applies to this run only.`
-                      : 'Each profile uses its own default; anything set here applies to this run only.'}
-                  </p>
-                  {hasAiOverrides && (
-                    <button
-                      type="button"
-                      onClick={() => setAiOverrides({})}
+                {shouldShowRoleInput && (
+                  <div>
+                    <label className="tl-label">
+                      Role <span className={styles.required}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={role}
+                      onChange={(e) => setRole(e.target.value)}
                       disabled={isGenerating}
-                      className="shrink-0 text-xs text-blue-600 hover:underline disabled:text-gray-400"
-                    >
-                      Reset
-                    </button>
+                      placeholder="Enter job role/title"
+                      className="tl-input mt-2"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="tl-label">
+                    Job Description <span className={styles.required}>*</span>
+                  </label>
+                  <textarea
+                    value={jobDescription}
+                    onChange={(e) => setJobDescription(e.target.value)}
+                    disabled={isGenerating}
+                    placeholder="Paste the job description (min 50 characters)"
+                    rows={4}
+                    className="tl-input mt-2 h-72 resize-y"
+                  />
+                  <p className="mt-2 text-sm text-subtle">{jobDescription.length} characters</p>
+                </div>
+              </div>
+            </Card>
+
+            <Card title="Build options" padded={false}>
+              <div className="divide-y divide-[var(--line-subtle)]">
+                <div className="space-y-5 p-5">
+                  <div>
+                    <label className="tl-label">
+                      Generate mode
+                    </label>
+                    <div className="mt-2 grid gap-2">
+                      <label className="tl-choice" data-on={generateMode === 'single'}>
+                        <input
+                          type="radio"
+                          name="generateMode"
+                          value="single"
+                          checked={generateMode === 'single'}
+                          onChange={() => setGenerateMode('single')}
+                          disabled={isGenerating}
+                        />
+                        <span className="text-sm font-medium text-ink">Single (one profile)</span>
+                      </label>
+                      <label className="tl-choice" data-on={generateMode === 'multiple'}>
+                        <input
+                          type="radio"
+                          name="generateMode"
+                          value="multiple"
+                          checked={generateMode === 'multiple'}
+                          onChange={() => setGenerateMode('multiple')}
+                          disabled={isGenerating}
+                        />
+                        <span className="text-sm font-medium text-ink">Multiple (all profiles)</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {generateMode === 'single' && (
+                    <ProfileSelector
+                      profiles={profiles}
+                      selectedId={selectedProfileId}
+                      onChange={setSelectedProfileId}
+                      isLoading={false}
+                    />
+                  )}
+
+                  {generateMode === 'multiple' && (
+                    <div className="space-y-5">
+                      <div>
+                        <label className="tl-label">Target</label>
+                        <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+                          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                            <input
+                              type="radio"
+                              name="multipleTarget"
+                              value="all"
+                              checked={multipleTarget === 'all'}
+                              onChange={() => setMultipleTarget('all')}
+                              disabled={isGenerating}
+                              className="tl-check"
+                            />
+                            <span>All profiles</span>
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+                            <input
+                              type="radio"
+                              name="multipleTarget"
+                              value="group"
+                              checked={multipleTarget === 'group'}
+                              onChange={() => setMultipleTarget('group')}
+                              disabled={isGenerating}
+                              className="tl-check"
+                            />
+                            <span>Specific group</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {multipleTarget === 'group' && (
+                        <div>
+                          <label className="tl-label">Select Group</label>
+                          <select
+                            value={selectedGroupId}
+                            onChange={(e) => setSelectedGroupId(e.target.value)}
+                            disabled={isGenerating}
+                            className="tl-input mt-2"
+                          >
+                            <option value="">Choose a group...</option>
+                            {groups.map((group) => (
+                              <option key={group.id} value={group.id}>
+                                {group.name} ({group.profileIds.length})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-              </div>
-            </details>
 
-            {generateMode === 'multiple' && (
-              <div className="space-y-4 border border-gray-200 rounded-lg p-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Target</label>
-                  <div className="flex gap-4">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="multipleTarget"
-                        value="all"
-                        checked={multipleTarget === 'all'}
-                        onChange={() => setMultipleTarget('all')}
-                        disabled={isGenerating}
-                        className="w-4 h-4 text-blue-600"
-                      />
-                      <span>All profiles</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="multipleTarget"
-                        value="group"
-                        checked={multipleTarget === 'group'}
-                        onChange={() => setMultipleTarget('group')}
-                        disabled={isGenerating}
-                        className="w-4 h-4 text-blue-600"
-                      />
-                      <span>Specific group</span>
-                    </label>
-                  </div>
-                </div>
-
-                {multipleTarget === 'group' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Select Group</label>
-                    <select
-                      value={selectedGroupId}
-                      onChange={(e) => setSelectedGroupId(e.target.value)}
+                <details className={`${styles.disclosure} p-5`}>
+                  <summary className="text-sm font-medium text-ink">
+                    <IconChevronRight className={`h-4 w-4 ${styles.chevron}`} />
+                    Model
+                    {hasAiOverrides && (
+                      <Pill tone="sky">
+                        overridden for this run
+                      </Pill>
+                    )}
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    <AiPreferenceFields
+                      idPrefix="builder-ai"
+                      value={aiOverrides}
+                      onChange={setAiOverrides}
+                      models={modelSettings.aiModels}
+                      providerLocks={modelSettings.providerLocks}
+                      inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
+                      inherited={inheritedChoice}
                       disabled={isGenerating}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="">Choose a group...</option>
-                      {groups.map((group) => (
-                        <option key={group.id} value={group.id}>
-                          {group.name} ({group.profileIds.length})
-                        </option>
-                      ))}
-                    </select>
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm text-subtle">
+                        {inheritsFromProfile
+                          ? `Defaults come from ${selectedProfile?.name}. Anything set here applies to this run only.`
+                          : 'Each profile uses its own default; anything set here applies to this run only.'}
+                      </p>
+                      {hasAiOverrides && (
+                        <button
+                          type="button"
+                          onClick={() => setAiOverrides({})}
+                          disabled={isGenerating}
+                          className="tl-button-quiet shrink-0"
+                          data-size="sm"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
-            )}
+                </details>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Company Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-                disabled={isGenerating}
-                placeholder="Enter company name"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            {shouldShowRoleInput && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Role <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  disabled={isGenerating}
-                  placeholder="Enter job role/title"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            )}
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Job Description <span className="text-red-500">*</span>
-              </label>
-              <textarea
-                value={jobDescription}
-                onChange={(e) => setJobDescription(e.target.value)}
-                disabled={isGenerating}
-                placeholder="Paste the job description (min 50 characters)"
-                rows={4}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              />
-              <p className="text-sm text-gray-500 mt-1">{jobDescription.length} characters</p>
-            </div>
-
-            <div
-              className={`flex items-center justify-between border rounded-lg p-4 transition-colors ${
-                autoGenerate ? 'border-blue-200 bg-blue-50' : 'border-red-200 bg-red-50'
-              }`}
-            >
-              <div>
-                <div className="text-sm font-semibold text-gray-800">
-                  {autoGenerate ? 'Auto-generate (On)' : 'Preview mode (On)'}
-                </div>
-                <div className="text-xs text-gray-600">
-                  {autoGenerate
-                    ? 'Analyze + generate in one step.'
-                    : 'Analyze + preview first. Generate manually.'}
+                <div className="flex items-center justify-between gap-4 p-5">
+                  <div>
+                    <div className="text-sm font-semibold text-ink">
+                      {autoGenerate ? 'Auto-generate (On)' : 'Preview mode (On)'}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {autoGenerate
+                        ? 'Analyze + generate in one step.'
+                        : 'Analyze + preview first. Generate manually.'}
+                    </div>
+                  </div>
+                  <label className={styles.switch}>
+                    <input
+                      type="checkbox"
+                      checked={autoGenerate}
+                      onChange={(e) => setAutoGenerate(e.target.checked)}
+                      disabled={isGenerating}
+                      className="sr-only"
+                    />
+                    <span className={`${styles.track} ${autoGenerate ? styles.trackOn : ''}`}>
+                      <span className={`${styles.knob} ${autoGenerate ? styles.knobOn : ''}`} />
+                    </span>
+                  </label>
                 </div>
               </div>
-              <label className="inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoGenerate}
-                  onChange={(e) => setAutoGenerate(e.target.checked)}
-                  disabled={isGenerating}
-                  className="sr-only"
-                />
-                <span
-                  className={`relative w-11 h-6 rounded-full peer-focus:outline-none transition-colors ${
-                    autoGenerate ? 'bg-blue-600' : 'bg-red-500'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 h-5 w-5 bg-white rounded-full transition-transform ${
-                      autoGenerate ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </span>
-              </label>
-            </div>
+            </Card>
           </div>
         ) : (
-          <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-4">
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  setBuilderMode(null);
-                  setIsSheetsImportOpen(false);
-                }}
-                disabled={isGenerating}
-                className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                Back
-              </button>
-            </div>
-            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-              Import a Google Sheet range where each row is one job. After column mapping, the builder will generate every selected profile against every imported row.
-            </div>
+          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            {/*
+              First in the source so a phone reads what this mode does - and
+              why it cannot run yet - before the fields; beside them from xl up.
+            */}
+            <div className="space-y-3 xl:col-start-2 xl:row-start-1">
+              <Notice tone="info">
+                Import a Google Sheet range where each row is one job. After column mapping, the builder will generate every selected profile against every imported row.
+              </Notice>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Build target
-              </label>
-              <div className="flex flex-wrap gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="sheetsTargetMode"
-                    value="single"
-                    checked={sheetsTargetMode === 'single'}
-                    onChange={() => setSheetsTargetMode('single')}
-                    disabled={isGenerating}
-                    className="w-4 h-4 text-blue-600"
-                  />
-                  <span>Single profile</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="sheetsTargetMode"
-                    value="all"
-                    checked={sheetsTargetMode === 'all'}
-                    onChange={() => setSheetsTargetMode('all')}
-                    disabled={isGenerating}
-                    className="w-4 h-4 text-blue-600"
-                  />
-                  <span>All profiles</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="sheetsTargetMode"
-                    value="group"
-                    checked={sheetsTargetMode === 'group'}
-                    onChange={() => setSheetsTargetMode('group')}
-                    disabled={isGenerating}
-                    className="w-4 h-4 text-blue-600"
-                  />
-                  <span>Specific group</span>
-                </label>
-              </div>
+              {!hasImportableSheet && (
+                <Notice tone="warn">
+                  {sheetImportNotice}
+                </Notice>
+              )}
             </div>
 
-            {sheetsTargetMode === 'single' && (
-              <ProfileSelector
-                profiles={profiles}
-                selectedId={selectedSheetsProfileId}
-                onChange={setSelectedSheetsProfileId}
-                isLoading={false}
-              />
-            )}
+            <div className="xl:col-start-1 xl:row-start-1">
+              <Card title="Build target">
+                <div className="space-y-6">
+                  <div>
+                    <label className="tl-label sr-only">
+                      Build target
+                    </label>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <label className="tl-choice" data-on={sheetsTargetMode === 'single'}>
+                        <input
+                          type="radio"
+                          name="sheetsTargetMode"
+                          value="single"
+                          checked={sheetsTargetMode === 'single'}
+                          onChange={() => setSheetsTargetMode('single')}
+                          disabled={isGenerating}
+                        />
+                        <span className="text-sm font-medium text-ink">Single profile</span>
+                      </label>
+                      <label className="tl-choice" data-on={sheetsTargetMode === 'all'}>
+                        <input
+                          type="radio"
+                          name="sheetsTargetMode"
+                          value="all"
+                          checked={sheetsTargetMode === 'all'}
+                          onChange={() => setSheetsTargetMode('all')}
+                          disabled={isGenerating}
+                        />
+                        <span className="text-sm font-medium text-ink">All profiles</span>
+                      </label>
+                      <label className="tl-choice" data-on={sheetsTargetMode === 'group'}>
+                        <input
+                          type="radio"
+                          name="sheetsTargetMode"
+                          value="group"
+                          checked={sheetsTargetMode === 'group'}
+                          onChange={() => setSheetsTargetMode('group')}
+                          disabled={isGenerating}
+                        />
+                        <span className="text-sm font-medium text-ink">Specific group</span>
+                      </label>
+                    </div>
+                  </div>
 
-            {sheetsTargetMode === 'group' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Select Group</label>
-                <select
-                  value={selectedSheetsGroupId}
-                  onChange={(e) => setSelectedSheetsGroupId(e.target.value)}
-                  disabled={isGenerating}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Choose a group...</option>
-                  {groups.map((group) => (
-                    <option key={group.id} value={group.id}>
-                      {group.name} ({group.profileIds.length})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+                  {sheetsTargetMode === 'single' && (
+                    <ProfileSelector
+                      profiles={profiles}
+                      selectedId={selectedSheetsProfileId}
+                      onChange={setSelectedSheetsProfileId}
+                      isLoading={false}
+                    />
+                  )}
 
-            {shouldShowRoleInput && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Fallback Role
-                </label>
-                <input
-                  type="text"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  disabled={isGenerating}
-                  placeholder="Optional fallback if a sheet row has no mapped job title"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <p className="mt-1 text-sm text-gray-500">
-                  Leave this blank if your imported rows already include a mapped job title column.
-                </p>
-              </div>
-            )}
+                  {sheetsTargetMode === 'group' && (
+                    <div>
+                      <label className="tl-label">Select Group</label>
+                      <select
+                        value={selectedSheetsGroupId}
+                        onChange={(e) => setSelectedSheetsGroupId(e.target.value)}
+                        disabled={isGenerating}
+                        className="tl-input mt-2"
+                      >
+                        <option value="">Choose a group...</option>
+                        {groups.map((group) => (
+                          <option key={group.id} value={group.id}>
+                            {group.name} ({group.profileIds.length})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
-            {!hasImportableSheet && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                {sheetImportNotice}
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                if (!hasImportableSheet) {
-                  setError(sheetImportNotice);
-                  return;
-                }
-                setError('');
-                setIsSheetsImportOpen(true);
-              }}
-              disabled={isGenerating}
-              className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
-            >
-              {isGenerating ? generationStep || 'Generating...' : 'Import from Google Sheet'}
-            </button>
+                  {shouldShowRoleInput && (
+                    <div>
+                      <label className="tl-label">
+                        Fallback Role
+                      </label>
+                      <input
+                        type="text"
+                        value={role}
+                        onChange={(e) => setRole(e.target.value)}
+                        disabled={isGenerating}
+                        placeholder="Optional fallback if a sheet row has no mapped job title"
+                        className="tl-input mt-2"
+                      />
+                      <p className="mt-2 text-sm text-subtle">
+                        Leave this blank if your imported rows already include a mapped job title column.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            </div>
           </div>
         ))}
 
@@ -1996,27 +2031,27 @@ export default function Home() {
         )}
 
         {builderMode === 'manual' && generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0 && activeMultiplePreview && (
-          <div className="fixed inset-0 z-[var(--layer-app-modal)] bg-black/40 backdrop-blur-sm">
-            <div className="absolute inset-4 bg-white rounded-xl shadow-2xl flex flex-col">
-              <div className="flex items-center justify-between px-6 py-4 border-b">
-                <div className="flex items-center gap-3">
-                  <h3 className="text-lg font-semibold text-gray-900">Resume Preview</h3>
-                  <span className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded-full">
+          <div className="tl-backdrop">
+            <div className={`tl-dialog ${styles.sheet}`}>
+              <div className="tl-card-header">
+                <div className="flex min-w-0 flex-wrap items-center gap-3">
+                  <h3 className="text-lg font-semibold text-ink">Resume Preview</h3>
+                  <Pill>
                     {multiplePreviewIndex + 1} / {multiplePreviews.length}
-                  </span>
+                  </Pill>
                   {multiplePreviewTailored && (
-                    <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
+                    <Pill tone="green">
                       ATS OPTIMIZATION
-                    </span>
+                    </Pill>
                   )}
-                  <span className="text-sm text-gray-600">{activeMultiplePreview.profileName}</span>
+                  <span className="min-w-0 truncate text-sm text-muted">{activeMultiplePreview.profileName}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setMultiplePreviewIndex((i) => Math.max(0, i - 1))}
                     disabled={multiplePreviewIndex === 0 || isGenerating}
-                    className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+                    className="tl-button-quiet"
                   >
                     Previous
                   </button>
@@ -2024,14 +2059,14 @@ export default function Home() {
                     type="button"
                     onClick={() => setMultiplePreviewIndex((i) => Math.min(multiplePreviews.length - 1, i + 1))}
                     disabled={multiplePreviewIndex >= multiplePreviews.length - 1 || isGenerating}
-                    className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+                    className="tl-button-quiet"
                   >
                     Next
                   </button>
                   <button
                     onClick={handleFinalizeGenerateMultiple}
                     disabled={isGenerating}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed font-medium transition-colors"
+                    className={`tl-button ${styles.wrap}`}
                   >
                     {isGenerating ? generationStep || 'Generating...' : 'Generate All'}
                   </button>
@@ -2042,18 +2077,18 @@ export default function Home() {
                       setMultiplePreviewIndex(0);
                     }}
                     disabled={isGenerating}
-                    className="px-3 py-2 text-sm bg-white text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50"
+                    className="tl-button-quiet"
                   >
                     Close
                   </button>
                 </div>
               </div>
-              <div className="flex-1 grid grid-cols-2 overflow-hidden">
-                <div className="h-full overflow-y-auto bg-gray-100 p-6">
+              <div className="min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-2 lg:overflow-hidden">
+                <div className="bg-surface-muted p-4 sm:p-6 lg:h-full lg:overflow-y-auto">
                   {isGenerating && generationProgress && (
                     <GenerationProgress progress={generationProgress} className="mb-4" />
                   )}
-                  <div className="resume-paper-shell bg-white shadow-lg mx-auto max-w-[816px]">
+                  <div className={`resume-paper-shell ${styles.paper} mx-auto max-w-[816px]`}>
                     <iframe
                       srcDoc={activeMultiplePreview.html}
                       className="w-full h-[1056px] border-0"
@@ -2061,33 +2096,38 @@ export default function Home() {
                     />
                   </div>
                 </div>
-                <div className="h-full overflow-y-auto border-l p-6 space-y-6">
+                <div className="space-y-6 p-4 sm:p-6 lg:h-full lg:overflow-y-auto">
                   {unconfirmedPanel}
 
-                  <div className="bg-gray-50 rounded-lg border border-gray-200 p-4">
-                    <div className="text-sm font-medium text-gray-700 mb-2">Manual Edits (JSON)</div>
-                    <textarea
-                      value={activeMultiplePreview.draft}
-                      onChange={(e) => handleMultipleDraftChange(activeMultiplePreview.profileId, e.target.value)}
-                      rows={8}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Edit tailored content JSON here."
-                    />
-                    {activeMultiplePreview.error && (
-                      <p className="text-sm text-red-600 mt-2">{activeMultiplePreview.error}</p>
-                    )}
-                    <div className="mt-3 flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateMultiplePreview(activeMultiplePreview.profileId)}
-                        disabled={isGenerating || !!activeMultiplePreview.error}
-                        className="px-3 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-900 disabled:bg-gray-400"
-                      >
-                        Update Preview
-                      </button>
-                      <span className="text-xs text-gray-500">
-                        Apply edits to preview before final generate.
-                      </span>
+                  <div className="tl-card">
+                    <div className="tl-card-header">
+                      <div className="text-sm font-semibold text-ink">Manual Edits (JSON)</div>
+                    </div>
+                    <div className="p-4">
+                      <textarea
+                        value={activeMultiplePreview.draft}
+                        onChange={(e) => handleMultipleDraftChange(activeMultiplePreview.profileId, e.target.value)}
+                        rows={8}
+                        className={`tl-input ${styles.code}`}
+                        placeholder="Edit tailored content JSON here."
+                      />
+                      {activeMultiplePreview.error && (
+                        <p className="tl-status mt-2" data-tone="error">{activeMultiplePreview.error}</p>
+                      )}
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateMultiplePreview(activeMultiplePreview.profileId)}
+                          disabled={isGenerating || !!activeMultiplePreview.error}
+                          className="tl-button-quiet"
+                          data-size="sm"
+                        >
+                          Update Preview
+                        </button>
+                        <span className="text-xs text-subtle">
+                          Apply edits to preview before final generate.
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2108,30 +2148,35 @@ export default function Home() {
             sidebar={
               <>
                 {unconfirmedPanel}
-                <div className="bg-gray-50 rounded-lg border border-gray-200 p-4">
-                  <div className="text-sm font-medium text-gray-700 mb-2">Manual Edits (JSON)</div>
-                  <textarea
-                    value={tailoredContentDraft}
-                    onChange={(e) => handleTailoredContentChange(e.target.value)}
-                    rows={8}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Edit tailored content JSON here."
-                  />
-                  {tailoredContentError && (
-                    <p className="text-sm text-red-600 mt-2">{tailoredContentError}</p>
-                  )}
-                  <div className="mt-3 flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={handleUpdatePreview}
-                      disabled={isGenerating || !!tailoredContentError}
-                      className="px-3 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-900 disabled:bg-gray-400"
-                    >
-                      Update Preview
-                    </button>
-                    <span className="text-xs text-gray-500">
-                      Apply edits to preview before final generate.
-                    </span>
+                <div className="tl-card">
+                  <div className="tl-card-header">
+                    <div className="text-sm font-semibold text-ink">Manual Edits (JSON)</div>
+                  </div>
+                  <div className="p-4">
+                    <textarea
+                      value={tailoredContentDraft}
+                      onChange={(e) => handleTailoredContentChange(e.target.value)}
+                      rows={8}
+                      className={`tl-input ${styles.code}`}
+                      placeholder="Edit tailored content JSON here."
+                    />
+                    {tailoredContentError && (
+                      <p className="tl-status mt-2" data-tone="error">{tailoredContentError}</p>
+                    )}
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleUpdatePreview}
+                        disabled={isGenerating || !!tailoredContentError}
+                        className="tl-button-quiet"
+                        data-size="sm"
+                      >
+                        Update Preview
+                      </button>
+                      <span className="text-xs text-subtle">
+                        Apply edits to preview before final generate.
+                      </span>
+                    </div>
                   </div>
                 </div>
               </>
@@ -2139,18 +2184,7 @@ export default function Home() {
           />
         )}
 
-        {builderMode === 'manual' && generateMode === 'single' && previewHtml && !isSinglePreviewOpen && (
-          <div className="mt-4">
-            <button
-              type="button"
-              onClick={() => setIsSinglePreviewOpen(true)}
-              className="px-3 py-2 text-sm bg-white text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50"
-            >
-              Open Preview
-            </button>
-          </div>
-        )}
-      </main>
+      </Page>
 
       <SheetsImportModal
         isOpen={isSheetsImportOpen}
@@ -2166,7 +2200,7 @@ export default function Home() {
       />
 
       {/* Footer */}
-      <footer className="mt-auto py-6 text-center text-sm text-gray-500">
+      <footer className="mt-auto py-6 text-center text-sm text-subtle">
         <p>Tailor - Powered by your Claude subscription, with OpenAI, Anthropic and DeepSeek as options</p>
       </footer>
     </>

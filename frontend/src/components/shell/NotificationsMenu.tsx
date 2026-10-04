@@ -113,22 +113,24 @@ export default function NotificationsMenu() {
           aria-label="Notifications"
           className="tl-panel app-top-nav-menu absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden"
         >
-          <div className="border-b-[1px] border-[color:var(--border-color)] px-4 py-3">
-            <p className="text-sm font-semibold text-ink">Notifications</p>
+          {/* Hairlines in the kit's own colour, and `-[1px]` rather than the
+              bare `border-b` the dark-mode shim recolours. */}
+          <div className="border-b-[1px] border-[color:var(--line-subtle)] px-4 py-3.5">
+            <p className="text-base font-semibold text-ink">Notifications</p>
           </div>
 
           <div className="max-h-96 overflow-y-auto">
             {failed ? (
-              <p className="px-4 py-6 text-sm text-subtle">Could not reach the server.</p>
+              <p className="px-4 py-8 text-center text-sm text-subtle">Could not reach the server.</p>
             ) : items.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-subtle">
+              <p className="px-4 py-8 text-center text-sm text-subtle">
                 Nothing yet. Announcements from the administrators of this installation appear here.
               </p>
             ) : (
               items.map((item) => (
                 <article
                   key={item.id}
-                  className="border-b-[1px] border-[color:var(--border-color)] px-4 py-3 last:border-b-0"
+                  className="border-b-[1px] border-[color:var(--line-subtle)] px-4 py-3.5 last:border-b-0"
                 >
                   <p className="text-sm font-semibold text-ink">{item.title}</p>
                   <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{item.body}</p>

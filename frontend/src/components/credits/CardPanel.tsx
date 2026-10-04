@@ -3,7 +3,8 @@
 import { IconTrash } from '@/components/icons';
 import { MarkCardBrand } from '@/components/icons/marks';
 import PayForm from './PayForm';
-import { CHOICE, LABEL, PANEL, PRIMARY, QUIET } from './chrome';
+import { Spinner } from '@/components/ui/kit';
+import { LABEL, PANEL, PRIMARY, QUIET } from './chrome';
 import type { Order } from './order';
 import { describeCard, formatAmount, type SavedCard } from '@/lib/payments';
 
@@ -72,9 +73,10 @@ export default function CardPanel({
       {cards.length > 0 && (
         <section>
           <h3 className={LABEL}>Cards you have saved</h3>
-          <div className="mt-2 space-y-2">
+          {/* One box, a hairline between cards: the kit's list of rows. */}
+          <div className="tl-rows mt-2">
             {cards.map((card) => (
-              <div key={card.id} className={`${CHOICE} flex items-center gap-3`}>
+              <div key={card.id} className="flex items-center gap-3 p-3">
                 <MarkCardBrand brand={card.brand} className="h-5 w-8 shrink-0" />
                 <span className="min-w-0 flex-1">
                   {/*
@@ -96,7 +98,8 @@ export default function CardPanel({
                   type="button"
                   onClick={() => onPayWithCard(card.id)}
                   disabled={busyCardId !== null}
-                  className={`${PRIMARY} shrink-0 px-3 py-1.5`}
+                  className={`${PRIMARY} shrink-0`}
+                  data-size="sm"
                 >
                   {busyCardId === card.id ? 'Charging…' : 'Pay now'}
                 </button>
@@ -138,7 +141,7 @@ export default function CardPanel({
             <button
               type="button"
               onClick={onUseSavedCards}
-              className="text-xs font-medium text-accent underline"
+              className="tl-link text-xs"
             >
               Use a saved card instead
             </button>
@@ -151,13 +154,13 @@ export default function CardPanel({
           </button>
         ) : (
           <>
-            <label className="mt-2 flex items-start gap-2.5 text-sm text-muted">
+            <label className="mt-3 flex items-start gap-2.5 text-sm text-ink">
               <input
                 type="checkbox"
                 checked={saveCard}
                 disabled={starting}
                 onChange={(event) => onSaveCard(event.target.checked)}
-                className="mt-0.5 h-4 w-4"
+                className="tl-check mt-0.5 shrink-0"
               />
               <span>
                 Save this card for future purchases.
@@ -171,8 +174,7 @@ export default function CardPanel({
             <div className="mt-3">
               {(order.status === 'none' || order.status === 'starting') && (
                 <div className={PANEL}>
-                  <div className="mx-auto h-10 w-10 animate-spin rounded-full border-b-2 border-blue-600" />
-                  <p className="mt-3 text-center text-sm text-muted">Preparing your order…</p>
+                  <Spinner label="Preparing your order…" />
                 </div>
               )}
 
@@ -183,11 +185,11 @@ export default function CardPanel({
                   </p>
                   <p className="mt-1 text-sm text-muted">{order.message}</p>
                   <p className="mt-1 text-xs text-subtle">Nothing was charged.</p>
-                  <div className="mt-3 flex gap-2">
-                    <button type="button" onClick={onRetry} className={`${PRIMARY} px-4 py-2`}>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button type="button" onClick={onRetry} className={PRIMARY}>
                       Try again
                     </button>
-                    <button type="button" onClick={onCancel} className={`${QUIET} px-4 py-2`}>
+                    <button type="button" onClick={onCancel} className={QUIET}>
                       Change the amount
                     </button>
                   </div>
@@ -230,7 +232,7 @@ export default function CardPanel({
                       {formatAmount(order.started.amountCents, order.started.currency)} is left
                       unpaid and will expire on its own.
                     </p>
-                    <button type="button" onClick={onRetry} className={`${PRIMARY} mt-3 px-4 py-2`}>
+                    <button type="button" onClick={onRetry} className={`${PRIMARY} mt-4`}>
                       Try again
                     </button>
                   </div>

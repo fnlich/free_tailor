@@ -162,7 +162,7 @@ async function readDialog(page) {
 async function openDialog(page) {
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
   await wait(500);
-  const opened = await clickText(page, 'button', 'Buy credits');
+  const opened = await clickText(page, 'button', 'Purchase Credits');
   await wait(300);
   return opened;
 }
@@ -424,7 +424,7 @@ async function main() {
     await signIn(page, token);
 
     console.log('\n=== Step 1: payment options ===');
-    check('the dialog opens', await openDialog(page), 'no Buy credits button');
+    check('the dialog opens', await openDialog(page), 'no Purchase Credits button');
     let dialog = await readDialog(page);
     check('step 1 is the payment options', dialog?.title === 'Payment options', dialog?.title);
     // Case-insensitive, because these headings are uppercased in CSS and

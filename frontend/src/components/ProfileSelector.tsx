@@ -17,14 +17,14 @@ export default function ProfileSelector({
 }: ProfileSelectorProps) {
   return (
     <div>
-      <label className="block text-sm font-medium text-black mb-2">
+      <label className="tl-label">
         Select Profile
       </label>
       <select
         value={selectedId || ''}
         onChange={(e) => onChange(e.target.value)}
         disabled={isLoading}
-        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white disabled:bg-gray-100 disabled:cursor-not-allowed"
+        className="tl-input mt-2"
       >
         <option value="">Choose a profile...</option>
         {profiles.map((profile) => (
@@ -34,9 +34,9 @@ export default function ProfileSelector({
         ))}
       </select>
       {profiles.length === 0 && !isLoading && (
-        <p className="mt-2 text-sm text-gray-700">
+        <p className="mt-2 text-sm text-muted">
           No profiles available. Create one under{' '}
-          <a href="/admin/profiles" className="text-blue-600 hover:underline">
+          <a href="/admin/profiles" className="tl-link">
             Profile
           </a>
           .

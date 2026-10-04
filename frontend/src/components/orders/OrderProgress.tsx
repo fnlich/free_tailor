@@ -1,6 +1,8 @@
 'use client';
 
+import { Pill, type PillTone } from '@/components/ui/kit';
 import type { OrderCounts, OrderState } from '@/lib/orders';
+import styles from './OrderProgress.module.css';
 
 /**
  * "122 of 300", with a bar.
@@ -12,12 +14,13 @@ import type { OrderCounts, OrderState } from '@/lib/orders';
  * them would make the bar a lie in the other direction.
  */
 
-const STATE_STYLES: Record<OrderState, string> = {
-  running: 'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-200',
-  done: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200',
-  failed: 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200',
-  cancelled: 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200',
-  expired: 'bg-gray-200 text-gray-700 dark:bg-slate-700 dark:text-slate-200',
+/** The kit's pill colours, so an order's state reads like a payment's on /credits. */
+const STATE_TONES: Record<OrderState, PillTone> = {
+  running: 'sky',
+  done: 'green',
+  failed: 'red',
+  cancelled: 'amber',
+  expired: 'grey',
 };
 
 const STATE_LABELS: Record<OrderState, string> = {
@@ -29,11 +32,7 @@ const STATE_LABELS: Record<OrderState, string> = {
 };
 
 export function OrderStatePill({ state }: { state: OrderState }) {
-  return (
-    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATE_STYLES[state]}`}>
-      {STATE_LABELS[state]}
-    </span>
-  );
+  return <Pill tone={STATE_TONES[state]}>{STATE_LABELS[state]}</Pill>;
 }
 
 function percent(part: number, whole: number): number {
@@ -56,33 +55,27 @@ export default function OrderProgress({
   return (
     <div className={className}>
       <div className="flex items-baseline justify-between gap-4 text-sm">
-        <span className="font-semibold text-gray-900 dark:text-white">
+        <span className="font-semibold tabular-nums text-ink">
           {counts.settled} of {counts.total}
         </span>
         {counts.running > 0 && (
-          <span className="text-xs text-gray-500 dark:text-slate-400">
+          <span className="text-xs text-subtle">
             {counts.running} building now
           </span>
         )}
       </div>
       <div
-        className="mt-2 flex h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-slate-700"
+        className={`mt-2 ${styles.track}`}
         role="progressbar"
         aria-valuenow={counts.settled}
         aria-valuemin={0}
         aria-valuemax={counts.total}
       >
-        <div
-          className="h-full bg-emerald-500 transition-[width] duration-300 ease-out"
-          style={{ width: `${donePercent}%` }}
-        />
-        <div
-          className="h-full bg-red-400 transition-[width] duration-300 ease-out"
-          style={{ width: `${stoppedPercent}%` }}
-        />
+        <div className={styles.done} style={{ width: `${donePercent}%` }} />
+        <div className={styles.stopped} style={{ width: `${stoppedPercent}%` }} />
       </div>
       {(counts.failed > 0 || counts.cancelled > 0) && (
-        <p className="mt-1.5 text-xs text-gray-500 dark:text-slate-400">
+        <p className="mt-1.5 text-xs text-subtle">
           {counts.failed > 0 && `${counts.failed} failed`}
           {counts.failed > 0 && counts.cancelled > 0 && ', '}
           {counts.cancelled > 0 && `${counts.cancelled} cancelled`}

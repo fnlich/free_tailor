@@ -4,6 +4,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { importApi } from '@/lib/api';
 import { parseSpreadsheetColumnInput, toSpreadsheetColumnLabel } from '@/lib/sheet';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
+import { Notice, Pill } from '@/components/ui/kit';
+import { IconChevronRight } from '@/components/icons';
+import styles from '@/components/builder.module.css';
 
 export type ImportedSheetJob = {
   companyName: string;
@@ -368,17 +371,22 @@ export default function SheetsImportModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[var(--layer-app-modal)] bg-black/40 backdrop-blur-sm">
-      <div className="absolute inset-4 flex items-center justify-center">
-        <div className="max-h-[90vh] w-full max-w-6xl overflow-hidden rounded-xl bg-white shadow-2xl">
-          <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Import from Sheets</h3>
-              <p className="text-sm text-gray-600">
+    <div className="tl-backdrop">
+      {/*
+        A fixed header over a body that scrolls, so Close stays in reach
+        however long the preview table grows. The hairlines between header,
+        progress band and body come from `divide-y`, not a bare `border-b`,
+        which the html.dark shim would recolour.
+      */}
+      <div className={`tl-dialog ${styles.stack} max-w-6xl divide-y divide-[var(--line-subtle)]`}>
+          <div className="flex items-start justify-between gap-4 px-6 py-4">
+            <div className="min-w-0">
+              <h3 className="text-lg font-semibold text-ink">Import from Sheets</h3>
+              <p className="mt-0.5 text-sm text-muted">
                 Load jobs from Google Sheets, map the columns, then generate all profile × job combinations.
               </p>
               {selectedProfileName && (
-                <div className="mt-2 text-sm font-medium text-gray-900">
+                <div className="mt-2 text-sm font-medium text-ink">
                   Selected profile: {selectedProfileName}
                 </div>
               )}
@@ -387,34 +395,35 @@ export default function SheetsImportModal({
               type="button"
               onClick={onClose}
               disabled={isLoading || isSubmitting}
-              className="rounded-md px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              className="tl-button-quiet shrink-0"
+              data-size="sm"
             >
               Close
             </button>
           </div>
 
           {isSubmitting && generationProgress && (
-            <div className="border-b border-blue-100 bg-blue-50/40 px-6 py-4">
+            <div className="px-6 py-4">
               <GenerationProgress progress={generationProgress} />
             </div>
           )}
 
-          <div className="max-h-[calc(90vh-72px)] overflow-y-auto px-6 py-5">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-5">
               {error && (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <Notice tone="error">
                   {error}
-                </div>
+                </Notice>
               )}
 
               <div className="grid gap-4">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">Google Sheet</label>
+                  <label className="tl-label">Google Sheet</label>
                   <select
                     value={selectedSourceId}
                     onChange={(e) => onSelectSource(e.target.value)}
                     disabled={isLoading || isSubmitting || sources.length === 0}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                    className="tl-input mt-2"
                   >
                     <option value="">
                       {sources.length ? 'Choose a Google Sheet...' : 'No Google Sheet available'}
@@ -426,15 +435,15 @@ export default function SheetsImportModal({
                     ))}
                   </select>
                   {selectedSource && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-subtle">
                       <span className="break-all">{selectedSource.sheetId}</span>
-                      <span>
+                      <Pill>
                         {isLoadingTabs
                           ? 'Loading tabs...'
                           : tabName
                             ? `Tab: ${tabName}`
                             : 'No tab selected'}
-                      </span>
+                      </Pill>
                     </div>
                   )}
                 </div>
@@ -442,51 +451,56 @@ export default function SheetsImportModal({
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">From Row</label>
+                  <label className="tl-label">From Row</label>
                   <input
                     type="number"
                     min="1"
                     value={fromRow}
                     onChange={(e) => setFromRow(e.target.value)}
                     disabled={isLoading || isSubmitting}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="tl-input mt-2"
                   />
                 </div>
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-gray-700">To Row</label>
+                  <label className="tl-label">To Row</label>
                   <input
                     type="number"
                     min="1"
                     value={toRow}
                     onChange={(e) => setToRow(e.target.value)}
                     disabled={isLoading || isSubmitting}
-                    className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="tl-input mt-2"
                   />
                 </div>
               </div>
 
-              <div className="rounded-lg border border-gray-200 bg-gray-50">
+              <div className="tl-card divide-y divide-[var(--line-subtle)] overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setIsAdvancedOpen((current) => !current)}
                   disabled={isLoading || isSubmitting}
-                  className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-60"
+                  className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm font-medium text-ink hover:bg-surface-muted disabled:opacity-60"
                   aria-expanded={isAdvancedOpen}
                 >
-                  <span>Advanced columns</span>
-                  <span className="text-xs text-gray-500">
+                  <span className="flex items-center gap-2">
+                    <IconChevronRight
+                      className={`h-4 w-4 ${styles.chevron} ${isAdvancedOpen ? styles.chevronOpen : ''}`}
+                    />
+                    Advanced columns
+                  </span>
+                  <span className="text-xs text-subtle">
                     Range {fromCol.trim().toUpperCase() || layout.fromCol}:{toCol.trim().toUpperCase() || layout.toCol}
                   </span>
                 </button>
                 {isAdvancedOpen && (
-                  <div className="grid gap-4 border-t border-gray-200 bg-white p-4 sm:grid-cols-2">
+                  <div className="grid gap-4 bg-surface-muted p-4 sm:grid-cols-2">
                     <div className="sm:col-span-2">
-                      <label className="mb-2 block text-sm font-medium text-gray-700">Sheet Tab</label>
+                      <label className="tl-label">Sheet Tab</label>
                       <select
                         value={tabName}
                         onChange={(e) => setTabName(e.target.value)}
                         disabled={isLoadingTabs || isLoading || isSubmitting || !selectedSource || sheetTabs.length === 0}
-                        className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                        className="tl-input mt-2"
                       >
                         <option value="">
                           {isLoadingTabs
@@ -503,25 +517,25 @@ export default function SheetsImportModal({
                       </select>
                     </div>
                     <div>
-                      <label className="mb-2 block text-sm font-medium text-gray-700">From Column</label>
+                      <label className="tl-label">From Column</label>
                       <input
                         type="text"
                         value={fromCol}
                         onChange={(e) => setFromCol(e.target.value)}
                         disabled={isLoading || isSubmitting}
                         placeholder={layout.fromCol}
-                        className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="tl-input mt-2"
                       />
                     </div>
                     <div>
-                      <label className="mb-2 block text-sm font-medium text-gray-700">To Column</label>
+                      <label className="tl-label">To Column</label>
                       <input
                         type="text"
                         value={toCol}
                         onChange={(e) => setToCol(e.target.value)}
                         disabled={isLoading || isSubmitting}
                         placeholder={layout.toCol}
-                        className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="tl-input mt-2"
                       />
                     </div>
                   </div>
@@ -529,11 +543,16 @@ export default function SheetsImportModal({
               </div>
 
               <div className="flex justify-end">
+                {/*
+                  The primary until a range is loaded; after that the confirm
+                  button under the preview is, and this one steps back to quiet
+                  so the dialog never offers two solid buttons at once.
+                */}
                 <button
                   type="button"
                   onClick={handleGenerate}
                   disabled={isLoadingTabs || isLoading || isSubmitting || !selectedSource}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-blue-400"
+                  className={values.length > 0 ? 'tl-button-quiet' : 'tl-button'}
                 >
                   {isLoading || isSubmitting ? 'Generating...' : isLoadingTabs ? 'Loading tabs...' : 'Generate'}
                 </button>
@@ -541,37 +560,42 @@ export default function SheetsImportModal({
 
               {values.length > 0 && (
                 <>
-                  <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-                    <div className="text-sm text-gray-700">
+                  <Notice tone="neutral" className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                    <div className="text-muted">
                       Every imported row will be treated as one job record using company column {layout.companyColumn} and description column {layout.jobDescriptionColumn}.
                     </div>
-                    <div className="text-xs text-gray-500">Rows loaded: {values.length}</div>
-                  </div>
+                    <div className="text-xs text-subtle">Rows loaded: {values.length}</div>
+                  </Notice>
 
-                  <div className="rounded-lg border border-gray-200 bg-gray-50">
+                  <div className="tl-card divide-y divide-[var(--line-subtle)] overflow-hidden">
                     <button
                       type="button"
                       onClick={() => setIsAdvancedOpen((current) => !current)}
                       disabled={isSubmitting}
-                      className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-60"
+                      className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm font-medium text-ink hover:bg-surface-muted disabled:opacity-60"
                       aria-expanded={isAdvancedOpen}
                     >
-                      <span>Edit imported column mapping</span>
-                      <span className="text-xs text-gray-500">
+                      <span className="flex items-center gap-2">
+                        <IconChevronRight
+                          className={`h-4 w-4 ${styles.chevron} ${isAdvancedOpen ? styles.chevronOpen : ''}`}
+                        />
+                        Edit imported column mapping
+                      </span>
+                      <span className="text-xs text-subtle">
                         company {columnOptions.find((option) => option.value === mapping.companyName)?.label || '-'}, description {columnOptions.find((option) => option.value === mapping.jobDescription)?.label || '-'}
                       </span>
                     </button>
                     {isAdvancedOpen && (
-                      <div className={`grid gap-4 border-t border-gray-200 bg-white p-4 ${showJobTitleMapping ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+                      <div className={`grid gap-4 bg-surface-muted p-4 ${showJobTitleMapping ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                         <div>
-                          <label className="mb-2 block text-sm font-medium text-gray-700">
-                            company_name <span className="text-red-500">*</span>
+                          <label className="tl-label">
+                            company_name <span className={styles.required}>*</span>
                           </label>
                           <select
                             value={mapping.companyName}
                             onChange={(e) => setMapping((current) => ({ ...current, companyName: e.target.value }))}
                             disabled={isSubmitting}
-                            className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="tl-input mt-2"
                           >
                             <option value="">Choose a column...</option>
                             {columnOptions.map((option) => (
@@ -583,12 +607,12 @@ export default function SheetsImportModal({
                         </div>
                         {showJobTitleMapping && (
                           <div>
-                            <label className="mb-2 block text-sm font-medium text-gray-700">job_title</label>
+                            <label className="tl-label">job_title</label>
                             <select
                               value={mapping.jobTitle}
                               onChange={(e) => setMapping((current) => ({ ...current, jobTitle: e.target.value }))}
                               disabled={isSubmitting}
-                              className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              className="tl-input mt-2"
                             >
                               <option value="">Skip</option>
                               {columnOptions.map((option) => (
@@ -600,14 +624,14 @@ export default function SheetsImportModal({
                           </div>
                         )}
                         <div>
-                          <label className="mb-2 block text-sm font-medium text-gray-700">
-                            job_description <span className="text-red-500">*</span>
+                          <label className="tl-label">
+                            job_description <span className={styles.required}>*</span>
                           </label>
                           <select
                             value={mapping.jobDescription}
                             onChange={(e) => setMapping((current) => ({ ...current, jobDescription: e.target.value }))}
                             disabled={isSubmitting}
-                            className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="tl-input mt-2"
                           >
                             <option value="">Choose a column...</option>
                             {columnOptions.map((option) => (
@@ -621,26 +645,27 @@ export default function SheetsImportModal({
                     )}
                   </div>
 
-                  <div className="overflow-x-auto rounded-lg border border-gray-200">
-                    <table className="min-w-full divide-y divide-gray-200 text-sm">
-                      <thead className="bg-gray-50">
+                  <div className="tl-table-box">
+                    <table className="tl-table">
+                      <thead>
                         <tr>
-                          <th className="px-3 py-2 text-left font-medium text-gray-700">Row</th>
+                          <th>Row</th>
                           {columnOptions.map((option, index) => (
-                            <th key={option.value} className="px-3 py-2 text-left font-medium text-gray-700">
+                            <th key={option.value}>
                               {toSpreadsheetColumnLabel(rangeStartCol + index)}
                             </th>
                           ))}
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-200 bg-white">
+                      <tbody>
                         {previewRows.map((row, rowIndex) => (
                           <tr key={`preview-row-${rowIndex}`}>
-                            <td className="whitespace-nowrap px-3 py-2 font-medium text-gray-900">
-                              {rangeStartRow + rowIndex}
+                            <td className="whitespace-nowrap align-top">
+                              {/* A colour on a .tl-table cell goes on an inner span - the unlayered td rule beats a utility on the td. */}
+                              <span className="font-medium text-ink">{rangeStartRow + rowIndex}</span>
                             </td>
                             {columnOptions.map((option, columnIndex) => (
-                              <td key={`preview-cell-${rowIndex}-${option.value}`} className="max-w-xs px-3 py-2 align-top text-gray-700">
+                              <td key={`preview-cell-${rowIndex}-${option.value}`} className="max-w-xs align-top">
                                 <span className="line-clamp-3 whitespace-pre-wrap break-words">
                                   {row[columnIndex] ?? ''}
                                 </span>
@@ -657,7 +682,7 @@ export default function SheetsImportModal({
                       type="button"
                       onClick={onClose}
                       disabled={isSubmitting}
-                      className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                      className="tl-button-quiet"
                     >
                       Cancel
                     </button>
@@ -665,7 +690,7 @@ export default function SheetsImportModal({
                       type="button"
                       onClick={handleConfirm}
                       disabled={isSubmitting}
-                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-blue-400"
+                      className="tl-button"
                     >
                       {isSubmitting ? 'Generating...' : 'Generate from Imported Jobs'}
                     </button>
@@ -674,7 +699,6 @@ export default function SheetsImportModal({
               )}
             </div>
           </div>
-        </div>
       </div>
     </div>
   );

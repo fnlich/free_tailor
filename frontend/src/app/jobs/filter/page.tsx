@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
+import { Card, Field, Notice, Page, PageHeader } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   parsePositiveWholeNumber,
@@ -194,40 +195,34 @@ export default function JobFilterPage() {
   const hasSavedSheets = sheetSources.length > 0;
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-      <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8 dark:border-slate-800 dark:bg-slate-950/85">
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-3">
-            <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white sm:text-4xl">
-              Filter Google Sheet Jobs
-            </h1>
-            <p className="text-sm text-gray-600 dark:text-slate-300 sm:text-base">
-              Select a sheet and tab, scrape each job link, classify it with the saved prompt, then write a final Pass or Fail result back to Google Sheets.
-            </p>
+    <Page>
+      <PageHeader
+        title="Job Filter"
+        description="Select a sheet and tab, scrape each job link, classify it with the saved prompt, then write a final Pass or Fail result back to Google Sheets."
+        actions={
+          // What the run leaves behind, beside the title - the same place the
+          // balance sits on /credits. `border-l-4` is not one of the dark-mode
+          // shim's names; the bare `border-l` is.
+          <div className="w-64 border-l-4 border-line pl-4 text-sm">
+            <p className="font-semibold text-ink">Result</p>
+            <p className="mt-1 text-muted">Writes `Pass` or `Fail`, plus a fail reason when one applies.</p>
           </div>
+        }
+      />
 
-          <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-            <div className="font-semibold text-gray-900 dark:text-white">Result</div>
-            <div className="mt-1">Writes `Pass` or `Fail`, plus a fail reason when one applies.</div>
-          </div>
-        </div>
-      </section>
-
-      <section className="mt-6 rounded-3xl border border-gray-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-950/85">
+      <Card title="Filter Google Sheet Jobs">
         <form className="space-y-6" onSubmit={handleSubmit}>
           {isAdmin && (
-            <div className="flex flex-wrap gap-2">
+            <div className="tl-card inline-flex flex-wrap gap-1 p-1">
               {(['mine', 'shared'] as const).map((option) => (
                 <button
                   key={option}
                   type="button"
                   onClick={() => setTarget(option)}
                   disabled={isLoading}
-                  className={`rounded-xl border px-4 py-2 text-sm font-medium ${
-                    target === option
-                      ? 'border-emerald-500 bg-emerald-600 text-white'
-                      : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
-                  }`}
+                  className="tl-subtab"
+                  data-active={target === option}
+                  aria-pressed={target === option}
                 >
                   {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
                 </button>
@@ -236,12 +231,12 @@ export default function JobFilterPage() {
           )}
 
           {target === 'mine' ? (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+            <Notice tone="neutral">
               {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
                 <>
                   Filters every job on the{' '}
                   <a
-                    className="font-semibold underline"
+                    className="tl-link"
                     href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
                     target="_blank"
                     rel="noreferrer"
@@ -256,13 +251,13 @@ export default function JobFilterPage() {
               ) : (
                 "Filters every job on today's tab of your own job sheet."
               )}
-            </div>
+            </Notice>
           ) : (
           <>
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto]">
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Google Sheet</span>
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto] lg:items-end">
+            <Field label="Google Sheet" htmlFor="job-filter-sheet">
               <select
+                id="job-filter-sheet"
                 value={form.sheetId}
                 onChange={(event) => {
                   setField('sheetId', event.target.value);
@@ -270,7 +265,7 @@ export default function JobFilterPage() {
                   setSheetTabs([]);
                   setSheetTitle('');
                 }}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
               >
                 <option value="">
@@ -282,14 +277,14 @@ export default function JobFilterPage() {
                   </option>
                 ))}
               </select>
-            </label>
+            </Field>
 
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Sheet tab</span>
+            <Field label="Sheet tab" htmlFor="job-filter-tab">
               <select
+                id="job-filter-tab"
                 value={form.tabName}
                 onChange={(event) => setField('tabName', event.target.value)}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
               >
                 <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
@@ -299,97 +294,95 @@ export default function JobFilterPage() {
                   </option>
                 ))}
               </select>
-            </label>
+            </Field>
 
-            <div className="flex items-end">
-              <button
-                type="button"
-                onClick={handleLoadTabs}
-                disabled={isLoading || isLoadingTabs || !form.sheetId.trim()}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800 dark:disabled:bg-slate-900/60 dark:disabled:text-slate-500"
-              >
-                {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleLoadTabs}
+              disabled={isLoading || isLoadingTabs || !form.sheetId.trim()}
+              className="tl-button-quiet w-full lg:w-auto"
+            >
+              {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
+            </button>
           </div>
 
           {sheetTitle && (
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">
+            <Notice tone="success">
               Connected to <span className="font-semibold">{sheetTitle}</span>.
-            </div>
+            </Notice>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Start row</span>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <Field label="Start row" htmlFor="job-filter-start-row">
               <input
+                id="job-filter-start-row"
                 type="number"
                 min={1}
                 step={1}
                 value={form.startRow}
                 onChange={(event) => setField('startRow', event.target.value)}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading}
               />
-            </label>
+            </Field>
 
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">End row</span>
+            <Field label="End row" htmlFor="job-filter-end-row">
               <input
+                id="job-filter-end-row"
                 type="number"
                 min={1}
                 step={1}
                 value={form.endRow}
                 onChange={(event) => setField('endRow', event.target.value)}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading}
               />
-            </label>
+            </Field>
 
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Job link column</span>
+            <Field label="Job link column" htmlFor="job-filter-link-col">
               <input
+                id="job-filter-link-col"
                 type="text"
                 value={form.jobLinkCol}
                 onChange={(event) => setField('jobLinkCol', event.target.value.toUpperCase())}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading}
               />
-            </label>
+            </Field>
 
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Result column</span>
+            <Field label="Result column" htmlFor="job-filter-result-col">
               <input
+                id="job-filter-result-col"
                 type="text"
                 value={form.resultCol}
                 onChange={(event) => setField('resultCol', event.target.value.toUpperCase())}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading}
               />
-            </label>
+            </Field>
 
-            <label className="space-y-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-slate-200">Reason column</span>
+            <Field label="Reason column" htmlFor="job-filter-reason-col">
               <input
+                id="job-filter-reason-col"
                 type="text"
                 value={form.reasonCol}
                 onChange={(event) => setField('reasonCol', event.target.value.toUpperCase())}
-                className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm text-gray-900 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                className="tl-input"
                 disabled={isLoading}
               />
-            </label>
+            </Field>
           </div>
           </>
           )}
 
-          <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-4 text-sm text-blue-900 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100">
+          <Notice tone="info">
             Uses the live <span className="font-semibold">Filter Google Sheet Job</span> prompt from{' '}
             prompt library. Edit it in{' '}
             <Link href="/admin/prompts" className="font-semibold underline underline-offset-2">
               Admin Prompts
             </Link>{' '}
             and changes will apply here automatically.
-          </div>
+          </Notice>
 
           <div className="flex flex-wrap gap-3">
             <button
@@ -399,7 +392,7 @@ export default function JobFilterPage() {
               // needs no configuration at all - impossible to run on an install
               // where no administrator had ever saved a shared sheet.
               disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
-              className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-emerald-300"
+              className="tl-button"
             >
               {isLoading ? 'Filtering jobs...' : 'Run job filter'}
             </button>
@@ -407,47 +400,77 @@ export default function JobFilterPage() {
         </form>
 
         {error && (
-          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200">
+          <Notice tone="error" className="mt-4">
             {error}
-          </div>
+          </Notice>
         )}
 
         {!hasSavedSheets && (
-          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+          <Notice tone="warn" className="mt-4">
             Save at least one Google Sheet in the Admin Google Sheets panel before using this filter.
-          </div>
+          </Notice>
         )}
+      </Card>
 
-        {summary && !error && (
-          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100">
-            <div className="font-semibold">
-              Processed {summary.processedRows} row{summary.processedRows === 1 ? '' : 's'} in {summary.spreadsheetTitle} / {summary.selectedTab}
-            </div>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <div>Scanned: {summary.scannedRows}</div>
-              <div>Runtime provider: {getAIProviderLabel(summary.provider)}</div>
-              <div>Runtime model: {summary.modelName || 'default'}</div>
-              <div>Scraped pages: {summary.scrapedRows}</div>
-              <div>Skipped rows: {summary.skippedRows}</div>
-              <div>Rows with errors: {summary.errorRows}</div>
-              <div>Job link column: {toSpreadsheetColumnLabel(summary.jobLinkCol)}</div>
-              <div>Result column: {toSpreadsheetColumnLabel(summary.resultCol)}</div>
-              <div>Reason column: {toSpreadsheetColumnLabel(summary.reasonCol)}</div>
-              <div>Rows: {summary.startRow} to {summary.endRow}</div>
-              <div>Updated ranges: {summary.updatedRanges.join(', ')}</div>
-            </div>
+      {summary && !error && (
+        <div className="mt-8">
+          <Card
+            title={
+              <>
+                Processed {summary.processedRows} row{summary.processedRows === 1 ? '' : 's'} in {summary.spreadsheetTitle} / {summary.selectedTab}
+              </>
+            }
+          >
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-5 xl:grid-cols-4">
+              {(
+                [
+                  ['Scanned', summary.scannedRows],
+                  ['Runtime provider', getAIProviderLabel(summary.provider)],
+                  ['Runtime model', summary.modelName || 'default'],
+                  ['Scraped pages', summary.scrapedRows],
+                  ['Skipped rows', summary.skippedRows],
+                  ['Rows with errors', summary.errorRows],
+                  ['Job link column', toSpreadsheetColumnLabel(summary.jobLinkCol)],
+                  ['Result column', toSpreadsheetColumnLabel(summary.resultCol)],
+                  ['Reason column', toSpreadsheetColumnLabel(summary.reasonCol)],
+                  ['Rows', `${summary.startRow} to ${summary.endRow}`],
+                  ['Updated ranges', summary.updatedRanges.join(', ')],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label} className="min-w-0">
+                  <dt className="text-sm text-muted">{label}</dt>
+                  <dd className="mt-1 break-words text-base font-semibold text-ink tabular-nums">{value}</dd>
+                </div>
+              ))}
+            </dl>
+
             {summary.rowErrors.length > 0 && (
-              <div className="mt-3 space-y-1">
-                {summary.rowErrors.map((item) => (
-                  <div key={`${item.row}-${item.message}`}>
-                    Row {item.row}: {item.message}
-                  </div>
-                ))}
+              // Colours on a .tl-table cell go on an inner span - the unlayered
+              // `td` rule beats a utility on the cell itself.
+              <div className="tl-table-box mt-6">
+                <table className="tl-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" className="w-24">Row</th>
+                      <th scope="col">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.rowErrors.map((item) => (
+                      <tr key={`${item.row}-${item.message}`}>
+                        <td>
+                          <span className="tabular-nums text-ink">{item.row}</span>
+                        </td>
+                        <td>{item.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
-          </div>
-        )}
-      </section>
-    </main>
+          </Card>
+        </div>
+      )}
+    </Page>
   );
 }

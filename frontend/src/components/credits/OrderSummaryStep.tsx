@@ -145,7 +145,8 @@ export default function OrderSummaryStep({
             <Mark target={target} />
           </div>
 
-          <div className="mt-3 border-t border-line pt-1">
+          {/* `border-t-[1px]`: the bare `border-t` is one the dark-mode shim recolours. */}
+          <div className="mt-3 border-t-[1px] border-[color:var(--line-subtle)] pt-1">
             <Row
               label="Order"
               // Allocated when a payment row is created, which for a card the
@@ -153,7 +154,7 @@ export default function OrderSummaryStep({
               // then there is honestly no reference to print.
               value={started ? started.reference : 'Assigned when you pay'}
             />
-            <div className="border-t border-line" />
+            <div className="border-t-[1px] border-[color:var(--line-subtle)]" />
             <Row
               label={`${credits} ${credits === 1 ? 'credit' : 'credits'}`}
               hint={`${formatAmount(unitPriceCents, currency)} each`}
@@ -166,7 +167,7 @@ export default function OrderSummaryStep({
                 value={formatAmount(fee, money?.currency ?? currency)}
               />
             )}
-            <div className="border-t border-line" />
+            <div className="border-t-[1px] border-[color:var(--line-subtle)]" />
             <Row
               label="Total to pay"
               strong
@@ -186,14 +187,10 @@ export default function OrderSummaryStep({
         </div>
 
         {priced.status === 'failed' && (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-            <p className="text-sm font-semibold text-red-700">This amount cannot be bought.</p>
-            <p className="mt-1 text-xs text-red-700">{priced.message}</p>
-            <button
-              type="button"
-              onClick={onBack}
-              className="mt-2 text-xs font-semibold text-red-700 underline"
-            >
+          <div className="tl-notice" data-tone="error">
+            <p className="font-semibold">This amount cannot be bought.</p>
+            <p className="mt-1 text-xs">{priced.message}</p>
+            <button type="button" onClick={onBack} className="mt-2 text-xs font-semibold underline">
               Choose a different amount
             </button>
           </div>

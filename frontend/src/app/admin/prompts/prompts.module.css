@@ -1,0 +1,86 @@
+/*
+ * The Prompt Library's feature list, and the one dark-mode repair its editor
+ * needs. Everything else on the page is the shared kit (.tl-card, .tl-choice,
+ * .tl-input, .tl-pill...) from globals.css.
+ */
+
+/* A category heading inside the list, pinned while its features scroll past. */
+.group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--line-subtle);
+  background: var(--rail);
+  color: var(--text-subtle);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/*
+ * One feature. Lit the way the app's rail lights its current row - a grey
+ * band and the accent ink - so the list reads as navigation, not as buttons.
+ */
+.item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6875rem 1rem;
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--rail-ink);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-align: left;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.item:hover {
+  background: var(--rail-hover);
+  color: var(--rail-ink-active);
+}
+
+.item[data-active='true'] {
+  background: var(--rail-active);
+  color: var(--accent-ink);
+}
+
+.item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The card's own border closes the list; a rule under the last row doubles it. */
+.section:last-child .item:last-child {
+  border-bottom: 0;
+}
+
+/* "This feature has a live prompt." */
+.live {
+  flex: none;
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 9999px;
+  background: #16a34a;
+}
+
+:global(html.dark) .live {
+  background: #4ade80;
+}
+
+/*
+ * A field a built-in prompt does not let you change.
+ *
+ * `.tl-input:disabled` already greys it in light mode, but in dark mode the
+ * shim's `html.dark input:not(...)` rule outranks it on specificity and paints
+ * it as an ordinary editable field. The two :not()s are there for weight, so
+ * this one outranks the shim in turn.
+ */
+:global(html.dark) .locked:disabled:not([type='radio']):not([type='checkbox']) {
+  background: var(--surface-muted);
+  color: var(--text-subtle);
+  border-color: var(--border-color);
+}

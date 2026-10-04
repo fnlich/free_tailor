@@ -23,12 +23,12 @@ import { IconClose } from '@/components/icons';
  * and putting it here keeps it in one place at the bottom of the panel instead
  * of at the bottom of whichever step happens to be mounted.
  *
- * Styling note, and it is load-bearing: the chrome here is on the `@theme
- * inline` tokens (`tl-panel`, `text-ink`, `text-muted`) with no `dark:`
- * variants anywhere. The html.dark shim at the end of globals.css is unlayered
- * while Tailwind utilities live in `@layer utilities`, so it beats `dark:`
- * outright - this panel used to say `bg-white shadow-xl dark:bg-slate-900` and
- * the dark: half of that never once applied.
+ * Styling note, and it is load-bearing: the chrome here is the shared kit's
+ * `.tl-backdrop` and `.tl-dialog` plus the `@theme inline` tokens (`text-ink`,
+ * `text-muted`), with no `dark:` variants anywhere. The html.dark shim at the
+ * end of globals.css is unlayered while Tailwind utilities live in `@layer
+ * utilities`, so it beats `dark:` outright - this panel used to say `bg-white
+ * shadow-xl dark:bg-slate-900` and the dark: half of that never once applied.
  */
 export default function PayDialog({
   open,
@@ -80,7 +80,7 @@ export default function PayDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[var(--layer-app-modal)] overflow-y-auto bg-black/40 backdrop-blur-sm"
+      className="tl-backdrop"
       // The backdrop closes, but only when the backdrop itself was clicked:
       // without this check a drag that ends outside the panel closes the dialog
       // in the middle of filling in a card number.
@@ -89,55 +89,46 @@ export default function PayDialog({
       }}
     >
       {/*
-        Centring is done by an inner box that can GROW, not by the scroller.
-        `items-center` on the scrolling element itself centres a panel taller
-        than the window by pushing it off BOTH ends - and the half above the
-        top is unreachable, because scrolling cannot go past zero. The two-
-        column summary is tall enough to hit that on a short laptop screen,
-        where it took the title and the Close button with it. `min-h-full` on
-        a box that is allowed to be taller means the panel is centred while it
-        fits and sits at the top, scrolling normally, once it does not.
+        The kit's dialog, which is never taller than the window: `.tl-dialog`
+        caps its own height and scrolls inside itself. That is what keeps the
+        title and the Close button reachable on a short laptop screen, where
+        the two-column summary is taller than the window - centring a panel
+        that could grow past the window used to push it off BOTH ends, and the
+        half above the top was unreachable because scrolling cannot go past
+        zero.
       */}
       <div
-        className="flex min-h-full items-start justify-center p-4 sm:items-center"
-        onMouseDown={(event) => {
-          if (event.target === event.currentTarget) close();
-        }}
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        data-width={width}
+        className={`tl-dialog p-4 outline-none sm:p-6 ${width === 'wide' ? 'max-w-4xl' : 'max-w-md'}`}
       >
-        <div
-          ref={panel}
-          role="dialog"
-          aria-modal="true"
-          aria-label={title}
-          tabIndex={-1}
-          data-width={width}
-          className={`tl-panel w-full p-6 outline-none ${
-            width === 'wide' ? 'max-w-4xl' : 'max-w-md'
-          }`}
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-ink">{title}</h2>
-              {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
-            </div>
-            <button
-              type="button"
-              onClick={close}
-              aria-label="Close"
-              className="tl-icon-button -mr-1.5 -mt-1.5"
-            >
-              <IconClose className="h-[18px] w-[18px]" />
-            </button>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="text-xl font-semibold text-ink">{title}</h2>
+            {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
           </div>
-
-          <div className="mt-5">{children}</div>
-
-          {footer && (
-            <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-line pt-5">
-              {footer}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={close}
+            aria-label="Close"
+            className="tl-icon-button -mr-2 -mt-2 shrink-0"
+          >
+            <IconClose className="h-[18px] w-[18px]" />
+          </button>
         </div>
+
+        <div className="mt-6">{children}</div>
+
+        {footer && (
+          /* `border-t-[1px]`, not the bare `border-t` the dark-mode shim recolours. */
+          <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t-[1px] border-[color:var(--line-subtle)] pt-5">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );

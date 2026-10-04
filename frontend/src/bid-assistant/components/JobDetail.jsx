@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { bidAssistantFetch } from '../lib/apiBase.js';
+import { IconChevronRight, IconClose } from '@/components/icons';
 
 async function readResponseData(response) {
   const responseText = await response.text();
@@ -73,10 +74,10 @@ function getErrorBadgeLabel(job) {
 // Renders the job detail modal content.
 function JobInfoModal({ job, onClose }) {
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card detail-modal" onClick={(event) => event.stopPropagation()}>
-        <button className="icon-button" onClick={onClose}>
-          x
+    <div className="tl-backdrop" onClick={onClose}>
+      <div className="tl-dialog modal-card detail-modal" onClick={(event) => event.stopPropagation()}>
+        <button className="tl-icon-button bid-close" onClick={onClose} aria-label="Close">
+          <IconClose />
         </button>
 
         <section className="detail-section hero-section">
@@ -116,8 +117,8 @@ function JobErrorModal({
   onSave
 }) {
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card job-error-modal" onClick={(event) => event.stopPropagation()}>
+    <div className="tl-backdrop" onClick={onClose}>
+      <div className="tl-dialog modal-card job-error-modal" onClick={(event) => event.stopPropagation()}>
         <div className="section-header modal-header">
           <div className="modal-header-copy">
             <h2>Set Error</h2>
@@ -131,6 +132,7 @@ function JobErrorModal({
           <label className="stacked-field">
             <span>Error reason</span>
             <input
+              className="tl-input"
               type="text"
               value={errorReasonDraft}
               onChange={(event) => onChangeErrorReason(event.target.value)}
@@ -139,10 +141,10 @@ function JobErrorModal({
           </label>
 
           <div className="form-actions">
-            <button className="primary-button" onClick={onSave} disabled={isSavingJobError}>
+            <button className="tl-button" onClick={onSave} disabled={isSavingJobError}>
               {isSavingJobError ? 'Saving...' : 'Save'}
             </button>
-            <button className="secondary-button" onClick={onClose} disabled={isSavingJobError}>
+            <button className="tl-button-quiet" onClick={onClose} disabled={isSavingJobError}>
               Cancel
             </button>
           </div>
@@ -187,14 +189,14 @@ function DeleteAnswerModal({
 
   return (
     <div
-      className="modal-backdrop"
+      className="tl-backdrop"
       onClick={() => {
         if (!isDeleting) {
           onClose();
         }
       }}
     >
-      <div className="modal-card ask-modal" onClick={(event) => event.stopPropagation()}>
+      <div className="tl-dialog modal-card ask-modal" onClick={(event) => event.stopPropagation()}>
         <div className="section-header modal-header">
           <div className="modal-header-copy">
             <h2>Delete Answer</h2>
@@ -206,7 +208,7 @@ function DeleteAnswerModal({
 
         <label className="stacked-field">
           <span>Question</span>
-          <input value={question} readOnly />
+          <input className="tl-input" value={question} readOnly />
         </label>
 
         <div className="stacked-field">
@@ -215,6 +217,7 @@ function DeleteAnswerModal({
             {profiles.map((profile) => (
               <label key={profile.id} className="checkbox-row">
                 <input
+                  className="tl-check"
                   type="checkbox"
                   checked={targetProfileIds.includes(profile.id)}
                   onChange={() => toggleTargetProfile(profile.id)}
@@ -229,7 +232,8 @@ function DeleteAnswerModal({
         <div className="form-actions">
           <button
             type="button"
-            className="secondary-button danger-button"
+            className="tl-button"
+            data-tone="danger"
             onClick={handleDelete}
             disabled={isDeleting}
           >
@@ -237,7 +241,7 @@ function DeleteAnswerModal({
           </button>
           <button
             type="button"
-            className="secondary-button"
+            className="tl-button-quiet"
             onClick={onClose}
             disabled={isDeleting}
           >
@@ -255,10 +259,10 @@ function ProfileInfoModal({ profile, onClose }) {
   const contact = getProfileContact(profile);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card detail-modal" onClick={(event) => event.stopPropagation()}>
-        <button className="icon-button" onClick={onClose}>
-          x
+    <div className="tl-backdrop" onClick={onClose}>
+      <div className="tl-dialog modal-card detail-modal" onClick={(event) => event.stopPropagation()}>
+        <button className="tl-icon-button bid-close" onClick={onClose} aria-label="Close">
+          <IconClose />
         </button>
 
         <section className="detail-section">
@@ -485,27 +489,29 @@ export default function JobDetail({
 
   return (
     <main className="job-detail-panel">
-      <section className="detail-section workspace-hero">
+      <section className="workspace-hero">
         <div className="workspace-copy">
           <p className="eyebrow">AI Workspace</p>
           <div className="workspace-title-row">
             <h1 title={getDisplayCompanyLabel(job)}>{getDisplayCompanyLabel(job)}</h1>
             <div className="workspace-nav-buttons">
               <button
-                className="secondary-button nav-arrow-button"
+                className="tl-button-quiet bid-square nav-arrow-button"
                 onClick={onSelectPreviousJob}
                 disabled={!hasPreviousJob}
                 title="Previous job"
+                aria-label="Previous job"
               >
-                {'<'}
+                <IconChevronRight className="rotate-180" />
               </button>
               <button
-                className="secondary-button nav-arrow-button"
+                className="tl-button-quiet bid-square nav-arrow-button"
                 onClick={onSelectNextJob}
                 disabled={!hasNextJob}
                 title="Next job"
+                aria-label="Next job"
               >
-                {'>'}
+                <IconChevronRight />
               </button>
             </div>
           </div>
@@ -516,13 +522,13 @@ export default function JobDetail({
             <span>{job.salary_range || 'No salary listed'}</span>
             <span>{job.posted_date || 'No date'}</span>
             <span>{answers.length} saved answer(s)</span>
-            {job.is_error && <span className="error-badge">{getErrorBadgeLabel(job)}</span>}
+            {job.is_error && <span className="tl-pill" data-tone="red">{getErrorBadgeLabel(job)}</span>}
           </div>
           {job.job_url && (
             <div className="job-link-row">
               <button
                 type="button"
-                className="icon-button job-link-copy-button"
+                className="tl-button-quiet bid-square job-link-copy-button"
                 onClick={() => handleCopyJobUrl(job.job_url)}
                 aria-label="Copy job link"
                 title="Copy job link"
@@ -548,20 +554,20 @@ export default function JobDetail({
         </div>
 
         <div className="workspace-actions">
-          <button className="primary-button" onClick={onOpenAskModal} disabled={!profile}>
+          <button className="tl-button" onClick={onOpenAskModal} disabled={!profile}>
             Ask AI
           </button>
-          <button className="secondary-button danger-button" onClick={openJobErrorModal}>
+          <button className="tl-button-quiet" data-tone="danger" onClick={openJobErrorModal}>
             Set Error
           </button>
-          <button className="secondary-button danger-button" onClick={handleDeleteJob} disabled={isDeletingJob}>
+          <button className="tl-button-quiet" data-tone="danger" onClick={handleDeleteJob} disabled={isDeletingJob}>
             {isDeletingJob ? 'Deleting...' : 'Delete Job'}
           </button>
-          <button className="secondary-button" onClick={() => setActiveModal('job')}>
+          <button className="tl-button-quiet" onClick={() => setActiveModal('job')}>
             See Job Detail
           </button>
           <button
-            className="secondary-button"
+            className="tl-button-quiet"
             onClick={() => setActiveModal('profile')}
             disabled={!profile}
           >
@@ -585,7 +591,7 @@ export default function JobDetail({
             <div className="answer-card-top">
               <strong>{item.question}</strong>
               <div className="answer-card-actions">
-                <span className="char-badge">
+                <span className="tl-pill char-badge">
                   {item.answer.length} / {item.charLimit}
                 </span>
                 <div className="answer-action-buttons">
@@ -629,7 +635,7 @@ export default function JobDetail({
         {answers.length === 0 && (
           <div className="answer-empty-state">
             <p className="empty-state">No saved answers for this profile yet.</p>
-            <button className="secondary-button" onClick={onOpenAskModal} disabled={!profile}>
+            <button className="tl-button-quiet" onClick={onOpenAskModal} disabled={!profile}>
               Open Ask AI
             </button>
           </div>

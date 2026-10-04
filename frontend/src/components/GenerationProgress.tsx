@@ -79,38 +79,45 @@ export default function GenerationProgress({ progress, className = '' }: Generat
   })();
 
   return (
-    <div className={`rounded-xl border border-blue-200 bg-blue-50/80 px-4 py-4 ${className}`.trim()}>
+    // A bordered card in the kit's colours: ink for what is happening, muted for
+    // the detail, and the accent for the bar - the same blue as the button that
+    // started it. Tokens and kit classes only, so it reads the same in both
+    // themes without a `dark:` variant the html.dark shim would override.
+    <div className={`tl-card px-4 py-4 ${className}`.trim()}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="text-sm font-semibold text-blue-900">{progress.phase}</div>
-          <div className="mt-1 text-sm text-blue-800">
-            {isSheetsImport
-              ? sheetsStatus
-              : runningLabel
-                ? `${runningLabel}, ${progress.completed} of ${progress.total} done`
-                : activeIndex > 0
-                  ? `Resume ${activeIndex} of ${progress.total}`
-                  : `Preparing ${progress.total} resume(s)`}
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="tl-spinner mt-0.5 shrink-0" aria-hidden />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-ink">{progress.phase}</div>
+            <div className="mt-1 text-sm text-muted">
+              {isSheetsImport
+                ? sheetsStatus
+                : runningLabel
+                  ? `${runningLabel}, ${progress.completed} of ${progress.total} done`
+                  : activeIndex > 0
+                    ? `Resume ${activeIndex} of ${progress.total}`
+                    : `Preparing ${progress.total} resume(s)`}
+            </div>
+            {!isSheetsImport && (
+              <div className="mt-1 text-sm text-muted">
+                {progress.currentProfileName
+                  ? `Building ${progress.currentProfileName}${progress.currentCompanyName ? ` for ${progress.currentCompanyName}` : ''}`
+                  : 'Preparing generation queue'}
+              </div>
+            )}
+            {progress.queued ? (
+              <div className="mt-1 text-xs text-subtle">
+                {progress.queued} waiting for a browser
+              </div>
+            ) : null}
           </div>
-          {!isSheetsImport && (
-            <div className="mt-1 text-sm text-blue-700">
-              {progress.currentProfileName
-                ? `Building ${progress.currentProfileName}${progress.currentCompanyName ? ` for ${progress.currentCompanyName}` : ''}`
-                : 'Preparing generation queue'}
-            </div>
-          )}
-          {progress.queued ? (
-            <div className="mt-1 text-xs text-blue-700">
-              {progress.queued} waiting for a browser
-            </div>
-          ) : null}
         </div>
-        <div className="shrink-0 text-sm font-medium text-blue-900">{completedLabel}</div>
+        <div className="shrink-0 text-sm font-semibold tabular-nums text-ink">{completedLabel}</div>
       </div>
 
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100">
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-muted">
         <div
-          className="h-full rounded-full bg-blue-600 transition-[width] duration-300 ease-out"
+          className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
           style={{ width: `${displayedPercent}%` }}
         />
       </div>
