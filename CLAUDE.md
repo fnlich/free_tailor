@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~1m5s, 812 tests)
+npm test                       # backend node:test suite (~1m10s, 890 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -45,7 +45,7 @@ Facts worth knowing before you build:
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. Thirteen of the 23 App Router pages carry no `dark:` at all and
+  ignored. Twenty of the 28 App Router pages carry no `dark:` at all and
   theme entirely through it, so it stays. New chrome uses the `@theme inline` tokens instead
   (`bg-surface`, `border-line`, `text-muted`), which the shim never names, and
   needs no `dark:` variant. Three of its rules are catch-alls rather than
@@ -129,10 +129,19 @@ backend/
   static/             # seed prompts, skills, templates — defaults only
   test/               # node:test, 74 files; fixtures/cli replays real streams
 frontend/src/
-  app/                # App Router pages: /, /admin/*, /jobs, /orders, /credits
-  components/shell/   # The app shell - top bar, sidebar, settings sub-nav.
+  app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
+                      #   /orders, /credits (+ /credits/invoice, drawn with no
+                      #   shell - navModel's isBareRoute). /account redirects.
+  components/shell/   # The app shell - top bar, rail, and the "Settings" title
+                      #   and tabs above every settings route (Administration
+                      #   is one tab with a second row of the /admin/* pages).
                       #   Mounted once in the root layout inside AuthGate;
-                      #   pages render no navigation of their own.
+                      #   pages render no navigation of their own. navModel.ts
+                      #   is the ONE list of rail entries and settings tabs.
+                      #   The look follows a reference design (textverified):
+                      #   .tl-tabs, .tl-button(-quiet), .tl-table(-box),
+                      #   .tl-section, .tl-input in globals.css are the shared
+                      #   pieces, as classes the dark-mode shim never names.
   components/icons/   # Hand-rolled inline SVG set (there is no icon library).
                       #   index.tsx is UI icons - one grid, one stroke, one
                       #   colour, and the ROW decides it. marks.tsx is brand
@@ -142,7 +151,11 @@ frontend/src/
   components/credits/ # The three-step purchase dialog. order.ts holds the
                       #   wizard reducer with no JSX in it; chrome.ts holds the
                       #   shared class strings and the note on why none of them
-                      #   carries a `dark:` variant.
+                      #   carries a `dark:` variant. Also the /credits history
+                      #   tables: usePagedList.ts (paging with the race guards),
+                      #   TablePager, OrderHistory, CreditHistory. A colour on a
+                      #   .tl-table cell goes on an inner span - the unlayered
+                      #   td rule beats a utility on the td itself.
   bid-assistant/      # the largest single feature directory here, and the only
                       #   JSX: its own App, components and stylesheet
   components/, lib/   # UI and the API client. Shared bits worth knowing before
