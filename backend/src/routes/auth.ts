@@ -1,9 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 
 import { listAccountPlans, resolveAccountPlan, type AccountPlan } from '../config/accountPlans';
+import { sessionTtlMs } from '../config/operational';
 import { countProfilesForOwner } from '../database/profileRepository';
 import { destroySession, updateUser } from '../database/userRepository';
 import { requireUser, SESSION_COOKIE } from '../middleware/auth';
+import { pdfUploadLimitMb } from '../middleware/pdfUpload';
 import {
   AuthError,
   describeSignInOptions,
@@ -17,14 +19,6 @@ import { MailNotConfiguredError, MailSendError } from '../services/auth/mailer';
 import type { UserAccount } from '../types/account';
 
 const router = Router();
-
-/**
- * How long the session cookie lives. Matches the session row's own expiry, so
- * the browser stops sending a token at about the moment the server stops
- * accepting it - a cookie that outlived its row would mean a silent 401 on
- * every request with nothing to clear it.
- */
-const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Sets the session cookie.
@@ -45,7 +39,14 @@ function setSessionCookie(req: Request, res: Response, token: string): void {
     httpOnly: true,
     sameSite: 'lax',
     secure: req.protocol === 'https',
-    maxAge: COOKIE_MAX_AGE_MS,
+    /*
+     * How long the cookie lives: SESSION_TTL_DAYS, through the same getter
+     * `createSession` stamps the row's expiry with, so the browser stops sending
+     * a token at about the moment the server stops accepting it. A cookie that
+     * outlived its row would mean a silent 401 on every request with nothing to
+     * clear it.
+     */
+    maxAge: sessionTtlMs(),
     path: '/',
   });
 }
@@ -161,9 +162,20 @@ router.post('/email/verify', (req: Request, res: Response) => {
  * 200 with `account: null` rather than 401 when signed out: every page calls
  * this on mount to decide what to render, and a 401 on the ordinary
  * not-signed-in path would fill the console with errors that are not errors.
+ *
+ * `uploadMaxMb` rides along because this is the one response every page
+ * already has (AuthContext fetches it once, on mount), and the upload pages
+ * need the server's PDF cap to say it before a large file is sent. Served
+ * rather than duplicated as a NEXT_PUBLIC_ value, which would be compiled into
+ * the bundle and could disagree with what the server enforces. It is the number
+ * the multer instance was built with, and it is not account data - hence top
+ * level, beside `account` rather than in it.
  */
 router.get('/me', (req: Request, res: Response) => {
-  res.json({ account: req.user ? describeAccount(req.user) : null });
+  res.json({
+    account: req.user ? describeAccount(req.user) : null,
+    uploadMaxMb: pdfUploadLimitMb(),
+  });
 });
 
 router.post('/logout', (req: Request, res: Response) => {

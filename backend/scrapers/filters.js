@@ -1,9 +1,22 @@
 'use strict';
 
+const { requireSettings } = require('./settings');
+
+/**
+ * Results asked of an actor when the request names no number. Not a deployment
+ * setting: SCRAPER_MAX_RESULTS caps this and every other count from above.
+ */
 const DEFAULT_MAX_RESULTS = 100;
+/**
+ * The most each actor below returns per run, whatever it is asked for - limits
+ * of the actors, not of this deployment. services/scraperProviders.ts serves
+ * them (with SCRAPER_MAX_RESULTS folded in) so the jobs page offers no count
+ * the run cannot return.
+ */
 const JOB_BOARD_MAX_RESULTS = 100;
+const INDEED_MAX_ITEMS_PER_SEARCH = 100;
+const MEMO23_MAX_ITEMS = 50;
 const DEFAULT_JOB_BOARD_SITES = ['linkedin', 'indeed', 'glassdoor', 'google', 'zip_recruiter'];
-const DEFAULT_LINKEDIN_LOCATION = 'United States';
 const LINKEDIN_TIME_POSTED_TO_SECONDS = {
   '24h': 24 * 60 * 60,
   '3d': 3 * 24 * 60 * 60,
@@ -176,16 +189,44 @@ function toRegexFilter(value) {
   return escapeRegex(normalized).replace(/\s+/g, '.*');
 }
 
-function toMaxResults(filters, maxLimit) {
-  if (Number.isInteger(filters && filters.maxResults) && filters.maxResults > 0) {
-    if (Number.isInteger(maxLimit) && maxLimit > 0) {
-      return Math.min(filters.maxResults, maxLimit);
-    }
+/** The smallest of the limits that are set; `null` and anything not a positive whole number are "no limit". */
+function smallestLimit(...limits) {
+  const set = limits.filter((limit) => Number.isInteger(limit) && limit > 0);
+  return set.length > 0 ? Math.min(...set) : null;
+}
 
-    return filters.maxResults;
+/**
+ * How many results to ask an actor for.
+ *
+ * The request's own number, or DEFAULT_MAX_RESULTS when it names none, held
+ * under the actor's own limit (`actorLimit`) and the deployment's cap
+ * (`deploymentCap`, SCRAPER_MAX_RESULTS) when either is set. With neither set
+ * this is exactly what it was before the cap existed.
+ */
+function toMaxResults(filters, actorLimit, deploymentCap) {
+  const requested = Number.isInteger(filters && filters.maxResults) && filters.maxResults > 0
+    ? filters.maxResults
+    : DEFAULT_MAX_RESULTS;
+  const limit = smallestLimit(actorLimit, deploymentCap);
+
+  return limit === null ? requested : Math.min(requested, limit);
+}
+
+/**
+ * Apify proxy configuration for the deployment's proxy groups.
+ *
+ * An empty list is APIFY_PROXY_GROUPS=auto: the groups are left out and Apify
+ * picks its own pool. RESIDENTIAL, the default, is a paid add-on on Apify's
+ * plans, which is why the groups are configurable at all. `extra` follows the
+ * groups so the keys keep the order the actors have always been sent.
+ */
+function buildProxyConfiguration(proxyGroups, extra) {
+  const configuration = { useApifyProxy: true };
+  if (proxyGroups.length > 0) {
+    configuration.apifyProxyGroups = proxyGroups.slice();
   }
 
-  return DEFAULT_MAX_RESULTS;
+  return { ...configuration, ...(extra || {}) };
 }
 
 function inferWellfoundRoles(keywords) {
@@ -198,10 +239,19 @@ function inferWellfoundRoles(keywords) {
     .filter((entry) => entry.pattern.test(normalizedKeywords))
     .map((entry) => entry.role);
 }
-function buildIndeedSearchUrl(filters) {
+
+/**
+ * An Indeed search URL for keywords and a location.
+ *
+ * Nothing in the server calls this today - the Indeed actor runs from a start
+ * URL the user pastes - but it is the shape such a URL takes. A missing location
+ * falls back to the deployment's (SCRAPER_DEFAULT_LOCATION, via `settings`), and
+ * with neither the URL carries no location at all.
+ */
+function buildIndeedSearchUrl(filters, settings) {
   const url = new URL('https://www.indeed.com/jobs/');
   const keywords = buildExpandedKeywordQuery(filters && filters.keywords);
-  const location = normalizeText(filters && filters.location) || DEFAULT_LINKEDIN_LOCATION;
+  const location = normalizeText(filters && filters.location) || normalizeText(settings && settings.defaultLocation);
 
   if (keywords) {
     url.searchParams.set('q', keywords);
@@ -214,26 +264,33 @@ function buildIndeedSearchUrl(filters) {
   url.searchParams.set('sort', 'date');
   return url.toString();
 }
-function mapFiltersForIndeed(filters) {
+/**
+ * The Indeed actor's input. The pasted start URL decides the search, so the
+ * request's `maxResults` is not sent: the actor's per-search cap is, held under
+ * SCRAPER_MAX_RESULTS when that is set.
+ */
+function mapFiltersForIndeed(filters, settings) {
   const startUrl = normalizeText(filters && filters.startUrl);
   if (!startUrl) {
     throw new Error('startUrl is required for the Misceres Indeed scraper.');
   }
+  requireSettings(settings, ['country', 'maxResults'], 'Indeed scraper');
 
   return {
-    country: 'US',
+    country: settings.country,
     followApplyRedirects: false,
-    maxItemsPerSearch: 100,
+    maxItemsPerSearch: smallestLimit(INDEED_MAX_ITEMS_PER_SEARCH, settings.maxResults),
     parseCompanyDetails: false,
     saveOnlyUniqueItems: true,
     startUrls: [{ url: startUrl }],
   };
 }
 
-function mapFiltersForJobBoard(filters) {
+function mapFiltersForJobBoard(filters, settings) {
+  requireSettings(settings, ['proxyGroups', 'maxResults'], 'Job Board scraper');
   const actorInput = {
     searchTerm: normalizeText(filters && filters.keywords) || 'software engineer',
-    maxResults: toMaxResults(filters || {}, JOB_BOARD_MAX_RESULTS),
+    maxResults: toMaxResults(filters || {}, JOB_BOARD_MAX_RESULTS, settings.maxResults),
     sites: DEFAULT_JOB_BOARD_SITES.slice(),
   };
   const location = normalizeText(filters && filters.location);
@@ -256,17 +313,15 @@ function mapFiltersForJobBoard(filters) {
     actorInput.hoursOld = JOB_BOARD_TIME_POSTED_TO_HOURS[timePosted];
   }
 
-  actorInput.proxyConfiguration = {
-    useApifyProxy: true,
-    apifyProxyGroups: ['RESIDENTIAL'],
-  };
+  actorInput.proxyConfiguration = buildProxyConfiguration(settings.proxyGroups);
 
   return actorInput;
 }
 
-function mapFiltersForWellfound(filters) {
+function mapFiltersForWellfound(filters, settings) {
+  requireSettings(settings, ['maxResults'], 'Wellfound scraper');
   const actorInput = {
-    maxResults: toMaxResults(filters || {}),
+    maxResults: toMaxResults(filters || {}, null, settings.maxResults),
     remote: Boolean(filters && filters.remoteOnly),
     enrichDetail: true,
     descriptionMaxLength: 0,
@@ -286,14 +341,12 @@ function mapFiltersForWellfound(filters) {
   return actorInput;
 }
 
-function mapFiltersForHiringCafe(filters) {
+function mapFiltersForHiringCafe(filters, settings) {
+  requireSettings(settings, ['proxyGroups', 'maxResults'], 'Hiring Cafe scraper');
   const actorInput = {
     searchQuery: buildHiringCafeKeywordString(filters && filters.keywords),
-    maxResults: toMaxResults(filters || {}),
-    proxyConfiguration: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL'],
-    },
+    maxResults: toMaxResults(filters || {}, null, settings.maxResults),
+    proxyConfiguration: buildProxyConfiguration(settings.proxyGroups),
   };
   const location = normalizeText(filters && filters.location);
   const jobType = normalizeText(filters && filters.jobType);
@@ -318,10 +371,11 @@ function mapFiltersForHiringCafe(filters) {
   return actorInput;
 }
 
-function mapFiltersForHiringCafeCrawlerbros(filters) {
+function mapFiltersForHiringCafeCrawlerbros(filters, settings) {
+  requireSettings(settings, ['maxResults'], 'Hiring Cafe scraper (CrawlerBros)');
   const actorInput = {
     searchQueries: buildHiringCafeSearchQueries(filters && filters.keywords),
-    maxItems: toMaxResults(filters || {}),
+    maxItems: toMaxResults(filters || {}, null, settings.maxResults),
   };
   const jobType = normalizeText(filters && filters.jobType);
   const timePosted = normalizeText(filters && filters.timePosted);
@@ -341,28 +395,39 @@ function mapFiltersForHiringCafeCrawlerbros(filters) {
   return actorInput;
 }
 
-function mapFiltersForHiringCafeMemo23(filters) {
+/**
+ * The memo23 actor's input. Like Indeed it runs from a pasted start URL, with a
+ * fixed location and proxy exit country - the deployment's market - and a fixed
+ * item count held under SCRAPER_MAX_RESULTS when that is set.
+ */
+function mapFiltersForHiringCafeMemo23(filters, settings) {
   const startUrl = normalizeText(filters && filters.startUrl);
   if (!startUrl) {
     throw new Error('startUrl is required for the memo23 Hiring Cafe scraper.');
   }
+  requireSettings(
+    settings,
+    ['defaultLocation', 'country', 'proxyGroups', 'maxResults'],
+    'Hiring Cafe scraper (memo23)'
+  );
 
   return {
     flattenOutput: false,
-    location: DEFAULT_LINKEDIN_LOCATION,
+    location: settings.defaultLocation,
     maxConcurrency: 2,
-    maxItems: 50,
+    maxItems: smallestLimit(MEMO23_MAX_ITEMS, settings.maxResults),
     maxRequestRetries: 0,
     minConcurrency: 1,
-    proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ['RESIDENTIAL'],
-      apifyProxyCountry: 'US',
-    },
+    proxy: buildProxyConfiguration(settings.proxyGroups, { apifyProxyCountry: settings.country }),
     startUrls: [{ url: startUrl }],
   };
 }
 
+/**
+ * The Lever actor's input. It has no result count to send - it returns every
+ * matching posting - so SCRAPER_MAX_RESULTS cannot bound this run on Apify's
+ * side. routes/jobs.ts trims what comes back to the cap instead.
+ */
 function mapFiltersForLever(filters) {
   const actorInput = {
     mode: 'all',
@@ -385,6 +450,9 @@ function mapFiltersForLever(filters) {
 }
 
 module.exports = {
+  INDEED_MAX_ITEMS_PER_SEARCH,
+  JOB_BOARD_MAX_RESULTS,
+  MEMO23_MAX_ITEMS,
   buildIndeedSearchUrl,
   isBroadSoftwareRoleSearch,
   mapFiltersForIndeed,

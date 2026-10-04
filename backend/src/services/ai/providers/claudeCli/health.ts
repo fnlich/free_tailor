@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { aiCliHealthTimeoutMs } from '../../../../config/operational';
 import { resolveCliExecPlan } from '../cli/resolveBinary';
 import { CLAUDE_CLI_BINARY_HINTS } from './hints';
 import type { ProviderHealth } from '../../types';
@@ -57,11 +58,18 @@ function run(
 
 export async function checkClaudeCliHealth(options: {
   binary: string;
+  /** The CHILD's environment, which is what the binary runs with. */
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
 }): Promise<ClaudeCliHealth> {
   const checkedAt = new Date().toISOString();
-  const timeoutMs = options.timeoutMs ?? 20_000;
+  // AI_CLI_HEALTH_TIMEOUT_MS, applied to each of the two commands, so the
+  // whole check can take up to twice it. Configurable because spawn time is
+  // the machine's, not the code's: a Windows `.cmd` shim, an antivirus scan of
+  // a fresh binary or a cold global install can outlast 20s, and a probe that
+  // times out reports a working seat as broken. Read from the SERVER's
+  // environment, not `options.env`, which is the child's.
+  const timeoutMs = options.timeoutMs ?? aiCliHealthTimeoutMs();
 
   const version = await run(options.binary, ['--version'], options.env, timeoutMs);
   if (!version.ok) {

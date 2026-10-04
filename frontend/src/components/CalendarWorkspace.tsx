@@ -5,20 +5,16 @@ import { useEffect, useMemo, useState } from 'react';
 import styles from '@/components/CalendarWorkspace.module.css';
 import { Spinner } from '@/components/ui/kit';
 import type { CalendarExtractedLink } from '@/lib/calendar/linkExtractor';
+import {
+  CALENDAR_DEFAULT_TIME_ZONE,
+  CALENDAR_TIME_ZONE_OPTIONS,
+  calendarTimeZoneLabel,
+} from '@/lib/calendar/timeZone';
 import type { CalendarApiResponse, CalendarEvent, CalendarMetadata } from '@/lib/calendar/types';
 
 // Optional default share link, configured per environment. Empty means the user pastes one.
 const DEFAULT_SHARE_URL = process.env.NEXT_PUBLIC_CALENDAR_SHARE_URL ?? '';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const TIME_ZONE_OPTIONS = [
-  { label: 'PT', value: 'America/Los_Angeles' },
-  { label: 'MT', value: 'America/Denver' },
-  { label: 'CT', value: 'America/Chicago' },
-  { label: 'ET', value: 'America/New_York' },
-  { label: 'Vladivostok', value: 'Asia/Vladivostok' },
-] as const;
-
-type SupportedTimeZone = (typeof TIME_ZONE_OPTIONS)[number]['value'];
 type RgbColor = { r: number; g: number; b: number };
 type EventSlotColor = { color: string; name: string };
 type AvailabilityWindow = { startMinutes: number; endMinutes: number };
@@ -340,10 +336,6 @@ function reorderWeekdayLabels(firstWeekday: number): string[] {
   return WEEKDAY_LABELS.slice(firstWeekday).concat(WEEKDAY_LABELS.slice(0, firstWeekday));
 }
 
-function getTimeZoneLabel(timeZone: SupportedTimeZone): string {
-  return TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label ?? 'PT';
-}
-
 /**
  * Reads a calendar API response without assuming it is JSON.
  *
@@ -390,12 +382,14 @@ export default function CalendarWorkspace() {
   const [currentView, setCurrentView] = useState<'month' | 'agenda'>('month');
   const [currentMonth, setCurrentMonth] = useState(() => currentMonthStart());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
-  const [selectedTimeZone, setSelectedTimeZone] = useState<SupportedTimeZone>('America/Los_Angeles');
+  // NEXT_PUBLIC_CALENDAR_DEFAULT_TIMEZONE picks the zone both selectors start
+  // on; lib/calendar/timeZone.ts validates it and adds it to the list.
+  const [selectedTimeZone, setSelectedTimeZone] = useState(CALENDAR_DEFAULT_TIME_ZONE);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeSubCalendars, setActiveSubCalendars] = useState<Set<number>>(new Set());
   const [isAvailabilityOpen, setIsAvailabilityOpen] = useState(false);
   const [isJobLinksOpen, setIsJobLinksOpen] = useState(false);
-  const [availabilityTimeZone, setAvailabilityTimeZone] = useState<SupportedTimeZone>('America/Los_Angeles');
+  const [availabilityTimeZone, setAvailabilityTimeZone] = useState(CALENDAR_DEFAULT_TIME_ZONE);
   const [availabilityFromDate, setAvailabilityFromDate] = useState(defaultAvailabilityStart);
   const [availabilityToDate, setAvailabilityToDate] = useState(defaultAvailabilityEnd);
   const [availabilityFromTime, setAvailabilityFromTime] = useState('09:00');
@@ -586,7 +580,7 @@ export default function CalendarWorkspace() {
     if (availabilityResults.length === 0) return '';
 
     return [
-      `All times in ${getTimeZoneLabel(availabilityTimeZone)}`,
+      `All times in ${calendarTimeZoneLabel(availabilityTimeZone)}`,
       ...availabilityResults.map((day) =>
         `${formatAvailabilityDayText(day.date)}: ${day.windows
           .map((window) => `${formatCompactMinutes(window.startMinutes)} - ${formatCompactMinutes(window.endMinutes)}`)
@@ -910,7 +904,7 @@ export default function CalendarWorkspace() {
           <section className={styles.panel}>
             <div className={styles.panelTitleRow}>
               <h2 className={styles.panelTitle}>Calendar</h2>
-              <span className="tl-pill" data-tone="sky">{getTimeZoneLabel(selectedTimeZone)}</span>
+              <span className="tl-pill" data-tone="sky">{calendarTimeZoneLabel(selectedTimeZone)}</span>
             </div>
             <div className={styles.metaGrid}>
               <div>
@@ -919,9 +913,9 @@ export default function CalendarWorkspace() {
                   <select
                     className="tl-input"
                     value={selectedTimeZone}
-                    onChange={(event) => setSelectedTimeZone(event.target.value as SupportedTimeZone)}
+                    onChange={(event) => setSelectedTimeZone(event.target.value)}
                   >
-                    {TIME_ZONE_OPTIONS.map((option) => (
+                    {CALENDAR_TIME_ZONE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
@@ -1159,7 +1153,7 @@ export default function CalendarWorkspace() {
               {formatEventTime(selectedEvent.start_date)} -{' '}
               {formatEventTime(selectedEvent.end_date)}
             </p>
-            <p className={styles.detailsMeta}><strong>Time Zone:</strong> {getTimeZoneLabel(selectedTimeZone)}</p>
+            <p className={styles.detailsMeta}><strong>Time Zone:</strong> {calendarTimeZoneLabel(selectedTimeZone)}</p>
             {selectedEvent.who ? <p className={styles.detailsMeta}><strong>Who:</strong> {selectedEvent.who}</p> : null}
             {selectedEvent.where ? <p className={styles.detailsMeta}><strong>Where:</strong> {selectedEvent.where}</p> : null}
             {selectedEvent.text ? <p className={styles.detailsCopy}>{selectedEvent.text}</p> : null}
@@ -1292,11 +1286,11 @@ export default function CalendarWorkspace() {
                     className="tl-input"
                     value={availabilityTimeZone}
                     onChange={(event) => {
-                      setAvailabilityTimeZone(event.target.value as SupportedTimeZone);
+                      setAvailabilityTimeZone(event.target.value);
                       setAvailabilityCopyState('idle');
                     }}
                   >
-                    {TIME_ZONE_OPTIONS.map((option) => (
+                    {CALENDAR_TIME_ZONE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
@@ -1361,7 +1355,7 @@ export default function CalendarWorkspace() {
                 {isLoadingAvailability ? 'Checking...' : 'Find Availability'}
               </button>
               <span className={styles.availabilitySummary}>
-                {availabilityFromDate} - {availabilityToDate} · {getTimeZoneLabel(availabilityTimeZone)} · {formatMinutes(parseTimeInput(availabilityFromTime))} - {formatMinutes(parseTimeInput(availabilityToTime))} · Prep {availabilityPrepareMinutes} min · Min {availabilityMinimumMinutes} min
+                {availabilityFromDate} - {availabilityToDate} · {calendarTimeZoneLabel(availabilityTimeZone)} · {formatMinutes(parseTimeInput(availabilityFromTime))} - {formatMinutes(parseTimeInput(availabilityToTime))} · Prep {availabilityPrepareMinutes} min · Min {availabilityMinimumMinutes} min
               </span>
             </div>
 
@@ -1390,7 +1384,7 @@ export default function CalendarWorkspace() {
                 : null}
               {availabilityViewMode === 'text' && availabilityResults.length > 0 ? (
                 <div className={styles.availabilityTextBlock}>
-                  <p className={styles.availabilityTextHeader}>All times in {getTimeZoneLabel(availabilityTimeZone)}</p>
+                  <p className={styles.availabilityTextHeader}>All times in {calendarTimeZoneLabel(availabilityTimeZone)}</p>
                   {availabilityResults.map((day) => (
                     <p key={day.dayKey} className={styles.availabilityTextLine}>
                       {formatAvailabilityDayText(day.date)}: {day.windows.map((window) => `${formatCompactMinutes(window.startMinutes)} - ${formatCompactMinutes(window.endMinutes)}`).join(', ')}
@@ -1469,7 +1463,7 @@ export default function CalendarWorkspace() {
                 {isLoadingJobLinks ? 'Scraping...' : 'Deep Scrape Links'}
               </button>
               <span className={styles.jobLinksSummary}>
-                {jobLinksFromDate} - {jobLinksToDate} · {getTimeZoneLabel(selectedTimeZone)} · All slots
+                {jobLinksFromDate} - {jobLinksToDate} · {calendarTimeZoneLabel(selectedTimeZone)} · All slots
               </span>
             </div>
 

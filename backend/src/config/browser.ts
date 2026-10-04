@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import puppeteer from 'puppeteer';
 import type { Browser, LaunchOptions } from 'puppeteer';
+import { pdfRenderTimeoutMs } from './operational';
 
 /**
  * Finding a Chrome to render with.
@@ -390,6 +391,12 @@ const SHARED_LAUNCH_ARGS = [
  *
  * Every caller goes through here so that the executable is found the same way
  * and a missing browser reports the same, actionable thing wherever it is hit.
+ *
+ * How long Chrome may take to start is PDF_RENDER_TIMEOUT_MS unless the caller
+ * says otherwise. It was puppeteer's own unwritten 30 seconds, and a cold Chrome
+ * on a slow or shared box failing to start is the same failure, for the same
+ * reason, as a render on that box running out of time - so the one setting
+ * covers both, and its default is that same 30 seconds.
  */
 export async function launchBrowser(options: LaunchOptions = {}): Promise<Browser> {
   const resolved = getResolvedBrowser();
@@ -402,6 +409,7 @@ export async function launchBrowser(options: LaunchOptions = {}): Promise<Browse
     return await puppeteer.launch({
       headless: true,
       executablePath: resolved.executablePath,
+      timeout: pdfRenderTimeoutMs(),
       ...rest,
       args: [...SHARED_LAUNCH_ARGS, ...args],
     });

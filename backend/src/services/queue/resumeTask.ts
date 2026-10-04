@@ -1,5 +1,6 @@
 import { resolveAiChoice, type AiChoice } from '../../config/aiPreferences';
 import { isRetiredProviderId } from '../../config/providerCatalog';
+import { generationRenderConcurrency } from '../../config/operational';
 import { getTemplateById } from '../../extractors/templateExtractor';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../../generators/coverLetterGenerator';
@@ -105,8 +106,19 @@ export type ResumeTaskResult = {
  * two seats sized at eight apiece could put sixteen simultaneous renders
  * through one Chrome. Rendering is seconds where a model call is minutes, so a
  * modest cap here costs nothing and bounds the memory.
+ *
+ * GENERATION_RENDER_CONCURRENCY, four by default: what a machine can hold is a
+ * matter of its RAM and CPU, one Chrome tab per render. Read ONCE, when this
+ * module loads, and never again - `getProviderSemaphore` replaces a lane's
+ * semaphore whenever it is asked for a different limit, so a value that changed
+ * between two calls would forget the renders already in flight.
  */
-const RENDER_CONCURRENCY = 4;
+const RENDER_CONCURRENCY = generationRenderConcurrency();
+
+/** The render cap this process is using. For the tests; it never changes after load. */
+export function resumeRenderConcurrency(): number {
+  return RENDER_CONCURRENCY;
+}
 
 /**
  * Analyses currently in flight, keyed exactly as the analysis cache keys them.

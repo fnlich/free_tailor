@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getProviderApiKey } from '../../../config/aiModelConfig';
+import { deepseekBaseUrl, openaiBaseUrl } from '../../../config/operational';
 import {
   getProviderDescriptor,
 } from '../../../config/providerCatalog';
@@ -20,12 +21,46 @@ import type {
  * `max_tokens`.
  */
 
+type OpenAICompatibleId = Extract<AIProvider, 'openai' | 'deepseek'>;
+
 type OpenAICompatibleOptions = {
-  id: Extract<AIProvider, 'openai' | 'deepseek'>;
-  baseURL?: string;
+  id: OpenAICompatibleId;
   defaultModel: string;
   /** OpenAI renamed this field; DeepSeek did not. */
   tokenLimitField: 'max_completion_tokens' | 'max_tokens';
+};
+
+/**
+ * Where each provider's API lives: OPENAI_BASE_URL and DEEPSEEK_BASE_URL, each
+ * defaulting to the vendor endpoint and validated by envUrl (https unless the
+ * host is loopback), since the API key is sent to whatever they name.
+ *
+ * Keyed on the id, so a third OpenAI-compatible provider cannot be added
+ * without deciding its endpoint. OPENAI_BASE_URL is passed EXPLICITLY even
+ * though the SDK would read it by itself: that way it is validated, shown on
+ * the startup line beside the other two, and - the point for DeepSeek - an
+ * explicit `baseURL` is what keeps the SDK's own read of that variable from
+ * ever applying to the wrong vendor.
+ */
+const BASE_URL: Record<OpenAICompatibleId, () => string> = {
+  openai: openaiBaseUrl,
+  deepseek: deepseekBaseUrl,
+};
+
+/**
+ * What the SDK would otherwise read from OPENAI_* for a client that is not
+ * talking to OpenAI.
+ *
+ * `new OpenAI()` fills `organization` and `project` from OPENAI_ORG_ID and
+ * OPENAI_PROJECT_ID when they are left undefined, and sends them as the
+ * OpenAI-Organization and OpenAI-Project headers on every request. That is
+ * right for OpenAI and a leak for DeepSeek, which would receive the operator's
+ * OpenAI org and project ids on every call. `null` (not undefined) is what the
+ * SDK takes as "none" - its defaults are destructuring defaults.
+ */
+const VENDOR_SCOPE: Record<OpenAICompatibleId, { organization?: null; project?: null }> = {
+  openai: {},
+  deepseek: { organization: null, project: null },
 };
 
 function classifyHttpStatus(status: number | undefined): AIErrorKind {
@@ -65,9 +100,17 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
           'environment only.',
       });
     }
-    if (!client || clientKey !== apiKey) {
-      client = new OpenAI({ apiKey, ...(options.baseURL ? { baseURL: options.baseURL } : {}) });
-      clientKey = apiKey;
+    // Read per call so a test can change it; the client is rebuilt only when
+    // the key or the endpoint actually changed, which in a running server is
+    // never - `.env` is loaded once at boot.
+    const baseURL = BASE_URL[options.id]();
+    const key = `${baseURL}\n${apiKey}`;
+    if (!client || clientKey !== key) {
+      // No per-request `timeout`, so the SDK's own (10 minutes per attempt,
+      // two retries) applies and AI_REQUEST_TIMEOUT_MS does not cut an
+      // in-flight request short. Only the caller's cancel signal does.
+      client = new OpenAI({ apiKey, baseURL, ...VENDOR_SCOPE[options.id] });
+      clientKey = key;
     }
     return client;
   }

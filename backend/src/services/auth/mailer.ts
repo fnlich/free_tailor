@@ -1,4 +1,5 @@
 import nodemailer, { type Transporter } from 'nodemailer';
+import { smtpConnectionTimeoutMs, smtpMaxConnections, smtpSocketTimeoutMs } from '../../config/operational';
 
 /**
  * Sending the sign-in code.
@@ -18,6 +19,12 @@ export type MailConfig = {
   user: string;
   pass: string;
   from: string;
+  /** SMTP_CONNECTION_TIMEOUT_MS: connect and greeting. */
+  connectionTimeoutMs: number;
+  /** SMTP_SOCKET_TIMEOUT_MS: idle socket. */
+  socketTimeoutMs: number;
+  /** SMTP_MAX_CONNECTIONS: width of the pool. */
+  maxConnections: number;
 };
 
 export class MailNotConfiguredError extends Error {
@@ -76,6 +83,9 @@ function readConfig(env: NodeJS.ProcessEnv = process.env): { config: MailConfig 
       // Falls back to the authenticating user, which is what most providers
       // require the From to be anyway.
       from: env.SMTP_FROM?.trim() || user,
+      connectionTimeoutMs: smtpConnectionTimeoutMs(env),
+      socketTimeoutMs: smtpSocketTimeoutMs(env),
+      maxConnections: smtpMaxConnections(env),
     },
     missing: [],
   };
@@ -96,12 +106,22 @@ export function describeMailConfig(env: NodeJS.ProcessEnv = process.env): MailSt
  * Held across sends so the connection pool is reused.
  *
  * Keyed on the config, so changing SMTP_HOST in a dev restart-in-place does not
- * keep talking to the old one.
+ * keep talking to the old one. The pool's width and timeouts are in the key
+ * too: they are fixed when the transport is built, so a transport is only
+ * reused while they are what it was built with.
  */
 let cached: { key: string; transport: Transporter } | null = null;
 
 function getTransport(config: MailConfig): Transporter {
-  const key = `${config.host}:${config.port}:${config.secure}:${config.user}`;
+  const key = [
+    config.host,
+    config.port,
+    config.secure,
+    config.user,
+    config.connectionTimeoutMs,
+    config.socketTimeoutMs,
+    config.maxConnections,
+  ].join(':');
   if (cached?.key === key) return cached.transport;
 
   const transport = nodemailer.createTransport({
@@ -110,7 +130,9 @@ function getTransport(config: MailConfig): Transporter {
     secure: config.secure,
     auth: { user: config.user, pass: config.pass },
     pool: true,
-    maxConnections: 2,
+    // SMTP_MAX_CONNECTIONS, two by default. Some relays and plans cap
+    // concurrent connections, and sign-in codes are not bulk mail.
+    maxConnections: config.maxConnections,
     /*
      * Bounded, because the interesting failure is silence.
      *
@@ -120,10 +142,15 @@ function getTransport(config: MailConfig): Transporter {
      * request hangs rather than returning an error, and `mail:doctor` sits there
      * instead of reporting the one thing it exists to report. Ten seconds is far
      * longer than any reachable relay needs to answer.
+     *
+     * SMTP_CONNECTION_TIMEOUT_MS (10s) and SMTP_SOCKET_TIMEOUT_MS (20s) tune them
+     * for a slow relay or network. Neither can be 0 or empty-means-infinite:
+     * empty is the default and the floor is one second, because an unbounded
+     * wait is precisely the hang described above.
      */
-    connectionTimeout: 10_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 20_000,
+    connectionTimeout: config.connectionTimeoutMs,
+    greetingTimeout: config.connectionTimeoutMs,
+    socketTimeout: config.socketTimeoutMs,
   });
   cached = { key, transport };
   return transport;
@@ -134,7 +161,8 @@ function getTransport(config: MailConfig): Transporter {
  *
  * The pool is right for the server, where the next sign-in re-uses it. A script
  * that has sent its one message would otherwise sit there, finished, until the
- * idle connection's twenty-second socket timeout let the process end.
+ * idle connection's socket timeout (SMTP_SOCKET_TIMEOUT_MS, twenty seconds by
+ * default) let the process end.
  */
 export function closeMailTransport(): void {
   cached?.transport.close();

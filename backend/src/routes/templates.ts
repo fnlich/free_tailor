@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { pdfUpload } from '../middleware/pdfUpload';
 import {
   extractAndSaveTemplate,
   getAllTemplates,
@@ -39,16 +40,6 @@ router.use(requireUser);
  * template, and a user who cannot list them cannot build anything.
  */
 
-
-// Configure multer for PDF uploads
-const uploadPdf = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') cb(null, true);
-    else cb(new Error('Only PDF files are allowed'));
-  },
-});
 
 // Configure multer for JSON template uploads
 const uploadJson = multer({
@@ -191,8 +182,9 @@ router.post('/upload-json', requireAdmin, uploadJson.single('template'), async (
   }
 });
 
-// Upload PDF and extract template (protected)
-router.post('/upload', requireAdmin, uploadPdf.single('pdf'), async (req: Request, res: Response) => {
+// Upload PDF and extract template (protected). The size cap is UPLOAD_MAX_MB,
+// shared with the resume upload through `pdfUpload`, which answers 413 above it.
+router.post('/upload', requireAdmin, pdfUpload('pdf'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No PDF file uploaded' });

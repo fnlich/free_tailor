@@ -4,6 +4,7 @@ import {
   isProviderEnabled,
   resolveRequestedAIModel,
 } from '../../config/aiModelConfig';
+import { aiRequestTimeoutMs } from '../../config/operational';
 import {
   AI_PROVIDER_IDS,
   coerceProviderId,
@@ -36,9 +37,6 @@ import {
  * with nothing in the UI to say so.
  */
 export const DEFAULT_PROVIDER: AIProvider = 'claude-cli';
-
-/** Fallback wall-clock budget when a caller names none. */
-const DEFAULT_TIMEOUT_MS = 300_000;
 
 export type PromptExecutionConfig = {
   provider: AIProvider;
@@ -269,7 +267,18 @@ async function runAssembled(
       maxOutputTokens: input.maxTokens,
       temperature: input.temperature,
     },
-    deadline: createDeadline(input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    // AI_REQUEST_TIMEOUT_MS, read per call. No caller passes `timeoutMs`
+    // today, so in practice this IS the deadline of every AI call - which is
+    // why it is a setting: a slow seat, a long tailoring prompt or a gateway
+    // in front of a metered API all need more than five minutes on some
+    // installs and nothing in the code could say which. It bounds the wait
+    // for a CLI slot and the CLI child (the smaller of this and the call
+    // site's AI_CLI_TIMEOUT_MS* / AI_CODEX_TIMEOUT_MS* wins, and startup warns
+    // when one of those is set above this), and the `claude` HTTP adapter
+    // checks it before each attempt. It does NOT abort a metered HTTP request
+    // already in flight: see the notes in anthropicHttp.ts and
+    // openaiCompatible.ts.
+    deadline: createDeadline(input.timeoutMs ?? aiRequestTimeoutMs()),
     signal: input.signal,
     callSite: input.callSite,
   };

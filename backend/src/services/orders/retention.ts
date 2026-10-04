@@ -8,6 +8,7 @@ import {
   type OrderFile,
 } from '../../database/orderRepository';
 import { getOutputStorageSettings } from '../../config/aiModelConfig';
+import { orderRetentionSweepMs } from '../../config/operational';
 import { getGeneratedFilePath } from '../../utils/generatedPath';
 
 /**
@@ -150,7 +151,7 @@ export async function purgeExpiredOrders(nowIso: string = new Date().toISOString
 
   /*
    * Worked in pages until there is nothing left, rather than taking one page
-   * and waiting six hours for the next sweep.
+   * and waiting for the next sweep (six hours later, by default).
    *
    * An install that was switched off for a fortnight comes back with every
    * order of those two weeks expired at once; clearing two hundred at a time
@@ -177,9 +178,6 @@ export async function purgeExpiredOrders(nowIso: string = new Date().toISOString
   return report;
 }
 
-/** Six hours. Files live for days, so checking four times a day is plenty. */
-const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
 let sweepTimer: NodeJS.Timeout | null = null;
 
 /**
@@ -190,8 +188,13 @@ let sweepTimer: NodeJS.Timeout | null = null;
  * in this suite loads the modules it is testing, and a timer started on import
  * would delete files under a temp directory while an unrelated test was using
  * them. `unref` so the interval never holds the process open.
+ *
+ * The interval is ORDER_RETENTION_SWEEP_MS - six hours by default, since files
+ * live for days and four checks a day is plenty - read once, here, when the
+ * timer is created. A short one is how ORDER_RETENTION_DAYS=0 ("delete on the
+ * next sweep") can be watched working.
  */
-export function startOrderRetention(intervalMs: number = SWEEP_INTERVAL_MS): () => void {
+export function startOrderRetention(intervalMs: number = orderRetentionSweepMs()): () => void {
   stopOrderRetention();
 
   const sweep = () => {

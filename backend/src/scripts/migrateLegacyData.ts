@@ -12,6 +12,11 @@
  *
  * Records that already exist in the database are left untouched.
  */
+// First, as in every other script here: DB_DIR and TAILOR_STATIC_DIR are
+// usually set only in the repository .env, and without this the import went
+// into the platform's default database directory (/data/db on Linux) instead of
+// the one the server uses.
+import '../config/env';
 import fs from 'fs';
 import path from 'path';
 import { getDatabasePath, getDb } from '../database/sqlite';
@@ -22,6 +27,7 @@ import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompt
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
 import { migrate001 } from '../database/migrations/001_openrouter_to_claude_cli';
 import { APP_SETTINGS_KEY } from '../config/aiModelConfig';
+import { getStaticPromptsDir, getStaticTemplatesDir } from '../config/staticPaths';
 import { addSkill, isHardSkillCategory } from '../database/skillsDatabase';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
 import { Profile } from '../types/profile';
@@ -230,12 +236,13 @@ function main(): void {
   // Ensure bid-assistant tables exist before copying legacy rows into them.
   require('../bidAssistant/database');
 
-  const staticDir = path.join(__dirname, '..', '..', 'static');
+  // Through the staticPaths getters, so TAILOR_STATIC_DIR is honoured here as it
+  // is everywhere else; this used to rebuild <backend>/static by hand.
   console.log(`Importing legacy data from ${legacyDir} into ${getDatabasePath()}`);
   console.log('profiles:', importProfiles([path.join(legacyDir, 'profiles'), path.join(legacyDir, 'bid-assistant', 'profiles')]));
   console.log('groups:', importGroups(path.join(legacyDir, 'groups')));
-  console.log('templates:', importTemplates(path.join(legacyDir, 'templates'), path.join(staticDir, 'templates')));
-  console.log('prompts:', importPrompts(path.join(legacyDir, 'prompts'), path.join(staticDir, 'prompts')));
+  console.log('templates:', importTemplates(path.join(legacyDir, 'templates'), getStaticTemplatesDir()));
+  console.log('prompts:', importPrompts(path.join(legacyDir, 'prompts'), getStaticPromptsDir()));
   console.log('active prompts:', importPromptLibrary(path.join(legacyDir, 'config')) ? 'imported' : 'skipped');
   console.log('app settings:', importAppSettings(path.join(legacyDir, 'config')) ? 'imported' : 'skipped');
   console.log('skills:', importSkills(path.join(legacyDir, 'skills', 'skills.json')));

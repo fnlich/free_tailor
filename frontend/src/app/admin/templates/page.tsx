@@ -7,6 +7,7 @@ import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
 import { EmptyState, Field, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
+import { pdfTooLargeMessage } from '@/lib/upload';
 
 /**
  * The preview document's own size, in CSS pixels: A4 at 96 DPI, the page
@@ -184,7 +185,8 @@ function ButtonSpinner() {
 }
 
 function TemplatesPageBody() {
-  const { isAdmin } = useAuth();
+  // uploadMaxMb is the server's UPLOAD_MAX_MB, served on /auth/me - see lib/upload.ts.
+  const { isAdmin, uploadMaxMb } = useAuth();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
@@ -232,6 +234,11 @@ function TemplatesPageBody() {
     if (file) {
       if (file.type !== 'application/pdf') {
         setUploadError('Please select a PDF file');
+        return;
+      }
+      const tooLarge = pdfTooLargeMessage(file, uploadMaxMb);
+      if (tooLarge) {
+        setUploadError(tooLarge);
         return;
       }
       setSelectedFile(file);
@@ -626,7 +633,7 @@ function TemplatesPageBody() {
                       </>
                     )}
                   </p>
-                  <p className="mt-1 text-xs text-subtle">PDF only, max 10MB</p>
+                  <p className="mt-1 text-xs text-subtle">PDF only, max {uploadMaxMb}MB</p>
                 </label>
               </Field>
 

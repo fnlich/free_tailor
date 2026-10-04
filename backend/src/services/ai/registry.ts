@@ -62,10 +62,11 @@ function registerDefaults(): void {
       tokenLimitField: 'max_completion_tokens',
     })
   );
+  // Neither OpenAI-compatible entry names an endpoint: the adapter reads
+  // OPENAI_BASE_URL / DEEPSEEK_BASE_URL by id, on each call.
   registerDefault('deepseek', () =>
     createOpenAICompatibleAdapter({
       id: 'deepseek',
-      baseURL: 'https://api.deepseek.com',
       defaultModel: DEFAULT_DEEPSEEK_MODEL,
       tokenLimitField: 'max_tokens',
     })

@@ -15,9 +15,11 @@ import { IconClose } from '@/components/icons';
 import { EmptyState, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
+import { pdfTooLargeMessage } from '@/lib/upload';
 
 export default function ProfilesPage() {
-  const { account, loading: authLoading, refresh } = useAuth();
+  // uploadMaxMb is the server's UPLOAD_MAX_MB, served on /auth/me - see lib/upload.ts.
+  const { account, loading: authLoading, refresh, uploadMaxMb } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -114,6 +116,12 @@ export default function ProfilesPage() {
 
     if (file.type !== 'application/pdf') {
       setError('Please upload a PDF file');
+      return;
+    }
+    const tooLarge = pdfTooLargeMessage(file, uploadMaxMb);
+    if (tooLarge) {
+      setError(tooLarge);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
 
@@ -261,7 +269,7 @@ export default function ProfilesPage() {
             <button
               onClick={triggerFileUpload}
               disabled={isUploading || addBlocked}
-              title={addBlocked ? blockedReason : undefined}
+              title={addBlocked ? blockedReason : `Build a profile from a resume PDF, max ${uploadMaxMb}MB`}
               className="tl-button-quiet"
             >
               {isUploading ? (

@@ -668,7 +668,7 @@ somebody coming back the next morning - so counts, items and file paths all come
 from the order's own tables and keep reading correctly long afterwards.
 
 **Files are deleted automatically after five days** (`ORDER_RETENTION_DAYS`).
-The sweep runs at startup and every six hours; it removes the files, prunes the
+The sweep runs at startup and every six hours (`ORDER_RETENTION_SWEEP_MS`); it removes the files, prunes the
 folders it emptied, and **keeps the order**, marked *Files deleted*, so the list
 still says what was built rather than going quietly blank. The expiry is stamped
 on each order when it is placed, so shortening the window never reaches back and
@@ -699,7 +699,7 @@ manual build and is unaffected.
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
 | Built-in resume templates | `backend/static/templates/*.json` |
 
-Nothing under `backend/static` is written to at runtime. Edits made in the admin panel always go to the database.
+Nothing under `backend/static` is written to at runtime (`TAILOR_STATIC_DIR` reads the seeds from somewhere else instead). Edits made in the admin panel always go to the database.
 
 ---
 
@@ -947,7 +947,7 @@ the CORS rule and the payment webhooks all line up without special cases.
                          ┌────┴────┐
                          │  Caddy  │  :443, certificate renewed for you
                          └────┬────┘
-                  /api/*  ────┤────  everything else
+                  /api/*  ────┤────  everything else, and /api/calendars/*
                               │
               ┌───────────────┴───────────────┐
         Express :3001                   Next.js :3000
@@ -978,7 +978,8 @@ analysis, then the tailoring, then the PDF and DOCX rendering, against budgets o
 `AI_CLI_TIMEOUT_MS=180000` and `AI_CLI_TIMEOUT_MS_TAILOR=300000` — three to five
 minutes per call, deliberately, because a subscription seat is not fast. Each of
 those requests is a guaranteed **error 524** behind the proxy, on a server that is
-working perfectly.
+working perfectly. A Job Search run is the same: the request waits for the Apify
+run, for up to `APIFY_RUN_TIMEOUT_S` (300 seconds by default).
 
 So set the `A` records to **DNS only** (grey cloud). Two consequences: the origin
 IP is public, so the firewall above is doing real work; and Cloudflare's
@@ -1037,6 +1038,13 @@ Caddy passes `Host` through. Set it only if your proxy rewrites `Host`.
 ```
 yourdomain.com {
 	encode zstd gzip
+
+	# The calendar page's API routes are Next.js route handlers, not Express,
+	# so they go to the frontend despite the /api prefix. Without this the
+	# calendar page answers 404 on a domain.
+	handle /api/calendars/* {
+		reverse_proxy 127.0.0.1:3000
+	}
 
 	handle /api/* {
 		reverse_proxy 127.0.0.1:3001
@@ -1201,7 +1209,7 @@ Two more worth doing once, because each fails quietly rather than loudly:
 free_tailor/
 ├── backend/                 # Express API
 │   ├── src/
-│   │   ├── config/         # App settings + static asset paths
+│   │   ├── config/         # .env loading, operational settings table, static asset paths
 │   │   ├── database/       # SQLite connection, schema, repositories
 │   │   ├── database/
 │   │   │   └── migrations/ # One-time data migrations, run on first DB use
@@ -1294,47 +1302,124 @@ unique across the install, which settles all of it in one segment.
 
 ## 🔧 Configuration
 
+Everything is set in the one `.env` at the repository root; `.env.example` is
+the annotated list, grouped by feature. The rules are the same for every
+setting in it:
+
+- **Empty means the default.** A bare `NAME=` is unset, and so is a commented
+  `#NAME=value` line, which shows the default the server already uses. Every
+  value written in `.env.example` is that default, so an unedited copy runs like
+  an installation that sets nothing.
+- **The unit is in the name**: `_MS` milliseconds, `_S` seconds, `_DAYS`,
+  `_MB` megabytes, `_BYTES`. Plain digits only - `30s` is unreadable, not thirty
+  seconds.
+- **A bad value is never fatal.** Out of range is clamped to the nearest end of
+  the range, anything unreadable is replaced by the default, and the backend
+  says which, once, on an `[env]` line. (The older `AI_CLI_*` / `AI_CODEX_*`
+  numbers, `AI_BATCH_CONCURRENCY`, `GENERATION_MAX_ATTEMPTS` and
+  `CREDIT_SIGNUP_GRANT` read numbers more loosely and clamp without a word.)
+- **Each process reads `.env` once, at startup**, so a change needs a restart.
+  *Startup* below marks a value that sizes something built once at boot;
+  *rebuild* marks a `NEXT_PUBLIC_` value, which `next build` compiles into the
+  bundle, so a restart alone keeps serving the old one.
+
+At startup the backend prints one line naming every operational setting that is
+not at its default, with the value actually in use after clamping - the answer
+to "what is this install really running with":
+
+```
+[env] Non-default settings: SESSION_TTL_DAYS=7, UPLOAD_MAX_MB=25
+```
+
+Those settings - the timeouts, size caps, pool widths, endpoints and actor ids
+that used to be literals in the code - are defined in one table,
+`backend/src/config/operational.ts`, with their defaults and ranges.
+`backend/test/envExample.test.js` fails if `.env.example` or this table stops
+matching it.
+
 | Variable | Description |
 |----------|-------------|
-| `HOST` / `PORT` | Backend bind address and port (default `0.0.0.0:3001`) |
+| `HOST` / `PORT` | Backend bind address and port (default `0.0.0.0:3001`). A `PORT` that is not a whole number from 1 to 65535 is reported and `3001` is used |
 | `DB_DIR` | SQLite database directory. Default `/data/db` on Linux and macOS, `%LOCALAPPDATA%\free_tailor\db` on Windows |
+| `SESSION_TTL_DAYS` | How long a sign-in lasts (default `30`, range 1-365). One setting for both the session's expiry and the cookie's lifetime. Stamped at sign-in and never extended, so a change affects new sign-ins only |
+| `JSON_BODY_MAX_MB` | Largest JSON body any `/api` route accepts (default `10`, range 1-100). No route has a smaller one of its own; only the payment webhooks keep a fixed 1 MB. *Startup* |
+| `UPLOAD_MAX_MB` | Largest resume or template PDF upload (default `10`, range 1-100). Held in memory, never written to disk. The upload pages are told the number by `GET /api/auth/me`, so no frontend rebuild; a larger file gets a 413 naming it. *Startup* |
+| `HTTP_REQUEST_TIMEOUT_MS` | How long Node allows for *receiving* one request (default `900000`, fifteen minutes; range 60000-3600000, never 0). Raise it with the two caps above for big uploads on slow links. A reverse proxy's own body and timeout limits must allow as much. *Startup* |
 | `FRONTEND_URL` | Extra allowed CORS origins, comma separated (same-host origins are always allowed) |
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Frontend bind address and port (default `0.0.0.0:3000`) |
-| `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime. Leave unset to derive it from `PORT` - set it only to reach a different machine |
-| `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra origins allowed by the Next.js dev server |
+| `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime. Leave unset to derive it from `PORT` - set it only to reach a different machine. *Rebuild* |
+| `NEXT_PUBLIC_FALLBACK_API_URL` | One more API base the browser tries last, only when none of the others could be connected to at all. Unset, there is none. *Rebuild* |
+| `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` | Extra **hostnames** - not origins - allowed to open the Next.js dev server, comma separated: `192.168.1.20`, `*.home.arpa`. Next compares the hostname alone, so `http://192.168.1.20:3000` matches nothing. `localhost` is always allowed. Read only by the dev server, when it starts |
 | | *(the frontend is launched through `frontend/scripts/next.mjs`, which loads this root `.env` and passes the host and port to Next - Next itself only reads `.env` files inside its own directory. A `frontend/.env*` file still wins for any key it sets, and an exported shell variable wins over both.)* |
-| `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link |
+| `NEXT_PUBLIC_CALENDAR_SHARE_URL` | Optional default calendar share link. *Rebuild* |
+| `NEXT_PUBLIC_CALENDAR_DEFAULT_TIMEZONE` | The calendar page's starting time zone, an IANA name (default `America/Los_Angeles`). A zone outside the five the page lists is added to its menu under its city's name; an unknown one falls back with a console warning. *Rebuild* |
+| `CALENDAR_API_TIMEOUT_MS` / `CALENDAR_DETAIL_CONCURRENCY` | The calendar's own API routes, which run in the Next.js server: the timeout of each calendar.online request (default `12000`, range 1000-120000) and how many event-detail requests the link scan runs at once (default `12`, range 1-32). Server-only, not `NEXT_PUBLIC_`: restart the frontend, no rebuild |
 | `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave it empty and the `SMTP_USER` address is used instead; with neither set the install has **no administrator at all** and says so at startup. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
 | `CREDIT_SIGNUP_GRANT` | Credits a brand-new account starts with. `0` by default |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
+| `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_MAX_CONNECTIONS` | The pooled SMTP connection: connect and greeting timeout (default `10000`), idle socket timeout (default `20000`) - both range 1000-300000, never 0, because an unbounded wait is a sign-in that never returns - and the pool's width (default `2`, range 1-20). *Startup* |
+| `AI_REQUEST_TIMEOUT_MS` | The wall-clock deadline of one AI call (default `300000`, range 5000-3600000). The outer bound for both subscription seats - slot wait and CLI process included - so a CLI budget set above it never takes effect, and startup warns when one is. Looser for the metered APIs: `claude` checks it between attempts, while `openai` and `deepseek` run on the SDK's own limits (ten minutes per attempt, two retries) |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
 | `AI_CLI_MODEL` | Default model alias (`sonnet`) |
 | `AI_CLI_CONCURRENCY` | Simultaneous `claude` processes, process-wide (default `4`) |
-| `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
+| `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets, each capped by `AI_REQUEST_TIMEOUT_MS` |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
 | `AI_CLI_EFFORT` | Reasoning effort passed to the `claude` CLI, installation-wide (default `low`). There is no per-run control by design: this is an operational default, not a per-request choice. An unrecognised value warns at startup and falls back |
+| `AI_CLI_WORKDIR` / `AI_CODEX_WORKDIR` | The fixed, empty working directory each CLI runs in. Default `claude-cli-work` / `codex-cli-work` inside `DB_DIR` when `DB_DIR` is set, otherwise `.claude-cli-work` / `.codex-cli-work` in the directory the backend was started from |
+| `AI_CLI_HEALTH_TIMEOUT_MS` / `AI_CODEX_HEALTH_TIMEOUT_MS` | Timeout of the seat health checks - `claude --version` and `claude auth status` (default `20000`), `codex login status` (default `15000`) - run at startup and by the admin Settings card. Range 1000-120000. Raise it where a CLI is slow to start |
+| `AI_CLI_MAX_OUTPUT_BYTES` / `AI_CODEX_MAX_OUTPUT_BYTES` | Most output one CLI call may produce before it is cut off to protect memory (defaults `25000000` and `8000000`) |
+| `AI_CLI_RECOVERY_S` | How long a model the service refused as unavailable is left alone before it is tried again (default `600`) |
+| `AI_BATCH_CONCURRENCY` | Ships unset, and should usually stay so: a batch then offers the chosen provider exactly its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, or 4 for a metered API). Set, it overrides all of them |
 | `AI_CODEX_BIN` | Path to the `codex` binary when it is not on PATH |
 | `AI_CODEX_MODEL` | Default model (`default` means "pass no `-m`" and let the account decide) |
 | `AI_CODEX_CONCURRENCY` | Simultaneous `codex` processes, and the size of the Codex queue lane (default `4`). Counted separately from `AI_CLI_CONCURRENCY` |
-| `AI_CODEX_TIMEOUT_MS` / `AI_CODEX_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
+| `AI_CODEX_TIMEOUT_MS` / `AI_CODEX_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets, each capped by `AI_REQUEST_TIMEOUT_MS` |
 | `AI_CODEX_ALLOW_API_KEY` | Off by default, and the most important default here: an `OPENAI_API_KEY` in the environment **outranks the subscription** in the CLI's own resolution order, so it is stripped from the child process. Left in place it produces identical answers and bills every one of them |
-| `GENERATION_MAX_ATTEMPTS` | How many times one resume may be built before it is given up on (default `3`, counting the first go; `1` switches retrying off). A retry costs no extra credit. Read at startup only |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers (can also be stored from the admin panel) |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers. `.env` is the only place they come from: the app stores no keys and the admin panel has no field for one |
+| `CLAUDE_BASE_URL` / `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` | Where each metered provider's API lives, for an LLM gateway in front of the vendor. Defaults `https://api.anthropic.com` (without `/v1` - the adapter appends `/v1/messages`), `https://api.openai.com/v1` (with `/v1`, as the openai SDK expects) and `https://api.deepseek.com`. Plain http is used as set - a LAN Ollama or LM Studio box works - but warns at startup when the host is not this machine, since the API key goes with every request; a malformed value, a query string, a fragment or `user:password@` is ignored with a warning and the vendor's endpoint is used. `CLAUDE_BASE_URL` and not `ANTHROPIC_BASE_URL` on purpose: the `claude` CLI inherits that one, so it would move the subscription seat as well |
+| `CLAUDE_MAX_ATTEMPTS` | Attempts, counting the first, the metered `claude` provider makes on a 429, 5xx, 529 or network error (default `4`, range 1-10). `openai` and `deepseek` retry inside their SDK instead |
+| `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` | The OpenAI organization and project the `openai` provider bills to, read by the SDK. Never sent to DeepSeek |
+| `GENERATION_MAX_ATTEMPTS` | How many times one resume may be built before it is given up on (default `3`, counting the first go; `1` switches retrying off). A retry costs no extra credit. *Startup* |
+| `GENERATION_RENDER_CONCURRENCY` | How many resumes the generation queue renders through Chrome at once, across every lane (default `4`, range 1-32). Sized by the machine's memory, one Chrome tab per render. *Startup* |
+| `PDF_RENDER_TIMEOUT_MS` | How long one PDF render step, or starting Chrome for it, may take (default `30000`, puppeteer's own; range 5000-300000) |
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
 | `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
 | `SHEET_DEFAULT_VISIBILITY` | Whether a newly allocated spreadsheet is link-shared: `private` (default) or `public`. `public` means **anyone with the link may edit**. Only that exact string opens a sheet up - anything else resolves to `private` with a warning, because the unsafe value cannot be taken back once a link is out. The account holder's own access comes from a writer grant made at allocation either way, and each account can flip its own sheet under Settings > Job Sheet |
+| `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
+| `SHEET_BACKFILL_PAUSE_MS` | Pause between two accounts in that startup backfill (default `250`, range 0-60000; `0` is no pause) - a throttle against your Cloud project's Drive and Sheets quota |
+| `APIFY_API_TOKEN` | Required for every job scraper run, which bills your Apify account; without it a run fails naming this variable. `APIFY_API_KEY` is the older name, still read when this one is empty |
+| `SCRAPER_DEFAULT_LOCATION` / `SCRAPER_COUNTRY` | The job market searched: the location used when the form's is empty, memo23's fixed location and the form's starting value (default `United States`, served to the page by the API), and the Indeed actor's country and memo23's proxy country (default `US`, a two-letter ISO code). Keep the two in agreement |
+| `SCRAPER_MAX_RESULTS` | Most results one scraper run may return - the only bound on the Apify bill the browser cannot get round. Unset (the default) is no cap beyond each actor's own; set (range 1-10000), larger requests are clamped, the Results menu stops there, and Indeed's and memo23's fixed counts are held to it. Lever's results are trimmed after a run billed in full |
+| `APIFY_PROXY_GROUPS` | Proxy group for the Job Board, Hiring Cafe and memo23 runs (default `RESIDENTIAL`, a paid Apify add-on). `auto` leaves the group out and lets Apify choose; empty means `RESIDENTIAL`, not none |
+| `APIFY_RUN_TIMEOUT_S` | How long one Apify run may take, and so how long the Job Search request waits (default `300`, range 30-3600; the page shows it). A reverse proxy must let a response take this long - Cloudflare's proxy cannot |
+| `APIFY_ACTOR_INDEED`, `APIFY_ACTOR_JOBBOARD`, `APIFY_ACTOR_WELLFOUND`, `APIFY_ACTOR_LEVER`, `APIFY_ACTOR_HIRINGCAFE`, `APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS`, `APIFY_ACTOR_HIRINGCAFE_MEMO23` | Which Apify actor each scraper runs; defaults in `.env.example`. Only a drop-in fork with the **same input and output schema** works, because the filters and the result parsing are written per actor |
+| `JOB_PAGE_FETCH_TIMEOUT_MS` / `JOB_PAGE_BROWSER_TIMEOUT_MS` / `JOB_PAGE_USER_AGENT` | The Job Filter reading each row's posting: the plain fetch's timeout (default `20000`, range 1000-120000), headless Chrome's page-load timeout for pages that need JavaScript (default `25000`, range 1000-180000), and the User-Agent both send - pinned to one Chrome release, so replace it when sites start refusing it |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
 | `CRYPTOMUS_MERCHANT_ID` / `CRYPTOMUS_PAYMENT_API_KEY` | Crypto through Cryptomus, on its hosted invoice page. Both are needed or the method is not offered. The payment API key does double duty: it signs outgoing requests **and** is what every incoming callback is verified against, so there is no separate webhook secret. The endpoint is `/api/payments/webhook/cryptomus` |
+| `CRYPTOMUS_INVOICE_LIFETIME_S` | How long a buyer has to pay a Cryptomus invoice (default `3600`; range 300-43200, Cryptomus's documented one, never checked against the live API from here) |
 | `CRYPTOMUS_CALLBACK_URL` | Optional. Sends the callback address per invoice instead of relying on the one set in the Cryptomus dashboard. Must be this server's API, reachable from the internet. Left empty the field is omitted entirely - sending it blank would override the dashboard with nothing |
-| `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Defaults to the first `FRONTEND_URL` |
+| `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Unset, it is `APP_URL`, then the first `FRONTEND_URL`, then the origin the buyer's own browser is on |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
-| `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
-| `ADMIN_EMAILS` | Who administers this installation. Wins over `SMTP_USER`; a comma-separated list may name several |
+| `ORDER_RETENTION_SWEEP_MS` | How often that sweep runs, besides once at startup (default `21600000`, six hours; range 60000-86400000). *Startup* |
+| `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
+| `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging; nothing is written there |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
 
 See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
+
+**Two settings are not read from `.env` at all**, because they steer the Chrome
+download that `npm install --prefix backend` runs before anything loads that
+file. Export them in the shell, for the install and the server alike:
+
+- `PUPPETEER_CACHE_DIR` - where puppeteer keeps its Chrome (default
+  `~/.cache/puppeteer`). Puppeteer reads it again at runtime to find the
+  browser, so putting it only in `.env` makes the server look in a directory the
+  download never used.
+- `BROWSER_INSTALL_TIMEOUT_MS` - how long the download may take before it is
+  abandoned: five minutes during `npm install`, fifteen for
+  `npm run setup:browser`.
 
 ---
 
@@ -1385,11 +1470,11 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | A Codex turn fails with `spawn codex ... ENOENT` | Same two causes as the row above, one vendor along: either `@openai/codex` is not installed, or this process has a different PATH than your shell (common under systemd and Docker). Set `AI_CODEX_BIN` to the full path from `which codex`. |
 | Codex says `Not logged in`, or a turn fails with an auth error | Run `codex login --device-auth` **as the user the server runs as** - it prints a code you approve from a browser anywhere, so the server needs no display. The sign-in lives in that user's `CODEX_HOME`, so a login as yourself is invisible to a service running as someone else. `codex login status` prints the account; note it exits 0 either way, so read the text rather than the exit code. Then check **Admin → Settings**, which shows this seat's own readiness card. |
 | Codex answers instantly and your OpenAI bill grows | An `OPENAI_API_KEY` reached the child process. A key **outranks** the subscription in the CLI's own resolution order, so the answers look identical and every one is metered. This server strips `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN` from the child by default; if you see this, `AI_CODEX_ALLOW_API_KEY` has been switched on. |
-| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
+| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. A Job Search run hits the same wall: its request waits for the Apify run, up to `APIFY_RUN_TIMEOUT_S` (300 seconds by default). |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch and a task kind this build does not know are **not** retried. |
 | Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
 | Somebody opened their sheet link and Google said they need access | Expected since sheets became private by default: the link alone no longer works, and the person it belongs to opens it through the grant their own Google account holds. If they want a link others can use, Settings > Job Sheet has a sharing toggle - or set `SHEET_DEFAULT_VISIBILITY=public` to go back to link-shared for new sheets, knowing that means anyone with the URL may edit. If the OWNER cannot open their own sheet, that is different: the writer grant failed, almost always because the Drive API is not enabled for the server's Google project. It is retried on their next sign-in, and `npm run sheets:doctor` names the cause. |
-| A setting is plainly in `.env` and plainly not in effect | Run `npm run mail:doctor` (or `sheets:doctor`) in `backend/` - its first step prints the absolute path of the file it read, the file's size and encoding, and which keys it found, names only - split into those in effect and those **present but empty**. A bare `NAME=`, which is how `.env.example` ships most of them, sets the variable to empty - and because this `.env` overrides the environment, it also blanks the same variable exported in your shell. Delete the line to let a shell value through. Four causes look identical without that: the loader read a **different** file - the path resolves from the compiled module, so it is always the **repository root** and never `backend/.env`, whichever directory you ran from; a **later duplicate** of the same key silently won, because the last assignment wins; the **encoding** did not decode, which happens to a UTF-16 file written without a byte-order mark and PowerShell's `>` writes UTF-16; or the editor never saved. |
+| A setting is plainly in `.env` and plainly not in effect | Run `npm run mail:doctor` (or `sheets:doctor`) in `backend/` - its first step prints the absolute path of the file it read, the file's size and encoding, and which keys it found, names only - split into those in effect and those **present but empty**. A bare `NAME=`, which is how `.env.example` ships the keys and addresses you fill in, sets the variable to empty - and because this `.env` overrides the environment, it also blanks the same variable exported in your shell. Delete the line to let a shell value through. A line still commented out (`#NAME=value`, how `.env.example` ships every tuning setting) is not read at all: remove the `#`. For the operational settings, the backend's own startup line `[env] Non-default settings: ...` lists exactly what is in effect, after clamping. Four causes look identical without that: the loader read a **different** file - the path resolves from the compiled module, so it is always the **repository root** and never `backend/.env`, whichever directory you ran from; a **later duplicate** of the same key silently won, because the last assignment wins; the **encoding** did not decode, which happens to a UTF-16 file written without a byte-order mark and PowerShell's `>` writes UTF-16; or the editor never saved. |
 | Sign-in emails are not arriving and the log says only `Could not send the sign-in email via …` | That one sentence covers a missing variable, a wrong key, a blocked port and an unverified sending domain. Run `npm run mail:doctor` in `backend/` - it walks the same chain in order and stops at the first break with what to change. Add `-- --to you@example.com` to include a real send, which is the only step that catches an unverified domain. |
 | Sign-in works for your own address but fails for everyone else, with a 403 from the relay | The relay is still sandboxed: most of them refuse to send to anybody but your own account address until the sending domain is **verified** in their dashboard. It is not a bug in the app, and the failure reaches the page as a 502 with the relay's own wording. Finish the DNS records the relay asked for, wait for it to read *Verified*, then retry. Test with a second address afterwards - your own inbox is the one case that works either way, so it proves nothing. |
 | The sign-in email arrives with no sender name, just the address | Expected: `From` is whatever `SMTP_FROM` says, verbatim. Set it to the display-name form to fix it - `SMTP_FROM="Tailor <login@yourdomain.com>"`, quoted because the value contains spaces. It is the only branding on the only email this app sends. |
@@ -1399,6 +1484,15 @@ See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 | A script ends with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c` (Windows) | A Node.js bug, not this app's: calling `process.exit()` just after network I/O races Node's own teardown on Windows ([nodejs/node#56645](https://github.com/nodejs/node/issues/56645)). Everything printed above it is complete and correct - read the report, not the crash; the only casualty was the exit code. The doctors and `sheets:login` now let the process end on its own, which avoids it on every Node version. Node itself fixed it in 24.20.0 and 26.7.0 ([nodejs/node#61999](https://github.com/nodejs/node/pull/61999)), and 22.x never got the fix, so a current 24 LTS is worth having anyway. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
 | Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
+| Startup prints `[env] NAME="..." is not a whole number; using ...` or `[env] NAME=... is outside a..b; using ...` | A value in `.env` could not be used as written, and the server is running on the value that line names instead - the default for an unreadable one, the nearest end of the range for one too big or too small (except `PORT`, which falls back to 3001 rather than becoming port 1 or 65535). Deliberately not fatal: a server that refused to start over a timeout typo would hide every other diagnostic it prints. Write plain digits with the unit taken from the name (`AI_REQUEST_TIMEOUT_MS=600000`, not `10m` or `600s`), keep it inside the range `.env.example` gives, and restart. Each variable is reported once per start, however often it is read. |
+| Startup warns `[ai] AI_CLI_TIMEOUT_MS_TAILOR=... is longer than AI_REQUEST_TIMEOUT_MS=...` | A CLI budget was raised above the deadline that bounds every AI call, so it can never take effect - the call is cut off at `AI_REQUEST_TIMEOUT_MS` (300000 by default) whatever the budget says. Raise `AI_REQUEST_TIMEOUT_MS` to at least the budget, and restart. The same holds for every `AI_CLI_TIMEOUT_MS*` and `AI_CODEX_TIMEOUT_MS*`. |
+| A PDF upload is refused with *That PDF is larger than N MB* | The file is over `UPLOAD_MAX_MB` (10 by default). Raise it in `.env` and restart the backend - the upload pages read the new number from the API, so the frontend needs no rebuild. A big file over a slow link may also need `HTTP_REQUEST_TIMEOUT_MS` raised, and a reverse proxy in front has a body limit of its own (nginx's is 1 MB unless `client_max_body_size` says otherwise). |
+| A large batch or import fails with `request entity too large` | The JSON body is over `JSON_BODY_MAX_MB` (10 by default). Raise it and restart the backend. No route has a smaller cap of its own, but a reverse proxy's body limit applies on top. |
+| `CLAUDE_BASE_URL`, `OPENAI_BASE_URL` or `DEEPSEEK_BASE_URL` is set and the provider still calls the vendor | Startup printed `[env] ... ; using https://...` for that variable: the value was not an absolute http(s) URL, or carried a query string, a fragment or `user:password@`, so it was ignored. Plain http is NOT a reason - it is used as set, and only warns that the API key travels unencrypted when the host is not this machine. `CLAUDE_BASE_URL` is the base **without** `/v1`; `OPENAI_BASE_URL` includes it. |
+| Job Search fails with `APIFY_API_TOKEN is required to run the ...` | The scrapers run on your Apify account and there is no token. Set `APIFY_API_TOKEN` in `.env` (Apify Console -> Settings -> API & Integrations) and restart the backend. |
+| The calendar page works locally but answers 404 on the domain | The reverse proxy sends `/api/calendars/*` to Express, which has no such route: the calendar's API is made of Next.js route handlers in the frontend. Add the `handle /api/calendars/*` block from the Caddyfile under [Serving it on your own domain](#-serving-it-on-your-own-domain), above `handle /api/*`, and reload Caddy. |
+| A changed `NEXT_PUBLIC_*` value - the calendar's time zone, the API URL - has no effect after a restart | `NEXT_PUBLIC_` values are compiled into the frontend bundle by `next build`. Run `npm run build --prefix frontend`, then restart the frontend. The calendar's `CALENDAR_API_TIMEOUT_MS` and `CALENDAR_DETAIL_CONCURRENCY` are not `NEXT_PUBLIC_` and need only the restart. |
+| Shortening `SESSION_TTL_DAYS` did not sign anybody out | Expected: a session's expiry is stamped when it is created and never extended, so a change applies to new sign-ins only. To end an account's sessions now, press **Sign out** on its row under Admin -> Accounts. |
 
 ## 🧪 Tests
 
@@ -1412,6 +1506,12 @@ The Claude CLI provider is covered by `backend/test/claudeCli.test.js`, which
 replays event streams recorded from the real CLI (`backend/test/fixtures/cli`)
 through an injected runner — so the suite needs no network, no `claude` binary
 and spawns no subprocess.
+
+The documentation is checked too. `backend/test/envExample.test.js` reads
+`.env.example` and this README against the table in
+`backend/src/config/operational.ts`, and fails when a setting there is missing
+from either, ships uncommented, or is shown with a default or range the code no
+longer uses.
 
 ---
 

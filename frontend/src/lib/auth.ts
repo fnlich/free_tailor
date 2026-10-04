@@ -63,7 +63,14 @@ export const authApi = {
 
   plans: () => apiFetch<{ plans: AccountPlan[] }>('/auth/plans'),
 
-  me: () => apiFetch<{ account: Account | null }>('/auth/me'),
+  /**
+   * Who is signed in, and the PDF upload cap (`uploadMaxMb`, UPLOAD_MAX_MB on
+   * the server). The cap is beside the account rather than in it because it is
+   * the server's, not the account's, and is answered signed out too. Optional,
+   * because a backend that predates it does not send it - read it through
+   * `readUploadMaxMb` in lib/upload.ts.
+   */
+  me: () => apiFetch<{ account: Account | null; uploadMaxMb?: number }>('/auth/me'),
 
   google: (credential: string) =>
     apiFetch<SignInResponse>('/auth/google', {

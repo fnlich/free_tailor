@@ -1,4 +1,5 @@
 import { launchBrowser } from '../config/browser';
+import { pdfRenderTimeoutMs } from '../config/operational';
 import fs from 'fs/promises';
 import path from 'path';
 /// <reference path="../types/html-to-docx.d.ts" />
@@ -87,6 +88,8 @@ export async function saveCoverLetter(
 
   try {
     const page = await browser.newPage();
+    // The same bound as the resume render: PDF_RENDER_TIMEOUT_MS.
+    page.setDefaultTimeout(pdfRenderTimeoutMs());
     await page.setViewport({ width: 595, height: 842, deviceScaleFactor: 1 }); // A4 at 72 DPI
     await page.emulateMediaType('print');
     await page.setContent(html, { waitUntil: 'load' });

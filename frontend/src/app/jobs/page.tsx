@@ -23,6 +23,7 @@ import {
   ScraperSourceProviderCatalog,
   ScraperTimePosted,
 } from '@/lib/api';
+import { formatRunTimeout, limitOptionsFor, resultCapFor } from '@/lib/scraperForm';
 
 const SCRAPER_OPTIONS: Array<{
   value: ScraperSource;
@@ -76,9 +77,6 @@ const JOB_TYPE_OPTIONS: Array<{ value: ScraperJobType; label: string }> = [
   { value: 'internship', label: 'Internship' },
   { value: 'temporary', label: 'Temporary' },
 ];
-
-const LIMIT_OPTIONS = [25, 100, 250, 500, 1000];
-const JOB_BOARD_MAX_RESULTS = 100;
 
 type SheetExportFormState = {
   sheetId: string;
@@ -173,7 +171,15 @@ export default function JobsPage() {
   const [selectedProviders, setSelectedProviders] = useState<Partial<Record<ScraperSource, string>>>({});
   const [keywords, setKeywords] = useState('');
   const [startUrl, setStartUrl] = useState('');
-  const [location, setLocation] = useState('United States');
+  /**
+   * Starts empty and is filled with the server's SCRAPER_DEFAULT_LOCATION once
+   * the provider catalog arrives. An empty location is also what tells the
+   * server to use that default, so a run made before the catalog loads (or when
+   * it fails to) searches the same market.
+   */
+  const [location, setLocation] = useState('');
+  const [defaultLocation, setDefaultLocation] = useState<string | null>(null);
+  const [runTimeoutS, setRunTimeoutS] = useState<number | null>(null);
   const [timePosted, setTimePosted] = useState<ScraperTimePosted>('24h');
   const [jobType, setJobType] = useState<ScraperJobType | ''>('');
   const [remoteOnly, setRemoteOnly] = useState(true);
@@ -211,9 +217,8 @@ export default function JobsPage() {
   const isMemo23StartUrlOnlyProvider = source === 'hiringcafe' && selectedProviderId === 'apify-memo23';
   const isIndeedStartUrlOnlySource = source === 'indeed';
   const isStartUrlOnlyScraper = isIndeedStartUrlOnlySource || isMemo23StartUrlOnlyProvider;
-  const availableLimitOptions = source === 'jobboard'
-    ? LIMIT_OPTIONS.filter((value) => value <= JOB_BOARD_MAX_RESULTS)
-    : LIMIT_OPTIONS;
+  const resultCap = resultCapFor(selectedProvider, isStartUrlOnlyScraper);
+  const availableLimitOptions = limitOptionsFor(resultCap);
 
   const setSheetField = <K extends keyof SheetExportFormState>(field: K, value: SheetExportFormState[K]) => {
     setSheetExportForm((current) => ({ ...current, [field]: value }));
@@ -224,7 +229,7 @@ export default function JobsPage() {
 
     const loadInitialData = async () => {
       try {
-        const [settings, providers] = await Promise.all([
+        const [settings, catalog] = await Promise.all([
           resumeApi.getModels(),
           jobsApi.getScraperProviders(),
         ]);
@@ -232,8 +237,13 @@ export default function JobsPage() {
           return;
         }
 
+        const providers = catalog.sources;
         setSheetSources(settings.googleSheetsSources);
         setProviderCatalog(providers);
+        setDefaultLocation(catalog.defaultLocation);
+        setRunTimeoutS(catalog.runTimeoutS);
+        // Only into an untouched field: whatever the user typed meanwhile wins.
+        setLocation((current) => current || catalog.defaultLocation);
         setSelectedProviders((current) => {
           const next = { ...current };
 
@@ -273,10 +283,10 @@ export default function JobsPage() {
   }, []);
 
   useEffect(() => {
-    if (source === 'jobboard' && limit > JOB_BOARD_MAX_RESULTS) {
-      setLimit(JOB_BOARD_MAX_RESULTS);
+    if (resultCap !== null && limit > resultCap) {
+      setLimit(resultCap);
     }
-  }, [source, limit]);
+  }, [resultCap, limit]);
 
   useEffect(() => {
     void (async () => {
@@ -433,7 +443,12 @@ export default function JobsPage() {
     <Page>
       <PageHeader title="Job Search" description="Run job scrapers one source at a time.">
         <div className="flex flex-wrap gap-2">
-          {['Independent runs', 'Source-specific inputs', '5-minute scraper timeout', 'Google Sheets export'].map((label) => (
+          {[
+            'Independent runs',
+            'Source-specific inputs',
+            ...(runTimeoutS !== null ? [`${formatRunTimeout(runTimeoutS)} scraper timeout`] : []),
+            'Google Sheets export',
+          ].map((label) => (
             <Pill key={label} tone="sky">
               {label}
             </Pill>
@@ -544,7 +559,7 @@ export default function JobsPage() {
                     type="text"
                     value={location}
                     onChange={(event) => setLocation(event.target.value)}
-                    placeholder="United States, Berlin, London..."
+                    placeholder={defaultLocation ? `Leave empty for ${defaultLocation}` : 'City, region or country'}
                     className="tl-input"
                     disabled={isLoading}
                   />
@@ -586,7 +601,7 @@ export default function JobsPage() {
                 <Field
                   label="Results"
                   htmlFor="jobs-results-limit"
-                  hint={source === 'jobboard' ? 'Job Board scraper supports up to 100 results per run.' : undefined}
+                  hint={resultCap !== null ? `At most ${resultCap} results per run.` : undefined}
                 >
                   <select
                     id="jobs-results-limit"

@@ -1,11 +1,9 @@
 import { Router, Request, Response } from 'express';
-import fs from 'fs/promises';
-import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import multer from 'multer';
 import pdf from 'pdf-parse';
 import { CreateProfileDTO } from '../types/profile';
 import { requireUser } from '../middleware/auth';
+import { pdfUpload } from '../middleware/pdfUpload';
 import { extractProfileFromResume } from '../services/resumeService';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
 import { buildImportedProfiles, ProfileImportError } from '../services/profileImport';
@@ -21,34 +19,6 @@ import {
 } from '../database/profileRepository';
 
 const router = Router();
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
-
-// Configure multer for PDF uploads
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    try {
-      await fs.mkdir(UPLOADS_DIR, { recursive: true });
-      cb(null, UPLOADS_DIR);
-    } catch (error) {
-      cb(error as Error, UPLOADS_DIR);
-    }
-  },
-  filename: (req, file, cb) => {
-    cb(null, `resume-${Date.now()}-${file.originalname}`);
-  }
-});
-
-const upload = multer({
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
-      cb(null, true);
-    } else {
-      cb(new Error('Only PDF files are allowed'));
-    }
-  },
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
-});
 
 /**
  * Reading is now signed-in too.
@@ -187,8 +157,16 @@ router.post('/import', (req: Request, res: Response) => {
   }
 });
 
-// Upload resume PDF and extract profile (protected)
-router.post('/upload', upload.single('resume'), async (req: Request, res: Response) => {
+/**
+ * Upload a resume PDF and extract a profile from it (protected).
+ *
+ * The file is held in memory (`req.file.buffer`) and never written to disk. The
+ * extraction only ever needed the bytes; the copy it used to write under a
+ * fixed `backend/uploads` was read straight back and then had to be unlinked on
+ * each of four exit paths. Its size cap is UPLOAD_MAX_MB, and `pdfUpload`
+ * answers 413 for a file over it.
+ */
+router.post('/upload', pdfUpload('resume'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No PDF file uploaded' });
@@ -199,19 +177,15 @@ router.post('/upload', upload.single('resume'), async (req: Request, res: Respon
     try {
       assertCanAddProfile(req.user!);
     } catch (error) {
-      await fs.unlink(req.file.path).catch(() => {});
       if (error instanceof ProfileLimitError) {
         return res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
       }
       throw error;
     }
 
-    // Read and parse PDF
-    const pdfBuffer = await fs.readFile(req.file.path);
-    const pdfData = await pdf(pdfBuffer);
+    const pdfData = await pdf(req.file.buffer);
 
     if (!pdfData.text || pdfData.text.trim().length < 50) {
-      await fs.unlink(req.file.path); // Clean up
       return res.status(400).json({ error: 'Could not extract text from PDF. Please ensure the PDF contains readable text.' });
     }
 
@@ -221,18 +195,9 @@ router.post('/upload', upload.single('resume'), async (req: Request, res: Respon
       ownerId: req.user!.id,
     });
 
-    // Clean up uploaded file
-    await fs.unlink(req.file.path);
-
     res.status(201).json(profile);
   } catch (error) {
     console.error('Error extracting profile from PDF:', error);
-    // Clean up uploaded file if it exists
-    if (req.file) {
-      try {
-        await fs.unlink(req.file.path);
-      } catch {}
-    }
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to extract profile from PDF' });
   }
 });

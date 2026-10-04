@@ -38,6 +38,13 @@ import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
 import { applyProxyTrust } from './config/proxyTrust';
+import {
+  describeAiTimeoutsAboveRequestDeadline,
+  describeNonDefaultOperationalSettings,
+  httpRequestTimeoutMs,
+  jsonBodyMaxMb,
+  serverPort,
+} from './config/operational';
 import { normalizeOrigin, publicBaseUrl } from './config/publicUrl';
 import {
   describeBrowser,
@@ -50,7 +57,9 @@ const app = express();
 // Behind a reverse proxy this is what lets the session cookie be marked
 // Secure. See config/proxyTrust for why it is 1 and not true.
 applyProxyTrust(app);
-const PORT = Number(process.env.PORT) || 3001;
+// Validated: junk or out-of-range warns and uses 3001 rather than reaching
+// `listen`, which throws on it and takes the whole server down with it.
+const PORT = serverPort();
 const HOST = process.env.HOST || '0.0.0.0';
 /**
  * Origins allowed outright, whatever Host the request arrived on.
@@ -160,7 +169,15 @@ app.use((req, res, next) => {
  */
 app.use('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }), paymentWebhookRoutes);
 
-app.use(express.json({ limit: '10mb' }));
+/*
+ * The one JSON parser, for every /api route. Its cap is JSON_BODY_MAX_MB (10 by
+ * default), read once here because the parser is built once. Batch requests and
+ * imports are what come near it, and how near depends on the operator's batch
+ * sizes rather than on anything in the code. A router-level parser further down
+ * would never run - this one has already consumed the body - so there is no
+ * second, smaller cap anywhere to look for.
+ */
+app.use(express.json({ limit: `${jsonBodyMaxMb()}mb` }));
 app.use(express.urlencoded({ extended: true }));
 
 /**
@@ -294,6 +311,15 @@ getDb();
 const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);
   console.log(`Server listening on ${listServerUrls().join(', ')}`);
+  // Every operational setting (config/operational.ts) that is not at its
+  // default, effective values after validation, on one line. None is a secret.
+  // A clamped value shows the number in use; a junk one has already warned and
+  // is back at its default, so it is not listed.
+  const nonDefault = describeNonDefaultOperationalSettings();
+  if (nonDefault) console.log(nonDefault);
+  // A CLI budget above the request deadline is read and then capped without a
+  // word; this is the one place that can say so before somebody waits for it.
+  for (const warning of describeAiTimeoutsAboveRequestDeadline()) console.warn(warning);
   // The address people actually type, which is none of the above on a
   // proxied install - the bind addresses are all loopback there.
   const publicUrl = publicBaseUrl();
@@ -347,8 +373,8 @@ const server = app.listen(PORT, HOST, () => {
     console.warn('[sheets] The account spreadsheet backfill did not finish.', error);
   });
   /*
-   * Deletes ordered resumes once their keep-until has passed, now and every six
-   * hours after.
+   * Deletes ordered resumes once their keep-until has passed, now and every
+   * ORDER_RETENTION_SWEEP_MS after (six hours by default).
    *
    * Started HERE rather than when the module loads, which is the whole reason
    * it is a function: every test in this suite loads the modules it exercises,
@@ -383,7 +409,12 @@ const server = app.listen(PORT, HOST, () => {
 // headers; neither bounds producing the response. They are raised here so a
 // slow or large upload on a busy box is not cut off, not because they limit
 // generation - the AI layer's own per-call deadlines are what bound that.
-server.requestTimeout = 15 * 60_000;
-server.headersTimeout = 15 * 60_000 + 10_000;
+//
+// HTTP_REQUEST_TIMEOUT_MS, fifteen minutes by default, read once. It has to grow
+// with UPLOAD_MAX_MB and JSON_BODY_MAX_MB on a slow link. `headersTimeout` stays
+// derived from it, ten seconds longer, as it always was.
+const requestTimeoutMs = httpRequestTimeoutMs();
+server.requestTimeout = requestTimeoutMs;
+server.headersTimeout = requestTimeoutMs + 10_000;
 
 export default app;

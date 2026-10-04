@@ -1,9 +1,19 @@
 import pdf from 'pdf-parse';
 import { launchBrowser } from '../config/browser';
+import { jobPageBrowserTimeoutMs, jobPageFetchTimeoutMs, jobPageUserAgent } from '../config/operational';
 
+/*
+ * The two timeouts and the User-Agent come from config/operational.ts
+ * (JOB_PAGE_FETCH_TIMEOUT_MS, JOB_PAGE_BROWSER_TIMEOUT_MS, JOB_PAGE_USER_AGENT),
+ * read on each fetch. They depend on the network this server sits on and on
+ * what job sites currently accept: the User-Agent is pinned to one Chrome
+ * release, and a site that blocks old ones blocks this one sooner or later.
+ *
+ * The byte cap stays a constant. It guards this process's memory against one
+ * oversized page, and the text is stripped and truncated for a prompt anyway,
+ * so no machine or plan wants a different number.
+ */
 const MAX_HTML_BYTES = 2_000_000;
-const FETCH_TIMEOUT_MS = 20_000;
-const PUPPETEER_TIMEOUT_MS = 25_000;
 const MIN_EXTRACTED_TEXT_LENGTH = 200;
 
 function normalizeWhitespace(value: string): string {
@@ -48,10 +58,9 @@ function withTimeoutSignal(timeoutMs: number): AbortSignal {
 async function fetchResponse(url: string): Promise<Response> {
   return fetch(url, {
     redirect: 'follow',
-    signal: withTimeoutSignal(FETCH_TIMEOUT_MS),
+    signal: withTimeoutSignal(jobPageFetchTimeoutMs()),
     headers: {
-      'User-Agent':
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'User-Agent': jobPageUserAgent(),
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,application/pdf;q=0.7,*/*;q=0.5',
       'Accept-Language': 'en-US,en;q=0.9',
       'Cache-Control': 'no-cache',
@@ -88,12 +97,10 @@ async function extractHtmlViaPuppeteer(url: string): Promise<string> {
 
   try {
     const page = await browser.newPage();
-    await page.setUserAgent(
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
+    await page.setUserAgent(jobPageUserAgent());
     await page.goto(url, {
       waitUntil: 'networkidle2',
-      timeout: PUPPETEER_TIMEOUT_MS,
+      timeout: jobPageBrowserTimeoutMs(),
     });
 
     const text = await page.evaluate(() => {

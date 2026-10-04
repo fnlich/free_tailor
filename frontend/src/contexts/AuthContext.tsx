@@ -13,6 +13,7 @@ import {
 
 import { setUnauthorizedHandler } from '@/lib/api';
 import { authApi, type Account } from '@/lib/auth';
+import { DEFAULT_UPLOAD_MAX_MB, readUploadMaxMb } from '@/lib/upload';
 
 /**
  * Who is signed in, for the whole app.
@@ -32,6 +33,13 @@ type AuthState = {
   error: string | null;
   isAdmin: boolean;
   signedIn: boolean;
+  /**
+   * The largest PDF the server accepts, in MB - its UPLOAD_MAX_MB, served on
+   * this same `/auth/me` so an upload page can say the limit and check it
+   * before sending. The old fixed 10 until the first answer, and from a
+   * server too old to send it.
+   */
+  uploadMaxMb: number;
   /** Re-reads the account, for after a change that alters plan or profile use. */
   refresh: () => Promise<void>;
   /** Records a sign-in that already happened, without a second round trip. */
@@ -45,6 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [uploadMaxMb, setUploadMaxMb] = useState(DEFAULT_UPLOAD_MAX_MB);
 
   // Guards against a refresh that resolves after the component is gone, which
   // React warns about and which would also overwrite a newer sign-in.
@@ -58,9 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const { account: next } = await authApi.me();
+      const { account: next, uploadMaxMb: limit } = await authApi.me();
       if (!alive.current) return;
       setAccount(next);
+      setUploadMaxMb(readUploadMaxMb(limit));
       setError(null);
     } catch (caught) {
       if (!alive.current) return;
@@ -107,11 +117,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       error,
       isAdmin: account?.role === 'admin',
       signedIn: account !== null,
+      uploadMaxMb,
       refresh,
       adopt,
       signOut,
     }),
-    [account, loading, error, refresh, adopt, signOut]
+    [account, loading, error, uploadMaxMb, refresh, adopt, signOut]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

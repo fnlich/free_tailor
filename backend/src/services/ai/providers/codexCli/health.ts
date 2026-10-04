@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { aiCodexHealthTimeoutMs } from '../../../../config/operational';
 import { resolveCliExecPlan } from '../cli/resolveBinary';
 import { CODEX_CLI_BINARY_HINTS } from './argv';
 import type { ProviderHealth } from '../../types';
@@ -66,10 +67,18 @@ function run(
 
 export async function checkCodexCliHealth(options: {
   binary: string;
+  /** The CHILD's environment, which is what the binary runs with. */
   env: NodeJS.ProcessEnv;
+  timeoutMs?: number;
 }): Promise<CodexCliHealth> {
   const checkedAt = new Date().toISOString();
-  const status = await run(options.binary, ['login', 'status'], options.env, 15_000);
+  // AI_CODEX_HEALTH_TIMEOUT_MS, the mirror of the Claude side's
+  // AI_CLI_HEALTH_TIMEOUT_MS and configurable for the same reason: how long a
+  // spawn takes is the machine's business (a Windows `.cmd` shim, antivirus, a
+  // cold global install), and a probe that times out reports a working seat as
+  // missing. Read from the SERVER's environment, not `options.env`.
+  const timeoutMs = options.timeoutMs ?? aiCodexHealthTimeoutMs();
+  const status = await run(options.binary, ['login', 'status'], options.env, timeoutMs);
 
   if (status.code === 'ENOENT') {
     return {

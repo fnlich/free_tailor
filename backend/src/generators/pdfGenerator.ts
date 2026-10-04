@@ -1,5 +1,6 @@
 import type { Browser } from 'puppeteer';
 import { browserProfileDir, launchBrowser } from '../config/browser';
+import { pdfRenderTimeoutMs } from '../config/operational';
 import Handlebars from 'handlebars';
 import fs from 'fs/promises';
 import path from 'path';
@@ -1539,6 +1540,11 @@ export async function generateResumePDF(
   try {
     const activePage = await timePdfStage('new page', () => browser.newPage());
     page = activePage;
+    // Loading the HTML and printing it both wait at most PDF_RENDER_TIMEOUT_MS
+    // (puppeteer's own 30 seconds by default). Heavy templates on a slow or
+    // shared machine are what run into it, and the fix there is a setting,
+    // not a code change.
+    activePage.setDefaultTimeout(pdfRenderTimeoutMs());
     await timePdfStage('page setup', async () => {
       // The viewport is what viewport units and the pre-print layout resolve
       // against, so give it this template's own content box rather than a

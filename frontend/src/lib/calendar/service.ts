@@ -1,3 +1,5 @@
+import { calendarApiTimeoutMs } from '@/lib/calendar/serverConfig';
+import { CALENDAR_DEFAULT_TIME_ZONE } from '@/lib/calendar/timeZone';
 import type { CalendarApiResponse, CalendarEvent, CalendarMetadata } from '@/lib/calendar/types';
 
 const CALENDAR_API = 'https://api.calendar.online/calendar';
@@ -17,7 +19,8 @@ function asApiDate(date: Date): string {
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(12000),
+    // CALENDAR_API_TIMEOUT_MS, read per request (see serverConfig.ts).
+    signal: AbortSignal.timeout(calendarApiTimeoutMs()),
     next: { revalidate: 0 },
   });
 
@@ -56,7 +59,7 @@ export async function getEvents(
     capabilityId: shareId,
     startDate,
     endDate,
-    timeZone: timeZone || 'America/Los_Angeles',
+    timeZone: timeZone || CALENDAR_DEFAULT_TIME_ZONE,
   });
 
   const payload = await fetchJson<CalendarEvent[]>(`${EVENTS_API}?${params.toString()}`);
@@ -70,7 +73,7 @@ export async function getEvent(
 ): Promise<CalendarApiResponse<CalendarEvent>> {
   const params = new URLSearchParams({
     capabilityId: shareId,
-    timeZone: timeZone || 'America/Los_Angeles',
+    timeZone: timeZone || CALENDAR_DEFAULT_TIME_ZONE,
   });
 
   const payload = await fetchJson<CalendarEvent>(

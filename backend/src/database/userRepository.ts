@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 
 import { DEFAULT_ACCOUNT_PLAN, isAccountPlanId, type AccountPlanId } from '../config/accountPlans';
 import { isConfiguredAdmin, resolveAdminIdentity } from '../config/adminIdentity';
+import { sessionTtlMs } from '../config/operational';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 import { getDb } from './sqlite';
 
@@ -462,9 +463,13 @@ function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-export function createSession(userId: string, ttlMs: number = SESSION_TTL_MS): string {
+/**
+ * A new session lasts SESSION_TTL_DAYS (30 by default), read on every sign-in
+ * through the same getter that sets the cookie's maxAge in routes/auth.ts, so
+ * the two cannot disagree. The expiry is stamped here and never extended, which
+ * is why changing the setting affects new sign-ins only.
+ */
+export function createSession(userId: string, ttlMs: number = sessionTtlMs()): string {
   const token = crypto.randomBytes(32).toString('base64url');
   const created = new Date();
   getDb()

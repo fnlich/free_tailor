@@ -488,12 +488,27 @@ export interface ScraperProviderSummary {
   id: string;
   label: string;
   description: string;
+  /** The most results one run returns (the actor's limit or SCRAPER_MAX_RESULTS); null for no limit. */
+  maxResults: number | null;
 }
 
 export interface ScraperSourceProviderCatalog {
   source: ScraperSource;
   defaultProviderId: string;
   providers: ScraperProviderSummary[];
+}
+
+/**
+ * GET /jobs/scrapers/providers. The deployment's scraper settings are served
+ * here rather than compiled in as NEXT_PUBLIC_ values, so the form always shows
+ * what the server will actually apply.
+ */
+export interface ScraperCatalog {
+  /** SCRAPER_DEFAULT_LOCATION: what an empty location searches. */
+  defaultLocation: string;
+  /** APIFY_RUN_TIMEOUT_S: how long one run may take. */
+  runTimeoutS: number;
+  sources: ScraperSourceProviderCatalog[];
 }
 
 export interface JobSheetExportSummary {
@@ -1198,7 +1213,7 @@ export type JobSheetDestination = {
 };
 
 export const jobsApi = {
-  getScraperProviders: () => apiFetch<ScraperSourceProviderCatalog[]>('/jobs/scrapers/providers'),
+  getScraperProviders: () => apiFetch<ScraperCatalog>('/jobs/scrapers/providers'),
 
   runScraper: (data: ScraperRunFilters & { source: ScraperSource; provider?: string }) =>
     apiFetch<ScraperRunResponse>('/jobs/scrapers/run', {

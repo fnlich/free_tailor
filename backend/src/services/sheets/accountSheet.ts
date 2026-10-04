@@ -1,3 +1,4 @@
+import { sheetBackfillPauseMs } from '../../config/operational';
 import {
   addSheetTabWithHeaders,
   createSpreadsheet,
@@ -510,8 +511,14 @@ export async function resolveAddressableTab(
  * otherwise open two hundred conversations with Drive the moment it booted and
  * be rate-limited for its trouble. Best-effort throughout: anyone this misses is
  * picked up by their next sign-in, which runs the same function.
+ *
+ * The pause is SHEET_BACKFILL_PAUSE_MS, 250ms by default. The quota it paces
+ * against belongs to the operator's own Cloud project and depends on that
+ * project's plan, so it is theirs to tune; 0 means no pause.
  */
-export async function backfillAccountSheets(pauseMs = 250): Promise<{ done: number; failed: number }> {
+export async function backfillAccountSheets(
+  pauseMs: number = sheetBackfillPauseMs()
+): Promise<{ done: number; failed: number }> {
   if (process.env.SHEET_BACKFILL === 'off') return { done: 0, failed: 0 };
   if (!(await client.isConfigured())) return { done: 0, failed: 0 };
 
@@ -527,10 +534,10 @@ export async function backfillAccountSheets(pauseMs = 250): Promise<{ done: numb
    * It RETURNS rather than falling through, which it used not to. Every account
    * below needs this same token, so a credential Google refused - an expired
    * consent, a deleted service account - fails all of them for one reason, and
-   * the loop would report it once per account with a 250ms pause between. Two
-   * hundred sheet-less accounts meant fifty seconds of startup spent failing and
-   * two hundred and one warnings for a single dead token. One line an operator
-   * can act on is worth more than all of them.
+   * the loop would report it once per account with the default 250ms pause
+   * between. Two hundred sheet-less accounts meant fifty seconds of startup
+   * spent failing and two hundred and one warnings for a single dead token. One
+   * line an operator can act on is worth more than all of them.
    */
   try {
     await client.checkCredential();

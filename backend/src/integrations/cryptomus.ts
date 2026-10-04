@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { timingSafeEquals } from './stripe';
+import { cryptomusInvoiceLifetimeS } from '../config/operational';
 
 /**
  * Cryptomus, which is how this server takes crypto.
@@ -34,9 +35,6 @@ import { timingSafeEquals } from './stripe';
  */
 
 const CRYPTOMUS_API_BASE = 'https://api.cryptomus.com/v1';
-
-/** How long a buyer has to pay a hosted invoice, in seconds. */
-const INVOICE_LIFETIME_SECONDS = 3600;
 
 export class CryptomusError extends Error {
   readonly status: number;
@@ -234,7 +232,9 @@ export async function createInvoice(input: InvoiceRequest): Promise<CryptomusInv
     amount: (input.amountCents / 100).toFixed(2),
     currency: input.currency.toUpperCase(),
     order_id: input.paymentId,
-    lifetime: INVOICE_LIFETIME_SECONDS,
+    // How long the buyer has to pay: CRYPTOMUS_INVOICE_LIFETIME_S, an hour by
+    // default, read per invoice. A slow chain is the reason to raise it.
+    lifetime: cryptomusInvoiceLifetimeS(),
     // Where the BUYER goes: back to the order either way. `url_return` is the
     // "I changed my mind" link on Cryptomus's own page, so it gets the cancel
     // URL; `url_success` is the redirect after paying.

@@ -1,4 +1,5 @@
 import { getProviderApiKey } from '../../../config/aiModelConfig';
+import { claudeBaseUrl, claudeMaxAttempts } from '../../../config/operational';
 import {
   getProviderDescriptor,
 } from '../../../config/providerCatalog';
@@ -22,7 +23,9 @@ import type {
  */
 
 const PROVIDER_ID = 'claude' as const;
-const MAX_RETRIES = 4;
+// The backoff SHAPE stays in code. The server's Retry-After drives the wait
+// whenever it sends one, and AI_REQUEST_TIMEOUT_MS ends the loop, so the one
+// retry knob an operator needs is how many attempts (CLAUDE_MAX_ATTEMPTS).
 const BASE_RETRY_DELAY_MS = 600;
 const MAX_RETRY_DELAY_MS = 15_000;
 
@@ -133,9 +136,27 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
         messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: request.userBody || ' ' }] }],
       };
 
+      // Both read once per call, not per attempt: one call goes to one endpoint,
+      // and the "attempt n/N" in the retry line has to be the N the loop uses.
+      //
+      // CLAUDE_BASE_URL, for an LLM gateway or regional relay in front of the
+      // API. Deliberately NOT ANTHROPIC_BASE_URL: claudeCli/env.ts passes that
+      // name through to the `claude` child on purpose, so reading it here as
+      // well would make one setting move the metered API AND the subscription
+      // seat. CLAUDE_* is stripped from that child, so this one cannot reach it.
+      // Validated by envUrl (https unless loopback, no trailing slash), because
+      // the API key is sent to whatever it names.
+      const endpoint = `${claudeBaseUrl()}/v1/messages`;
+      // CLAUDE_MAX_ATTEMPTS counts the first try, so 1 means "never retry".
+      // Only this adapter loops; openai and deepseek retry inside their SDK.
+      const maxAttempts = claudeMaxAttempts();
+
       let lastError: unknown = null;
 
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        // The deadline is checked HERE, between attempts, and nowhere else. The
+        // fetch below carries only the caller's cancel signal, so an attempt
+        // already in flight runs to its own end even past AI_REQUEST_TIMEOUT_MS.
         if (request.deadline.expired()) {
           throw new AIProviderError({
             provider: PROVIDER_ID,
@@ -145,7 +166,7 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
         }
 
         try {
-          const response = await fetch('https://api.anthropic.com/v1/messages', {
+          const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -160,7 +181,7 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
           if (!response.ok) {
             const errorText = await response.text();
             const kind = classifyStatus(response.status);
-            if (!isRetriableStatus(response.status) || attempt === MAX_RETRIES) {
+            if (!isRetriableStatus(response.status) || attempt === maxAttempts) {
               throw new AIProviderError({
                 provider: PROVIDER_ID,
                 kind,
@@ -169,7 +190,7 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
             }
             const delay = retryDelayMs(attempt, response.headers.get('retry-after'));
             console.warn(
-              `[ai] Anthropic returned ${response.status} (attempt ${attempt}/${MAX_RETRIES}); retrying in ${delay}ms.`
+              `[ai] Anthropic returned ${response.status} (attempt ${attempt}/${maxAttempts}); retrying in ${delay}ms.`
             );
             await sleep(delay);
             continue;
@@ -219,12 +240,12 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
           const message = error instanceof Error ? error.message.toLowerCase() : String(error);
           const isNetworkFailure =
             (error instanceof Error && error.name === 'TypeError') || message.includes('fetch failed');
-          if (!isNetworkFailure || attempt === MAX_RETRIES) {
+          if (!isNetworkFailure || attempt === maxAttempts) {
             throw asAIProviderError(error, PROVIDER_ID, isNetworkFailure ? 'unavailable' : 'failed');
           }
           const delay = retryDelayMs(attempt, null);
           console.warn(
-            `[ai] Anthropic request failed on a network error (attempt ${attempt}/${MAX_RETRIES}); retrying in ${delay}ms.`
+            `[ai] Anthropic request failed on a network error (attempt ${attempt}/${maxAttempts}); retrying in ${delay}ms.`
           );
           await sleep(delay);
         }

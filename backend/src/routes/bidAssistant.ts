@@ -1,9 +1,6 @@
 // @ts-nocheck
 const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
 const fs = require('fs/promises');
-const path = require('path');
 const Papa = require('papaparse');
 const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
@@ -17,10 +14,17 @@ const {
 const { getAccessToken, SHEETS_SCOPE } = require('../integrations/googleSheets');
 const profileService = require('../services/profileService');
 
-const backendDirectory = path.join(__dirname, '..', '..');
-const repoDirectory = path.join(backendDirectory, '..');
-
-dotenv.config({ path: path.join(repoDirectory, '.env') });
+/*
+ * No .env loading, CORS or body parser of its own here, and each used to be.
+ *
+ * `config/env.ts` loads the repository .env before anything else in the
+ * process, and decodes the UTF-16 file PowerShell writes, which a second
+ * `dotenv.config` here could not. The app applies CORS before any router. And
+ * the app-wide `express.json` (JSON_BODY_MAX_MB) has already consumed the body
+ * by the time a request reaches this router, so a router-level 2mb parser here
+ * never ran - its limit was a number that looked like a rule and enforced
+ * nothing.
+ */
 
 const {
   importJobs,
@@ -64,7 +68,6 @@ Write a professional, natural-sounding answer from the candidate's perspective.
 Keep it under {{charLimit}} characters.
 Avoid corporate buzzwords and make it sound like a real person.`;
 
-router.use(express.json({ limit: '2mb' }));
 /**
  * Everything below needs a signed-in account.
  *

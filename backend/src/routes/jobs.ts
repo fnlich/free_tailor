@@ -26,7 +26,9 @@ import {
   JOB_FILTER_PROVIDER,
 } from '../services/jobFilter';
 import { extractJobPageContent } from '../services/jobPageContent';
+import { scraperDefaultLocation, scraperMaxResults } from '../config/operational';
 import {
+  describeScraperCatalog,
   isSupportedScraperSource,
   listScraperProviderCatalog,
   resolveScraperProvider,
@@ -47,7 +49,6 @@ const router = Router();
 router.use(requireUser);
 
 const SCRAPER_EXPORT_BATCH_SIZE = 50;
-const DEFAULT_SCRAPER_LOCATION = 'United States';
 const BROAD_SOFTWARE_TITLE_PATTERNS = [
   /\bsoftware (engineer|developer)\b/i,
   /\b(frontend|front-end|backend|back-end|full[- ]stack|web|mobile|ios|android|embedded|firmware|systems|cloud|platform|infrastructure|devops|site reliability|sre|security|application security|data|machine learning|mlops|ai|computer vision|robotics|distributed systems|database|storage)\s+(engineer|developer)\b/i,
@@ -174,8 +175,25 @@ function normalizeScraperFilters(
     timePosted: normalizeTimePosted(payload.timePosted),
     jobType: normalizeJobTypeFilter(payload.jobType),
     remoteOnly: normalizeBoolean(payload.remoteOnly),
-    maxResults: payload.maxResults === undefined ? undefined : toPositiveInteger('maxResults', payload.maxResults),
+    maxResults: capRequestedResults(
+      payload.maxResults === undefined ? undefined : toPositiveInteger('maxResults', payload.maxResults)
+    ),
   };
+}
+
+/**
+ * The result count a run is asked for, held under SCRAPER_MAX_RESULTS when the
+ * deployment sets one; unchanged when it does not.
+ *
+ * Clamped rather than refused, like every other configured bound: a client
+ * that still offers 1000 gets a run of the size this deployment allows, and the
+ * response's `filters.maxResults` shows the number actually used. The scrapers
+ * apply the same cap to the counts they fill in themselves (a request that names
+ * none, Indeed's per-search cap, memo23's fixed count).
+ */
+function capRequestedResults(requested: number | undefined): number | undefined {
+  const cap = scraperMaxResults();
+  return requested === undefined || cap === null ? requested : Math.min(requested, cap);
 }
 
 function normalizeTimePosted(value: unknown): UnifiedScraperFilters['timePosted'] {
@@ -361,10 +379,13 @@ function applySourceSpecificScraperDefaults(
   source: ScraperSource,
   filters: UnifiedScraperFilters
 ): UnifiedScraperFilters {
+  // SCRAPER_DEFAULT_LOCATION, read per request. The jobs page pre-fills its
+  // location field with the same value (GET /scrapers/providers), so this
+  // applies when the user clears the field or a client sends none.
   if (!filters.location) {
     return {
       ...filters,
-      location: DEFAULT_SCRAPER_LOCATION,
+      location: scraperDefaultLocation(),
     };
   }
 
@@ -394,9 +415,13 @@ async function runScraper(
   const filteredResults = filters.remoteOnly
     ? resultsWithinPostedWindow.filter((job) => isStrictRemoteJob(job))
     : resultsWithinPostedWindow;
+  // The request's count (already held under SCRAPER_MAX_RESULTS) or, when it
+  // named none, the cap itself. Lever's actor takes no count at all, so for it
+  // this trim is the only place the cap applies.
+  const resultLimit = filters.maxResults ?? scraperMaxResults();
   const finalResults =
-    typeof filters.maxResults === 'number' && filters.maxResults > 0
-      ? filteredResults.slice(0, filters.maxResults)
+    typeof resultLimit === 'number' && resultLimit > 0
+      ? filteredResults.slice(0, resultLimit)
       : filteredResults;
 
   return {
@@ -496,8 +521,13 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * The providers, and the deployment settings the jobs page shows: the default
+ * location (SCRAPER_DEFAULT_LOCATION), the run timeout (APIFY_RUN_TIMEOUT_S) and,
+ * per provider, the most results a run returns (SCRAPER_MAX_RESULTS folded in).
+ */
 router.get('/scrapers/providers', (_req: Request, res: Response) => {
-  res.json(listScraperProviderCatalog());
+  res.json(describeScraperCatalog());
 });
 
 router.post('/scrapers/export', async (req: Request, res: Response) => {

@@ -20,19 +20,20 @@ import {
   saveTemplateOverride,
 } from '../database/templateRepository';
 
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
-
-async function ensureUploadsDir() {
-  await fs.mkdir(UPLOADS_DIR, { recursive: true });
-}
-
+/**
+ * Builds a template from an uploaded PDF and stores it.
+ *
+ * The PDF itself is not kept. It used to be written to `backend/uploads` under
+ * a fresh uuid that nothing recorded, read, served or deleted - every template
+ * upload added a file to the install tree for ever, inside a directory that was
+ * fixed in the code. Only the extracted template is ever used, and that is in
+ * the database.
+ */
 export async function extractAndSaveTemplate(
   pdfBuffer: Buffer,
   templateName: string,
   originalFilename: string
 ): Promise<Template> {
-  await ensureUploadsDir();
-
   // Parse PDF to extract text
   const pdfData = await pdf(pdfBuffer);
   const pdfText = pdfData.text;
@@ -40,11 +41,6 @@ export async function extractAndSaveTemplate(
   if (!pdfText || pdfText.trim().length < 50) {
     throw new Error('Could not extract sufficient text from PDF');
   }
-
-  // Save the original PDF
-  const pdfId = uuidv4();
-  const pdfPath = path.join(UPLOADS_DIR, `${pdfId}.pdf`);
-  await fs.writeFile(pdfPath, pdfBuffer);
 
   // Use Claude to extract template
   const { html, css, sections } = await extractTemplateFromPDF(pdfText, templateName);

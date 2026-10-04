@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { extractLinksFromEvent } from '@/lib/calendar/linkExtractor';
+import { calendarDetailConcurrency } from '@/lib/calendar/serverConfig';
 import { getEvent, getEvents } from '@/lib/calendar/service';
 import type { CalendarEvent } from '@/lib/calendar/types';
 
@@ -57,7 +58,10 @@ export async function GET(
       timeZone,
     });
 
-    const detailedEvents = await mapWithConcurrency(eventList.data, 12, async (event) => {
+    // CALENDAR_DETAIL_CONCURRENCY: one detail request per event, this many at
+    // a time, against calendar.online's rate limit rather than ours.
+    const concurrency = calendarDetailConcurrency();
+    const detailedEvents = await mapWithConcurrency(eventList.data, concurrency, async (event) => {
       try {
         const detail = await getEvent(shareId, event.id, { timeZone });
         return detail.data;

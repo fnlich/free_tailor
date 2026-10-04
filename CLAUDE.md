@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~20s with the tsc step, 757 tests)
+npm test                       # backend node:test suite (~20s with the tsc step, 891 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -90,7 +90,15 @@ backend/src/
                       #   backend/.env is ignored. envFile.ts's summarizeEnvFile
                       #   reports a file's path, encoding and key NAMES (never
                       #   values) so the doctors can say why a setting that is in
-                      #   the file is not in effect.
+                      #   the file is not in effect. A NEW setting is read through
+                      #   envValue.ts (envInt/envUrl/...: empty = default, junk
+                      #   warns once, out of range clamps, never throws) and, if
+                      #   it is operational - a timeout, cap, pool width,
+                      #   endpoint - added to operational.ts, the ONE table of
+                      #   name, default, range and getter, AND to .env.example
+                      #   as `#NAME=default` with its range, AND to the README's
+                      #   Configuration table. The drift test
+                      #   test/envExample.test.js fails until all three agree.
   controllers/        # one file, the skills handlers routes/resume.ts mounts
   database/           # better-sqlite3, one repository per table
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that
@@ -134,7 +142,7 @@ backend/
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 70 files; fixtures/cli replays real streams
+  test/               # node:test, 78 files; fixtures/cli replays real streams
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
                       #   /orders, /credits (+ /credits/invoice, drawn with no
