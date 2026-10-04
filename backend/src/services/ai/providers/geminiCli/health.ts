@@ -19,7 +19,9 @@ import { geminiCliHealthTimeoutMs } from './options';
  *      refresh token in it.
  *
  * What that cannot see is a token Google has since revoked. That surfaces on
- * the first real call, as `auth` with exit 41, and the adapter holds the seat.
+ * a real call as exit 41 - the same exit, and the same words, as a token check
+ * the network kept from reaching Google - so the adapter holds the seat
+ * briefly first and only calls it a sign-in problem once it repeats.
  * Credentials kept in the CLI's encrypted storage cannot be inspected at all,
  * and the result says so rather than guessing.
  */
@@ -134,6 +136,20 @@ function nonEmptyFile(file: string): boolean {
 }
 
 /** The sign-in, said once where every message needs it. */
+/**
+ * Whether the sign-in's home holds a Google sign-in with a refresh token - the
+ * file half of the health check, for the adapter to tell a lost sign-in from a
+ * token check that never reached Google. Credentials in the CLI's encrypted
+ * storage cannot be read, and count as present: "cannot tell" must not become
+ * a 30-minute "sign in again".
+ */
+export function hasStoredGeminiSignIn(env: NodeJS.ProcessEnv): boolean {
+  if ((env.GEMINI_FORCE_ENCRYPTED_FILE_STORAGE ?? '').trim().toLowerCase() === 'true') return true;
+  const credentials = readJson(path.join(resolveGeminiHome(env), '.gemini', 'oauth_creds.json'));
+  const refreshToken = credentials?.refresh_token;
+  return typeof refreshToken === 'string' && refreshToken.trim().length > 0;
+}
+
 export const GEMINI_SIGN_IN_ACTION =
   'Run `NO_BROWSER=true gemini` once, interactively, as the user this server runs as (with ' +
   'GEMINI_CLI_HOME set to the AI_GEMINI_HOME directory, when that is set): choose "Sign in with ' +

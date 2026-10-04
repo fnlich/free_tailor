@@ -117,10 +117,10 @@ export async function checkClaudeCliHealth(options: {
 
   // Said out loud because the failure is otherwise invisible until a call is
   // made: an API key answers every request just as well as the subscription
-  // and bills for every one of them, so the adapter refuses any call the CLI
-  // reports running on a key. Left ok, because an auth method this check has
-  // never seen may still be the subscription, and the call-time check is the
-  // one that knows.
+  // and bills for every one of them, so the adapter stops any turn whose first
+  // event says it runs on a key, and holds the seat. Left ok, because an auth
+  // method this check has never seen may still be the subscription, and the
+  // call-time check is the one that knows.
   const onSubscription = authMethod === 'oauth_token';
   return {
     ok: true,
@@ -134,8 +134,9 @@ export async function checkClaudeCliHealth(options: {
       : `Signed in with authMethod="${authMethod ?? 'unknown'}".`,
     warning: onSubscription
       ? undefined
-      : 'This is not a subscription sign-in. A call the CLI runs on an API key is refused rather than ' +
-        'billed per token; run `claude auth login` as the user this server runs as to use the subscription.',
+      : 'This may not be a subscription sign-in. A call the CLI starts on an API key is stopped at its first ' +
+        'event, before the model answers, and the seat is held for every call after it; run `claude auth login` ' +
+        'as the user this server runs as to use the subscription.',
     meta: parsed,
   };
 }

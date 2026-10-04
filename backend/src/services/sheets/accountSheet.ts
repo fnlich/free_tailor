@@ -397,12 +397,28 @@ export class SheetAccessError extends PublicError {
   }
 }
 
+/**
+ * Job sheets need Google Sheets set up on the server, which nobody but an
+ * administrator can do - so the reader is pointed there, not at a settings
+ * page that would only tell them the same, and the ref's log line and an
+ * administrator's response carry the cause.
+ */
+function sheetsNotConfigured(): SheetAccessError {
+  return new SheetAccessError(
+    "Job sheets aren't available right now. Please contact your administrator.",
+    503,
+    'Google Sheets is not configured on this server (no Google credential file). GET /api/sheet as an ' +
+      'administrator, or "npm run sheets:doctor" in backend/, shows what is missing.'
+  );
+}
+
 /** Flips link sharing, and reports what Drive says afterwards rather than what was asked for. */
 export async function setAccountSheetVisibility(
   account: UserAccount,
   visibility: SheetVisibility
 ): Promise<SheetVisibility> {
   const state = await ensureAccountSheet(account);
+  if (!state.configured) throw sheetsNotConfigured();
   if (!state.spreadsheetId) {
     throw new SheetAccessError('This account has no spreadsheet yet. Try again in a moment.', 503);
   }
@@ -454,6 +470,7 @@ export async function resolveAddressableSheet(
 
   // The common case, and the one the UI now takes: say nothing, get your own.
   if (!asked) {
+    if (!state.configured) throw sheetsNotConfigured();
     if (!own) {
       throw new SheetAccessError(
         'Your job sheet is not ready yet. Open Settings > Job Sheet to finish setting it up.',

@@ -26,7 +26,7 @@ import sheetRoutes from './routes/sheet';
 import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { describeAdminIdentity } from './config/adminIdentity';
-import { applyConfiguredAdmins } from './services/auth/authService';
+import { applyConfiguredAdmins, describeSignInGap } from './services/auth/authService';
 import { attachUser, isAdmin, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
@@ -363,6 +363,10 @@ const server = app.listen(PORT, HOST, () => {
     console.warn('[auth] Could not apply the configured administrator.', error);
   }
   warnIfNoAdmin();
+  // The sign-in page names no setting when neither path is configured, so the
+  // operator is told here which ones to set.
+  const signInGap = describeSignInGap();
+  if (signInGap) console.warn(signInGap);
   // Picks up a generation run the last process was part way through. Whatever
   // was mid-build when it stopped is built again, and whatever was queued
   // carries on - which is the whole point of the queue being on disk.

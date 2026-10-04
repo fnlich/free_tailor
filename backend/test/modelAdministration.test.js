@@ -376,6 +376,60 @@ test('an edit is checked against the list only when it changes the provider or t
   }
 });
 
+test('a display name another model already has is refused, in any case or spacing, on a create and a rename', async () => {
+  // Users see the display name and nothing else, so two records sharing one are
+  // two identical choices on different seats, at different prices.
+  clearOptionOverrides();
+  const server = await serveAdmin('display-names');
+  try {
+    for (const name of ['Claude Sonnet', '  claude sonnet ']) {
+      const twin = await server.call('POST', '/models', { name, provider: 'gemini-cli', modelName: 'pro', creditsPerResume: 9 });
+      assert.equal(twin.status, 400, JSON.stringify(name));
+      assert.equal(
+        twin.body.error,
+        '"Claude Sonnet" is already the name of a Claude (Subscription) model. Users see only display names, so give this one a different name.'
+      );
+    }
+
+    const renamed = await server.call('PUT', '/models/claude-cli-opus', { name: 'CLAUDE SONNET' });
+    assert.equal(renamed.status, 400);
+    assert.match(renamed.body.error, /already the name of a Claude \(Subscription\) model/);
+
+    // A record keeps its own name through any edit, a change of case included.
+    const recased = await server.call('PUT', '/models/claude-cli-sonnet', { name: 'claude sonnet' });
+    assert.equal(recased.status, 200);
+    const created = await server.call('POST', '/models', { name: 'Gemini Pro', provider: 'gemini-cli', modelName: 'pro' });
+    assert.equal(created.status, 201);
+  } finally {
+    server.close();
+  }
+});
+
+test('a pair of names stored before the check can still be toggled and repriced', async () => {
+  clearOptionOverrides();
+  const { dbDir } = useTempStorage('model-administration-legacy-twins');
+  const { writeSettingRaw } = require('./helpers');
+  const stamp = '2026-01-01T00:00:00.000Z';
+  const record = (id, provider, modelName) => ({
+    id, name: 'Twin', provider, modelName, description: '', enabled: true, creditsPerResume: 1, createdAt: stamp, updatedAt: stamp,
+  });
+  writeSettingRaw(
+    dbDir,
+    APP_SETTINGS_KEY,
+    JSON.stringify({ aiModels: [record('a', 'claude-cli', 'sonnet'), record('b', 'codex-cli', 'default')], defaultModelId: 'a' })
+  );
+  const config = loadFresh('../dist/config/aiModelConfig');
+  const toggled = await config.updateAIModel('b', { enabled: false, creditsPerResume: 3 });
+  assert.deepEqual(
+    toggled.aiModels.map((entry) => [entry.id, entry.name, entry.enabled, entry.creditsPerResume]),
+    [['a', 'Twin', true, 1], ['b', 'Twin', false, 3]]
+  );
+  // Renaming one away is the fix, and is fine; renaming it back is refused.
+  const apart = await config.updateAIModel('b', { name: 'Codex' });
+  assert.equal(apart.aiModels.find((entry) => entry.id === 'b').name, 'Codex');
+  await assert.rejects(() => config.updateAIModel('b', { name: 'twin ' }), /already the name of/);
+});
+
 test('a stored model the list does not offer still reads, and still runs', async () => {
   // The list comes from .env and can change under stored rows; a read that
   // checked it would let one .env edit take every settings read down.

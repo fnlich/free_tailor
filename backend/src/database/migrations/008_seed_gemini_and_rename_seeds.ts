@@ -65,8 +65,32 @@ export type GeminiSeedMigrationReport = {
   settingsRewritten: boolean;
   appendedModelIds: string[];
   renamedModels: Array<{ id: string; from: string; to: string }>;
+  /** Seed names left alone because another record already goes by the new one. */
+  skippedRenames: Array<{ id: string; from: string; to: string }>;
   notes: string[];
 };
+
+/** 007's reading of the lock variables, spelled out here for the same reason: AI_UNLOCKED_PROVIDERS wins. */
+function envProviderList(name: string): Set<string> {
+  const raw = process.env[name];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(/[,\s]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+function lockedHere(id: string): boolean {
+  if (envProviderList('AI_UNLOCKED_PROVIDERS').has(id)) return false;
+  return envProviderList('AI_LOCKED_PROVIDERS').has(id);
+}
+
+/** Trimmed and lower-cased: how two display names look the same to a person. */
+function sameName(a: unknown, b: string): boolean {
+  return typeof a === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
 
 function isObject(value: unknown): value is Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -86,7 +110,12 @@ function writeSettingRow(db: Database.Database, key: string, value: string, at: 
 
 /** Appended to, never replaced; a log row that is not an object is left, and the run gets a dated key. */
 function writeMigrationLog(db: Database.Database, report: GeminiSeedMigrationReport, at: string): void {
-  const entry = { at, appendedModelIds: report.appendedModelIds, renamedModels: report.renamedModels };
+  const entry = {
+    at,
+    appendedModelIds: report.appendedModelIds,
+    renamedModels: report.renamedModels,
+    ...(report.skippedRenames.length ? { skippedRenames: report.skippedRenames } : {}),
+  };
   const existing = readSettingRow(db, MIGRATION_LOG_KEY);
 
   let key = MIGRATION_LOG_KEY;
@@ -115,6 +144,7 @@ export function migrate008(db: Database.Database): GeminiSeedMigrationReport {
     settingsRewritten: false,
     appendedModelIds: [],
     renamedModels: [],
+    skippedRenames: [],
     notes: [],
   };
 
@@ -145,16 +175,32 @@ export function migrate008(db: Database.Database): GeminiSeedMigrationReport {
   const now = new Date().toISOString();
   let models = settings.aiModels as unknown[];
 
-  models = models.map((model) => {
-    if (!isObject(model)) return model;
+  // One at a time, against the list as renamed so far: users see display
+  // names and nothing else, so a rename onto a name another record already
+  // goes by - an administrator's own "Claude Sonnet" on another model, say -
+  // would make two identical choices. That record keeps its name, this one
+  // keeps the old one, and the log says so.
+  models = [...models];
+  for (const [index, model] of models.entries()) {
+    if (!isObject(model)) continue;
     const modelName = typeof model.modelName === 'string' ? model.modelName.trim().toLowerCase() : '';
     const rename = SEED_RENAMES.find(
       (entry) => entry.provider === model.provider && entry.modelName === modelName && entry.from === model.name
     );
-    if (!rename) return model;
-    report.renamedModels.push({ id: typeof model.id === 'string' ? model.id : '', from: rename.from, to: rename.to });
-    return { ...model, name: rename.to, updatedAt: now };
-  });
+    if (!rename) continue;
+    const id = typeof model.id === 'string' ? model.id : '';
+    const taken = models.some((other, otherIndex) => otherIndex !== index && isObject(other) && sameName(other.name, rename.to));
+    if (taken) {
+      report.skippedRenames.push({ id, from: rename.from, to: rename.to });
+      report.notes.push(
+        `Left "${rename.from}" as it is: another model is already called "${rename.to}", and users see only ` +
+          'display names. Rename one of the two under Admin > Models.'
+      );
+      continue;
+    }
+    report.renamedModels.push({ id, from: rename.from, to: rename.to });
+    models[index] = { ...model, name: rename.to, updatedAt: now };
+  }
 
   // Keyed on the PROVIDER, as 005 keys Codex: an administrator who already
   // added a Gemini record of their own has the seat covered, and a second one
@@ -170,15 +216,39 @@ export function migrate008(db: Database.Database): GeminiSeedMigrationReport {
     // touched - adding a record cannot strand it.
     models = [...models, { ...GEMINI_SEED_MODEL, enabled: true, createdAt: now, updatedAt: now }];
     report.appendedModelIds.push(GEMINI_SEED_MODEL.id);
-    report.notes.push(
-      `Added "${GEMINI_SEED_MODEL.name}" (${GEMINI_SEED_MODEL.id}) to the model list, so users can pick it now. ` +
-        'Install and sign in to the gemini CLI on this server (npm i -g @google/gemini-cli, then run ' +
-        '`NO_BROWSER=true gemini` once as the user the server runs as), or switch the Gemini seat off under ' +
-        'Admin > Settings.'
-    );
+    // Whether users can pick it now depends on the seat, and the note says
+    // which rather than promising a model the pickers will not show.
+    const added = `Added "${GEMINI_SEED_MODEL.name}" (${GEMINI_SEED_MODEL.id}) to the model list`;
+    const providers = isObject(settings.providersEnabled) ? settings.providersEnabled : {};
+    if (lockedHere(GEMINI_SEED_MODEL.provider)) {
+      report.notes.push(
+        `${added}. The Gemini seat is locked on this machine (AI_LOCKED_PROVIDERS), so users will not see it ` +
+          'until the gemini CLI is installed and signed in here and the lock is removed.'
+      );
+    } else if (providers[GEMINI_SEED_MODEL.provider] === false) {
+      report.notes.push(
+        `${added}. The Gemini seat is switched off under Admin > Settings, so users will see it once it is ` +
+          'switched on - after the gemini CLI is installed and signed in on this server.'
+      );
+    } else {
+      report.notes.push(
+        `${added}, so users can pick it now. ` +
+          'Install and sign in to the gemini CLI on this server (npm i -g @google/gemini-cli, then run ' +
+          '`NO_BROWSER=true gemini` once as the user the server runs as), or switch the Gemini seat off under ' +
+          'Admin > Settings.'
+      );
+    }
   }
 
-  if (report.appendedModelIds.length === 0 && report.renamedModels.length === 0) return report;
+  if (report.appendedModelIds.length === 0 && report.renamedModels.length === 0) {
+    // A skipped rename changes nothing in the row, but it is still reported -
+    // logged and said once - so the clash is not left for somebody to find.
+    if (report.skippedRenames.length > 0) {
+      writeMigrationLog(db, report, now);
+      report.ran = true;
+    }
+    return report;
+  }
 
   settings.aiModels = models;
   db.transaction(() => {

@@ -76,6 +76,9 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
 
   let workdirReady = false;
   let cachedHealth: { value: CodexCliHealth; at: number } | null = null;
+  // One check at a time: when the cache lapses under load, every call waiting
+  // on it shares the one `codex login status` rather than each spawning its own.
+  let pendingHealth: Promise<ProviderHealth> | null = null;
 
   const capabilities: ProviderCapabilities = {
     id: PROVIDER_ID,
@@ -100,8 +103,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     return new AIProviderError({ provider: PROVIDER_ID, kind, detail, ...extra });
   }
 
-  async function health(): Promise<ProviderHealth> {
-    if (cachedHealth && now() - cachedHealth.at < 60_000) return cachedHealth.value;
+  async function checkHealth(): Promise<ProviderHealth> {
     const check = options.healthCheck ?? checkCodexCliHealth;
     try {
       const value = await check({
@@ -117,6 +119,14 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
         checkedAt: new Date().toISOString(),
       };
     }
+  }
+
+  function health(): Promise<ProviderHealth> {
+    if (cachedHealth && now() - cachedHealth.at < 60_000) return Promise.resolve(cachedHealth.value);
+    pendingHealth ??= checkHealth().finally(() => {
+      pendingHealth = null;
+    });
+    return pendingHealth;
   }
 
   async function complete(request: CompletionRequest): Promise<CompletionResult> {
@@ -137,6 +147,26 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
         `codex-drop-maxtokens:${request.callSite}`,
         `"${request.callSite}" asks for a ${request.sampling.maxOutputTokens}-token cap, but the ` +
           'Codex CLI has no such control.'
+      );
+    }
+
+    // A key stored in CODEX_HOME (`codex login --with-api-key`, a Bedrock key)
+    // is out of the environment strip's reach, and every turn on it bills per
+    // token - so asked BEFORE spawning, not discovered after. Cached for a
+    // minute, and `codex login status` needs no network and reads the
+    // credential wherever it is kept, a keyring included. Only a positive
+    // "signed in with a key" refuses: a check that failed or said nothing
+    // must not block a working seat.
+    const seat = (await health()) as Partial<CodexCliHealth>;
+    if (seat.apiKey === true) {
+      throw fail(
+        'auth',
+        'the Codex CLI is signed in with an API key, so this call would be billed per token; it was refused without running',
+        {
+          adminAction:
+            'Run `codex logout`, then `codex login --device-auth` as the user this server runs as and sign in ' +
+            'with ChatGPT. Calls are refused until the seat is signed in to a subscription again.',
+        }
       );
     }
 

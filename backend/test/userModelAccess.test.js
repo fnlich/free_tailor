@@ -425,20 +425,27 @@ test('the job filter runs on the app default model, and is reported by its displ
   ai.resetRegistryForTests();
 });
 
-test("a filter prompt's own override wins, and is named by its record, or its option label", async () => {
+test("a filter prompt's own override wins, and is named by its record - or, to anybody but an admin, by no model name at all", async () => {
   const { staticDir } = useTempStorage('user-model-access-filter-override');
   config.invalidateSettingsCache();
-  filterPrompt(staticDir, { modelProvider: 'gemini-cli', modelName: 'flash' });
+  filterPrompt(staticDir, { modelProvider: 'codex-cli', modelName: 'gpt-6-sol' });
   const jobFilter = require('../dist/services/jobFilter');
 
+  // No record names codex-cli/gpt-6-sol, so there is no display name. The CLI
+  // option's label is a model name, and goes to administrators only.
   assert.deepEqual(await jobFilter.resolveJobFilterModel(), {
-    provider: 'gemini-cli',
-    modelName: 'flash',
-    modelLabel: 'Flash',
+    provider: 'codex-cli',
+    modelName: 'gpt-6-sol',
+    modelLabel: 'Chosen by your administrator',
+    adminModelLabel: 'GPT-6-Sol',
   });
 
-  await config.createAIModel({ name: 'Quick Gemini', provider: 'gemini-cli', modelName: 'flash' });
-  assert.equal((await jobFilter.resolveJobFilterModel()).modelLabel, 'Quick Gemini');
+  await config.createAIModel({ name: 'Sol', provider: 'codex-cli', modelName: 'gpt-6-sol' });
+  assert.deepEqual(await jobFilter.resolveJobFilterModel(), {
+    provider: 'codex-cli',
+    modelName: 'gpt-6-sol',
+    modelLabel: 'Sol',
+  });
 });
 
 test('the Bid Assistant answers on the app default model, not on a seat default', async () => {

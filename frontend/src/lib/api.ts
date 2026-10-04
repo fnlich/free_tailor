@@ -1250,6 +1250,12 @@ export interface ProviderHealthReport {
     seat: { utilization: number | null; resetsAt: string | null; observedAt: string | null };
     outages: Array<{ scope: string; reason: string; expiresAt: string }>;
   };
+  /**
+   * Every seat's holds, keyed by provider: Claude's (the same list as
+   * `subscription.outages`) and Gemini's. Codex keeps none. Optional, so a
+   * card reading an older server falls back to `subscription.outages`.
+   */
+  outagesByProvider?: Partial<Record<AIProvider, Array<{ scope: string; reason: string; expiresAt: string }>>>;
   concurrency: Record<string, { limit: number; inFlight: number; queued: number }>;
   usage: {
     totals: {
@@ -2054,6 +2060,11 @@ export const resumeApi = {
     jobDescription?: string;
     jobAnalysis?: JobAnalysis;
     tailoredContent?: TailoredContent;
+    /**
+     * The preview's token, sent with its `tailoredContent`: it names the model
+     * that wrote that content, which is what finalising is charged at.
+     */
+    previewToken?: string;
     companyName: string;
     role: string;
     sourceRowNumber?: number;
@@ -2129,7 +2140,13 @@ export const resumeApi = {
     tailoredContent?: TailoredContent;
     model?: string;
   }) =>
-    apiFetch<{ html: string; tailored: boolean; tailoredContent?: TailoredContent }>('/resume/preview', {
+    apiFetch<{
+      html: string;
+      tailored: boolean;
+      tailoredContent?: TailoredContent;
+      /** Only when THIS request wrote `tailoredContent`; a re-render of supplied content gets none. */
+      previewToken?: string;
+    }>('/resume/preview', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -2147,6 +2164,7 @@ export const resumeApi = {
         profileName: string;
         html: string;
         tailoredContent?: TailoredContent;
+        previewToken?: string;
       }>;
       tailored: boolean;
       unconfirmedHardSkills?: string[];

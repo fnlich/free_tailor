@@ -2023,6 +2023,8 @@ export async function analyzeJobDescription(
     // disagree: the text came from this literal record while the model
     // override came from whichever record was activated for the feature.
     useExactPromptId: true,
+    // A resume's work runs on the model it is charged at (see runChoiceWins).
+    runChoiceWins: true,
     signal,
   });
   const firstCallEndedAt = process.hrtime.bigint();
@@ -2179,6 +2181,8 @@ export async function tailorResume(
     // absent on the structured path - and the code below assumes the model
     // obeyed it, because skills are decided here, not by the model.
     appendToUserBody: FINAL_SKILL_OVERRIDE,
+    // A resume's work runs on the model it is charged at (see runChoiceWins).
+    runChoiceWins: true,
     signal,
   });
   const secondCallEndedAt = process.hrtime.bigint();
@@ -2220,11 +2224,12 @@ export async function generateCoverLetter(
     fallbackModelName: choice.modelName,
     maxTokens: 1500,
     // The only caller that wants sampling variety rather than determinism.
-    // The CLI provider cannot honour it and says so once; pin this prompt to
-    // the `claude` provider in the admin UI if the prose becomes too uniform.
+    // None of the CLI seats can honour it, and each says so once.
     temperature: 0.7,
     responseFormat: 'text',
     useExactPromptId: true,
+    // A resume's work runs on the model it is charged at (see runChoiceWins).
+    runChoiceWins: true,
     signal,
   });
   return content.trim();

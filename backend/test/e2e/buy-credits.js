@@ -175,6 +175,9 @@ async function main() {
   const other = users.createUser({ email: `e2e-other-${stamp}@example.com`, name: 'Somebody Else' });
   const token = users.createSession(buyer.id);
   const otherToken = users.createSession(other.id);
+  // Only an administrator is shown why a method is off; the buyer is pointed at one.
+  const admin = users.createUser({ email: `e2e-admin-${stamp}@example.com`, name: 'Dialog Admin', role: 'admin' });
+  const adminToken = users.createSession(admin.id);
 
   /* ============================================================ 1. the API */
   console.log('\n=== Targets ===');
@@ -817,63 +820,93 @@ async function main() {
       };
     }, LONG_REASON);
 
-    for (const viewport of [WIDE, PHONE]) {
-      const where = `at ${viewport.width}`;
-      await page.setViewport(viewport);
-      await openDialog(page);
-      dialog = await readDialog(page);
+    /*
+     * Twice: as an administrator, who is shown the reason - the long sentence
+     * the layout half of this block exists for - and as the buyer, who is shown
+     * only that the method is not available and whom to ask. The reason names
+     * the server's variables, which a buyer can do nothing with.
+     */
+    const readers = [
+      { who: 'an administrator', token: adminToken, shown: 'reason' },
+      { who: 'the buyer', token, shown: 'generic' },
+    ];
+    for (const reader of readers) {
+      await signIn(page, reader.token);
+      for (const viewport of [WIDE, PHONE]) {
+        const where = `at ${viewport.width}, to ${reader.who}`;
+        await page.setViewport(viewport);
+        await openDialog(page);
+        dialog = await readDialog(page);
 
-      check(
-        `an unavailable method is listed with its reason, ${where}`,
-        /CRYPTOMUS_PAYMENT_API_KEY/.test(dialog?.text ?? ''),
-        dialog?.text?.slice(0, 400)
-      );
-      check(
-        `nothing leaves the dialog, ${where}`,
-        dialog && dialog.panel.scrollWidth <= dialog.panel.clientWidth + 1,
-        `panel scrollWidth ${dialog?.panel.scrollWidth} vs clientWidth ${dialog?.panel.clientWidth}`
-      );
-      check(
-        `and nothing leaves the screen, ${where}`,
-        dialog && dialog.overflow.past <= 1,
-        `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
-      );
-
-      /*
-       * Not merely inside the dialog - READABLE.
-       *
-       * `truncate` would keep the row inside the panel and still fail the
-       * operator, because the part naming the keys is at the END of the
-       * sentence and a one-line ellipsis eats exactly that. Asking whether
-       * the element is clipped is not enough on its own: in the broken
-       * state the BUTTON grew instead, so the text was not overflowing
-       * itself and read as unclipped. The line count is what actually
-       * distinguishes wrapped from nowrap.
-       */
-      const reason = await page.evaluate(() => {
-        const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
-          (element) =>
-            /CRYPTOMUS_PAYMENT_API_KEY/.test(element.textContent || '') &&
-            element.children.length === 0
+        if (reader.shown === 'reason') {
+          check(
+            `an unavailable method is listed with its reason, ${where}`,
+            /CRYPTOMUS_PAYMENT_API_KEY/.test(dialog?.text ?? ''),
+            dialog?.text?.slice(0, 400)
+          );
+        } else {
+          check(
+            `an unavailable method says only to contact the administrator, ${where}`,
+            /Not available right now\. Please contact your administrator\./.test(dialog?.text ?? ''),
+            dialog?.text?.slice(0, 400)
+          );
+          check(
+            `and names none of the server's settings, ${where}`,
+            !/CRYPTOMUS|CHAIN_|COINBASE/.test(dialog?.text ?? ''),
+            dialog?.text?.slice(0, 400)
+          );
+        }
+        check(
+          `nothing leaves the dialog, ${where}`,
+          dialog && dialog.panel.scrollWidth <= dialog.panel.clientWidth + 1,
+          `panel scrollWidth ${dialog?.panel.scrollWidth} vs clientWidth ${dialog?.panel.clientWidth}`
         );
-        if (!node) return null;
-        return {
-          clipped: node.scrollWidth > node.clientWidth + 1,
-          lines: Math.round(node.getBoundingClientRect().height / 16),
-          whiteSpace: getComputedStyle(node).whiteSpace,
-        };
-      });
-      check(
-        `the reason is wrapped rather than clipped, ${where}`,
-        reason && !reason.clipped && reason.lines > 1 && reason.whiteSpace !== 'nowrap',
-        JSON.stringify(reason)
-      );
+        check(
+          `and nothing leaves the screen, ${where}`,
+          dialog && dialog.overflow.past <= 1,
+          `${dialog?.overflow.past}px past ${dialog?.overflow.viewport}: ${dialog?.overflow.culprit}`
+        );
 
-      await page.screenshot({
-        path: path.join(SHOTS, `buy-1-unavailable-${viewport.width}.png`),
-      });
-      await page.keyboard.press('Escape');
+        if (reader.shown === 'reason') {
+          /*
+           * Not merely inside the dialog - READABLE.
+           *
+           * `truncate` would keep the row inside the panel and still fail the
+           * operator, because the part naming the keys is at the END of the
+           * sentence and a one-line ellipsis eats exactly that. Asking whether
+           * the element is clipped is not enough on its own: in the broken
+           * state the BUTTON grew instead, so the text was not overflowing
+           * itself and read as unclipped. The line count is what actually
+           * distinguishes wrapped from nowrap.
+           */
+          const reason = await page.evaluate(() => {
+            const node = Array.from(document.querySelectorAll('[role="dialog"] *')).find(
+              (element) =>
+                /CRYPTOMUS_PAYMENT_API_KEY/.test(element.textContent || '') &&
+                element.children.length === 0
+            );
+            if (!node) return null;
+            return {
+              clipped: node.scrollWidth > node.clientWidth + 1,
+              lines: Math.round(node.getBoundingClientRect().height / 16),
+              whiteSpace: getComputedStyle(node).whiteSpace,
+            };
+          });
+          check(
+            `the reason is wrapped rather than clipped, ${where}`,
+            reason && !reason.clipped && reason.lines > 1 && reason.whiteSpace !== 'nowrap',
+            JSON.stringify(reason)
+          );
+
+          await page.screenshot({
+            path: path.join(SHOTS, `buy-1-unavailable-${viewport.width}.png`),
+          });
+        }
+        await page.keyboard.press('Escape');
+      }
     }
+    // Back to the buyer, whose history the rest of this file reads.
+    await signIn(page, token);
 
     /* ================================ the page's own two history columns */
 

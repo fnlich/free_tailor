@@ -57,6 +57,14 @@ const STATUS_BY_EXIT_CODE: Record<number, number> = {
  */
 const SIGNED_OUT = /manual authorization is required|please set an auth method|enforced authentication type|re-authenticate/i;
 
+/**
+ * The part of that family no network trouble can produce: no auth method at
+ * all, or the workspace's enforced type refusing another. "Manual
+ * authorization is required" is NOT here - the CLI says it whenever its token
+ * check fails, a refused connection to oauth2.googleapis.com included.
+ */
+const AUTH_NOT_CONFIGURED = /please set an auth method|enforced authentication type|re-authenticate/i;
+
 const QUOTA = /exhausted your (?:daily )?quota|quota|RESOURCE_EXHAUSTED|rate.?limit|capacity/i;
 const MODEL_MISSING = /model not found|not.?found|NOT_FOUND/i;
 const AUTH = /UNAUTHENTICATED|PERMISSION_DENIED|VALIDATION_REQUIRED|unauthori[sz]ed|forbidden/i;
@@ -131,6 +139,12 @@ export type GeminiFailure = {
   kind: AIErrorKind;
   detail: string;
   retryAfterSeconds?: number;
+  /**
+   * The CLI refused its sign-in while a stored one is there: a revoked token,
+   * or a token check the network never let reach Google. Not yet `auth`; the
+   * adapter decides that once it repeats.
+   */
+  signInUnverified?: boolean;
 };
 
 export type GeminiClassifyInput = {
@@ -140,6 +154,11 @@ export type GeminiClassifyInput = {
   status: string | null;
   /** The CLI's own words for the failure: `describeGeminiFailure(state)`. */
   message: string;
+  /**
+   * Whether the sign-in's home holds a Google sign-in with a refresh token
+   * (`hasStoredGeminiSignIn`). Passed in so this stays a pure function.
+   */
+  credentialsPresent?: boolean;
 };
 
 /**
@@ -150,6 +169,20 @@ export function classifyGeminiFailure(input: GeminiClassifyInput): GeminiFailure
 
   if (!input.sawResult) {
     if (input.exitCode === GEMINI_EXIT_CODES.AUTH || SIGNED_OUT.test(stderr)) {
+      // On every start the CLI checks its cached token with Google, and ANY
+      // failure there - a refused or reset connection, a proxy - ends in the
+      // same exit 41 and "Manual authorization is required" as a real sign-out.
+      // With a sign-in on disk that is far more often the network, so it is
+      // not reported as one until it repeats.
+      if (input.credentialsPresent && !AUTH_NOT_CONFIGURED.test(stderr)) {
+        return {
+          kind: 'unavailable',
+          detail:
+            'the Gemini CLI could not validate its Google sign-in - network or proxy trouble reaching ' +
+            `oauth2.googleapis.com, or a token Google has revoked (${stderr || `exit ${input.exitCode}`})`,
+          signInUnverified: true,
+        };
+      }
       return { kind: 'auth', detail: stderr || `the CLI exited ${input.exitCode} (authentication)` };
     }
     const exitStatus = input.exitCode !== null ? STATUS_BY_EXIT_CODE[input.exitCode] : undefined;
@@ -208,6 +241,17 @@ const MIN_LIMIT_HOLD_MS = 30_000;
 const MODEL_HOLD_MS = 10 * 60_000;
 /** A 5xx that survived the CLI's own retries. */
 const UNAVAILABLE_HOLD_MS = 2 * 60_000;
+/**
+ * A sign-in the CLI could not validate, while one is on disk: short, because
+ * it is usually the network, and seat-wide, because every model shares it.
+ */
+const SIGN_IN_UNVERIFIED_HOLD_MS = 2 * 60_000;
+/**
+ * How many of those in a row, with no success between, before it is called a
+ * sign-in problem - so a token Google has revoked still ends at "sign in
+ * again" after a few minutes, rather than at short holds forever.
+ */
+const SIGN_IN_UNVERIFIED_LIMIT = 3;
 
 /**
  * What is known not to answer, until when, and why - so a spent quota or a
@@ -221,6 +265,7 @@ const UNAVAILABLE_HOLD_MS = 2 * 60_000;
  */
 export class GeminiOutageTable {
   private readonly holds = new Map<string, Hold>();
+  private unverifiedInARow = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -278,9 +323,26 @@ export class GeminiOutageTable {
     this.set(model, this.now() + UNAVAILABLE_HOLD_MS, reason || 'the service did not answer', 'unavailable');
   }
 
+  /**
+   * A sign-in the CLI could not validate (see `signInUnverified`). Held
+   * briefly, as `unavailable`; the third in a row with no success between
+   * becomes the 30-minute sign-in hold. Returns true when it did.
+   */
+  noteSignInUnverified(reason: string): boolean {
+    this.unverifiedInARow += 1;
+    if (this.unverifiedInARow >= SIGN_IN_UNVERIFIED_LIMIT) {
+      this.unverifiedInARow = 0;
+      this.noteAuth(`${reason}; ${SIGN_IN_UNVERIFIED_LIMIT} times in a row, so treated as signed out`);
+      return true;
+    }
+    this.set('*', this.now() + SIGN_IN_UNVERIFIED_HOLD_MS, reason, 'unavailable');
+    return false;
+  }
+
   noteSuccess(model: string): void {
     this.holds.delete(model);
     this.holds.delete('*');
+    this.unverifiedInARow = 0;
   }
 
   snapshot(): Array<{ scope: string; reason: string; expiresAt: string }> {

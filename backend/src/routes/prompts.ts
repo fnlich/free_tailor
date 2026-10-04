@@ -1,6 +1,5 @@
 import { Request, Response, Router } from 'express';
 import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
-import { listAvailableAIModelOptions } from '../config/aiModelConfig';
 import { listPromptCategories } from '../config/promptCategories';
 import {
   activatePrompt,
@@ -78,15 +77,6 @@ router.post('/preview', requireAdmin, async (req: Request, res: Response) => {
     res.status(400).json({
       error: error instanceof Error ? error.message : 'Failed to generate prompt preview',
     });
-  }
-});
-
-router.get('/models', requireAdmin, async (_req: Request, res: Response) => {
-  try {
-    res.json(await listAvailableAIModelOptions());
-  } catch (error) {
-    console.error('Error fetching prompt model options:', error);
-    res.status(500).json({ error: 'Failed to fetch prompt model options' });
   }
 });
 

@@ -1339,3 +1339,56 @@ test('the boot promotes the administrator - and so runs 006 - before the queue r
   assert.ok(promote < restore, 'promotion first');
   assert.ok(noAdmin < restore, 'and the warning that depends on it');
 });
+
+test("006's notes about the metered providers say that 007, which runs next, removes them", async () => {
+  // An install skipping releases, both seats locked here: 006 switches the
+  // metered API it already has a model for on and asks for its key - and 007
+  // deletes that provider two lines later. Left alone, the log contradicted
+  // itself and told the operator to set a key nothing reads.
+  const { dbDir } = freshStorage('superseded-notes');
+  plantSettings(
+    dbDir,
+    browserEraSettings({
+      providersEnabled: { 'claude-cli': true, 'codex-cli': true, claude: false, openai: false, deepseek: false, 'claude-web': true },
+      aiModels: [
+        model('claude-web-chat', 'claude-web', 'chat'),
+        model('anthropic-sonnet', 'claude', 'claude-sonnet-4-20250514'),
+      ],
+      defaultModelId: 'claude-web-chat',
+    })
+  );
+  useAdminEmails('admin@example.com');
+  loadFresh('../dist/database/userRepository').createUser({ email: 'admin@example.com' });
+
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    const { warnings } = await withLocks('claude-cli,codex-cli', () =>
+      captureWarnings(() => {
+        const db = openDb(dbDir);
+        try {
+          loadFresh('../dist/database/migrations/index').runDataMigrations(db);
+        } finally {
+          db.close();
+        }
+      })
+    );
+    assert.equal(readVersion(dbDir), '8');
+    // 006's own notes, by what only they say, that mention a metered provider.
+    const metered = warnings.filter(
+      (line) =>
+        /browser chat (?:providers|models) were removed|nothing this migration may bring back/.test(line) &&
+        /_API_KEY|metered|bills per token|subscription seats are locked|claude was switched on/.test(line)
+    );
+    assert.ok(metered.length > 0, warnings.join('\n'));
+    for (const line of metered) {
+      assert.match(line, /\(This release has no metered providers: migration 007, which runs after this one, removes them/);
+    }
+    // A note with nothing about them is left as 006 wrote it.
+    const { supersededByMeteredRemoval } = loadFresh('../dist/database/migrations/index');
+    assert.equal(supersededByMeteredRemoval('Removed 2 browser chat model(s).'), 'Removed 2 browser chat model(s).');
+  } finally {
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = savedKey;
+  }
+});

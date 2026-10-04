@@ -126,8 +126,9 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
  * administrator's. Public, so `sendPublicError` passes it through.
  */
 export class PaymentError extends PublicError {
-  constructor(message: string, status = 400) {
-    super(message, { status });
+  /** `detail` is the administrator's half, as on PriceError: logged under the ref, never shown to a buyer. */
+  constructor(message: string, status = 400, detail?: string) {
+    super(message, { status, ...(detail ? { detail } : {}) });
     this.name = 'PaymentError';
   }
 }
@@ -322,11 +323,15 @@ export async function startCheckout(
 
   const availability = describeMethods(env).find((entry) => entry.method === method);
   if (!availability?.available) {
+    // Keys only an administrator can set, so the buyer is pointed there and
+    // the reason - which names them - is the administrator's detail, as it is
+    // for the price settings' own 503.
     throw new PaymentError(
       method === 'card'
-        ? 'Card payments are not set up on this server.'
-        : 'Crypto payments are not set up on this server.',
-      503
+        ? 'Card payments are not available right now. Please contact your administrator.'
+        : 'Crypto payments are not available right now. Please contact your administrator.',
+      503,
+      availability?.reason || `No ${method} payment provider is configured on this server.`
     );
   }
 

@@ -38,6 +38,7 @@ import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
+import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
@@ -71,6 +72,13 @@ type MultiplePreview = {
   profileName: string;
   html: string;
   tailoredContent?: TailoredContent;
+  /**
+   * The server's word for which model wrote `tailoredContent`. Sent back when
+   * finalising, so the resume is charged at the model that did the work rather
+   * than whatever the menu says by then. Kept through manual edits and
+   * re-renders: they are still that model's work.
+   */
+  previewToken?: string;
   draft: string;
   error: string;
 };
@@ -203,6 +211,8 @@ export default function Home() {
   const [previewTailored, setPreviewTailored] = useState(false);
   const [isSinglePreviewOpen, setIsSinglePreviewOpen] = useState(false);
   const [tailoredContent, setTailoredContent] = useState<TailoredContent | null>(null);
+  /** The single preview's token - see MultiplePreview.previewToken. */
+  const [previewToken, setPreviewToken] = useState<string | null>(null);
   const [tailoredContentDraft, setTailoredContentDraft] = useState('');
   const [tailoredContentError, setTailoredContentError] = useState('');
   const [unconfirmedHardSkills, setUnconfirmedHardSkills] = useState<UnconfirmedSkill[]>([]);
@@ -233,6 +243,7 @@ export default function Home() {
 
   const resetTailoredEditor = useCallback(() => {
     setTailoredContent(null);
+    setPreviewToken(null);
     setTailoredContentDraft('');
     setTailoredContentError('');
   }, []);
@@ -255,9 +266,12 @@ export default function Home() {
     setMultiplePreviewIndex(0);
   }, [resetTailoredEditor]);
 
+  // The model too: a preview is that model's work, and the cost line, the
+  // picker and the finalise must all be about the same one. Leaving a preview
+  // up across a change of model priced it at the new one.
   useEffect(() => {
     resetGenerationOutputs();
-  }, [builderMode, companyName, role, jobDescription, selectedProfileId, generateMode, resetGenerationOutputs]);
+  }, [builderMode, companyName, role, jobDescription, selectedProfileId, generateMode, aiOverrides.modelId, resetGenerationOutputs]);
 
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const aiRequestOverrides = toAiRequestOverrides(aiOverrides);
@@ -417,6 +431,10 @@ export default function Home() {
     return group ? profiles.filter((profile) => group.profileIds.includes(profile.id)) : [];
   }, [groups, profiles, selectedSheetsGroupId, selectedSheetsProfileId, sheetsTargetMode]);
 
+  // The ready set as a string, so editing a preview's JSON or resetting the
+  // form - each a new array - does not re-ask for the same price.
+  const readyPreviewIds = useMemo(() => readyPreviewKey(multiplePreviews), [multiplePreviews]);
+  const hasPreviews = multiplePreviews.length > 0;
   /**
    * What to price: the run the page is set up for, as the request that would
    * start it. Finalising multiple previews builds only the profiles that have
@@ -428,10 +446,8 @@ export default function Home() {
       target = sheetsRunProfiles;
     } else if (builderMode === 'manual') {
       target = manualRunProfiles;
-      if (generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0) {
-        const ready = new Set(
-          multiplePreviews.filter((preview) => preview.tailoredContent).map((preview) => preview.profileId)
-        );
+      if (generateMode === 'multiple' && !autoGenerate && hasPreviews) {
+        const ready = new Set(readyPreviewIds.split(','));
         target = target.filter((profile) => ready.has(profile.id));
       }
     }
@@ -448,8 +464,9 @@ export default function Home() {
     autoGenerate,
     builderMode,
     generateMode,
+    hasPreviews,
     manualRunProfiles,
-    multiplePreviews,
+    readyPreviewIds,
     runRevision,
     sheetsRunProfiles,
   ]);
@@ -818,12 +835,14 @@ export default function Home() {
     targetCompanyName,
     resolvedRole,
     tailoredContentByProfileId,
+    previewTokenByProfileId,
   }: {
     targetProfiles: Profile[];
     analysis: JobAnalysis;
     targetCompanyName: string;
     resolvedRole: string;
     tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
+    previewTokenByProfileId?: Map<string, string | undefined>;
   }) => {
     updateGenerationProgress(
       targetProfiles.length,
@@ -834,9 +853,12 @@ export default function Home() {
     );
 
     const tailoredByProfileId: Record<string, unknown> = {};
+    const tokensByProfileId: Record<string, string> = {};
     for (const profile of targetProfiles) {
       const tailored = tailoredContentByProfileId?.get(profile.id);
       if (tailored) tailoredByProfileId[profile.id] = tailored;
+      const token = previewTokenByProfileId?.get(profile.id);
+      if (tailored && token) tokensByProfileId[profile.id] = token;
     }
 
     const snapshot = await runBatch(
@@ -855,6 +877,7 @@ export default function Home() {
         ...(Object.keys(tailoredByProfileId).length > 0
           ? { tailoredContentByProfileId: tailoredByProfileId }
           : {}),
+        ...(Object.keys(tokensByProfileId).length > 0 ? { previewTokenByProfileId: tokensByProfileId } : {}),
         ...getDefaultGenerationOptions(),
       },
       { phase: 'Building resumes' }
@@ -1013,6 +1036,7 @@ export default function Home() {
         setPreviewHtml(preview.html);
         setPreviewTailored(preview.tailored);
         setIsSinglePreviewOpen(true);
+        setPreviewToken(preview.previewToken ?? null);
         if (preview.tailoredContent) {
           setTailoredContent(preview.tailoredContent);
           setTailoredContentDraft(JSON.stringify(preview.tailoredContent, null, 2));
@@ -1035,7 +1059,11 @@ export default function Home() {
         }
 
         setGenerationStep('Building previews...');
+        // The model the run names, as the finalise and its quote will:
+        // previewing on each profile's own while charging the menu's was
+        // the mismatch this used to have.
         const res = await resumeApi.previewAll({
+          ...aiRequestOverrides,
           jobDescription,
           jobAnalysis: analysis,
           profileIds,
@@ -1470,6 +1498,7 @@ export default function Home() {
         jobDescription,
         jobAnalysis: analysis,
         tailoredContent: tailoredContent || undefined,
+        ...(tailoredContent && previewToken ? { previewToken } : {}),
         companyName: companyName.trim(),
         role: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
         ...getDefaultGenerationOptions(),
@@ -1606,37 +1635,44 @@ export default function Home() {
         if (!profilesToGenerate.length) {
           throw new Error('No preview content available to generate.');
         }
-        const total = profilesToGenerate.length;
-        let completed = 0;
 
-        updateGenerationProgress(total, 0, 'Preparing resume generation', undefined, companyName.trim());
-        for (const profile of profilesToGenerate) {
-          const preview = previewMap.get(profile.id);
-          if (!preview?.tailoredContent) continue;
-          const templateId = profile.preferredTemplate || 'default';
-          setGenerationStep(`Generating ${completed + 1}/${total}: ${profile.name} x ${companyName.trim()}`);
-          updateGenerationProgress(total, completed, 'Building resumes', profile.name, companyName.trim());
-          await resumeApi.generate({
-            ...aiRequestOverrides,
-            profileId: profile.id,
-            templateId,
-            jobDescription,
-            jobAnalysis: analysis,
-            tailoredContent: preview.tailoredContent,
-            companyName: companyName.trim(),
-            role: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
-            ...getDefaultGenerationOptions(),
-          });
-          completed += 1;
-          updateGenerationProgress(total, completed, 'Building resumes', profile.name, companyName.trim());
+        /*
+         * ONE batch for every previewed profile, not one /generate each.
+         *
+         * The loop charged each resume as its own request, so a balance that
+         * ran out part way built and charged the first few, reported one
+         * resume's price as what "this run" needed, and left those first few
+         * in the list for a retry to build - and charge - again. As a batch
+         * the whole run is reserved at once, priced as the quote line says, and
+         * a 402 names that total before anything is built.
+         */
+        const res = await generateSequentialResumes({
+          targetProfiles: profilesToGenerate,
+          analysis,
+          targetCompanyName: companyName.trim(),
+          resolvedRole: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
+          tailoredContentByProfileId: new Map(
+            profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.tailoredContent])
+          ),
+          previewTokenByProfileId: new Map(
+            profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.previewToken])
+          ),
+        });
+        setSuccessMessage(`Generated ${res.generated} resume(s) successfully.`);
+        if (res.failed > 0) {
+          setError(
+            `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || companyName.trim()}. ${res.failures.slice(0, 3).map((failure) => `${failure.profileName}: ${failure.error}`).join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
+          );
         }
-        setSuccessMessage(`Generated ${profilesToGenerate.length} resume(s) successfully.`);
+        // Only the previews that did NOT become a resume stay, so finalising
+        // again builds - and charges for - just those.
+        const remaining = keepUnbuiltPreviews(multiplePreviews, res.failures.map((failure) => failure.profileId));
         const aggregated = aggregateUnconfirmedFromPreviews(multiplePreviews);
         setUnconfirmedHardSkills(aggregated.hard);
         setUnconfirmedSoftSkills(aggregated.soft);
-        setMultiplePreviews([]);
+        setMultiplePreviews(remaining);
         setMultiplePreviewIndex(0);
-        setMultiplePreviewTailored(false);
+        if (remaining.length === 0) setMultiplePreviewTailored(false);
         return;
       }
 

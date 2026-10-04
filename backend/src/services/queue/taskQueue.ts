@@ -271,6 +271,15 @@ export type QueueHooks = {
 /** What a task that was running when its batch was cancelled says. */
 export const CANCELLED_WHILE_RUNNING = 'Cancelled while it was running';
 
+/**
+ * A runner's failure that no later attempt can change - it says so with
+ * `retryable: false` (a deleted profile, say) - settles at once instead of
+ * spending the remaining attempts reaching the same answer.
+ */
+function isFinalFailure(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { retryable?: unknown }).retryable === false;
+}
+
 function describeError(error: unknown, task: Task): string {
   return publicTaskError(error, 'This resume could not be built', `task ${task.id} (batch ${task.batchId})`);
 }
@@ -772,7 +781,7 @@ export class TaskQueue {
         // A cancelled run's rejection is the abort itself, which says nothing
         // the person who pressed Cancel does not already know.
         const said = cancelled ? CANCELLED_WHILE_RUNNING : describeError(error, task);
-        if (!cancelled && this.retryTask(task, said)) {
+        if (!cancelled && !isFinalFailure(error) && this.retryTask(task, said)) {
           return;
         }
         this.settle(task, cancelled ? 'cancelled' : 'failed', said);

@@ -223,9 +223,22 @@ test('a method with no keys is not offered and cannot be checked out', async () 
     const asAdmin = await (await server.call(server.adminToken, '/api/payments/methods')).json();
     assert.match(asAdmin.methods[0].reason, /STRIPE_SECRET_KEY/);
 
-    const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
-    assert.equal(response.status, 503);
-    assert.match((await response.json()).error, /not set up/i);
+    // A stale tab, or a call made straight to the API: the buyer is pointed at
+    // the administrator, and the reason - which names the server's variables -
+    // goes to the administrator and the log, under the ref.
+    for (const method of ['card', 'crypto']) {
+      const response = await server.checkout(server.aliceToken, { method, credits: 20 });
+      assert.equal(response.status, 503, method);
+      const body = await response.json();
+      assert.match(body.error, /payments are not available right now\. Please contact your administrator\./, method);
+      assert.match(body.ref, /^ERR-[0-9A-F]{6}$/, method);
+      assert.equal(body.detail, undefined, method);
+      assert.doesNotMatch(JSON.stringify(body), /STRIPE_|CRYPTOMUS_/, method);
+    }
+    const asAdminCheckout = await (await server.checkout(server.adminToken, { method: 'card', credits: 20 })).json();
+    assert.match(asAdminCheckout.detail, /STRIPE_SECRET_KEY/);
+    const asAdminCrypto = await (await server.checkout(server.adminToken, { method: 'crypto', credits: 20 })).json();
+    assert.match(asAdminCrypto.detail, /CRYPTOMUS_/);
   } finally {
     server.close();
   }

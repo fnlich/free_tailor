@@ -27,6 +27,7 @@ import {
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { Card, ErrorNotice, Field, Section } from '@/components/ui/kit';
+import { savableModelChoice } from '@/lib/profileModel';
 
 interface ProfileFormProps {
   initialData?: Profile;
@@ -313,25 +314,13 @@ export default function ProfileForm({
     });
   };
 
-  /**
-   * The model choice as it can be saved.
-   *
-   * A choice that is no longer on offer is saved as "inherit". The server runs
-   * such a profile on the app default already, and it refuses to SAVE a model
-   * this account cannot pick - so keeping the stale id would make every later
-   * edit of this profile fail over a setting the picker shows as unavailable.
-   */
-  const savableAiPreferences = (ai: AiPreferences): AiPreferences => {
-    const preferences = normalizeAiPreferences(ai);
-    if (
-      modelsLoaded &&
-      preferences.modelId &&
-      !appSettings.models.some((model) => model.id === preferences.modelId)
-    ) {
-      return {};
-    }
-    return preferences;
-  };
+  /** The model choice as it can be saved - see `savableModelChoice`. */
+  const savableAiPreferences = (ai: AiPreferences): AiPreferences =>
+    savableModelChoice(normalizeAiPreferences(ai), {
+      modelsLoaded,
+      offeredIds: appSettings.models.map((model) => model.id),
+      storedModelId: initialData?.profileSettings?.ai?.modelId,
+    });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

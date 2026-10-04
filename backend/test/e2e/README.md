@@ -95,7 +95,7 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 92 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 100 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
 leave behind. Over HTTP: each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
@@ -110,7 +110,10 @@ AT the ceiling and saying so; Back preserving the amount; the summary pricing
 itself without opening a checkout, so looking at it costs the buyer nothing;
 the order appearing when the new-card form is asked for; the form mounting or
 saying plainly that it could not; Escape closing; and nothing hanging off the
-side at 1440 or 390, in either theme. On the credits page: two columns wide and
+side at 1440 or 390, in either theme. A method that is switched off is shown
+twice: to an administrator with its reason, wrapped rather than clipped (the
+`buy-1-unavailable-*.png` screenshots), and to the buyer as *Not available
+right now. Please contact your administrator.* with no setting named. On the credits page: two columns wide and
 stacked narrow, both histories opening on five rows and saying how many there
 are, Older and Newer moving between real pages, and a page whose request FAILS
 keeping its rows while the count sentence still describes them - a failed press

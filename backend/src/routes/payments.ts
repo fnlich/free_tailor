@@ -247,8 +247,10 @@ router.delete('/cards/:id', async (req: Request<{ id: string }>, res: Response) 
     detachCard(req.user!.id, card.id);
     res.json({ deleted: true });
   } catch (error) {
-    console.error('[payments] a saved card could not be removed:', error);
-    res.status(502).json({ error: 'That card could not be removed. Try again in a moment.' });
+    // Through the shared refusal, so the log line carries a ref the buyer can
+    // quote and an administrator gets Stripe's reason - which, with the keys
+    // gone, is permanent configuration rather than a moment's wait.
+    sendPublicError(req, res, error, 'That card could not be removed', 502);
   }
 });
 

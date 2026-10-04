@@ -1030,7 +1030,12 @@ export async function getAccessToken(scope: string): Promise<string> {
         'This usually means the JSON key belongs to a deleted or disabled service account, or the key file does not match the live account. ' +
         'Create a new key for the current service account and replace backend/service-account-key.json.';
     }
-    if (!operatorDetail) {
+    if (response.status === 429) {
+      // The token endpoint being busy is the one refusal here that waiting
+      // fixes, and the only one the reader is told to wait out.
+      operatorDetail = `The token request was rate-limited.${googleSaid}`;
+      errorMessage = publicGoogleRefusal(429).message;
+    } else if (!operatorDetail) {
       // Nothing above recognised it, so `errorMessage` is still Google's raw
       // OAuth text. That is the operator's to read, not an account holder's.
       operatorDetail = `The token request was refused.${googleSaid}`;
@@ -1038,7 +1043,14 @@ export async function getAccessToken(scope: string): Promise<string> {
         "This server's Google sign-in did not work, so Sheets and Drive are unavailable until an " +
         'administrator fixes it.';
     }
-    throw new GoogleSheetsRequestError(response.status, errorMessage, operatorDetail);
+    // Any other refusal at the token endpoint is THIS SERVER's credential
+    // failing, whatever status Google chose for it, so it is a 502 - never
+    // Google's 400, 403 or 404 passed through as if the caller's request were
+    // at fault. Google's own status is kept for the doctor.
+    const status = response.status === 429 ? 429 : 502;
+    const refused = new GoogleSheetsRequestError(status, errorMessage, operatorDetail);
+    if (response.status !== status) refused.upstreamStatus = response.status;
+    throw refused;
   }
 
   const data = (await response.json()) as { access_token?: string; expires_in?: number };

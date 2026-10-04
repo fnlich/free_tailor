@@ -16,10 +16,12 @@ import type {
 import { createSpawnRunner, type CliRunner } from '../cli/runner';
 import {
   buildGeminiArgv,
+  escapeAtReferences,
   GEMINI_BASE_SYSTEM_PROMPT,
   guardGeminiPrompt,
   MAX_GEMINI_STDIN_BYTES,
   resolveGeminiModel,
+  restoreEscapedAt,
 } from './argv';
 import { classifyGeminiFailure, cleanStderr, GeminiOutageTable, PAID_CREDITS } from './classify';
 import { buildGeminiChildEnv, resolveGeminiHome } from './env';
@@ -29,7 +31,13 @@ import {
   describeGeminiFailure,
   readGeminiTurnText,
 } from './events';
-import { checkGeminiCliHealth, GEMINI_INSTALL_ACTION, GEMINI_SIGN_IN_ACTION, type GeminiCliHealth } from './health';
+import {
+  checkGeminiCliHealth,
+  GEMINI_INSTALL_ACTION,
+  GEMINI_SIGN_IN_ACTION,
+  hasStoredGeminiSignIn,
+  type GeminiCliHealth,
+} from './health';
 import { GEMINI_CLI_BINARY_HINTS } from './hints';
 import { readGeminiCliConfig, resolveGeminiTimeoutMs, type GeminiCliConfig } from './options';
 import {
@@ -192,6 +200,9 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     // Refused before it costs a slot: past this size the CLI cuts the prompt
     // off without a word and the model answers what is left.
     const stdin = guardGeminiPrompt(request.userBody);
+    // When that escaped an `@`, the model saw `\@` where the user wrote `@`,
+    // and may copy it into its answer; it is taken back out there.
+    const escapedAt = escapeAtReferences(request.userBody) !== request.userBody;
     if (Buffer.byteLength(stdin, 'utf8') > MAX_GEMINI_STDIN_BYTES) {
       throw fail(
         'failed',
@@ -308,7 +319,8 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
         });
       }
 
-      const text = readGeminiTurnText(state).trim();
+      const answered = readGeminiTurnText(state).trim();
+      const text = escapedAt ? restoreEscapedAt(answered) : answered;
 
       if (!state.sawResult || state.status !== 'success') {
         const failure = classifyGeminiFailure({
@@ -317,7 +329,20 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
           sawResult: state.sawResult,
           status: state.status,
           message: describeGeminiFailure(state),
+          // Only a turn with no result can be the sign-in refusing, and only
+          // then is the file worth reading.
+          credentialsPresent: !state.sawResult && hasStoredGeminiSignIn(turnEnv),
         });
+        if (failure.signInUnverified) {
+          const signedOut = outages.noteSignInUnverified(failure.detail);
+          throw fail(signedOut ? 'auth' : 'unavailable', failure.detail, {
+            adminAction: signedOut
+              ? GEMINI_SIGN_IN_ACTION
+              : 'Check that this server can reach oauth2.googleapis.com (a proxy, a firewall, DNS). If it keeps ' +
+                'happening, the token may have been revoked - then sign in again: ' +
+                GEMINI_SIGN_IN_ACTION,
+          });
+        }
         if (failure.kind === 'auth') {
           outages.noteAuth(failure.detail);
           throw fail('auth', failure.detail, { adminAction: GEMINI_SIGN_IN_ACTION });

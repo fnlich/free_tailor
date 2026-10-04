@@ -144,8 +144,10 @@ test('an expired sign-in is diagnosed as one, and the operator is told to sign i
       assert.equal(calls.length, 1);
       assert.match(calls[0].body, /grant_type=refresh_token/);
 
-      // The account-holder half is unchanged...
-      assert.equal(error.statusCode, 400);
+      // The account-holder half: the server's credential failing is a 502,
+      // never Google's 400 passed off as the caller's mistake...
+      assert.equal(error.statusCode, 502);
+      assert.equal(error.upstreamStatus, 400);
       assert.match(error.message, /sign-in is no longer valid/);
       assert.doesNotMatch(error.message, /sheets:login/, 'a page must not hand out server commands');
       // ...and the operator half now carries Google's own words too, which is
@@ -168,6 +170,43 @@ test('an expired sign-in is diagnosed as one, and the operator is told to sign i
     },
     { fakeFetch }
   );
+});
+
+test('a refusal at the token endpoint is a 502 whatever Google answered, with Google\'s status kept', async () => {
+  // Every one of these is THIS SERVER's credential failing. Passed through,
+  // a 400 told the caller their request was wrong and a 403 or 404 looked like
+  // their own refusal; only a busy endpoint is something to wait out.
+  for (const [status, body, expected] of [
+    [400, { error: 'invalid_grant', error_description: 'Bad Request' }, 502],
+    [403, { error: 'access_denied', error_description: 'denied' }, 502],
+    [404, '<html>Not Found</html>', 502],
+    [500, '<html>Server Error</html>', 502],
+    [401, { error: 'unauthorized_client' }, 502],
+    [429, { error: 'rate_limit_exceeded' }, 429],
+  ]) {
+    const fakeFetch = async () =>
+      new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': typeof body === 'string' ? 'text/html' : 'application/json' },
+      });
+    await withCredentials(
+      { 'google-oauth-credentials.json': USER_CREDENTIAL },
+      async ({ sheets, doctor }) => {
+        const error = await sheets.getAccessToken(sheets.SHEETS_SCOPE).then(
+          () => assert.fail(`a ${status} must not mint a token`),
+          (refused) => refused
+        );
+        assert.equal(error.statusCode, expected, `Google ${status}`);
+        assert.equal(error.upstreamStatus, status === expected ? undefined : status, `Google ${status}`);
+        assert.ok(error.detail, `Google ${status} keeps an operator detail`);
+        if (status === 429) assert.match(error.message, /busy right now/);
+        else assert.match(error.message, /^This server's Google/);
+        // The doctor still names what Google answered.
+        assert.match(doctor.reason(error), new RegExp(`^HTTP ${status}: `));
+      },
+      { fakeFetch }
+    );
+  }
 });
 
 // Signing in again re-uses the client saved in the file, so with the CLIENT

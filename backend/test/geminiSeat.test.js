@@ -516,3 +516,62 @@ test('the Gemini model 008 appended still counts as what the migrations left, wh
     );
   });
 });
+
+test("008's note says whether users can pick the Gemini model: not while the seat is locked, or switched off", async () => {
+  // It used to promise "users can pick it now" on an install where the lock
+  // kept it out of every picker.
+  const locked = freshStorage('note-locked');
+  plantSettings(locked.dbDir, preGeminiSettings());
+  const lockedReport = await withLocks('gemini-cli', async () => runMigration008(locked.dbDir));
+  assert.deepEqual(lockedReport.appendedModelIds, ['gemini-cli-auto'], 'still added, ready for the day the lock goes');
+  assert.match(lockedReport.notes[0], /locked on this machine \(AI_LOCKED_PROVIDERS\), so users will not see it/);
+  assert.doesNotMatch(lockedReport.notes[0], /users can pick it now/);
+
+  const off = freshStorage('note-off');
+  plantSettings(off.dbDir, preGeminiSettings({ providersEnabled: { 'claude-cli': true, 'codex-cli': true, 'gemini-cli': false } }));
+  const offReport = runMigration008(off.dbDir);
+  assert.match(offReport.notes[0], /switched off under Admin > Settings, so users will see it once it is switched on/);
+  assert.doesNotMatch(offReport.notes[0], /users can pick it now/);
+});
+
+test('008 does not rename a seed onto a display name another model already has', () => {
+  // Users see display names and nothing else, so the rename would make two
+  // identical choices - here, an administrator's own "claude opus" on Codex.
+  const { dbDir } = freshStorage('rename-clash');
+  plantSettings(
+    dbDir,
+    preGeminiSettings({
+      aiModels: [
+        ...preGeminiSettings().aiModels,
+        model('uuid-own', 'codex-cli', 'gpt-5.5', { name: ' claude opus ' }),
+      ],
+    })
+  );
+  const report = runMigration008(dbDir);
+  assert.deepEqual(report.skippedRenames, [
+    { id: 'claude-cli-opus', from: 'Claude Opus (subscription)', to: 'Claude Opus' },
+  ]);
+  assert.ok(report.renamedModels.some((entry) => entry.id === 'claude-cli-sonnet'), 'the others are still renamed');
+  assert.ok(report.notes.some((note) => /Left "Claude Opus \(subscription\)" as it is: another model is already called "Claude Opus"/.test(note)));
+
+  const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
+  assert.equal(stored.aiModels.find((entry) => entry.id === 'claude-cli-opus').name, 'Claude Opus (subscription)');
+  assert.equal(stored.aiModels.find((entry) => entry.id === 'uuid-own').name, ' claude opus ');
+  assert.deepEqual(JSON.parse(readSettingRaw(dbDir, SEED_LOG_KEY)).skippedRenames, report.skippedRenames);
+
+  // A clash with nothing else to do is still reported, and written nowhere but the log.
+  const lone = freshStorage('rename-clash-only');
+  const raw = plantSettings(
+    lone.dbDir,
+    preGeminiSettings({
+      aiModels: [
+        model('claude-cli-sonnet', 'claude-cli', 'sonnet', { name: 'Claude Sonnet (subscription)' }),
+        model('uuid-g', 'gemini-cli', 'pro', { name: 'Claude Sonnet' }),
+      ],
+    })
+  );
+  const loneReport = runMigration008(lone.dbDir);
+  assert.equal(loneReport.ran, true, 'so the runner says it');
+  assert.equal(loneReport.skippedRenames.length, 1);
+  assert.equal(readSettingRaw(lone.dbDir, APP_SETTINGS_KEY), raw, 'the row is untouched');
+});

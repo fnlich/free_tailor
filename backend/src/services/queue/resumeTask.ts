@@ -1,4 +1,5 @@
 import { resolveAiChoice, type AiChoice } from '../../config/aiPreferences';
+import { PublicError } from '../../middleware/publicError';
 import {
   isRetiredProviderId,
   RETIRED_FAMILY_DESCRIPTION,
@@ -338,6 +339,26 @@ export async function runResumeTask(
 }
 
 /**
+ * The profile a queued resume names was deleted before it ran.
+ *
+ * Its owner's own doing, and nothing an administrator can fix, so the stored
+ * text says what happened in their terms rather than "contact your
+ * administrator" - the id stays out of it and goes to the log as detail. And
+ * not retried: no later attempt will find the profile either.
+ */
+export class ProfileGoneError extends PublicError {
+  readonly retryable = false;
+
+  constructor(profileId: string) {
+    super('The profile for this resume was deleted before it could be built.', {
+      status: 410,
+      detail: `Profile ${profileId} no longer exists, so this resume cannot be generated.`,
+    });
+    this.name = 'ProfileGoneError';
+  }
+}
+
+/**
  * Turns a stored payload back into a running resume.
  *
  * The indirection a restart costs: a task on disk names its profile and its job
@@ -354,9 +375,7 @@ export function makeResumeRunner(
 
     const profile = readProfile(input.profileId);
     if (!profile) {
-      throw new Error(
-        `Profile ${input.profileId} no longer exists, so this resume cannot be generated.`
-      );
+      throw new ProfileGoneError(input.profileId);
     }
 
     const jobs = readJobs(input.batchId);

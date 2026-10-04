@@ -66,8 +66,19 @@ function jobsFor(count) {
   }));
 }
 
-async function serve(name) {
-  useTempStorage(`generation-pricing-${name}`);
+async function serve(name, { seeds = false } = {}) {
+  const { staticDir } = useTempStorage(`generation-pricing-${name}`);
+  if (seeds) {
+    // The default template and the shipped prompts, for the tests that need a
+    // preview to really be written: /preview renders HTML only, so nothing
+    // here prints a PDF.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const shipped = path.join(__dirname, '..', 'static');
+    fs.mkdirSync(path.join(staticDir, 'templates'), { recursive: true });
+    fs.copyFileSync(path.join(shipped, 'templates', 'default.json'), path.join(staticDir, 'templates', 'default.json'));
+    fs.cpSync(path.join(shipped, 'prompts'), path.join(staticDir, 'prompts'), { recursive: true });
+  }
   useAdminEmails('admin@example.com');
   config.invalidateSettingsCache();
   queueModule.resetGenerationQueueForTests();
@@ -358,6 +369,187 @@ test('/resume/generate resolves the model first and charges its price', async ()
     assert.equal(refused.status, 400);
     assertModelUnavailable(refused.body);
     assert.equal(server.ledger(server.alice).length, before, 'nothing reserved, nothing released');
+  } finally {
+    server.close();
+  }
+});
+
+/* ------------------------------------- content a preview already wrote */
+
+const ANALYSIS = {
+  jobMeta: { title: 'Engineer', seniority: '', industry: '', department: '' },
+  skills: { technical: [], required: [], preferred: [], tools: [], soft: [], technologies: [] },
+  technologies: [],
+  protocols: [],
+  methodologies: [],
+  architecturePatterns: [],
+  responsibilities: [],
+  domainKnowledge: [],
+  softSkills: [],
+  keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
+};
+
+/** A Claude seat that answers every tailoring with a summary naming the model that wrote it. */
+function claudeSeatNamingItsModel(calls) {
+  const ai = require('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+  ai.registerAdapter('claude-cli', () => ({
+    id: 'claude-cli',
+    capabilities: {
+      id: 'claude-cli', label: 'stub', temperature: false, maxOutputTokens: false,
+      nativeJsonMode: 'json-schema', systemBlocks: true, maxConcurrency: 4,
+    },
+    defaultModelName: () => 'sonnet',
+    health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
+    async complete(request) {
+      calls.push(request.modelName);
+      const text = JSON.stringify({ summary: `Written by ${request.modelName}.`, hardSkills: [], softSkills: [], experience: [] });
+      return { text, resolvedModel: request.modelName, providerId: 'claude-cli', droppedParams: [], latencyMs: 1 };
+    },
+  }));
+  return () => ai.resetRegistryForTests();
+}
+
+test('a preview hands back a token naming the model that wrote it, and a re-render of supplied content gets none', async () => {
+  const server = await serve('preview-token', { seeds: true });
+  const calls = [];
+  const restore = claudeSeatNamingItsModel(calls);
+  const { readPreviewToken } = require('../dist/services/credits/previewToken');
+  try {
+    const single = await server.post('alice', '/resume/preview', {
+      profileId: 'p-plain',
+      model: 'claude-cli-opus',
+      jobAnalysis: ANALYSIS,
+    });
+    assert.equal(single.status, 200, JSON.stringify(single.body));
+    assert.deepEqual(calls, ['opus']);
+    assert.equal(
+      readPreviewToken(single.body.previewToken, { userId: server.alice.id, profileId: 'p-plain' }),
+      'claude-cli-opus'
+    );
+    // Issued to this account for this profile, and nobody else's.
+    assert.equal(readPreviewToken(single.body.previewToken, { userId: server.admin.id, profileId: 'p-plain' }), null);
+    assert.equal(readPreviewToken(single.body.previewToken, { userId: server.alice.id, profileId: 'p-opus' }), null);
+    assert.equal(readPreviewToken(`${single.body.previewToken}x`, { userId: server.alice.id, profileId: 'p-plain' }), null);
+
+    // Re-rendering content the request supplies runs no model, so it proves
+    // nothing about which model wrote it.
+    const rerender = await server.post('alice', '/resume/preview', {
+      profileId: 'p-plain',
+      model: 'claude-cli-haiku',
+      jobAnalysis: ANALYSIS,
+      tailoredContent: single.body.tailoredContent,
+    });
+    assert.equal(rerender.status, 200);
+    assert.equal(rerender.body.previewToken, undefined);
+    assert.equal(calls.length, 1);
+
+    // The multi-profile preview runs each profile on the request's model when
+    // it names one - and on the profile's own when it does not - and each
+    // preview's token says which.
+    const jobDescription = jobsFor(1)[0].jobDescription;
+    const named = await server.post('alice', '/resume/preview-all', {
+      profileIds: ['p-opus', 'p-plain'],
+      model: 'claude-cli-haiku',
+      jobDescription,
+      jobAnalysis: ANALYSIS,
+    });
+    assert.equal(named.status, 200, JSON.stringify(named.body));
+    const unnamed = await server.post('alice', '/resume/preview-all', {
+      profileIds: ['p-opus', 'p-plain'],
+      jobDescription,
+      jobAnalysis: ANALYSIS,
+    });
+    const tokenModel = (body, profileId) =>
+      readPreviewToken(body.previews.find((preview) => preview.profileId === profileId).previewToken, {
+        userId: server.alice.id,
+        profileId,
+      });
+    assert.equal(tokenModel(named.body, 'p-opus'), 'claude-cli-haiku');
+    assert.equal(tokenModel(named.body, 'p-plain'), 'claude-cli-haiku');
+    assert.equal(tokenModel(unnamed.body, 'p-opus'), 'claude-cli-opus');
+    assert.equal(tokenModel(unnamed.body, 'p-plain'), 'claude-cli-sonnet');
+    assert.deepEqual(server.ledger(server.alice), [], 'previews are free');
+  } finally {
+    restore();
+    server.close();
+  }
+});
+
+test("finalising a preview is charged the model that wrote it, not the one the request names", async () => {
+  const server = await serve('finalize-price');
+  const { issuePreviewToken } = require('../dist/services/credits/previewToken');
+  try {
+    credits.setBalance(server.alice.id, 20, server.admin.id);
+    await config.updateAIModel('claude-cli-haiku', { creditsPerResume: 0 });
+    const opusToken = issuePreviewToken({ userId: server.alice.id, profileId: 'p-plain', modelId: 'claude-cli-opus' });
+    const written = { summary: 'Written by opus.', hardSkills: [], softSkills: [], experience: [] };
+    const reserveNote = () => server.ledger(server.alice, 'generation-reserve').at(0)?.note ?? null;
+
+    // Opus's work, finalised naming the free model: charged Opus. (No template
+    // here, so the run stops after the charge and gives it back.)
+    await server.post('alice', '/resume/generate', {
+      profileId: 'p-plain',
+      companyName: 'Acme',
+      model: 'claude-cli-haiku',
+      tailoredContent: written,
+      previewToken: opusToken,
+    });
+    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ 2 = 2 credits');
+
+    // A token for another profile, or a forged one, proves nothing - and
+    // content of unknown origin is charged at least what the profile's own
+    // model costs, never the free model the request names.
+    for (const previewToken of [
+      issuePreviewToken({ userId: server.alice.id, profileId: 'p-opus', modelId: 'claude-cli-haiku' }),
+      `${opusToken.split('.')[0]}.forged`,
+      undefined,
+    ]) {
+      await server.post('alice', '/resume/generate', {
+        profileId: 'p-plain',
+        companyName: 'Acme',
+        model: 'claude-cli-haiku',
+        tailoredContent: written,
+        ...(previewToken ? { previewToken } : {}),
+      });
+      assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Sonnet @ 1 = 1 credit');
+    }
+    // ...while naming a dearer model than the profile's is charged that.
+    await server.post('alice', '/resume/generate', {
+      profileId: 'p-plain',
+      companyName: 'Acme',
+      model: 'claude-cli-opus',
+      tailoredContent: written,
+    });
+    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ 2 = 2 credits');
+
+    // The queue the same way, and the quote with it: the tokens alone are
+    // enough to price what finalising will charge.
+    const batchBody = {
+      jobs: jobsFor(1),
+      profileIds: ['p-plain'],
+      model: 'claude-cli-haiku',
+      previewTokenByProfileId: { 'p-plain': opusToken },
+    };
+    const quote = await server.post('alice', '/generation/quote', batchBody);
+    assert.equal(quote.body.credits, 2);
+    const submitted = await server.post('alice', '/generation/batches', {
+      ...batchBody,
+      tailoredContentByProfileId: { 'p-plain': written },
+    });
+    assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
+    assert.match(reserveNote(), /1 x Claude Opus @ 2 = 2 credits$/);
+    await untilFinished(submitted.body.batchId);
+
+    const stripped = await server.post('alice', '/generation/batches', {
+      jobs: jobsFor(1),
+      profileIds: ['p-plain'],
+      model: 'claude-cli-haiku',
+      tailoredContentByProfileId: { 'p-plain': written },
+    });
+    assert.equal(stripped.status, 202);
+    assert.match(reserveNote(), /1 x Claude Sonnet @ 1 = 1 credit$/);
+    await untilFinished(stripped.body.batchId);
   } finally {
     server.close();
   }

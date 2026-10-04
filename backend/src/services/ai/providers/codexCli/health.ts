@@ -31,6 +31,12 @@ import type { ProviderHealth } from '../../types';
 export type CodexCliHealth = ProviderHealth & {
   binary: string | null;
   loggedIn: boolean;
+  /**
+   * True only when `codex login status` positively says the sign-in is an API
+   * key. The adapter refuses every turn on that, before spawning; an unknown or
+   * failed check is NOT this, and never blocks a working seat.
+   */
+  apiKey?: boolean;
 };
 
 const SIGNED_OUT = /not\s+logged\s+in|no\s+credentials|please\s+run\s+`?codex\s+login/i;
@@ -140,6 +146,7 @@ export async function checkCodexCliHealth(options: {
     return {
       ok: false,
       loggedIn: false,
+      apiKey: true,
       binary: options.binary,
       detail:
         `Signed in with an API key, not a ChatGPT subscription (\`codex login status\` said: ${how}). ` +

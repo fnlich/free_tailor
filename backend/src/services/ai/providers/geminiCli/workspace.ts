@@ -30,8 +30,14 @@ import { warnOnce } from '../../telemetry';
  *     any other auth type exit 41 before a network call (verified with a
  *     GEMINI_API_KEY in place);
  *   - tools.core [] registers no built-in tools at all (verified: the request
- *     carries an empty functionDeclarations), MCP, extensions, skills and
- *     hooks are off;
+ *     carries an empty functionDeclarations), skills and hooks are off;
+ *   - MCP servers and extensions are NOT turned off here, whatever the keys
+ *     below look like: 0.62.0 rebuilds `admin.*` from remote admin controls
+ *     only, so it is ignored in any settings file, and an empty `mcp.allowed`
+ *     means "no limit". The pinned `--allowed-mcp-server-names` and
+ *     `--extensions none` in argv.ts are what keep the operator's own servers
+ *     and extensions out of a turn. The keys stay because this is the file
+ *     that was verified, and they cost nothing;
  *   - billing.overageStrategy 'never': a seat whose quota is spent fails rather
  *     than spending the account's paid AI Credits;
  *   - usage statistics and telemetry off, checkpointing and auto-update off;

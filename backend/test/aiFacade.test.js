@@ -306,6 +306,60 @@ test('a prompt record model override beats the caller, and a stale provider id s
   assert.equal(requests[0].modelName, 'opus');
 });
 
+test("a prompt's override does not move a resume off the model it is charged at", async () => {
+  // A resume's analysis, tailoring and cover letter are priced at the run's
+  // model. Honouring the override there ran the work on one model while the
+  // account paid for another, and made the person's choice do nothing.
+  const { staticDir } = useTempStorage('facade-override-priced');
+  const override = { modelProvider: 'gemini-cli', modelName: 'flash' };
+  writePrompt(staticDir, 'tailor-resume', 'Tailor.\n[[profileJson]]\n[[jobAnalysisJson]]', override);
+  writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]', override);
+  writePrompt(staticDir, 'generate-cover-letter', 'Write.\n[[profileJson]] [[companyName]] [[role]]', override);
+
+  const ai = loadAi();
+  const claude = stubAdapter({
+    text: JSON.stringify({ title: 'Engineer', summary: 'S.', experience: [], strengths: [], hardSkills: [], softSkills: [] }),
+  });
+  const gemini = stubAdapter();
+  ai.registerAdapter('claude-cli', () => claude.adapter);
+  ai.registerAdapter('gemini-cli', () => ({ ...gemini.adapter, id: 'gemini-cli' }));
+
+  const resumeService = loadFresh('../dist/services/resumeService');
+  const choice = { provider: 'claude-cli', modelName: 'opus', modelId: 'claude-cli-opus', modelLabel: 'Claude Opus' };
+  const profile = { id: 'p1', name: 'Jane', experience: [], skills: [], education: [] };
+  const analysis = {
+    jobMeta: { title: 'Engineer', seniority: '', industry: '', department: '' },
+    skills: { technical: [], required: [], preferred: [], tools: [], soft: [], technologies: [] },
+    technologies: [],
+    protocols: [],
+    methodologies: [],
+    architecturePatterns: [],
+    responsibilities: [],
+    domainKnowledge: [],
+    softSkills: [],
+    keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
+  };
+
+  await resumeService.tailorResume(profile, analysis, choice);
+  await resumeService.generateCoverLetter(profile, 'Acme', 'Engineer', choice);
+  await resumeService
+    .analyzeJobDescription('A job description long enough to be analysed. '.repeat(3), choice)
+    .catch(() => undefined);
+
+  assert.deepEqual(claude.requests.map((request) => request.modelName), ['opus', 'opus', 'opus']);
+  assert.equal(gemini.requests.length, 0, 'the override ran nothing');
+
+  // The same override still decides a call nobody is charged for.
+  await ai.createPromptCompletion({
+    promptId: 'analyze-job-description',
+    promptValues: { jobDescription: 'A job' },
+    fallbackProvider: 'claude-cli',
+    fallbackModelName: 'opus',
+    useExactPromptId: true,
+  });
+  assert.deepEqual(gemini.requests.map((request) => request.modelName), ['flash']);
+});
+
 test('a disabled provider is refused with a status a route can act on', async () => {
   const { staticDir } = useTempStorage('facade-disabled');
   writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]');

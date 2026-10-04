@@ -22,9 +22,12 @@ import { isGeminiModelName } from './options';
  *     one turn's content into another;
  *   --acp / --experimental-acp switch to an agent protocol on stdio;
  *   --debug opens a debug console;
- *   --worktree, --include-directories, --extensions, --allowed-tools and
- *     --allowed-mcp-server-names widen what the turn can reach;
+ *   --worktree, --include-directories and --allowed-tools widen what the turn
+ *     can reach;
  *   the hidden --fake-responses / --record-responses are test hooks.
+ *
+ * `--extensions` and `--allowed-mcp-server-names` are not here: every turn
+ * passes them, pinned to values that NARROW (see buildGeminiArgv).
  */
 export const FORBIDDEN_FLAGS = [
   '--yolo',
@@ -48,10 +51,7 @@ export const FORBIDDEN_FLAGS = [
   '--worktree',
   '-w',
   '--include-directories',
-  '--extensions',
-  '-e',
   '--allowed-tools',
-  '--allowed-mcp-server-names',
   '--fake-responses',
   '--fake-responses-non-strict',
   '--record-responses',
@@ -138,8 +138,22 @@ export function buildGeminiArgv(options: GeminiArgvOptions): string[] {
     '--skip-trust',
     '--session-id',
     options.sessionId,
+    // MCP servers and extensions OFF, by flag because no settings file can do
+    // it: 0.62.0 builds `admin.*` from remote admin controls only, ignoring it
+    // in every settings file, and an empty `mcp.allowed` means "no limit". So
+    // the operator's own ~/.gemini mcpServers would start (and a hung one
+    // stall every turn) and an installed extension's context would join every
+    // prompt. A non-empty allowlist naming no real server blocks every server,
+    // extensions' included; `none` is the CLI's own value for "load none".
+    '--allowed-mcp-server-names',
+    GEMINI_NO_MCP_SERVER,
+    '--extensions',
+    'none',
   ];
 }
+
+/** An MCP allowlist entry no real server is called, so the allowlist admits none. */
+export const GEMINI_NO_MCP_SERVER = '__tailor_none__';
 
 /**
  * The CLI's own `@path` token, copied from its parser (atCommandProcessor in
@@ -148,36 +162,48 @@ export function buildGeminiArgv(options: GeminiArgvOptions): string[] {
  */
 const AT_REFERENCE = /(?<!\\)@(?:(?:"[^"]*")|(?:\\.|[^ \t\n\r,;!?()[\]{}.]|\.(?!$|[ \t\n\r])))+/g;
 
-/** A token that could name a file outside the empty workspace. */
-const PATH_LIKE = /[\\/~:"]/;
-
 /**
- * Escapes every `@` the CLI would read as a reference to a file OUTSIDE the
- * workspace.
+ * Escapes every `@` reference the CLI would read, with the CLI's own `\@`,
+ * which it leaves as text.
  *
- * The CLI treats `@path` in the prompt as "attach this file", reads it before
- * the model is called, and allows any path inside the workspace OR inside its
- * own per-project temp directory under `~/.gemini/tmp/` - which is where every
- * concurrent turn's transcript sits while it runs. A job description is
- * user-supplied text, so `@../../home/app/.gemini/tmp/gemini-cli-work/chats`
- * in one would attach other users' prompts to this turn. A token with a path
- * separator, a drive colon, a `~` or a quote is escaped with the CLI's own
- * `\@`, which it leaves as text. Emails and handles (`@example.com`, `@jane`)
- * cannot leave the empty workspace and are left exactly as written; a URL with
- * an `@` in its path gains one backslash, which is the cost of the guard.
+ * The CLI treats `@name` in the prompt as "attach this file", reads it before
+ * the model is called, and resolves it against every workspace directory - the
+ * empty one this seat runs in, but ALSO each `context.includeDirectories` in the
+ * operator's ~/.gemini or system settings, a list the workspace settings cannot
+ * clear (its merge strategy is concat). A path can also reach the CLI's
+ * per-project temp dir under ~/.gemini/tmp, where every concurrent turn's
+ * transcript sits. A job description is user-supplied text, so `@config.json`
+ * or `@../../home/app/.gemini/tmp/...` in one would attach the operator's
+ * files, or other users' prompts, to this turn. So no token is judged safe by
+ * its spelling: emails and handles are escaped too, and the backslash that
+ * puts in front of them is taken back out of the answer (restoreEscapedAt).
  *
  * Repeated until nothing changes, because escaping the first `@` of a token
  * like `@a@/etc` exposes the second as a token of its own.
  */
-export function escapeOutsidePathReferences(text: string): string {
+export function escapeAtReferences(text: string): string {
   let current = text;
   for (;;) {
-    const next = current.replace(AT_REFERENCE, (match) =>
-      PATH_LIKE.test(match.slice(1)) ? `\\${match}` : match
-    );
+    const next = current.replace(AT_REFERENCE, (match) => `\\${match}`);
     if (next === current) return current;
     current = next;
   }
+}
+
+/**
+ * Undoes the escape above in a model's answer.
+ *
+ * A model shown `jane\@example.com` can copy it as written, and a `\@` inside
+ * a JSON string is not a valid escape, so the whole answer would fail to parse.
+ * Only a `\@` whose backslash is not itself escaped is changed - the CLI's own
+ * unescapeLiteralAt rule - so a JSON `\\@` (a real backslash) survives.
+ */
+export function restoreEscapedAt(text: string): string {
+  return text.replace(/\\@/g, (match, offset: number, full: string) => {
+    let backslashes = 0;
+    for (let i = offset - 1; i >= 0 && full[i] === '\\'; i -= 1) backslashes += 1;
+    return backslashes % 2 === 0 ? '@' : match;
+  });
 }
 
 /**
@@ -188,6 +214,6 @@ export function escapeOutsidePathReferences(text: string): string {
  * CLI would otherwise run as a slash command instead of sending it.
  */
 export function guardGeminiPrompt(userBody: string): string {
-  const escaped = escapeOutsidePathReferences(userBody);
+  const escaped = escapeAtReferences(userBody);
   return escaped.startsWith('/') ? `\n${escaped}` : escaped;
 }

@@ -19,10 +19,15 @@ import { classifyCliFailure } from './classify';
 import { checkClaudeCliHealth, type ClaudeCliHealth } from './health';
 import { interpretRateLimitEvent, OutageTable } from './limits';
 import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './options';
-import { createSpawnRunner, ensureCliWorkdir, type CliRunner } from '../cli/runner';
+import { createSpawnRunner, ensureCliWorkdir, type CliRunner, type CliRunOutcome } from '../cli/runner';
 import { CLAUDE_CLI_BINARY_HINTS } from './hints';
 
 const PROVIDER_ID = 'claude-cli' as const;
+
+/** `apiKeySource` from `system/init`: anything but 'none' is a key, billed per token. */
+function billedToKey(apiKeySource: string | null): boolean {
+  return Boolean(apiKeySource) && apiKeySource !== 'none';
+}
 
 export type ClaudeCliAdapterOptions = {
   /** Injected in tests so the suite never spawns a process. */
@@ -178,21 +183,69 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       const startedAt = now();
       const reduce = createEventReducer(state);
 
-      const outcome = await runner.run({
-        binary: config.binary,
-        argv: invocation.argv,
-        env: buildChildEnv(process.env),
-        cwd: config.workdir,
-        stdin,
-        deadlineMs: Math.max(1_000, Math.min(request.deadline.remainingMs(), resolveTimeoutMs(config, request.callSite))),
-        firstEventMs: config.firstEventMs,
-        maxOutputBytes: config.maxOutputBytes,
-        signal: request.signal,
-        onLine: (line) => reduce(line, now() - startedAt),
-        binaryHints: CLAUDE_CLI_BINARY_HINTS,
-      });
+      // The turn's own stop switch, so the key check below can end the child
+      // the moment `system/init` names a key, rather than after the answer -
+      // and the bill - has arrived. The caller's cancellation still reaches it.
+      const stop = new AbortController();
+      const forwardCancel = (): void => stop.abort();
+      if (request.signal?.aborted) {
+        stop.abort();
+      } else {
+        request.signal?.addEventListener('abort', forwardCancel, { once: true });
+      }
+
+      let outcome: CliRunOutcome;
+      try {
+        outcome = await runner.run({
+          binary: config.binary,
+          argv: invocation.argv,
+          env: buildChildEnv(process.env),
+          cwd: config.workdir,
+          stdin,
+          deadlineMs: Math.max(1_000, Math.min(request.deadline.remainingMs(), resolveTimeoutMs(config, request.callSite))),
+          firstEventMs: config.firstEventMs,
+          maxOutputBytes: config.maxOutputBytes,
+          signal: stop.signal,
+          onLine: (line) => {
+            reduce(line, now() - startedAt);
+            if (billedToKey(state.apiKeySource) && !stop.signal.aborted) {
+              stop.abort();
+            }
+          },
+          binaryHints: CLAUDE_CLI_BINARY_HINTS,
+        });
+      } finally {
+        request.signal?.removeEventListener('abort', forwardCancel);
+      }
 
       const latencyMs = now() - startedAt;
+
+      // A key reaching the child means this call is billed per token, which is
+      // the exact failure this provider exists to prevent - and it is
+      // otherwise completely invisible. `system/init` is the CLI's first event
+      // and names the credential, so the child was stopped right there, before
+      // the model's answer; asserted ahead of every other outcome because that
+      // stop reads as a cancellation. No switch to accept it: the app runs on
+      // subscription seats only.
+      if (billedToKey(state.apiKeySource)) {
+        // Held as an outage too. Failing only this call leaves the operator
+        // free to retry straight into another billed request; every call until
+        // the environment is fixed would be metered. Worded "signed in" so the
+        // calls the hold turns away read as the sign-in problem it is, not as
+        // a busy seat.
+        outages.noteAuth(`the CLI is signed in with ${state.apiKeySource}, not the subscription`);
+        throw fail(
+          'auth',
+          `the CLI reported apiKeySource="${state.apiKeySource}", so this call would have been billed per ` +
+            'token rather than run on the subscription; the turn was stopped at that first event',
+          {
+            adminAction:
+              'An API key reached the claude subprocess (an apiKeyHelper in its settings, or a key the ' +
+              'environment strip cannot see). Remove it from the server, then run `claude auth status` as ' +
+              'the service user and confirm it reports the subscription.',
+          }
+        );
+      }
 
       if (outcome.spawnError) {
         if (outcome.spawnError.code === 'ENOENT') {
@@ -246,27 +299,6 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
           ? Math.max(1, Math.ceil(rate.resetsAt - now() / 1000))
           : undefined;
         throw fail('rateLimited', rate.reason, { retryAfterSeconds });
-      }
-
-      // A key reaching the child means this call is billed per token, which is
-      // the exact failure this provider exists to prevent - and it is
-      // otherwise completely invisible. Free to assert, so assert it, and with
-      // no switch to accept it: the app runs on subscription seats only.
-      if (state.apiKeySource && state.apiKeySource !== 'none') {
-        // Held as an outage too. Failing only this call leaves the operator
-        // free to retry straight into another billed request; every call until
-        // the environment is fixed would be metered.
-        outages.noteAuth(`the CLI is authenticating with ${state.apiKeySource}, not the subscription`);
-        throw fail(
-          'auth',
-          `the CLI reported apiKeySource="${state.apiKeySource}", so this call was billed per token rather than run on the subscription`,
-          {
-            adminAction:
-              'An API key reached the claude subprocess (an apiKeyHelper in its settings, or a key the ' +
-              'environment strip cannot see). Remove it from the server, then run `claude auth status` as ' +
-              'the service user and confirm it reports the subscription.',
-          }
-        );
       }
 
       // Only consulted when something actually says the turn failed. Run on

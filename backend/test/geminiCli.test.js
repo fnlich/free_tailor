@@ -150,7 +150,15 @@ test('argv asks for stream-json, an explicit model, the deny-all policy and a se
     '--skip-trust',
     '--session-id',
     'b9b4e623-5fc0-49bc-8f1e-950adada3732',
+    // No settings file can turn MCP servers or extensions off (0.62.0 ignores
+    // `admin.*` in every file, and an empty allowlist means no limit), so the
+    // flags do: an allowlist naming no real server, and no extensions.
+    '--allowed-mcp-server-names',
+    '__tailor_none__',
+    '--extensions',
+    'none',
   ]);
+  assert.equal(argv.GEMINI_NO_MCP_SERVER, '__tailor_none__');
 
   for (const flag of argv.FORBIDDEN_FLAGS) {
     assert.equal(flags.includes(flag), false, `${flag} must never be passed`);
@@ -161,6 +169,7 @@ test('argv asks for stream-json, an explicit model, the deny-all policy and a se
   for (const flag of [
     '--yolo', '-y', '--approval-mode', '--sandbox', '-s', '-p', '--prompt', '-i',
     '--raw-output', '--accept-raw-output-risk', '--resume', '--acp', '--debug',
+    '--include-directories', '--allowed-tools',
   ]) {
     assert.ok(argv.FORBIDDEN_FLAGS.includes(flag), `${flag} belongs in FORBIDDEN_FLAGS`);
   }
@@ -193,10 +202,12 @@ test('a prompt that starts with / is not run as a slash command', () => {
   assert.equal(argv.guardGeminiPrompt('Write about /usr paths'), 'Write about /usr paths');
 });
 
-test('an @path that leaves the workspace is escaped, and an email is left exactly as written', () => {
-  // The CLI attaches the file an @path names, and its project temp dir - where
-  // concurrent turns' transcripts sit - is readable that way. A job description
-  // is user-supplied text.
+test('every @ reference is escaped, an email included, so none can attach a file', () => {
+  // The CLI attaches the file an @name names, resolved against the workspace
+  // AND every context.includeDirectories in the operator's own settings, which
+  // the workspace settings cannot clear - so a bare `@config.json` can reach an
+  // operator file, and a path can reach other turns' transcripts. A job
+  // description is user-supplied text.
   const cases = [
     ['see @../../home/app/.gemini/tmp/work/chats now', 'see \\@../../home/app/.gemini/tmp/work/chats now'],
     ['@/etc/passwd', '\\@/etc/passwd'],
@@ -204,23 +215,43 @@ test('an @path that leaves the workspace is escaped, and an email is left exactl
     ['@C:secrets', '\\@C:secrets'],
     ['@"/root/notes"', '\\@"/root/notes"'],
     ['@..\\..\\Users', '\\@..\\..\\Users'],
+    // Bare names resolve inside an operator's includeDirectories.
+    ['we use @config.json and @.env', 'we use \\@config.json and \\@.env'],
+    ['Email jane.doe@example.com or ping @jane.', 'Email jane.doe\\@example.com or ping \\@jane.'],
     // Escaping the first @ exposes the second as a token of its own.
     ['@a@/etc/passwd', '\\@a\\@/etc/passwd'],
   ];
   for (const [input, expected] of cases) {
-    assert.equal(argv.escapeOutsidePathReferences(input), expected, input);
+    assert.equal(argv.escapeAtReferences(input), expected, input);
   }
 
-  // Nothing here can leave the empty workspace, so nothing is changed - in
-  // particular no backslash that a model could copy into a JSON string.
-  for (const untouched of [
-    'Email jane.doe@example.com or ping @jane.',
-    'Meet @ 3pm, budget @$40k',
-    'already escaped \\@/etc/passwd',
-    'no at sign at all',
-  ]) {
-    assert.equal(argv.escapeOutsidePathReferences(untouched), untouched, untouched);
+  // Not a reference to the CLI, so left exactly as written.
+  for (const untouched of ['Meet @ 3pm', 'already escaped \\@/etc/passwd', 'no at sign at all']) {
+    assert.equal(argv.escapeAtReferences(untouched), untouched, untouched);
   }
+});
+
+test('the backslash the escape adds is taken back out of the answer, and a real one is kept', () => {
+  // `\@` is not a JSON escape, so an answer that copied it would not parse.
+  assert.equal(argv.restoreEscapedAt('{"email": "jane\\@example.com"}'), '{"email": "jane@example.com"}');
+  assert.equal(JSON.parse(argv.restoreEscapedAt('{"email": "jane\\@example.com"}')).email, 'jane@example.com');
+  // A JSON `\\@` is a literal backslash before an @, and stays one.
+  assert.equal(argv.restoreEscapedAt('{"path": "C:\\\\@x"}'), '{"path": "C:\\\\@x"}');
+  assert.equal(argv.restoreEscapedAt('plain @ text'), 'plain @ text');
+});
+
+test('an answer that echoes an escaped email is returned as the user wrote it', async () => {
+  const echo = [
+    ...OPENING,
+    JSON.stringify({ type: 'message', role: 'assistant', content: '{"email": "jane\\@example.com"}', delta: true }),
+    lines('constructed-success.ndjson').at(-1),
+  ];
+  const runner = makeFakeCliRunner({ lines: echo });
+  const { adapter } = makeAdapter(runner);
+
+  const result = await adapter.complete(makeRequest({ userBody: 'Contact: jane@example.com' }));
+  assert.equal(runner.calls[0].stdin, 'Contact: jane\\@example.com');
+  assert.equal(result.text, '{"email": "jane@example.com"}');
 });
 
 // -- child environment ------------------------------------------------------ //
@@ -613,6 +644,81 @@ test('a signed-out seat is an auth failure with the sign-in steps, and the seat 
   assert.ok(again.retryAfterSeconds > 0);
   assert.equal(runner.calls.length, 1);
   assert.deepEqual(adapter.outages().map((hold) => hold.scope), ['*']);
+});
+
+/** A Google sign-in on disk, as the health check reads it. */
+function writeSignIn(home) {
+  fs.mkdirSync(path.join(home, '.gemini'), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.gemini', 'oauth_creds.json'),
+    JSON.stringify({ access_token: 'ya29.x', refresh_token: '1//refresh', expiry_date: 4102444800000 })
+  );
+}
+
+test('exit 41 with a sign-in on disk is held briefly, and only a repeat makes it a sign-in problem', async () => {
+  // The CLI checks its token with Google on every start, and a refused
+  // connection there ends in exactly the signed-out exit and words. One blip
+  // must not take the seat out for half an hour as "sign in again".
+  let clock = Date.parse('2026-10-04T12:00:00Z');
+  let calls = 0;
+  const runner = makeFakeCliRunner(() => {
+    calls += 1;
+    return calls === 2
+      ? { lines: lines('constructed-success.ndjson') }
+      : { lines: [], exitCode: 41, stderr: stderrTail('recorded-signed-out.stderr.txt') };
+  });
+  const { adapter, home } = makeAdapter(runner, {}, { now: () => clock });
+  writeSignIn(home);
+
+  const first = await failureOf(adapter.complete(makeRequest()));
+  assert.equal(first.kind, 'unavailable');
+  assert.match(first.detail, /could not validate its Google sign-in/);
+  assert.match(first.adminAction, /oauth2\.googleapis\.com/);
+  // Held seat-wide, but for minutes, and turned away as what it is.
+  const held = await failureOf(adapter.complete(makeRequest()));
+  assert.equal(held.kind, 'unavailable');
+  assert.ok(held.retryAfterSeconds > 0 && held.retryAfterSeconds <= 120, `${held.retryAfterSeconds}s`);
+  assert.equal(runner.calls.length, 1);
+
+  // A success clears the hold and the count.
+  clock += 3 * 60_000;
+  assert.equal((await adapter.complete(makeRequest())).text, '{"capital": "Paris"}');
+
+  // Three in a row with nothing working between: a revoked token, most likely,
+  // so it ends at the sign-in action and the long hold after all.
+  const kinds = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    clock += 3 * 60_000;
+    const error = await failureOf(adapter.complete(makeRequest()));
+    kinds.push(error.kind);
+    if (attempt === 2) assert.match(error.adminAction, /NO_BROWSER=true gemini/);
+  }
+  assert.deepEqual(kinds, ['unavailable', 'unavailable', 'auth']);
+  const after = await failureOf(adapter.complete(makeRequest()));
+  assert.equal(after.kind, 'auth');
+  assert.ok(after.retryAfterSeconds > 20 * 60, `${after.retryAfterSeconds}s`);
+});
+
+test('no auth method, or a refused type, is auth at once even with a sign-in on disk', async () => {
+  for (const name of ['recorded-no-auth-method.stderr.txt', 'recorded-enforced-type-refusal.stderr.txt']) {
+    const runner = makeFakeCliRunner({ lines: [], exitCode: 41, stderr: stderrTail(name) });
+    const { adapter, home } = makeAdapter(runner);
+    writeSignIn(home);
+    const error = await failureOf(adapter.complete(makeRequest()));
+    assert.equal(error.kind, 'auth', name);
+  }
+
+  const signedOut = stderrTail('recorded-signed-out.stderr.txt');
+  const classifyWith = (credentialsPresent) =>
+    classify.classifyGeminiFailure({ exitCode: 41, stderrTail: signedOut, sawResult: false, status: null, message: '', credentialsPresent });
+  assert.equal(classifyWith(false).kind, 'auth');
+  assert.equal(classifyWith(true).kind, 'unavailable');
+  assert.equal(classifyWith(true).signInUnverified, true);
+
+  // Encrypted storage cannot be read, and "cannot tell" is not "signed out".
+  const { hasStoredGeminiSignIn } = require('../dist/services/ai/providers/geminiCli/health');
+  assert.equal(hasStoredGeminiSignIn({ HOME: '/nonexistent', GEMINI_FORCE_ENCRYPTED_FILE_STORAGE: 'true' }), true);
+  assert.equal(hasStoredGeminiSignIn({ HOME: '/nonexistent' }), false);
 });
 
 test('no auth method, or a refused one, is auth too - by the exit code or by the words', async () => {

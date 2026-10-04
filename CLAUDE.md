@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~22s with the tsc step, 1039 tests)
+npm test                       # backend node:test suite (~22s with the tsc step, 1065 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -153,7 +153,7 @@ backend/
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 86 files; fixtures/cli, codex and gemini
+  test/               # node:test, 87 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -241,15 +241,19 @@ all **subscription seats** run through a local CLI, in catalog order:
 headless: `codex login --device-auth` and `NO_BROWSER=true gemini` need no
 browser on the server. **Nothing reads or sends an API key**, and there is no
 switch to allow one: each seat strips every key variable from its child (Gemini
-pins them to ""), the Claude seat fails a turn whose `apiKeySource` is not
-`none` and holds itself as signed out, and Codex health counts a CLI signed in
-with a key as not signed in. `AI_LOCKED_PROVIDERS` marks a seat this machine
+pins them to ""), the Claude seat stops a turn the moment its `system/init`
+event names an `apiKeySource` other than `none` - before the answer, not after
+the bill - and holds itself as signed out, and Codex asks `codex login status`
+(cached a minute) before every turn and refuses, without spawning, a CLI signed
+in with a key (stored in CODEX_HOME, out of the environment strip's reach). `AI_LOCKED_PROVIDERS` marks a seat this machine
 cannot run; nothing is locked out of the box, a fresh install defaults to the
 first seat not locked, and with all three locked a settings READ still succeeds
 with no runnable models (saves keep their asserts) while a run fails with
 `AiUnavailableError`. The job filter and the Bid Assistant run on the app
 default MODEL - a record's provider and model name - like any run that names
-none.
+none, and a prompt's model override still decides them. It does NOT decide a
+resume: analysis, tailoring and cover letter pass `runChoiceWins`, so they run
+on the model the run was charged at, whatever the prompt record says.
 
 Models are admin-curated records: a display name, a seat, a model name and
 `creditsPerResume`. The model name is chosen from `config/providerModels.ts`'s
@@ -280,6 +284,13 @@ re-prices it; the queue hook refunds `taskCreditCost(payload)`, 1 when absent.
 `reserveCredits` and `refundTaskUnit` take AMOUNTS, a batch reserves the sum,
 and `POST /api/generation/quote` prices a batch body through the same
 `resolveProfileChoices` without reserving anything. Administrators stay exempt.
+Tailored content a preview already wrote is priced at the model that WROTE it,
+not the one the finalising request names: `/resume/preview` and `/preview-all`
+hand back a signed `previewToken` (`services/credits/previewToken.ts`, HMAC with
+a secret kept in `app_settings`), `/resume/generate` and `/generation/batches`
+(`previewTokenByProfileId`, which the quote takes alone) price and run on its
+model, and supplied content without a valid token is charged at least what the
+profile's own model costs (`resolveSuppliedContentChoice`).
 
 **What a failure may tell whom** (`middleware/publicError.ts`). Most people
 using an install do not run its server, so a response never names a seat, CLI,
@@ -352,13 +363,21 @@ pins every API-key, Vertex and gateway variable to "" and sets `NO_BROWSER`,
 `NO_COLOR` and `GEMINI_CLI_NO_RELAUNCH` (without it the CLI relaunches itself
 and SIGTERM never reaches the real process). Every turn runs in one fixed empty
 workdir whose `.gemini/settings.json` enforces the Google sign-in, registers no
-tools, turns MCP, extensions, hooks and telemetry off and sets
-`billing.overageStrategy: 'never'`, under a deny-all policy; the prompt goes on
-stdin with a leading `/` pushed off column one and `@path` references escaped,
-and the turn dir and the CLI's session transcript are removed afterwards. A
-"Using AI Credits" notice or any tool call fails the turn. Its health check
-sends no prompt: `gemini --version`, then the sign-in files under the CLI's
-home.
+tools, turns hooks and telemetry off and sets `billing.overageStrategy:
+'never'`, under a deny-all policy. MCP servers and extensions are kept out by
+FLAGS (`--allowed-mcp-server-names __tailor_none__ --extensions none`): 0.62.0
+ignores `admin.*` in every settings file and reads an empty `mcp.allowed` as
+"no limit", so the settings keys that look like they do it do not. The prompt
+goes on stdin with a leading `/` pushed off column one and EVERY `@` reference
+escaped - a bare `@name` resolves inside the operator's own
+`context.includeDirectories`, which no workspace setting can clear - and the
+`\@` the escape puts before an email is taken back out of the answer. The turn
+dir and the CLI's session transcript are removed afterwards. A "Using AI
+Credits" notice or any tool call fails the turn. Exit 41 with a sign-in still
+on disk is usually the CLI's per-start token check failing on the network, so
+it is held for two minutes as `unavailable` and becomes the 30-minute sign-in
+hold only on the third in a row. Its health check sends no prompt: `gemini
+--version`, then the sign-in files under the CLI's home.
 
 Tests never spawn a browser, a subprocess or a network call: each CLI provider
 replays recorded event streams from `test/fixtures/cli`, `test/fixtures/codex`

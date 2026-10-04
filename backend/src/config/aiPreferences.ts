@@ -137,6 +137,35 @@ export async function resolvePricedAiChoice(
   return { choice: toChoice(model), creditCost: model.creditsPerResume };
 }
 
+/**
+ * The priced choice for a resume built from tailored content a preview already
+ * wrote, where no model will run again to write it.
+ *
+ * The price is the model that WROTE the content. `previewModelId` is that model,
+ * read from the preview's signed token (services/credits/previewToken), and
+ * when there is one it replaces whatever the request names: the page's picker
+ * may have moved since the preview, and a request may name the cheapest model
+ * while sending the dearest one's work.
+ *
+ * With no token - a server restarted onto a new secret, a page from before
+ * tokens, or a token left off on purpose - the request's own choice is priced
+ * as before, but for anybody but an administrator never below the model the
+ * profile or the app default would have run on: content of unknown origin is
+ * charged at least as if it had been written the ordinary way.
+ */
+export async function resolveSuppliedContentChoice(
+  overrides: AiPreferences | undefined,
+  profile: { profileSettings?: { ai?: AiPreferences } } | null | undefined,
+  options: ModelRequestOptions,
+  previewModelId: string | null
+): Promise<PricedAiChoice> {
+  if (previewModelId) return resolvePricedAiChoice({ modelId: previewModelId }, profile, options);
+  const requested = await resolvePricedAiChoice(overrides, profile, options);
+  if (options.admin) return requested;
+  const ordinary = await resolvePricedAiChoice(undefined, profile, options);
+  return ordinary.creditCost > requested.creditCost ? ordinary : requested;
+}
+
 /** One line for the generation logs, so a run says what it ran with. */
 export function describeAiChoice(choice: AiChoice): string {
   return `${choice.provider}/${choice.modelName}`;

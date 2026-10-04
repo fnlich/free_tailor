@@ -232,10 +232,21 @@ export function buildJobFilterPromptValues(jobContent: string, jobLink = ''): Re
  * `modelLabel` is the display name, which is the only name for a model an
  * ordinary account is shown: never a seat or a CLI model name. An override
  * names a provider and a model name rather than a record, so it is reported by
- * the record an administrator made for that pair, or failing one, by the
- * option's label.
+ * the record an administrator made for that pair. With no such record there
+ * is no display name to give, and the CLI option's label IS a model name - so
+ * anybody else is told only that an administrator chose it, and the option's
+ * label goes in `adminModelLabel` for the routes to give administrators.
  */
-export type JobFilterModel = { provider: AIProvider; modelName: string; modelLabel: string };
+export type JobFilterModel = {
+  provider: AIProvider;
+  modelName: string;
+  modelLabel: string;
+  /** Set only when no record names the override's model: its CLI option label. */
+  adminModelLabel?: string;
+};
+
+/** What an ordinary account reads for a filter model no record names. */
+export const JOB_FILTER_UNNAMED_MODEL = 'Chosen by your administrator';
 
 export async function resolveJobFilterModel(): Promise<JobFilterModel> {
   const model = await resolveRequestedAIModel();
@@ -248,10 +259,12 @@ export async function resolveJobFilterModel(): Promise<JobFilterModel> {
   const record = (await listAdminAIModels()).find(
     (entry) => entry.provider === config.provider && entry.modelName.toLowerCase() === modelName.toLowerCase()
   );
+  if (record) return { provider: config.provider, modelName, modelLabel: record.name };
   return {
     provider: config.provider,
     modelName,
-    modelLabel: record?.name ?? findProviderModelOption(config.provider, modelName)?.label ?? modelName,
+    modelLabel: JOB_FILTER_UNNAMED_MODEL,
+    adminModelLabel: findProviderModelOption(config.provider, modelName)?.label ?? modelName,
   };
 }
 

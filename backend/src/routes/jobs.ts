@@ -795,6 +795,9 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
     // Once for the run, so every row runs on the same model and the summary
     // names the one they ran on.
     const filterModel = await resolveJobFilterModel();
+    // A model no record names has no display name; only an administrator is
+    // given the CLI option's label for it.
+    const modelLabel = (isAdmin(req) && filterModel.adminModelLabel) || filterModel.modelLabel;
 
     if (endRow < startRow) {
       // An empty tab is not an error - a sheet created this morning that nobody
@@ -805,7 +808,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         spreadsheetId: sheetId,
         spreadsheetTitle: '',
         selectedTab: tabName,
-        modelLabel: filterModel.modelLabel,
+        modelLabel,
         startRow,
         endRow,
         jobLinkCol,
@@ -917,7 +920,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       spreadsheetId: sheetRange.spreadsheetId,
       spreadsheetTitle: sheetRange.spreadsheetTitle,
       selectedTab: tabName,
-      modelLabel: filterModel.modelLabel,
+      modelLabel,
       startRow,
       endRow,
       jobLinkCol,

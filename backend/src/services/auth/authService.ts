@@ -239,3 +239,21 @@ export function describeSignInOptions(env: NodeJS.ProcessEnv = process.env): Sig
     },
   };
 }
+
+/**
+ * The startup line for an install nobody can sign in to, or null.
+ *
+ * The sign-in page names no setting - whoever reads it has no account yet -
+ * so with neither path configured the log is the only place an operator can
+ * learn which variables to set. Names only, never a value.
+ */
+export function describeSignInGap(env: NodeJS.ProcessEnv = process.env): string | null {
+  const options = describeSignInOptions(env);
+  if (options.google.available || options.email.available) return null;
+  const smtp = options.email.missing.length ? options.email.missing.join(', ') : 'the SMTP_* variables';
+  return (
+    '[auth] Nobody can sign in: neither Google sign-in (GOOGLE_CLIENT_ID) nor emailed codes ' +
+    `(${smtp} missing) are configured, and the sign-in page says only that sign-in isn't available. ` +
+    'Set one of them in .env (see .env.example) and restart; "npm run mail:doctor" in backend/ checks SMTP.'
+  );
+}

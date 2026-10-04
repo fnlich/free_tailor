@@ -84,6 +84,11 @@ export type SubmitBatchRequest = AiRequestOverrides & {
   }>;
   tailoredContentByProfileId?: Record<string, unknown>;
   /**
+   * Each preview's token, by profile id: the model that wrote that profile's
+   * content, which the server prices it at. The quote takes these alone.
+   */
+  previewTokenByProfileId?: Record<string, string>;
+  /**
    * Place this as an order instead of waiting for it.
    *
    * What the Google Sheet import sends. The caller gets an order number back

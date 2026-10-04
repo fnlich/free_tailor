@@ -294,7 +294,6 @@ test('the routes that leak an installation\'s workings are administrator-only', 
     for (const [method, route, body] of [
       ['GET', '/api/admin/ai/health'],
       ['GET', '/api/generation/queues'],
-      ['GET', '/api/prompts/models'],
       ['POST', '/api/prompts/validate', { content: 'x' }],
       ['POST', '/api/prompts/preview', { content: 'x' }],
       ['POST', '/api/resume/analyze-prompt-test', { jobDescription: 'x'.repeat(60) }],
@@ -345,6 +344,23 @@ test('a prompt is a name to pick to anybody but an administrator', async () => {
   } finally {
     server.close();
   }
+});
+
+test('with neither sign-in path configured, the startup log names what to set', () => {
+  // The sign-in page names no setting, so this line is where an operator learns
+  // which ones are missing. Names only, never a value.
+  const { describeSignInGap } = require('../dist/services/auth/authService');
+  const gap = describeSignInGap({});
+  assert.match(gap, /^\[auth\] Nobody can sign in/);
+  assert.match(gap, /GOOGLE_CLIENT_ID/);
+  assert.match(gap, /SMTP_HOST, SMTP_USER, SMTP_PASS missing/);
+  assert.match(gap, /mail:doctor/);
+  assert.match(describeSignInGap({ SMTP_HOST: 'smtp.example.com', SMTP_PASS: 'hunter2' }), /SMTP_USER missing/);
+  assert.doesNotMatch(describeSignInGap({ SMTP_HOST: 'smtp.example.com', SMTP_PASS: 'hunter2' }), /hunter2|smtp\.example/);
+
+  // Either path on its own is a working install, and nothing is said.
+  assert.equal(describeSignInGap({ GOOGLE_CLIENT_ID: '123.apps.googleusercontent.com' }), null);
+  assert.equal(describeSignInGap({ SMTP_HOST: 'smtp.example.com', SMTP_USER: 'me', SMTP_PASS: 'pw' }), null);
 });
 
 test('the sign-in page learns which methods exist, not which settings are missing', async () => {

@@ -1938,23 +1938,6 @@ export async function listAvailableAIModels(): Promise<AIModelRecord[]> {
   return getRunnableModels(settings).map((model) => ({ ...model }));
 }
 
-export async function listAvailableAIModelOptions(): Promise<Array<{
-  id: string;
-  label: string;
-  provider: AIProvider;
-  modelName: string;
-  description: string;
-}>> {
-  const models = await listAvailableAIModels();
-  return models.map((model) => ({
-    id: model.id,
-    label: `${getProviderLabel(model.provider)} · ${model.name}`,
-    provider: model.provider,
-    modelName: model.modelName,
-    description: model.description,
-  }));
-}
-
 /**
  * How a request may name its model.
  *
@@ -2294,10 +2277,29 @@ function assertNoDuplicateModel(
   }
 }
 
+/**
+ * The display name is the only part of a record a user ever sees, so two
+ * records sharing one are two identical choices that may run on different
+ * seats at different prices. Compared the way people read it: trimmed, in any
+ * case. Checked on a create, and on an edit only when the name changes, so a
+ * pair stored before this check can still be toggled or repriced.
+ */
+function assertUniqueDisplayName(models: AIModelRecord[], candidate: { id?: string; name: string }): void {
+  const wanted = candidate.name.trim().toLowerCase();
+  const owner = models.find((model) => model.id !== candidate.id && model.name.trim().toLowerCase() === wanted);
+  if (owner) {
+    throw new Error(
+      `"${owner.name}" is already the name of a ${getProviderLabel(owner.provider)} model. Users see only ` +
+        'display names, so give this one a different name.'
+    );
+  }
+}
+
 export async function createAIModel(input: AIModelMutationInput): Promise<AdminAppSettings> {
   const settings = await readSettings();
   const normalized = normalizeAIModelMutationInput(input);
   assertNoDuplicateModel(settings.aiModels, normalized);
+  assertUniqueDisplayName(settings.aiModels, normalized);
 
   const now = new Date().toISOString();
   const created: AIModelRecord = {
@@ -2326,6 +2328,9 @@ export async function updateAIModel(id: string, input: AIModelMutationInput): Pr
 
   const normalized = normalizeAIModelMutationInput(input, current);
   assertNoDuplicateModel(settings.aiModels, { id, ...normalized });
+  if (normalized.name.trim().toLowerCase() !== current.name.trim().toLowerCase()) {
+    assertUniqueDisplayName(settings.aiModels, { id, name: normalized.name });
+  }
 
   const next: AppSettings = {
     ...settings,

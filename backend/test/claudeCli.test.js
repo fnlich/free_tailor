@@ -560,6 +560,57 @@ test('an API key reaching the child aborts the call rather than billing silently
   );
 });
 
+test('an API key is caught at the first event, and the turn is stopped before the answer', async () => {
+  // `system/init` names the credential before the model has said anything, so
+  // that is where the child is stopped - not after a whole billed answer.
+  const [init] = readCliFixture('api-key-billing');
+  let stoppedAtInit = null;
+  const runner = makeFakeCliRunner((spec) => {
+    spec.onLine(init);
+    stoppedAtInit = spec.signal.aborted;
+    // What the real runner reports once that abort has killed the child.
+    return { lines: [], aborted: true, exitCode: null };
+  });
+  const adapter = makeAdapter(runner);
+
+  await assert.rejects(
+    () => adapter.complete(makeRequest()),
+    (error) => error.kind === 'auth' && /billed per token/.test(error.message) && /claude auth status/.test(error.adminAction ?? '')
+  );
+  assert.equal(stoppedAtInit, true);
+
+  // And the seat is held as the sign-in problem it is: the next call is turned
+  // away without a spawn, and not as a busy seat.
+  await assert.rejects(
+    () => adapter.complete(makeRequest()),
+    (error) => error.kind === 'auth'
+  );
+  assert.equal(runner.calls.length, 1);
+});
+
+test("a turn on the subscription is not stopped, and the caller's cancel still reaches the child", async () => {
+  const quiet = makeFakeCliRunner((spec) => {
+    for (const line of readCliFixture('success-text')) spec.onLine(line);
+    assert.equal(spec.signal.aborted, false);
+    return { lines: [] };
+  });
+  const result = await makeAdapter(quiet).complete(makeRequest());
+  assert.equal(result.text, '{"capital": "Paris"}');
+
+  const cancel = new AbortController();
+  let sawCancel = null;
+  const cancelled = makeFakeCliRunner((spec) => {
+    cancel.abort();
+    sawCancel = spec.signal.aborted;
+    return { lines: [], aborted: true, exitCode: null };
+  });
+  await assert.rejects(
+    () => makeAdapter(cancelled).complete(makeRequest({ signal: cancel.signal })),
+    (error) => error.kind === 'timeout'
+  );
+  assert.equal(sawCancel, true);
+});
+
 test('a response cut off by the model output limit fails instead of returning a fragment', async () => {
   // extractJSON will happily find a balanced sub-object inside a truncated
   // document, so a fragment does not fail here - it fails later, in a parser,

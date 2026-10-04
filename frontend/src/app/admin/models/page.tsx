@@ -17,10 +17,10 @@ import {
   isProviderOffered,
   LOCK_ICON,
   MAX_CREDITS_PER_RESUME,
-  ProviderModelNameOption,
 } from '@/lib/api';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
+import { blankDraftChoice, displayNameOwner, firstModelName, isTaken, optionsFor } from './modelDraft';
 
 type ModelDraft = {
   name: string;
@@ -47,47 +47,13 @@ function toDraft(model: AIModelRecord): ModelDraft {
   };
 }
 
-/** The model names a seat offers, from the server's list for it. */
-function optionsFor(settings: AdminAppSettings, provider: AIProvider): ProviderModelNameOption[] {
-  return settings.providerModelOptions.find((entry) => entry.provider === provider)?.models ?? [];
-}
-
-/**
- * Whether another record already uses this provider and model name.
- *
- * The server refuses a second record for the same pair - it is how a request
- * naming `provider:modelName` resolves to exactly one model - so the form marks
- * those options rather than letting a save fail over them.
- */
-function isTaken(
-  settings: AdminAppSettings,
-  provider: AIProvider,
-  modelName: string,
-  exceptId: string | null
-): boolean {
-  const wanted = modelName.toLowerCase();
-  return settings.aiModels.some(
-    (model) => model.id !== exceptId && model.provider === provider && model.modelName.toLowerCase() === wanted
-  );
-}
-
-/**
- * The model name a provider switch lands on: the seat's first option no other
- * record uses, or its first option when every one is taken (the save then says
- * why). Empty only for a seat the server listed no names for.
- */
-function firstModelName(settings: AdminAppSettings, provider: AIProvider, exceptId: string | null): string {
-  const options = optionsFor(settings, provider);
-  return (options.find((option) => !isTaken(settings, provider, option.value, exceptId)) ?? options[0])?.value ?? '';
-}
-
-/** A blank form on the first seat, with that seat's first free model name. */
+/** A blank form on the first seat with a free model name, on that name. */
 function emptyDraft(settings: AdminAppSettings | null): ModelDraft {
-  const provider = settings?.providerModelOptions[0]?.provider ?? 'claude-cli';
+  const { provider, modelName } = blankDraftChoice(settings);
   return {
     name: '',
     provider,
-    modelName: settings ? firstModelName(settings, provider, null) : '',
+    modelName,
     creditsPerResume: String(DEFAULT_CREDITS_PER_RESUME),
     description: '',
     enabled: true,
@@ -161,6 +127,15 @@ function ModelsPageBody() {
 
     if (!name) {
       setError('Display name is required.');
+      return;
+    }
+
+    const nameOwner = displayNameOwner(settings ?? { aiModels: [] }, name, editingId);
+    if (nameOwner) {
+      setError(
+        `"${nameOwner.name}" is already the name of a ${getAIProviderLabel(nameOwner.provider)} model. ` +
+          'People see only display names, so give this one a different name.'
+      );
       return;
     }
 
@@ -284,6 +259,7 @@ function ModelsPageBody() {
    */
   const draftListedOption = findProviderModelOption(settings.providerModelOptions, draft.provider, draft.modelName);
   const draftCredits = parseCreditsPerResume(draft.creditsPerResume);
+  const nameOwner = displayNameOwner(settings, draft.name, editingId);
 
   return (
     <div>
@@ -322,7 +298,15 @@ function ModelsPageBody() {
         }
       >
         <div className="grid gap-6 md:grid-cols-2">
-          <Field label="Display name" htmlFor="model-display-name">
+          <Field
+            label="Display name"
+            htmlFor="model-display-name"
+            hint={
+              nameOwner
+                ? `Already the name of a ${getAIProviderLabel(nameOwner.provider)} model - people see only this name, so it must differ.`
+                : undefined
+            }
+          >
             <input
               id="model-display-name"
               type="text"
@@ -378,6 +362,13 @@ function ModelsPageBody() {
                 <option value={draft.modelName}>{draft.modelName} (current - not in the list)</option>
               )}
               {draftOptions.length === 0 && !draft.modelName && <option value="">No model names</option>}
+              {draftOptions.length > 0 && !draft.modelName && (
+                // Every name on this seat is taken: nothing is preselected,
+                // so the form cannot be saved into the duplicate refusal.
+                <option value="" disabled>
+                  Choose a model
+                </option>
+              )}
               {draftOptions.map((option) => {
                 const taken = isTaken(settings, draft.provider, option.value, editingId);
                 return (
@@ -531,7 +522,10 @@ function ModelsPageBody() {
                     {/* The column says "Updated", so the cell is the date alone. */}
                     <td className="whitespace-nowrap text-xs">{new Date(model.updatedAt).toLocaleString()}</td>
                     <td>
-                      <div className="flex justify-end gap-2">
+                      {/* Wraps rather than widening the row: with the Price
+                          column the four buttons pushed Delete off a 1440px
+                          screen. */}
+                      <div className="flex flex-wrap justify-end gap-2">
                         <button
                           type="button"
                           onClick={() => handleEdit(model)}

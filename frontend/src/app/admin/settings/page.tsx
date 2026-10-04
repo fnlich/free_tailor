@@ -24,6 +24,7 @@ import {
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
+import { seatHolds } from '@/lib/seatHolds';
 import styles from './page.module.css';
 
 type SettingsFormState = {
@@ -91,11 +92,12 @@ const AUTH_METHOD_LABELS: Record<string, string> = {
  * unsigned-in or off PATH had nothing on the page saying so.
  *
  * `seatWindow` is opt-in for the same honest reason: `subscription` on the wire
- * is ONE object, the Claude adapter's, because the Codex and Gemini adapters
- * deliberately model no usage window or outage table - inventing the shape of a
- * refusal nobody has seen produces a confidently wrong message at the worst
- * moment. An absent window on those cards is the truth; an absent in-flight row
- * was not.
+ * is ONE object, the Claude adapter's, because only that CLI reports a usage
+ * window - inventing the shape of one nobody has seen produces a confidently
+ * wrong message at the worst moment. An absent window on the other cards is the
+ * truth; an absent in-flight row was not.
+ *
+ * Holds are per seat - see `seatHolds`.
  */
 function SubscriptionCard({
   health,
@@ -112,7 +114,7 @@ function SubscriptionCard({
 }) {
   const provider = health?.providers.find((item) => item.id === providerId);
   const seat = seatWindow ? health?.subscription.seat : undefined;
-  const outages = seatWindow ? health?.subscription.outages ?? [] : [];
+  const outages = seatHolds(health, providerId);
   // This provider's own numbers. The process-wide totals include every seat,
   // and reporting those here would credit the others' calls to this one.
   const usage = health?.usage.byProvider[providerId];

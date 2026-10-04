@@ -136,7 +136,28 @@ function describeGeminiSeed(report: GeminiSeedMigrationReport): string {
   if (report.renamedModels.length) {
     parts.push(`${report.renamedModels.length} seed model(s) renamed without "(subscription)"`);
   }
+  if (report.skippedRenames.length) {
+    parts.push(`${report.skippedRenames.length} left as named because the new name was taken`);
+  }
   return parts.length ? parts.join(', ') : 'nothing to change';
+}
+
+/**
+ * 006 is frozen history, and what it says about the metered providers stopped
+ * being true when 007 joined the chain behind it: on an install that skipped
+ * releases, 006 can switch a metered API on, tell the operator to set its key,
+ * or say nothing else here can run - and 007 removes that provider two lines
+ * later. 006 only ever runs on a database below 7, so 007 always follows it,
+ * and its notes are marked as superseded here rather than edited in it.
+ */
+const METERED_MENTION =
+  /_API_KEY|bills per token|metered|subscription seats are locked|\b(?:claude|openai|deepseek)(?: was switched on|'s models)/;
+
+export function supersededByMeteredRemoval(note: string): string {
+  return METERED_MENTION.test(note)
+    ? `${note} (This release has no metered providers: migration 007, which runs after this one, removes ` +
+        'them and moves the row onto a subscription seat - see its note below.)'
+    : note;
 }
 
 /**
@@ -224,7 +245,7 @@ const MIGRATIONS: readonly MigrationStep[] = [
       return {
         ran: report.ran,
         deferred: report.deferred,
-        notes: report.notes,
+        notes: report.notes.map(supersededByMeteredRemoval),
         summary: describeBrowserChatRemoval(report),
       };
     },

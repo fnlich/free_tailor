@@ -8,7 +8,13 @@ import {
 } from '../services/credits';
 import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import { getUserAppSettings } from '../config/aiModelConfig';
-import { resolvePricedAiChoice, type AiPreferences, type PricedAiChoice } from '../config/aiPreferences';
+import {
+  resolvePricedAiChoice,
+  resolveSuppliedContentChoice,
+  type AiPreferences,
+  type PricedAiChoice,
+} from '../config/aiPreferences';
+import { readPreviewToken } from '../services/credits/previewToken';
 import { listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
 import { genericMessage, PublicError, publicStoredError, sendPublicError } from '../middleware/publicError';
 import {
@@ -74,6 +80,11 @@ type SubmitBody = {
   }>;
   /** Tailored content a preview already produced, keyed by profile id. */
   tailoredContentByProfileId?: Record<string, unknown>;
+  /**
+   * Each preview's token, keyed by profile id: which model wrote that
+   * profile's content, so it is priced - and quoted - as that model's work.
+   */
+  previewTokenByProfileId?: Record<string, unknown>;
   /**
    * Place this as an ORDER rather than a build the caller waits for.
    *
@@ -194,6 +205,8 @@ export type BuildTaskOptions = {
    * request's `model` may take (see ModelRequestOptions). Absent is not one.
    */
   admin?: boolean;
+  /** The submitter's account id, which a preview token must have been issued to. */
+  userId?: string;
 };
 
 /**
@@ -207,12 +220,26 @@ export type BuildTaskOptions = {
 async function resolveProfileChoices(
   body: SubmitBody,
   profiles: Profile[],
-  options: Pick<BuildTaskOptions, 'admin'>
+  options: Pick<BuildTaskOptions, 'admin' | 'userId'>
 ): Promise<Map<string, PricedAiChoice>> {
   const overrides = readAiOverrides(body);
+  const requestOptions = { admin: options.admin === true };
+  const supplied = (body.tailoredContentByProfileId ?? {}) as Record<string, unknown>;
+  const tokens = (body.previewTokenByProfileId ?? {}) as Record<string, unknown>;
   const choices = new Map<string, PricedAiChoice>();
   for (const profile of profiles) {
-    choices.set(profile.id, await resolvePricedAiChoice(overrides, profile, { admin: options.admin === true }));
+    // A preview's token names the model that wrote this profile's content, and
+    // that is the model it runs - and is priced - on. The quote is sent the
+    // tokens without the content, which is why a token counts on its own.
+    const previewModelId = options.userId
+      ? readPreviewToken(tokens[profile.id], { userId: options.userId, profileId: profile.id })
+      : null;
+    choices.set(
+      profile.id,
+      previewModelId || supplied[profile.id]
+        ? await resolveSuppliedContentChoice(overrides, profile, requestOptions, previewModelId)
+        : await resolvePricedAiChoice(overrides, profile, requestOptions)
+    );
   }
   return choices;
 }
@@ -401,6 +428,7 @@ router.post('/batches', async (req: Request, res: Response) => {
     const descriptors = await buildTasks(body, jobs, profiles, batchId, {
       accountFolder: accountFolderName(req.user),
       admin: isAdmin(req),
+      userId: req.user?.id,
     });
     const charge = chargeFor(descriptors);
 
@@ -565,7 +593,7 @@ router.post('/quote', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as SubmitBody;
     const jobCount = Array.isArray(body.jobs) ? body.jobs.length : 0;
     const profiles = jobCount > 0 ? loadProfiles(req.user ?? null, body.profileIds) : [];
-    const choices = await resolveProfileChoices(body, profiles, { admin: isAdmin(req) });
+    const choices = await resolveProfileChoices(body, profiles, { admin: isAdmin(req), userId: req.user?.id });
 
     const perJob = [...choices.values()].reduce((sum, priced) => sum + priced.creditCost, 0);
     res.json({

@@ -26,10 +26,12 @@ import {
   normalizeAiPreferences,
   resolveAiChoice,
   resolvePricedAiChoice,
+  resolveSuppliedContentChoice,
   type AiChoice,
   type AiPreferences,
 } from '../config/aiPreferences';
 import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
+import { issuePreviewToken, readPreviewToken } from '../services/credits/previewToken';
 import { PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
@@ -408,11 +410,14 @@ async function tailorResumesForProfiles(
   signal?: AbortSignal
 ): Promise<{
   tailoredByProfileId: Map<string, TailoredContent>;
+  /** The model each profile's content was written on, for its preview token. */
+  modelIdByProfileId: Map<string, string>;
   failures: Array<{ profileId: string; profileName: string; error: string }>;
   unconfirmedHardSkills: string[];
   unconfirmedSoftSkills: string[];
 }> {
   const tailoredByProfileId = new Map<string, TailoredContent>();
+  const modelIdByProfileId = new Map<string, string>();
   const failures: Array<{ profileId: string; profileName: string; error: string }> = [];
   const unconfirmedHardMap = new Map<string, string>();
   const unconfirmedSoftMap = new Map<string, string>();
@@ -432,9 +437,11 @@ async function tailorResumesForProfiles(
   // it once per profile would read the settings row once per profile to get the
   // same answer.
   const capacity = await resolveBatchCapacity(requestChoice);
-  const outcomes = await mapWithConcurrency(profiles, capacity.limit, async (profile) =>
-    tailorResume(profile, analysis, await resolveAiChoice(overrides, profile, options), signal)
-  );
+  const outcomes = await mapWithConcurrency(profiles, capacity.limit, async (profile) => {
+    const choice = await resolveAiChoice(overrides, profile, options);
+    modelIdByProfileId.set(profile.id, choice.modelId);
+    return tailorResume(profile, analysis, choice, signal);
+  });
 
   outcomes.forEach((outcome, index) => {
     const profile = profiles[index];
@@ -452,6 +459,7 @@ async function tailorResumesForProfiles(
 
   return {
     tailoredByProfileId,
+    modelIdByProfileId,
     failures,
     unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
     unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
@@ -502,6 +510,8 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       profileName: string;
       html: string;
       tailoredContent?: TailoredContent;
+      /** Names the model that wrote `tailoredContent`; finalising is charged for that model. */
+      previewToken?: string;
     }> = [];
     const unconfirmedHardMap = new Map<string, string>();
     const unconfirmedSoftMap = new Map<string, string>();
@@ -540,6 +550,9 @@ router.post('/preview-all', async (req: Request, res: Response) => {
           ? bulkTailoring.tailoredByProfileId.get(profile.id)
           : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res))
         : undefined;
+      const writtenOn = tailoredContent
+        ? bulkTailoring?.modelIdByProfileId.get(profile.id) ?? selectedModel.modelId
+        : null;
 
       return {
         tailoredContent,
@@ -548,6 +561,9 @@ router.post('/preview-all', async (req: Request, res: Response) => {
           profileName: profile.name,
           html: await generatePreviewHTML(profile, template, tailoredContent),
           tailoredContent,
+          ...(writtenOn
+            ? { previewToken: issuePreviewToken({ userId: req.user!.id, profileId: profile.id, modelId: writtenOn }) }
+            : {}),
         },
       };
     });
@@ -624,11 +640,22 @@ router.post('/generate', async (req: Request, res: Response) => {
     // the profile has to be loaded before it can be read. The request's own
     // override still wins - and one it may not use is refused here, before
     // anything is taken.
-    const { choice: selectedModel, creditCost } = await resolvePricedAiChoice(
-      readAiOverrides(req.body),
-      profile,
-      { admin: isAdmin(req) }
-    );
+    //
+    // Content a preview already wrote is priced at the model that wrote it -
+    // named by the preview's token - and not at whatever this request names,
+    // since no model writes it again here (see resolveSuppliedContentChoice).
+    const suppliedContent = Boolean((req.body as GenerateResumeRequest).tailoredContent);
+    const { choice: selectedModel, creditCost } = suppliedContent
+      ? await resolveSuppliedContentChoice(
+          readAiOverrides(req.body),
+          profile,
+          { admin: isAdmin(req) },
+          readPreviewToken((req.body as { previewToken?: unknown }).previewToken, {
+            userId: req.user!.id,
+            profileId: profile.id,
+          })
+        )
+      : await resolvePricedAiChoice(readAiOverrides(req.body), profile, { admin: isAdmin(req) });
 
     // One resume, one price - however many files it writes. A run asking for
     // PDF and DOCX plus a cover letter produces four files and is still one
@@ -832,8 +859,13 @@ router.post('/preview', async (req: Request, res: Response) => {
     if (tailoredContent && analysis) {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }
+    // Only content THIS request wrote gets a token naming its model. Content
+    // the request supplied is re-rendered, and a token for it would let any
+    // model's work be re-labelled as the one the request names.
+    let previewToken: string | undefined;
     if (!tailoredContent && analysis) {
       tailoredContent = await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
+      previewToken = issuePreviewToken({ userId: req.user!.id, profileId: profile.id, modelId: selectedModel.modelId });
     }
 
     // Generate HTML preview
@@ -842,7 +874,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     );
 
     console.log(`[Resume timing] /resume/preview finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
-    res.json({ html, tailored: !!tailoredContent, tailoredContent });
+    res.json({ html, tailored: !!tailoredContent, tailoredContent, ...(previewToken ? { previewToken } : {}) });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to generate the preview');
   }

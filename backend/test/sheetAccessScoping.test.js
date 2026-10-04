@@ -19,13 +19,13 @@ const { loadFresh, useTempStorage, writeSettingRaw, useAdminEmails } = require('
  * starts failing, a job route has gone back to trusting its input.
  */
 
-function makeClient() {
+function makeClient({ configured = true } = {}) {
   let minted = 0;
   let nextGid = 100;
   const shares = new Map();
   return {
     async isConfigured() {
-      return true;
+      return configured;
     },
     async createSpreadsheet() {
       minted += 1;
@@ -54,7 +54,7 @@ function makeClient() {
   };
 }
 
-async function serve(sharedSources = []) {
+async function serve(sharedSources = [], { configured = true } = {}) {
   const { dbDir } = useTempStorage(`sheet-scoping-${Math.random().toString(36).slice(2)}`);
   // First in is no longer automatically the admin, so the admin is named.
   useAdminEmails('admin@example.com');
@@ -75,7 +75,7 @@ async function serve(sharedSources = []) {
   // SheetAccessError` check would compare against a different class object and
   // every refusal would surface as a 500.
   loadFresh('../dist/services/sheets/jobSheetTarget');
-  sheets.setSheetsClientForTests(makeClient());
+  sheets.setSheetsClientForTests(makeClient({ configured }));
 
   const { attachUser } = loadFresh('../dist/middleware/auth');
   const importRoutes = loadFresh('../dist/routes/import');
@@ -133,6 +133,42 @@ const ID_TAKING_ROUTES = [
     body: () => ({ source: 'indeed', tabName: 'Sheet1', startRow: 2 }),
   },
 ];
+
+test('with Google Sheets not set up, a user is sent to the administrator and the cause is logged', async () => {
+  // Only an administrator can configure Google Sheets, so "open Settings to
+  // finish setting it up" sent account holders to a page with nothing to do.
+  const server = await serve([], { configured: false });
+  const { captureErrorLog } = require('./helpers');
+  try {
+    for (const route of ID_TAKING_ROUTES) {
+      const { result: asAlice, lines } = await captureErrorLog(async () => {
+        const response = await server.post(server.aliceToken, route.path, route.body());
+        return { status: response.status, body: await response.json() };
+      });
+      assert.equal(asAlice.status, 503, route.path);
+      assert.match(asAlice.body.error, /^Job sheets aren't available right now\. Please contact your administrator\./);
+      assert.doesNotMatch(asAlice.body.error, /Settings/);
+      assert.equal(asAlice.body.detail, undefined, 'the cause is not for an account holder');
+      assert.match(asAlice.body.ref, /^ERR-[0-9A-F]{6}$/);
+      // ...but it is under the ref in the log, for whoever looks it up.
+      assert.ok(
+        lines.some((line) => line.includes(asAlice.body.ref) && /not configured on this server/.test(line)),
+        `${route.path}: ${lines.join('\n')}`
+      );
+
+      const asAdmin = await server.post(server.adminToken, route.path, route.body());
+      assert.equal(asAdmin.status, 503);
+      assert.match((await asAdmin.json()).detail, /Google Sheets is not configured on this server/);
+    }
+
+    await assert.rejects(
+      () => server.sheets.setAccountSheetVisibility(server.users.getUserById(server.alice.id), 'private'),
+      (error) => error.status === 503 && /contact your administrator/.test(error.message) && /not configured/.test(error.detail)
+    );
+  } finally {
+    server.close();
+  }
+});
 
 test("a user pointing a job route at somebody else's sheet gets 404", async () => {
   const server = await serve();

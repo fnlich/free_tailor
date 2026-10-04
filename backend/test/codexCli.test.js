@@ -59,14 +59,26 @@ function replay(lines, outcome = {}) {
   };
 }
 
-function makeAdapter(t, { lines = [], answer = '', outcome = {}, config = {} } = {}) {
+/** What `codex login status` reports for a seat signed in with ChatGPT. */
+const SIGNED_IN_WITH_CHATGPT = async () => ({
+  ok: true,
+  loggedIn: true,
+  binary: 'codex',
+  detail: 'Logged in using ChatGPT',
+  checkedAt: new Date(0).toISOString(),
+});
+
+function makeAdapter(t, { lines = [], answer = '', outcome = {}, config = {}, healthCheck = SIGNED_IN_WITH_CHATGPT } = {}) {
   useTempStorage(`codex-${Math.random().toString(36).slice(2)}`);
   const { createCodexCliAdapter } = loadFresh('../dist/services/ai/providers/codexCli/index');
   const { runner, seen } = replay(lines, outcome);
+  // Every turn asks the sign-in first, so the check is always injected: the
+  // real one would spawn `codex login status`.
   const adapter = createCodexCliAdapter({
     runner,
     readAnswerFile: () => answer,
     config: { binary: 'codex', ...config },
+    healthCheck,
   });
   return { adapter, seen };
 }
@@ -315,6 +327,53 @@ test('a Codex CLI signed in with an API key is NOT signed in to a subscription',
     assert.match(health.detail, /not a ChatGPT subscription/, said);
     assert.match(health.detail, /codex login --device-auth/, said);
     assert.doesNotMatch(health.detail, /sk-proj|ABCD/, 'the masked key is not repeated');
+  }
+});
+
+test('a Codex seat signed in with an API key refuses every turn without spawning', async () => {
+  // The key lives in CODEX_HOME, where the environment strip cannot reach it,
+  // so the only guard is not to start the turn at all.
+  const health = await codexHealthSaying('Logged in using an API key - sk-proj-***ABCD\n');
+  assert.equal(health.apiKey, true);
+
+  let checks = 0;
+  const { adapter, seen } = makeAdapter(null, {
+    lines: fixture('constructed-success.ndjson'),
+    answer: 'billed per token',
+    healthCheck: async () => {
+      checks += 1;
+      return health;
+    },
+  });
+  for (let call = 0; call < 2; call += 1) {
+    await assert.rejects(
+      () => adapter.complete(request()),
+      (error) =>
+        error.kind === 'auth' &&
+        /billed per token/.test(error.message) &&
+        /codex logout/.test(error.adminAction ?? '') &&
+        /codex login --device-auth/.test(error.adminAction ?? '')
+    );
+  }
+  assert.equal(seen.spec, null, 'the runner was never reached');
+  assert.equal(checks, 1, 'the sign-in is asked once a minute, not once a call');
+});
+
+test('a Codex sign-in check that fails or says nothing never blocks the seat', async () => {
+  for (const healthCheck of [
+    async () => {
+      throw new Error('spawn codex ETIMEDOUT');
+    },
+    async () => ({ ok: false, loggedIn: false, binary: 'codex', detail: 'said nothing', checkedAt: '' }),
+  ]) {
+    const { adapter, seen } = makeAdapter(null, {
+      lines: fixture('constructed-success.ndjson'),
+      answer: 'the tailored resume',
+      healthCheck,
+    });
+    const result = await adapter.complete(request());
+    assert.equal(result.text, 'the tailored resume');
+    assert.notEqual(seen.spec, null);
   }
 });
 

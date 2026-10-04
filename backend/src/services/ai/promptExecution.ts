@@ -141,6 +141,15 @@ export type CreatePromptCompletionInput = {
   jsonSchema?: Readonly<Record<string, unknown>>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * The caller's model is the one this run was priced and charged at - a
+   * resume's analysis, tailoring and cover letter - so the prompt record's own
+   * override does NOT replace it. Otherwise an override would run the work on
+   * one model while the account paid for another, and the person's choice of
+   * model would do nothing. Calls nobody pays per use of (the job filter, the
+   * Bid Assistant, the extractors) leave this off and keep the override.
+   */
+  runChoiceWins?: boolean;
 };
 
 async function runAssembled(
@@ -291,15 +300,18 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
   };
 
   const assembled = await assemblePrompt(ref, input.promptValues);
-  const config = configFromRecord(
-    assembled.record,
-    input.fallbackProvider || DEFAULT_PROVIDER,
-    input.fallbackModelName,
-    // A caller that named a provider chose it; one that fell through to the
-    // default did not, and should be rerouted rather than failed if an admin
-    // has disabled that default.
-    Boolean(input.fallbackProvider)
-  );
+  const config: PromptExecutionConfig =
+    input.runChoiceWins && input.fallbackProvider
+      ? { provider: input.fallbackProvider, modelName: input.fallbackModelName, explicit: true }
+      : configFromRecord(
+          assembled.record,
+          input.fallbackProvider || DEFAULT_PROVIDER,
+          input.fallbackModelName,
+          // A caller that named a provider chose it; one that fell through to
+          // the default did not, and should be rerouted rather than failed if
+          // an admin has disabled that default.
+          Boolean(input.fallbackProvider)
+        );
 
   const result = await runAssembled(assembled, config, {
     callSite: input.callSite || input.promptId,

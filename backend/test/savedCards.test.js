@@ -307,6 +307,12 @@ test('a card Stripe will not forget is not forgotten here either', async () => {
       method: 'DELETE',
     });
     assert.equal(response.status, 502);
+    // The buyer gets a ref to quote and not Stripe's words; the log has both.
+    const body = await response.json();
+    assert.match(body.error, /^That card could not be removed\. Please try again, or contact your administrator\./);
+    assert.match(body.ref, /^ERR-[0-9A-F]{6}$/);
+    assert.equal(body.detail, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /Stripe is down/);
     assert.equal(
       server.cards.listCardsForUser(server.alice.id).length,
       1,

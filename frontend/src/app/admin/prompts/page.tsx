@@ -823,6 +823,17 @@ function PromptsPageBody() {
                     </Field>
                   </div>
 
+                  {/*
+                    Said here because nothing else would: a resume is charged at
+                    the model its run chose, so its analysis, tailoring and cover
+                    letter always run on that one, override or not.
+                  */}
+                  <p className="text-sm text-muted">
+                    An override decides the model for the job filter, the Bid Assistant and the
+                    extractors. A resume&apos;s analysis, tailoring and cover letter always run on the
+                    model chosen for the run - the one it is charged at - so an override never
+                    changes what a resume costs or runs on.
+                  </p>
                   <div className="grid gap-6 md:grid-cols-2">
                     <Field
                       label="Model override: provider"
