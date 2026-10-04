@@ -325,7 +325,7 @@ export default function ProfilesPage() {
           <p className="mt-1 text-sm">
             Delete one below to make room, or ask an administrator of this installation to move your
             account to a larger plan.{' '}
-            <Link href="/account" className="underline">
+            <Link href="/settings/plan" className="underline">
               See your plan
             </Link>
             .

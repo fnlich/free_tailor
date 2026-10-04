@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
+import { IconUser } from '@/components/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage } from '@/lib/auth';
 
@@ -17,14 +18,6 @@ import { describeProfileUsage } from '@/lib/auth';
 const ITEM =
   'block w-full px-4 py-3 text-left text-sm text-gray-700 transition hover:bg-gray-50 ' +
   'dark:text-slate-200 dark:hover:bg-slate-900';
-
-function initials(name: string, email: string): string {
-  const source = name.trim() || email;
-  const parts = source.split(/[\s@._-]+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  const letters = parts.length === 1 ? parts[0].slice(0, 2) : parts[0][0] + parts[1][0];
-  return letters.toUpperCase();
-}
 
 export default function AccountMenu() {
   const { account, isAdmin, signOut } = useAuth();
@@ -71,7 +64,8 @@ export default function AccountMenu() {
          * one, the account was simply missing from the row it checks.
          */
         aria-label={`Account: ${account.name || account.email}`}
-        className="flex items-center gap-2 rounded-full py-1 pl-1 pr-3 text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:text-slate-200 dark:hover:bg-slate-800"
+        title={account.name || account.email}
+        className="tl-icon-button"
       >
         {account.picture ? (
           // A plain <img>, not next/image: the src is a Google avatar URL on a
@@ -84,15 +78,20 @@ export default function AccountMenu() {
             alt=""
             width={32}
             height={32}
-            className="h-8 w-8 rounded-full"
+            className="h-9 w-9 rounded-full"
             referrerPolicy="no-referrer"
           />
         ) : (
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
-            {initials(account.name, account.email)}
+          /*
+           * An outlined figure rather than initials on a coloured disc - the
+           * reference's account button, which keeps the bar's right end a row
+           * of same-weight line icons. The name is one press away, at the top
+           * of the menu, and in this button's accessible name and tooltip.
+           */
+          <span className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-current">
+            <IconUser className="h-5 w-5" />
           </span>
         )}
-        <span className="hidden max-w-[10rem] truncate sm:inline">{account.name || account.email}</span>
       </button>
 
       {open && (
@@ -122,7 +121,7 @@ export default function AccountMenu() {
             */}
             <div className="mt-3 space-y-1 text-xs text-gray-600 dark:text-slate-300">
               <Link
-                href="/account#credits"
+                href="/credits"
                 onClick={() => setOpen(false)}
                 className="-mx-1 flex justify-between rounded px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-900"
               >
@@ -130,7 +129,7 @@ export default function AccountMenu() {
                 <span className="font-medium text-gray-900 dark:text-white">{account.credits}</span>
               </Link>
               <Link
-                href="/account#subscription"
+                href="/settings/plan"
                 onClick={() => setOpen(false)}
                 className="-mx-1 flex justify-between rounded px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-900"
               >
@@ -142,11 +141,11 @@ export default function AccountMenu() {
             </div>
           </div>
 
-          <Link href="/account" onClick={() => setOpen(false)} className={ITEM}>
-            Account info
+          <Link href="/settings" onClick={() => setOpen(false)} className={ITEM}>
+            Settings
           </Link>
-          <Link href="/account#subscription" onClick={() => setOpen(false)} className={ITEM}>
-            Subscription
+          <Link href="/settings/plan" onClick={() => setOpen(false)} className={ITEM}>
+            Plan
           </Link>
           {isAdmin && (
             <Link href="/admin/accounts" onClick={() => setOpen(false)} className={ITEM}>

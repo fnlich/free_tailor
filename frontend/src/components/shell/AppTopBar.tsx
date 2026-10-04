@@ -5,7 +5,7 @@ import Link from 'next/link';
 import type { RefObject } from 'react';
 
 import AccountMenu from '@/components/auth/AccountMenu';
-import { IconCredits, IconMenu, IconMoon, IconSun, IconTemplates } from '@/components/icons';
+import { IconCredits, IconMenu, IconMoon, IconSun } from '@/components/icons';
 import { useTheme } from '@/lib/useTheme';
 import NotificationsMenu from './NotificationsMenu';
 
@@ -27,7 +27,9 @@ type Props = {
 function CreditsPill({ credits }: { credits: number }) {
   return (
     <Link href="/credits" className="tl-credits" title="Credits - press to buy more">
-      <IconCredits className="h-[18px] w-[18px] text-amber-500" />
+      <span className="tl-coin" aria-hidden>
+        <IconCredits className="h-5 w-5" />
+      </span>
       <span>{credits}</span>
     </Link>
   );
@@ -69,41 +71,31 @@ export default function AppTopBar({ credits, drawerOpen, onToggleDrawer, trigger
           <IconMenu className="h-5 w-5" />
         </button>
 
-        <Link href="/" className="flex min-w-0 items-center gap-2" aria-label="Tailor home">
+        <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="Tailor home">
           <Image
             src="/tailor-icon.svg"
             alt=""
-            width={26}
-            height={26}
-            className="rounded-md"
+            width={34}
+            height={34}
+            className="rounded-lg"
             priority
             data-darkreader-ignore
             suppressHydrationWarning
           />
-          <span className="truncate">Tailor</span>
+          <span className="tl-wordmark truncate">tailor</span>
         </Link>
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-1 px-3 sm:gap-2 sm:px-4">
+      {/*
+        Controls only - what you have, what is new, how it looks, who you are.
+        Templates, which used to end this row, is a destination, and now sits
+        at the foot of the rail beside Settings.
+      */}
+      <div className="ml-auto flex shrink-0 items-center gap-1 px-3 sm:gap-3 sm:px-5">
         <CreditsPill credits={credits} />
         <NotificationsMenu />
         <ThemeToggleButton />
         <AccountMenu />
-
-        {/*
-          Templates is a destination rather than a control, but it belongs up
-          here with them: it is shared by the whole installation, so it is not
-          any one person's work the way the sidebar entries are. Everybody can
-          look; only an administrator can change one.
-
-          Last, and after the account, for that same reason. Everything before
-          it acts on the session in front of you - what you have, what is new,
-          how it looks, who you are - and this one navigates away. Putting a
-          door in the middle of a row of switches is what made it read oddly.
-        */}
-        <Link href="/admin/templates" className="tl-icon-button" title="Templates">
-          <IconTemplates className="h-5 w-5" />
-        </Link>
       </div>
     </header>
   );

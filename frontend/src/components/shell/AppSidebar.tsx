@@ -3,14 +3,14 @@
 import Link from 'next/link';
 import { useEffect, useRef, type RefObject } from 'react';
 
-import { ICONS } from '@/components/icons';
+import { ICONS, IconExternal } from '@/components/icons';
 import {
   activeHref,
   canSee,
   isSettingsRoute,
+  SIDEBAR_ASSISTANT,
   SIDEBAR_BOTTOM,
   SIDEBAR_MAIN,
-  SIDEBAR_TOOLS,
   type NavItem,
 } from './navModel';
 
@@ -64,6 +64,7 @@ function Row({
         className="tl-nav-item"
       >
         {content}
+        <IconExternal className="tl-nav-out" />
       </a>
     );
   }
@@ -92,17 +93,16 @@ export default function AppSidebar({
   onNavigate,
   panelRef,
 }: Props) {
-  const main = SIDEBAR_MAIN.filter((item) => canSee(item, isAdmin, plan));
-  const tools = SIDEBAR_TOOLS.filter((item) => canSee(item, isAdmin, plan));
-  const bottom = SIDEBAR_BOTTOM.filter(
-    // A link that would open about:blank is worse than no link at all, so the
-    // sheet entry stays out until there is a URL for it.
-    (item) => canSee(item, isAdmin, plan) && (!item.external || sheetUrl)
-  );
+  // A link that would open about:blank is worse than no link at all, so the
+  // sheet entry stays out until there is a URL for it.
+  const offered = (item: NavItem) => canSee(item, isAdmin, plan) && (!item.external || Boolean(sheetUrl));
+  const main = SIDEBAR_MAIN.filter(offered);
+  const assistant = SIDEBAR_ASSISTANT.filter(offered);
+  const bottom = SIDEBAR_BOTTOM.filter(offered);
 
-  // Resolved across every entry at once, so /jobs/filter lights "Job Filter"
-  // alone rather than lighting "Job Search" as well.
-  const active = activeHref(pathname, [...main, ...tools, ...bottom]);
+  // Resolved across every entry at once, by longest match, so a route under
+  // another entry's path lights only the row that is really its own.
+  const active = activeHref(pathname, [...main, ...assistant, ...bottom]);
   const settingsActive = isSettingsRoute(pathname);
 
   const firstLink = useRef<HTMLDivElement | null>(null);
@@ -111,8 +111,10 @@ export default function AppSidebar({
     firstLink.current?.querySelector<HTMLElement>('a')?.focus();
   }, [isCompact, drawerOpen]);
 
+  // Settings stays lit on every one of its tabs, including the
+  // administrator's, which live under /admin/ rather than under /settings.
   const isActive = (item: NavItem) =>
-    item.href === '/admin/settings' ? settingsActive : active === item.href;
+    item.href === '/settings' ? settingsActive : !settingsActive && active === item.href;
 
   return (
     <aside
@@ -127,10 +129,10 @@ export default function AppSidebar({
       inert={isCompact && !drawerOpen}
       className="tl-sidebar"
     >
-      <div ref={firstLink} className="flex flex-col gap-0.5">
+      <div ref={firstLink} className="flex flex-col">
         {main.map((item) => (
           <Row
-            key={item.href}
+            key={item.href || item.label}
             item={item}
             active={isActive(item)}
             sheetUrl={sheetUrl}
@@ -139,22 +141,28 @@ export default function AppSidebar({
         ))}
       </div>
 
-      {tools.length > 0 && <div className="tl-sidebar-divider" />}
-
-      <div className="flex flex-col gap-0.5">
-        {tools.map((item) => (
-          <Row
-            key={item.href}
-            item={item}
-            active={isActive(item)}
-            sheetUrl={sheetUrl}
-            onNavigate={onNavigate}
-          />
-        ))}
-      </div>
+      {assistant.length > 0 && (
+        <>
+          <div className="tl-sidebar-divider" />
+          <div className="tl-sidebar-label" id="nav-assistant">
+            Assistant
+          </div>
+          <div className="flex flex-col" role="group" aria-labelledby="nav-assistant">
+            {assistant.map((item) => (
+              <Row
+                key={item.href}
+                item={item}
+                active={isActive(item)}
+                sheetUrl={sheetUrl}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </div>
+        </>
+      )}
 
       {bottom.length > 0 && (
-        <div className="tl-sidebar-bottom flex flex-col gap-0.5">
+        <div className="tl-sidebar-bottom flex flex-col">
           {bottom.map((item) => (
             <Row
               key={item.href || item.label}

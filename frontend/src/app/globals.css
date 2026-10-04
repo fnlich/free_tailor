@@ -19,26 +19,36 @@
    * it sits next to are different materials, and giving them one variable is
    * how they drift apart later when only one of them is meant to change.
    */
-  --canvas: #f4f5f7;
-  --rail: #ffffff;
+  --canvas: #ffffff;
+  --rail: #f9fafb;
   --rail-line: #e5e7eb;
-  --rail-ink: #475467;
-  --rail-ink-active: #1d4ed8;
+  --rail-ink: #364153;
+  --rail-ink-active: #101828;
+  --rail-icon: #6a7282;
+  --rail-label: #99a1af;
   --rail-hover: #f3f4f6;
-  --rail-active: #eef2ff;
-  --topbar: rgba(255, 255, 255, 0.92);
+  --rail-active: #e4e4e7;
+  --topbar: #ffffff;
   --line-subtle: #e5e7eb;
-  --accent: #2563eb;
-  --accent-soft: #eff4ff;
-  --accent-ink: #1d4ed8;
+  /*
+   * One blue for every control that commits to something - the primary
+   * button, the active tab and its underline, a link. Tailwind's sky-700,
+   * which is the blue the reference design the shell follows is built on.
+   */
+  --accent: #0069a8;
+  --accent-hover: #00598a;
+  --accent-soft: #f0f9ff;
+  --accent-ink: #0069a8;
+  /* The coin beside the balance, and the bar beside it on /credits. */
+  --coin: #f0b100;
 
   /*
    * Measurements the shell owns. bid-assistant and the calendar read the bar
    * height rather than repeating a number - which is what they used to do, in
    * three places, disagreeing with each other by 12px.
    */
-  --tl-topbar-h: 3.5rem;
-  --tl-sidebar-w: 15rem;
+  --tl-topbar-h: 4.5rem;
+  --tl-sidebar-w: 16rem;
   --tl-drawer-w: min(17rem, 82vw);
 
   /*
@@ -94,7 +104,12 @@
   --color-subtle: var(--text-subtle);
 
   --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-canvas: var(--canvas);
+  --color-rail: var(--rail);
+  --color-coin: var(--coin);
 }
 
 html.dark {
@@ -112,15 +127,19 @@ html.dark {
   --canvas: #070f1c;
   --rail: #0b1524;
   --rail-line: #1b2942;
-  --rail-ink: #9fb0c9;
-  --rail-ink-active: #bfdbfe;
+  --rail-ink: #b4c2d6;
+  --rail-ink-active: #f1f5f9;
+  --rail-icon: #7f91ad;
+  --rail-label: #5f708c;
   --rail-hover: rgba(148, 163, 184, 0.1);
-  --rail-active: rgba(59, 130, 246, 0.16);
-  --topbar: rgba(11, 21, 36, 0.92);
+  --rail-active: rgba(148, 163, 184, 0.18);
+  --topbar: #0b1524;
   --line-subtle: #1b2942;
-  --accent: #3b82f6;
-  --accent-soft: rgba(59, 130, 246, 0.16);
-  --accent-ink: #93c5fd;
+  --accent: #0284c7;
+  --accent-hover: #0ea5e9;
+  --accent-soft: rgba(14, 165, 233, 0.14);
+  --accent-ink: #7dd3fc;
+  --coin: #f0b100;
   color-scheme: dark;
 }
 
@@ -441,7 +460,6 @@ html.dark .shadow-2xl {
   align-items: center;
   height: var(--tl-topbar-h);
   background: var(--topbar);
-  backdrop-filter: saturate(180%) blur(8px);
   border-bottom: 1px solid var(--line-subtle);
 }
 
@@ -452,11 +470,16 @@ html.dark .shadow-2xl {
   gap: 0.55rem;
   flex: 0 0 auto;
   width: var(--tl-sidebar-w);
-  padding-inline: 1rem;
+  padding-inline: 1.25rem;
   color: var(--foreground);
-  font-size: 0.9375rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+}
+
+/* The wordmark: the product's name, set large, the way the reference sets its own. */
+.tl-wordmark {
+  font-size: 1.75rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
 }
 
 .tl-sidebar {
@@ -468,8 +491,7 @@ html.dark .shadow-2xl {
   z-index: var(--layer-app-sidebar);
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
-  padding: 0.75rem 0.5rem;
+  padding: 1rem 0 0;
   background: var(--rail);
   border-right: 1px solid var(--rail-line);
   overflow-y: auto;
@@ -477,25 +499,42 @@ html.dark .shadow-2xl {
 }
 
 .tl-sidebar-divider {
-  margin: 0.5rem 0.375rem;
+  margin: 0.75rem 0;
   border-top: 1px solid var(--rail-line);
+}
+
+/*
+ * A heading for a group of rows, not a row: it is not a link, and the rows
+ * under it are reached exactly as the rows above the divider are.
+ */
+.tl-sidebar-label {
+  padding: 0.25rem 1.25rem 0.375rem;
+  color: var(--rail-label);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* margin-top:auto is what pins the bottom group to the bottom. */
 .tl-sidebar-bottom {
   margin-top: auto;
-  padding-top: 0.5rem;
+  padding-block: 0.5rem;
   border-top: 1px solid var(--rail-line);
 }
 
+/*
+ * Full-bleed rows with square ends, lit by a grey band rather than a coloured
+ * pill - the reference design's rail, which reads as a list rather than as a
+ * set of buttons.
+ */
 .tl-nav-item {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  padding: 0.5rem 0.625rem;
-  border-radius: 0.5rem;
+  gap: 0.875rem;
+  padding: 0.6875rem 1.25rem;
   color: var(--rail-ink);
-  font-size: 0.8125rem;
+  font-size: 0.9375rem;
   font-weight: 500;
   line-height: 1.25rem;
   white-space: nowrap;
@@ -504,11 +543,21 @@ html.dark .shadow-2xl {
 
 .tl-nav-item > svg {
   flex: 0 0 auto;
+  height: 1.25rem;
+  width: 1.25rem;
+  color: var(--rail-icon);
+}
+
+/* The small arrow after a label that leaves the app. */
+.tl-nav-item > svg.tl-nav-out {
+  height: 0.875rem;
+  width: 0.875rem;
+  margin-left: -0.375rem;
 }
 
 .tl-nav-item:hover {
   background: var(--rail-hover);
-  color: var(--foreground);
+  color: var(--rail-ink-active);
 }
 
 /* State on a data attribute rather than a className ternary: one source of
@@ -516,16 +565,19 @@ html.dark .shadow-2xl {
 .tl-nav-item[data-active='true'] {
   background: var(--rail-active);
   color: var(--rail-ink-active);
-  font-weight: 600;
+}
+
+.tl-nav-item[data-active='true'] > svg {
+  color: var(--accent-ink);
 }
 
 .tl-icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 2.25rem;
-  width: 2.25rem;
-  border-radius: 0.625rem;
+  height: 2.5rem;
+  width: 2.5rem;
+  border-radius: 9999px;
   color: var(--rail-ink);
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -557,19 +609,33 @@ html.dark .shadow-2xl {
 .tl-credits {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  height: 2.25rem;
-  padding-inline: 0.7rem;
+  gap: 0.5rem;
+  height: 2.5rem;
+  padding-inline: 0.375rem 0.625rem;
   border-radius: 9999px;
-  background: var(--rail-hover);
   color: var(--foreground);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .tl-credits:hover {
-  background: var(--rail-active);
+  background: var(--rail-hover);
+}
+
+/* A gold coin with the dollar sign knocked out of it, as in the reference. */
+.tl-coin {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: 2rem;
+  width: 2rem;
+  border-radius: 9999px;
+  background: var(--coin);
+  color: #ffffff;
 }
 
 .tl-panel {
@@ -610,46 +676,204 @@ html.dark .shadow-2xl {
   min-height: calc(100dvh - var(--tl-topbar-h));
 }
 
-.tl-subnav {
-  background: var(--canvas);
+/*
+ * Underlined tabs: Settings' sections, and the Card / Crypto / history split
+ * on Credits. A row of plain words over a hairline, the current one in the
+ * accent with a 3px bar sitting ON the hairline - which is what the negative
+ * margin is for.
+ *
+ * Scrolls sideways rather than wrapping. A wrapped row of tabs reads as two
+ * rows of choices, and the underline of the first row would cross the second.
+ */
+.tl-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2rem;
+  overflow-x: auto;
+  scrollbar-width: none;
   border-bottom: 1px solid var(--line-subtle);
 }
 
-/*
- * Scrolls sideways rather than wrapping. A wrapping pill row changes its own
- * height, which would break the sticky offset that holds it under the bar.
- */
-.tl-subnav-row {
-  display: flex;
-  gap: 0.25rem;
-  overflow-x: auto;
-  scrollbar-width: none;
-  padding: 0.625rem 0;
-}
-
-.tl-subnav-row::-webkit-scrollbar {
+.tl-tabs::-webkit-scrollbar {
   display: none;
 }
 
-.tl-subnav-item {
+.tl-tab {
   flex: 0 0 auto;
-  padding: 0.375rem 0.75rem;
-  border-radius: 9999px;
-  color: var(--text-subtle);
-  font-size: 0.8125rem;
+  margin-bottom: -1px;
+  padding: 0.75rem 0.25rem 0.875rem;
+  border-bottom: 3px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
   font-weight: 500;
   white-space: nowrap;
 }
 
-.tl-subnav-item:hover {
-  background: var(--surface-muted);
+.tl-tab:hover {
   color: var(--foreground);
 }
 
-.tl-subnav-item[data-active='true'] {
-  background: var(--accent-soft);
+.tl-tab[data-active='true'] {
+  border-bottom-color: var(--accent);
   color: var(--accent-ink);
+}
+
+/* Between two groups of tabs - Settings' own, and the administrator's. */
+.tl-tabs-group {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--line-subtle);
+  margin-block: 0.75rem 0.875rem;
+  color: var(--text-subtle);
+  font-size: 0.6875rem;
   font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/*
+ * The primary button, as a class rather than a utility string, so it carries
+ * no `bg-blue-600` the dark-mode shim would recolour and no `shadow` it would
+ * replace. Square-ish and solid, like the reference's Change and Purchase.
+ */
+.tl-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tl-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.tl-button:disabled {
+  opacity: 0.45;
+}
+
+.tl-button[data-shape='pill'] {
+  border-radius: 9999px;
+  padding-inline: 1.125rem;
+}
+
+/* The outlined one: Invoice and Help in a table row, Cancel beside a Save. */
+.tl-button-quiet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 2.25rem;
+  padding: 0.375rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tl-button-quiet:hover:not(:disabled) {
+  background: var(--surface-muted);
+}
+
+.tl-button-quiet:disabled {
+  opacity: 0.45;
+}
+
+/*
+ * A bordered table in a rounded box, with a tinted header row: the order
+ * history on /credits. Classes rather than utilities for the same reason as
+ * the buttons - `border` alone is one of the shim's catch-alls.
+ */
+.tl-table-box {
+  overflow-x: auto;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.5rem;
+  background: var(--surface-secondary);
+}
+
+.tl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.tl-table th {
+  padding: 0.875rem 1rem;
+  background: var(--rail);
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--foreground);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.tl-table td {
+  padding: 1rem;
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+
+.tl-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* A setting: heading and one line of explanation, then its fields. */
+.tl-section {
+  padding-block: 2rem;
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.tl-section:last-child {
+  border-bottom: 0;
+}
+
+/* A read-only value shown where an input would be - the reference's Email. */
+.tl-field-static {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.375rem;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+}
+
+/*
+ * An editable field to match it. The shim's dark-mode input rule outranks this
+ * one (it names an element as well as a class) and that is harmless: it reads
+ * the same surface and ink variables, and differs only in a stronger border.
+ */
+.tl-input {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  background: var(--surface-secondary);
+  color: var(--foreground);
+  font-size: 0.9375rem;
+}
+
+.tl-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 @media (max-width: 767.98px) {
@@ -707,7 +931,7 @@ html.dark .shadow-2xl {
    * less. Kept, it degrades to an icon that still says what the control is
    * and still opens /credits, which is where the exact figure lives anyway.
    */
-  .tl-credits > svg {
+  .tl-credits > .tl-coin {
     flex: none;
   }
 

@@ -49,6 +49,14 @@ function Icon({ children, className = 'h-[18px] w-[18px]', ...rest }: IconProps 
 
 /* ------------------------------------------------------------ navigation */
 
+/** A person - the signed-in account, where there is no picture to show. */
+export const IconUser = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="8.5" r="3.5" />
+    <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
+  </Icon>
+);
+
 /** Resume profiles - the career data a resume is built from. */
 export const IconProfile = (p: IconProps) => (
   <Icon {...p}>
@@ -229,6 +237,7 @@ export const IconPlus = (p: IconProps) => (
  */
 export const ICONS = {
   profile: IconProfile,
+  user: IconUser,
   groups: IconGroups,
   build: IconBuild,
   orders: IconOrders,

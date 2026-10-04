@@ -9,8 +9,8 @@ import { useIsCompact } from '@/lib/useMediaQuery';
 import { useDismissable } from '@/lib/useDismissable';
 import AppSidebar from './AppSidebar';
 import AppTopBar from './AppTopBar';
-import SettingsSubNav from './SettingsSubNav';
-import { isSettingsRoute } from './navModel';
+import SettingsHeader from './SettingsHeader';
+import { isAdminSettingsRoute, isBareRoute, isSettingsRoute } from './navModel';
 
 /**
  * The chrome every signed-in page sits inside.
@@ -63,20 +63,17 @@ export default function AppShell({ children }: { children: ReactNode }) {
    *
    * Fetched here rather than in the sidebar because the shell survives every
    * client-side navigation - one request per page load instead of one per
-   * route. Skipped entirely for administrators, who do not see that entry.
+   * route. Administrators included now: every account has a sheet of its own,
+   * and Find Jobs is the second row of everybody's rail.
    */
-  const [fetchedSheetUrl, setFetchedSheetUrl] = useState('');
+  const [sheetUrl, setSheetUrl] = useState('');
   useEffect(() => {
-    if (isAdmin) return;
-
     let alive = true;
     void (async () => {
       try {
         const sheet = await sheetApi.get();
         if (!alive) return;
-        setFetchedSheetUrl(
-          sheet.configured ? (sheet.todayTabUrl ?? sheet.spreadsheetUrl ?? '') : ''
-        );
+        setSheetUrl(sheet.configured ? (sheet.todayTabUrl ?? sheet.spreadsheetUrl ?? '') : '');
       } catch {
         // No link is the right answer here - one that opens about:blank is
         // worse than none - and that is already the starting state.
@@ -85,11 +82,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [isAdmin]);
-
-  // Derived, so an account that turns out to be an administrator never shows a
-  // link fetched a moment earlier.
-  const sheetUrl = isAdmin ? '' : fetchedSheetUrl;
+  }, [account?.id]);
 
   const closeDrawer = useCallback(() => setDrawerRequested(false), []);
 
@@ -120,7 +113,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const showSettingsNav = isAdmin && isSettingsRoute(pathname);
+  if (isBareRoute(pathname)) return <>{children}</>;
+
+  const onSettings = isSettingsRoute(pathname);
 
   return (
     <div className="tl-shell" data-drawer={drawerOpen ? 'open' : 'closed'}>
@@ -145,7 +140,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
       {drawerOpen && <div className="tl-scrim" onClick={closeDrawer} aria-hidden />}
 
       <div className="tl-main">
-        {showSettingsNav && <SettingsSubNav pathname={pathname} />}
+        {onSettings && (
+          <SettingsHeader pathname={pathname} isAdmin={isAdmin} wide={isAdminSettingsRoute(pathname)} />
+        )}
         {children}
       </div>
     </div>

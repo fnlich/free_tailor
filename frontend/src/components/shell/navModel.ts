@@ -27,24 +27,32 @@ export type NavItem = {
   title?: string;
 };
 
-/** The primary destinations. */
+/**
+ * The primary destinations, in the order the rail shows them.
+ *
+ * "Find Jobs" has no href of its own - it opens the account's own job sheet,
+ * whose URL is fetched once by the shell, in a new tab. It sits second because
+ * it is the second thing in the day's loop: profiles first, then the jobs
+ * those profiles are for, then the resumes built for them.
+ */
 export const SIDEBAR_MAIN: NavItem[] = [
-  // "Profile" here is the resume profile - the career data a resume is built
-  // from. The account you are signed in as lives in the top bar instead.
-  { href: '/admin/profiles', label: 'Profile', icon: 'profile' },
-  { href: '/admin/groups', label: 'Groups', icon: 'groups', needs: 'premium' },
+  // "Profiles" here is the resume profiles - the career data a resume is built
+  // from. The account you are signed in as lives under Settings instead.
+  { href: '/admin/profiles', label: 'Profiles', icon: 'profile' },
+  {
+    href: '',
+    label: 'Find Jobs',
+    icon: 'search',
+    external: true,
+    title: "Opens today's tab of your job sheet in a new tab",
+  },
   { href: '/', label: 'Build Resumes', icon: 'build' },
   { href: '/orders', label: 'Orders', icon: 'orders' },
-  // Last, and beside Orders on purpose: running out of credits is something
-  // you notice on an order. The coin pill in the top bar goes to the same
-  // page - it is a balance you can press, not a way to find the page, and
-  // somebody not looking at it had no door here at all.
   { href: '/credits', label: 'Credits', icon: 'credits' },
 ];
 
-/** Everything to do with finding work, below a divider. */
-export const SIDEBAR_TOOLS: NavItem[] = [
-  { href: '/jobs', label: 'Job Search', icon: 'search' },
+/** Below the divider, under the "Assistant" heading: the tools that help work a job. */
+export const SIDEBAR_ASSISTANT: NavItem[] = [
   { href: '/jobs/filter', label: 'Job Filter', icon: 'filter' },
   { href: '/bid-assistant', label: 'Bid Assistant', icon: 'bid' },
   { href: '/calendar', label: 'Calendar', icon: 'calendar' },
@@ -53,38 +61,38 @@ export const SIDEBAR_TOOLS: NavItem[] = [
 /**
  * Pinned to the bottom of the rail.
  *
- * "Find Jobs" has no href of its own - it opens the account's own spreadsheet,
- * whose URL is fetched once by the shell. It is the app's first non-admin-only
- * entry: an administrator manages the installation rather than working a job
- * sheet, and the sheet an admin would open is their own, which is not what the
- * entry is for.
+ * Templates is shared by the whole installation - everybody can look, only an
+ * administrator can change one - and Settings is everybody's: an account's own
+ * tabs for everyone, the installation's on top of them for an administrator.
  */
 export const SIDEBAR_BOTTOM: NavItem[] = [
-  {
-    href: '',
-    label: 'Find Jobs',
-    icon: 'external',
-    needs: 'non-admin',
-    external: true,
-    title: "Opens today's tab of your job sheet in a new tab",
-  },
-  { href: '/admin/settings', label: 'Settings', icon: 'settings', needs: 'admin' },
-  { href: '/admin/accounts', label: 'Manage Accounts', icon: 'accounts', needs: 'admin' },
+  { href: '/admin/templates', label: 'Templates', icon: 'templates' },
+  { href: '/settings', label: 'Settings', icon: 'settings' },
+];
+
+export type SettingsTab = { href: string; label: string };
+
+/** Settings for the account you are signed in as. Everybody gets these. */
+export const SETTINGS_ACCOUNT_TABS: SettingsTab[] = [
+  { href: '/settings', label: 'Profile' },
+  { href: '/settings/job-sheet', label: 'Job Sheet' },
+  { href: '/settings/payment-methods', label: 'Payment Methods' },
+  { href: '/settings/plan', label: 'Plan' },
 ];
 
 /**
- * The Settings hub.
+ * The installation's settings, after the account's, for administrators only.
  *
- * Every page here is administrator-only and each carries its own `AdminOnly`
- * gate, which is why the sub-nav is shown only to administrators - offering
- * anybody else a row of seven doors that all say "administrators only" is worse
- * than offering none.
+ * Every page here carries its own `AdminOnly` gate, which is why the tabs are
+ * shown only to administrators - offering anybody else a row of doors that all
+ * say "administrators only" is worse than offering none.
  *
  * Note `/test` is in this list but is not under `/admin/`, which is why the
- * sub-nav is rendered by the shell rather than by the admin layout.
+ * tabs are rendered by the shell rather than by the admin layout.
  */
-export const SETTINGS_ITEMS = [
+export const SETTINGS_ADMIN_TABS: SettingsTab[] = [
   { href: '/admin/settings', label: 'General' },
+  { href: '/admin/accounts', label: 'Accounts' },
   { href: '/admin/google-sheets', label: 'Google Sheets' },
   { href: '/admin/prompts', label: 'Prompts' },
   { href: '/admin/models', label: 'Models' },
@@ -92,7 +100,10 @@ export const SETTINGS_ITEMS = [
   { href: '/admin/notifications', label: 'Notifications' },
   { href: '/admin/payments', label: 'Payments' },
   { href: '/test', label: 'Prompt Test' },
-] as const;
+];
+
+/** Every Settings tab, for deciding whether a route is part of the hub. */
+export const SETTINGS_ITEMS: SettingsTab[] = [...SETTINGS_ACCOUNT_TABS, ...SETTINGS_ADMIN_TABS];
 
 export function canSee(item: NavItem, isAdmin: boolean, plan: unknown): boolean {
   if (!item.needs) return true;
@@ -127,7 +138,26 @@ export function activeHref(pathname: string, items: readonly { href: string }[])
 }
 
 const SETTINGS_HREFS = SETTINGS_ITEMS.map((item) => item.href);
+const ADMIN_SETTINGS_HREFS = SETTINGS_ADMIN_TABS.map((item) => item.href);
 
 export function isSettingsRoute(pathname: string): boolean {
   return SETTINGS_HREFS.some((href) => matches(pathname, href));
+}
+
+/** One of the installation's pages, which are wider than an account's own. */
+export function isAdminSettingsRoute(pathname: string): boolean {
+  return ADMIN_SETTINGS_HREFS.some((href) => matches(pathname, href));
+}
+
+/**
+ * Pages drawn without the shell at all.
+ *
+ * An invoice is a document, opened in a tab of its own and printed: a rail and
+ * a top bar around it would be printed too, or need hiding from print one
+ * piece at a time.
+ */
+const BARE_ROUTES = ['/credits/invoice'];
+
+export function isBareRoute(pathname: string): boolean {
+  return BARE_ROUTES.some((href) => matches(pathname, href));
 }
