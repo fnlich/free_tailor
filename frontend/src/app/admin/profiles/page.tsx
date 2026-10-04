@@ -367,7 +367,7 @@ export default function ProfilesPage() {
           title="No profiles"
           action={
             <button onClick={openCreateForm} className="tl-button">
-              Add Profile
+              New Profile
             </button>
           }
         >

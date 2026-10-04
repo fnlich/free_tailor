@@ -10,7 +10,7 @@ import { useDismissable } from '@/lib/useDismissable';
 import AppSidebar from './AppSidebar';
 import AppTopBar from './AppTopBar';
 import SettingsHeader from './SettingsHeader';
-import { isAdminSettingsRoute, isBareRoute, isSettingsRoute } from './navModel';
+import { isBareRoute, isSettingsRoute } from './navModel';
 
 /**
  * The chrome every signed-in page sits inside.
@@ -141,7 +141,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       <div className="tl-main">
         {onSettings && (
-          <SettingsHeader pathname={pathname} isAdmin={isAdmin} wide={isAdminSettingsRoute(pathname)} />
+          <SettingsHeader pathname={pathname} isAdmin={isAdmin} />
         )}
         {children}
       </div>

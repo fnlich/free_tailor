@@ -61,28 +61,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
             </tr>
           </thead>
           <tbody>
-            {!list.loaded ? (
-              <tr>
-                <td colSpan={COLUMNS.length} className="text-center">
-                  {list.failed ? (
-                    <>
-                      Your credit history could not be loaded.{' '}
-                      <button type="button" onClick={list.retry} className="font-semibold text-accent-ink underline">
-                        Try again
-                      </button>
-                    </>
-                  ) : (
-                    'Loading…'
-                  )}
-                </td>
-              </tr>
-            ) : ordered.length === 0 ? (
-              <tr>
-                <td colSpan={COLUMNS.length} className="text-center">
-                  Nothing has moved yet. Every credit added, spent or given back will be listed here.
-                </td>
-              </tr>
-            ) : (
+            {list.loaded &&
               ordered.map((entry) => (
                 <tr key={entry.id}>
                   <td className="whitespace-nowrap">{formatDate(entry.createdAt, { style: 'short' })}</td>
@@ -98,10 +77,28 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
                   <td className="tabular-nums">{entry.balanceAfter}</td>
                   <td className="break-words">{entry.note || '—'}</td>
                 </tr>
-              ))
-            )}
+              ))}
           </tbody>
         </table>
+        {/* Below the table, not in a spanning cell - see OrderHistory for why. */}
+        {(!list.loaded || ordered.length === 0) && (
+          <p className="p-6 text-center text-sm text-muted">
+            {!list.loaded ? (
+              list.failed ? (
+                <>
+                  Your credit history could not be loaded.{' '}
+                  <button type="button" onClick={list.retry} className="font-semibold text-accent-ink underline">
+                    Try again
+                  </button>
+                </>
+              ) : (
+                'Loading…'
+              )
+            ) : (
+              'Nothing has moved yet. Every credit added, spent or given back will be listed here.'
+            )}
+          </p>
+        )}
       </div>
     </section>
   );

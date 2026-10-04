@@ -109,32 +109,34 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
             </tr>
           </thead>
           <tbody>
-            {!list.loaded ? (
-              <tr>
-                <td colSpan={COLUMNS.length} className="text-center">
-                  {list.failed ? (
-                    <>
-                      Your orders could not be loaded.{' '}
-                      <button type="button" onClick={list.retry} className="font-semibold text-accent-ink underline">
-                        Try again
-                      </button>
-                    </>
-                  ) : (
-                    'Loading…'
-                  )}
-                </td>
-              </tr>
-            ) : list.rows.length === 0 ? (
-              <tr>
-                <td colSpan={COLUMNS.length} className="text-center">
-                  {copy.empty}
-                </td>
-              </tr>
-            ) : (
-              list.rows.map((payment) => <OrderRow key={payment.id} payment={payment} />)
-            )}
+            {list.loaded && list.rows.map((payment) => <OrderRow key={payment.id} payment={payment} />)}
           </tbody>
         </table>
+        {/*
+          Below the table rather than in a full-width cell. On a phone the table
+          is wider than the screen and scrolls inside this box, so a message in
+          a spanning cell was centred on the SCROLLED width - "No card purch"
+          and a Try again button off the edge. A block child of the scroll box
+          is as wide as what is visible.
+        */}
+        {(!list.loaded || list.rows.length === 0) && (
+          <p className="p-6 text-center text-sm text-muted">
+            {!list.loaded ? (
+              list.failed ? (
+                <>
+                  Your orders could not be loaded.{' '}
+                  <button type="button" onClick={list.retry} className="font-semibold text-accent-ink underline">
+                    Try again
+                  </button>
+                </>
+              ) : (
+                'Loading…'
+              )
+            ) : (
+              copy.empty
+            )}
+          </p>
+        )}
       </div>
     </section>
   );
@@ -162,7 +164,14 @@ function OrderRow({ payment }: { payment: Payment }) {
       <td className="whitespace-nowrap">
         <span className="text-ink">{payment.credits} Credits</span>
       </td>
-      <td className="whitespace-nowrap tabular-nums">{formatAmount(payment.amountCents, payment.currency)}</td>
+      {/*
+        Under "Paid", only what was paid. A pending, failed or expired order
+        took no money, and its price here read as a charge - the cell beside it
+        and the invoice's Amount Paid already say nothing for the same reason.
+      */}
+      <td className="whitespace-nowrap tabular-nums">
+        {settled ? formatAmount(payment.amountCents, payment.currency) : '—'}
+      </td>
       <td className="tabular-nums">
         {/*
           What was GRANTED, falling back to what was quoted for every row

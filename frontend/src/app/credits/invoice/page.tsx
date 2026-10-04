@@ -24,6 +24,13 @@ const STATUS_WORDS: Record<PaymentState, string> = {
   refunded: 'Refunded',
 };
 
+/** How an order that never settled is described, finishing "Order FT-PAY-... ". */
+const UNSETTLED_WORDS: Partial<Record<PaymentState, string>> = {
+  pending: 'is still waiting for payment',
+  failed: 'did not go through',
+  expired: 'expired before it was paid',
+};
+
 /** What a load came back with, tagged with the id it was for. */
 type Loaded = { id: string; payment: Payment } | { id: string; error: string };
 
@@ -91,8 +98,35 @@ function InvoiceBody() {
     return <Message title="Invoice unavailable">{'error' in current ? current.error : ''}</Message>;
   }
 
-  const settled = isPaymentSettled(payment);
+  /*
+   * No invoice for an order nobody paid. The page used to draw one anyway -
+   * a pending order as an invoice with nothing paid against it, a failed one
+   * as an invoice for money that never moved - and an invoice is precisely
+   * the document somebody files as proof that it did. The return page is
+   * where an unfinished order's state is explained.
+   */
+  if (!isPaymentSettled(payment)) {
+    return (
+      <Message
+        title="No invoice yet"
+        action={{ href: `/credits/return?payment=${encodeURIComponent(payment.id)}`, label: 'See this order' }}
+      >
+        Order {payment.reference} {UNSETTLED_WORDS[payment.state] ?? 'has not been paid'}. An invoice is issued
+        once the payment completes.
+      </Message>
+    );
+  }
+
   const net = payment.creditsGranted || payment.credits;
+  /*
+   * The line is what the credits cost at the price they were sold at, so it
+   * reads as count x price. What a purchase loses to rounding is under one
+   * credit's price and is shown as its own row, so the rows still add up to
+   * the total rather than leaving a few cents unexplained.
+   */
+  const lineCents = payment.credits * payment.unitPriceCents;
+  const roundingCents = payment.amountCents - payment.feeCents - lineCents;
+  const spent = net - payment.refundedCredits;
 
   return (
     <article className={styles.card}>
@@ -133,11 +167,17 @@ function InvoiceBody() {
         </thead>
         <tbody>
           <tr>
-            <td>{payment.credits} Credit Balance</td>
-            <td className={styles.amount}>
-              {formatAmount(payment.amountCents - payment.feeCents, payment.currency)}
+            <td>
+              {payment.credits} Credits at {formatAmount(payment.unitPriceCents, payment.currency)} each
             </td>
+            <td className={styles.amount}>{formatAmount(lineCents, payment.currency)}</td>
           </tr>
+          {roundingCents > 0 && (
+            <tr>
+              <td>Rounding (less than one credit)</td>
+              <td className={styles.amount}>{formatAmount(roundingCents, payment.currency)}</td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -152,19 +192,32 @@ function InvoiceBody() {
         </div>
         <div>
           <dt className="text-muted">Amount Paid</dt>
-          {/* Nothing was paid on an order that never settled, whatever it was for. */}
-          <dd className="text-ink">{formatAmount(settled ? payment.amountCents : 0, payment.currency)}</dd>
+          <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
         </div>
+        {payment.state === 'refunded' && (
+          <div>
+            {/* A refund returns the whole charge - the fee included. */}
+            <dt className="text-muted">Amount Refunded</dt>
+            <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
+          </div>
+        )}
         <div className={styles.strong}>
           <dt className="text-ink">Net Credits</dt>
           <dd className="text-ink">{net}</dd>
         </div>
       </dl>
 
+      {/*
+        The money and the credits are two figures, and only the money is always
+        whole: a credit already spent on a resume cannot be taken back, so the
+        reversal can be short of what was granted. It said "Refunded: 40
+        credits" before, which read as the refund itself being 40 credits.
+      */}
       {payment.state === 'refunded' && (
         <p className="mt-8 text-sm text-ink">
-          Refunded: {payment.refundedCredits} credits
-          {payment.refundedAt ? ` on ${formatDate(payment.refundedAt, { style: 'date' })}` : ''}
+          Refunded{payment.refundedAt ? ` on ${formatDate(payment.refundedAt, { style: 'date' })}` : ''}. Credits
+          reversed: {payment.refundedCredits} of {net}
+          {spent > 0 ? ` - the other ${spent} had already been spent.` : '.'}
         </p>
       )}
     </article>
@@ -175,15 +228,35 @@ function Term({ children, className = '' }: { children: ReactNode; className?: s
   return <h2 className={`text-sm font-semibold text-ink ${className}`}>{children}</h2>;
 }
 
-function Message({ title, back = true, children }: { title: string; back?: boolean; children: ReactNode }) {
+function Message({
+  title,
+  back = true,
+  action,
+  children,
+}: {
+  title: string;
+  back?: boolean;
+  /** A link to offer before "Back to Credits", for a message with somewhere better to go. */
+  action?: { href: string; label: string };
+  children: ReactNode;
+}) {
   return (
     <div className={`${styles.card} text-center`}>
       <h1 className="text-xl font-semibold text-ink">{title}</h1>
       <div className="mt-3 text-sm text-muted">{children}</div>
-      {back && (
-        <Link href="/credits" className="mt-6 inline-block text-sm font-semibold text-accent-ink underline">
-          Back to Credits
-        </Link>
+      {(action || back) && (
+        <div className="mt-6 flex flex-wrap justify-center gap-x-6 gap-y-2">
+          {action && (
+            <Link href={action.href} className="text-sm font-semibold text-accent-ink underline">
+              {action.label}
+            </Link>
+          )}
+          {back && (
+            <Link href="/credits" className="text-sm font-semibold text-accent-ink underline">
+              Back to Credits
+            </Link>
+          )}
+        </div>
       )}
     </div>
   );

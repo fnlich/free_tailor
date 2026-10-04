@@ -25,7 +25,8 @@
   --rail-ink: #364153;
   --rail-ink-active: #101828;
   --rail-icon: #6a7282;
-  --rail-label: #99a1af;
+  /* Small uppercase text, so it needs the full 4.5:1 - #99a1af gave 2.5. */
+  --rail-label: #6a7282;
   --rail-hover: #f3f4f6;
   --rail-active: #e4e4e7;
   --topbar: #ffffff;
@@ -132,13 +133,19 @@ html.dark {
   --rail-ink: #b4c2d6;
   --rail-ink-active: #f1f5f9;
   --rail-icon: #7f91ad;
-  --rail-label: #5f708c;
+  --rail-label: #7486a2;
   --rail-hover: rgba(148, 163, 184, 0.1);
   --rail-active: rgba(148, 163, 184, 0.18);
   --topbar: #0b1524;
   --line-subtle: #1b2942;
-  --accent: #0284c7;
-  --accent-hover: #0ea5e9;
+  /*
+   * Darker than the light theme's sky-700 would suggest, because white button
+   * text sits on it: #0284c7 gave 4.1:1 and its lighter hover 2.8:1. Hover
+   * goes darker here, not lighter. Still over 3:1 against the page and the
+   * rail, which is what an underline or a focus ring in it needs.
+   */
+  --accent: #0369a1;
+  --accent-hover: #075985;
   --accent-soft: rgba(14, 165, 233, 0.14);
   --accent-ink: #7dd3fc;
   --coin: #f0b100;
@@ -721,6 +728,26 @@ html.dark .shadow-2xl {
 }
 
 /*
+ * The edge a row has more behind, faded - set by useTabRow, which knows when a
+ * row overflows. A mask rather than an overlay, so it fades whatever is behind
+ * the row in either theme and needs no colour of its own.
+ */
+.tl-tabs[data-more='end'],
+.tl-subtabs[data-more='end'] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 3rem), transparent);
+}
+
+.tl-tabs[data-more='start'],
+.tl-subtabs[data-more='start'] {
+  mask-image: linear-gradient(to left, #000 calc(100% - 3rem), transparent);
+}
+
+.tl-tabs[data-more='both'],
+.tl-subtabs[data-more='both'] {
+  mask-image: linear-gradient(to right, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+}
+
+/*
  * The second level under one tab - the installation's pages under
  * Administration. Smaller and unruled, lit by colour and a soft wash, so it
  * reads as belonging to the tab above rather than as a rival row of tabs.
@@ -969,6 +996,15 @@ html.dark .tl-button-quiet[data-tone='danger'] {
 .tl-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/*
+ * Drawn inside on a tab. A tab row scrolls, so it clips whatever spills past
+ * it, and an outset ring lost its top and bottom to the row's own edges.
+ */
+.tl-tab:focus-visible,
+.tl-subtab:focus-visible {
+  outline-offset: -2px;
 }
 
 /* Checkboxes and radios in the accent, wherever they sit. */
@@ -1349,6 +1385,35 @@ html.dark select.tl-input:disabled {
   .tl-brand {
     width: auto;
     flex: 0 0 auto;
+    gap: 0.375rem;
+    padding-inline: 0.75rem;
+  }
+
+  /*
+   * Pinning the brand only moved the squeeze: at 360 the pill was left with
+   * room for its coin and nothing else, so a phone never showed the balance
+   * at all. The brand and the controls are tightened instead, by an amount
+   * measured to leave a four-figure balance readable at 360 - a smaller mark,
+   * a smaller wordmark, 36px buttons (still a comfortable tap) and less air
+   * between them. The name stays whole; only its size gives.
+   */
+  .tl-brand > a {
+    gap: 0.5rem;
+  }
+
+  .tl-brand > a > img {
+    width: 28px;
+    height: 28px;
+  }
+
+  .tl-wordmark {
+    font-size: 1.375rem;
+  }
+
+  .tl-topbar .tl-icon-button {
+    width: 2.25rem;
+    height: 2.25rem;
+    flex: none;
   }
 
   /*
@@ -1359,11 +1424,20 @@ html.dark select.tl-input:disabled {
   .tl-topbar > .ml-auto {
     min-width: 0;
     flex-shrink: 1;
+    column-gap: 0.125rem;
+    padding-inline: 0.5rem;
   }
 
+  /*
+   * Never narrower than its coin, so the worst case is still a coin. Tighter
+   * inside too: at 320 the last 5px of a one-digit balance were what the
+   * padding held, and a half-clipped 0 reads as a C.
+   */
   .tl-credits {
-    min-width: 0;
+    min-width: 2.375rem;
     overflow: hidden;
+    gap: 0.375rem;
+    padding-inline: 0.25rem 0.375rem;
   }
 
   /*
@@ -1454,6 +1528,30 @@ html.dark select.tl-input:disabled {
   .tl-shell[data-drawer='open'] .tl-sidebar {
     transform: none;
     box-shadow: 0 18px 48px rgba(2, 6, 23, 0.28);
+  }
+}
+
+/*
+ * The narrowest phones (320) still left the balance no room after the above,
+ * so there the gutters and the brand give a little more. Measured to show a
+ * short balance beside its coin at 320; a long one keeps its leading digits.
+ */
+@media (max-width: 374.98px) {
+  .tl-brand {
+    padding-inline: 0.5rem;
+  }
+
+  .tl-brand > a > img {
+    width: 24px;
+    height: 24px;
+  }
+
+  .tl-wordmark {
+    font-size: 1.25rem;
+  }
+
+  .tl-topbar > .ml-auto {
+    padding-inline: 0.25rem;
   }
 }
 

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import BuyCreditsDialog from '@/components/credits/BuyCreditsDialog';
 import CreditHistory from '@/components/credits/CreditHistory';
 import OrderHistory from '@/components/credits/OrderHistory';
+import { useTabRow } from '@/components/shell/useTabRow';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
 import { paymentsApi, type PaymentOptions } from '@/lib/payments';
 
@@ -96,6 +97,7 @@ function CreditsBody() {
 
   // Arrow keys move along the row, as the ARIA tabs pattern expects.
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
+  const tabRow = useTabRow<HTMLDivElement>(tab);
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = -1;
     if (event.key === 'ArrowRight') next = (index + 1) % TABS.length;
@@ -201,7 +203,7 @@ function CreditsBody() {
         )}
       </div>
 
-      <div role="tablist" aria-label="Credits" className="tl-tabs mt-8">
+      <div ref={tabRow} role="tablist" aria-label="Credits" className="tl-tabs mt-8">
         {TABS.map((entry, index) => {
           const active = entry.id === tab;
           return (

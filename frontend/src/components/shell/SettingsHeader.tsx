@@ -9,16 +9,11 @@ import {
   SETTINGS_ADMIN_TABS,
   type SettingsTab,
 } from './navModel';
+import { useTabRow } from './useTabRow';
 
 type Props = {
   pathname: string;
   isAdmin: boolean;
-  /**
-   * On the installation's own pages, which are laid out at `max-w-7xl` - so the
-   * title and tabs line up with the page underneath rather than sitting at a
-   * different left edge from it. An account's own tabs are narrower.
-   */
-  wide: boolean;
 };
 
 /** Where the Administration tab goes: the first of the installation's pages. */
@@ -37,8 +32,10 @@ const ADMINISTRATION_HREF = SETTINGS_ADMIN_TABS[0].href;
  * of a 1440px window with nothing to say there was more - four of the nine
  * were simply not there to be seen.
  */
-export default function SettingsHeader({ pathname, isAdmin, wide }: Props) {
+export default function SettingsHeader({ pathname, isAdmin }: Props) {
   const onAdmin = isAdmin && isAdminSettingsRoute(pathname);
+  const accountRow = useTabRow<HTMLElement>(pathname);
+  const adminRow = useTabRow<HTMLElement>(`${pathname}:${onAdmin}`);
 
   // Longest match, so /settings/plan lights Plan and not Profile, whose
   // /settings is a prefix of it.
@@ -57,15 +54,22 @@ export default function SettingsHeader({ pathname, isAdmin, wide }: Props) {
     </Link>
   );
 
+  /*
+   * One width on every settings route. It used to be narrower over an account
+   * tab than over an administration one, and because both are centred the
+   * title and the whole row jumped sideways on a wide window at the moment
+   * Administration was pressed. The account pages narrow inside this box
+   * instead (SettingsPage), from the right, so their left edge stays put.
+   */
   return (
-    <div className={`mx-auto px-4 pt-8 sm:px-6 lg:px-8 ${wide ? 'max-w-7xl' : 'max-w-5xl'}`}>
+    <div className="mx-auto max-w-7xl px-4 pt-8 sm:px-6 lg:px-8">
       <h1 className="text-3xl font-bold tracking-tight text-ink">Settings</h1>
-      <nav className="tl-tabs mt-6" aria-label="Settings">
+      <nav ref={accountRow} className="tl-tabs mt-6" aria-label="Settings">
         {SETTINGS_ACCOUNT_TABS.map((item) => tab(item, accountActive === item.href))}
         {isAdmin && tab({ href: ADMINISTRATION_HREF, label: 'Administration' }, onAdmin)}
       </nav>
       {onAdmin && (
-        <nav className="tl-subtabs" aria-label="Administration">
+        <nav ref={adminRow} className="tl-subtabs" aria-label="Administration">
           {SETTINGS_ADMIN_TABS.map((item) => tab(item, adminActive === item.href, 'tl-subtab'))}
         </nav>
       )}
