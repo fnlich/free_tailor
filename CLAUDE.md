@@ -37,7 +37,7 @@ Facts worth knowing before you build:
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
   `src/bid-assistant/App.jsx` (lines 259, 293, 369; `src/app/page.tsx`
-  contributes none), plus 1 `no-img-element` warning in that feature's TopBar.
+  contributes none), and no warnings.
   Not a build gate: `next build` does not run ESLint. Do not treat a red lint as
   something your change caused without checking `git stash` first.
 - **Dark mode does not work the way it looks.** `globals.css` ends with a block
@@ -158,6 +158,18 @@ frontend/src/
                       #   td rule beats a utility on the td itself.
   bid-assistant/      # the largest single feature directory here, and the only
                       #   JSX: its own App, components and stylesheet
+  components/ui/      # The kit every page is built from: kit.tsx (Page,
+                      #   PageHeader, Section, Card, Field, Notice, Pill,
+                      #   EmptyState, Spinner) over the .tl-* classes in
+                      #   globals.css, which state every colour for both themes.
+                      #   New UI uses these and the tokens (text-ink, text-muted,
+                      #   bg-surface, border-hairline...), never bg-white /
+                      #   text-gray-* / dark: - see the shim note above. The
+                      #   .tl-* rules are unlayered, so a utility cannot override
+                      #   their padding or height; use a data-* option or a
+                      #   CSS module. /admin/* pages sit inside app/admin/
+                      #   layout.tsx's <main> and under the shell's Settings
+                      #   title, so they open with an h2, not a PageHeader.
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page), lib/sheet.ts (the spreadsheet range
