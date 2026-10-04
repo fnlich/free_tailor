@@ -23,6 +23,7 @@ import {
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
 
 type SettingsFormState = {
@@ -282,7 +283,7 @@ function AdminSettingsPageBody() {
         setHealth(report);
         setHealthError('');
       })
-      .catch((err) => setHealthError(err instanceof Error ? err.message : 'Could not read provider status'));
+      .catch((err) => setHealthError(messageWithDetail(err, 'Could not read provider status')));
 
   }, []);
 
@@ -300,7 +301,7 @@ function AdminSettingsPageBody() {
       setProfiles(profilesData.filter((profile) => !profile.disabled));
       setForm(toFormState(settingsData));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load settings');
+      setError(messageWithDetail(err, 'Failed to load settings'));
     } finally {
       setIsLoading(false);
     }
@@ -337,7 +338,7 @@ function AdminSettingsPageBody() {
       setSuccessMessage(nextMessage);
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update settings');
+      setError(messageWithDetail(err, 'Failed to update settings'));
       return false;
     } finally {
       setSavingSection(null);
@@ -356,7 +357,7 @@ function AdminSettingsPageBody() {
         setField('outputBaseDir', result.selectedPath);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to open folder picker');
+      setError(messageWithDetail(err, 'Failed to open folder picker'));
     } finally {
       setIsBrowsingDirectory(false);
     }

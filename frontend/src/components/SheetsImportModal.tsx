@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { importApi } from '@/lib/api';
 import { parseSpreadsheetColumnInput, toSpreadsheetColumnLabel } from '@/lib/sheet';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
-import { Notice, Pill } from '@/components/ui/kit';
+import { ErrorNotice, Notice, Pill } from '@/components/ui/kit';
 import { IconChevronRight } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
@@ -141,7 +141,8 @@ export default function SheetsImportModal({
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [isLoadingTabs, setIsLoadingTabs] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  /** A sentence of the dialog's own, or a caught failure for <ErrorNotice> to word. */
+  const [error, setError] = useState<unknown>('');
 
   useEffect(() => {
     if (!isOpen) {
@@ -199,7 +200,7 @@ export default function SheetsImportModal({
       })
       .catch((err) => {
         if (isCancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load spreadsheet tabs');
+        setError(err ?? 'Failed to load the spreadsheet tabs.');
       })
       .finally(() => {
         if (!isCancelled) {
@@ -348,7 +349,7 @@ export default function SheetsImportModal({
       onClose();
     } catch (err) {
       setValues([]);
-      setError(err instanceof Error ? err.message : 'Failed to generate from sheet');
+      setError(err ?? 'Failed to generate from the sheet.');
     } finally {
       setIsLoading(false);
     }
@@ -366,7 +367,7 @@ export default function SheetsImportModal({
       await onConfirm(jobs, { skippedRows });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to import jobs from sheet');
+      setError(err ?? 'Failed to import jobs from the sheet.');
     }
   };
 
@@ -410,11 +411,7 @@ export default function SheetsImportModal({
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-5">
-              {error && (
-                <Notice tone="error">
-                  {error}
-                </Notice>
-              )}
+              <ErrorNotice error={error} />
 
               <div className="grid gap-4">
                 <div>

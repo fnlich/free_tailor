@@ -2,7 +2,8 @@ import path from 'path';
 import { Router, type Request, type Response } from 'express';
 import archiver, { type ArchiverError } from 'archiver';
 
-import { requireUser } from '../middleware/auth';
+import { isAdmin, requireUser } from '../middleware/auth';
+import { publicStoredError } from '../middleware/publicError';
 import {
   countsForOrder,
   countsForOrders,
@@ -102,10 +103,15 @@ router.get('/:id', (req: Request, res: Response) => {
 
   const order = reconciled(found);
   const items = listOrderItems(order.id);
+  const admin = isAdmin(req);
   res.json({
     ...view(order, countsForOrder(order.id), items.some((item) => item.files.length > 0)),
     items: items.map((item) => ({
       ...item,
+      // Written safe since failures were stored as a public sentence and a
+      // ref; an item from before then can hold the raw cause, so it is read
+      // through the same filter the generation routes use.
+      ...(item.error && !admin ? { error: publicStoredError(item.error, 'This resume could not be built') } : {}),
       // What the page may offer a link for. The full list stays on `files` so
       // an expired order can still show what it built.
       available: availableFiles(item).map((file) => file.kind),

@@ -27,14 +27,14 @@ import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { describeAdminIdentity } from './config/adminIdentity';
 import { applyConfiguredAdmins } from './services/auth/authService';
-import { attachUser, requireUser } from './middleware/auth';
+import { attachUser, isAdmin, requireUser } from './middleware/auth';
 import groupRoutes from './routes/groups';
 import importRoutes from './routes/import';
 import promptRoutes from './routes/prompts';
 import jobRoutes from './routes/jobs';
 import bidAssistantRoutes from './routes/bidAssistant';
 import aiHealthRoutes from './routes/aiHealth';
-import { aiErrorHandler } from './middleware/aiErrors';
+import { publicErrorHandler } from './middleware/publicError';
 import { preflightAllProviders } from './services/ai';
 import { describeRetiredProviderVariables } from './config/providerCatalog';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
@@ -145,9 +145,9 @@ app.use((req, res, next) => {
     // so a cross-site POST would take effect unseen. Neither the status nor
     // the body is visible to the page either way, which is what CORS is for;
     // the log line above is where the reason actually lands.
-    res.status(403).json({
-      error: `Origin ${origin ?? '(none)'} is not allowed by this server's CORS policy.`,
-    });
+    // Not even the origin is echoed: the reason is the operator's, and the
+    // log line above names it with the variable that fixes it.
+    res.status(403).json({ error: 'Request not allowed.' });
     return;
   }
 
@@ -258,12 +258,23 @@ app.use('/api/jobs', jobRoutes);
 app.use('/api/bid-assistant', bidAssistantRoutes);
 app.use('/api/admin/ai', aiHealthRoutes);
 
-// Health check
+/*
+ * Health check. Unauthenticated, so it says only whether the server is up.
+ *
+ * The browser block - which Chrome PDFs are printed with, where it lives on
+ * disk, and the commands that install one - is for an administrator, and is
+ * sent to an administrator's session only. Everybody else, and every
+ * monitoring probe, gets the status and the time.
+ */
 app.get('/api/health', (req, res) => {
+  const healthy = { status: 'ok', timestamp: new Date().toISOString() };
+  if (!isAdmin(req)) {
+    res.json(healthy);
+    return;
+  }
   const browser = getResolvedBrowser();
   res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
+    ...healthy,
     // PDF generation is the one feature with an external dependency that can
     // go missing without any config change, so it is reported here.
     browser: browser
@@ -278,15 +289,14 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// AI transport failures answer with a status and a message a person can act
-// on; everything else falls through to the generic handler below.
-app.use(aiErrorHandler);
-
-// Error handling middleware
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Error:', err);
-  res.status(500).json({ error: err.message || 'Internal server error' });
-});
+/*
+ * The last handler, for anything a route passed on or threw: a multer refusal,
+ * a body-parser error, an AI failure, a bug. It answers with what the reader may
+ * see - the generic sentence and a ref for anybody, the cause as well for an
+ * administrator - and logs the cause under the ref. It used to send
+ * `err.message` to whoever asked, with a 500 even for a body that was not JSON.
+ */
+app.use(publicErrorHandler);
 
 /** Lists the addresses the server is reachable on, resolved at runtime. */
 function listServerUrls(): string[] {

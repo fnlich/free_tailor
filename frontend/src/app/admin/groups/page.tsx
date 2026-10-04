@@ -5,6 +5,7 @@ import { groupsApi, profilesApi, Group, Profile } from '@/lib/api';
 import { RequiresPlan } from '@/components/auth/AuthGate';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { Card, Field, Notice, PageHeader, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 function GroupsPageBody() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -29,7 +30,7 @@ function GroupsPageBody() {
       setGroups(groupsData);
       setProfiles(profilesData.filter((p) => !p.disabled));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load groups');
+      setError(messageWithDetail(err, 'Failed to load groups'));
     } finally {
       setIsLoading(false);
     }
@@ -69,7 +70,7 @@ function GroupsPageBody() {
       await loadData();
       resetForm();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save group');
+      setError(messageWithDetail(err, 'Failed to save group'));
     } finally {
       setIsSaving(false);
     }
@@ -90,7 +91,7 @@ function GroupsPageBody() {
         resetForm();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete group');
+      setError(messageWithDetail(err, 'Failed to delete group'));
     }
   };
 

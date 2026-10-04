@@ -8,6 +8,7 @@ import { IconClose } from '@/components/icons';
 import { EmptyState, Field, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { pdfSizeRefusal } from '@/lib/upload';
+import { messageWithDetail } from '@/lib/userMessage';
 
 /**
  * The preview document's own size, in CSS pixels: A4 at 96 DPI, the page
@@ -223,7 +224,7 @@ function TemplatesPageBody() {
       const data = await templatesApi.getAll({ includeDisabled: isAdmin });
       setTemplates(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load templates');
+      setError(messageWithDetail(err, 'Failed to load templates'));
     } finally {
       setIsLoading(false);
     }
@@ -275,7 +276,7 @@ function TemplatesPageBody() {
       }
     } catch (err) {
       setUploadError(
-        err instanceof Error ? err.message : 'Failed to upload template'
+        messageWithDetail(err, 'Failed to upload template')
       );
     } finally {
       setIsUploading(false);
@@ -287,7 +288,7 @@ function TemplatesPageBody() {
       await templatesApi.update(template.id, { disabled: !template.disabled });
       await loadTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update template status');
+      setError(messageWithDetail(err, 'Failed to update template status'));
     }
   };
 
@@ -298,7 +299,7 @@ function TemplatesPageBody() {
       await loadTemplates();
       setEditingBasicTemplate(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update template');
+      setError(messageWithDetail(err, 'Failed to update template'));
     }
   };
 
@@ -308,7 +309,7 @@ function TemplatesPageBody() {
       await templatesApi.delete(id);
       await loadTemplates();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete template');
+      setError(messageWithDetail(err, 'Failed to delete template'));
     }
   };
 
@@ -359,7 +360,7 @@ function TemplatesPageBody() {
       );
       if (jsonFileInputRef.current) jsonFileInputRef.current.value = '';
     } catch (err) {
-      setJsonUploadError(err instanceof Error ? err.message : 'Failed to upload template');
+      setJsonUploadError(messageWithDetail(err, 'Failed to upload template'));
     } finally {
       setIsJsonUploading(false);
     }

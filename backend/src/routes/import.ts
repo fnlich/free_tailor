@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { requireUser } from '../middleware/auth';
-import { fetchGoogleSheetsRange, GoogleSheetsRequestError } from '../integrations/googleSheets';
-import { sheetsOperatorDetail } from './sheetsDetail';
-import { SheetAccessError } from '../services/sheets/accountSheet';
+import { fetchGoogleSheetsRange } from '../integrations/googleSheets';
+import { sendPublicError } from '../middleware/publicError';
 import { resolveAddressableSheet } from '../services/sheets/accountSheet';
 import { adminAllowedSheetIds } from '../services/sheets/jobSheetTarget';
 
@@ -42,16 +41,9 @@ router.post('/', async (req: Request, res: Response) => {
     const result = await fetchGoogleSheetsRange({ ...body, sheetId: spreadsheetId });
     res.json(result);
   } catch (error) {
-    const statusCode =
-      error instanceof SheetAccessError
-        ? error.status
-        : error instanceof GoogleSheetsRequestError
-          ? error.statusCode
-          : 500;
-    res.status(statusCode).json({
-      error: error instanceof Error ? error.message : 'Failed to import Google Sheets data',
-      ...sheetsOperatorDetail(req, error),
-    });
+    // The guard's refusals and Google's keep their own status and their public
+    // sentence; Google's reason is an administrator's `detail`.
+    sendPublicError(req, res, error, 'Failed to import the Google Sheets data');
   }
 });
 

@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
-import { requireUser } from '../middleware/auth';
+import { requireAdmin } from '../middleware/auth';
+import { sendPublicError } from '../middleware/publicError';
 import { AI_PROVIDER_IDS, getProviderDescriptor } from '../config/providerCatalog';
 import {
   checkProviderHealth,
@@ -19,16 +20,16 @@ import {
  */
 const router = express.Router();
 /**
- * Everything below needs a signed-in account.
+ * Administrators only.
  *
- * At the router rather than per route, so a route added later is protected by
- * default. Before v2 these were open, which was defensible with one user on one
- * machine and is not once profiles belong to people.
+ * It was any signed-in account, which handed everybody each seat's binary and
+ * sign-in state, the signed-in Google account, the lanes and their outages, and
+ * per-seat token and cost totals. Only the admin Settings page reads it.
  */
-router.use(requireUser);
+router.use(requireAdmin);
 
 
-router.get('/health', async (_req: Request, res: Response) => {
+router.get('/health', async (req: Request, res: Response) => {
   try {
     const capabilities = listProviderCapabilities();
     const providers = await Promise.all(
@@ -94,9 +95,7 @@ router.get('/health', async (_req: Request, res: Response) => {
       usage: { entries: usageRows, totals: snapshot.totals, byProvider: usageByProvider },
     });
   } catch (error) {
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to read AI provider health',
-    });
+    sendPublicError(req, res, error, 'Failed to read AI provider health');
   }
 });
 

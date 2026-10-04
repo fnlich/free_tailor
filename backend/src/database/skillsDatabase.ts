@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { getStaticSkillsFile } from '../config/staticPaths';
 import { getDatabasePath, getDb } from './sqlite';
+import { PublicError } from '../middleware/publicError';
 
 export type SkillType = 'hard' | 'soft';
 export type HardSkillCategory =
@@ -75,10 +76,15 @@ type HardSkillMetadata = {
   category?: HardSkillCategory;
 };
 
-export class SkillDatabaseError extends Error {
-  constructor(message: string, public readonly statusCode: number) {
-    super(message);
+/** A skill-library refusal about the skill the caller named, so public. */
+export class SkillDatabaseError extends PublicError {
+  constructor(message: string, statusCode: number) {
+    super(message, { status: statusCode });
     this.name = 'SkillDatabaseError';
+  }
+
+  get statusCode(): number {
+    return this.status;
   }
 }
 

@@ -216,8 +216,12 @@ test('a method with no keys is not offered and cannot be checked out', async () 
   try {
     const methods = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
     assert.equal(methods.methods.every((entry) => entry.available === false), true);
-    // The reason is for the operator: "no button" tells them nothing.
-    assert.match(methods.methods[0].reason, /STRIPE_SECRET_KEY/);
+    // The reason is for the operator: "no button" tells them nothing - and a
+    // buyer can do nothing with the names of the server's variables.
+    assert.equal(methods.methods[0].reason, 'Not available right now.');
+    assert.doesNotMatch(JSON.stringify(methods), /STRIPE_|CRYPTOMUS_/);
+    const asAdmin = await (await server.call(server.adminToken, '/api/payments/methods')).json();
+    assert.match(asAdmin.methods[0].reason, /STRIPE_SECRET_KEY/);
 
     const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
     assert.equal(response.status, 503);
@@ -490,7 +494,9 @@ test('without the publishable key the card method is withheld', async () => {
     const methods = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
     const card = methods.methods.find((entry) => entry.method === 'card');
     assert.equal(card.available, false);
-    assert.match(card.reason, /STRIPE_PUBLISHABLE_KEY/);
+    assert.equal(card.reason, 'Not available right now.');
+    const asAdmin = await (await server.call(server.adminToken, '/api/payments/methods')).json();
+    assert.match(asAdmin.methods.find((entry) => entry.method === 'card').reason, /STRIPE_PUBLISHABLE_KEY/);
     assert.equal(methods.publishableKey, '', 'and no half-configured key is handed out');
 
     const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });

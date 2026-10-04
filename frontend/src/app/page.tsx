@@ -36,7 +36,8 @@ import SheetsImportModal, { ImportedSheetJob, type ImportSheetSource } from '@/c
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
-import { Card, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
+import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
+import { userMessage } from '@/lib/userMessage';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
@@ -184,6 +185,8 @@ export default function Home() {
   const [role, setRole] = useState('');
   const [jobDescription, setJobDescription] = useState('');
   const [modelSettings, setModelSettings] = useState<UserAppSettings>(DEFAULT_USER_APP_SETTINGS);
+  /** Whether `modelSettings` is the server's answer, rather than the empty stand-in. */
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   /** The administrator's saved sheets, loaded only for an administrator. */
   const [sharedSheetSources, setSharedSheetSources] = useState<GoogleSheetSource[]>([]);
   /**
@@ -214,8 +217,12 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState('');
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
-  /** The batch this page is watching, so a reload can pick it back up. */
-  const [error, setError] = useState('');
+  /**
+   * What went wrong: one of the page's own sentences ("Please select a
+   * profile"), or the failure itself, which <ErrorNotice> words for the reader
+   * and - for an administrator - follows with the server's detail.
+   */
+  const [error, setError] = useState<unknown>('');
   const [successMessage, setSuccessMessage] = useState('');
   /** The receipt for a sheet import, kept as data so it can carry a link. */
   const [placedOrder, setPlacedOrder] = useState<PlacedOrder | null>(null);
@@ -276,18 +283,22 @@ export default function Home() {
 
   const loadInitialData = async () => {
     try {
-      const [profilesData, groupsData, modelData, ownSheet] = await Promise.all([
+      const [profilesData, groupsData, loadedModels, ownSheet] = await Promise.all([
         profilesApi.getAll({ includeDisabled: true }),
         groupsApi.getAll().catch(() => []),
-        resumeApi.getModels().catch(() => DEFAULT_USER_APP_SETTINGS),
+        resumeApi.getModels().catch(() => null),
         // Never fatal to this page: the import dialog is one feature of it, and
         // a Google outage must not stop the builder from loading.
         sheetApi.get().catch(() => null),
       ]);
       const enabledProfiles = profilesData.filter((p) => !p.disabled);
+      // A failed models request is not "no models": the picker must not tell
+      // the reader AI generation is unavailable because one request dropped.
+      const modelData = loadedModels ?? DEFAULT_USER_APP_SETTINGS;
       setProfiles(enabledProfiles);
       setGroups(groupsData);
       setModelSettings(modelData);
+      setModelsLoaded(loadedModels !== null);
       setAccountSheet(ownSheet);
       setAutoGenerate(modelData.defaultMode === 'generate');
       setStoredDefaultTheme(modelData.defaultTheme);
@@ -325,7 +336,7 @@ export default function Home() {
         setSelectedSheetsGroupId(initialGroupId);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setError(err ?? 'Failed to load data.');
     } finally {
       setIsLoadingData(false);
     }
@@ -482,11 +493,11 @@ export default function Home() {
         message:
           needed !== undefined && balance !== undefined
             ? `This run needs ${plural(needed, 'credit')}, and your balance is ${balance}.`
-            : err.message,
+            : userMessage(err),
       });
       return;
     }
-    setError(err instanceof Error ? err.message : fallback);
+    setError(err ?? fallback);
   };
 
   const hasImportableSheet = sheetImportSources.length > 0;
@@ -1377,7 +1388,7 @@ export default function Home() {
       }
       setSuccessMessage(`Added "${cleaned}" to ${type === 'hard' ? 'tech' : 'soft'} skills.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to confirm skill');
+      setError(err ?? 'Failed to confirm skill.');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -1421,7 +1432,7 @@ export default function Home() {
       setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent?.unconfirmedSoftSkills));
       setSuccessMessage('Preview updated.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update preview');
+      setError(err ?? 'Failed to update preview.');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -1548,7 +1559,7 @@ export default function Home() {
       setUnconfirmedSoftSkills(aggregated.soft);
       setSuccessMessage(`Preview updated for ${preview.profileName}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update preview');
+      setError(err ?? 'Failed to update preview.');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -1854,18 +1865,7 @@ export default function Home() {
         />
 
         <div className="mb-6 space-y-3 empty:hidden">
-          {error && (
-            <Notice tone="error" className="flex items-start justify-between gap-4">
-              <span className="min-w-0 break-words">{error}</span>
-              <button
-                onClick={() => setError('')}
-                className="-my-1 shrink-0 px-1 text-lg font-bold leading-none"
-                aria-label="Dismiss"
-              >
-                ×
-              </button>
-            </Notice>
-          )}
+          <ErrorNotice error={error} onDismiss={() => setError('')} />
 
           {shortfall && (
             <Notice tone="error" className="flex items-start justify-between gap-4">
@@ -2114,6 +2114,7 @@ export default function Home() {
                       value={aiOverrides}
                       onChange={setAiOverrides}
                       models={modelSettings.models}
+                      modelsLoaded={modelsLoaded}
                       inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                       inherited={inheritedChoice}
                       disabled={isGenerating}

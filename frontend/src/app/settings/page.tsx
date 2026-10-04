@@ -6,6 +6,7 @@ import { Field, Section, SettingsPage, StaticValue, Status } from '@/components/
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
+import { messageWithDetail } from '@/lib/userMessage';
 
 /**
  * Settings > Profile: who you are signed in as, and the one thing about that
@@ -40,7 +41,7 @@ export default function ProfileSettingsPage() {
       adopt((await authApi.updateName(name)).account);
       setSaved(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not save that name.');
+      setError(messageWithDetail(caught, 'Could not save that name.'));
     } finally {
       setSaving(false);
     }
@@ -54,7 +55,7 @@ export default function ProfileSettingsPage() {
       // with the sign-in screen, so there is nothing to reset afterwards.
       await signOut();
     } catch (caught) {
-      setSignOutError(caught instanceof Error ? caught.message : 'Could not sign out.');
+      setSignOutError(messageWithDetail(caught, 'Could not sign out.'));
       setSigningOut(false);
     }
   };

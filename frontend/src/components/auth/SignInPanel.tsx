@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Field, Notice } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, type SignInOptions } from '@/lib/auth';
+import { userMessage } from '@/lib/userMessage';
 
 /**
  * The sign-in form.
@@ -63,7 +64,7 @@ export default function SignInPanel() {
       .options()
       .then(setOptions)
       .catch((caught: unknown) =>
-        setOptionsError(caught instanceof Error ? caught.message : 'Could not reach the server.')
+        setOptionsError(userMessage(caught, 'Could not reach the server.'))
       );
   }, []);
 
@@ -74,7 +75,7 @@ export default function SignInPanel() {
       try {
         adopt((await authApi.google(credential)).account);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'That Google sign-in did not work.');
+        setError(userMessage(caught, 'That Google sign-in did not work.'));
       } finally {
         setBusy(false);
       }
@@ -118,7 +119,7 @@ export default function SignInPanel() {
       setNotice(result.message);
       setStage('code');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not send the code.');
+      setError(userMessage(caught, 'Could not send the code.'));
     } finally {
       setBusy(false);
     }
@@ -131,7 +132,7 @@ export default function SignInPanel() {
     try {
       adopt((await authApi.verifyCode(email, code)).account);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'That code did not work.');
+      setError(userMessage(caught, 'That code did not work.'));
       setCode('');
     } finally {
       setBusy(false);
@@ -176,14 +177,14 @@ export default function SignInPanel() {
           </Notice>
         )}
 
+        {/*
+          Who is looking is unknown here - nobody can be signed in - so this
+          says only who can fix it. What to set is in the backend's startup log
+          and the README, where the person who runs the server will look.
+        */}
         {nothingConfigured && (
           <Notice tone="warn" className="mt-6">
-            <p className="font-medium">This server has no way to sign anybody in yet.</p>
-            <p className="mt-1 break-words">
-              Set <code>GOOGLE_CLIENT_ID</code> for Google sign-in, or{' '}
-              <code>{options?.email.missing.join(', ') || 'SMTP_HOST, SMTP_USER, SMTP_PASS'}</code> to
-              send codes by email, then restart the backend.
-            </p>
+            Sign-in isn&apos;t available right now. Please contact your administrator.
           </Notice>
         )}
 

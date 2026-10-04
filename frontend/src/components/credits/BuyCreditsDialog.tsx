@@ -16,6 +16,7 @@ import {
   type PaymentOptions,
   type SavedCard,
 } from '@/lib/payments';
+import { messageWithDetail } from '@/lib/userMessage';
 
 /**
  * Buying credits, in three steps: what to pay with, how much, then what for.
@@ -115,7 +116,7 @@ export default function BuyCreditsDialog({
           key: summaryKey,
           state: {
             status: 'failed',
-            message: err instanceof Error ? err.message : 'That amount could not be priced.',
+            message: messageWithDetail(err, 'That amount could not be priced.'),
           },
         });
       }
@@ -173,7 +174,7 @@ export default function BuyCreditsDialog({
           key: orderKey,
           order: {
             status: 'failed',
-            message: err instanceof Error ? err.message : 'Could not start that payment.',
+            message: messageWithDetail(err, 'Could not start that payment.'),
           },
         });
       }
@@ -210,7 +211,7 @@ export default function BuyCreditsDialog({
          * with the same shape of name.
          */
         const stripe = await stripeFor(options.publishableKey);
-        if (!stripe) throw new Error('Stripe could not be loaded to authorise this payment.');
+        if (!stripe) throw new Error('The card authorisation step could not be loaded. Please try again.');
         const result = await stripe.handleNextAction({ clientSecret: started.clientSecret });
         if (result.error) {
           throw new Error(result.error.message || 'Your bank did not authorise this payment.');
@@ -225,7 +226,7 @@ export default function BuyCreditsDialog({
        */
       router.push(`/credits/return?payment=${encodeURIComponent(started.paymentId)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'That card could not be charged.');
+      setError(messageWithDetail(err, 'That card could not be charged.'));
       setBusyCardId(null);
     }
   };
@@ -241,7 +242,7 @@ export default function BuyCreditsDialog({
       await paymentsApi.deleteCard(cardId);
       setCards((current) => current.filter((entry) => entry.id !== cardId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'That card could not be removed.');
+      setError(messageWithDetail(err, 'That card could not be removed.'));
     } finally {
       setBusyCardId(null);
     }

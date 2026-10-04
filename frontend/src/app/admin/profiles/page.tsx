@@ -12,7 +12,7 @@ import {
 import ProfileForm from '@/components/admin/ProfileForm';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
-import { EmptyState, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
+import { EmptyState, ErrorNotice, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
 import { pdfSizeRefusal } from '@/lib/upload';
@@ -22,7 +22,8 @@ export default function ProfilesPage() {
   const { account, loading: authLoading, refresh, uploadMaxMb, refreshUploadMaxMb } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+  /** One of the page's own sentences, or a caught failure for <ErrorNotice> to word. */
+  const [error, setError] = useState<unknown>('');
   const [showForm, setShowForm] = useState(false);
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -40,7 +41,7 @@ export default function ProfilesPage() {
       const data = await profilesApi.getAll({ includeDisabled: true });
       setProfiles(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load profiles');
+      setError(err ?? 'Failed to load your profiles.');
     } finally {
       setIsLoading(false);
     }
@@ -82,7 +83,7 @@ export default function ProfilesPage() {
       await loadProfiles();
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete profile');
+      setError(err ?? 'Failed to delete the profile.');
     }
   };
 
@@ -91,7 +92,7 @@ export default function ProfilesPage() {
       await profilesApi.update(profile.id, { disabled: !profile.disabled });
       await loadProfiles();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update profile status');
+      setError(err ?? 'Failed to update the profile.');
     }
   };
 
@@ -141,7 +142,7 @@ export default function ProfilesPage() {
       setShowForm(true);
     } catch (err) {
       if (isProfileLimit(err)) await refresh();
-      setError(err instanceof Error ? err.message : 'Failed to extract profile from PDF');
+      setError(err ?? 'Failed to read a profile from that PDF.');
     } finally {
       setIsUploading(false);
       setUploadProgress('');
@@ -196,7 +197,7 @@ export default function ProfilesPage() {
       // server-side - the count is unreadable until the file is picked - so the
       // cap refusal arrives here and re-syncs the gate.
       if (isProfileLimit(err)) await refresh();
-      setError(err instanceof Error ? err.message : 'Failed to import profiles');
+      setError(err ?? 'Failed to import the profiles.');
     } finally {
       setIsUploading(false);
       setUploadProgress('');
@@ -336,11 +337,7 @@ export default function ProfilesPage() {
 
         {notice && <Notice tone="success">{notice}</Notice>}
 
-        {error && (
-          <Notice tone="error" role="alert">
-            {error}
-          </Notice>
-        )}
+        <ErrorNotice error={error} />
       </div>
 
       {showForm && (

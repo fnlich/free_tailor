@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DEFAULT_PROMPT_TEMPLATE } from '../lib/promptTemplate.js';
-import { bidAssistantFetch } from '../lib/apiBase.js';
+import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconClose } from '@/components/icons';
+import { messageWithDetail } from '@/lib/userMessage';
 
 // Creates a blank question row with a default character limit.
 function createQuestionRow(overrides = {}) {
@@ -209,13 +210,13 @@ export default function AskWindow({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Answer generation failed.');
+        throw responseError(response, data, 'Answer generation failed.');
       }
 
       onAnswersReady();
       onClose();
     } catch (error) {
-      setErrorMessage(error.message);
+      setErrorMessage(messageWithDetail(error, 'Answer generation failed.'));
     } finally {
       setLoading(false);
     }

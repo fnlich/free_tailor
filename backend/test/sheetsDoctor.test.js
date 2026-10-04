@@ -537,7 +537,7 @@ test('a relative path that names nothing says where it was resolved from', async
 
 test("a route hands the operator half to an administrator and the log, never to an account holder's page", async () => {
   await withCredentials({}, async ({ sheets }) => {
-    const { sheetsOperatorDetail } = loadFresh('../dist/routes/sheetsDetail');
+    const { publicFailure } = loadFresh('../dist/middleware/publicError');
     const error = new sheets.GoogleSheetsRequestError(
       500,
       "This server's Google credential file cannot be used.",
@@ -547,17 +547,21 @@ test("a route hands the operator half to an administrator and the log, never to 
     const logged = [];
     const realError = console.error;
     console.error = (...args) => logged.push(args.join(' '));
+    let asUser;
+    let asAdmin;
     try {
-      assert.deepEqual(sheetsOperatorDetail({ user: { role: 'user' } }, error), {});
-      assert.deepEqual(sheetsOperatorDetail({ user: { role: 'admin' } }, error), {
-        detail: '/srv/backend/google-oauth-credentials.json is not valid JSON.',
-      });
-      assert.deepEqual(sheetsOperatorDetail({ user: { role: 'admin' } }, new Error('other')), {});
+      asUser = publicFailure(error, { admin: false });
+      asAdmin = publicFailure(error, { admin: true });
     } finally {
       console.error = realError;
     }
+    assert.equal(asUser.body.error, "This server's Google credential file cannot be used.");
+    assert.equal(asUser.body.detail, undefined);
+    assert.match(asUser.body.ref, /^ERR-[0-9A-F]{6}$/);
+    assert.equal(asAdmin.body.detail, '/srv/backend/google-oauth-credentials.json is not valid JSON.');
     assert.equal(logged.length, 2, 'logged for both readers, so the operator half always lands somewhere');
     assert.match(logged[0], /not valid JSON/);
+    assert.match(logged[0], new RegExp(`\\[error ${asUser.body.ref}\\]`), 'under the ref the reader was given');
   });
 });
 
@@ -607,4 +611,113 @@ test('sheets:login tells one file under two names from two files', async () => {
     assert.equal(await login.sameFileOnDisk(a, path.join(link, 'a.json')), true, 'a symlinked directory');
     assert.equal(await login.sameFileOnDisk(a, path.join(dir, 'b.json')), false, 'identical content, two files');
   });
+});
+
+/* ------------------------------------------- what anybody reads of a refusal */
+
+/**
+ * The token endpoint mints, and every Sheets or Drive call is refused with
+ * `status` and Google's own structured body.
+ */
+function sheetsRefuses(status, body) {
+  return async (url) => {
+    if (String(url).includes('oauth2')) {
+      return new Response(JSON.stringify({ access_token: 'token', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  };
+}
+
+test("a Sheets refusal says only what the reader can act on; Google's reason, project and credential are the operator's", async () => {
+  // A disabled API: Google's body names the Cloud project and the console URL
+  // that enables it, and the remedy names a command. All of it used to be the
+  // MESSAGE, which account holders' pages show.
+  const disabled = {
+    error: {
+      code: 403,
+      message: 'Google Sheets API has not been used in project 424242 before or it is disabled.',
+      details: [
+        {
+          reason: 'SERVICE_DISABLED',
+          metadata: {
+            service: 'sheets.googleapis.com',
+            consumer: 'projects/424242',
+            activationUrl: 'https://console.developers.google.com/apis/api/sheets.googleapis.com/overview?project=424242',
+          },
+        },
+      ],
+    },
+  };
+  await withCredentials(
+    { 'google-oauth-credentials.json': USER_CREDENTIAL },
+    async ({ sheets, doctor }) => {
+      const error = await sheets.fetchGoogleSheetsRange({ sheetId: 'sheet-1' }).then(
+        () => assert.fail('a refused call must not resolve'),
+        (refused) => refused
+      );
+      assert.equal(error.message, 'This server cannot open that spreadsheet. Check the sheet link, or contact your administrator.');
+      assert.doesNotMatch(error.message, /424242|console|sheets:|Asked with|googleapis/);
+      // Ours, not Google's: the server was refused, not the caller.
+      assert.equal(error.statusCode, 502);
+      assert.equal(error.upstreamStatus, 403);
+
+      // The operator half keeps everything it always said.
+      assert.match(error.detail, /switched off for project 424242/);
+      assert.match(error.detail, /activationUrl|https:\/\/console\.developers\.google\.com/);
+      assert.match(error.detail, /Asked with user credentials/);
+
+      // And the doctor, whose reader IS the operator, prints Google's status and both halves.
+      const printed = doctor.reason(error);
+      assert.match(printed, /^HTTP 403: /);
+      assert.match(printed, /switched off for project 424242/);
+    },
+    { fakeFetch: sheetsRefuses(403, disabled) }
+  );
+});
+
+test('a missing sheet, a busy Google and a bad request each say what the reader can do', async () => {
+  for (const [status, said, ours] of [
+    [404, /^That spreadsheet or tab could not be found\. Check the sheet link/, 404],
+    [429, /^Google Sheets is busy right now\. Please try again in a few minutes\.$/, 429],
+    [400, /^Google Sheets could not complete that request\. Check the sheet and the rows you chose/, 400],
+    [500, /^Google Sheets could not complete that request\. Please try again, or contact your administrator\.$/, 502],
+  ]) {
+    await withCredentials(
+      { 'google-oauth-credentials.json': USER_CREDENTIAL },
+      async ({ sheets }) => {
+        const error = await sheets.fetchGoogleSheetsRange({ sheetId: 'sheet-1' }).then(
+          () => assert.fail('a refused call must not resolve'),
+          (refused) => refused
+        );
+        assert.match(error.message, said, String(status));
+        assert.equal(error.statusCode, ours, String(status));
+        assert.match(error.detail, /Unable to parse range: NotATab!A1/, `${status}: Google's words are the detail`);
+      },
+      { fakeFetch: sheetsRefuses(status, { error: { code: status, message: 'Unable to parse range: NotATab!A1' } }) }
+    );
+  }
+});
+
+test("an OAuth refusal nothing recognises keeps Google's words out of the message", async () => {
+  const { fakeFetch } = tokenEndpointSays(400, {
+    error: 'invalid_request',
+    error_description: 'Missing required parameter: client_id (project 777)',
+  });
+  await withCredentials(
+    { 'google-oauth-credentials.json': USER_CREDENTIAL },
+    async ({ sheets }) => {
+      const error = await sheets.getAccessToken(sheets.SHEETS_SCOPE).then(
+        () => assert.fail('a refused token must not resolve'),
+        (refused) => refused
+      );
+      assert.match(error.message, /Google sign-in did not work/);
+      assert.match(error.message, /administrator/);
+      assert.doesNotMatch(error.message, /invalid_request|client_id|777/);
+      assert.match(error.detail, /Google said: "invalid_request: Missing required parameter: client_id \(project 777\)"/);
+    },
+    { fakeFetch }
+  );
 });

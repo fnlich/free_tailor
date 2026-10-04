@@ -1,13 +1,12 @@
 import { Router, Request, Response } from 'express';
 import {
   describeCharge,
-  InsufficientCreditsError,
   newReservationId,
   releaseReservation,
   reserveCredits,
   settleRun,
 } from '../services/credits';
-import { isAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import path from 'path';
 import {
   analyzeJobDescription,
@@ -30,12 +29,11 @@ import {
   type AiChoice,
   type AiPreferences,
 } from '../config/aiPreferences';
-import { ModelUnavailableError, modelUnavailableBody } from '../config/modelErrors';
 import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
-import { describeFailure, sendAiError } from '../middleware/aiErrors';
+import { PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
-import { getProfileFor, listProfilesFor, type Viewer } from '../database/profileRepository';
+import { getProfileFor, listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
 import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
 import { GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
 
@@ -122,6 +120,18 @@ async function resolveTemplateForProfile(profile: Profile, requestedTemplateId?:
   return null;
 }
 
+/**
+ * No enabled template to render with, not even the default. The fix is an
+ * administrator's (Admin -> Templates), so the reader is told whom to ask and
+ * the log gets a ref.
+ */
+function noTemplate(): PublicError {
+  return new PublicError('No resume template is available right now. Please contact your administrator.', {
+    status: 503,
+    detail: 'No enabled template was found, not even "default".',
+  });
+}
+
 function getProfileAnalyzeJobPromptId(profile?: Profile): string {
   return profile?.profileSettings?.analyzeJobPromptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
 }
@@ -183,16 +193,16 @@ router.post('/analyze', async (req: Request, res: Response) => {
     console.log(`[Resume timing] /resume/analyze finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
     res.json(analysis);
   } catch (error) {
-    console.error('Error analyzing job description:', error);
-    if (sendModelUnavailable(req, res, error)) return;
-    if (sendAiError(res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to analyze job description'
-    });
+    sendPublicError(req, res, error, 'Failed to analyze the job description');
   }
 });
 
-router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
+/**
+ * The Prompt Test page's raw run. Administrators only: it is how a prompt is
+ * debugged, it can name any model by provider, and its answer is the model's
+ * unparsed output.
+ */
+router.post('/analyze-prompt-test', requireAdmin, async (req: Request, res: Response) => {
   try {
     const { jobDescription, promptId } = req.body as {
       jobDescription?: string;
@@ -212,11 +222,7 @@ router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
     );
     res.json(result);
   } catch (error) {
-    console.error('Error testing job description prompt:', error);
-    if (sendModelUnavailable(req, res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to test job description prompt',
-    });
+    sendPublicError(req, res, error, 'Failed to test the job description prompt');
   }
 });
 
@@ -316,7 +322,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       failures.push({
         companyName: job.companyName,
         sourceRowNumber: job.sourceRowNumber,
-        error: describeFailure(outcome.error, 'Analysis failed'),
+        error: publicItemError(outcome.error, 'Analysis failed', `analyze-multi-job ${job.customId}`),
       });
     });
 
@@ -327,11 +333,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       failures,
     });
   } catch (error) {
-    console.error('Error analyzing multiple job descriptions:', error);
-    if (sendModelUnavailable(req, res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to analyze job descriptions',
-    });
+    sendPublicError(req, res, error, 'Failed to analyze the job descriptions');
   }
 });
 
@@ -397,17 +399,6 @@ function readAiOverrides(body: unknown): AiPreferences {
   });
 }
 
-/**
- * Answers a request whose `model` cannot be used, and says whether it did.
- * Ahead of the AI error mapping in every handler that resolves a model: it is
- * the request that is wrong, not a provider that failed.
- */
-function sendModelUnavailable(req: Request, res: Response, error: unknown): boolean {
-  if (!(error instanceof ModelUnavailableError) || res.headersSent) return false;
-  res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
-  return true;
-}
-
 async function tailorResumesForProfiles(
   profiles: Profile[],
   analysis: JobAnalysis,
@@ -455,7 +446,7 @@ async function tailorResumesForProfiles(
     failures.push({
       profileId: profile.id,
       profileName: profile.name,
-      error: describeFailure(outcome.error, 'Failed to tailor resume'),
+      error: publicItemError(outcome.error, 'Failed to tailor the resume', `tailor ${profile.id}`),
     });
   });
 
@@ -490,7 +481,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
 
     const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
-      res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
+      res.status(400).json({ error: NO_MATCHING_PROFILES });
       return;
     }
 
@@ -526,11 +517,13 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       : null;
 
     if (bulkTailoring && bulkTailoring.failures.length > 0) {
-      throw new Error(
+      // Built from each profile's PUBLIC sentence, so it is public too.
+      throw new PublicError(
         `Failed to tailor ${bulkTailoring.failures.length} profile(s): ${bulkTailoring.failures
           .slice(0, 3)
           .map((item) => `${item.profileName}: ${item.error}`)
-          .join(' | ')}${bulkTailoring.failures.length > 3 ? ' | ...' : ''}`
+          .join(' | ')}${bulkTailoring.failures.length > 3 ? ' | ...' : ''}`,
+        { status: 502 }
       );
     }
 
@@ -582,12 +575,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
     });
   } catch (error) {
-    console.error('Error previewing resumes for all profiles:', error);
-    if (sendModelUnavailable(req, res, error)) return;
-    if (sendAiError(res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to preview resumes'
-    });
+    sendPublicError(req, res, error, 'Failed to preview the resumes');
   }
 });
 
@@ -663,8 +651,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
-      res.status(500).json({ error: 'Default template not available' });
-      return;
+      throw noTemplate();
     }
 
     // If job description provided, tailor the resume. Existing/manual content still
@@ -790,21 +777,9 @@ router.post('/generate', async (req: Request, res: Response) => {
       releaseReservation(singleReservation, 'The run did not finish.');
     }
   } catch (error) {
-    if (error instanceof InsufficientCreditsError) {
-      res.status(402).json({
-        error: error.message,
-        code: 'insufficient-credits',
-        needed: error.needed,
-        balance: error.balance,
-      });
-      return;
-    }
-    console.error('Error generating resume:', error);
-    if (sendModelUnavailable(req, res, error)) return;
-    if (sendAiError(res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to generate resume'
-    });
+    // Too few credits is a 402 with `needed` and `balance`; a model the
+    // request may not use, a 400. Both are public. Anything else is generic.
+    sendPublicError(req, res, error, 'Failed to generate the resume');
   }
 });
 
@@ -839,8 +814,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
-      res.status(500).json({ error: 'Default template not available' });
-      return;
+      throw noTemplate();
     }
 
     // If job description provided, tailor the resume. Existing/manual content still
@@ -870,12 +844,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     console.log(`[Resume timing] /resume/preview finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
     res.json({ html, tailored: !!tailoredContent, tailoredContent });
   } catch (error) {
-    console.error('Error generating preview:', error);
-    if (sendModelUnavailable(req, res, error)) return;
-    if (sendAiError(res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to generate preview'
-    });
+    sendPublicError(req, res, error, 'Failed to generate the preview');
   }
 });
 

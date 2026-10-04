@@ -199,8 +199,9 @@ export async function acquireSlot(
         provider,
         kind: 'unavailable',
         detail: error.message,
-        userMessage:
-          'The server is busy running other AI requests. Please try again in a moment.',
+        adminMessage: 'The server is busy running other AI requests. Please try again in a moment.',
+        // Every slot taken is the one case where waiting is the whole answer.
+        publicFailure: 'busy',
       });
     }
     throw new AIProviderError({

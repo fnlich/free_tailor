@@ -17,7 +17,7 @@
 
 Tailor is a full-stack application that generates tailored resumes and cover letters for job applications. Paste a job description, and the AI analyzes it to optimize your resume with relevant keywords, rewrite experience sections, and craft a professional cover letter.
 
-By default it runs on **a subscription seat you already pay for** rather than metered API tokens: the backend runs the local `claude` binary on a Claude Pro/Max plan, so generation costs nothing per request beyond the plan and needs no API key. The other vendor's seat is offered the same way - the `codex` binary on a ChatGPT Plus/Pro plan. Each needs only that its binary is installed and signed in on the machine running the server, and both work on a headless box. OpenAI, the Anthropic API and DeepSeek remain available as API-key providers you can switch to per prompt or per request.
+It runs on **subscription seats you already pay for**, never on metered API tokens: the backend runs a vendor's own command-line tool, signed in on the machine running the server - the `claude` binary on a Claude Pro/Max plan (the default), the `codex` binary on a ChatGPT Plus/Pro plan, or the `gemini` binary on a Google account. Generation costs nothing per request beyond the plan, and there is no API key anywhere: the app reads none, stores none, and strips every key from the CLIs' environment. Each seat needs only that its binary is installed and signed in, and all three sign in on a headless box.
 
 ### ✨ Features
 
@@ -25,7 +25,7 @@ By default it runs on **a subscription seat you already pay for** rather than me
 |---------|-------------|
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
 | **Plans** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets the plan |
-| **Credits** | One credit per generated resume, whatever it writes. Charged before the first model call and given back for any resume that does not build, so credits spent always equals resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
+| **Credits** | Each resume costs the credits set for the model it is built with - one by default, any whole number an administrator sets, or free. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, so credits spent always pay for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Order & Download** | A Google Sheet import is placed as an order and answers with an order number instead of making you wait. Track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
@@ -34,7 +34,8 @@ By default it runs on **a subscription seat you already pay for** rather than me
 | **Templates** | Built-in professional templates plus manual and uploaded templates |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
 | **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skill ordering |
-| **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and AI model settings |
+| **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and the AI models - each with a display name, a seat, a model picked from that seat's own list, and a price per resume |
+| **Plain messages** | A failure tells an ordinary account what it can do about it, never how the server is set up; anything else is a generic sentence with a reference such as `ERR-7F3A9C`, and the cause is in the server log under it. Administrators see the cause on the page as well |
 | **PDF & DOCX** | Export resumes in both formats |
 
 ---
@@ -46,9 +47,7 @@ By default it runs on **a subscription seat you already pay for** rather than me
 │   Next.js 16    │────▶│  Express API    │────▶│  services/ai             │
 │   Frontend      │     │  Backend        │     │  ├── claude-cli  (seat)  │
 │   (React 19)    │     │  (Port 3001)    │     │  ├── codex-cli   (seat)  │
-└─────────────────┘     └─────────────────┘     │  ├── claude      (key)   │
-                                 │              │  ├── openai      (key)   │
-                                 │              │  └── deepseek    (key)   │
+└─────────────────┘     └─────────────────┘     │  └── gemini-cli  (seat)  │
                                  │              └──────────────────────────┘
                                  │
                                  ├── SQLite database  (/data/db) — all dynamic data
@@ -63,25 +62,49 @@ is one directory implementing `AIProviderAdapter`; call sites never name a
 transport, and the registry is keyed on the provider catalog so a missing entry
 is a compile error rather than a silent fall-through.
 
-| Provider id | How it authenticates | Notes |
-|---|---|---|
-| `claude-cli` (default) | The `claude` CLI's own sign-in — no key | Runs on a Claude Pro/Max subscription. Needs `claude` installed and signed in on the server's machine. Free at the margin, one subprocess per call. |
-| `codex-cli` | The `codex` CLI's own sign-in — no key | Offered. Runs on a ChatGPT Plus/Pro subscription through the local `codex` binary. Headless-friendly: `codex login --device-auth` prints a code you approve from any other browser, so the server needs no display. Its seeded model is `default`, meaning "whatever that account is configured with" — Codex resolves its catalog from the account, so add a specific model under **Admin → Models** if you want to pin one. |
-| `claude` | `ANTHROPIC_API_KEY` | Metered. The only provider that can still honour `temperature`. |
-| `openai` | `OPENAI_API_KEY` | Metered. |
-| `deepseek` | `DEEPSEEK_API_KEY` | Metered. |
+Every provider is a **subscription seat**: a vendor's own CLI, installed and
+signed in on the server's machine as the user the server runs as, run as one
+subprocess per call. There is no API key anywhere - each seat's child process
+has every key variable stripped (the Gemini seat's are pinned empty), so none
+of them can fall back to billing per token.
+
+| Provider id | Shown as | How it authenticates | Notes |
+|---|---|---|---|
+| `claude-cli` (default) | Claude (Subscription) | The `claude` CLI's own sign-in | A Claude Pro/Max plan. `claude auth status` must report `oauth_token`. A call the CLI runs on an API key anyway is failed and its answer discarded, and the seat is held as signed out so no further calls are made. |
+| `codex-cli` | Codex (Subscription) | The `codex` CLI's own sign-in | A ChatGPT Plus/Pro plan. Headless-friendly: `codex login --device-auth` prints a code you approve from any other browser. A CLI signed in with an API key (`codex login --with-api-key`) reads as **not** signed in. Its seeded model is `default`, meaning "whatever that account is configured with". |
+| `gemini-cli` | Gemini (Subscription) | The `gemini` CLI's Google sign-in | A Google account. Sign in once with `NO_BROWSER=true gemini` - it prints a URL to open in any browser. Runs headless with no tools, pinned to the Google sign-in so it cannot use a key, and refuses any answer the CLI says it billed to paid AI Credits. Its seeded model is `auto`, which lets the CLI pick Pro or Flash per request. |
+
+> **No real Google account has answered through the Gemini seat yet.** It was
+> built against the real `@google/gemini-cli` 0.62.0 - its stream format, its
+> exit codes, its sign-in errors and the settings files it reads - but the
+> machine it was built on had no Google sign-in, so the successful turns in
+> `backend/test/geminiCli.test.js` are the CLI's own envelopes around fake
+> answers. Treat the first runs on a real account as the test, and watch the
+> backend log while they happen.
+
+Each seat has its own queue lane and its own process limit (`AI_CLI_CONCURRENCY`,
+`AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`), so one seat's backlog never
+holds up another. The job filter and the Bid Assistant run on the app's default
+model, as a run that names no model does - the filter on its prompt's own model
+override when an administrator has set one.
+
+**Models are the administrator's to define.** Under **Admin → Models** each
+model is a display name, a seat, a model name picked from that seat's own list,
+a price per resume and a description - see **Admin Panel** below. An
+ordinary account sees only the display names of the models that can run right
+now, never a seat, a model name or a reason.
 
 **Locked providers.** A lock means this installation cannot run a provider —
 distinct from the admin's enable switch, which records what an operator wants.
-**Nothing is locked out of the box.** A locked provider's models stay in every
-picker, greyed out behind a 🔒 with the reason next to them, rather than
-vanishing: a model that disappears reads as a bug. Nothing dispatches to a
-locked provider — naming one by model id, by provider id or as
-`provider:modelName` is refused with a sentence saying so.
+**Nothing is locked out of the box.** A locked seat's models are offered to
+nobody: the model menus list only what can run. The admin pages still show the
+seat, behind a 🔒 with the reason. Nothing dispatches to a locked provider —
+a request that names one of its models is refused with *That model isn't
+available*, and an administrator is told why.
 
-Lock one from `.env` when the machine cannot run it — a box with no `claude`
-binary signed in, or a shared install whose operator does not want the
-subscription seat spent:
+Lock one from `.env` when the machine cannot run it — a box where that CLI is
+not installed or not signed in, or a shared install whose operator does not
+want that subscription spent:
 
 ```env
 AI_LOCKED_PROVIDERS=claude-cli
@@ -93,11 +116,11 @@ it stays an escape hatch.
 There is deliberately no button for either in the admin UI. A lock is a fact
 about the machine, and only whoever set the machine up can know it has changed.
 
-A lock moves the default with it. With the Claude seat locked, a fresh install
-defaults to the Codex seat, which needs no key either; with **both** seats
-locked the only models left are the metered ones, so the default is an API
-model and every call bills per token. Lock both only on a box that has a key in
-`.env` to fall back on.
+A lock moves the default with it. A fresh install defaults to the first seat
+not locked - Claude, then Codex, then Gemini - and a stored default whose seat
+is locked is served as the first model that can run. With **all three** locked
+nothing can run: settings still read, users are told *AI generation isn't
+available right now*, and the admin pages name the locks.
 
 The `openrouter` provider was **replaced** by `claude-cli`. An existing database
 is migrated on the next boot (its settings row is backed up first, and
@@ -106,21 +129,51 @@ read as `claude-cli` whether or not that migration has run.
 
 The two providers that drove claude.ai and chatgpt.com in a debug Chrome you
 started yourself were **removed**, and nothing maps them onto another provider:
-their records name a model called `chat`, which neither seat has. An existing
+their records name a model called `chat`, which no seat has. An existing
 database is migrated on the next boot, and anything that still names them is
 read as the default whether or not that migration has run - see [Upgrading an
 install that used browser chat](#5-upgrading-an-install-that-used-browser-chat).
 
+The three metered providers - `claude` (the Anthropic API), `openai` and
+`deepseek` - were **removed** the same way, with every API key, their
+`*_BASE_URL` gateways and the switches that let a seat use a key. Nothing maps
+them onto a seat either: an API model name is not a seat's, and moving a model
+would change what a run costs behind its owner's back. See [Upgrading an
+install that used the metered APIs](#6-upgrading-an-install-that-used-the-metered-apis).
+
 ### Credits
 
-One credit buys **one resume** - one profile against one job - however many files
-that produces. A run asking for PDF and DOCX plus a cover letter writes four
-files and costs one credit, because what was asked for is one tailored resume.
+A resume - one profile against one job - costs **the price of the model it is
+built with**, however many files that produces. Every model has a *price per
+resume* in whole credits, set under **Admin → Models**: `1` unless an
+administrator changes it, anything up to `1000`, or `0` for a free model. A run
+asking for PDF and DOCX plus a cover letter writes four files and costs one
+resume's price, because what was asked for is one tailored resume.
+
+The model is the one the resume actually runs on - the run's own choice, else
+the profile's, else the app default - resolved at submit, and **its price is
+fixed then**: each task carries what it was charged, so a price changed
+mid-run, a server restart, or a queued task re-resolved after its model went
+away never re-prices it. A run across several models is charged the sum, and
+the reservation in Credit History says how it was made up -
+`4 resumes: 2 x Claude Opus @ 2, 2 x Claude Sonnet @ 1 = 6 credits`. The
+`perResume` that `GET /api/credits` still returns is the default price, for
+older pages.
 
 The charge happens **at submit, before the first model call**, and every resume
-that does not build gives its credit back. So the invariant is: *credits spent
-equals resumes delivered*. A run that is cancelled refunds everything that had
-not started; one that fails half way refunds the half that failed.
+that does not build gives back exactly what it was charged. So the invariant
+is: *credits spent pay for resumes delivered*. A run that is cancelled refunds
+everything that had not started; one that fails half way refunds the half that
+failed.
+
+**The builder says what a run will cost before it starts.** Beside the generate
+button it shows *This run: 3 resumes · 5 credits · balance 12*, priced by
+`POST /api/generation/quote` - the batch request's own body and its own model
+resolution, with nothing submitted and nothing reserved - and fetched again
+when the profiles or the model change. It turns red with a **Buy credits** link
+when the balance is short, and a run refused for credits (a 402 carrying
+`needed` and `balance`) says how many it needed and what you have. The price
+is not in the model menus: they show display names only.
 
 Charging up front rather than on delivery is what makes a refusal mean
 something. The batch endpoint returns a job id before any work runs, and by the
@@ -135,8 +188,9 @@ being refused on the thirtieth after twenty-nine resumes already exist.
   A new account on zero credits can still paste a job description and see the
   result; what it cannot do is take the file away.
 - **Administrators are exempt.** They can already set any balance, so metering
-  them is a formality. The first account to sign in is an administrator, which is
-  why a fresh install works on day one with nobody holding a credit.
+  them is a formality - the cost line tells them *Administrators are not
+  charged*. The first account to sign in is an administrator, which is why a
+  fresh install works on day one with nobody holding a credit.
 - **Every movement is explainable.** The ledger is append-only and records the
   reserve, each refund, each grant and who made it. `users.credits` is a cache of
   its sum, and a disagreement is reported at startup rather than quietly fixed -
@@ -468,6 +522,52 @@ administrator on the default plan is refused Groups too**. Every account starts
 on the default plan, so the first administrator has to be moved up before they
 can use them.
 
+The same rule holds below the pages. The seats' health (`/api/admin/ai/health`),
+the queue lanes (`/api/generation/queues`), the prompt tools
+(`/api/prompts/models`, `/validate`, `/preview`) and the prompt test
+(`/api/resume/analyze-prompt-test`) answer administrators only. Elsewhere an
+ordinary account gets a narrower answer than an administrator: models as id and
+display name only, prompts as id and name, a payment method that cannot be used
+as *Not available right now* without the reason, no queue lanes or seat in a
+run's progress, and a health check without the PDF browser's details.
+
+### When something fails
+
+Most people using an installation do not run its server, so **a message never
+tells them how the server is set up** - no seat, CLI, command, setting, path,
+model name or third party's own error text. What they are told is one of two
+things:
+
+- **A specific sentence** when the failure is about something of theirs they can
+  act on: a wrong sign-in code, a plan's profile limit, too few credits for a
+  run, a sheet tab that does not exist, a PDF that is too large.
+- **Otherwise a generic one with a reference**: *Failed to queue the batch.
+  Please try again, or contact your administrator. (Ref: ERR-7F3A9C)*. An AI
+  failure is one of four fixed sentences instead - *AI generation is busy right
+  now* (with `Retry-After` when the seat said when), *The request took too
+  long*, *The AI request failed. Please try again*, or *AI generation isn't
+  available right now. Please contact your administrator* - whichever seat it
+  was.
+
+**The reference is how an administrator finds the cause.** The server logs
+every one once, on a line that starts with it:
+
+```
+[error ERR-7F3A9C] POST /api/generation/batches <the real error, with its stack>
+```
+
+so `grep 'ERR-7F3A9C'` over the backend's output finds it. An administrator
+does not need the log for a request of their own: the same response carries
+the cause as `detail`, which the page shows under the message. The server
+decides that from the account's role - the page never does.
+
+Errors that outlive their request - a resume that failed in a run, an order
+item - are stored in the same form, the public sentence and its reference, with
+the cause logged under it. Rows stored before this release held the raw error;
+an ordinary account reads those as *This resume could not be built. Please try
+again, or contact your administrator.*, and an administrator reads them as
+stored.
+
 ### The job sheet
 
 Every account gets **one Google spreadsheet of its own**, and inside it **one tab
@@ -658,7 +758,9 @@ was asked for and builds it whether or not anybody is watching.
 `122 of 300` progress bar. Open one and every resume is there as it lands:
 download a single file, tick a few and take them as a zip, or take the whole
 order as one archive. Failures show their reason in place rather than being
-counted away, and the bar counts *settled* work, so a run with failures still
+counted away - in words for the person who ordered, with a reference an
+administrator can look up (see [When something fails](#when-something-fails)) -
+and the bar counts *settled* work, so a run with failures still
 reaches the end instead of stalling at 98% for ever.
 
 **The order outlives the run that produced it**, and that is the reason it
@@ -694,7 +796,8 @@ manual build and is unaffected.
 | Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
 | Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
-| API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
+| AI models and their prices | The same database, in the app settings row: each model's display name, seat, model name, price per resume (`creditsPerResume`) and description. A run's price is copied onto each of its queued tasks when it is submitted |
+| API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory. A settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log; migration 007 deletes them from the oldest settings snapshot too |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
 | Built-in resume templates | `backend/static/templates/*.json` |
@@ -707,17 +810,20 @@ Nothing under `backend/static` is written to at runtime (`TAILOR_STATIC_DIR` rea
 
 ### Prerequisites
 
-- **Node.js** 18+ (the same major version for installing and running - see the
-  `NODE_MODULE_VERSION` row under Troubleshooting)
+- **Node.js** 18+, or 20+ for the Gemini seat (the same major version for
+  installing and running - see the `NODE_MODULE_VERSION` row under
+  Troubleshooting)
 - **Windows 10/11, Ubuntu, or macOS.** Every command in this guide is the same
   on all three; where a default differs it is called out below.
 - A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
   Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
   backend prints the resolved path at startup.
+- **At least one subscription seat**, installed and signed in as the user the
+  server runs as. Any one of the three will do - Claude Code, Codex or the
+  Gemini CLI - but one has to be in place before anything can be generated.
+  There is no API key to set: the app uses none.
+
 - **Claude Code**, for the default provider: the Claude subscription seat.
-  Install it and sign it in as the user the server runs as. The Codex seat below
-  or a metered API key will do instead, but one of the three has to be in place
-  before anything can be generated.
 
   ```bash
   npm i -g @anthropic-ai/claude-code
@@ -732,8 +838,9 @@ Nothing under `backend/static` is written to at runtime (`TAILOR_STATIC_DIR` rea
   `AI_CLI_BIN`.
 
   `oauth_token` is what a subscription looks like. Any other `authMethod` means
-  the CLI found an API key and every request will be billed per token; the
-  backend says so loudly at startup and on the admin Settings page.
+  the CLI found an API key; the backend says so loudly at startup and on the
+  admin Settings page. A call the CLI runs on a key anyway is failed, and the
+  seat is held as signed out so no further calls are billed.
 
 - **Codex**, only if you want to run on a ChatGPT subscription seat. Same
   arrangement, different vendor - and `--device-auth` is why this one is
@@ -748,17 +855,32 @@ Nothing under `backend/static` is written to at runtime (`TAILOR_STATIC_DIR` rea
 
   Run it as the **same user the server runs as** - the sign-in lives in that
   user's `CODEX_HOME`, and a login as yourself is not one the service can see.
+  Sign in with ChatGPT, not `codex login --with-api-key`: a CLI signed in with a
+  key is reported as not signed in, because every call on it would be billed.
+
+- **Gemini CLI**, only if you want to run on a Google account. It also signs in
+  without a display on the server - it prints a URL you open in any browser and
+  takes the code back:
+
+  ```bash
+  npm i -g @google/gemini-cli     # needs Node 20 or later
+  NO_BROWSER=true gemini          # choose "Sign in with Google", then /quit
+  ```
+
+  Again as the **same user the server runs as**: the sign-in is saved as
+  `~/.gemini/oauth_creds.json` in that user's home, which is what the health
+  check reads - it never sends a prompt to find out. To keep the server's
+  sign-in apart from a personal one, set `AI_GEMINI_HOME` to a directory of its
+  own and run the sign-in with `GEMINI_CLI_HOME` set to the same directory; a
+  personal `~/.gemini/GEMINI.md` would otherwise be added to every prompt the
+  seat runs (the health check warns when it is not empty).
 
 - **A Chrome to print with.** Resumes and cover letters are rendered by
   headless Chrome, and `npm install --prefix backend` downloads one
   automatically. Nothing further is needed unless that download is blocked -
   see `Could not find Chrome` under Troubleshooting. The backend prints which
   browser it resolved at startup, on a `[pdf]` line, and reports it from
-  `GET /api/health`.
-
-- Optionally an **OpenAI**, **Anthropic** or **DeepSeek** API key in `.env`, if
-  you want those providers available as alternatives. They are the only
-  credentials this app reads and it stores none of its own.
+  `GET /api/health` to an administrator.
 
 ### 1. Clone & Install
 
@@ -799,8 +921,10 @@ SMTP_USER=
 SMTP_PASS=
 ```
 
-**Somebody has to be able to sign in.** Set up Google sign-in or SMTP - the
-login page names what is missing if neither is configured. The **first account
+**Somebody has to be able to sign in.** Set up Google sign-in or SMTP. With
+neither, the login page says only *Sign-in isn't available right now* - it is
+read by somebody who is not signed in, so it names no setting;
+`cd backend && npm run mail:doctor` checks the SMTP path. The **first account
 to sign in becomes the administrator**, because account management is
 admin-only and an install whose first user was an ordinary one would have no
 way to appoint one. Set `ADMIN_EMAILS` to decide in advance instead.
@@ -814,11 +938,11 @@ picks the writable default for the platform it is on. Set it when you want the
 data somewhere specific - `DB_DIR=./data/db` works on both Windows and Ubuntu
 and is resolved from the directory the backend was started in.
 
-Nothing else in `.env` is required for AI generation: the default provider is
-the Claude subscription seat, which needs no key - only the `claude` CLI
-installed and signed in on this machine, as under Prerequisites. The `AI_CLI_*`
-variables in `.env.example` tune its model, concurrency and timeouts, and the
-`AI_CODEX_*` ones do the same for the Codex seat.
+Nothing else in `.env` is required for AI generation: every provider is a
+subscription seat, which needs no key - only its CLI installed and signed in on
+this machine, as under Prerequisites. The `AI_CLI_*` variables in
+`.env.example` tune the Claude seat's model, concurrency and timeouts, and the
+`AI_CODEX_*` and `AI_GEMINI_*` ones do the same for the Codex and Gemini seats.
 
 The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the page was loaded from, and the backend accepts requests from any origin on the same host as the API. That means you can open the app through `localhost`, a LAN IP, or a hostname without changing configuration.
 
@@ -842,7 +966,11 @@ rather than probed:
 ```
 [ai] claude-cli: Signed in on a Claude subscription (OAuth).
 [ai] codex-cli: Locked in this installation. Needs the `codex` CLI installed and a ChatGPT subscription ...
+[ai] gemini-cli: Signed in with Google as you@example.com.
 ```
+
+The Gemini line names the signed-in Google account; it is in the server log and
+on the admin Settings page, nowhere an ordinary account can see.
 
 Both sides read the single `.env` at the repository root, on Windows as well as
 macOS and Linux, and every npm script here runs under `cmd.exe` and PowerShell
@@ -874,21 +1002,24 @@ first start after upgrading, migration 006 tidies the database once:
   settings (the master switch and the registered debug ports).
 - It repoints whatever named them. The stored default moves to the Claude
   seat's Sonnet - or, when that seat is locked on this machine
-  (`AI_LOCKED_PROVIDERS`), to the Codex seat, and to a metered model only when
-  both seats are locked. That follows the locks as they are when the migration
-  runs: lifting one later does not move the default back, so pick it again
-  under Admin -> Settings if you want it. A profile's model choice and a
-  prompt's model override are cleared, which means "use the default".
+  (`AI_LOCKED_PROVIDERS`), to the Codex seat. That follows the locks as they
+  are when the migration runs: lifting one later does not move the default
+  back, so pick it again under Admin -> Settings if you want it. A profile's
+  model choice and a prompt's model override are cleared, which means "use the
+  default".
 - An install that ran only on the browsers - every other provider unticked or
   locked here, or every other model switched off - gets one back: a seat this
-  machine can run, switched on with its models, or else a metered model it
-  already had, switched back on - from a provider whose key is set in `.env`
-  before one whose key is not. The backend log says which; review it under
-  Admin -> Settings and Admin -> Models.
+  machine can run, switched on with its models. The backend log says which;
+  review it under Admin -> Settings and Admin -> Models.
+- 006 was written while the metered APIs were still here, and on a database
+  that skipped straight to this release it can still land the default, or the
+  model it switches back on, on a metered API model. Migration 007 runs right
+  after it in the same start and moves anything like that onto a seat - see
+  section 6.
 - It keeps a copy of the settings row first, in `app_settings` under
   `app-settings.backup.pre-browser-chat-removal` - verbatim, except that an API
-  key store an older release left in the row is not copied, since keys come
-  from `.env` only - and the prompt rows it changed in a side table,
+  key store an older release left in the row is not copied - and the prompt
+  rows it changed in a side table,
   `prompts_backup_pre_browser_chat_removal`. The profile choices it cleared are
   listed in `migration-log.provider-schema-6`. Nothing restores these
   automatically - `npm run ai:rollback` is for the older provider migration -
@@ -905,16 +1036,18 @@ own browser model, whose id the migration logs, so a page that still names it
 works after a restart too.
 
 An install left with nothing it can run is repaired the same way in memory,
-until an administrator saves Settings - with one step more than the migration
-takes. With both seats locked and no metered model left at all, the migration
-adds none and leaves the row as it is; the app then offers a metered API's own
-default model in memory - from one whose key is set in `.env`, where there is
-one - which bills per token, or fails every generation until a key is set or a
-seat is unlocked. Saving Settings keeps it. The same repair covers a lock added
-after the upgrade, but only while the settings are still what the migration
-left: once an administrator has changed which providers or models are switched
-on, an install a later lock leaves with nothing fails by name, pointing at the
-lock, as it does on an install that never used browser chat.
+until an administrator saves Settings: one seat this machine can run is read as
+switched on and given its models - the seat migration 007 would pick, rank for
+rank (section 6), so nothing changes seat when the migrations catch up. Saving
+Settings keeps it. With every seat locked there is nothing to repair onto:
+nothing can run until a seat is unlocked, ordinary accounts are told AI
+generation is not available, and the admin pages name the locks. The same
+repair covers a lock added after the upgrade, but only while the settings are
+still what the latest removal migration left: once an administrator has changed
+which providers or models are switched on, an install a later lock leaves with
+nothing fails by name, pointing at the lock (an administrator sees that
+sentence; anybody else, a generic one with a reference), as it does on an
+install that never used browser chat.
 
 A run that was queued across the upgrade still finishes: a resume that was
 waiting for a browser is built on whatever its profile resolves to now - the
@@ -931,6 +1064,90 @@ loopback remote-debugging port (9222 by default; the ports you registered are
 in `browserChatEndpoints` in the settings snapshot above). Their profiles,
 `~/.free-tailor-chrome-<port>` or the directory you gave `--profile`, are still
 signed in to claude.ai and chatgpt.com - delete them.
+
+### 6. Upgrading an install that used the metered APIs
+
+The `claude` (Anthropic API), `openai` and `deepseek` providers are gone, and
+with them every API key the app ever read. On the first start after upgrading,
+migration 007 tidies the database once, the way 006 did for browser chat:
+
+- It removes their model records and enable switches, the flat
+  `claudeEnabled` / `openaiEnabled` / `deepseekEnabled` flags an older row
+  carries, and any API key store still in the row.
+- It repoints whatever named them. A default that named a removed model moves
+  to the Claude seat's Sonnet when that can run, otherwise to the first model
+  that can, in seat order. A profile's model choice and a prompt's model
+  override that named one are cleared, which means "use the default" - an API
+  model name is not a seat's, so nothing is mapped across.
+- An install left with no seat switched on, or no model that can run, gets one
+  back - never anything billed per token. The seat is one not locked here:
+  first one the row explicitly switched on, then one it records nothing about
+  (the Gemini seat, on any row older than this release), then one switched off;
+  one with a model already switched on before one without; Claude, Codex,
+  Gemini after that. It gets its missing shipped models, and failing that one
+  of its own switched back on. With every seat locked the row is left as it is,
+  and the log says nothing can run until a seat is unlocked.
+- It keeps a copy of the settings row first, in `app_settings` under
+  `app-settings.backup.pre-metered-removal` - verbatim except for the API key
+  store, which is not copied - and the prompt rows it changed in a side table,
+  `prompts_backup_pre_metered_removal`. What it removed and the profile choices
+  it cleared are in `migration-log.provider-schema-7`; a later run adds to that
+  log rather than replacing it.
+- It deletes the API keys from `app-settings.backup.pre-claude-cli`, the
+  snapshot the oldest provider migration took verbatim - the last plaintext
+  copy of keys nothing can use. The rest of that snapshot is kept, so
+  `npm run ai:rollback` still restores it, and 007 cleans what it brings back
+  on the next start.
+
+Like 006, it can be held back - it waits behind the migration that waits for the
+first administrator, and while the settings row is not valid JSON - and nothing
+depends on it having run. A record, profile, prompt or open page that still
+names a metered provider or one of its shipped models is read as the default,
+never as an error, and the backend log says so once per name. That includes an
+administrator's own metered model, whose id 007 logs, and the model an older
+release named after `OPENAI_MODEL`, `CLAUDE_MODEL` or `DEEPSEEK_MODEL` for as
+long as that variable is still set. An install left with nothing it can run is
+repaired in memory by the same rule as above until an administrator saves
+Settings, exactly as in section 5.
+
+A run queued across the upgrade still finishes: a resume that was waiting for a
+metered provider is built on whatever its profile resolves to now, and is not
+charged again.
+
+**Delete the old variables from `.env`.** `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `CLAUDE_MODEL`, `OPENAI_MODEL`,
+`DEEPSEEK_MODEL`, `CLAUDE_BASE_URL`, `OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`,
+`CLAUDE_MAX_ATTEMPTS`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
+`AI_CLI_ALLOW_API_KEY` and `AI_CODEX_ALLOW_API_KEY` are read by nothing. The
+backend names whichever is still set, once, at startup - never its value:
+
+```
+[ai] OPENAI_API_KEY, AI_CLI_ALLOW_API_KEY are still set, and nothing reads them: ...
+```
+
+The seats strip any key from their CLI's environment either way, and the two
+`*_ALLOW_API_KEY` switches no longer turn that off.
+
+### 7. The Gemini model and the new model names
+
+Migration 008 runs once on an install that has its own model list - a fresh
+install, and a row that never saved one, read the shipped models and need
+nothing:
+
+- It adds the shipped Gemini model, **Gemini** (`gemini-cli-auto`, the `auto`
+  model, 1 credit per resume), unless the list already has a Gemini model. The
+  Gemini seat has no switch in an older row and so reads as switched on; without
+  this it would be on with nothing to pick.
+- It drops "(subscription)" from the shipped display names nobody changed:
+  *Claude Sonnet (subscription)* becomes *Claude Sonnet*, and so on for Opus,
+  Haiku and *Codex (subscription)*. Only a name exactly as a release shipped it,
+  on the model it was shipped for, is renamed; a name an administrator typed is
+  theirs.
+
+It leaves the default and the switches alone, and logs what it did in
+`migration-log.provider-schema-8`. Every model without a price - every model
+saved before this release - reads as costing 1 credit per resume until an
+administrator sets one; nothing is written to make it so.
 
 ---
 
@@ -1099,28 +1316,37 @@ sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2   li
 | Stripe → Webhooks | Endpoint `https://yourdomain.com/api/payments/webhook/stripe`, subscribed to all seven events listed in `.env.example`. Copy the new signing secret into `STRIPE_WEBHOOK_SECRET`. |
 | Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL` | `https://yourdomain.com/api/payments/webhook/cryptomus` — the **API**, not the frontend. |
 
-**Install the subscription seats on the server.** The default provider is the
-Claude seat, and both seats work on a headless box - neither needs a display,
-and Codex's device sign-in is approved from a browser anywhere else:
+**Install the subscription seats on the server** - the ones you mean to use;
+one is enough. The default provider is the Claude seat, and all three work on a
+headless box - none needs a display: Codex's device sign-in is approved from a
+browser anywhere else, and Gemini prints a URL to open elsewhere and takes the
+code back:
 
 ```bash
-npm i -g @anthropic-ai/claude-code @openai/codex
+npm i -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli
 
 sudo -u tailor -H claude auth login          # over SSH
 sudo -u tailor -H codex login --device-auth  # prints a code you approve in ANY browser
+sudo -u tailor -H env NO_BROWSER=true gemini # "Sign in with Google", paste the code, /quit
 ```
 
-Three things go wrong in this order:
+Lock any seat you do not set up (`AI_LOCKED_PROVIDERS=codex-cli,gemini-cli`),
+so its models are not offered. Three things go wrong in this order:
 
 - **Sign in as the user the service runs as.** The sign-in lives in that user's
-  home (`CODEX_HOME` for Codex), so `claude auth login` as root is invisible to a
-  unit running as `tailor` - hence `sudo -u tailor -H`.
-- **systemd gets a minimal `PATH`.** A turn that fails with `spawn codex ...
-  ENOENT`, or with "the Claude CLI is not installed", wants `AI_CLI_BIN` and
-  `AI_CODEX_BIN` set to the full paths from `which claude` / `which codex`.
-- **Each seat has its own queue lane**, sized by `AI_CLI_CONCURRENCY` and
-  `AI_CODEX_CONCURRENCY`. They are counted separately; the defaults of 4 are a
-  fine place to start.
+  home (`CODEX_HOME` for Codex, `~/.gemini` - or `AI_GEMINI_HOME` - for Gemini),
+  so `claude auth login` as root is invisible to a unit running as `tailor` -
+  hence `sudo -u tailor -H`.
+- **systemd gets a minimal `PATH`.** A seat that reports its CLI missing at
+  startup or on the admin Settings page - `No "gemini" on the server PATH`,
+  `spawn codex ... ENOENT`, "the Claude CLI is not installed" - wants
+  `AI_CLI_BIN`, `AI_CODEX_BIN` or `AI_GEMINI_BIN` set to the full path from
+  `which claude` / `which codex` / `which gemini`.
+- **Each seat has its own queue lane**, sized by `AI_CLI_CONCURRENCY`,
+  `AI_CODEX_CONCURRENCY` and `AI_GEMINI_CONCURRENCY`. They are counted
+  separately; the defaults of 4, 4 and 2 are a fine place to start - Gemini's is
+  lower because a Google account has per-minute limits on top of its daily
+  quota.
 
 **Mail from your own domain** is DNS first, then four values. Outgoing mail here
 is only the sign-in codes, so there is nothing else to move.
@@ -1209,17 +1435,21 @@ Two more worth doing once, because each fails quietly rather than loudly:
 free_tailor/
 ├── backend/                 # Express API
 │   ├── src/
-│   │   ├── config/         # .env loading, operational settings table, static asset paths
+│   │   ├── config/         # .env loading, operational settings table, provider catalog,
+│   │   │                   #   each seat's model-name list, static asset paths
 │   │   ├── database/       # SQLite connection, schema, repositories
 │   │   ├── database/
 │   │   │   └── migrations/ # One-time data migrations, run on first DB use
 │   │   ├── routes/         # API routes
 │   │   ├── services/
 │   │   │   ├── ai/         # Provider-agnostic AI transport
-│   │   │   │   ├── providers/claudeCli/  # The `claude` CLI provider
-│   │   │   │   └── providers/            # openai, deepseek, anthropicHttp
+│   │   │   │   ├── providers/cli/        # The shared spawn seam: runner, binary resolution
+│   │   │   │   ├── providers/claudeCli/  # The `claude` CLI seat
+│   │   │   │   ├── providers/codexCli/   # The `codex` CLI seat
+│   │   │   │   └── providers/geminiCli/  # The `gemini` CLI seat
 │   │   │   └── resumeService.ts          # Resume/cover-letter domain logic
 │   │   ├── generators/     # PDF, DOCX, cover letter generation
+│   │   ├── middleware/     # Auth, uploads, and publicError.ts - what a failure may tell whom
 │   │   ├── scripts/        # Legacy data import, provider-migration rollback
 │   │   └── types/          # TypeScript types
 │   ├── static/
@@ -1227,14 +1457,14 @@ free_tailor/
 │   │   ├── skills/         # Skill library seed
 │   │   └── templates/      # Built-in templates
 │   └── test/               # node:test suite
-│       └── fixtures/cli/   # Recorded `claude` CLI event streams
+│       └── fixtures/       # CLI event streams: cli/ (claude), codex/, gemini/
 ├── frontend/               # Next.js app
 │   └── src/
 │       ├── app/            # Pages (/, /admin/*, /jobs, /bid-assistant, /calendar)
 │       ├── components/     # Reusable UI components
 │       │   ├── shell/      # The app shell: top bar, sidebar, settings sub-nav
 │       │   └── icons/      # The inline SVG icon set
-│       └── lib/            # API client
+│       └── lib/            # API client, and userMessage.ts - one way to show a failure
 └── generated/              # Default output location for resumes and cover letters
 ```
 
@@ -1290,13 +1520,14 @@ unique across the install, which settles all of it in one segment.
 | **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
-| **Credentials** | Claude Code and Codex run on your subscription seats, with no key at all. The metered providers - Anthropic API, OpenAI, DeepSeek - read their key from `.env`; there is no key management in the app, so a key exists in exactly one place |
-| **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden |
+| **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
+| **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in credits (a whole number from 0 to 1000, `0` shown as *Free*), and a description. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name |
+| **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default, and the server refuses a run or a profile save that names one with *That model isn't available* |
 | **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
-| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. Admin-only to change, since one edit changes what every account gets |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Admin-only to change, since one edit changes what every account gets |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, models, output location, and live Claude subscription status (sign-in, usage window, in-flight calls). Each provider row shows what it reports right now; a metered provider's key comes from `.env`. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose |
+| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, output location, and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test runs a prompt on a model you pick by name. Every page here shows the cause of a failure under its message |
 
 ---
 
@@ -1317,9 +1548,7 @@ setting in it:
   system as written, so an address this machine does not have stops the server
   starting. Out of range is clamped to the nearest end of the range, anything
   unreadable is replaced by the default, and the backend says which, once, on an
-  `[env]` line. A `*_BASE_URL` is the exception to "replaced by the default": its
-  default is the vendor, so one that cannot be used is refused and that provider
-  sends nothing until it is fixed. (The older `AI_CLI_*` / `AI_CODEX_*`
+  `[env]` line. (The older `AI_CLI_*` / `AI_CODEX_*`
   numbers, `AI_BATCH_CONCURRENCY`, `GENERATION_MAX_ATTEMPTS` and
   `CREDIT_SIGNUP_GRANT` read numbers more loosely and clamp without a word.)
 - **Each process reads `.env` once, at startup**, so a change needs a restart.
@@ -1335,7 +1564,7 @@ to "what is this install really running with":
 [env] Non-default settings: SESSION_TTL_DAYS=7, UPLOAD_MAX_MB=25
 ```
 
-Those settings - the timeouts, size caps, pool widths, endpoints and actor ids
+Those settings - the timeouts, size caps, pool widths, model lists and actor ids
 that used to be literals in the code - are defined in one table,
 `backend/src/config/operational.ts`, with their defaults and ranges.
 `backend/test/envExample.test.js` fails if `.env.example` or this table stops
@@ -1363,18 +1592,19 @@ matching it.
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_MAX_CONNECTIONS` | The pooled SMTP connection: connect and greeting timeout (default `10000`), idle socket timeout (default `20000`) - both range 1000-300000, never 0, because an unbounded wait is a sign-in that never returns - and the pool's width (default `2`, range 1-20). *Startup* |
-| `AI_REQUEST_TIMEOUT_MS` | The wall-clock deadline of one AI call (default `300000`, range 5000-3600000). The outer bound for both subscription seats - slot wait and CLI process included - so a CLI budget set above it never takes effect, and startup warns when one is. Looser for the metered APIs: `claude` checks it between attempts, while `openai` and `deepseek` run on the SDK's own limits (ten minutes per attempt, two retries) |
+| `AI_LOCKED_PROVIDERS` / `AI_UNLOCKED_PROVIDERS` | Seats this machine cannot run (`claude-cli`, `codex-cli`, `gemini-cli`), comma separated, and the mirror, which wins. A locked seat's models are offered to nobody, and the default moves to the first seat not locked. Nothing is locked by default |
+| `AI_REQUEST_TIMEOUT_MS` | The wall-clock deadline of one AI call (default `300000`, range 5000-3600000). The outer bound on every seat - slot wait and CLI process included - so a CLI budget set above it never takes effect, and startup warns when one is |
 | `AI_CLI_BIN` | Path to the `claude` binary when it is not on PATH |
 | `AI_CLI_MODEL` | Default model alias (`sonnet`) |
 | `AI_CLI_CONCURRENCY` | Simultaneous `claude` processes, process-wide (default `4`) |
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets, each capped by `AI_REQUEST_TIMEOUT_MS` |
-| `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
+| `AI_CLI_ALLOW_OVERAGE` | Allow calls on the Claude plan's paid extra usage once the subscription window is spent. Off by default. There is no switch for an API key: every seat strips keys from its CLI's environment, always |
 | `AI_CLI_EFFORT` | Reasoning effort passed to the `claude` CLI, installation-wide (default `low`). There is no per-run control by design: this is an operational default, not a per-request choice. An unrecognised value warns at startup and falls back |
 | `AI_CLI_WORKDIR` / `AI_CODEX_WORKDIR` | The fixed, empty working directory each CLI runs in. Default `claude-cli-work` / `codex-cli-work` inside `DB_DIR` when `DB_DIR` is set, otherwise `.claude-cli-work` / `.codex-cli-work` in the directory the backend was started from |
 | `AI_CLI_HEALTH_TIMEOUT_MS` / `AI_CODEX_HEALTH_TIMEOUT_MS` | Timeout of the seat health checks - `claude --version` and `claude auth status` (default `20000`), `codex login status` (default `15000`) - run at startup and by the admin Settings card. Range 1000-120000. Raise it where a CLI is slow to start |
 | `AI_CLI_MAX_OUTPUT_BYTES` / `AI_CODEX_MAX_OUTPUT_BYTES` | Most output one CLI call may produce before it is cut off to protect memory (defaults `25000000` and `8000000`) |
 | `AI_CLI_RECOVERY_S` | How long a model the service refused as unavailable is left alone before it is tried again (default `600`) |
-| `AI_BATCH_CONCURRENCY` | Ships unset, and should usually stay so: a batch then offers the chosen provider exactly its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, or 4 for a metered API). Set, it overrides all of them |
+| `AI_BATCH_CONCURRENCY` | Ships unset, and should usually stay so: a batch then offers the chosen seat exactly its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY` or `AI_GEMINI_CONCURRENCY`). Set, it overrides all of them |
 | `AI_CODEX_BIN` | Path to the `codex` binary when it is not on PATH |
 | `AI_CODEX_MODEL` | Default model (`default` means "pass no `-m`" and let the account decide) |
 | `AI_CODEX_CONCURRENCY` | Simultaneous `codex` processes, and the size of the Codex queue lane (default `4`). Counted separately from `AI_CLI_CONCURRENCY` |
@@ -1387,11 +1617,6 @@ matching it.
 | `AI_GEMINI_HEALTH_TIMEOUT_MS` | Timeout of `gemini --version`, the Gemini seat's health check, run at startup and by the admin Settings card (default `15000`, range 1000-120000). The check sends no prompt; it reads the sign-in files instead |
 | `AI_GEMINI_MAX_ATTEMPTS` / `AI_GEMINI_MAX_OUTPUT_BYTES` | Attempts the CLI itself makes on a 429 or a 5xx, counting the first (default `3`, range 1-10), and the most output one turn may produce before it is cut off (default `25000000`, range 1000000-500000000 - the CLI echoes the whole prompt before the answer). *Startup* |
 | `AI_GEMINI_WORKDIR` / `AI_GEMINI_STATE_DIR` / `AI_GEMINI_HOME` | The fixed, empty working directory every turn runs in (default `gemini-cli-work` inside `DB_DIR`, else `.gemini-cli-work` where the backend started); where each turn's system prompt, the deny-all policy and temp files go, outside that directory on purpose (default `gemini-cli-state` beside it); and an optional dedicated sign-in home, passed to the CLI as `GEMINI_CLI_HOME` - the one way to keep an operator's personal `~/.gemini/GEMINI.md` out of every prompt. Sign in with `GEMINI_CLI_HOME` set to the same directory. *Startup* |
-| `AI_CODEX_ALLOW_API_KEY` | Off by default, and the most important default here: an `OPENAI_API_KEY` in the environment **outranks the subscription** in the CLI's own resolution order, so it is stripped from the child process. Left in place it produces identical answers and bills every one of them |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers. `.env` is the only place they come from: the app stores no keys and the admin panel has no field for one |
-| `CLAUDE_BASE_URL` / `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` | Where each metered provider's API lives, for an LLM gateway in front of the vendor. Defaults `https://api.anthropic.com` (without `/v1` - the adapter appends `/v1/messages`), `https://api.openai.com/v1` (with `/v1`, as the openai SDK expects) and `https://api.deepseek.com`. Plain http is used as set - a LAN Ollama or LM Studio box works - but warns at startup when the host is not this machine, since the API key goes with every request. A value that is set but cannot be used - no `http://` or `https://`, an `@` (`user:password@`), a query string or a fragment - is **refused, not replaced**: that provider sends nothing, to the vendor or anywhere else, and reports itself not ready until the value is fixed or removed (removed means the vendor's endpoint). `CLAUDE_BASE_URL` and not `ANTHROPIC_BASE_URL` on purpose: the `claude` CLI inherits that one, so it would move the subscription seat as well |
-| `CLAUDE_MAX_ATTEMPTS` | Attempts, counting the first, the metered `claude` provider makes on a 429, 5xx, 529 or network error (default `4`, range 1-10). `openai` and `deepseek` retry inside their SDK instead |
-| `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` | The OpenAI organization and project the `openai` provider bills to, read by the SDK. Never sent to DeepSeek |
 | `GENERATION_MAX_ATTEMPTS` | How many times one resume may be built before it is given up on (default `3`, counting the first go; `1` switches retrying off). A retry costs no extra credit. *Startup* |
 | `GENERATION_RENDER_CONCURRENCY` | How many resumes the generation queue renders through Chrome at once, across every lane (default `4`, range 1-32). Sized by the machine's memory, one Chrome tab per render. *Startup* |
 | `PDF_RENDER_TIMEOUT_MS` | How long one PDF render step, or starting Chrome for it, may take (default `30000`, puppeteer's own; range 5000-300000) |
@@ -1421,6 +1646,14 @@ matching it.
 
 See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
 
+**Removed, and read by nothing:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`DEEPSEEK_API_KEY`, `CLAUDE_MODEL`, `OPENAI_MODEL`, `DEEPSEEK_MODEL`,
+`CLAUDE_BASE_URL`, `OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`,
+`CLAUDE_MAX_ATTEMPTS`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
+`AI_CLI_ALLOW_API_KEY` and `AI_CODEX_ALLOW_API_KEY` - the metered providers and
+the switches that let a seat use a key. Startup names any of them that is still
+set, never its value; delete them.
+
 **Two settings are not read from `.env` at all**, because they steer the Chrome
 download that `npm install --prefix backend` runs before anything loads that
 file. Export them in the shell, for the install and the server alike:
@@ -1440,7 +1673,7 @@ file. Export them in the shell, for the install and the server alike:
 | Symptom | Cause and fix |
 |---------|---------------|
 | Coin arrived on the retired on-chain path and was never credited | The watcher and the admin queue that showed these are gone, but the records are not. An unattributable transfer, or one that arrived against an order it could not be credited to, is still in the database: `SELECT * FROM chain_orphans WHERE resolved_at IS NULL;` and `SELECT * FROM chain_invoices WHERE state = 'held';` against your `DB_DIR`. Each row carries the transaction id, the amount and why it was held. Settle it by hand and adjust the balance from the accounts page - nothing in the app will surface it for you any more. |
-| The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and read the buy page's own reason under the greyed-out button: it names which key is missing. |
+| The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and, signed in as an administrator, read the buy page's own reason under the greyed-out button: it names which key is missing. Anybody else is told only *Not available right now*. |
 | Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
 | A Cryptomus invoice was paid but nothing was credited | Read the backend log for that payment's reference. *"the provider reported N against M"* means the amount did not match what was quoted - the payment is deliberately left pending for a person rather than credited to a guess. *"a paid event arrived with no amount on it"* means the callback carried nothing comparable to what was quoted, and a signature alone is not evidence of how much arrived - so that one is held for a person too. *"already handled"* on every attempt means the callback was recorded before; the credits either landed or the row is not pending. Nothing at all means the callback never arrived: check the address set in the Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL`, points at **this server's API** - `/api/payments/webhook/cryptomus` - and not at the frontend. |
 | Every card payment suddenly asks the buyer to confirm with their bank | *Always ask the cardholder's bank to authenticate* is on under **Admin → Payments**. That is what it does - it asks on every payment rather than only when the provider's own rules call for it. Turn it off to go back to letting Stripe decide, and note that doing so also gives up the shift of chargeback liability to the issuing bank |
@@ -1452,7 +1685,7 @@ file. Export them in the shell, for the install and the server alike:
 | A refund says *Could not confirm the refund with Stripe* | The call went out and no answer came back, so this server does not know whether the refund exists - and it deliberately reversed no credits rather than guessing. Press **Refund** again: the request carries `Idempotency-Key: refund:<payment id>`, so Stripe cannot create a second refund for that payment, and the second attempt finishes the reversal. If you would rather look first, the payment in the Stripe dashboard shows whether a refund is there. |
 | A payment closed with *This server could not start that payment* | Not the provider - this end. The settings row would not load, or the database refused a write, before anything was sent anywhere. Nothing was charged. Read the backend log for the reference: the real error is there, and it is usually `DB_DIR` becoming unwritable or a settings row saved as something that will not parse. |
 | Buying with a card works, but paying with a SAVED card takes the money and never credits it | The webhook endpoint is not subscribed to `payment_intent.succeeded`. A saved card is charged off-session, which emits `payment_intent.*` and never `checkout.session.completed` - so the card path works and the saved-card path silently does not. Add `payment_intent.succeeded`, `payment_intent.payment_failed` and `payment_intent.canceled` to the endpoint's events. `stripe listen` forwards everything, so this only bites an endpoint created by hand. |
-| The buy page says no payment method is set up, but the keys are in `.env` | A method is offered only when **every** one of its keys is set - for Stripe that is all three, including the webhook secret. The buy page lists which key each method is missing. Keys are read at startup, so a `.env` edited while the server was running has not been seen yet: restart the backend. |
+| The buy page says no payment method is set up, but the keys are in `.env` | A method is offered only when **every** one of its keys is set - for Stripe that is all three, including the webhook secret. Signed in as an administrator, the buy page lists which key each method is missing; anybody else is told only that purchasing is not available. Keys are read at startup, so a `.env` edited while the server was running has not been seen yet: restart the backend. |
 | The page cannot reach the API but the backend is clearly running | Look for `[cors] Refused origin ...` in the backend output. A browser reports a refused origin as an unreachable server, so the page cannot tell the two apart - the backend log is the only place the reason appears. It names the origin and the `FRONTEND_URL` value that allows it. Behind a reverse proxy this should not happen at all — the rule allows any origin whose hostname matches the `Host` the request arrived on — so seeing it there means the proxy is rewriting `Host`, and `FRONTEND_URL=https://yourdomain.com` is the fix. |
 | On a domain, the site loads over https but every action cannot reach the backend | The public address is missing or stale **in the built bundle**. It is compiled in, not read at runtime, so a restart changes nothing — only `npm run build --prefix frontend` does. With neither `APP_URL` nor `NEXT_PUBLIC_API_URL` set, the frontend keeps the default port and scheme and swaps only the hostname, asking an https page for `http://yourdomain.com:3001/api`: the wrong port, and blocked as mixed content besides. Set `APP_URL=https://yourdomain.com`, rebuild the frontend, then restart it. The frontend build also warns outright when `NEXT_PUBLIC_API_URL` is `http:` under an `https:` `APP_URL`. The browser console shows the mixed-content refusal; the network tab shows the port. |
 | `Cannot reach the backend at ...` naming a port you did not expect | `NEXT_PUBLIC_API_URL` and `PORT` disagree. They must name the same port when both point at this machine. Delete `NEXT_PUBLIC_API_URL` from `.env` to derive it from `PORT`, or set the two to match. The backend and the frontend build both print an `[env]` line when they disagree. |
@@ -1463,46 +1696,60 @@ file. Export them in the shell, for the install and the server alike:
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
-| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource: one for the Claude CLI seat (shared with the metered API providers, which have no local resource of their own) and one for the Codex seat - so neither seat can hold up the other. |
+| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource - one per subscription seat: Claude, Codex and Gemini - so no seat can hold up another. |
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones running are aborted. |
-| A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen provider can actually take: each subscription seat's own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`), or four for a metered API provider. The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
+| A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen seat can actually take: its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`). The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. |
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
 | Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
-| A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. Nothing is locked by default, so this means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart, or pick a model from another provider. |
+| A model is missing from the model menus | The menus list only models that can run right now. Under **Admin → Models**, it is either *Disabled*, on a provider switched off under Admin → Settings (*Provider off*), or on a seat locked in this installation (*🔒 Locked*, with the reason). Nothing is locked by default, so a lock means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart. |
+| *That model isn't available. Choose another, or contact your administrator.* | A run, or a profile save, named a model that cannot run: switched off, deleted, on a locked seat or on a provider switched off. It is refused rather than replaced, because another model could cost a different price. An administrator's response carries the reason underneath. A profile that already stored such a model is not refused - it shows *Unavailable model* and runs on the default, and the server log says so once. |
+| *AI generation isn't available right now. Please contact your administrator.* | What anybody but an administrator is told when the seat a run needs cannot answer: its CLI is signed out or not installed, the account cannot use that model, the provider is locked or switched off - or every seat is locked, so nothing can run at all. An administrator sees the cause under the same sentence; the startup `[ai]` lines and the seat cards on Admin → Settings say which seat and why. The other three AI sentences are for the person to act on: *busy* (a usage limit - wait), *took too long* (ask for less) and *failed* (try again). |
 | **Claude (browser)**, **ChatGPT (browser)** or **Default (browser)** is missing from the model menus | Removed, along with the debug Chrome they drove - see [Upgrading an install that used browser chat](#5-upgrading-an-install-that-used-browser-chat). A stored default, profile or prompt that named one now runs on the default model, which is the Claude seat unless that is locked here, and the backend log says so once per name. Debug Chrome windows started for them are still running on a remote-debugging port, and their `~/.free-tailor-chrome-<port>` profiles are still signed in: close the windows and delete the profiles. `npm run browser:debug`, `npm run browser:doctor` and the `AI_WEB_*` variables no longer exist; a leftover `AI_WEB_*` line in `.env` is ignored. |
-| A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
+| The Anthropic API, OpenAI or DeepSeek models are gone from every menu | Removed, with every API key - see [Upgrading an install that used the metered APIs](#6-upgrading-an-install-that-used-the-metered-apis). A stored default, profile or prompt that named one now runs on the default model, and the backend log says so once per name. Startup warns `[ai] OPENAI_API_KEY, ... are still set, and nothing reads them` for any of the old variables left in `.env`: delete them. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |
-| `The Claude CLI is not installed or is not on the server PATH` | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows npm installs the CLI as `claude.cmd`, a shim wrapping `node_modules\@anthropic-ai\claude-code\bin\claude.exe`; the server follows the shim to that binary on its own, so `AI_CLI_BIN` is only needed if that fails, and then it should name the `.exe`, not the `.cmd`. |
+| `The Claude CLI is not installed or is not on the server PATH` (an administrator's detail, or the startup line) | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows npm installs the CLI as `claude.cmd`, a shim wrapping `node_modules\@anthropic-ai\claude-code\bin\claude.exe`; the server follows the shim to that binary on its own, so `AI_CLI_BIN` is only needed if that fails, and then it should name the `.exe`, not the `.cmd`. |
 | A Codex turn fails with `spawn codex ... ENOENT` | Same two causes as the row above, one vendor along: either `@openai/codex` is not installed, or this process has a different PATH than your shell (common under systemd and Docker). Set `AI_CODEX_BIN` to the full path from `which codex`. |
 | Codex says `Not logged in`, or a turn fails with an auth error | Run `codex login --device-auth` **as the user the server runs as** - it prints a code you approve from a browser anywhere, so the server needs no display. The sign-in lives in that user's `CODEX_HOME`, so a login as yourself is invisible to a service running as someone else. `codex login status` prints the account; note it exits 0 either way, so read the text rather than the exit code. Then check **Admin → Settings**, which shows this seat's own readiness card. |
-| Codex answers instantly and your OpenAI bill grows | An `OPENAI_API_KEY` reached the child process. A key **outranks** the subscription in the CLI's own resolution order, so the answers look identical and every one is metered. This server strips `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN` from the child by default; if you see this, `AI_CODEX_ALLOW_API_KEY` has been switched on. |
+| Codex reports *Signed in with an API key, not a ChatGPT subscription* | The CLI was signed in with `codex login --with-api-key` (or a Bedrock key), and every call on that would be billed per token - so the seat counts as not signed in. Run `codex logout`, then `codex login --device-auth` as the user the server runs as, and sign in with ChatGPT. Keys in the environment are a different matter and already handled: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_API_KEY` and `CODEX_ACCESS_TOKEN` are always stripped from the child, and there is no longer a switch to let them through. |
+| `[ai] gemini-cli: No "gemini" on the server PATH.` | Either `@google/gemini-cli` is not installed (`npm i -g @google/gemini-cli`; it needs Node 20 or later), or this process has a different PATH than your shell (common under systemd and Docker). Set `AI_GEMINI_BIN` to the full path from `which gemini`. On Windows npm installs a `.cmd` shim around `bundle/gemini.js`, which the server runs under its own Node; `AI_GEMINI_BIN` is only needed if that fails. Lock the seat (`AI_LOCKED_PROVIDERS=gemini-cli`) if you do not mean to use it. |
+| `[ai] gemini-cli: Not signed in: there is no Google sign-in at .../.gemini/oauth_creds.json`, or a Gemini turn fails with an auth error | Run `NO_BROWSER=true gemini` **as the user the server runs as**, choose *Sign in with Google*, open the URL it prints in any browser, paste the code back and `/quit`. The file the check names is where the server looks: with `AI_GEMINI_HOME` set, sign in with `GEMINI_CLI_HOME` set to that same directory, or the sign-in lands in a home the server never reads. *has no refresh token, so it stops working within the hour* means the same fix. A failed sign-in holds the whole seat for 30 minutes (`[ai] Holding off the Gemini seat ...`) so calls stop failing one by one; restart the backend after signing in to lift it at once. With `GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true` the check cannot read the sign-in and says so - the first call is the test. |
+| A Gemini turn is refused: *the Gemini CLI billed this call to the account's paid AI Credits* (an administrator's detail; users see *busy*) | The workspace this server writes for the CLI says `billing.overageStrategy: "never"`, so something that outranks it turned paid credits on - a system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `/etc/gemini-cli`). The answer is thrown away and the seat held, so the next calls are not billed the same way. Remove that setting, or wait for the free quota to reset. |
+| A Gemini turn fails with *the model called N tool(s)* | The seat runs with no tools and a deny-all policy, so a tool call means something re-enabled them for every workspace - a system settings file again (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `/etc/gemini-cli`) adding tools, extensions or MCP servers. Nothing that turn produced is used. |
+| `[ai] gemini-cli: ... GEMINI.md is not empty, and the CLI appends it to every prompt this seat runs` | The service user's personal `~/.gemini/GEMINI.md` - notes the CLI adds to every prompt, whatever the app sends, with no way to turn it off. Empty it, or give the server a home of its own with `AI_GEMINI_HOME` and sign in there. |
+| A Gemini model fails with *The signed-in Google account cannot use model "..."* | The account's plan does not offer that model (a preview, or Pro on a plan without it), and that model is left alone for 10 minutes. Pick another model name for that record under **Admin → Models** - `auto` lets the CLI choose one the account can use. |
+| A resume built on Gemini comes back cut short | A known limit of the Gemini CLI's stream format: an answer cut off at the model's output limit can arrive marked as a success, with nothing in it to tell the two apart. An answer that should have been structured fails to read and is built again (`GENERATION_MAX_ATTEMPTS`); a prose one arrives short. If it recurs on long resumes, use another model or seat for them. |
 | Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. A Job Search run hits the same wall: its request waits for the Apify run, up to `APIFY_RUN_TIMEOUT_S` (300 seconds by default). |
-| A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs no extra credit - the credit is taken once at submission and returned only if the resume never delivers. A cancelled batch and a task kind this build does not know are **not** retried. |
-| Codex work queues while the Claude seat sits idle, or vice versa | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for the Claude seat (shared with the metered API providers) and `AI_CODEX_CONCURRENCY` for Codex. They are deliberately not pooled: one shared lane across two independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots the other seat needs. Raise the variable for the seat that is waiting, and restart. |
+| A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs nothing extra - the resume's price is taken once at submission and returned only if the resume never delivers. A cancelled batch and a task kind this build does not know are **not** retried. |
+| One seat's work queues while another sits idle | Each seat has its own queue lane, sized by its own variable - `AI_CLI_CONCURRENCY` for Claude, `AI_CODEX_CONCURRENCY` for Codex, `AI_GEMINI_CONCURRENCY` for Gemini. They are deliberately not pooled: one shared lane across independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots another seat needs. Raise the variable for the seat that is waiting, and restart. |
 | Somebody opened their sheet link and Google said they need access | Expected since sheets became private by default: the link alone no longer works, and the person it belongs to opens it through the grant their own Google account holds. If they want a link others can use, Settings > Job Sheet has a sharing toggle - or set `SHEET_DEFAULT_VISIBILITY=public` to go back to link-shared for new sheets, knowing that means anyone with the URL may edit. If the OWNER cannot open their own sheet, that is different: the writer grant failed, almost always because the Drive API is not enabled for the server's Google project. It is retried on their next sign-in, and `npm run sheets:doctor` names the cause. |
 | A setting is plainly in `.env` and plainly not in effect | Run `npm run mail:doctor` (or `sheets:doctor`) in `backend/` - its first step prints the absolute path of the file it read, the file's size and encoding, and which keys it found, names only - split into those in effect and those **present but empty**. A bare `NAME=`, which is how `.env.example` ships the keys and addresses you fill in, sets the variable to empty - and because this `.env` overrides the environment, it also blanks the same variable exported in your shell. Delete the line to let a shell value through. A line still commented out (`#NAME=value`, how `.env.example` ships every tuning setting) is not read at all: remove the `#`. For the operational settings, the backend's own startup line `[env] Non-default settings: ...` lists exactly what is in effect, after clamping. Four causes look identical without that: the loader read a **different** file - the path resolves from the compiled module, so it is always the **repository root** and never `backend/.env`, whichever directory you ran from; a **later duplicate** of the same key silently won, because the last assignment wins; the **encoding** did not decode, which happens to a UTF-16 file written without a byte-order mark and PowerShell's `>` writes UTF-16; or the editor never saved. |
+| Somebody reports an error ending *(Ref: ERR-7F3A9C)* | Every failure that is not about something of their own gets a generic sentence and a reference, and the cause is logged once under it: `grep 'ERR-7F3A9C'` over the backend's output finds a line `[error ERR-7F3A9C] <METHOD /api/path> <the real error>` - or `task <id> (batch <id>)` for a resume that failed in a run. Signed in as an administrator you rarely need the log: the same responses carry the cause as `detail`, shown under the message. See [When something fails](#when-something-fails). |
+| The sign-in page says *Sign-in isn't available right now. Please contact your administrator.* | Neither sign-in path is configured: `GOOGLE_CLIENT_ID` is empty and the `SMTP_*` block is incomplete. The page names no setting, because whoever reads it is not signed in. Set one of them (see `.env.example`), restart, and check SMTP with `cd backend && npm run mail:doctor`. `GET /api/auth/options` says which paths are available. |
 | Sign-in emails are not arriving and the log says only `Could not send the sign-in email via …` | That one sentence covers a missing variable, a wrong key, a blocked port and an unverified sending domain. Run `npm run mail:doctor` in `backend/` - it walks the same chain in order and stops at the first break with what to change. Add `-- --to you@example.com` to include a real send, which is the only step that catches an unverified domain. |
 | Sign-in works for your own address but fails for everyone else, with a 403 from the relay | The relay is still sandboxed: most of them refuse to send to anybody but your own account address until the sending domain is **verified** in their dashboard. It is not a bug in the app, and the failure reaches the page as a 502 with the relay's own wording. Finish the DNS records the relay asked for, wait for it to read *Verified*, then retry. Test with a second address afterwards - your own inbox is the one case that works either way, so it proves nothing. |
 | The sign-in email arrives with no sender name, just the address | Expected: `From` is whatever `SMTP_FROM` says, verbatim. Set it to the display-name form to fix it - `SMTP_FROM="Tailor <login@yourdomain.com>"`, quoted because the value contains spaces. It is the only branding on the only email this app sends. |
 | Sign-in emails try to send from `resend`, `apikey` or another bare username | `SMTP_FROM` is unset and fell back to `SMTP_USER`, which on a relay is not an address. Set `SMTP_FROM` to a real address on your domain. |
 | Nobody is an administrator, and the UI offers no way to appoint one | `ADMIN_EMAILS` is unset. The fallback is `SMTP_USER`, and it is used **only** when that value looks like an email address - so a relay username (`resend`, `apikey`) names nobody. Fix: set `ADMIN_EMAILS` to the address you sign in with, restart, and sign in again. An account that already exists is promoted on the way in, so there is no need to delete it and start over. |
+| Admin → Models refuses a model: *"..." is not one of the Claude (Subscription) models: sonnet, opus, haiku, fable.* | The model name must be one the seat's list offers - the form's select only shows those, so this is an older tab or a hand-made request. To offer another name, add it to that seat's list in `.env` (`AI_CLI_MODEL_OPTIONS`, `AI_CODEX_MODEL_OPTIONS`, `AI_GEMINI_MODEL_OPTIONS`) and restart. A list with an entry the CLI would not run as written is ignored whole, with one `[env]` warning, and the default list is used. |
+| A model shows *Not in model list* | Its model name is not in its seat's list any more - the list was overridden in `.env` since it was saved. It keeps running exactly as before; the flag only says the form cannot offer that name again. Editing its name or price keeps it, while changing its model means picking one from the list. |
+| *Set Default* is refused with *"..." cannot be the default* or *is switched off* | The model cannot run, and a default nobody can run would only fail every run that names no model: switch it on under Admin → Models, switch its provider on under Admin → Settings, or unlock its seat (`AI_LOCKED_PROVIDERS`). Nothing is quietly substituted. |
+| *This needs N credits and the account has M* (the builder: *This run needs N credits, and your balance is M*) | The run costs the sum of each resume's model price, and the balance is short. Buy credits, generate fewer at once, or pick a model with a lower price per resume - the builder's cost line shows the total before the run starts. An administrator can grant credits under Accounts, and is never charged. |
 | Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, *Import from Sheets* and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen **before** signing in again - a consent given while it is in Testing keeps the seven-day limit: Cloud console -> Google Auth Platform -> Audience -> Publish app (older consoles: APIs \& Services -> OAuth consent screen -> PUBLISH APP). With the restricted Drive scope Google then shows a "Google hasn't verified this app" screen at sign-in; for your own install that is expected - Advanced -> Go to the app. A Google Workspace project can choose user type Internal instead, which has neither the expiry nor the warning. `deleted_client`, `disabled_client` or `invalid_client` instead of `invalid_grant` means the OAuth client itself is gone, and signing in again would re-use it: a deleted one can be restored for 30 days under Google Auth Platform -> Clients; otherwise make a new Desktop app client, download it into `backend/` and run `npm run sheets:login -- --client <that file>` - naming it, because an older `client_secret*.json` left there can otherwise be picked. If `GOOGLE_CREDENTIALS_PATH` names the credential, `sheets:login` re-uses the client from that file and says so if the app will keep reading a different one from the file it just saved. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
 | A script ends with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c` (Windows) | A Node.js bug, not this app's: calling `process.exit()` just after network I/O races Node's own teardown on Windows ([nodejs/node#56645](https://github.com/nodejs/node/issues/56645)). Everything printed above it is complete and correct - read the report, not the crash; the only casualty was the exit code. The doctors and `sheets:login` now let the process end on its own, which avoids it on every Node version. Node itself fixed it in 24.20.0 and 26.7.0 ([nodejs/node#61999](https://github.com/nodejs/node/pull/61999)), and 22.x never got the fix, so a current 24 LTS is worth having anyway. |
-| Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key and every request is billed. Run `claude auth login`, and remove `ANTHROPIC_API_KEY` from the server environment if you did not mean to use it. |
-| Generation returns 429 with a `Retry-After` | The subscription usage window is spent. The Settings page shows the window and its reset time; generation resumes on its own. |
+| Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI found an API key. A call it runs on one is failed and its answer discarded, and the seat is held as signed out so no further calls are billed. Run `claude auth login` as the user the server runs as, and remove whatever supplies the key - an `apiKeyHelper` in the CLI's own settings, say; `ANTHROPIC_API_KEY` in the environment is stripped from the child already. |
+| Generation returns 429 with a `Retry-After`, and users see *AI generation is busy right now* | A seat's usage limit is spent: the Claude subscription's window, the ChatGPT plan's, or the Google account's quota. The Settings page shows the Claude window and its reset time; generation resumes on its own. The Gemini seat holds itself off for as long as Google's error asked - from 30 seconds up to 30 minutes, five when it named no delay - and logs `[ai] Holding off the Gemini seat for about ...`. |
 | Startup prints `[env] NAME="..." is not a whole number; using ...` or `[env] NAME=... is outside a..b; using ...` | A value in `.env` could not be used as written, and the server is running on the value that line names instead - the default for an unreadable one, the nearest end of the range for one too big or too small (except `PORT`, which falls back to 3001 rather than becoming port 1 or 65535). Deliberately not fatal: a server that refused to start over a timeout typo would hide every other diagnostic it prints. Write plain digits with the unit taken from the name (`AI_REQUEST_TIMEOUT_MS=600000`, not `10m` or `600s`), keep it inside the range `.env.example` gives, and restart. Each variable is reported once per start, however often it is read. |
-| Startup warns `[ai] AI_CLI_TIMEOUT_MS_TAILOR=... is longer than AI_REQUEST_TIMEOUT_MS=...` | A CLI budget was raised above the deadline that bounds every AI call, so it can never take effect - the call is cut off at `AI_REQUEST_TIMEOUT_MS` (300000 by default) whatever the budget says. Raise `AI_REQUEST_TIMEOUT_MS` to at least the budget, and restart. The same holds for every `AI_CLI_TIMEOUT_MS*` and `AI_CODEX_TIMEOUT_MS*`. The value is read as the CLI providers read it, so `600000ms` counts as 600000; a budget left at its own default - older copies of `.env.example` wrote all six out - is never reported, since lowering the deadline below it is a deliberate cap. |
+| Startup warns `[ai] AI_CLI_TIMEOUT_MS_TAILOR=... is longer than AI_REQUEST_TIMEOUT_MS=...` | A CLI budget was raised above the deadline that bounds every AI call, so it can never take effect - the call is cut off at `AI_REQUEST_TIMEOUT_MS` (300000 by default) whatever the budget says. Raise `AI_REQUEST_TIMEOUT_MS` to at least the budget, and restart. The same holds for every `AI_CLI_TIMEOUT_MS*`, `AI_CODEX_TIMEOUT_MS*` and `AI_GEMINI_TIMEOUT_MS*`. Each is read as its seat reads it - the Claude and Codex budgets loosely, so `600000ms` counts as 600000, and the Gemini ones strictly, like every newer setting; a budget left at its own default - older copies of `.env.example` wrote the first six out - is never reported, since lowering the deadline below it is a deliberate cap. |
 | A PDF upload is refused with *... is N MB or larger; this server accepts PDFs under N MB* (the page's check names the file, the server's 413 says *That PDF*) | The file is at or over `UPLOAD_MAX_MB` (10 by default) - a file of exactly N MB is refused too. Raise it in `.env` and restart the backend - the upload pages read the new number from the API, so the frontend needs no rebuild, and a page left open re-checks it before refusing. A big file over a slow link may also need `HTTP_REQUEST_TIMEOUT_MS` raised, and a reverse proxy in front has a body limit of its own (nginx's is 1 MB unless `client_max_body_size` says otherwise). |
 | A large batch or profile import fails with `request entity too large` | The JSON body is over `JSON_BODY_MAX_MB` (10 by default). Raise it and restart the backend. A reverse proxy's body limit applies on top. |
 | A template JSON import fails with *File too large* | The template import is a file upload with its own fixed 2 MB cap - `JSON_BODY_MAX_MB` does not raise it. Split a file of several templates into smaller ones. |
-| `CLAUDE_BASE_URL`, `OPENAI_BASE_URL` or `DEEPSEEK_BASE_URL` is set and that provider is not ready - `[ai] openai: OPENAI_BASE_URL is not an absolute http(s) URL ... so nothing is sent`, and a generation on it fails saying the provider is not set up correctly | Startup printed `[env] NAME ... It is refused, and NOT replaced by https://...` for that variable: the value is missing its `http://` or `https://` (`localhost:11434/v1` is the usual slip, and quotes a `docker --env-file` kept count too), has an `@` in it (`user:password@` - put credentials in the gateway's own key instead), or carries a query string or a fragment. Deliberately not replaced by the vendor's endpoint, which would send the prompts, the resumes and the key to the very place the setting routes around. The warning does not repeat the value, in case it holds a secret. Fix it, or delete the line to use the vendor, and restart. Plain http is NOT a reason - it is used as set, and only warns that the API key travels unencrypted when the host is not this machine. `CLAUDE_BASE_URL` is the base **without** `/v1`; `OPENAI_BASE_URL` includes it. |
-| Job Search fails with `APIFY_API_TOKEN is required to run the ...` | The scrapers run on your Apify account and there is no token. Set `APIFY_API_TOKEN` in `.env` (Apify Console -> Settings -> API & Integrations) and restart the backend. |
+| Job Search fails with *The job search could not run right now* - for an administrator, with `APIFY_API_TOKEN is required to run the ...` under it | The scrapers run on your Apify account and there is no token. Set `APIFY_API_TOKEN` in `.env` (Apify Console -> Settings -> API & Integrations) and restart the backend. The same sentence covers any other scraper failure; the reference in it finds the cause in the backend log. |
 | The calendar page works locally but answers 404 on the domain | The reverse proxy sends `/api/calendars/*` to Express, which has no such route: the calendar's API is made of Next.js route handlers in the frontend. Add the `handle /api/calendars/*` block from the Caddyfile under [Serving it on your own domain](#-serving-it-on-your-own-domain), above `handle /api/*`, and reload Caddy. |
 | A changed `NEXT_PUBLIC_*` value - the calendar's time zone, the API URL - has no effect after a restart | `NEXT_PUBLIC_` values are compiled into the frontend bundle by `next build`. Run `npm run build --prefix frontend`, then restart the frontend. The calendar's `CALENDAR_API_TIMEOUT_MS` and `CALENDAR_DETAIL_CONCURRENCY` are not `NEXT_PUBLIC_` and need only the restart. |
 | Shortening `SESSION_TTL_DAYS` did not sign anybody out | Expected: a session's expiry is stamped when it is created and never extended, so a change applies to new sign-ins only. To end an account's sessions now, press **Sign out** on its row under Admin -> Accounts. |
@@ -1515,10 +1762,13 @@ npm test
 
 Runs the backend `node:test` suite against temporary SQLite databases and static directories.
 
-The Claude CLI provider is covered by `backend/test/claudeCli.test.js`, which
-replays event streams recorded from the real CLI (`backend/test/fixtures/cli`)
-through an injected runner — so the suite needs no network, no `claude` binary
-and spawns no subprocess.
+The three seats are covered by `backend/test/claudeCli.test.js`,
+`codexCli.test.js` and `geminiCli.test.js`, which replay event streams from the
+real CLIs (`backend/test/fixtures/cli`, `codex` and `gemini`) through an
+injected runner — so the suite needs no network, no `claude`, `codex` or
+`gemini` binary, and spawns no subprocess. A fixture's name says what it is:
+`recorded-` is a real capture, `constructed-` a real envelope around an answer
+that could not be captured here.
 
 The documentation is checked too. `backend/test/envExample.test.js` reads
 `.env.example` and this README against the table in
@@ -1534,7 +1784,7 @@ read-timing tag the code no longer matches.
 |-------|--------------|
 | **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
 | **Backend** | Express, TypeScript, better-sqlite3 |
-| **AI** | Claude Code CLI (default) and Codex CLI (subscription seats), OpenAI, Anthropic API, DeepSeek |
+| **AI** | Subscription seats only: Claude Code CLI (default), Codex CLI, Gemini CLI |
 | **PDF** | Puppeteer |
 | **DOCX** | html-to-docx |
 | **Templates** | Handlebars |

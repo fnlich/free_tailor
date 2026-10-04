@@ -18,6 +18,7 @@ import type { UserAccount } from '../../types/account';
 import { ensureAccountSheet } from '../sheets/accountSheet';
 import { describeMailConfig, sendLoginCode } from './mailer';
 import { isGoogleConfigured, verifyGoogleIdToken } from './google';
+import { PublicError } from '../../middleware/publicError';
 
 /**
  * The two sign-in paths, and what they have in common.
@@ -28,13 +29,11 @@ import { isGoogleConfigured, verifyGoogleIdToken } from './google';
  * different notions of what a signed-in user is.
  */
 
-export class AuthError extends Error {
-  readonly status: number;
-
+/** A sign-in refusal about the caller's own address or code, so it is public. */
+export class AuthError extends PublicError {
   constructor(message: string, status = 400) {
-    super(message);
+    super(message, { status });
     this.name = 'AuthError';
-    this.status = status;
   }
 }
 

@@ -312,7 +312,16 @@ test('with every seat locked, settings still read - no runnable model, the locks
     'the stored default is kept, so lifting the lock restores it'
   );
 
-  await assert.rejects(() => config.resolveRequestedAIModel(), /every AI provider is locked/i);
+  // Everybody is told only who can fix it; the locks are the administrator's
+  // detail, and the 503 says it is the installation, not the request.
+  await assert.rejects(
+    () => config.resolveRequestedAIModel(),
+    (error) =>
+      error.status === 503 &&
+      error.code === 'ai-unavailable' &&
+      error.message === "AI generation isn't available right now. Please contact your administrator." &&
+      /every AI provider is locked/i.test(error.detail)
+  );
   await assert.rejects(() => config.updateAppSettings({ defaultTheme: 'light' }), /unlocked AI provider/i);
 
   // A fresh install with every seat locked reads too.

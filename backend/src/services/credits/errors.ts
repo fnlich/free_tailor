@@ -1,3 +1,5 @@
+import { PublicError } from '../../middleware/publicError';
+
 /**
  * Not enough credits to start what was asked for.
  *
@@ -5,7 +7,7 @@
  * fields and the page can show "12 of 30" without parsing English back out of
  * an error message.
  */
-export class InsufficientCreditsError extends Error {
+export class InsufficientCreditsError extends PublicError {
   readonly needed: number;
   readonly balance: number;
 
@@ -23,7 +25,10 @@ export class InsufficientCreditsError extends Error {
         ? `This needs ${needed} credit${needed === 1 ? '' : 's'} and the account has none. ` +
           'Add credits to carry on; previews are free.'
         : `This needs ${needed} credit${needed === 1 ? '' : 's'} and the account has ${balance}. ` +
-          'Generate fewer at once, or add more credits.'
+          'Generate fewer at once, or add more credits.',
+      // The caller's own balance, so it is theirs to read in full - and the
+      // numbers ride along as fields, which is what the builder shows.
+      { status: 402, code: 'insufficient-credits', extra: { needed, balance } }
     );
     this.name = 'InsufficientCreditsError';
     this.needed = needed;

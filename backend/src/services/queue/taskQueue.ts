@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 
+import { publicTaskError } from '../../middleware/publicError';
+
 /**
  * The queues the server runs generation out of.
  *
@@ -257,9 +259,20 @@ export type QueueHooks = {
   taskFinished?(task: Task): void;
 };
 
-function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+/**
+ * The text a failed task stores.
+ *
+ * Stored, so it outlives the request that queued it: it is persisted with the
+ * task, copied onto the order item, and read by the owner's page days later.
+ * The raw message - a seat's stderr, a path, a model id - is never what is
+ * stored. It is the public sentence and a ref, and the cause is logged once
+ * under that ref (see `publicTaskError`).
+ */
+/** What a task that was running when its batch was cancelled says. */
+export const CANCELLED_WHILE_RUNNING = 'Cancelled while it was running';
+
+function describeError(error: unknown, task: Task): string {
+  return publicTaskError(error, 'This resume could not be built', `task ${task.id} (batch ${task.batchId})`);
 }
 
 export class TaskQueue {
@@ -729,7 +742,11 @@ export class TaskQueue {
      */
     const runner = runners.get(task.kind);
     if (!runner) {
-      this.settle(task, 'failed', `No runner is registered for "${task.kind}" tasks`);
+      this.settle(
+        task,
+        'failed',
+        describeError(new Error(`No runner is registered for "${task.kind}" tasks`), task)
+      );
       release();
       return;
     }
@@ -752,10 +769,13 @@ export class TaskQueue {
         // failed unit is refunded - so a task that goes back on the queue
         // instead of settling has neither been charged again nor refunded
         // early. It is simply still in flight, which is the truth.
-        if (!cancelled && this.retryTask(task, describeError(error))) {
+        // A cancelled run's rejection is the abort itself, which says nothing
+        // the person who pressed Cancel does not already know.
+        const said = cancelled ? CANCELLED_WHILE_RUNNING : describeError(error, task);
+        if (!cancelled && this.retryTask(task, said)) {
           return;
         }
-        this.settle(task, cancelled ? 'cancelled' : 'failed', describeError(error));
+        this.settle(task, cancelled ? 'cancelled' : 'failed', said);
       } finally {
         release();
       }

@@ -454,6 +454,8 @@ async function serveJobs(name) {
 
   const user = users.createUser({ email: 'alice@example.com' });
   const token = users.createSession(user.id);
+  const admin = users.createUser({ email: 'admin@example.com' });
+  const adminToken = users.createSession(admin.id);
   const app = express();
   app.use(express.json());
   app.use(attachUser);
@@ -466,6 +468,10 @@ async function serveJobs(name) {
     close: () => server.close(),
     get: async (path) => {
       const response = await fetch(`${base}${path}`, { headers });
+      return { status: response.status, body: await response.json() };
+    },
+    adminGet: async (path) => {
+      const response = await fetch(`${base}${path}`, { headers: { ...headers, authorization: `Bearer ${adminToken}` } });
       return { status: response.status, body: await response.json() };
     },
     post: async (path, body) => {
@@ -506,6 +512,36 @@ test('GET /scrapers/providers is still the bare array every jobs page iterates',
     await withEnv({ ...SCRAPER_ENV_UNSET, SCRAPER_MAX_RESULTS: '40' }, async () => {
       const configured = await server.get('/scrapers/providers');
       assert.equal(providerCaps(configured.body)['apify-wellfound'], 40);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test('an account holder sees each source and the one provider it runs; the actors are the administrator\'s', async () => {
+  const server = await serveJobs('scraper-catalog-reader');
+  try {
+    await withEnv(SCRAPER_ENV_UNSET, async () => {
+      const mine = await server.get('/scrapers/providers');
+      for (const entry of mine.body) {
+        assert.deepEqual(
+          entry.providers.map((provider) => provider.id),
+          [entry.defaultProviderId],
+          `${entry.source}: only the provider a run will use`
+        );
+        assert.equal(entry.providers[0].label, '');
+        assert.equal(entry.providers[0].description, '');
+      }
+      // The ids stay: they are keys the page sends back, not names it shows.
+      assert.doesNotMatch(
+        JSON.stringify(mine.body.map((entry) => entry.providers.map(({ label, description }) => ({ label, description })))),
+        /Apify|actor/i
+      );
+
+      const asAdmin = await server.adminGet('/scrapers/providers');
+      const hiringCafe = asAdmin.body.find((entry) => entry.source === 'hiringcafe');
+      assert.ok(hiringCafe.providers.length > 1, 'an administrator still chooses between them');
+      assert.match(JSON.stringify(asAdmin.body), /Apify/);
     });
   } finally {
     server.close();

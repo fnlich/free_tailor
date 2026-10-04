@@ -63,7 +63,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return (
       <Centered>
         <div className="tl-card w-full max-w-md p-6 sm:p-8">
-          <p className="text-xl font-semibold text-ink">Cannot reach the server</p>
+          {/* The sentence under it says why, in words written for whoever is
+              looking - the addresses tried and the port in the build go to the
+              browser console (lib/userMessage.ts), not onto this card. */}
+          <p className="text-xl font-semibold text-ink">Tailor is not available right now</p>
           <Notice tone="error" className="mt-4 break-words">
             {error}
           </Notice>

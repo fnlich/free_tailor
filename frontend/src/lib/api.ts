@@ -222,6 +222,15 @@ export function isInsufficientCredits(error: unknown): error is ApiResponseError
  */
 const EXPECTED_API_PORT = process.env.NEXT_PUBLIC_EXPECTED_API_PORT || '';
 
+/**
+ * The message of a refusal whose body carried no sentence - a proxy's HTML
+ * error page, an empty 502. Pages show failures through lib/userMessage.ts,
+ * which reads the body rather than this; it is a whole sentence anyway, so a
+ * page that ever does print `err.message` says nothing a reader cannot use.
+ * The status is on the error itself (`status`, `url`) for whoever debugs it.
+ */
+export const GENERIC_MESSAGE = 'Something went wrong. Please try again, or contact your administrator.';
+
 /** Nothing answered at any candidate base. */
 export class ApiUnreachableError extends Error {
   constructor(
@@ -283,7 +292,7 @@ export async function apiStream(
         onUnauthorized?.();
       }
       throw new ApiResponseError(
-        typeof body.error === 'string' ? body.error : `Request failed with HTTP ${response.status}`,
+        typeof body.error === 'string' ? body.error : GENERIC_MESSAGE,
         response.status,
         `${apiBase}${endpoint}`,
         body
@@ -371,7 +380,7 @@ export async function apiFetch<T>(
         onUnauthorized?.();
       }
       throw new ApiResponseError(
-        typeof body.error === 'string' ? body.error : `Request failed with HTTP ${response.status}`,
+        typeof body.error === 'string' ? body.error : GENERIC_MESSAGE,
         response.status,
         url,
         body

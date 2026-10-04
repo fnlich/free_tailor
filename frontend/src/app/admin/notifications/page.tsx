@@ -9,6 +9,7 @@ import {
   type Notification,
 } from '@/lib/notifications';
 import { Field, Notice, Section } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 /**
  * Posting to the notice board.
@@ -37,7 +38,7 @@ function NotificationsAdminBody() {
       setItems(notifications);
       setError('');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not load notifications.');
+      setError(messageWithDetail(caught, 'Could not load notifications.'));
     } finally {
       setLoading(false);
     }
@@ -56,7 +57,7 @@ function NotificationsAdminBody() {
       setBody('');
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not post that.');
+      setError(messageWithDetail(caught, 'Could not post that.'));
     } finally {
       setSaving(false);
     }
@@ -69,7 +70,7 @@ function NotificationsAdminBody() {
       setEditingId(null);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not save that.');
+      setError(messageWithDetail(caught, 'Could not save that.'));
     } finally {
       setSaving(false);
     }
@@ -85,7 +86,7 @@ function NotificationsAdminBody() {
       await adminNotificationsApi.remove(item.id);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not delete that.');
+      setError(messageWithDetail(caught, 'Could not delete that.'));
     }
   };
 

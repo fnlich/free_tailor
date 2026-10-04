@@ -45,8 +45,25 @@ Coverage currently focuses on:
   refused with one generic sentence, the provider request forms kept for
   administrators, the profile-save check, and the job filter and Bid Assistant
   on the app default model (`userModelAccess.test.js`)
-- the Claude CLI provider: argv, child environment, event reduction, failure
-  classification, rate limits, outages and concurrency
+- what anybody but an administrator is told when something fails
+  (`publicErrors.test.js`): public refusals in their own words, everything
+  else as a generic sentence and a ref with the cause logged under it, and the
+  cause as `detail` for an administrator only - per class (public errors, AI
+  failures, body-parser, anything else), through the last-resort handler and
+  a route's AI failure over HTTP, for stored task and order-item errors read
+  back by their owner, and for the routes and projections that were leaking
+  the installation's workings (AI health, the queues, prompt bodies, the
+  sign-in options); the payment method reasons and the scraper actors are
+  pinned beside their routes (`paymentRoutes.test.js`, `scraperWiring.test.js`)
+- the three CLI seats, each with no binary, no subprocess and no network:
+  the Claude provider - argv, child environment, event reduction, failure
+  classification, rate limits, outages and concurrency (`claudeCli.test.js`);
+  the Codex provider, including a CLI signed in with an API key reading as not
+  signed in (`codexCli.test.js`); and the Gemini provider - argv and the
+  forbidden flags, the pinned-empty key variables, the workspace settings and
+  deny-all policy, the stream reduction that answers only on a `success`
+  result, failure classification and holds, the paid-credits and tool-call
+  refusals, the prompt guards and the per-turn cleanup (`geminiCli.test.js`)
 - the platform-dependent decisions - the default database directory, Windows
   binary resolution, the Windows command-line budget and the path characters
   Windows reserves. Each of those takes its platform as an argument rather than
@@ -79,17 +96,28 @@ Coverage currently focuses on:
   same default, range and tag; plus the CLI budgets shipped commented out
   (`envExample.test.js`)
 
-## Testing the Claude CLI provider
+## Testing the CLI providers
 
-`claudeCli.test.js` never spawns a process, never touches the network, and does
-not need the `claude` binary. It works because `child_process` is confined to
-one module (`services/ai/providers/claudeCli/runner.ts`) behind the injectable
-`CliRunner` interface; the tests pass `makeFakeCliRunner` from `helpers.js`,
-which replays NDJSON event streams from `test/fixtures/cli/`.
+`claudeCli.test.js`, `codexCli.test.js` and `geminiCli.test.js` never spawn a
+process, never touch the network, and do not need the `claude`, `codex` or
+`gemini` binary. They work because `child_process` is confined to one module
+(`services/ai/providers/cli/runner.ts`) behind the injectable `CliRunner`
+interface; the tests pass `makeFakeCliRunner` from `helpers.js`, which replays
+NDJSON event streams from `test/fixtures/cli/`, `test/fixtures/codex/` and
+`test/fixtures/gemini/`. The health checks stub `child_process.execFile`
+instead.
 
-`AI_CLI_BIN` is set to a path that does not exist, so a code path that
-accidentally reached a real spawn fails loudly rather than passing by accident
-on a developer machine that has Claude Code installed.
+The Claude and Gemini suites set `AI_CLI_BIN` and `AI_GEMINI_BIN` to paths
+that do not exist, so a code path that accidentally reached a real spawn fails
+loudly rather than passing by accident on a developer machine that has the CLI
+installed; the Codex suite hands its fake runner to every adapter it builds.
+
+A fixture's name says what it is, because a fixture that LOOKS recorded is how
+a test ends up agreeing with an assumption: `recorded-` is a real capture;
+`constructed-` is the real CLI's envelope around an answer that could not be
+captured on a machine with no subscription signed in (every successful Codex
+and Gemini turn here); `verified-` is a file that was run against the real
+binary and is pinned so what the adapter writes cannot drift from it.
 
 **Record fixtures, do not invent them.** Several rules in the provider exist
 because the real event shapes are surprising - a hard model 404 arrives with

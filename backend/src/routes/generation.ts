@@ -2,17 +2,15 @@ import { Router, type Request, type Response } from 'express';
 import {
   describeCharge,
   getStatus,
-  InsufficientCreditsError,
   isExempt,
   releaseReservation,
   reserveCredits,
 } from '../services/credits';
-import { isAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import { getUserAppSettings } from '../config/aiModelConfig';
 import { resolvePricedAiChoice, type AiPreferences, type PricedAiChoice } from '../config/aiPreferences';
-import { ModelUnavailableError, modelUnavailableBody } from '../config/modelErrors';
-import { listProfilesFor, type Viewer } from '../database/profileRepository';
-import { describeFailure } from '../middleware/aiErrors';
+import { listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
+import { genericMessage, PublicError, publicStoredError, sendPublicError } from '../middleware/publicError';
 import {
   getGenerationQueue,
   laneFor,
@@ -89,7 +87,13 @@ type SubmitBody = {
 
 export type NormalizedJob = ResumeJob;
 
-export class SubmitError extends Error {}
+/** A submission refused for what it asked for - always the caller's to fix, so public. */
+export class SubmitError extends PublicError {
+  constructor(message: string) {
+    super(message, { status: 400 });
+    this.name = 'SubmitError';
+  }
+}
 
 function readAiOverrides(body: SubmitBody): AiPreferences {
   return {
@@ -292,8 +296,22 @@ export function chargeFor(descriptors: Array<TaskDescriptor<ResumeTaskResult>>):
   };
 }
 
+/**
+ * A stored task failure as this reader may see it.
+ *
+ * New failures are stored already safe (`publicTaskError`), but a batch the
+ * queue restored from before that can still hold a raw one - a seat's stderr,
+ * a path - so anybody but an administrator reads it through
+ * `publicStoredError`. An administrator reads it as stored.
+ */
+function readTaskError(error: string, admin: boolean): string {
+  return admin ? error : publicStoredError(error, TASK_FAILED);
+}
+
+const TASK_FAILED = 'This resume could not be built';
+
 /** The results and failures of a batch, in submitted order. */
-function collectOutcome(batchId: string) {
+function collectOutcome(batchId: string, admin: boolean) {
   const batch = getGenerationQueue().getBatch(batchId);
   if (!batch) return null;
 
@@ -320,7 +338,7 @@ function collectOutcome(batchId: string) {
         profileId: task.label.profileId,
         profileName: task.label.profileName,
         companyName: task.label.companyName,
-        error: task.error ?? 'Failed to generate resume',
+        error: task.error ? readTaskError(task.error, admin) : genericMessage(TASK_FAILED),
       });
     }
   }
@@ -335,8 +353,22 @@ function collectOutcome(batchId: string) {
   };
 }
 
-function fullSnapshot(snapshot: BatchSnapshot) {
-  return { ...snapshot, ...(collectOutcome(snapshot.batchId) ?? {}) };
+/**
+ * A snapshot as this reader may see it. Which lane and seat a task is running on
+ * (`runningOn`) is an administrator's business, and so is a raw stored error.
+ */
+function readerSnapshot(snapshot: BatchSnapshot, admin: boolean): BatchSnapshot {
+  if (admin) return snapshot;
+  return {
+    ...snapshot,
+    tasks: snapshot.tasks.map(({ runningOn: _lane, ...task }) =>
+      task.error ? { ...task, error: readTaskError(task.error, false) } : task
+    ),
+  };
+}
+
+function fullSnapshot(snapshot: BatchSnapshot, admin: boolean) {
+  return { ...readerSnapshot(snapshot, admin), ...(collectOutcome(snapshot.batchId, admin) ?? {}) };
 }
 
 /**
@@ -358,9 +390,7 @@ router.post('/batches', async (req: Request, res: Response) => {
 
     const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
-      res.status(400).json({
-        error: 'No matching profiles available. Add profiles in Admin or update group members.',
-      });
+      res.status(400).json({ error: NO_MATCHING_PROFILES });
       return;
     }
 
@@ -499,29 +529,15 @@ router.post('/batches', async (req: Request, res: Response) => {
       total: descriptors.length,
       jobCount: jobs.length,
       profileCount: profiles.length,
-      queues: queue.stats(),
+      // The lanes and how busy they are, for an administrator's eyes only.
+      ...(isAdmin(req) ? { queues: queue.stats() } : {}),
       ...(order ? { orderId: order.id, orderNumber: order.number } : {}),
     });
   } catch (error) {
-    if (error instanceof SubmitError) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    if (error instanceof ModelUnavailableError) {
-      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
-      return;
-    }
-    if (error instanceof InsufficientCreditsError) {
-      res.status(402).json({
-        error: error.message,
-        code: 'insufficient-credits',
-        needed: error.needed,
-        balance: error.balance,
-      });
-      return;
-    }
-    console.error('Error queueing a generation batch:', error);
-    res.status(500).json({ error: describeFailure(error, 'Failed to queue the batch') });
+    // A refused submission (400), too few credits (402 with `needed` and
+    // `balance`) and a model the request may not use (400) are all public and
+    // say so in their own words; anything else is generic, with a ref.
+    sendPublicError(req, res, error, 'Failed to queue the batch');
   }
 });
 
@@ -559,12 +575,7 @@ router.post('/quote', async (req: Request, res: Response) => {
       exempt: isExempt(req.user!),
     });
   } catch (error) {
-    if (error instanceof ModelUnavailableError) {
-      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
-      return;
-    }
-    console.error('Error quoting a generation batch:', error);
-    res.status(500).json({ error: describeFailure(error, 'Failed to price the run') });
+    sendPublicError(req, res, error, 'Failed to price the run');
   }
 });
 
@@ -598,6 +609,7 @@ function visibleBatch(req: Request, batchId: string) {
 router.get('/batches', (req: Request, res: Response) => {
   const queue = getGenerationQueue();
   const activeOnly = req.query.active === '1' || req.query.active === 'true';
+  const admin = isAdmin(req);
   res.json({
     batches: queue
       .listBatches(activeOnly)
@@ -607,8 +619,9 @@ router.get('/batches', (req: Request, res: Response) => {
       // point somebody at a stranger's run.
       .filter((batch) => canSeeBatch(req.user ?? null, batch))
       .map((batch) => queue.snapshot(batch.id))
-      .filter(Boolean),
-    queues: queue.stats(),
+      .filter((snapshot): snapshot is BatchSnapshot => Boolean(snapshot))
+      .map((snapshot) => readerSnapshot(snapshot, admin)),
+    ...(admin ? { queues: queue.stats() } : {}),
   });
 });
 
@@ -628,7 +641,7 @@ router.get('/batches/:id', (req: Request<{ id: string }>, res: Response) => {
     });
     return;
   }
-  res.json(fullSnapshot(snapshot));
+  res.json(fullSnapshot(snapshot, isAdmin(req)));
 });
 
 /**
@@ -650,17 +663,18 @@ router.get('/batches/:id/stream', (req: Request<{ id: string }>, res: Response) 
     return;
   }
 
+  const admin = isAdmin(req);
   const stream = openBatchStream(res);
-  stream.send({ type: 'snapshot', ...fullSnapshot(snapshot) });
+  stream.send({ type: 'snapshot', ...fullSnapshot(snapshot, admin) });
 
   if (snapshot.state !== 'running') {
-    stream.send({ type: 'done', ...fullSnapshot(snapshot) });
+    stream.send({ type: 'done', ...fullSnapshot(snapshot, admin) });
     stream.end();
     return;
   }
 
   const unsubscribe = queue.subscribe(req.params.id, (event) => {
-    stream.send({ type: event.type, ...fullSnapshot(event.snapshot) });
+    stream.send({ type: event.type, ...fullSnapshot(event.snapshot, admin) });
     if (event.type === 'done') {
       unsubscribe();
       stream.end();
@@ -686,8 +700,8 @@ router.post('/batches/:id/cancel', (req: Request<{ id: string }>, res: Response)
   res.json(outcome);
 });
 
-/** What the queues are doing, for the admin page. */
-router.get('/queues', (_req: Request, res: Response) => {
+/** What the queues are doing, for the admin page - and only for an administrator. */
+router.get('/queues', requireAdmin, (_req: Request, res: Response) => {
   res.json(getGenerationQueue().stats());
 });
 

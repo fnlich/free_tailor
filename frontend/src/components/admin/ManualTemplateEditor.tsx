@@ -5,6 +5,7 @@ import { templatesApi, Template, ManualTemplateConfigStored } from '@/lib/api';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
 import { Card, Field, Notice } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 const SECTIONS = [
   { id: 'summary', label: 'Summary' },
@@ -415,7 +416,7 @@ export default function ManualTemplateEditor({
       }
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create template');
+      setError(messageWithDetail(err, 'Failed to create template'));
     } finally {
       setIsSubmitting(false);
     }

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { TaskQueue, registerTaskRunner } = require('../dist/services/queue/taskQueue');
+const { captureErrorLog, refAndLog } = require('./helpers');
 
 /**
  * The dispatcher: two queues, slots, and FIFO.
@@ -192,17 +193,24 @@ test('one failing task does not stop the batch', async () => {
     throw new Error('the model refused');
   });
   const failing = { ...harnessed.task('bad'), kind: 'always-fails' };
-  const batch = harnessed.queue.submit([failing, harnessed.task('good')]);
-  await harnessed.queue.refreshCapacity();
-  await settle();
-  harnessed.finish('good');
-  await settle();
+  const { result: batch, lines } = await captureErrorLog(async () => {
+    const submitted = harnessed.queue.submit([failing, harnessed.task('good')]);
+    await harnessed.queue.refreshCapacity();
+    await settle();
+    harnessed.finish('good');
+    await settle();
+    return submitted;
+  });
 
   const snapshot = harnessed.queue.snapshot(batch.id);
   assert.equal(snapshot.failed, 1);
   assert.equal(snapshot.completed, 1);
   assert.equal(snapshot.state, 'done');
-  assert.match(snapshot.tasks[0].error, /the model refused/);
+  // Stored is the public sentence and a ref - it outlives the request and is
+  // read back by the owner's page - and the cause is logged under that ref.
+  assert.match(snapshot.tasks[0].error, /^This resume could not be built\. .*\(Ref: ERR-[0-9A-F]{6}\)$/);
+  assert.doesNotMatch(snapshot.tasks[0].error, /the model refused/);
+  assert.match(refAndLog(snapshot.tasks[0].error, lines).logged, /the model refused/);
 });
 
 test('a rejecting task raises no unhandled rejection', async () => {
@@ -242,6 +250,10 @@ test('cancel drops what is queued and aborts what is running', async () => {
   const snapshot = harnessed.queue.snapshot(batch.id);
   assert.equal(snapshot.state, 'cancelled');
   assert.equal(snapshot.queued, 0);
+  // Each says which way it went, in words: the abort the running one rejected
+  // with is not news to whoever pressed Cancel.
+  assert.equal(snapshot.tasks[0].error, 'Cancelled while it was running');
+  assert.equal(snapshot.tasks[1].error, 'Cancelled before it started');
   assert.equal(harnessed.queue.cancel(batch.id), null, 'cancelling twice is a no-op, not a throw');
 });
 

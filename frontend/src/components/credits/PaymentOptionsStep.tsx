@@ -2,6 +2,7 @@
 
 import { MarkCardTrio, MarkCoinTrio } from '@/components/icons/marks';
 import { IconChevronRight } from '@/components/icons';
+import { useAuth } from '@/contexts/AuthContext';
 import { CHOICE, LABEL } from './chrome';
 import { formatAmount, type PaymentTarget } from '@/lib/payments';
 
@@ -15,11 +16,15 @@ import { formatAmount, type PaymentTarget } from '@/lib/payments';
  * could only be discovered by being refused.
  *
  * Only what this installation can serve is offered, and an unavailable target
- * is still LISTED with its reason rather than hidden. That is the house rule
- * already in force for AI providers and payment methods, and the reason is the
- * same: the person who needs to read "set STRIPE_SECRET_KEY" is the operator,
- * and a missing button tells them nothing at all.
+ * is still LISTED rather than hidden, so nobody wonders where card payments
+ * went. Its reason ("set STRIPE_SECRET_KEY") is for the operator, so only an
+ * administrator reads it; a buyer is told the method is not available and
+ * that an administrator can help. The server withholds the reason from
+ * everybody else as well - this is the same rule, not the enforcement.
  */
+
+/** What a buyer reads on a method that cannot take payments here. */
+const UNAVAILABLE_FOR_BUYER = 'Not available right now. Please contact your administrator.';
 
 function Mark({ target }: { target: PaymentTarget }) {
   // Two marks, because there are two buttons. There was a per-coin one until
@@ -55,6 +60,8 @@ function Choice({
   target: PaymentTarget;
   onChoose: (target: PaymentTarget) => void;
 }) {
+  const { isAdmin } = useAuth();
+  const reason = isAdmin ? target.reason || 'Not available.' : UNAVAILABLE_FOR_BUYER;
   return (
     <button
       type="button"
@@ -73,7 +80,7 @@ function Choice({
       onClick={() => onChoose(target)}
       // The reason is on the element as well as in the text below it, so it
       // reaches a screen reader on a control it cannot press.
-      title={target.available ? undefined : target.reason}
+      title={target.available ? undefined : reason}
     >
       <Mark target={target} />
       <span className="min-w-0 flex-1">
@@ -90,17 +97,15 @@ function Choice({
         {/*
           Wrapped, not truncated, and the difference matters.
 
-          This is the only thing on screen telling an operator what to go and
-          set, and the part that says which keys is at the END of the sentence
-          - so one line with an ellipsis hides the whole point of showing it.
+          For an administrator this is the only thing on screen saying what to
+          go and set, and the part that says which keys is at the END of the
+          sentence - so one line with an ellipsis hides the whole point of it.
           `break-words` is for the keys themselves: CRYPTOMUS_PAYMENT_API_KEY
           is one long word with nowhere a browser will break it, and in this
           column it has to go somewhere.
         */}
         {!target.available && (
-          <span className="block break-words text-xs text-subtle">
-            {target.reason || 'Not available.'}
-          </span>
+          <span className="block break-words text-xs text-subtle">{reason}</span>
         )}
       </span>
       {target.available && <IconChevronRight className="h-4 w-4 shrink-0 text-subtle" />}

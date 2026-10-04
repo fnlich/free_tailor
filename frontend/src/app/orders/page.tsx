@@ -6,6 +6,7 @@ import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress
 import { isOrderLive, orderZipUrl, ordersApi, type Order } from '@/lib/orders';
 import { formatDate } from '@/lib/format';
 import { EmptyState, Notice, Page, PageHeader, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 const COLUMNS = ['Date', 'Order #', 'Label', 'Resumes', 'Status', 'Action(s)'];
 
@@ -53,7 +54,7 @@ export default function OrdersPage() {
       setError('');
     } catch (err) {
       if (token !== latestRequest.current) return;
-      setError(err instanceof Error ? err.message : 'Could not load your orders.');
+      setError(messageWithDetail(err, 'Could not load your orders.'));
     } finally {
       if (token === latestRequest.current) setLoading(false);
     }

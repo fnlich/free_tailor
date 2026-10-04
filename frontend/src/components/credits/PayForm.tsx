@@ -60,10 +60,13 @@ function Inner({
   }
 
   if (state.type === 'error') {
+    // The SDK's own text - a bad publishable key, a blocked script - is the
+    // operator's to read, in the console. The buyer can only try again.
+    console.warn('[tailor] the payment form failed to load:', state.error.message);
     return (
       <div className={PANEL}>
         <p className="tl-status" data-tone="error">
-          The payment form could not be loaded. {state.error.message}
+          The payment form could not be loaded. Please try again, or contact your administrator.
         </p>
         <button type="button" onClick={onCancel} className={`${QUIET} mt-4`}>
           Start again
@@ -98,13 +101,11 @@ function Inner({
        * or the SDK throwing. Without this the button stays "Paying…" and
        * disabled, Cancel stays disabled with it, and the screen is frozen with
        * nothing said. Whether the payment went through is then genuinely
-       * unknown, so the wording does not guess.
+       * unknown, so the wording does not guess. The SDK's exception text is
+       * not written for the cardholder, so it goes to the console.
        */
-      setProblem(
-        error instanceof Error && error.message
-          ? `${error.message} If you were charged, your credits will still arrive.`
-          : 'That payment could not be completed. If you were charged, your credits will still arrive.'
-      );
+      console.warn('[tailor] confirming the payment threw:', error);
+      setProblem('That payment could not be completed. If you were charged, your credits will still arrive.');
       setPaying(false);
     }
   };

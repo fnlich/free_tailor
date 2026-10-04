@@ -18,7 +18,10 @@ export type MethodAvailability = {
   provider: PaymentProvider;
   label: string;
   available: boolean;
-  /** Why it is not on offer. Written for the operator, not the customer. */
+  /**
+   * Why it is not on offer. Written for the operator, not the customer, so the
+   * server sends it to administrators and the page shows it to nobody else.
+   */
   reason?: string;
 };
 
@@ -38,6 +41,7 @@ export type PaymentTarget = {
   /** Which mark to draw. A key into the marks registry, never a URL. */
   mark: string;
   available: boolean;
+  /** As `MethodAvailability.reason`: the operator's, shown to administrators only. */
   reason?: string;
   minCredits: number;
   maxCredits: number;

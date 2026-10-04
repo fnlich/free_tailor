@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { HARD_SKILL_CATEGORIES, resumeApi, type HardSkillCategory } from '@/lib/api';
 import { Field, Notice, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 type SkillType = 'hard' | 'soft';
 type SortOption = 'az' | 'za';
@@ -48,7 +49,7 @@ function SkillsPageBody() {
       setTechSkills(tech.skills);
       setSoftSkills(soft.skills);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load skills');
+      setError(messageWithDetail(err, 'Failed to load skills'));
     } finally {
       setIsLoading(false);
     }
@@ -92,7 +93,7 @@ function SkillsPageBody() {
       }
       setSuccess(`Added "${cleaned}".`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add skill');
+      setError(messageWithDetail(err, 'Failed to add skill'));
     } finally {
       setIsSaving(false);
     }
@@ -122,7 +123,7 @@ function SkillsPageBody() {
       setEditing(null);
       setSuccess(`Updated "${original}".`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update skill');
+      setError(messageWithDetail(err, 'Failed to update skill'));
     } finally {
       setIsSaving(false);
     }
@@ -147,7 +148,7 @@ function SkillsPageBody() {
       }
       setSuccess(`Deleted "${skill}".`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete skill');
+      setError(messageWithDetail(err, 'Failed to delete skill'));
     } finally {
       setIsSaving(false);
     }

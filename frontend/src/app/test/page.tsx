@@ -14,6 +14,7 @@ import {
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { Card, Field, Notice, Pill, Section } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 import styles from './test.module.css';
 
@@ -313,7 +314,7 @@ function TestPageBody() {
         setStoredDefaultTheme(settings.defaultTheme);
         applyTheme(getStoredTheme() ?? settings.defaultTheme);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load test settings');
+        setError(messageWithDetail(err, 'Failed to load test settings'));
       }
     };
 
@@ -352,7 +353,7 @@ function TestPageBody() {
       setStatus('Analysis complete.');
     } catch (err) {
       setAnalysis(null);
-      setError(err instanceof Error ? err.message : 'Failed to analyze job description');
+      setError(messageWithDetail(err, 'Failed to analyze job description'));
     } finally {
       setIsAnalyzing(false);
     }

@@ -3,6 +3,7 @@ import { Profile } from '../types/profile';
 import type { UserAccount } from '../types/account';
 import { DocumentTable } from './documentTable';
 import { getDb } from './sqlite';
+import { PublicError } from '../middleware/publicError';
 
 /**
  * Profiles, scoped to the account that owns them.
@@ -119,7 +120,14 @@ export function countProfilesForOwner(ownerId: string): number {
   return row.n;
 }
 
-export class ProfileLimitError extends Error {
+/**
+ * When a run selects no profile the caller has. About their own profiles and
+ * groups, so it stays specific - and says where to fix it in pages they have.
+ */
+export const NO_MATCHING_PROFILES =
+  "No matching profiles. Add a profile on the Profiles page, or check the group's members.";
+
+export class ProfileLimitError extends PublicError {
   readonly limit: number;
   readonly used: number;
   readonly planLabel: string;
@@ -127,7 +135,10 @@ export class ProfileLimitError extends Error {
   constructor(planLabel: string, limit: number, used: number) {
     super(
       `The ${planLabel} plan allows ${limit} profile${limit === 1 ? '' : 's'} and this account has ` +
-        `${used}. Delete one, or ask an administrator to move the account to a larger plan.`
+        `${used}. Delete one, or ask an administrator to move the account to a larger plan.`,
+      // 402: the plan, not the request, is what is short - the same status a
+      // run refused for want of credits answers.
+      { status: 402, code: 'profile-limit', extra: { limit } }
     );
     this.name = 'ProfileLimitError';
     this.limit = limit;

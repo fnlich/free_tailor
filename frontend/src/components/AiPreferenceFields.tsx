@@ -1,6 +1,7 @@
 'use client';
 
 import { AiPreferences, PublicModelOption } from '@/lib/api';
+import { AI_UNAVAILABLE_MESSAGE } from '@/lib/userMessage';
 import { useAuth } from '@/contexts/AuthContext';
 
 /**
@@ -108,6 +109,10 @@ export default function AiPreferenceFields({
             </option>
           ))}
         </select>
+        {/* An empty list that HAS arrived: nothing can run for this account. Why
+            is the administrator's to know (Admin -> Models says), so this only
+            says who can fix it. */}
+        {modelsLoaded && models.length === 0 && <p className={HINT_CLASS}>{AI_UNAVAILABLE_MESSAGE}</p>}
         {staleModelId && (
           <p className={HINT_CLASS}>
             The model chosen here is no longer available, so the {inheritedFrom} is used. Choose another to

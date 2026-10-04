@@ -19,6 +19,7 @@ import {
   importApi,
   jobsApi,
 } from '@/lib/api';
+import { messageWithDetail } from '@/lib/userMessage';
 
 type FilterFormState = {
   sheetId: string;
@@ -86,7 +87,7 @@ export default function JobFilterPage() {
           return;
         }
 
-        setError(err instanceof Error ? err.message : 'Failed to load the shared Google Sheets');
+        setError(messageWithDetail(err, 'Failed to load the shared Google Sheets'));
       }
     };
 
@@ -128,7 +129,7 @@ export default function JobFilterPage() {
     } catch (err) {
       setSheetTitle('');
       setSheetTabs([]);
-      setError(err instanceof Error ? err.message : 'Failed to load Google Sheet tabs');
+      setError(messageWithDetail(err, 'Failed to load Google Sheet tabs'));
     } finally {
       setIsLoadingTabs(false);
     }
@@ -192,7 +193,7 @@ export default function JobFilterPage() {
       setSummary(response);
     } catch (err) {
       setSummary(null);
-      setError(err instanceof Error ? err.message : 'Failed to filter jobs from Google Sheets');
+      setError(messageWithDetail(err, 'Failed to filter jobs from Google Sheets'));
     } finally {
       setIsLoading(false);
     }

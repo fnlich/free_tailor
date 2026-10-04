@@ -1,5 +1,7 @@
 import { OAuth2Client } from 'google-auth-library';
 
+import { PublicError } from '../../middleware/publicError';
+
 /**
  * Verifying a Google sign-in.
  *
@@ -25,9 +27,14 @@ export class GoogleNotConfiguredError extends Error {
   }
 }
 
-export class GoogleTokenError extends Error {
-  constructor(message: string) {
-    super(message);
+/**
+ * A Google sign-in that cannot be accepted. Public, and a 401: it is about the
+ * credential the browser sent. The library's own reason for refusing one is
+ * not for the person signing in, so it travels as `detail`.
+ */
+export class GoogleTokenError extends PublicError {
+  constructor(message: string, detail?: string) {
+    super(message, { status: 401, ...(detail ? { detail } : {}) });
     this.name = 'GoogleTokenError';
   }
 }
@@ -80,7 +87,10 @@ export async function verifyGoogleIdToken(
     payload = ticket.getPayload();
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new GoogleTokenError(`Google could not verify that sign-in: ${reason}`);
+    throw new GoogleTokenError(
+      'That Google sign-in could not be verified. Please try again.',
+      `Google could not verify that sign-in: ${reason}`
+    );
   }
 
   if (!payload) throw new GoogleTokenError('Google returned a sign-in with no account details.');

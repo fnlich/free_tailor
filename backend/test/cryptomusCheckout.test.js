@@ -103,6 +103,8 @@ async function serve({ cryptomus = true, legacyEnv = false } = {}) {
 
   const alice = users.createUser({ email: 'alice@example.com' });
   const token = users.createSession(alice.id);
+  const boss = users.createUser({ email: 'boss@example.com' });
+  const bossToken = users.createSession(boss.id);
 
   const app = express();
   app.use(express.json());
@@ -131,6 +133,9 @@ async function serve({ cryptomus = true, legacyEnv = false } = {}) {
     // One response carries both: `methods` for an older tab, `targets` for
     // the per-thing rows the buy page actually renders.
     methods: async () => (await call('/api/payments/methods')).json(),
+    // The same, read by an administrator: the only reader given the reason.
+    adminMethods: async () =>
+      (await call('/api/payments/methods', { headers: { authorization: `Bearer ${bossToken}` } })).json(),
   };
 }
 
@@ -243,9 +248,12 @@ test('and the deleted paths cannot be brought back by their old variables', asyn
     assert.equal((await server.checkout({ method: 'crypto', credits: 100 })).status, 503);
 
     // And the operator is told which variables are dead rather than being left
-    // to work out what broke the ones they had configured.
-    assert.match(crypto.reason, /^Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY/);
-    assert.match(crypto.reason, /CHAIN_\* and COINBASE_COMMERCE_\* settings no longer do anything/);
+    // to work out what broke the ones they had configured. Only the operator:
+    // a buyer is told it is not available, and nothing about the server.
+    assert.equal(crypto.reason, 'Not available right now.');
+    const operatorView = (await server.adminMethods()).methods.find((entry) => entry.method === 'crypto');
+    assert.match(operatorView.reason, /^Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY/);
+    assert.match(operatorView.reason, /CHAIN_\* and COINBASE_COMMERCE_\* settings no longer do anything/);
 
     // Cards are untouched by any of this.
     assert.equal(methods.methods.find((entry) => entry.method === 'card').available, true);

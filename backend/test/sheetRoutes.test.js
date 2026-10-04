@@ -225,21 +225,78 @@ test('an install with no key tells the admin what to set, and everyone else what
   }
 });
 
-test("Google's own failure reaches the user with its reason intact", async () => {
-  const { GoogleSheetsRequestError } = require('../dist/integrations/googleSheets');
+test("a sheet that cannot go private tells its owner what is at stake, and the administrator why", async () => {
+  /*
+   * The usual cause is that the Drive API is not enabled for the server's Google
+   * project. That used to be the sentence the owner read - about a project they
+   * have never seen. They are told what refusing protects them from and whom to
+   * ask; the cause is the administrator's `detail`, and the log's, under the ref.
+   */
   const server = await serve({
-    async setSpreadsheetVisibility() {
-      throw new GoogleSheetsRequestError(403, 'Sharing a sheet needs the Drive API.');
+    async hasPersonalGrant() {
+      return false;
+    },
+    async shareSpreadsheetWithEmail() {
+      throw new Error('Drive API has not been used in project 12345 before or it is disabled.');
     },
   });
+  const quiet = { warn: console.warn, error: console.error };
+  console.warn = () => {};
+  console.error = () => {};
   try {
-    const response = await server.request(server.aliceToken, '/visibility', {
+    const mine = await server.request(server.aliceToken, '/visibility', {
       method: 'POST',
       body: JSON.stringify({ visibility: 'private' }),
     });
-    assert.equal(response.status, 403);
-    assert.match((await response.json()).error, /Drive API/);
+    assert.equal(mine.status, 409);
+    const body = await mine.json();
+    assert.match(body.error, /cannot be made private yet/);
+    assert.match(body.error, /contact your administrator/);
+    assert.match(body.ref, /^ERR-[0-9A-F]{6}$/);
+    assert.equal(body.detail, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /Drive API|project|sheets:doctor/);
+
+    const asAdmin = await server.request(server.adminToken, '/visibility', {
+      method: 'POST',
+      body: JSON.stringify({ visibility: 'private' }),
+    });
+    const adminBody = await asAdmin.json();
+    assert.equal(adminBody.error, body.error, 'the same sentence');
+    assert.match(adminBody.detail, /Drive API/, 'and the administrator also gets why');
   } finally {
+    console.warn = quiet.warn;
+    console.error = quiet.error;
+    server.close();
+  }
+});
+
+test("a refusal Google sends says only what the reader can act on", async () => {
+  // A Google refusal is a public sentence chosen by status; Google's own text,
+  // with the project and the credential in it, is the administrator's detail.
+  const { GoogleSheetsRequestError } = require('../dist/integrations/googleSheets');
+  const server = await serve({
+    async setSpreadsheetVisibility() {
+      throw new GoogleSheetsRequestError(
+        502,
+        'This server cannot open that spreadsheet. Check the sheet link, or contact your administrator.',
+        'The caller does not have permission Sharing is a Drive operation, so the Drive API must be enabled.'
+      );
+    },
+  });
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const response = await server.request(server.aliceToken, '/visibility', {
+      method: 'POST',
+      body: JSON.stringify({ visibility: 'public' }),
+    });
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.match(body.error, /^This server cannot open that spreadsheet/);
+    assert.equal(body.detail, undefined);
+    assert.doesNotMatch(JSON.stringify(body), /Drive API|permission/);
+  } finally {
+    console.error = quiet;
     server.close();
   }
 });

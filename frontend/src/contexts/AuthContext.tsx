@@ -14,6 +14,7 @@ import {
 import { setUnauthorizedHandler } from '@/lib/api';
 import { authApi, type Account } from '@/lib/auth';
 import { DEFAULT_UPLOAD_MAX_MB, readUploadMaxMb } from '@/lib/upload';
+import { userMessage } from '@/lib/userMessage';
 
 /**
  * Who is signed in, for the whole app.
@@ -90,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // unreachable, and saying "sign in" would send the reader to a page that
       // cannot work either.
       setAccount(null);
-      setError(caught instanceof Error ? caught.message : 'Could not reach the server.');
+      setError(userMessage(caught, 'Could not reach the server.'));
     } finally {
       if (alive.current) setLoading(false);
     }

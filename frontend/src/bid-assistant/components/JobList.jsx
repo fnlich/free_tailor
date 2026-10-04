@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { bidAssistantFetch } from '../lib/apiBase.js';
+import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconClose } from '@/components/icons';
+import { messageWithDetail } from '@/lib/userMessage';
 
 // Returns the search text used to filter visible jobs.
 function matchesSearch(job, searchText) {
@@ -153,7 +154,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data?.error || 'Could not load links for that row range.');
+        throw responseError(response, data, 'Could not load links for that row range.');
       }
 
       const jobLinks = Array.isArray(data?.links) ? data.links : [];
@@ -171,7 +172,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
       );
       closeCopyModal();
     } catch (error) {
-      setCopyError(error.message || 'Could not copy links.');
+      setCopyError(messageWithDetail(error, 'Could not copy links.'));
     }
   }
 

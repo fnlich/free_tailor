@@ -6,8 +6,10 @@ import BuyCreditsDialog from '@/components/credits/BuyCreditsDialog';
 import CreditHistory from '@/components/credits/CreditHistory';
 import OrderHistory from '@/components/credits/OrderHistory';
 import { useTabRow } from '@/components/shell/useTabRow';
+import { useAuth } from '@/contexts/AuthContext';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
 import { paymentsApi, type PaymentOptions } from '@/lib/payments';
+import { messageWithDetail } from '@/lib/userMessage';
 
 type Tab = 'card' | 'crypto' | 'history';
 
@@ -40,6 +42,7 @@ function CreditsBody() {
    * an address that names another.
    */
   const tab = readTab(search?.get('tab'));
+  const { isAdmin } = useAuth();
 
   const [options, setOptions] = useState<PaymentOptions | null>(null);
   const [status, setStatus] = useState<CreditStatus | null>(null);
@@ -71,7 +74,7 @@ function CreditsBody() {
         setOptions(optionsResult.value);
         setError('');
       } else {
-        setError('Could not load the payment options.');
+        setError(messageWithDetail(optionsResult.reason, 'Could not load the payment options.'));
       }
       if (statusResult.status === 'fulfilled') setStatus(statusResult.value);
     } finally {
@@ -143,8 +146,8 @@ function CreditsBody() {
         <div className="ml-auto">
           {/*
             Always on screen, disabled with the reason when it cannot work. The
-            reason for the operator - which keys are missing - is in the card
-            below; the title is the short form for whoever hovers here.
+            title is the short form for whoever hovers here; the card below says
+            who can help (and, for an administrator, which keys are missing).
           */}
           <button
             type="button"
@@ -182,20 +185,32 @@ function CreditsBody() {
           Only once the options have actually arrived. When they failed to load
           the error above says so, and "this installation cannot take payments"
           would be a claim nobody checked.
+
+          Each method's reason names the settings it lacks, which is the
+          operator's business: an administrator gets the list, everybody else
+          the one thing they can do about it. The server withholds the reasons
+          from non-administrators too.
         */}
         {options && !anyMethod && (
           <div className="tl-card p-6">
-            <p className="text-lg font-semibold text-ink">No payment method is set up</p>
-            <p className="mt-2 text-sm text-muted">
-              This installation cannot take payments yet. An administrator can turn one on:
-            </p>
-            <ul className="mt-3 space-y-1 text-sm text-muted">
-              {options.methods.map((entry) => (
-                <li key={entry.method}>
-                  <span className="font-medium text-ink">{entry.label}</span> &mdash; {entry.reason}
-                </li>
-              ))}
-            </ul>
+            <p className="text-lg font-semibold text-ink">Purchasing credits is not available yet</p>
+            {isAdmin ? (
+              <>
+                <p className="mt-2 text-sm text-muted">
+                  This installation cannot take payments yet. Turn a method on:
+                </p>
+                <ul className="mt-3 space-y-1 text-sm text-muted">
+                  {options.methods.map((entry) => (
+                    <li key={entry.method}>
+                      <span className="font-medium text-ink">{entry.label}</span>
+                      {entry.reason ? <> &mdash; {entry.reason}</> : null}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="mt-2 text-sm text-muted">Please contact your administrator.</p>
+            )}
             <p className="mt-3 text-sm text-muted">
               Until then, an administrator can add credits to your account directly.
             </p>

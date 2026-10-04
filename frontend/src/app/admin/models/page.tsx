@@ -20,6 +20,7 @@ import {
   ProviderModelNameOption,
 } from '@/lib/api';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 type ModelDraft = {
   name: string;
@@ -128,7 +129,7 @@ function ModelsPageBody() {
       // they arrive with the settings.
       setDraft(emptyDraft(loaded));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load models');
+      setError(messageWithDetail(err, 'Failed to load models'));
     } finally {
       setIsLoading(false);
     }
@@ -192,7 +193,7 @@ function ModelsPageBody() {
       setStatus(editingId ? 'Model updated.' : 'Model created.');
       resetDraft(updated);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save model');
+      setError(messageWithDetail(err, 'Failed to save model'));
     } finally {
       setIsSaving(false);
     }
@@ -219,7 +220,7 @@ function ModelsPageBody() {
       }
       setStatus('Model deleted.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete model');
+      setError(messageWithDetail(err, 'Failed to delete model'));
     } finally {
       setIsSaving(false);
     }
@@ -239,7 +240,7 @@ function ModelsPageBody() {
       }
       setStatus(`${model.name} ${model.enabled ? 'disabled' : 'enabled'}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update model');
+      setError(messageWithDetail(err, 'Failed to update model'));
     } finally {
       setIsSaving(false);
     }
@@ -254,7 +255,7 @@ function ModelsPageBody() {
       setSettings(updated);
       setStatus(`Default model set to ${model.name}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update default model');
+      setError(messageWithDetail(err, 'Failed to update default model'));
     } finally {
       setIsSaving(false);
     }

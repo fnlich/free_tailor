@@ -27,6 +27,7 @@ import {
   StaticValue,
   type PillTone,
 } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 /** The kit's pill colours, matching the order's own pill and the payments on /credits. */
 const ITEM_STATE_TONES: Record<OrderItemState, PillTone> = {
@@ -81,7 +82,7 @@ export default function OrderDetailPage() {
       setError('');
     } catch (err) {
       if (token !== latestRequest.current) return;
-      setError(err instanceof Error ? err.message : 'Could not load that order.');
+      setError(messageWithDetail(err, 'Could not load that order.'));
     } finally {
       if (token === latestRequest.current) setLoading(false);
     }
@@ -130,7 +131,7 @@ export default function OrderDetailPage() {
       await ordersApi.cancel(order.id);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not cancel that order.');
+      setError(messageWithDetail(err, 'Could not cancel that order.'));
     } finally {
       setCancelling(false);
     }

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~20s with the tsc step, 916 tests)
+npm test                       # backend node:test suite (~22s with the tsc step, 1039 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -72,8 +72,9 @@ curl http://127.0.0.1:3001/api/health
 Unset, `DB_DIR` defaults to `/data/db` on Linux/macOS (often not writable — the
 most common first-run failure) and `%LOCALAPPDATA%\free_tailor\db` on Windows.
 The backend prints the resolved path, the Chrome it will print with, and a
-readiness line per AI provider at startup; missing API keys and signed-out
-seats are reported, not fatal.
+readiness line per AI seat at startup; a CLI that is missing or signed out is
+reported, not fatal, and so is any removed metered-provider variable
+(`OPENAI_API_KEY`, `AI_CLI_ALLOW_API_KEY`...) still set in `.env`.
 
 To sign in, `.env` needs Google OAuth (`GOOGLE_CLIENT_ID`) or SMTP. The first
 account to sign in becomes the administrator unless `ADMIN_EMAILS` decides in
@@ -91,32 +92,39 @@ backend/src/
                       #   reports a file's path, encoding and key NAMES (never
                       #   values) so the doctors can say why a setting that is in
                       #   the file is not in effect. A NEW setting is read through
-                      #   envValue.ts (envInt/envUrl/...: empty = default, junk
-                      #   warns once, out of range clamps, never throws - but a
-                      #   refused envUrl is NOT the vendor default: the provider
-                      #   it configures sends nothing until it is fixed) and, if
-                      #   it is operational - a timeout, cap, pool width,
-                      #   endpoint - added to operational.ts, the ONE table of
-                      #   name, default, range and getter, AND to .env.example
+                      #   envValue.ts (envInt/envList/...: empty = default, junk
+                      #   warns once, out of range clamps, never throws) and, if
+                      #   it is operational - a timeout, cap, pool width, model
+                      #   list - added to operational.ts, the ONE table of
+                      #   name, default, range and getter (a seat may keep its
+                      #   own in its options.ts and spread them in, as
+                      #   GEMINI_CLI_SETTINGS does), AND to .env.example
                       #   as `#NAME=default` with its range, AND to the README's
                       #   Configuration table. The drift test
                       #   test/envExample.test.js fails until all three agree.
+                      #   providerCatalog.ts is the ONE list of seats and of
+                      #   retired ids; providerModels.ts each seat's model-name
+                      #   list; creditsPerResume.ts the price field's rules;
+                      #   modelErrors.ts the two model refusals.
   controllers/        # one file, the skills handlers routes/resume.ts mounts
   database/           # better-sqlite3, one repository per table
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that
-                      #   defers (003 waits for an admin, 006 for a settings
-                      #   row that does not parse) stops the ones after
-                      #   it. Adding a seed model needs a migration - stored
-                      #   `aiModels` is read verbatim, never unioned with the
-                      #   defaults, so a seed reaches fresh installs only. The
-                      #   chain is 001, 003-006: 002 seeded the browser-chat
+                      #   defers (003 waits for an admin; 006 and 007 for a
+                      #   settings row that names what they remove but does
+                      #   not parse; 008 for one whose model list does not)
+                      #   stops the ones after it. Adding a seed model needs a
+                      #   migration - stored `aiModels` is read verbatim, never
+                      #   unioned with the defaults, so a seed reaches fresh
+                      #   installs only (005 did it for Codex, 008 for Gemini).
+                      #   The chain is 001, 003-008: 002 seeded the browser-chat
                       #   models and went with them, and the runner skips any
                       #   version it has passed, so the gap is harmless. Never
                       #   reuse a retired number.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service
-  middleware/         # auth, and turning an AI failure into a useful status
+  middleware/         # auth, uploads, and publicError.ts - what a failure may
+                      #   tell whom (see "The AI layer" below)
   routes/             # one file per /api/* area
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor, migrate:legacy,
@@ -126,14 +134,15 @@ backend/src/
                       #   single error message covers several causes.
   services/ai/        # provider-agnostic transport; one directory per provider
   services/queue/     # on-disk generation queue (survives a restart). One LANE
-                      #   per real resource - the Claude seat, which also
-                      #   carries the metered APIs, and the Codex seat - each
-                      #   sized from its own variable. A restored row naming a
-                      #   lane this build lacks is moved to one it has. A task
-                      #   row's `data` is a hand-picked PROJECTION built by
-                      #   index.ts's `taskRow`, not the Task serialized, so a new
-                      #   field must be named there AND in the restore mapper or
-                      #   it silently does not persist.
+                      #   per real resource - one per seat, `cli`, `codex` and
+                      #   `gemini` (`laneFor`) - each sized from its seat's own
+                      #   variable. A restored row naming a lane this build
+                      #   lacks is moved to one it has. A task row's `data` is a
+                      #   hand-picked PROJECTION built by index.ts's `taskRow`,
+                      #   not the Task serialized, so a new field must be named
+                      #   there AND in the restore mapper or it silently does
+                      #   not persist. The payload persists whole, which is why
+                      #   a task's price lives on it (`payload.creditCost`).
   bidAssistant/       # the Bid Assistant's own prompt building
   types/, utils/      # shared types; path, storage and filename helpers
 backend/
@@ -144,7 +153,9 @@ backend/
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
   static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 78 files; fixtures/cli replays real streams
+  test/               # node:test, 86 files; fixtures/cli, codex and gemini
+                      #   replay real CLI streams (`recorded-` is a capture,
+                      #   `constructed-` a real envelope around a fake answer)
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
                       #   /orders, /credits (+ /credits/invoice, drawn with no
@@ -174,10 +185,12 @@ frontend/src/
                       #   .tl-table cell goes on an inner span - the unlayered
                       #   td rule beats a utility on the td itself.
   bid-assistant/      # the largest single feature directory here, and the only
-                      #   JSX: its own App, components and stylesheet
+                      #   JSX: its own App, components and stylesheet. Its
+                      #   failures go through lib/apiBase.js's readError /
+                      #   responseError, then messageWithDetail like the rest
   components/ui/      # The kit every page is built from: kit.tsx (Page,
-                      #   PageHeader, Section, Card, Field, Notice, Pill,
-                      #   EmptyState, Spinner) over the .tl-* classes in
+                      #   PageHeader, Section, Card, Field, Notice, ErrorNotice,
+                      #   Pill, EmptyState, Spinner) over the .tl-* classes in
                       #   globals.css, which state every colour for both themes.
                       #   New UI uses these and the tokens (text-ink, text-muted,
                       #   bg-surface, border-hairline...), never bg-white /
@@ -191,7 +204,11 @@ frontend/src/
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page), lib/sheet.ts (the spreadsheet range
                       #   parsers), components/pageChrome.ts (the CARD and LABEL
-                      #   class strings, with the note on why they keep `dark:`).
+                      #   class strings, with the note on why they keep `dark:`),
+                      #   lib/userMessage.ts (userMessage / messageWithDetail -
+                      #   the ONE way a page turns a failure into text; never
+                      #   print `err.message`, and render a caught error with
+                      #   <ErrorNotice>, which shows an admin's `detail`).
 ```
 
 Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
@@ -217,52 +234,142 @@ install reads its prompts, skills and templates from the database.
 
 Every model call goes through `backend/src/services/ai`. A provider is one
 directory implementing `AIProviderAdapter`; the registry is keyed on the
-provider catalog, so a missing entry is a compile error. Providers:
-`claude-cli` (the default) and `codex-cli` (subscription seats via the local
-`claude` and `codex` binaries; both work headless, and `codex login
---device-auth` needs no browser on the server), and `claude` / `openai` /
-`deepseek` (metered API keys). `AI_LOCKED_PROVIDERS` in `.env` marks a provider
-this machine cannot run; nothing is locked out of the box. A locked Claude seat
-moves the default to Codex, and with both seats locked the default is a metered
-API model - so nothing keyless is left, and the default bills per token.
+provider catalog, so a missing entry is a compile error. There are exactly three,
+all **subscription seats** run through a local CLI, in catalog order:
+`claude-cli` (the default), `codex-cli` and `gemini-cli` - labelled "Claude
+(Subscription)", "Codex (Subscription)", "Gemini (Subscription)". All three work
+headless: `codex login --device-auth` and `NO_BROWSER=true gemini` need no
+browser on the server. **Nothing reads or sends an API key**, and there is no
+switch to allow one: each seat strips every key variable from its child (Gemini
+pins them to ""), the Claude seat fails a turn whose `apiKeySource` is not
+`none` and holds itself as signed out, and Codex health counts a CLI signed in
+with a key as not signed in. `AI_LOCKED_PROVIDERS` marks a seat this machine
+cannot run; nothing is locked out of the box, a fresh install defaults to the
+first seat not locked, and with all three locked a settings READ still succeeds
+with no runnable models (saves keep their asserts) while a run fails with
+`AiUnavailableError`. The job filter and the Bid Assistant run on the app
+default MODEL - a record's provider and model name - like any run that names
+none.
 
-Two browser-chat providers were deleted: `claude-web` and `chatgpt-web` drove
-claude.ai and chatgpt.com in a debug Chrome over DevTools. **They are retired,
-not aliased** - their records carry `modelName: 'chat'`, which no seat has, so
-unlike `openrouter` in `LEGACY_PROVIDER_ALIASES` they map onto nothing.
-`RETIRED_PROVIDER_IDS` and `RETIRED_MODEL_IDS` (`free-hybrid`,
-`claude-web-chat`, `chatgpt-web-chat`) in `config/providerCatalog.ts` let a
-stored row, a profile, a prompt override or a stale tab that names them read as
-"the default" instead of throwing, and they are permanent for the reason the
-alias map is: a restored backup, a hand-edited row or a page left open from
-before the upgrade can bring the ids back at any time. Migration 006 strips
-them from the database once and keeps a settings snapshot (minus any stored
-API keys); the read-time tolerance - including the in-memory repair, onto a
-provider not locked here, of a row left with nothing it can run - has to
-stand on its own, because 006 sits after 003 in the chain and waits with it
-until an administrator exists. A deleted model that was never a browser one is still an
-error - do not widen the tolerance to "any unknown id". 006's log,
-`migration-log.provider-schema-6`, is read back and so load-bearing: its
-`removedModelIds` keep an administrator's own browser model (a UUID) reading
-as the default after a restart, and its `leftRunning` limits the in-memory
-repair to a row still as 006 left it - after an admin's own save, a new lock
-fails by name.
+Models are admin-curated records: a display name, a seat, a model name and
+`creditsPerResume`. The model name is chosen from `config/providerModels.ts`'s
+`listProviderModelOptions(provider)`, each seat's list overridable in `.env`
+(`AI_CLI_MODEL_OPTIONS`, `AI_CODEX_MODEL_OPTIONS`, `AI_GEMINI_MODEL_OPTIONS`,
+read per call, all-or-nothing). It is checked when a model is created or its
+provider or model name changes, and when a prompt override is saved -
+`normalizeAIModelRecords` stays list-agnostic, so a `.env` edit can never brick
+a settings read. An ordinary account sees models as `{ id, name }` only
+(`getUserAppSettings`, `GET /api/resume/models`); the admin payload carries
+everything plus `providerModelOptions`. A REQUEST naming a model that cannot run
+is refused (`ModelUnavailableError`, 400) rather than swapped, because another
+model could cost another price, while a STORED profile preference that went
+stale falls back to the default with a warning once. The bare-provider and
+`provider:modelName` request forms are admin-only.
 
-Both CLI providers share the spawn seam in `services/ai/providers/cli/`:
+**Price per resume.** `creditsPerResume` is whole credits, 0..1000, 0 = free
+(`config/creditsPerResume.ts`; `DEFAULT_CREDITS_PER_RESUME = 1`, which
+`services/credits`' `CREDITS_PER_RESUME` aliases). It is not called "price" in
+code: `creditPriceCents` already means money per credit. A stored record
+without it reads as 1 in memory - no write-back, no migration - and an
+out-of-range one clamps on read; admin mutations refuse a bad value by name,
+and a partial edit keeps it. A resume is priced at submit by the same
+resolution its task runs (`resolvePricedAiChoice`: request, then profile, then
+default) and the price is snapshotted on the task as `payload.creditCost` -
+OUTSIDE `payload.choice`, so a restore that re-resolves a retired choice never
+re-prices it; the queue hook refunds `taskCreditCost(payload)`, 1 when absent.
+`reserveCredits` and `refundTaskUnit` take AMOUNTS, a batch reserves the sum,
+and `POST /api/generation/quote` prices a batch body through the same
+`resolveProfileChoices` without reserving anything. Administrators stay exempt.
+
+**What a failure may tell whom** (`middleware/publicError.ts`). Most people
+using an install do not run its server, so a response never names a seat, CLI,
+command, setting, path, model id or third party's raw text to them. A
+`PublicError` - `AuthError`, `InsufficientCreditsError`, `ModelUnavailableError`,
+`AiUnavailableError`, the payment, sheet and Google errors among them - carries a
+sentence written for anybody. Everything else goes through
+`sendPublicError(req, res, error, fallback)`: `<fallback>. Please try again, or
+contact your administrator.` with a `ref` (`ERR-` and six hex digits), the cause
+logged once as `[error ERR-...] <METHOD path> <cause>`. An `AIProviderError`
+becomes one of four `PUBLIC_AI_MESSAGE` sentences (busy, timeout, retry,
+contact-admin) by its `publicFailure`, never naming the seat; its `message`,
+`adminMessage` and `adminAction` are for the log and for administrators, who
+get the cause as `detail` in the body - the server decides that by role, and
+pages render it (`<ErrorNotice>`, `messageWithDetail`) without checking. Errors
+that outlive their request (`publicTaskError`, `publicItemError`) are stored as
+the sentence plus `(Ref: ...)`; older raw rows are sanitised on read for
+non-admins (`publicStoredError`). A message stays specific only when it is
+about the caller's own input, objects or entitlements, they can act on it, and
+it names nothing about how the server is run. Never send
+`{ error: err.message }` from a route a non-admin can reach. `isPublicError`
+also checks a `Symbol.for` brand, because the tests `loadFresh` modules and a
+reloaded class fails `instanceof`.
+
+Two families of providers were deleted, and both are **retired, not
+aliased**: the browser-chat pair `claude-web` / `chatgpt-web`, which drove
+claude.ai and chatgpt.com in a debug Chrome (migration 006), and the metered
+APIs `claude` (Anthropic), `openai` and `deepseek` (migration 007). Unlike
+`openrouter` in `LEGACY_PROVIDER_ALIASES` they map onto nothing: a browser
+record's `modelName: 'chat'` is no seat's, and moving an API model onto a seat
+would change what a run costs. `RETIRED_PROVIDER_IDS` and `RETIRED_MODEL_IDS`
+in `config/providerCatalog.ts` are null-prototype maps from id to family
+(`'browser-chat' | 'metered-api'`, so a warning names the right removal). The
+model map holds `free-hybrid`, `claude-web-chat`, `chatgpt-web-chat` and the
+seven shipped metered seeds, and `isRetiredModelId` also matches the seed id an
+old `OPENAI_MODEL` / `CLAUDE_MODEL` / `DEEPSEEK_MODEL` produced, while that
+variable is still set. They let a stored row, a profile, a prompt override or a
+stale tab that names them read as "the default" instead of throwing, and they
+are permanent for the reason the alias map is: a restored backup, a hand-edited
+row or a page left open from before the upgrade can bring the ids back at any
+time. There is deliberately no prefix rule (it would swallow `claude-cli-*`),
+and a deleted model that was never retired is still an error - do not widen the
+tolerance to "any unknown id". 006 and 007 each strip their family once and keep
+a settings snapshot minus any stored API keys, and 007 also deletes the keys
+from 001's snapshot. The read-time tolerance - including the in-memory repair,
+onto a seat not locked here, of a row left with nothing it can run
+(`rescueRetiredProviderRow`, ranked exactly as 007 ranks: switched on, then not
+recorded, then switched off; then has an enabled model; then catalog order) -
+has to stand on its own, because both sit after 003 in the chain and wait with
+it until an administrator exists. Their logs, `migration-log.provider-schema-6`
+and `-7`, are read back and so load-bearing: their `removedModelIds` keep an
+administrator's own retired model (a UUID) reading as the default after a
+restart, and the LATEST `leftRunning` across both limits the in-memory repair to
+a row still as the migrations left it - after an admin's own save, a new lock
+fails by name. 008's log (`-8`) is read back too: the Gemini model it appends
+counts as part of what the migrations left. 006 itself is frozen history; on a
+database that skips straight here it can still land on a metered model, which
+007 moves in the same boot.
+
+All three seats share the spawn seam in `services/ai/providers/cli/`:
 `runner.ts` is the only module under `services/ai` that imports
 `child_process`, and `resolveBinary.ts` exists because npm installs a CLI on
 Windows as a `.cmd` shim `spawn` cannot execute. Codex differs from Claude in
 one way worth knowing: its answer is read from the file named by
 `--output-last-message`, not from the event stream, so the JSONL envelope can
-move without breaking it.
+move without breaking it. Gemini differs again: its answer is the joined
+assistant deltas of `--output-format stream-json`, taken ONLY when the `result`
+event says `status: 'success'` - exit 0 alone is not success. Its child env
+pins every API-key, Vertex and gateway variable to "" and sets `NO_BROWSER`,
+`NO_COLOR` and `GEMINI_CLI_NO_RELAUNCH` (without it the CLI relaunches itself
+and SIGTERM never reaches the real process). Every turn runs in one fixed empty
+workdir whose `.gemini/settings.json` enforces the Google sign-in, registers no
+tools, turns MCP, extensions, hooks and telemetry off and sets
+`billing.overageStrategy: 'never'`, under a deny-all policy; the prompt goes on
+stdin with a leading `/` pushed off column one and `@path` references escaped,
+and the turn dir and the CLI's session transcript are removed afterwards. A
+"Using AI Credits" notice or any tool call fails the turn. Its health check
+sends no prompt: `gemini --version`, then the sign-in files under the CLI's
+home.
 
-Tests never spawn a browser, a subprocess or a network call: the CLI provider
-replays recorded event streams from `test/fixtures/cli` and
-`test/fixtures/codex` through an injected runner, and storage tests point `DB_DIR` and `TAILOR_STATIC_DIR` at temp dirs.
+Tests never spawn a browser, a subprocess or a network call: each CLI provider
+replays recorded event streams from `test/fixtures/cli`, `test/fixtures/codex`
+and `test/fixtures/gemini` through an injected runner, and storage tests point `DB_DIR` and
+`TAILOR_STATIC_DIR` at temp dirs. No real Google account has answered through
+the Gemini seat: its successful fixtures are the real 0.62.0 CLI's envelopes
+around fake answers, and the file names say so.
 
 ## Conventions from the history
 
-148 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
+Some 190 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
 The pattern in nearly every feature arc is a feature commit followed by one or
 more "fix what the adversarial review found" commits, so expect review passes
 to be part of the work rather than an afterthought.
@@ -274,7 +381,9 @@ it back", not "fix(sheets): visibility". Match that voice.
 The README's Troubleshooting table is long and genuinely load-bearing: most
 failures you can hit here already have a row explaining the cause. Read it
 before debugging a PDF-rendering Chrome, database-directory, seat or provider
-problem, and add a row when you fix a new class of failure.
+problem, and add a row when you fix a new class of failure. Quote a message
+the way the person who reports it sees it - usually the generic sentence and
+its `Ref:` - and say where an administrator finds the cause.
 
 ## Platform notes
 

@@ -6,7 +6,7 @@ const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
 const profileRepository = require('../database/profileRepository');
 const { requireUser } = require('../middleware/auth');
-const { sheetsOperatorDetail } = require('./sheetsDetail');
+const { isPublicError, PublicError, sendPublicError } = require('../middleware/publicError');
 const {
   assertSheetNotOwnedByAnotherAccount,
   SheetAccessError,
@@ -80,7 +80,7 @@ router.use(requireUser);
 // Ensures a profile id is safe to use as a record key.
 function validateProfileId(profileId) {
   if (!/^[a-z0-9_-]+$/i.test(profileId || '')) {
-    throw new Error('Profile id may only contain letters, numbers, underscores, and hyphens.');
+    throw new PublicError('Profile id may only contain letters, numbers, underscores, and hyphens.');
   }
 }
 
@@ -109,7 +109,7 @@ function validatePromptTemplatePayload(payload) {
     : '';
 
   if (!promptTemplate) {
-    throw new Error('Prompt template is required.');
+    throw new PublicError('Prompt template is required.');
   }
 
   return promptTemplate;
@@ -123,7 +123,7 @@ function validateJobErrorPayload(payload) {
     : '';
 
   if (isError && !errorReason) {
-    throw new Error('Error reason is required when a job is marked as Error.');
+    throw new PublicError('Error reason is required when a job is marked as Error.');
   }
 
   return {
@@ -132,9 +132,9 @@ function validateJobErrorPayload(payload) {
   };
 }
 
-class ProfileNotFoundError extends Error {
+class ProfileNotFoundError extends PublicError {
   constructor() {
-    super('Profile not found.');
+    super('Profile not found.', { status: 404 });
     this.name = 'ProfileNotFoundError';
   }
 }
@@ -157,7 +157,7 @@ function readAllProfiles(viewer) {
 
 function assertProfilePayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('Profile payload must be a JSON object.');
+    throw new PublicError('Profile payload must be a JSON object.');
   }
 }
 
@@ -180,7 +180,7 @@ function createProfile(profile, viewer) {
   validateProfileId(nextId);
 
   if (profileRepository.hasProfile(nextId)) {
-    throw new Error('A profile with this id already exists.');
+    throw new PublicError('A profile with this id already exists.', { status: 409 });
   }
 
   // The plan's cap applies here as much as on the profiles page: this is a
@@ -204,34 +204,6 @@ function deleteProfile(profileId, viewer) {
   if (!profileRepository.deleteProfile(profileId)) {
     throw new ProfileNotFoundError();
   }
-}
-
-// Maps profile validation and lookup errors to cleaner API responses.
-function getProfileErrorDetails(error) {
-  const clientMessages = [
-    'Profile payload must be a JSON object.',
-    'Profile id may only contain letters, numbers, underscores, and hyphens.',
-    'A profile with this id already exists.'
-  ];
-
-  if (clientMessages.includes(error.message)) {
-    return {
-      status: error.message === 'A profile with this id already exists.' ? 409 : 400,
-      message: error.message
-    };
-  }
-
-  if (error instanceof ProfileNotFoundError) {
-    return {
-      status: 404,
-      message: error.message
-    };
-  }
-
-  return {
-    status: 500,
-    message: error.message
-  };
 }
 
 /**
@@ -330,11 +302,11 @@ function validateGoogleSheetPayload(payload) {
   const sheetId = typeof payload?.sheetId === 'string' ? payload.sheetId.trim() : '';
 
   if (!label) {
-    throw new Error('Label is required.');
+    throw new PublicError('Label is required.');
   }
 
   if (!sheetId) {
-    throw new Error('Sheet ID is required.');
+    throw new PublicError('Sheet ID is required.');
   }
 
   return {
@@ -343,82 +315,42 @@ function validateGoogleSheetPayload(payload) {
   };
 }
 
-// Maps known Google Sheet source errors to cleaner API responses.
-function getGoogleSheetErrorDetails(error) {
-  // The addressability guard carries its own status. Without this it would
-  // surface as a 500, which reads as "the server broke" rather than "no".
-  if (error instanceof SheetAccessError) {
-    return { status: error.status, message: error.message };
-  }
+/*
+ * Every refusal this router writes for the person in front of it - a missing
+ * label, a row range, a tab that is not there - is a PublicError, thrown where
+ * it is decided; everything else reaches them through `sendPublicError` as the
+ * generic sentence with a ref. Two outside failures are translated first,
+ * because what the library says is not for them: a duplicate label (a SQLite
+ * constraint) and Google refusing a sheet (googleapis' own error text).
+ */
 
-  if (error.message === 'Label is required.' || error.message === 'Sheet ID is required.') {
-    return {
-      status: 400,
-      message: error.message
-    };
+// A second source with a label already in use.
+function publicSourceError(error) {
+  if (!isPublicError(error) && typeof error?.message === 'string'
+    && error.message.includes('UNIQUE constraint failed: google_sheets.label')) {
+    return new PublicError('A Google Sheet source with this label already exists.', { status: 409 });
   }
-
-  if (error.message.includes('UNIQUE constraint failed: google_sheets.label')) {
-    return {
-      status: 409,
-      message: 'A Google Sheet source with this label already exists.'
-    };
-  }
-
-  return {
-    status: 500,
-    message: error.message
-  };
+  return error;
 }
 
-// Maps Google Sheet import errors to cleaner API responses.
-function getGoogleSheetImportErrorDetails(error) {
-  if (error instanceof SheetAccessError) {
-    return { status: error.status, message: error.message };
+// Google refusing to open the sheet, or a row range past the end of a tab.
+function publicSheetReadError(error) {
+  if (isPublicError(error)) return error;
+  if (typeof error?.message === 'string' && error.message.includes('exceeds grid limits')) {
+    return new PublicError('The selected row range exceeds the size of this tab.');
   }
-
-  const importValidationMessages = [
-    'Select a tab before importing.',
-    'From row must be a whole number greater than or equal to 1.',
-    'To row must be a whole number greater than or equal to 1.',
-    'From row must be less than or equal to To row.',
-    'The selected row range did not match any job rows.',
-    'Google Sheets credentials are not configured.',
-    'The selected row range exceeds the size of this tab.'
-  ];
-
-  if (importValidationMessages.includes(error.message)) {
-    return {
+  const status = error?.code ?? error?.response?.status;
+  if (status === 403 || status === 404) {
+    // Which of the two - a link that is wrong, or a sheet never shared with
+    // this server - only the administrator can tell, and Google's text says
+    // why in terms of the server's own credential.
+    return new PublicError('This sheet could not be opened. Check the sheet link, or contact your administrator.', {
       status: 400,
-      message: error.message
-    };
+      detail: error.message,
+      cause: error,
+    });
   }
-
-  if (typeof error.message === 'string' && error.message.includes('exceeds grid limits')) {
-    return {
-      status: 400,
-      message: 'The selected row range exceeds the size of this tab.'
-    };
-  }
-
-  if (error?.code === 403 || error?.response?.status === 403) {
-    return {
-      status: 403,
-      message: 'Google Sheets access was denied. Share the spreadsheet with the service account email and confirm the Sheets API is enabled.'
-    };
-  }
-
-  if (error?.code === 404 || error?.response?.status === 404) {
-    return {
-      status: 404,
-      message: 'Google Sheets could not find this spreadsheet or tab for the configured service account.'
-    };
-  }
-
-  return {
-    status: 500,
-    message: error.message
-  };
+  return error;
 }
 
 // Lists tabs from a Google Sheet source using the authenticated Sheets API.
@@ -438,7 +370,7 @@ async function listGoogleSheetTabs(sheetId) {
     .filter((tab) => tab.name);
 
   if (tabs.length === 0) {
-    throw new Error('No tabs were found in the selected Google Sheet.');
+    throw new PublicError('No tabs were found in the selected Google Sheet.');
   }
 
   return tabs;
@@ -454,7 +386,7 @@ async function loadJobsFromGoogleSheet(sheet, tabName, fromRow, toRow) {
   const rows = Array.isArray(response.data.values) ? response.data.values : [];
 
   if (rows.length === 0) {
-    throw new Error('No job rows were found in the selected Google Sheet.');
+    throw new PublicError('No job rows were found in the selected Google Sheet.');
   }
 
   const rangeStartRow = getRangeStartRow(fromRow);
@@ -480,7 +412,7 @@ async function loadJobsFromGoogleSheet(sheet, tabName, fromRow, toRow) {
   }
 
   if (fromRow || toRow) {
-    throw new Error('The selected row range did not match any job rows.');
+    throw new PublicError('The selected row range did not match any job rows.');
   }
 
   const fallbackResponse = await sheetsClient.spreadsheets.values.get({
@@ -490,13 +422,13 @@ async function loadJobsFromGoogleSheet(sheet, tabName, fromRow, toRow) {
   const fallbackRows = Array.isArray(fallbackResponse.data.values) ? fallbackResponse.data.values : [];
 
   if (fallbackRows.length === 0) {
-    throw new Error('No job rows were found in the selected Google Sheet.');
+    throw new PublicError('No job rows were found in the selected Google Sheet.');
   }
 
   const [headerRow, ...valueRows] = fallbackRows;
 
   if (!headerRow || headerRow.length === 0) {
-    throw new Error('The selected tab does not contain a header row.');
+    throw new PublicError('The selected tab does not contain a header row.');
   }
 
   const csvText = Papa.unparse({
@@ -533,7 +465,7 @@ async function loadJobsFromGoogleSheet(sheet, tabName, fromRow, toRow) {
     ));
 
   if (fallbackJobs.length === 0) {
-    throw new Error('No job rows were found in the selected Google Sheet.');
+    throw new PublicError('No job rows were found in the selected Google Sheet.');
   }
 
   return fallbackJobs;
@@ -544,7 +476,7 @@ function validateImportTabName(payload) {
   const tabName = typeof payload?.tabName === 'string' ? payload.tabName.trim() : '';
 
   if (!tabName) {
-    throw new Error('Select a tab before importing.');
+    throw new PublicError('Select a tab before importing.');
   }
 
   return tabName;
@@ -560,15 +492,15 @@ function validateImportRange(payload) {
   const toRow = hasToRow ? Number(rawToRow) : undefined;
 
   if (hasFromRow && (!Number.isInteger(fromRow) || fromRow < 1)) {
-    throw new Error('From row must be a whole number greater than or equal to 1.');
+    throw new PublicError('From row must be a whole number greater than or equal to 1.');
   }
 
   if (hasToRow && (!Number.isInteger(toRow) || toRow < 1)) {
-    throw new Error('To row must be a whole number greater than or equal to 1.');
+    throw new PublicError('To row must be a whole number greater than or equal to 1.');
   }
 
   if (fromRow && toRow && fromRow > toRow) {
-    throw new Error('From row must be less than or equal to To row.');
+    throw new PublicError('From row must be less than or equal to To row.');
   }
 
   return {
@@ -584,7 +516,7 @@ router.post('/import-jobs', async (req, res) => {
     const addedCount = importJobs(jobs);
     res.json({ addedCount });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not import those jobs');
   }
 });
 
@@ -593,7 +525,7 @@ router.get('/google-sheets', async (req, res) => {
   try {
     res.json(getGoogleSheets());
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not load the Google Sheet sources');
   }
 });
 
@@ -614,8 +546,7 @@ router.get('/google-sheets/:id/tabs', async (req, res) => {
     const tabs = await listGoogleSheetTabs(sheet.sheet_id);
     res.json(tabs);
   } catch (error) {
-    const errorDetails = getGoogleSheetImportErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
+    sendPublicError(req, res, publicSheetReadError(error), 'Could not read that Google Sheet');
   }
 });
 
@@ -632,8 +563,7 @@ router.post('/google-sheets', async (req, res) => {
     const sheet = createGoogleSheet(payload);
     res.json(sheet);
   } catch (error) {
-    const errorDetails = getGoogleSheetErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
+    sendPublicError(req, res, publicSourceError(error), 'Could not save that Google Sheet source');
   }
 });
 
@@ -652,8 +582,7 @@ router.put('/google-sheets/:id', async (req, res) => {
     const sheet = updateGoogleSheet(id, payload);
     res.json(sheet);
   } catch (error) {
-    const errorDetails = getGoogleSheetErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
+    sendPublicError(req, res, publicSourceError(error), 'Could not save that Google Sheet source');
   }
 });
 
@@ -670,7 +599,7 @@ router.delete('/google-sheets/:id', async (req, res) => {
     deleteGoogleSheet(id);
     res.json({ message: 'Google Sheet source deleted successfully.' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not delete that Google Sheet source');
   }
 });
 
@@ -699,8 +628,7 @@ router.post('/google-sheets/:id/import', async (req, res) => {
       toRow: fromRow && !toRow ? fromRow + jobs.length - 1 : toRow || jobs.length
     });
   } catch (error) {
-    const errorDetails = getGoogleSheetImportErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message, ...sheetsOperatorDetail(req, error) });
+    sendPublicError(req, res, publicSheetReadError(error), 'Could not read that Google Sheet');
   }
 });
 
@@ -712,7 +640,7 @@ router.get('/jobs', async (req, res) => {
     const jobs = getJobs(search, date);
     res.json(jobs);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not load the jobs');
   }
 });
 
@@ -730,7 +658,7 @@ router.get('/jobs/copy-links', async (req, res) => {
     const result = getCopyableJobLinks(fromRow, toRow, date);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not copy the job links');
   }
 });
 
@@ -751,7 +679,7 @@ router.delete('/jobs/:jobId', async (req, res) => {
 
     res.json({ message: 'Job deleted successfully.' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not delete that job');
   }
 });
 
@@ -770,8 +698,7 @@ router.put('/jobs/:jobId/error', async (req, res) => {
 
     res.json(updatedJob);
   } catch (error) {
-    const status = error.message === 'Error reason is required when a job is marked as Error.' ? 400 : 500;
-    res.status(status).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not update that job');
   }
 });
 
@@ -780,7 +707,7 @@ router.get('/settings/prompt-template', async (req, res) => {
   try {
     res.json(getPromptTemplateSetting());
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not load the prompt template');
   }
 });
 
@@ -795,8 +722,7 @@ router.put('/settings/prompt-template', async (req, res) => {
       updatedAt: savedSetting.updated_at
     });
   } catch (error) {
-    const status = error.message === 'Prompt template is required.' ? 400 : 500;
-    res.status(status).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not save the prompt template');
   }
 });
 
@@ -805,7 +731,7 @@ router.get('/profiles', (req, res) => {
   try {
     res.json(readAllProfiles(req.user));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not load the profiles');
   }
 });
 
@@ -815,8 +741,7 @@ router.post('/profiles', (req, res) => {
     const profile = createProfile(req.body || {}, req.user);
     res.json(profile);
   } catch (error) {
-    const errorDetails = getProfileErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    sendPublicError(req, res, error, 'Could not save that profile');
   }
 });
 
@@ -825,8 +750,7 @@ router.get('/profiles/:profileId', (req, res) => {
   try {
     res.json(readProfile(req.params.profileId, req.user));
   } catch (error) {
-    const errorDetails = getProfileErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    sendPublicError(req, res, error, 'Could not save that profile');
   }
 });
 
@@ -836,8 +760,7 @@ router.put('/profiles/:profileId', (req, res) => {
     const profile = updateProfile(req.params.profileId, req.body || {}, req.user);
     res.json({ message: 'Profile saved successfully.', profile });
   } catch (error) {
-    const errorDetails = getProfileErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    sendPublicError(req, res, error, 'Could not save that profile');
   }
 });
 
@@ -847,8 +770,7 @@ router.delete('/profiles/:profileId', (req, res) => {
     deleteProfile(req.params.profileId, req.user);
     res.json({ message: 'Profile deleted successfully.' });
   } catch (error) {
-    const errorDetails = getProfileErrorDetails(error);
-    res.status(errorDetails.status).json({ error: errorDetails.message });
+    sendPublicError(req, res, error, 'Could not save that profile');
   }
 });
 
@@ -859,7 +781,7 @@ router.get('/answers/:jobId', async (req, res) => {
     const answers = getAnswersByJobId(jobId);
     res.json(answers);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not load the saved answers');
   }
 });
 
@@ -881,7 +803,7 @@ router.delete('/answers/:jobId', async (req, res) => {
     deleteAnswer(jobId, profileId, question);
     res.json({ message: 'Answer deleted successfully.' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not delete that answer');
   }
 });
 
@@ -1001,7 +923,7 @@ router.post('/ask', async (req, res) => {
 
     res.json(generatedAnswersByProfile[focusProfileId] || []);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendPublicError(req, res, error, 'Could not generate the answers');
   }
 });
 

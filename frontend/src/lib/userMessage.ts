@@ -1,4 +1,4 @@
-import { ApiResponseError, ApiUnreachableError } from './api';
+import { ApiResponseError, ApiUnreachableError, GENERIC_MESSAGE, operatorDetail } from './api';
 
 /**
  * What a person is shown when something failed.
@@ -20,8 +20,8 @@ import { ApiResponseError, ApiUnreachableError } from './api';
 export const UNREACHABLE_MESSAGE =
   "We can't reach the server right now. Please try again in a moment, or contact your administrator if this continues.";
 
-/** When there is nothing more specific to say. */
-export const GENERIC_MESSAGE = 'Something went wrong. Please try again, or contact your administrator.';
+/** When there is nothing more specific to say. Defined beside `apiFetch`, which uses it too. */
+export { GENERIC_MESSAGE };
 
 /**
  * What a person is told when no AI model can run for them: every model is
@@ -40,11 +40,22 @@ export const AI_UNAVAILABLE_MESSAGE =
  */
 const warned = new WeakSet<object>();
 
-function warnOnce(error: Error): void {
+function warnOnce(error: Error, what: string): void {
   if (warned.has(error)) return;
   warned.add(error);
-  console.warn('[tailor] request failed before reaching the server:', error.message);
+  console.warn(`[tailor] ${what}:`, error.message);
 }
+
+/*
+ * What `fetch` itself rejects with when nothing answered: a TypeError, worded
+ * per browser - "Failed to fetch" (Chromium), "NetworkError when attempting to
+ * fetch resource." (Firefox), "Load failed" (Safari). `apiFetch` already turns
+ * these into ApiUnreachableError; the pages that call `fetch` directly (the bid
+ * assistant, the calendar) see them raw. Matched on the wording because a
+ * TypeError is ALSO what a bug in the page throws - `undefined.length` - and
+ * telling somebody the server is down over that sends them the wrong way.
+ */
+const FETCH_FAILURE = /failed to fetch|networkerror|load failed|network request failed/i;
 
 /**
  * The reference the server logged a failure under, e.g. `ERR-7F3A9C`.
@@ -82,21 +93,22 @@ function fallbackSentence(fallback: string): string {
  * - The server answered: its `error` sentence (already safe for whoever is
  *   signed in), plus "(Ref: ...)" when it logged the failure. A response with
  *   no sentence - a proxy's HTML error page, say - gets the fallback.
- * - Nothing answered (or `fetch` itself threw, which is a TypeError): the
+ * - Nothing answered (or `fetch` itself threw its network TypeError): the
  *   unreachable sentence. The technical text, which names the URLs tried and
  *   the port in the build, goes to the console for whoever is debugging.
  * - An `Error` the app threw itself (`new Error('Pick a profile first')`): its
  *   message - those are written for the reader already.
  * - Anything else, including a library's own exception classes whose text was
- *   never written for a person: the fallback.
+ *   never written for a person: the fallback, with the exception's own text
+ *   in the console.
  */
 export function userMessage(error: unknown, fallback: string = GENERIC_MESSAGE): string {
   if (error instanceof ApiResponseError) {
     const said = typeof error.body.error === 'string' ? error.body.error.trim() : '';
     return withRef(said || fallbackSentence(fallback), errorRef(error));
   }
-  if (error instanceof ApiUnreachableError || error instanceof TypeError) {
-    warnOnce(error);
+  if (error instanceof ApiUnreachableError || (error instanceof TypeError && FETCH_FAILURE.test(error.message))) {
+    warnOnce(error, 'request failed before reaching the server');
     return UNREACHABLE_MESSAGE;
   }
   // `name === 'Error'` is what marks the app's own: a SyntaxError from a
@@ -105,5 +117,23 @@ export function userMessage(error: unknown, fallback: string = GENERIC_MESSAGE):
     return error.message;
   }
   if (typeof error === 'string' && error.trim()) return error;
+  if (error instanceof Error) warnOnce(error, `${error.name} behind a failure`);
   return fallbackSentence(fallback);
+}
+
+/**
+ * `userMessage`, followed by the server's `detail` when it sent one - as ONE
+ * string, for the places that hold a failure as text: a status line under a
+ * button, a row's error cell, a dialog's message.
+ *
+ * Safe on any page for the same reason <ErrorNotice> is: the server attaches
+ * `detail` for an administrator and nobody else, so for everybody else this is
+ * exactly `userMessage`. It exists because the server's `error` is the generic
+ * sentence for administrators too - an admin page that showed only that would
+ * have lost the cause it used to print.
+ */
+export function messageWithDetail(error: unknown, fallback: string = GENERIC_MESSAGE): string {
+  const message = userMessage(error, fallback);
+  const detail = operatorDetail(error);
+  return detail && !message.includes(detail) ? `${message} ${detail}` : message;
 }

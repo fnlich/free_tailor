@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { requireUser } from '../middleware/auth';
-import { sheetsOperatorDetail } from './sheetsDetail';
+import { isAdmin, requireUser } from '../middleware/auth';
+import { isPublicError, PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
 import {
   batchUpdateGoogleSheetsColumns,
   fetchGoogleSheetsColumnValues,
@@ -13,7 +13,6 @@ import {
   JOB_SHEET_FIRST_DATA_ROW,
   toColumnLetters,
 } from '../integrations/googleSheets';
-import { SheetAccessError } from '../services/sheets/accountSheet';
 import {
   resolveAppendRow,
   resolveColumn,
@@ -38,6 +37,35 @@ import {
 const { isBroadSoftwareRoleSearch } = require('../../scrapers/filters');
 
 const router = Router();
+
+/**
+ * A failed job search, as anybody may read it.
+ *
+ * What a scraper throws names the actor that ran, its run id and status, or the
+ * variable that holds the token it needs - all the operator's. The reader is
+ * told only what they can do: pick another source, wait, or ask. Refusals of
+ * their own input (a bad URL, a missing keyword, a sheet that is not theirs)
+ * are public already and pass straight through, with their own status - a 404
+ * from the addressability guard stays a 404, so nobody learns whether another
+ * account's spreadsheet exists by watching the status change.
+ */
+function publicScraperFailure(error: unknown): unknown {
+  if (isPublicError(error)) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/unknown scraper (provider|source)/i.test(message)) {
+    return new PublicError("That job source isn't available. Choose another.", { status: 400, detail: message });
+  }
+  if (/rate limited|timed out/i.test(message)) {
+    return new PublicError('The job search is busy right now. Please try again in a few minutes.', {
+      status: 429,
+      detail: message,
+    });
+  }
+  return new PublicError(
+    'The job search could not run right now. Please try again later, or contact your administrator.',
+    { status: 502, detail: message, cause: error }
+  );
+}
 /**
  * Everything below needs a signed-in account.
  *
@@ -479,7 +507,7 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const source = requireSupportedScraperSource(body.source);
-    const providerId = typeof body.provider === 'string' ? body.provider : undefined;
+    const providerId = requestedProvider(req, body);
     const filters = applySourceSpecificScraperDefaults(source, normalizeScraperFilters(body, source, providerId));
     const {
       provider,
@@ -493,7 +521,7 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
       fetchedAt: new Date().toISOString(),
       source,
       providerId: provider.id,
-      providerLabel: provider.label,
+      ...(isAdmin(req) ? { providerLabel: provider.label } : {}),
       filters: {
         ...filters,
         rawResultCount,
@@ -503,20 +531,7 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
       results: finalResults,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to run scraper';
-    const statusCode =
-      // A 404 from the addressability guard, so a caller cannot learn whether
-      // somebody else's spreadsheet exists by watching the status change.
-      error instanceof SheetAccessError
-        ? error.status
-        : error instanceof GoogleSheetsRequestError
-        ? error.statusCode
-        : /unknown scraper provider/i.test(message)
-          ? 400
-        : /rate limited|timed out/i.test(message)
-          ? 429
-          : 500;
-    res.status(statusCode).json({ error: message, ...sheetsOperatorDetail(req, error) });
+    sendPublicError(req, res, publicScraperFailure(error), 'Failed to run the job search');
   }
 });
 
@@ -524,8 +539,9 @@ router.post('/scrapers/run', async (req: Request, res: Response) => {
  * The providers - a bare array, as it has always been - each with the most
  * results a run returns (SCRAPER_MAX_RESULTS folded in).
  */
-router.get('/scrapers/providers', (_req: Request, res: Response) => {
-  res.json(listScraperProviderCatalog());
+router.get('/scrapers/providers', (req: Request, res: Response) => {
+  const catalog = listScraperProviderCatalog();
+  res.json(isAdmin(req) ? catalog : catalog.map(catalogForReader));
 });
 
 /**
@@ -548,7 +564,7 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
     // terms rather than incidentally failing some other check first.
     const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
     const source = requireSupportedScraperSource(body.source);
-    const providerId = typeof body.provider === 'string' ? body.provider : undefined;
+    const providerId = requestedProvider(req, body);
     const filters = applySourceSpecificScraperDefaults(source, normalizeScraperFilters(body, source, providerId));
     const companyNameCol = resolveColumn('Company column', body.companyNameCol, JOB_SHEET_COLUMNS.company);
     const jobTitleCol = resolveColumn('Job title column', body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
@@ -681,7 +697,7 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
       fetchedAt: new Date().toISOString(),
       source,
       providerId: provider.id,
-      providerLabel: provider.label,
+      ...(isAdmin(req) ? { providerLabel: provider.label } : {}),
       filters: {
         ...filters,
         rawResultCount,
@@ -703,22 +719,38 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export scraper jobs';
-    const statusCode =
-      // A 404 from the addressability guard, so a caller cannot learn whether
-      // somebody else's spreadsheet exists by watching the status change.
-      error instanceof SheetAccessError
-        ? error.status
-        : error instanceof GoogleSheetsRequestError
-        ? error.statusCode
-        : /unknown scraper provider/i.test(message)
-          ? 400
-        : /rate limited|timed out/i.test(message)
-          ? 429
-          : 500;
-    res.status(statusCode).json({ error: message, ...sheetsOperatorDetail(req, error) });
+    sendPublicError(req, res, publicScraperFailure(error), 'Failed to export the jobs');
   }
 });
+
+/**
+ * Which scraper a run uses. An administrator may name one; everybody else runs
+ * each source's default - the providers are third-party actors, chosen and
+ * paid for by whoever runs the server, and which one is not theirs to pick.
+ */
+function requestedProvider(req: Request, body: Record<string, unknown>): string | undefined {
+  return isAdmin(req) && typeof body.provider === 'string' ? body.provider : undefined;
+}
+
+/**
+ * The catalog as anybody but an administrator reads it: each source and the
+ * one provider it will run, with what the page needs to size a run and none of
+ * the actor's name or description.
+ */
+function catalogForReader(entry: ReturnType<typeof listScraperProviderCatalog>[number]) {
+  const runs = entry.providers.find((provider) => provider.id === entry.defaultProviderId);
+  return {
+    ...entry,
+    providers: runs ? [{ id: runs.id, label: '', description: '', maxResults: runs.maxResults }] : [],
+  };
+}
+
+/** What one row's error line says, by the step it failed at. */
+const ROW_STEP_FAILED = {
+  open: 'Could not open the job page',
+  judge: 'The AI could not judge this row',
+  write: 'Could not write to the sheet',
+} as const;
 
 router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   try {
@@ -842,10 +874,15 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         continue;
       }
 
+      // Which step a row failed at is what its one-line error says; the cause -
+      // the job site's status, the seat's failure, Google's refusal - is logged
+      // under the ref the line carries.
+      let step: keyof typeof ROW_STEP_FAILED = 'open';
       try {
         const jobContent = await extractJobPageContent(jobLink);
         scrapedRows += 1;
 
+        step = 'judge';
         const analysis = await evaluateJobContentAgainstFilter({
           jobContent,
           jobLink,
@@ -855,6 +892,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         });
         const decision = evaluateJobFilterAnalysis(analysis);
 
+        step = 'write';
         await updateGoogleSheetsRow({
           sheetId,
           tabName,
@@ -868,8 +906,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         processedRows += 1;
       } catch (error) {
         errorRows += 1;
-        const message = error instanceof Error ? error.message : 'Unknown row processing error';
-        console.error(`[Filter Google Sheet] Row ${rowNumber} failed: ${message}`);
+        const message = publicItemError(error, ROW_STEP_FAILED[step], `job filter row ${rowNumber} (${step})`);
         if (rowErrors.length < 20) {
           rowErrors.push({ row: rowNumber, message });
         }
@@ -898,18 +935,9 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       rowErrors,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to filter Google Sheet jobs';
-    const statusCode =
-      // A 404 from the addressability guard, so a caller cannot learn whether
-      // somebody else's spreadsheet exists by watching the status change.
-      error instanceof SheetAccessError
-        ? error.status
-        : error instanceof GoogleSheetsRequestError
-        ? error.statusCode
-        : /rate limited/i.test(message)
-          ? 429
-          : 500;
-    res.status(statusCode).json({ error: message, ...sheetsOperatorDetail(req, error) });
+    // The sheet guard's own statuses, Google's refusals and "no model can run"
+    // are public; anything else is generic.
+    sendPublicError(req, res, error, 'Failed to filter the job sheet');
   }
 });
 

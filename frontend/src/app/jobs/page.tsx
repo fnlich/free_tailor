@@ -24,6 +24,7 @@ import {
   ScraperTimePosted,
 } from '@/lib/api';
 import { formatRunTimeout, limitOptionsFor, readScraperSettings, resultCapFor } from '@/lib/scraperForm';
+import { messageWithDetail } from '@/lib/userMessage';
 
 const SCRAPER_OPTIONS: Array<{
   value: ScraperSource;
@@ -341,7 +342,7 @@ export default function JobsPage() {
     } catch (err) {
       setSheetTabs([]);
       setSheetTitle('');
-      setError(err instanceof Error ? err.message : 'Failed to load Google Sheet tabs');
+      setError(messageWithDetail(err, 'Failed to load Google Sheet tabs'));
     } finally {
       setIsLoadingTabs(false);
     }
@@ -361,8 +362,8 @@ export default function JobsPage() {
         if (!trimmedStartUrl) {
           setError(
             isIndeedStartUrlOnlySource
-              ? 'Paste an Indeed start URL before running the Indeed scraper.'
-              : 'Paste a Hiring Cafe start URL before running the memo23 scraper.'
+              ? 'Paste an Indeed start URL before running the search.'
+              : 'Paste a Hiring Cafe start URL before running the search.'
           );
           setIsLoading(false);
           return;
@@ -448,7 +449,7 @@ export default function JobsPage() {
       setSearchMeta(null);
       setExportMeta(null);
       setSearched(true);
-      setError(err instanceof Error ? err.message : 'Failed to run scraper');
+      setError(messageWithDetail(err, 'Failed to run scraper'));
     } finally {
       setIsLoading(false);
     }
@@ -504,30 +505,38 @@ export default function JobsPage() {
           </fieldset>
 
           <div className="grid gap-x-4 gap-y-6 md:grid-cols-2 xl:grid-cols-3">
-            <Field
-              label="Provider"
-              htmlFor="jobs-provider"
-              hint={selectedProvider ? selectedProvider.description : undefined}
-            >
-              <select
-                id="jobs-provider"
-                value={selectedProviderId}
-                onChange={(event) =>
-                  setSelectedProviders((current) => ({
-                    ...current,
-                    [source]: event.target.value,
-                  }))
-                }
-                className="tl-input"
-                disabled={isLoading || !selectedSourceProviderCatalog || selectedSourceProviderCatalog.providers.length <= 1}
+            {/*
+              Which scraping service runs a category, and its actor's name, is
+              how this installation is run - an administrator's choice. Anybody
+              else picks a category and gets its default provider, which is the
+              id `selectedProviderId` falls back to without this select.
+            */}
+            {isAdmin && (
+              <Field
+                label="Provider"
+                htmlFor="jobs-provider"
+                hint={selectedProvider ? selectedProvider.description : undefined}
               >
-                {(selectedSourceProviderCatalog?.providers ?? []).map((provider) => (
-                  <option key={provider.id} value={provider.id}>
-                    {provider.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
+                <select
+                  id="jobs-provider"
+                  value={selectedProviderId}
+                  onChange={(event) =>
+                    setSelectedProviders((current) => ({
+                      ...current,
+                      [source]: event.target.value,
+                    }))
+                  }
+                  className="tl-input"
+                  disabled={isLoading || !selectedSourceProviderCatalog || selectedSourceProviderCatalog.providers.length <= 1}
+                >
+                  {(selectedSourceProviderCatalog?.providers ?? []).map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
 
             {isStartUrlOnlyScraper ? (
               <div className="md:col-span-1 xl:col-span-2">
@@ -536,8 +545,8 @@ export default function JobsPage() {
                   htmlFor="jobs-start-url"
                   hint={
                     isIndeedStartUrlOnlySource
-                      ? 'Indeed runs from a single Indeed URL. The backend sends the rest of the actor input as fixed values.'
-                      : '`Apify: memo23` runs from a single Hiring Cafe URL. The backend sends the rest of the actor input as fixed values.'
+                      ? 'Paste an Indeed search URL. The other search options are fixed.'
+                      : 'Paste a Hiring Cafe search URL. The other search options are fixed.'
                   }
                 >
                   <input
@@ -853,8 +862,15 @@ export default function JobsPage() {
           <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-sm text-muted">
             <span>
               Found <span className="font-semibold text-ink">{results.length}</span> {formatSourceLabel(searchMeta.source)} job
-              {results.length === 1 ? '' : 's'} for <span className="font-semibold text-ink">{searchSummaryValue}</span> via{' '}
-              <span className="font-semibold text-ink">{searchMeta.providerLabel}</span>.
+              {results.length === 1 ? '' : 's'} for <span className="font-semibold text-ink">{searchSummaryValue}</span>
+              {/* The provider is the actor's name - see the Provider select. */}
+              {isAdmin && (
+                <>
+                  {' '}
+                  via <span className="font-semibold text-ink">{searchMeta.providerLabel}</span>
+                </>
+              )}
+              .
             </span>
             <span className="flex flex-wrap gap-x-6 gap-y-1">
               <span>Fetched {formatFetchedAt(searchMeta.fetchedAt)}</span>
@@ -901,8 +917,8 @@ export default function JobsPage() {
             <Spinner
               label={
                 writeToGoogleSheet
-                  ? `${selectedSource.label} is running on the backend and rows will be written to Google Sheets after filtering duplicate jobs.`
-                  : `${selectedSource.label} is running on the backend.`
+                  ? `Searching ${selectedSource.label}. The jobs are written to Google Sheets once duplicates are filtered out.`
+                  : `Searching ${selectedSource.label}...`
               }
             />
           </div>

@@ -30,6 +30,16 @@ const { loadFresh, useAdminEmails, useTempStorage, writeStaticJson } = require('
 
 const GENERIC = "That model isn't available. Choose another, or contact your administrator.";
 
+/**
+ * The model-unavailable body anybody but an administrator gets: the one public
+ * sentence, its code, and the ref its cause was logged under - never the cause.
+ */
+function assertModelUnavailable(body) {
+  const { ref, ...rest } = body;
+  assert.deepEqual(rest, { error: GENERIC, code: 'model-unavailable' });
+  assert.match(ref, /^ERR-[0-9A-F]{6}$/);
+}
+
 const config = require('../dist/config/aiModelConfig');
 const preferences = require('../dist/config/aiPreferences');
 
@@ -264,7 +274,7 @@ test('over HTTP, a refused model is a 400 with the generic sentence; only an adm
 
     const user = await server.call('alice', 'POST', '/resume/analyze', { jobDescription, model: 'claude-cli-haiku' });
     assert.equal(user.status, 400);
-    assert.deepEqual(user.body, { error: GENERIC, code: 'model-unavailable' });
+    assertModelUnavailable(user.body);
 
     const form = await server.call('alice', 'POST', '/resume/analyze', { jobDescription, model: 'claude-cli' });
     assert.equal(form.status, 400);
@@ -292,7 +302,7 @@ test('a profile save checks a changed model against the list, and stores a retir
       profileSettings: { ai: { modelId: 'claude-cli-haiku' } },
     });
     assert.equal(refused.status, 400);
-    assert.deepEqual(refused.body, { error: GENERIC, code: 'model-unavailable' });
+    assertModelUnavailable(refused.body);
 
     const created = await server.call('bob', 'POST', '/profiles', {
       ...profileInput('Bo'),

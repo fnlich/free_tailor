@@ -1,13 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 
 import { isAdmin, requireUser } from '../middleware/auth';
-import { sheetsOperatorDetail } from './sheetsDetail';
-import { GoogleSheetsRequestError } from '../integrations/googleSheets';
-import {
-  describeAccountSheet,
-  setAccountSheetVisibility,
-  SheetAccessError,
-} from '../services/sheets/accountSheet';
+import { isPublicError, sendPublicError } from '../middleware/publicError';
+import { describeAccountSheet, setAccountSheetVisibility } from '../services/sheets/accountSheet';
 
 /**
  * The signed-in account's own spreadsheet.
@@ -36,33 +31,17 @@ const NOT_CONFIGURED =
   'Job sheets are not set up on this server yet. An administrator has to connect Google Sheets ' +
   'before this page can show you one.';
 
+/**
+ * Every failure here, through the one helper every other route uses.
+ *
+ * A refusal about THIS account's spreadsheet - the refusal to go private while
+ * the owner has no grant of their own, a tab that is not there - is public and
+ * keeps its own status. A Google refusal says only what the reader can act on,
+ * with Google's reason as `detail` for an administrator and the log. Anything
+ * else is Google being unreachable, as far as the reader is concerned: a 502.
+ */
 function fail(req: Request, res: Response, error: unknown): void {
-  if (error instanceof SheetAccessError) {
-    // Carries its own status and its own sentence - the refusal to go private
-    // while the owner has no grant of their own is the one that matters. It is
-    // about THIS account's spreadsheet, so everybody gets it.
-    res.status(error.status).json({ error: error.message });
-    return;
-  }
-  if (error instanceof GoogleSheetsRequestError) {
-    // Pass Google's own status through. The 403 in particular carries the
-    // "enable the Drive API" sentence, which is the actual fix. (Not a 401:
-    // the error has already made that a 502, since ours means "signed out".)
-    const status = error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502;
-
-    /*
-     * The operator half is logged every time and sent only to an administrator.
-     *
-     * `error.detail` is the part that names a command to run in `backend/`, a
-     * file on disk or an environment variable. Whoever is reading their own
-     * Account page is usually not the person who can do any of that, and the
-     * log is where it was always meant to go.
-     */
-    res.status(status).json({ error: error.message, ...sheetsOperatorDetail(req, error) });
-    return;
-  }
-  console.error('[sheets] Sheet request failed.', error);
-  res.status(502).json({ error: 'Could not reach Google Sheets. Try again in a moment.' });
+  sendPublicError(req, res, error, 'Could not reach Google Sheets', isPublicError(error) ? undefined : 502);
 }
 
 /**

@@ -180,8 +180,44 @@ function loadFresh(modulePath) {
   return require(resolved);
 }
 
+/**
+ * Runs `action` with console.error captured, and returns what it logged - one
+ * string per call, objects through util.inspect, so an error's stack and own
+ * properties are searchable - beside its result.
+ *
+ * For the failures `middleware/publicError` answers generically: the body or
+ * the stored text carries a ref, and the cause is meant to be in the log under
+ * that ref and nowhere a non-administrator can read it.
+ */
+async function captureErrorLog(action) {
+  const util = require('util');
+  const lines = [];
+  const real = console.error;
+  console.error = (...args) =>
+    lines.push(args.map((arg) => (typeof arg === 'string' ? arg : util.inspect(arg, { depth: 4 }))).join(' '));
+  try {
+    const result = await action();
+    return { result, lines };
+  } finally {
+    console.error = real;
+  }
+}
+
+/**
+ * The ref a public failure text ends with ("... (Ref: ERR-7F3A9C)"), checked
+ * to be one, and the log lines filed under it.
+ */
+function refAndLog(text, lines) {
+  const match = /\(Ref: (ERR-[0-9A-F]{6})\)$/.exec(String(text));
+  if (!match) throw new Error(`No ref at the end of: ${text}`);
+  const ref = match[1];
+  return { ref, logged: lines.filter((line) => line.includes(`[error ${ref}]`)).join('\n') };
+}
+
 module.exports = {
+  captureErrorLog,
   loadFresh,
+  refAndLog,
   useAdminEmails,
   makeFakeCliRunner,
   readCliFixture,

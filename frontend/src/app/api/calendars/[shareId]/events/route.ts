@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDefaultRange, getEvents } from '@/lib/calendar/service';
+import { calendarFailure } from '@/lib/calendar/routeFailure';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,9 +31,6 @@ export async function GET(
       },
     });
   } catch (error) {
-    return NextResponse.json(
-      { message: error instanceof Error ? error.message : 'Failed to load calendar events.' },
-      { status: 502 }
-    );
+    return calendarFailure('calendar events', error);
   }
 }

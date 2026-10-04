@@ -1,4 +1,5 @@
 import { getCreditPricingSettings, type PaymentTargetLimits } from '../../config/aiModelConfig';
+import { PublicError } from '../../middleware/publicError';
 
 /**
  * What a number of credits costs, decided here and nowhere else.
@@ -15,15 +16,20 @@ import { getCreditPricingSettings, type PaymentTargetLimits } from '../../config
  * of those has to be a refusal with a reason rather than a strange order.
  */
 
-export class PriceError extends Error {
-  readonly status: number;
-
-  constructor(message: string, status = 400) {
-    super(message);
+/**
+ * A purchase amount refused. A 4xx is the buyer's choice and says so; the 503 -
+ * settings that leave nothing to buy - is the administrator's, so its sentence
+ * is generic and the reason is `detail`.
+ */
+export class PriceError extends PublicError {
+  constructor(message: string, status = 400, detail?: string) {
+    super(message, { status, ...(detail ? { detail } : {}) });
     this.name = 'PriceError';
-    this.status = status;
   }
 }
+
+/** What a buyer is told when the settings leave nothing they could buy. */
+export const PURCHASES_UNAVAILABLE = 'Purchases are not available right now. Please contact your administrator.';
 
 export type Quote = {
   /** What the ledger will be credited: the gross, less the fee, floored. */
@@ -159,10 +165,11 @@ export async function resolveLimits(target?: QuoteTarget): Promise<ResolvedLimit
 
   if (minCredits > maxCredits) {
     throw new PriceError(
+      PURCHASES_UNAVAILABLE,
+      503,
       `${name} purchases are not available: at ${unitPriceCents}c per credit no whole ` +
         'number of credits falls inside the configured amounts. Change the price or the ' +
-        'limits under Admin - Payments.',
-      503
+        'limits under Admin - Payments.'
     );
   }
 

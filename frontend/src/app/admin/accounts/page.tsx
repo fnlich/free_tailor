@@ -14,6 +14,7 @@ import {
 import { describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credits';
 import { formatDate } from '@/lib/format';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
 
 /**
@@ -67,7 +68,7 @@ function AccountsTable() {
       setPlans(data.plans);
       setError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not load accounts.');
+      setError(messageWithDetail(caught, 'Could not load accounts.'));
     } finally {
       setLoading(false);
     }
@@ -92,7 +93,7 @@ function AccountsTable() {
         await load();
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'That change was refused.');
+      setError(messageWithDetail(caught, 'That change was refused.'));
       // Reloaded so the control snaps back to what the server actually holds,
       // rather than showing a value the refusal means was never stored.
       await load();
@@ -113,7 +114,7 @@ function AccountsTable() {
       if (ledgerRequest.current === token) setHistory(result.entries);
     } catch (caught) {
       if (ledgerRequest.current === token) {
-        setError(caught instanceof Error ? caught.message : 'Could not load that history.');
+        setError(messageWithDetail(caught, 'Could not load that history.'));
       }
     } finally {
       if (ledgerRequest.current === token) setHistoryLoading(false);
@@ -160,7 +161,7 @@ function AccountsTable() {
       );
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not create that account.');
+      setError(messageWithDetail(caught, 'Could not create that account.'));
     } finally {
       setInviting(false);
     }
@@ -183,7 +184,7 @@ function AccountsTable() {
       setNotice(result.note ?? `Deleted the account for ${row.email}.`);
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not delete that account.');
+      setError(messageWithDetail(caught, 'Could not delete that account.'));
     } finally {
       setBusyId(null);
     }

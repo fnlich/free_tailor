@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage } = require('./helpers');
+const { captureErrorLog, loadFresh, refAndLog, useTempStorage } = require('./helpers');
 
 /**
  * The queue on disk, so a run survives the server restarting.
@@ -246,15 +246,21 @@ test('a task whose kind nothing registers fails by name', async () => {
     cli: [{ id: 'c1', queue: 'cli' }],
     codex: [],
   }));
-  const batch = queue.restore(meta, [
-    { ...entry('a', 0, 'queued'), kind: 'from-a-later-build' },
-  ]);
-  await queue.refreshCapacity();
-  await settle();
+  const { result: batch, lines } = await captureErrorLog(async () => {
+    const restored = queue.restore(meta, [
+      { ...entry('a', 0, 'queued'), kind: 'from-a-later-build' },
+    ]);
+    await queue.refreshCapacity();
+    await settle();
+    return restored;
+  });
 
   const snapshot = queue.snapshot(batch.id);
   assert.equal(snapshot.failed, 1);
-  assert.match(snapshot.tasks[0].error, /No runner is registered for "from-a-later-build"/);
+  // By name in the LOG, under the ref the stored failure carries: the kind is
+  // the operator's to read, and the owner's page reads the stored text.
+  assert.doesNotMatch(snapshot.tasks[0].error, /runner|from-a-later-build/);
+  assert.match(refAndLog(snapshot.tasks[0].error, lines).logged, /No runner is registered for "from-a-later-build"/);
 });
 
 /**
@@ -349,13 +355,15 @@ test('a kind nothing registers fails once, however many attempts are allowed', a
 
   // The dispatcher runs on a timer, so wait for the task to stop rather than
   // assuming it already has.
-  for (let i = 0; i < 200 && batch.tasks[0].state === 'queued'; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  const { lines } = await captureErrorLog(async () => {
+    for (let i = 0; i < 200 && batch.tasks[0].state === 'queued'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  });
 
   const snapshot = queue.snapshot('bat_no_runner');
   assert.equal(snapshot.tasks[0].state, 'failed');
-  assert.match(snapshot.tasks[0].error, /No runner is registered/);
+  assert.match(refAndLog(snapshot.tasks[0].error, lines).logged, /No runner is registered/);
   assert.equal(
     snapshot.tasks[0].attempts,
     undefined,

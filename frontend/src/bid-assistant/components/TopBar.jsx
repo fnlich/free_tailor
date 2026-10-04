@@ -3,8 +3,9 @@ import {
   DEFAULT_PROMPT_TEMPLATE,
   PROMPT_TOKENS
 } from '../lib/promptTemplate.js';
-import { bidAssistantFetch } from '../lib/apiBase.js';
+import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconClose } from '@/components/icons';
+import { messageWithDetail } from '@/lib/userMessage';
 
 // Returns the empty form state for creating a new Google Sheet source.
 function createEmptySheetForm() {
@@ -182,7 +183,7 @@ export default function TopBar({
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || 'Could not load tabs.');
+          throw responseError(response, data, 'Could not load tabs.');
         }
 
         if (cancelled) {
@@ -197,7 +198,7 @@ export default function TopBar({
         if (!cancelled) {
           setTabs([]);
           setSelectedTabName('');
-          setTabsError(error.message);
+          setTabsError(messageWithDetail(error, 'Could not load the tabs.'));
         }
       } finally {
         if (!cancelled) {
@@ -265,7 +266,7 @@ export default function TopBar({
       setPromptTemplateDraft(savedPromptTemplate);
       setPromptMessage('Prompt template saved.');
     } catch (error) {
-      setPromptError(error.message);
+      setPromptError(messageWithDetail(error, 'Could not save the prompt template.'));
     } finally {
       setIsSavingPrompt(false);
     }
@@ -310,7 +311,7 @@ export default function TopBar({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Could not save profile.');
+        throw responseError(response, data, 'Could not save profile.');
       }
 
       const nextProfiles = await onProfilesChanged();
@@ -324,7 +325,7 @@ export default function TopBar({
         setActiveProfileId(nextProfiles[0].id);
       }
     } catch (error) {
-      setProfileError(error.message);
+      setProfileError(messageWithDetail(error, 'Could not save the profile.'));
     } finally {
       setIsSavingProfile(false);
     }
@@ -344,7 +345,7 @@ export default function TopBar({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Could not delete profile.');
+        throw responseError(response, data, 'Could not delete profile.');
       }
 
       const nextProfiles = await onProfilesChanged();
@@ -355,7 +356,7 @@ export default function TopBar({
       setProfileJsonText(formatProfileJson(createEmptyProfileTemplate()));
       setProfileMessage('Profile deleted.');
     } catch (error) {
-      setProfileError(error.message);
+      setProfileError(messageWithDetail(error, 'Could not delete the profile.'));
     } finally {
       setIsDeletingProfile(false);
     }
@@ -385,7 +386,7 @@ export default function TopBar({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Could not save Google Sheet source.');
+        throw responseError(response, data, 'Could not save Google Sheet source.');
       }
 
       const nextSheets = await onGoogleSheetsChanged();
@@ -398,7 +399,7 @@ export default function TopBar({
         setActiveSheetId(nextSheets[0].id);
       }
     } catch (error) {
-      setFormError(error.message);
+      setFormError(messageWithDetail(error, 'Could not save the Google Sheet source.'));
     } finally {
       setIsSavingSheet(false);
     }
@@ -418,7 +419,7 @@ export default function TopBar({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Could not delete Google Sheet source.');
+        throw responseError(response, data, 'Could not delete Google Sheet source.');
       }
 
       if (sheetForm.id === sheetId) {
@@ -429,7 +430,7 @@ export default function TopBar({
       setFormMessage('Source deleted.');
       setFormError('');
     } catch (error) {
-      setFormError(error.message);
+      setFormError(messageWithDetail(error, 'Could not delete the Google Sheet source.'));
     } finally {
       setIsDeletingSheet(false);
     }
@@ -461,7 +462,7 @@ export default function TopBar({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Import failed.');
+        throw responseError(response, data, 'Import failed.');
       }
 
       setImportMessage(
@@ -469,7 +470,7 @@ export default function TopBar({
       );
       await onJobsImported();
     } catch (error) {
-      setImportError(error.message);
+      setImportError(messageWithDetail(error, 'Import failed.'));
     } finally {
       setIsImporting(false);
     }
@@ -581,7 +582,7 @@ export default function TopBar({
             <h2>Profile Manager</h2>
             <p className="muted-text">
               Create, edit, and delete the full profile JSON records directly. New profiles get their `id`,
-              `createdAt`, and `updatedAt` values from the backend.
+              `createdAt`, and `updatedAt` values automatically.
             </p>
 
             <div className="source-manager-grid">
@@ -830,8 +831,12 @@ export default function TopBar({
                   </button>
                 </div>
 
+                {/* Which Google identity reads the sheet is the operator's
+                    business (the README's Google Sheets section), so this says
+                    only who to ask when the tabs do not appear. */}
                 <p className="muted-text">
-                  Share the spreadsheet with your service account email. Tabs are loaded automatically after you select the source.
+                  Tabs are loaded automatically after you select the source. If they do not load, ask your
+                  administrator to give the app access to the spreadsheet.
                 </p>
 
                 {formMessage && <p className="success-text">{formMessage}</p>}

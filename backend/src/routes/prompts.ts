@@ -1,5 +1,5 @@
 import { Request, Response, Router } from 'express';
-import { requireAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import { listAvailableAIModelOptions } from '../config/aiModelConfig';
 import { listPromptCategories } from '../config/promptCategories';
 import {
@@ -21,10 +21,21 @@ const router = Router();
  *
  * Split because the prompts are shared: they are how EVERY account's resumes
  * are built, so one user editing the tailoring prompt changes what everybody
- * else gets. Reading stays open to users so the builder can show which prompt a
- * run will use.
+ * else gets. Reading stays open to users so a profile can pick which prompt its
+ * runs use - but only what that picker needs. A prompt's body, its variables
+ * and the model override it carries (a seat and a CLI model id) are the
+ * administrator's, and so are the routes that validate, preview and list
+ * models for one.
  */
 router.use(requireUser);
+
+type PromptLike = { id: string; name: string; featureKey?: string | null };
+
+/** What anybody but an administrator reads of a prompt: enough to pick it by name. */
+function forReader<T extends PromptLike>(prompt: T, admin: boolean): T | PromptLike {
+  if (admin) return prompt;
+  return { id: prompt.id, name: prompt.name, ...(prompt.featureKey ? { featureKey: prompt.featureKey } : {}) };
+}
 
 /**
  * The categories, so the page's headings are not a second copy of the list.
@@ -35,17 +46,18 @@ router.get('/categories', (_req: Request, res: Response) => {
   res.json({ categories: listPromptCategories() });
 });
 
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
+    const admin = isAdmin(req);
     const prompts = await listPrompts();
-    res.json(prompts);
+    res.json(prompts.map((prompt) => forReader(prompt, admin)));
   } catch (error) {
     console.error('Error fetching prompts:', error);
     res.status(500).json({ error: 'Failed to fetch prompts' });
   }
 });
 
-router.post('/validate', async (req: Request, res: Response) => {
+router.post('/validate', requireAdmin, async (req: Request, res: Response) => {
   try {
     const validation = await validatePromptDraft(req.body as PromptPreviewInput);
     res.json(validation);
@@ -57,7 +69,7 @@ router.post('/validate', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/preview', async (req: Request, res: Response) => {
+router.post('/preview', requireAdmin, async (req: Request, res: Response) => {
   try {
     const preview = await previewPrompt(req.body as PromptPreviewInput);
     res.json(preview);
@@ -69,7 +81,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/models', async (_req: Request, res: Response) => {
+router.get('/models', requireAdmin, async (_req: Request, res: Response) => {
   try {
     res.json(await listAvailableAIModelOptions());
   } catch (error) {
@@ -85,7 +97,7 @@ router.get('/:id', async (req: Request<{ id: string }>, res: Response) => {
       res.status(404).json({ error: 'Prompt not found' });
       return;
     }
-    res.json(prompt);
+    res.json(forReader(prompt, isAdmin(req)));
   } catch (error) {
     console.error('Error fetching prompt:', error);
     res.status(500).json({ error: 'Failed to fetch prompt' });

@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
-import { bidAssistantFetch } from '../lib/apiBase.js';
+import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconChevronRight, IconClose } from '@/components/icons';
+import { messageWithDetail } from '@/lib/userMessage';
 
+/*
+ * The body, or null when there is none or it is not JSON. An HTML error page
+ * from a proxy, or a stack trace, is not a sentence for the reader - the
+ * caller's fallback is - so it goes to the console for whoever is debugging.
+ */
 async function readResponseData(response) {
   const responseText = await response.text();
 
@@ -12,11 +18,8 @@ async function readResponseData(response) {
   try {
     return JSON.parse(responseText);
   } catch {
-    return {
-      error: responseText.startsWith('<!DOCTYPE')
-        ? 'The backend returned HTML instead of JSON. Restart the backend server and try again.'
-        : responseText
-    };
+    console.warn(`[tailor] ${response.url} answered HTTP ${response.status} with a body that is not JSON.`);
+    return null;
   }
 }
 
@@ -26,7 +29,7 @@ async function fetchAnswers(jobId) {
   const data = await readResponseData(response);
 
   if (!response.ok) {
-    throw new Error(data?.error || 'Failed to load answers.');
+    throw responseError(response, data, 'Failed to load answers.');
   }
 
   return data || {};
@@ -43,7 +46,7 @@ async function deleteSavedAnswer(jobId, profileId, question) {
   const data = await readResponseData(response);
 
   if (!response.ok) {
-    throw new Error(data?.error || 'Failed to delete answer.');
+    throw responseError(response, data, 'Failed to delete answer.');
   }
 }
 
@@ -183,7 +186,7 @@ function DeleteAnswerModal({
       setErrorMessage('');
       await onDelete(targetProfileIds);
     } catch (error) {
-      setErrorMessage(error.message);
+      setErrorMessage(messageWithDetail(error, 'Could not delete the answers.'));
     }
   }
 
@@ -364,7 +367,7 @@ export default function JobDetail({
         }
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error.message);
+          setErrorMessage(messageWithDetail(error, 'Could not load the saved answers.'));
         }
       }
     }
@@ -395,7 +398,7 @@ export default function JobDetail({
       setActionMessage(`Saved answer deleted for ${profileIds.length} profile${profileIds.length === 1 ? '' : 's'}.`);
       closeDeleteAnswerModal();
     } catch (error) {
-      setErrorMessage(error.message);
+      setErrorMessage(messageWithDetail(error, 'Could not delete the answer.'));
       throw error;
     } finally {
       setDeletingQuestion('');
@@ -437,7 +440,7 @@ export default function JobDetail({
       setActionMessage('Job marked as Error.');
       setActiveModal(null);
     } catch (error) {
-      setErrorMessage(error.message);
+      setErrorMessage(messageWithDetail(error, 'Could not save the error note.'));
     } finally {
       setIsSavingJobError(false);
     }
@@ -456,7 +459,7 @@ export default function JobDetail({
       setActionMessage('');
       await onJobDeleted(job.id);
     } catch (error) {
-      setErrorMessage(error.message);
+      setErrorMessage(messageWithDetail(error, 'Could not delete the job.'));
     } finally {
       setIsDeletingJob(false);
     }

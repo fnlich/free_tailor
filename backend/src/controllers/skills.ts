@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
+import { sendPublicError } from '../middleware/publicError';
 import {
   HardSkillCategory,
-  SkillDatabaseError,
   addSkill,
   deleteSkill,
   isHardSkillCategory,
@@ -38,14 +38,13 @@ function parseHardSkillMetadata(body: SkillBody): { priority: number; category: 
     : null;
 }
 
-function sendSkillError(res: Response, error: unknown, fallbackMessage: string): void {
-  if (error instanceof SkillDatabaseError) {
-    res.status(error.statusCode).json({ error: error.message });
-    return;
-  }
-
-  console.error(fallbackMessage, error);
-  res.status(500).json({ error: fallbackMessage });
+/**
+ * A skill the caller named that is missing, already there or incomplete is a
+ * `SkillDatabaseError` and public; anything else - the database itself - is
+ * the generic sentence with a ref.
+ */
+function sendSkillError(req: Request, res: Response, error: unknown, fallbackMessage: string): void {
+  sendPublicError(req, res, error, fallbackMessage);
 }
 
 function refreshCachesForType(type: 'hard' | 'soft'): void {
@@ -65,7 +64,7 @@ export function listSkills(req: Request, res: Response): void {
 
     res.json({ skills: readSkills(type) });
   } catch (error) {
-    sendSkillError(res, error, 'Failed to read skills');
+    sendSkillError(req, res, error, 'Failed to read skills');
   }
 }
 
@@ -84,7 +83,7 @@ export function confirmSkill(req: Request, res: Response): void {
 
     res.json(result);
   } catch (error) {
-    sendSkillError(res, error, 'Failed to confirm skill');
+    sendSkillError(req, res, error, 'Failed to confirm skill');
   }
 }
 
@@ -110,7 +109,7 @@ export function createSkill(req: Request, res: Response): void {
 
     res.json(result);
   } catch (error) {
-    sendSkillError(res, error, 'Failed to add skill');
+    sendSkillError(req, res, error, 'Failed to add skill');
   }
 }
 
@@ -135,7 +134,7 @@ export function updateSkillHandler(req: Request, res: Response): void {
     refreshCachesForType(type);
     res.json(result);
   } catch (error) {
-    sendSkillError(res, error, 'Failed to update skill');
+    sendSkillError(req, res, error, 'Failed to update skill');
   }
 }
 
@@ -151,6 +150,6 @@ export function deleteSkillHandler(req: Request, res: Response): void {
     refreshCachesForType(type);
     res.json(result);
   } catch (error) {
-    sendSkillError(res, error, 'Failed to delete skill');
+    sendSkillError(req, res, error, 'Failed to delete skill');
   }
 }

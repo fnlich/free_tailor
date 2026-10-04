@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 
+import { PublicError } from '../middleware/publicError';
+
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4';
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
@@ -502,25 +504,27 @@ export function describeCredentialInUse(): string {
   return credentialSummary;
 }
 
-export class GoogleSheetsRequestError extends Error {
+export class GoogleSheetsRequestError extends PublicError {
   statusCode: number;
 
   /**
    * What to tell the OPERATOR, kept apart from what anyone may read.
    *
    * The useful thing to say about a refused credential names a command to run
-   * in `backend/`, or an environment variable, or a file on the server's disk.
-   * That is exactly right in a log and exactly wrong on a page: `/api/sheet` is
-   * behind `requireUser`, not `requireAdmin`, so every account holder opening
-   * their own Account page was being handed `Run "npm run sheets:login" in
-   * backend/` about a server they do not administer, along with the layout of
-   * its directories.
+   * in `backend/`, or an environment variable, or a file on the server's disk;
+   * the useful thing to say about a refused call is Google's own reason, the
+   * Cloud project it was refused in and the credential that asked. That is
+   * exactly right in a log and exactly wrong on a page: `/api/sheet` is behind
+   * `requireUser`, not `requireAdmin`, so every account holder opening their
+   * own Account page was being handed `Run "npm run sheets:login" in backend/`
+   * about a server they do not administer, along with the layout of its
+   * directories.
    *
-   * So `message` stays true and says only what the reader can act on, and the
-   * half that assumes shell access goes here. A route decides who sees it -
-   * see `fail` in `routes/sheet.ts` - and the log always does.
+   * So `message` says only what the reader can act on - which is what makes
+   * this a `PublicError` - and the rest goes here. `publicFailure` gives it to
+   * an administrator's response and the log, and to nobody else.
    */
-  detail?: string;
+  declare readonly detail?: string;
 
   /**
    * Google's own status, when `statusCode` had to differ from it.
@@ -535,11 +539,62 @@ export class GoogleSheetsRequestError extends Error {
   upstreamStatus?: number;
 
   constructor(statusCode: number, message: string, detail?: string) {
-    super(message);
-    this.statusCode = statusCode === 401 ? 502 : statusCode;
-    if (statusCode !== this.statusCode) this.upstreamStatus = statusCode;
-    if (detail) this.detail = detail;
+    const status = statusCode === 401 ? 502 : statusCode;
+    super(message, { status, ...(detail ? { detail } : {}) });
+    this.name = 'GoogleSheetsRequestError';
+    this.statusCode = status;
+    if (statusCode !== status) this.upstreamStatus = statusCode;
   }
+}
+
+/**
+ * What anybody may be told when Google refuses a Sheets or Drive call, and the
+ * status this API answers with.
+ *
+ * Google's own text - and `describeGoogleFailure`'s remedies on top of it -
+ * names the Cloud project, the API to enable, the credential that asked and a
+ * command to run; it is the `detail`. What is left for the reader depends only
+ * on what they could do: a sheet or tab that is not there is theirs to check, a
+ * busy Google is theirs to wait out, and everything else is the
+ * administrator's. Google's 403 is never passed through as ours - it is the
+ * server that was refused, not the caller.
+ */
+function publicGoogleRefusal(status: number): { status: number; message: string } {
+  if (status === 404) {
+    return {
+      status: 404,
+      message: 'That spreadsheet or tab could not be found. Check the sheet link, or contact your administrator.',
+    };
+  }
+  if (status === 429) {
+    return { status: 429, message: 'Google Sheets is busy right now. Please try again in a few minutes.' };
+  }
+  if (status === 400) {
+    return {
+      status: 400,
+      message:
+        'Google Sheets could not complete that request. Check the sheet and the rows you chose, ' +
+        'or contact your administrator.',
+    };
+  }
+  if (status === 403) {
+    return {
+      status: 502,
+      message: 'This server cannot open that spreadsheet. Check the sheet link, or contact your administrator.',
+    };
+  }
+  return {
+    status: 502,
+    message: 'Google Sheets could not complete that request. Please try again, or contact your administrator.',
+  };
+}
+
+/** A refused Sheets or Drive call, split into what anybody may read and the operator's half. */
+function googleRefusal(status: number, operatorText: string): GoogleSheetsRequestError {
+  const refusal = publicGoogleRefusal(status);
+  const error = new GoogleSheetsRequestError(refusal.status, refusal.message, operatorText);
+  if (refusal.status !== status) error.upstreamStatus = status;
+  return error;
 }
 
 function base64UrlEncode(value: string): string {
@@ -975,6 +1030,14 @@ export async function getAccessToken(scope: string): Promise<string> {
         'This usually means the JSON key belongs to a deleted or disabled service account, or the key file does not match the live account. ' +
         'Create a new key for the current service account and replace backend/service-account-key.json.';
     }
+    if (!operatorDetail) {
+      // Nothing above recognised it, so `errorMessage` is still Google's raw
+      // OAuth text. That is the operator's to read, not an account holder's.
+      operatorDetail = `The token request was refused.${googleSaid}`;
+      errorMessage =
+        "This server's Google sign-in did not work, so Sheets and Drive are unavailable until an " +
+        'administrator fixes it.';
+    }
     throw new GoogleSheetsRequestError(response.status, errorMessage, operatorDetail);
   }
 
@@ -1008,7 +1071,7 @@ async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRet
   }
 
   if (!response.ok) {
-    throw new GoogleSheetsRequestError(
+    throw googleRefusal(
       response.status,
       describeGoogleFailure(
         response.status,
@@ -1053,7 +1116,7 @@ async function googleDriveFetch<T>(pathname: string, init?: RequestInit, hasRetr
   }
 
   if (!response.ok) {
-    throw new GoogleSheetsRequestError(
+    throw googleRefusal(
       response.status,
       describeGoogleFailure(
         response.status,

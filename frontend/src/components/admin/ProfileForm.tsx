@@ -26,7 +26,7 @@ import {
 } from '@/lib/api';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
-import { Card, Field, Notice, Section } from '@/components/ui/kit';
+import { Card, ErrorNotice, Field, Section } from '@/components/ui/kit';
 
 interface ProfileFormProps {
   initialData?: Profile;
@@ -207,7 +207,8 @@ export default function ProfileForm({
   onCancel,
 }: ProfileFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  /** A caught failure, which <ErrorNotice> words for the reader. */
+  const [error, setError] = useState<unknown>(null);
 
   const initialHardSkills = initialData?.hardSkills || initialData?.skills || [];
   const [skillCategoryBySkill, setSkillCategoryBySkill] = useState<Record<string, string>>(() =>
@@ -334,7 +335,7 @@ export default function ProfileForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError(null);
 
     setIsSubmitting(true);
 
@@ -381,7 +382,7 @@ export default function ProfileForm({
         skillCategories: buildSkillCategories(formData.hardSkills, skillCategoryBySkill),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save profile');
+      setError(err ?? 'Failed to save the profile.');
     } finally {
       setIsSubmitting(false);
     }
@@ -438,7 +439,7 @@ export default function ProfileForm({
         await resumeApi.addSkill({ type: 'hard', skill: value });
         setHardSkillLibrary((skills) => [...skills, value].sort((a, b) => a.localeCompare(b)));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to add skill');
+        setError(err ?? 'Failed to add the skill.');
         return;
       }
     }
@@ -540,7 +541,7 @@ export default function ProfileForm({
         await resumeApi.addSkill({ type: 'hard', skill: value });
         setHardSkillLibrary((skills) => [...skills, value].sort((a, b) => a.localeCompare(b)));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to add skill');
+        setError(err ?? 'Failed to add the skill.');
         return;
       }
     }
@@ -581,11 +582,7 @@ export default function ProfileForm({
 
   return (
     <form onSubmit={handleSubmit} className={chrome.sectionedForm}>
-      {error && (
-        <Notice tone="error" role="alert" className="mt-6">
-          {error}
-        </Notice>
-      )}
+      <ErrorNotice error={error} className="mt-6" />
 
       {/* Basic Info */}
       <Section title="Basic Information">

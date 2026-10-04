@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 
-import { requireAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { sendPublicError } from '../middleware/publicError';
 import {
   describeMethods,
   getPayment,
@@ -22,7 +23,6 @@ import { detachCard, getCardForUser, listCardsForUser } from '../database/savedC
 import * as stripe from '../integrations/stripe';
 import {
   getPricingLimits,
-  PriceError,
   quoteCredits,
   requireThreeDSecure,
 } from '../services/payments/pricing';
@@ -43,13 +43,27 @@ import { getUserById } from '../database/userRepository';
 const router = Router();
 router.use(requireUser);
 
-function fail(res: Response, error: unknown): void {
-  if (error instanceof PaymentError || error instanceof PriceError) {
-    res.status(error.status).json({ error: error.message });
-    return;
-  }
-  console.error('[payments] A payment request failed.', error);
-  res.status(502).json({ error: 'Could not reach the payment provider. Try again in a moment.' });
+/**
+ * A refused or failed payment request.
+ *
+ * `PaymentError` and `PriceError` are public: the buyer's own amount, card or
+ * limit, or "purchases are not available" with the reason as an
+ * administrator's `detail`. Anything else is the provider being unreachable
+ * as far as the buyer is concerned - a 502 with a ref.
+ */
+function fail(req: Request, res: Response, error: unknown): void {
+  sendPublicError(req, res, error, 'Could not reach the payment provider', 502);
+}
+
+/**
+ * What anybody but an administrator is told about a method that is not on
+ * offer. The real reason names the STRIPE_* and CRYPTOMUS_* variables or the
+ * Admin -> Payments limits that leave nothing to buy - the operator's to read.
+ */
+const NOT_AVAILABLE = 'Not available right now.';
+
+function withPublicReason<T extends { reason?: string }>(entry: T, admin: boolean): T {
+  return admin || !entry.reason ? entry : { ...entry, reason: NOT_AVAILABLE };
 }
 
 /**
@@ -61,12 +75,13 @@ function fail(res: Response, error: unknown): void {
  * because the person who needs to read it is the operator, and "no button"
  * tells them nothing.
  */
-router.get('/methods', async (_req: Request, res: Response) => {
+router.get('/methods', async (req: Request, res: Response) => {
   try {
+    const admin = isAdmin(req);
     const limits = await getPricingLimits();
     res.json({
       ...limits,
-      methods: describeMethods(),
+      methods: describeMethods().map((entry) => withPublicReason(entry, admin)),
       /*
        * The same information, per thing a buyer can actually choose.
        *
@@ -74,7 +89,7 @@ router.get('/methods', async (_req: Request, res: Response) => {
        * page reads, and a deploy must not blank the buy page of a browser tab
        * that has not been reloaded.
        */
-      targets: await describeTargets(),
+      targets: (await describeTargets()).map((entry) => withPublicReason(entry, admin)),
       /*
        * So the card step can warn before the challenge appears.
        *
@@ -96,7 +111,7 @@ router.get('/methods', async (_req: Request, res: Response) => {
       publishableKey: publishableKey(),
     });
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 
@@ -136,7 +151,7 @@ router.get('/quote', async (req: Request, res: Response) => {
       currency: quote.currency,
     });
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 
@@ -178,7 +193,7 @@ router.post('/checkout', async (req: Request, res: Response) => {
       ...(started.processing ? { processing: true } : {}),
     });
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 
@@ -342,6 +357,6 @@ adminPaymentsRouter.post('/:id/refund', async (req: Request, res: Response) => {
     // credits is not a success worth reporting as a bare "done".
     res.json(outcome);
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });

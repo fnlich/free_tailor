@@ -38,7 +38,7 @@ import {
   type ProviderModelOptions,
 } from './providerModels';
 import { DEFAULT_CREDITS_PER_RESUME, parseCreditsPerResume, readCreditsPerResume } from './creditsPerResume';
-import { ModelUnavailableError } from './modelErrors';
+import { AiUnavailableError, ModelUnavailableError } from './modelErrors';
 import {
   buildOutputPathPreview,
   DEFAULT_OUTPUT_PATH_TEMPLATE,
@@ -2144,7 +2144,7 @@ function warnOncePerPreference(key: string, message: string): void {
  * log - because the price of a resume is its model's, and running something
  * else would charge something else. See `ModelRequestOptions` for which names a
  * caller may use. Nothing runnable at all is a different failure, the
- * installation's rather than the request's, and stays a plain error.
+ * installation's rather than the request's: `AiUnavailableError`, a 503.
  */
 export async function resolveRequestedAIModel(
   requestedModelId?: string,
@@ -2155,14 +2155,16 @@ export async function resolveRequestedAIModel(
 
   if (runnableModels.length === 0) {
     // The one way a READ ends up here: every seat locked, which the settings
-    // read tolerates so the admin pages can say why. Named for the operator.
+    // read tolerates so the admin pages can say why. The reason is the
+    // operator's - it names the variable and the seats - so it is `detail`,
+    // and everybody else is told only who can fix it.
     if (everyProviderLocked()) {
-      throw new Error(
+      throw new AiUnavailableError(
         'No AI model can run: every AI provider is locked in this installation ' +
           `(${LOCKED_PROVIDERS_ENV_VAR}: ${listLockedProviderIds().join(', ')}).`
       );
     }
-    throw new Error('No enabled AI models are configured.');
+    throw new AiUnavailableError('No enabled AI models are configured.');
   }
 
   const named = typeof requestedModelId === 'string' ? requestedModelId.trim() : '';

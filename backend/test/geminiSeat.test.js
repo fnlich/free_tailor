@@ -137,10 +137,10 @@ test('a locked Gemini seat says how to sign it in', async () => {
   });
 });
 
-test('a Gemini failure names the Gemini seat, not the Claude one', () => {
-  const { defaultUserMessage } = loadFresh('../dist/services/ai/errors');
+test("a Gemini failure names the Gemini seat to an administrator, not the Claude one", () => {
+  const { defaultAdminMessage } = loadFresh('../dist/services/ai/errors');
   for (const kind of ['auth', 'rateLimited', 'binaryMissing']) {
-    const message = defaultUserMessage('gemini-cli', kind);
+    const message = defaultAdminMessage('gemini-cli', kind);
     assert.match(message, /Gemini/, kind);
     assert.doesNotMatch(message, /Claude|claude auth/, kind);
   }

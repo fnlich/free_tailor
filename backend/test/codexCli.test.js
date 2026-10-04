@@ -187,17 +187,18 @@ test('being signed out is reported as an auth problem, with what to run', async 
   );
 });
 
-test('what a person is told about a missing or signed-out Codex CLI names Codex, not the Claude seat', async () => {
+test('a missing or signed-out Codex CLI names Codex to an administrator, and no seat to anybody else', async () => {
   // The shared sentences were written when the Claude seat was the only
   // provider. A Codex failure told the person to install the Claude CLI, or to
   // run `claude auth login` - on an install where that seat may be locked.
+  // Now the seat's own sentence is the administrator's `detail`.
   const missing = makeAdapter(null, {
     outcome: { spawnError: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }) },
   });
   const signedOut = makeAdapter(null, {
     lines: ['{"type":"turn.failed","message":"Not logged in. Run codex login."}'],
   });
-  const { describeAiError } = require('../dist/middleware/aiErrors');
+  const { publicFailure } = require('../dist/middleware/publicError');
 
   for (const [adapter, kind, said] of [
     [missing.adapter, 'binaryMissing', /The Codex CLI is not installed/],
@@ -207,11 +208,25 @@ test('what a person is told about a missing or signed-out Codex CLI names Codex,
       () => assert.fail('expected a failure'),
       (failure) => failure
     );
-    const described = describeAiError(error);
-    assert.equal(described.body.code, kind);
-    assert.equal(described.body.provider, 'codex-cli');
-    assert.match(described.body.error, said);
-    assert.doesNotMatch(described.body.error, /Claude|claude auth/);
+    assert.equal(error.kind, kind);
+    assert.equal(error.provider, 'codex-cli');
+
+    const quiet = console.error;
+    console.error = () => {};
+    let asAdmin;
+    let asUser;
+    try {
+      asAdmin = publicFailure(error, { admin: true });
+      asUser = publicFailure(error, { admin: false });
+    } finally {
+      console.error = quiet;
+    }
+    assert.match(asAdmin.body.detail, said);
+    assert.doesNotMatch(asAdmin.body.detail, /Claude|claude auth/);
+    assert.equal(asUser.status, 503);
+    assert.equal(asUser.body.code, 'ai-unavailable');
+    assert.equal(asUser.body.detail, undefined);
+    assert.doesNotMatch(JSON.stringify(asUser.body), /codex|Codex|ENOENT|login/);
   }
 });
 

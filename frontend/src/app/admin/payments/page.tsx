@@ -12,6 +12,7 @@ import {
   STATE_TONES,
 } from '@/lib/payments';
 import { formatDate } from '@/lib/format';
+import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
 
 /**
@@ -238,7 +239,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
       setNote('Pricing saved. It applies to new purchases only.');
       onSaved();
     } catch (err) {
-      setProblem(err instanceof Error ? err.message : 'Could not save the pricing.');
+      setProblem(messageWithDetail(err, 'Could not save the pricing.'));
     } finally {
       setSaving(false);
     }
@@ -562,7 +563,7 @@ function PaymentsBody() {
       setTotal(response.total ?? response.payments.length);
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load payments.');
+      setError(messageWithDetail(err, 'Could not load payments.'));
     } finally {
       setLoading(false);
     }
@@ -588,7 +589,7 @@ function PaymentsBody() {
       if (typeof response.total === 'number') setTotal(response.total);
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load older payments.');
+      setError(messageWithDetail(err, 'Could not load older payments.'));
     } finally {
       setLoadingMore(false);
     }
@@ -619,7 +620,7 @@ function PaymentsBody() {
       setNote('');
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not refund that payment.');
+      setError(messageWithDetail(err, 'Could not refund that payment.'));
     } finally {
       setRefunding('');
     }

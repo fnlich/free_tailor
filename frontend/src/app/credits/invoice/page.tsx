@@ -13,6 +13,7 @@ import {
   type Payment,
   type PaymentState,
 } from '@/lib/payments';
+import { messageWithDetail } from '@/lib/userMessage';
 import styles from './invoice.module.css';
 
 const STATUS_WORDS: Record<PaymentState, string> = {
@@ -65,9 +66,7 @@ function InvoiceBody() {
         const message =
           error instanceof ApiResponseError && error.status === 404
             ? 'That invoice was not found.'
-            : error instanceof Error
-              ? error.message
-              : 'The invoice could not be loaded.';
+            : messageWithDetail(error, 'The invoice could not be loaded.');
         setLoaded({ id: paymentId, error: message });
       }
     );

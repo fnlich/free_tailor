@@ -8,8 +8,8 @@ import {
   updateAIModel,
   updateAppSettings,
 } from '../config/aiModelConfig';
-import { fetchGoogleSheetsRange, GoogleSheetsRequestError, updateGoogleSheetsRange } from '../integrations/googleSheets';
-import { sheetsOperatorDetail } from './sheetsDetail';
+import { fetchGoogleSheetsRange, updateGoogleSheetsRange } from '../integrations/googleSheets';
+import { sendPublicError } from '../middleware/publicError';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
@@ -64,11 +64,8 @@ router.post('/google-sheets/range', requireAdmin, async (req: Request, res: Resp
     const result = await fetchGoogleSheetsRange(req.body ?? {});
     res.json(result);
   } catch (error) {
-    const statusCode = error instanceof GoogleSheetsRequestError ? error.statusCode : 500;
-    res.status(statusCode).json({
-      error: error instanceof Error ? error.message : 'Failed to fetch Google Sheets data',
-      ...sheetsOperatorDetail(req, error),
-    });
+    // Admin-only, so the reader always gets Google's reason as `detail`.
+    sendPublicError(req, res, error, 'Failed to fetch the Google Sheets data');
   }
 });
 
@@ -77,11 +74,7 @@ router.put('/google-sheets/range', requireAdmin, async (req: Request, res: Respo
     const result = await updateGoogleSheetsRange(req.body ?? {});
     res.json(result);
   } catch (error) {
-    const statusCode = error instanceof GoogleSheetsRequestError ? error.statusCode : 500;
-    res.status(statusCode).json({
-      error: error instanceof Error ? error.message : 'Failed to update Google Sheets data',
-      ...sheetsOperatorDetail(req, error),
-    });
+    sendPublicError(req, res, error, 'Failed to update the Google Sheets data');
   }
 });
 

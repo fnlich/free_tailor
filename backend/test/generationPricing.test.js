@@ -29,6 +29,16 @@ const { useAdminEmails, useTempStorage } = require('./helpers');
 
 const GENERIC = "That model isn't available. Choose another, or contact your administrator.";
 
+/**
+ * The model-unavailable body anybody but an administrator gets: the one public
+ * sentence, its code, and the ref its cause was logged under - never the cause.
+ */
+function assertModelUnavailable(body) {
+  const { ref, ...rest } = body;
+  assert.deepEqual(rest, { error: GENERIC, code: 'model-unavailable' });
+  assert.match(ref, /^ERR-[0-9A-F]{6}$/);
+}
+
 const config = require('../dist/config/aiModelConfig');
 const credits = require('../dist/services/credits');
 const users = require('../dist/database/userRepository');
@@ -175,7 +185,7 @@ test('the quote follows the model the request names, and an empty selection is a
       model: 'claude-cli-haiku',
     });
     assert.equal(refused.status, 400);
-    assert.deepEqual(refused.body, { error: GENERIC, code: 'model-unavailable' });
+    assertModelUnavailable(refused.body);
   } finally {
     server.close();
   }
@@ -296,7 +306,7 @@ test('a batch naming a model it may not use is refused before anything is charge
         model,
       });
       assert.equal(refused.status, 400, model);
-      assert.deepEqual(refused.body, { error: GENERIC, code: 'model-unavailable' });
+      assertModelUnavailable(refused.body);
     }
     assert.deepEqual(server.ledger(server.alice, 'generation-reserve'), []);
 
@@ -322,7 +332,10 @@ test('/resume/generate resolves the model first and charges its price', async ()
     // No template in this storage: the run fails after the charge, before any
     // model call, and the charge comes back.
     const failed = await server.post('alice', '/resume/generate', { profileId: 'p-opus', companyName: 'Acme' });
-    assert.equal(failed.status, 500);
+    // The administrator's to fix, so a 503 that says whom to ask, with a ref.
+    assert.equal(failed.status, 503);
+    assert.match(failed.body.error, /No resume template is available right now\. Please contact your administrator\./);
+    assert.match(failed.body.ref, /^ERR-[0-9A-F]{6}$/);
     const [reserve] = server.ledger(server.alice, 'generation-reserve');
     assert.equal(reserve.delta, -2, "Opus's price");
     assert.equal(reserve.note, 'Ada / Acme - 1 resume: 1 x Claude Opus @ 2 = 2 credits');
@@ -343,7 +356,7 @@ test('/resume/generate resolves the model first and charges its price', async ()
       model: 'claude-cli-haiku',
     });
     assert.equal(refused.status, 400);
-    assert.deepEqual(refused.body, { error: GENERIC, code: 'model-unavailable' });
+    assertModelUnavailable(refused.body);
     assert.equal(server.ledger(server.alice).length, before, 'nothing reserved, nothing released');
   } finally {
     server.close();

@@ -11,6 +11,7 @@ import {
   calendarTimeZoneLabel,
 } from '@/lib/calendar/timeZone';
 import type { CalendarApiResponse, CalendarEvent, CalendarMetadata } from '@/lib/calendar/types';
+import { messageWithDetail } from '@/lib/userMessage';
 
 // Optional default share link, configured per environment. Empty means the user pastes one.
 const DEFAULT_SHARE_URL = process.env.NEXT_PUBLIC_CALENDAR_SHARE_URL ?? '';
@@ -346,7 +347,12 @@ function reorderWeekdayLabels(firstWeekday: number): string[] {
  * threw `SyntaxError: Unexpected token '<'` and the catch put a JSON parser
  * message in the error banner. Checking the status first, and treating a
  * missing or unparseable body as absent rather than as a throw, means the user
- * is told the status instead of how the body failed to parse.
+ * is told what did not load instead of how the body failed to parse.
+ *
+ * The route handlers' `message` is already a sentence for the reader (the
+ * upstream's own words go to the server log - lib/calendar/routeFailure.ts).
+ * When there is none, the status and the parse failure go to the console, not
+ * into the banner: neither is anything the reader can act on.
  */
 async function readCalendarResponse<T>(
   response: Response,
@@ -356,11 +362,15 @@ async function readCalendarResponse<T>(
     .json()
     .catch(() => null)) as (CalendarApiResponse<T> & { message?: string }) | null;
 
+  const failed = `${fallbackMessage.replace(/\.$/, '')}. Please try again later.`;
   if (!response.ok) {
-    throw new Error(payload?.message || `${fallbackMessage} (HTTP ${response.status})`);
+    if (payload?.message) throw new Error(payload.message);
+    console.warn(`[tailor] ${response.url} answered HTTP ${response.status} with no message.`);
+    throw new Error(failed);
   }
   if (!payload) {
-    throw new Error(`${fallbackMessage} (the server did not return JSON)`);
+    console.warn(`[tailor] ${response.url} did not return JSON.`);
+    throw new Error(failed);
   }
   return payload.data;
 }
@@ -428,7 +438,7 @@ export default function CalendarWorkspace() {
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load calendar');
+          setError(messageWithDetail(loadError, 'Failed to load calendar'));
           setMetadata(null);
           setEvents([]);
         }
@@ -486,7 +496,7 @@ export default function CalendarWorkspace() {
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load events');
+          setError(messageWithDetail(loadError, 'Failed to load events'));
         }
       } finally {
         if (!cancelled) {
@@ -800,7 +810,7 @@ export default function CalendarWorkspace() {
 
       setAvailabilityResults(nextResults);
     } catch (loadError) {
-      setAvailabilityError(loadError instanceof Error ? loadError.message : 'Failed to load availability.');
+      setAvailabilityError(messageWithDetail(loadError, 'Failed to load availability.'));
       setAvailabilityResults([]);
     } finally {
       setIsLoadingAvailability(false);
@@ -844,7 +854,7 @@ export default function CalendarWorkspace() {
 
       setJobLinkResults(data?.results ?? []);
     } catch (loadError) {
-      setJobLinksError(loadError instanceof Error ? loadError.message : 'Failed to load links.');
+      setJobLinksError(messageWithDetail(loadError, 'Failed to load links.'));
       setJobLinkResults([]);
     } finally {
       setIsLoadingJobLinks(false);

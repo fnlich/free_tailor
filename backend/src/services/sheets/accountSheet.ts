@@ -24,6 +24,7 @@ import {
   recordSheetTabDate,
 } from '../../database/userRepository';
 import type { UserAccount } from '../../types/account';
+import { PublicError } from '../../middleware/publicError';
 
 /**
  * One spreadsheet per account, one tab per day.
@@ -384,13 +385,15 @@ export async function describeAccountSheet(
   return { ...state, visibility: await client.getSpreadsheetVisibility(state.spreadsheetId) };
 }
 
-export class SheetAccessError extends Error {
-  readonly status: number;
-
-  constructor(message: string, status = 409) {
-    super(message);
+/**
+ * A refusal about the caller's own spreadsheet, so it is public. One that only
+ * an administrator can fix says so generically, and carries the reason as
+ * `detail`.
+ */
+export class SheetAccessError extends PublicError {
+  constructor(message: string, status = 409, detail?: string) {
+    super(message, { status, ...(detail ? { detail } : {}) });
     this.name = 'SheetAccessError';
-    this.status = status;
   }
 }
 
@@ -408,10 +411,15 @@ export async function setAccountSheetVisibility(
   // personal grant is missing this is the request that locks somebody out of
   // their own spreadsheet - and the UI has no way back from that.
   if (visibility === 'private' && !(await ensureOwnerAccess(state.spreadsheetId, account.email))) {
+    // The owner is told what is at stake and who can fix it; the likely cause
+    // is about the server's Google project, which is the administrator's.
     throw new SheetAccessError(
       'This sheet cannot be made private yet: your account does not have its own access to it, ' +
-        'so withdrawing the link would lock you out. This usually means the Drive API is not ' +
-        "enabled for the server's Google project."
+        'so withdrawing the link would lock you out. Please contact your administrator.',
+      409,
+      `${account.email} has no grant of its own on spreadsheet ${state.spreadsheetId}, so it was ` +
+        "not made private. This usually means the Drive API is not enabled for the server's " +
+        'Google project; run "npm run sheets:doctor" in backend/ to see which step fails.'
     );
   }
 

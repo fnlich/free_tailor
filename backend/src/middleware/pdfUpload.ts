@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import multer from 'multer';
 import { uploadMaxMb } from '../config/operational';
+import { PublicError } from './publicError';
 
 /**
  * Taking one PDF out of a multipart request: a resume to build a profile from,
@@ -24,7 +25,9 @@ const upload = multer({
   limits: { fileSize: LIMIT_MB * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype === 'application/pdf') cb(null, true);
-    else cb(new Error('Only PDF files are allowed'));
+    // Public and a 415: it is the file the caller chose. As a plain Error it
+    // reached the generic handler and answered 500, as though the server broke.
+    else cb(new PublicError('Only PDF files can be uploaded.', { status: 415, code: 'upload-not-pdf' }));
   },
 });
 
@@ -39,8 +42,8 @@ export function pdfUploadLimitMb(): number {
  * A file at or over the cap answers 413 with the limit in the message. multer's
  * own error says only "File too large", and that reached the generic handler as
  * a 500 - which told the person neither that the size was the problem nor what
- * size would do. Every other multer error goes on to the error handlers as
- * before.
+ * size would do. Any other multer refusal is the form's, and goes on to the
+ * error handler as a public 400; a non-PDF is the file filter's public 415.
  *
  * AT or over: busboy raises the limit as soon as a file reaches `fileSize`, so a
  * file of exactly LIMIT_MB is refused, as it always was. The wording says so,
@@ -53,13 +56,28 @@ export function pdfUpload(field: string): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
     single(req, res, (error?: unknown) => {
       if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+        // The number, never the setting: the uploader can act on the size, and
+        // the variable that raises it is the administrator's.
         res.status(413).json({
           error:
             `That PDF is ${LIMIT_MB} MB or larger; this server accepts PDFs under ${LIMIT_MB} MB. ` +
-            'Upload a smaller file, or ask the administrator to raise UPLOAD_MAX_MB.',
+            'Upload a smaller file, or ask your administrator about larger files.',
           code: 'upload-too-large',
           limitMb: LIMIT_MB,
         });
+        return;
+      }
+      if (error instanceof multer.MulterError) {
+        // The form itself was wrong - a second file, a field this route does
+        // not take. The caller's to fix, so a 400; multer's own wording names
+        // its internals and is the administrator's detail.
+        next(
+          new PublicError('That upload could not be read. Choose one PDF file and try again.', {
+            status: 400,
+            code: 'upload-unreadable',
+            detail: `${error.code}: ${error.message}`,
+          })
+        );
         return;
       }
       next(error as Error | undefined);

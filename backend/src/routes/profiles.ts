@@ -2,20 +2,19 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import pdf from 'pdf-parse';
 import { CreateProfileDTO, Profile } from '../types/profile';
-import { isAdmin, requireUser } from '../middleware/auth';
+import { requireUser } from '../middleware/auth';
+import { PublicError, sendPublicError } from '../middleware/publicError';
 import { checkProfileModelChoice } from '../config/aiModelConfig';
-import { ModelUnavailableError, modelUnavailableBody } from '../config/modelErrors';
 import { pdfUpload } from '../middleware/pdfUpload';
 import { extractProfileFromResume } from '../services/resumeService';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
-import { buildImportedProfiles, ProfileImportError } from '../services/profileImport';
+import { buildImportedProfiles } from '../services/profileImport';
 import {
   assertCanAddProfile,
   deleteProfile,
   getProfileFor,
   hasProfile,
   listProfilesFor,
-  ProfileLimitError,
   saveProfile,
   saveProfiles,
 } from '../database/profileRepository';
@@ -47,6 +46,8 @@ async function withCheckedModelChoice(built: Profile, stored?: Profile): Promise
     profileSettings: { ...settings, ai: modelId ? { ...settings.ai, modelId } : {} },
   };
 }
+
+const UNREADABLE_PDF = 'Could not extract text from PDF. Please ensure the PDF contains readable text.';
 
 // Get all profiles this account can see
 router.get('/', (req: Request, res: Response) => {
@@ -86,18 +87,10 @@ router.post('/', async (req: Request, res: Response) => {
     });
     res.status(201).json(profile);
   } catch (error) {
-    if (error instanceof ProfileLimitError) {
-      res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
-      return;
-    }
-    if (error instanceof ModelUnavailableError) {
-      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
-      return;
-    }
-    console.error('Error creating profile:', error);
-    const message = error instanceof Error ? error.message : 'Failed to create profile';
-    const status = /output (token|file name)/i.test(message) ? 400 : 500;
-    res.status(status).json({ error: message });
+    // The plan's profile limit (402 with `limit`), a model the owner may not
+    // pick, and a file or folder name template that cannot be used are the
+    // caller's to fix and say so; anything else is generic.
+    sendPublicError(req, res, error, 'Failed to create the profile');
   }
 });
 
@@ -122,11 +115,7 @@ router.put('/:id', async (req: Request<{ id: string }>, res: Response) => {
     });
     res.json(updatedProfile);
   } catch (error) {
-    if (error instanceof ModelUnavailableError) {
-      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
-      return;
-    }
-    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to update profile' });
+    sendPublicError(req, res, error, 'Failed to update the profile');
   }
 });
 
@@ -169,20 +158,10 @@ router.post('/import', (req: Request, res: Response) => {
       keptIds: imported.filter((entry) => entry.keptId).length,
     });
   } catch (error) {
-    if (error instanceof ProfileLimitError) {
-      res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
-      return;
-    }
-    if (error instanceof ProfileImportError) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    console.error('Error importing profiles:', error);
-    const message = error instanceof Error ? error.message : 'Failed to import profiles';
-    // The template validators throw for a stored file-name template the admin
-    // form would also have refused; that is the file's fault, not the server's.
-    const status = /output (token|file name|folder name)/i.test(message) ? 400 : 500;
-    res.status(status).json({ error: message });
+    // A file that is not a profile, an import past the plan's limit, and a
+    // file-name template the profile form would also have refused are the
+    // file's fault and are said so; anything else is generic.
+    sendPublicError(req, res, error, 'Failed to import the profiles');
   }
 });
 
@@ -203,19 +182,16 @@ router.post('/upload', pdfUpload('resume'), async (req: Request, res: Response) 
 
     // Checked before the AI call, not after: the extraction is the expensive
     // part, and refusing afterwards would spend it for nothing.
-    try {
-      assertCanAddProfile(req.user!);
-    } catch (error) {
-      if (error instanceof ProfileLimitError) {
-        return res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
-      }
-      throw error;
-    }
+    assertCanAddProfile(req.user!);
 
-    const pdfData = await pdf(req.file.buffer);
+    // pdf-parse's own exceptions quote the library's internals; what the
+    // uploader can act on is that this file could not be read.
+    const pdfData = await pdf(req.file.buffer).catch((error: unknown) => {
+      throw new PublicError(UNREADABLE_PDF, { detail: error instanceof Error ? error.message : String(error) });
+    });
 
     if (!pdfData.text || pdfData.text.trim().length < 50) {
-      return res.status(400).json({ error: 'Could not extract text from PDF. Please ensure the PDF contains readable text.' });
+      return res.status(400).json({ error: UNREADABLE_PDF });
     }
 
     const extractedData = await extractProfileFromResume(pdfData.text);
@@ -226,8 +202,9 @@ router.post('/upload', pdfUpload('resume'), async (req: Request, res: Response) 
 
     res.status(201).json(profile);
   } catch (error) {
-    console.error('Error extracting profile from PDF:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to extract profile from PDF' });
+    // An AI failure is one of its four public sentences here, never the seat's
+    // stderr; the profile limit stays a 402.
+    sendPublicError(req, res, error, 'Failed to read a profile from that PDF');
   }
 });
 

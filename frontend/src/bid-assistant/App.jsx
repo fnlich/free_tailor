@@ -3,8 +3,9 @@ import TopBar from './components/TopBar.jsx';
 import JobList from './components/JobList.jsx';
 import JobDetail from './components/JobDetail.jsx';
 import AskWindow from './components/AskWindow.jsx';
-import { bidAssistantFetch } from './lib/apiBase.js';
+import { bidAssistantFetch, readError } from './lib/apiBase.js';
 import { DEFAULT_PROMPT_TEMPLATE } from './lib/promptTemplate.js';
+import { messageWithDetail } from '@/lib/userMessage';
 
 const selectedProfileStorageKey = 'selected-profile-id';
 
@@ -13,8 +14,7 @@ async function fetchJson(url, options = {}) {
   const response = await bidAssistantFetch(url, options);
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => null);
-    throw new Error(errorData?.error || 'Request failed.');
+    throw await readError(response, 'Request failed.');
   }
 
   return response.json();
@@ -212,7 +212,7 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error.message);
+          setErrorMessage(messageWithDetail(error, 'Could not load the jobs.'));
           setHasLoadedAllJobs(true);
         }
       }
@@ -238,7 +238,7 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error.message);
+          setErrorMessage(messageWithDetail(error, 'Could not load the prompt template.'));
         }
       }
     }
@@ -275,7 +275,7 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error.message);
+          setErrorMessage(messageWithDetail(error, 'Could not load the profiles.'));
         }
       }
     }
@@ -319,7 +319,7 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error.message);
+          setErrorMessage(messageWithDetail(error, 'Could not load the Google Sheet sources.'));
         }
       }
     }
@@ -351,7 +351,7 @@ export default function App() {
         setJobs(jobList);
       } catch (error) {
         if (!cancelled) {
-          setErrorMessage(error.message);
+          setErrorMessage(messageWithDetail(error, 'Could not load the jobs.'));
         }
       }
     }

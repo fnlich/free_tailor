@@ -5,16 +5,16 @@ import { sessionTtlMs } from '../config/operational';
 import { countProfilesForOwner } from '../database/profileRepository';
 import { destroySession, updateUser } from '../database/userRepository';
 import { requireUser, SESSION_COOKIE } from '../middleware/auth';
+import { PublicError, sendPublicError } from '../middleware/publicError';
 import { pdfUploadLimitMb } from '../middleware/pdfUpload';
 import {
-  AuthError,
   describeSignInOptions,
   requestLoginCode,
   signInWithCode,
   signInWithGoogle,
   type SignInResult,
 } from '../services/auth/authService';
-import { GoogleNotConfiguredError, GoogleTokenError } from '../services/auth/google';
+import { GoogleNotConfiguredError } from '../services/auth/google';
 import { MailNotConfiguredError, MailSendError } from '../services/auth/mailer';
 import type { UserAccount } from '../types/account';
 
@@ -87,33 +87,47 @@ function respondWithSession(req: Request, res: Response, result: SignInResult): 
   });
 }
 
-function fail(res: Response, error: unknown): void {
-  if (error instanceof AuthError) {
-    res.status(error.status).json({ error: error.message });
-    return;
-  }
-  if (error instanceof GoogleTokenError) {
-    res.status(401).json({ error: error.message });
-    return;
-  }
+/**
+ * What a visitor is told when no sign-in method can be offered, or the one they
+ * picked cannot be used right now.
+ *
+ * Generic on purpose, and for everybody: these routes answer before anybody has
+ * signed in, so there is no role to give the reason to. The operator has the
+ * reason in the log (under the ref), at startup, and from `npm run mail:doctor`
+ * - and a visitor on the sign-in page has no use for the names of SMTP
+ * variables or the mail server that refused.
+ */
+const SIGN_IN_UNAVAILABLE = "Sign-in isn't available right now. Please contact your administrator.";
+const SIGN_IN_MAIL_FAILED =
+  'We could not send the sign-in email right now. Please try again in a few minutes, or contact your administrator.';
+
+function fail(req: Request, res: Response, error: unknown): void {
+  let failure = error;
   if (error instanceof GoogleNotConfiguredError || error instanceof MailNotConfiguredError) {
     // 503, not 400: nothing the caller sent was wrong, and the fix is on the
     // server. A 400 would have the login page blame the address they typed.
-    res.status(503).json({ error: error.message });
-    return;
+    failure = new PublicError(SIGN_IN_UNAVAILABLE, { status: 503, code: 'sign-in-unavailable', detail: error.message });
+  } else if (error instanceof MailSendError) {
+    failure = new PublicError(SIGN_IN_MAIL_FAILED, {
+      status: 502,
+      detail: error.message,
+      cause: error.cause ?? error,
+    });
   }
-  if (error instanceof MailSendError) {
-    console.error('[auth] Sending a sign-in code failed.', error.cause ?? error);
-    res.status(502).json({ error: error.message });
-    return;
-  }
-  console.error('[auth] Unexpected sign-in failure.', error);
-  res.status(500).json({ error: 'Something went wrong signing in. Try again.' });
+  // AuthError and GoogleTokenError are public already: a code that is wrong or
+  // used, an address that does not look like one, a Google account with no
+  // verified email. Anything else is a generic failure with a ref.
+  sendPublicError(req, res, failure, 'Something went wrong signing in');
 }
 
 /** What the login page can offer. Unauthenticated by design. */
 router.get('/options', (_req: Request, res: Response) => {
-  res.json(describeSignInOptions());
+  // Whether each method is on offer, and the Google client id the button
+  // needs (public by design - it is in the page of every site using Google
+  // sign-in). Not WHICH settings are missing: the visitor has no role yet,
+  // and the operator has the startup log and mail:doctor for that.
+  const options = describeSignInOptions();
+  res.json({ google: options.google, email: { available: options.email.available } });
 });
 
 /** The plan catalog, so the subscription panel is not a second copy of it. */
@@ -126,7 +140,7 @@ router.post('/google', async (req: Request, res: Response) => {
     const credential = String(req.body?.credential ?? req.body?.idToken ?? '');
     respondWithSession(req, res, await signInWithGoogle(credential));
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 
@@ -140,7 +154,7 @@ router.post('/email/request', async (req: Request, res: Response) => {
       message: `A six-digit code is on its way to ${result.email}. It expires in ${result.expiresInMinutes} minutes.`,
     });
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 
@@ -152,7 +166,7 @@ router.post('/email/verify', (req: Request, res: Response) => {
       signInWithCode(String(req.body?.email ?? ''), String(req.body?.code ?? ''))
     );
   } catch (error) {
-    fail(res, error);
+    fail(req, res, error);
   }
 });
 

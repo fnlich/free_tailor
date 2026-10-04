@@ -1013,7 +1013,10 @@ test('an install whose only unlocked providers were the browsers still reads, on
     const userSettings = await config.getUserAppSettings();
     assert.deepEqual(userSettings.models, []);
     assert.equal(userSettings.defaultModelId, '');
-    await assert.rejects(() => config.resolveRequestedAIModel(), /every AI provider is locked/);
+    await assert.rejects(
+      () => config.resolveRequestedAIModel(),
+      (error) => error.code === 'ai-unavailable' && /every AI provider is locked/.test(error.detail)
+    );
   });
 
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), original, 'repaired in memory only');
@@ -1240,7 +1243,10 @@ test("after 006, a lock under an administrator's own choice fails by name rather
     // read degrades to nothing runnable, and a run names the locks.
     const config = loadFresh('../dist/config/aiModelConfig');
     assert.deepEqual((await config.getUserAppSettings()).models, []);
-    await assert.rejects(() => config.resolveRequestedAIModel(), /every AI provider is locked/);
+    await assert.rejects(
+      () => config.resolveRequestedAIModel(),
+      (error) => error.code === 'ai-unavailable' && /every AI provider is locked/.test(error.detail)
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import {
   toSpreadsheetColumnLabel,
 } from '@/lib/sheet';
 import { Card, Field, Notice, Section } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 import styles from './GoogleSheetsRangeImporter.module.css';
 
 type SheetsImportFormState = {
@@ -192,7 +193,7 @@ export default function GoogleSheetsRangeImporter() {
         setSelectedSavedSourceId(initialSourceId);
         handleSheetIdChange(nextSources[0]?.sheetId ?? '');
       } catch (err) {
-        setSheetsError(err instanceof Error ? err.message : 'Failed to load saved Google Sheets');
+        setSheetsError(messageWithDetail(err, 'Failed to load saved Google Sheets'));
       } finally {
         setIsLoadingSavedSources(false);
       }
@@ -278,7 +279,7 @@ export default function GoogleSheetsRangeImporter() {
         nextSource.id
       );
     } catch (err) {
-      setSheetsError(err instanceof Error ? err.message : 'Failed to save Google Sheet');
+      setSheetsError(messageWithDetail(err, 'Failed to save Google Sheet'));
     } finally {
       setIsSavingSavedSource(false);
     }
@@ -309,7 +310,7 @@ export default function GoogleSheetsRangeImporter() {
       setIsSavingSavedSource(true);
       await persistSavedSources(nextSources, `Deleted "${source.name}".`, preferredSourceId);
     } catch (err) {
-      setSheetsError(err instanceof Error ? err.message : 'Failed to delete Google Sheet');
+      setSheetsError(messageWithDetail(err, 'Failed to delete Google Sheet'));
     } finally {
       setIsSavingSavedSource(false);
     }
@@ -341,7 +342,7 @@ export default function GoogleSheetsRangeImporter() {
     } catch (err) {
       setSheetsLookup(null);
       setSheetsResult(null);
-      setSheetsError(err instanceof Error ? err.message : 'Failed to load spreadsheet tabs');
+      setSheetsError(messageWithDetail(err, 'Failed to load spreadsheet tabs'));
     } finally {
       setIsLoadingSheetTabs(false);
     }
@@ -383,7 +384,7 @@ export default function GoogleSheetsRangeImporter() {
       }));
     } catch (err) {
       setSheetsResult(null);
-      setSheetsError(err instanceof Error ? err.message : 'Failed to import Google Sheets range');
+      setSheetsError(messageWithDetail(err, 'Failed to import Google Sheets range'));
     } finally {
       setIsImportingSheetRange(false);
     }
@@ -432,7 +433,7 @@ export default function GoogleSheetsRangeImporter() {
       applyImportedSheetResult(refreshed);
       setSheetsSuccess('Google Sheet updated successfully.');
     } catch (err) {
-      setSheetsError(err instanceof Error ? err.message : 'Failed to save Google Sheets changes');
+      setSheetsError(messageWithDetail(err, 'Failed to save Google Sheets changes'));
     } finally {
       setIsSavingSheetRange(false);
     }

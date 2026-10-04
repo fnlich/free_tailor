@@ -1,6 +1,7 @@
 import pdf from 'pdf-parse';
 import { launchBrowser } from '../config/browser';
 import { jobPageBrowserTimeoutMs, jobPageFetchTimeoutMs, jobPageUserAgent } from '../config/operational';
+import { PublicError } from '../middleware/publicError';
 
 /*
  * The two timeouts and the User-Agent come from config/operational.ts
@@ -123,7 +124,8 @@ async function extractHtmlViaPuppeteer(url: string): Promise<string> {
 export async function extractJobPageContent(url: string): Promise<string> {
   const normalizedUrl = url.trim();
   if (!/^https?:\/\//i.test(normalizedUrl)) {
-    throw new Error('Job link must be an absolute http(s) URL.');
+    // Public: it is the row's own link, and the person who typed it can fix it.
+    throw new PublicError('Job link must be an absolute http(s) URL.');
   }
 
   try {

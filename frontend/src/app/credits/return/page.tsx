@@ -13,6 +13,7 @@ import {
   STATE_TONES,
 } from '@/lib/payments';
 import { EmptyState, Notice, Pill, Spinner } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 /**
  * Where a provider sends the browser back to.
@@ -71,7 +72,7 @@ function ReturnBody() {
       if (response.payment.state === 'paid') void refresh();
     } catch (err) {
       if (token !== latestRequest.current) return;
-      setError(err instanceof Error ? err.message : 'Could not find that payment.');
+      setError(messageWithDetail(err, 'Could not find that payment.'));
     } finally {
       if (token === latestRequest.current) setLoading(false);
     }

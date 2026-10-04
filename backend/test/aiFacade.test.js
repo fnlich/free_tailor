@@ -333,21 +333,83 @@ test('a disabled provider is refused with a status a route can act on', async ()
   );
 });
 
-test("each seat's failures name what that seat needs, never another seat's", async () => {
+test("each seat's failures name what that seat needs to an administrator, and nothing to anybody else", async () => {
   // Every provider shared the Claude seat's sentences once, so a signed-out
   // Codex seat told the person to sign the Claude subscription in - on an
-  // install where that seat may well be locked.
+  // install where that seat may well be locked. The seat-specific sentences
+  // are now the administrator's `detail`; everybody else hears one of four
+  // sentences that name no seat at all.
   const ai = loadAi();
-  const { describeAiError } = require('../dist/middleware/aiErrors');
+  const { publicFailure } = require('../dist/middleware/publicError');
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    for (const kind of ['auth', 'rateLimited', 'binaryMissing']) {
+      const error = new ai.AIProviderError({ provider: 'codex-cli', kind, detail: 'x' });
+      const asAdmin = publicFailure(error, { admin: true });
+      assert.match(asAdmin.body.detail, /Codex/, kind);
+      assert.doesNotMatch(asAdmin.body.detail, /Claude|claude auth/, kind);
 
-  for (const kind of ['auth', 'rateLimited', 'binaryMissing']) {
-    const described = describeAiError(new ai.AIProviderError({ provider: 'codex-cli', kind, detail: 'x' }));
-    assert.match(described.body.error, /Codex/, kind);
-    assert.doesNotMatch(described.body.error, /Claude|claude auth/, kind);
+      const asUser = publicFailure(error, { admin: false });
+      assert.equal(asUser.body.detail, undefined, `${kind}: no detail for anybody else`);
+      assert.doesNotMatch(asUser.body.error, /Codex|Claude|codex|claude|CLI|PATH/, kind);
+      assert.match(asUser.body.ref, /^ERR-[0-9A-F]{6}$/, kind);
+      assert.equal('provider' in asUser.body, false, `${kind}: never the provider id`);
+      assert.equal('adminAction' in asUser.body, false, `${kind}: never the admin action`);
+    }
+    // And the Claude seat keeps the sentences that were always its own - for
+    // the administrator.
+    const seat = publicFailure(new ai.AIProviderError({ provider: 'claude-cli', kind: 'auth' }), { admin: true });
+    assert.match(seat.body.detail, /claude auth login/);
+  } finally {
+    console.error = quiet;
   }
-  // And the Claude seat keeps the sentences that were always its own.
-  const seat = describeAiError(new ai.AIProviderError({ provider: 'claude-cli', kind: 'auth' }));
-  assert.match(seat.body.error, /claude auth login/);
+});
+
+test('an AI failure is one of four public sentences, by what the reader can do about it', async () => {
+  const ai = loadAi();
+  const { publicFailure } = require('../dist/middleware/publicError');
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const said = (kind, extra = {}) =>
+      publicFailure(new ai.AIProviderError({ provider: 'gemini-cli', kind, ...extra }), { admin: false });
+
+    // Wait: a spent usage window is 429 with when to come back.
+    const busy = said('rateLimited', { retryAfterSeconds: 120 });
+    assert.equal(busy.status, 429);
+    assert.equal(busy.body.error, ai.PUBLIC_AI_MESSAGE.busy);
+    assert.equal(busy.body.code, 'ai-busy');
+    assert.equal(busy.body.retryAfterSeconds, 120);
+    assert.deepEqual(busy.headers, { 'Retry-After': '120' });
+
+    // Ask for less.
+    const timeout = said('timeout');
+    assert.equal(timeout.status, 504);
+    assert.equal(timeout.body.error, ai.PUBLIC_AI_MESSAGE.timeout);
+
+    // Simply try again.
+    for (const kind of ['stalled', 'unavailable', 'truncated', 'malformedOutput', 'failed']) {
+      assert.equal(said(kind).body.error, ai.PUBLIC_AI_MESSAGE.retry, kind);
+    }
+
+    // Tell somebody - one sentence and a 503, whatever the server-side cause.
+    for (const kind of ['auth', 'binaryMissing', 'misconfigured', 'locked', 'disabled', 'modelUnavailable']) {
+      const failure = said(kind);
+      assert.equal(failure.status, 503, kind);
+      assert.equal(failure.body.error, ai.PUBLIC_AI_MESSAGE.contactAdmin, kind);
+      assert.equal(failure.body.code, 'ai-unavailable', kind);
+    }
+
+    // A full semaphore is `unavailable` to the transport and "busy" to a person.
+    const full = publicFailure(
+      new ai.AIProviderError({ provider: 'claude-cli', kind: 'unavailable', publicFailure: 'busy' }),
+      { admin: false }
+    );
+    assert.equal(full.body.error, ai.PUBLIC_AI_MESSAGE.busy);
+  } finally {
+    console.error = quiet;
+  }
 });
 
 test('an explicitly registered adapter wins, and the other providers still exist', async () => {

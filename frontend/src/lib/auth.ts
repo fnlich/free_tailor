@@ -41,9 +41,14 @@ export type AccountPlan = {
   order: number;
 };
 
+/**
+ * Which ways in this server offers. Only whether each is available: which
+ * settings a missing one lacks is the operator's business, and the sign-in
+ * screen is shown to people nobody has identified yet.
+ */
 export type SignInOptions = {
   google: { available: boolean; clientId: string };
-  email: { available: boolean; missing: string[] };
+  email: { available: boolean };
 };
 
 export type SignInResponse = {

@@ -7,8 +7,14 @@
  * database and no `claude` binary.
  */
 
-export { AIProviderError, isAIProviderError, HTTP_STATUS_BY_KIND, USER_MESSAGE_BY_KIND } from './errors';
-export type { AIErrorKind } from './errors';
+export {
+  AIProviderError,
+  isAIProviderError,
+  ADMIN_MESSAGE_BY_KIND,
+  HTTP_STATUS_BY_KIND,
+  PUBLIC_AI_MESSAGE,
+} from './errors';
+export type { AIErrorKind, PublicAiFailure } from './errors';
 
 export {
   createPromptCompletion,

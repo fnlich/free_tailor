@@ -109,6 +109,10 @@ async function serve({ settings = {} } = {}) {
         body: JSON.stringify(body),
       }),
     methods: async () => (await call(users.createSession(alice.id), '/api/payments/methods')).json(),
+    adminMethods: async () => {
+      const boss = users.getUserByEmail('boss@example.com') ?? users.createUser({ email: 'boss@example.com' });
+      return (await call(users.createSession(boss.id), '/api/payments/methods')).json();
+    },
   };
 }
 
@@ -229,14 +233,22 @@ test('a price that leaves no whole credit inside the amounts withholds the metho
   try {
     const response = await server.checkout({ method: 'card', credits: 1 });
     assert.equal(response.status, 503, 'a misconfiguration, not the buyer\'s mistake');
-    const error = (await response.json()).error;
-    assert.match(error, /card/, 'names the target');
-    assert.match(error, /Admin/, 'and where to fix it');
+    const body = await response.json();
+    // The buyer is told whom to ask; what is wrong, and where to fix it, is the
+    // administrator's - in the log under the ref.
+    assert.equal(body.error, 'Purchases are not available right now. Please contact your administrator.');
+    assert.match(body.ref, /^ERR-[0-9A-F]{6}$/);
+    assert.equal(body.detail, undefined);
 
     const methods = await server.methods();
     const card = methods.targets.find((target) => target.id === 'card');
     assert.equal(card.available, false, 'withheld rather than dropped');
-    assert.match(card.reason, /no whole number of credits/i);
+    assert.equal(card.reason, 'Not available right now.');
+
+    const operatorCard = (await server.adminMethods()).targets.find((target) => target.id === 'card');
+    assert.match(operatorCard.reason, /no whole number of credits/i, 'the operator sees why');
+    assert.match(operatorCard.reason, /card/, 'names the target');
+    assert.match(operatorCard.reason, /Admin/, 'and where to fix it');
   } finally {
     server.close();
   }

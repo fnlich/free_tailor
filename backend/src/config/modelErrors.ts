@@ -1,3 +1,5 @@
+import { PublicError } from '../middleware/publicError';
+
 /**
  * The one sentence anybody gets when a run, a quote or a profile names a model
  * it may not use.
@@ -23,27 +25,32 @@ export const MODEL_UNAVAILABLE_MESSAGE =
  * administrator's response body and for the log, and for nobody else. A 400,
  * because it is the request's choice that is wrong and choosing again fixes it.
  */
-export class ModelUnavailableError extends Error {
-  readonly status = 400;
-  readonly code = 'model-unavailable';
-  readonly detail: string;
+export class ModelUnavailableError extends PublicError {
+  declare readonly detail: string;
 
   constructor(detail: string) {
-    super(MODEL_UNAVAILABLE_MESSAGE);
+    super(MODEL_UNAVAILABLE_MESSAGE, { status: 400, code: 'model-unavailable', detail });
     this.name = 'ModelUnavailableError';
-    this.detail = detail;
   }
 }
 
 /**
- * The response body for one, with the detail only for an administrator.
+ * Nothing at all can run: every model is switched off, or every seat behind
+ * the enabled ones is locked on this machine.
  *
- * A route that catches this answers `error.status` with this body. Kept beside
- * the class, so every route says it the same way.
+ * Not the request's fault, so not `ModelUnavailableError`'s 400 - choosing
+ * another model cannot help when there is none. A 503 with the sentence the
+ * frontend uses for the same state, and the operator's reason (which names
+ * AI_LOCKED_PROVIDERS and the seats) as `detail`.
  */
-export function modelUnavailableBody(
-  error: ModelUnavailableError,
-  admin: boolean
-): { error: string; code: string; detail?: string } {
-  return { error: error.message, code: error.code, ...(admin ? { detail: error.detail } : {}) };
+export const AI_UNAVAILABLE_MESSAGE =
+  "AI generation isn't available right now. Please contact your administrator.";
+
+export class AiUnavailableError extends PublicError {
+  declare readonly detail: string;
+
+  constructor(detail: string) {
+    super(AI_UNAVAILABLE_MESSAGE, { status: 503, code: 'ai-unavailable', detail });
+    this.name = 'AiUnavailableError';
+  }
 }

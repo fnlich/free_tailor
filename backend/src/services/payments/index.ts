@@ -26,6 +26,7 @@ import type { UserAccount } from '../../types/account';
 import { normalizeOrigin, publicBaseUrl } from '../../config/publicUrl';
 import * as stripe from '../../integrations/stripe';
 import * as cryptomus from '../../integrations/cryptomus';
+import { PublicError } from '../../middleware/publicError';
 import {
   PriceError,
   quoteCredits,
@@ -119,13 +120,15 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
   ];
 }
 
-export class PaymentError extends Error {
-  readonly status: number;
-
+/**
+ * A checkout or refund refused in words written for whoever asked: the buyer's
+ * own card, amount or limit, or - on the admin-only refund routes - the
+ * administrator's. Public, so `sendPublicError` passes it through.
+ */
+export class PaymentError extends PublicError {
   constructor(message: string, status = 400) {
-    super(message);
+    super(message, { status });
     this.name = 'PaymentError';
-    this.status = status;
   }
 }
 
@@ -748,7 +751,14 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
         ...base,
         id: entry.method,
         available: false,
-        reason: error instanceof Error ? error.message : 'These limits cannot be resolved.',
+        // The operator's reason - the route gives anybody else a plain "not
+        // available" instead (see GET /api/payments/methods).
+        reason:
+          error instanceof PublicError && error.detail
+            ? error.detail
+            : error instanceof Error
+              ? error.message
+              : 'These limits cannot be resolved.',
         minCredits: 0,
         maxCredits: 0,
         minAmountCents: 0,

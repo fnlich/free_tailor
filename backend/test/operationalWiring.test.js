@@ -128,9 +128,9 @@ async function serveUploads(name) {
   app.use('/api/auth', authRoutes.default);
   app.use('/api/profiles', profileRoutes.default);
   app.use('/api/templates', templateRoutes.default);
-  // The app's last-resort handler, so a multer error that is NOT a size
-  // problem lands where it always did.
-  app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
+  // The app's real last-resort handler, so a multer error that is NOT a size
+  // problem lands where it does in production.
+  app.use(loadFresh('../dist/middleware/publicError').publicErrorHandler);
   const server = app.listen(0);
   const port = server.address().port;
 
@@ -201,6 +201,8 @@ test('a resume PDF over UPLOAD_MAX_MB is a 413 that names the limit, not a 500',
       assert.equal(body.code, 'upload-too-large');
       assert.equal(body.limitMb, 1);
       assert.match(body.error, /1 MB or larger; this server accepts PDFs under 1 MB/);
+      // The number, never the setting: UPLOAD_MAX_MB is the administrator's.
+      assert.doesNotMatch(body.error, /UPLOAD_MAX_MB/);
     } finally {
       server.close();
     }
@@ -258,8 +260,8 @@ test('a resume upload under the cap is read in memory, and no uploads directory 
     const server = await serveUploads('wiring-upload-memory');
     try {
       // Not a real PDF, so the parse fails - but only AFTER multer accepted it
-      // and handed the handler a buffer: a 500 from the parser, not a 413.
-      // The handler logs that failure; it is expected here, so kept quiet.
+      // and handed the handler a buffer: the uploader's unreadable file, not a
+      // 413, and never the parser's own words.
       const realError = console.error;
       console.error = () => {};
       let response;
@@ -268,13 +270,27 @@ test('a resume upload under the cap is read in memory, and no uploads directory 
       } finally {
         console.error = realError;
       }
-      assert.equal(response.status, 500);
-      assert.doesNotMatch((await response.json()).error, /ENOENT|uploads/);
+      assert.equal(response.status, 400);
+      const unreadable = await response.json();
+      assert.match(unreadable.error, /^Could not extract text from PDF/);
+      assert.doesNotMatch(JSON.stringify(unreadable), /ENOENT|uploads/);
+      assert.equal(unreadable.detail, undefined, 'the parser\'s reason is an administrator\'s');
 
-      // A non-PDF is still refused by the filter, through the error handler.
+      // A non-PDF is still refused by the filter, through the error handler -
+      // as the caller's 415, where it used to be the server's 500.
       const text = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.from('hello'), 'text/plain');
-      assert.equal(text.status, 500);
-      assert.match((await text.json()).error, /Only PDF files are allowed/);
+      assert.equal(text.status, 415);
+      const refused = await text.json();
+      assert.equal(refused.error, 'Only PDF files can be uploaded.');
+      assert.equal(refused.code, 'upload-not-pdf');
+
+      // A form with the file under the wrong field is the form's fault too: a
+      // 400 in plain words, not multer's "Unexpected field" as a 500.
+      const misnamed = await server.upload(server.memberToken, '/api/profiles/upload', 'document', Buffer.from('%PDF-1.4'));
+      assert.equal(misnamed.status, 400);
+      const unreadable2 = await misnamed.json();
+      assert.equal(unreadable2.code, 'upload-unreadable');
+      assert.doesNotMatch(unreadable2.error, /Unexpected field|LIMIT_/);
     } finally {
       server.close();
     }

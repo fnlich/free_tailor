@@ -25,6 +25,7 @@ import {
 } from '@/lib/api';
 import { formatDate } from '@/lib/format';
 import { Field, Notice, Pill, Spinner, StaticValue } from '@/components/ui/kit';
+import { messageWithDetail } from '@/lib/userMessage';
 
 import styles from './prompts.module.css';
 
@@ -282,7 +283,7 @@ function PromptsPageBody() {
       setPreview(null);
       setIsDirty(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load prompt');
+      setError(messageWithDetail(err, 'Failed to load prompt'));
     } finally {
       setIsLoadingPrompt(false);
     }
@@ -342,7 +343,7 @@ function PromptsPageBody() {
         });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load prompts');
+      setError(messageWithDetail(err, 'Failed to load prompts'));
     } finally {
       setIsLoadingList(false);
     }
@@ -366,7 +367,7 @@ function PromptsPageBody() {
         setOfferSettings({ providerLocks: settings.providerLocks });
       } catch (err) {
         if (!isMounted) return;
-        setError(err instanceof Error ? err.message : 'Failed to load prompt model options');
+        setError(messageWithDetail(err, 'Failed to load prompt model options'));
       }
     };
 
@@ -454,7 +455,7 @@ function PromptsPageBody() {
       setValidation(nextValidation);
       setStatus('Validation complete.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to validate prompt');
+      setError(messageWithDetail(err, 'Failed to validate prompt'));
     } finally {
       setIsValidating(false);
     }
@@ -475,7 +476,7 @@ function PromptsPageBody() {
       setValidation(nextPreview.validation);
       setStatus('Preview generated.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to preview prompt');
+      setError(messageWithDetail(err, 'Failed to preview prompt'));
     } finally {
       setIsPreviewing(false);
     }
@@ -508,7 +509,7 @@ function PromptsPageBody() {
       setStatus(draft.id ? 'Prompt variant updated.' : 'Prompt variant created.');
       setIsDirty(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save prompt');
+      setError(messageWithDetail(err, 'Failed to save prompt'));
     } finally {
       setIsSaving(false);
     }
@@ -525,7 +526,7 @@ function PromptsPageBody() {
       await refreshPrompts(selectedFeatureGroup.key, activeCandidateId);
       setStatus(`Saved "${targetPrompt?.name || activeCandidateId}" as the active prompt for ${selectedFeatureGroup.label}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save active prompt selection');
+      setError(messageWithDetail(err, 'Failed to save active prompt selection'));
     }
   };
 
@@ -540,7 +541,7 @@ function PromptsPageBody() {
       await refreshPrompts(draft.featureKey ?? selectedFeatureKey ?? null);
       setStatus('Prompt deleted.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete prompt');
+      setError(messageWithDetail(err, 'Failed to delete prompt'));
     }
   };
 

@@ -1,5 +1,6 @@
 import { buildNewProfile } from './profileService';
 import type { CreateProfileDTO, Profile } from '../types/profile';
+import { PublicError } from '../middleware/publicError';
 
 /**
  * Reading an uploaded profile file.
@@ -45,9 +46,9 @@ const PROFILE_FIELDS = [
 ] as const;
 
 /** Carries a message written for the person who chose the file. */
-export class ProfileImportError extends Error {
+export class ProfileImportError extends PublicError {
   constructor(message: string) {
-    super(message);
+    super(message, { status: 400 });
     this.name = 'ProfileImportError';
   }
 }

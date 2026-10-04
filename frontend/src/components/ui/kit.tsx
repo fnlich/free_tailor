@@ -223,12 +223,15 @@ export function Notice({
 export function ErrorNotice({
   error,
   fallback,
+  onDismiss,
   className = '',
   children,
 }: {
   error: unknown;
   /** Said when the failure carries no sentence of its own, e.g. "Could not load your orders". */
   fallback?: string;
+  /** Adds the × that clears it, for a notice that would otherwise outstay the problem. */
+  onDismiss?: () => void;
   className?: string;
   /** After the sentence - a link to the page that fixes it, a retry button. */
   children?: ReactNode;
@@ -236,12 +239,32 @@ export function ErrorNotice({
   if (error === null || error === undefined || error === '' || error === false) return null;
   const message = typeof error === 'string' ? error : userMessage(error, fallback);
   const detail = operatorDetail(error);
-  return (
-    <Notice tone="error" role="alert" className={className}>
+  const body = (
+    <>
       <p className="break-words">{message}</p>
       {/* Administrators only: the server withholds `detail` from everyone else. */}
       {detail && <p className="mt-2 whitespace-pre-wrap break-words text-xs opacity-90">{detail}</p>}
       {children}
+    </>
+  );
+  if (!onDismiss) {
+    return (
+      <Notice tone="error" role="alert" className={className}>
+        {body}
+      </Notice>
+    );
+  }
+  return (
+    <Notice tone="error" role="alert" className={`flex items-start justify-between gap-4 ${className}`}>
+      <div className="min-w-0">{body}</div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="-my-1 shrink-0 px-1 text-lg font-bold leading-none"
+        aria-label="Dismiss"
+      >
+        ×
+      </button>
     </Notice>
   );
 }

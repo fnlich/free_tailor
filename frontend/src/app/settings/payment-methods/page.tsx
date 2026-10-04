@@ -7,6 +7,7 @@ import { MarkCardBrand } from '@/components/icons/marks';
 import { Notice, Section, SettingsPage, Status } from '@/components/settings/SettingsParts';
 import { formatDate } from '@/lib/format';
 import { describeCard, paymentsApi, type SavedCard } from '@/lib/payments';
+import { messageWithDetail } from '@/lib/userMessage';
 
 type CardsState =
   | { status: 'loading' }
@@ -49,7 +50,7 @@ export default function PaymentMethodsSettingsPage() {
     } catch (caught) {
       setState({
         status: 'failed',
-        message: caught instanceof Error ? caught.message : 'Your saved cards could not be loaded.',
+        message: messageWithDetail(caught, 'Your saved cards could not be loaded.'),
       });
     }
   }, []);
@@ -80,7 +81,7 @@ export default function PaymentMethodsSettingsPage() {
       // The row stays open on its question, so trying again is one press.
       setRemoveError({
         id: card.id,
-        message: caught instanceof Error ? caught.message : 'That card could not be removed.',
+        message: messageWithDetail(caught, 'That card could not be removed.'),
       });
     } finally {
       setBusyId(null);

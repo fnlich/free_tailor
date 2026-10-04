@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import { constants as fsConstants } from 'fs';
 import path from 'path';
 import os from 'os';
+import { PublicError } from '../middleware/publicError';
 
 export const DEFAULT_GENERATED_RESUMES_DIR = path.join(__dirname, '..', '..', '..', 'generated');
 export const DEFAULT_OUTPUT_PATH_TEMPLATE = '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
@@ -188,6 +189,12 @@ export function validateOutputPathTemplate(value: unknown): string {
   return normalized;
 }
 
+/*
+ * The file and folder name templates are a profile's own fields, typed by its
+ * owner, so a refusal of one is public: it quotes only what they wrote. The
+ * output base directory and path template above are an administrator's
+ * settings and stay plain errors.
+ */
 function assertSupportedOutputTokens(
   template: string,
   allowedAliases: Record<string, keyof OutputTemplateVariables> = OUTPUT_TOKEN_ALIASES
@@ -195,7 +202,7 @@ function assertSupportedOutputTokens(
   for (const match of template.matchAll(/\{\{\s*([^}]+)\s*\}\}/g)) {
     const tokenKey = match[1]?.trim().toLowerCase() || '';
     if (!allowedAliases[tokenKey]) {
-      throw new Error(`Unsupported output token "{{${match[1]}}}"`);
+      throw new PublicError(`Unsupported output token "{{${match[1]}}}"`);
     }
   }
 }
@@ -208,7 +215,7 @@ function resolveTemplateToken(
   const key = rawToken.trim().toLowerCase();
   const variableName = allowedAliases[key];
   if (!variableName) {
-    throw new Error(`Unsupported output token "{{${rawToken}}}"`);
+    throw new PublicError(`Unsupported output token "{{${rawToken}}}"`);
   }
 
   return variables[variableName] ?? '';
@@ -262,7 +269,7 @@ export function validateOutputFileNameTemplate(value: unknown, fallback: string)
   }, fallback);
 
   if (!sample) {
-    throw new Error('Output file name template must produce a valid file name');
+    throw new PublicError('Output file name template must produce a valid file name');
   }
 
   return normalized;
@@ -290,7 +297,7 @@ export function validateOutputFolderNameTemplate(value: unknown, fallback: strin
   }, fallback);
 
   if (!sample) {
-    throw new Error('Output folder name template must produce a valid folder name');
+    throw new PublicError('Output folder name template must produce a valid folder name');
   }
 
   return normalized;
