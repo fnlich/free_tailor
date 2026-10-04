@@ -1,0 +1,27 @@
+/*
+ * A line under a payment's status pill: how much of a refund came back, or why
+ * the payment failed. Coloured here, for both themes, because the html.dark
+ * shim names some status utilities (text-red-700) and not others (amber), and
+ * because `.tl-table td` sets the cell's colour unlayered.
+ */
+.note {
+  margin-top: 0.375rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.note[data-tone='warn'] {
+  color: #b45309;
+}
+
+.note[data-tone='error'] {
+  color: #b91c1c;
+}
+
+:global(html.dark) .note[data-tone='warn'] {
+  color: #fbbf24;
+}
+
+:global(html.dark) .note[data-tone='error'] {
+  color: #fca5a5;
+}

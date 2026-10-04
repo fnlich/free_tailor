@@ -28,6 +28,8 @@ import {
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
+import { Card, Field, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
+import styles from './page.module.css';
 
 type SettingsFormState = {
   providersEnabled: Record<AIProvider, boolean>;
@@ -68,19 +70,19 @@ function SettingSwitch({
   title: string;
   children: ReactNode;
 }) {
+  // A choice box, so the explanation sits inside the thing being switched.
   return (
-    <label className="flex cursor-pointer items-start gap-3" htmlFor={id}>
+    <label className="tl-choice" data-on={checked} htmlFor={id}>
       <input
         id={id}
         type="checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
-        className="mt-1 h-4 w-4 rounded border-gray-300"
       />
-      <span>
-        <span className="block text-sm font-medium text-gray-900">{title}</span>
-        <span className="block text-sm text-gray-600">{children}</span>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-ink">{title}</span>
+        <span className="mt-1 block text-sm text-muted">{children}</span>
       </span>
     </label>
   );
@@ -152,75 +154,85 @@ function SubscriptionCard({
   const usage = health?.usage.byProvider[providerId];
   const concurrency = health?.concurrency[providerId];
 
+  // The seat's state as a coloured dot beside its name - the colours live in
+  // page.module.css, stated for both themes.
   const tone = healthError
-    ? { dot: 'bg-red-500', box: 'border-red-200 bg-red-50' }
+    ? 'error'
     : !health
-    ? { dot: 'bg-gray-300', box: 'border-gray-200 bg-gray-50' }
+    ? 'unknown'
     : provider?.ok && !provider.warning
-      ? { dot: 'bg-green-500', box: 'border-green-200 bg-green-50' }
+      ? 'ok'
       : provider?.ok
-        ? { dot: 'bg-amber-500', box: 'border-amber-200 bg-amber-50' }
-        : { dot: 'bg-red-500', box: 'border-red-200 bg-red-50' };
+        ? 'warn'
+        : 'error';
 
   return (
-    <section className={`space-y-3 rounded-md border p-4 ${tone.box}`}>
-      <div className="flex items-center gap-2">
-        <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone.dot}`} aria-hidden />
-        <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-      </div>
+    <Card
+      title={
+        <span className="flex items-center gap-2">
+          <span className={styles.dot} data-tone={tone} aria-hidden />
+          {title}
+        </span>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-sm text-muted">
+          {healthError
+            ? `Could not read provider status: ${healthError}`
+            : health
+              ? provider?.detail ?? 'No status reported.'
+              : 'Checking the CLI on the server...'}
+        </p>
+        {provider?.warning && <Notice tone="warn">{provider.warning}</Notice>}
 
-      <p className="text-sm text-gray-700">
-        {healthError
-          ? `Could not read provider status: ${healthError}`
-          : health
-            ? provider?.detail ?? 'No status reported.'
-            : 'Checking the CLI on the server...'}
-      </p>
-      {provider?.warning && <p className="text-sm font-medium text-amber-800">{provider.warning}</p>}
-
-      <dl className="grid gap-x-6 gap-y-1 text-sm text-gray-700 sm:grid-cols-2">
-        <div className="flex gap-2">
-          <dt className="text-gray-500">Sign-in</dt>
-          <dd>{provider?.authMethod === 'oauth_token' ? 'Subscription (OAuth)' : provider?.authMethod ?? 'unknown'}</dd>
-        </div>
-        {seatWindow && (
+        <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
           <div className="flex gap-2">
-            <dt className="text-gray-500">Usage window</dt>
-            <dd>
-              {formatPercent(seat?.utilization ?? null)}
-              {seat?.resetsAt ? ` (resets ${new Date(seat.resetsAt).toLocaleTimeString()})` : ''}
+            <dt className="text-subtle">Sign-in</dt>
+            <dd className="text-ink">
+              {provider?.authMethod === 'oauth_token' ? 'Subscription (OAuth)' : provider?.authMethod ?? 'unknown'}
             </dd>
           </div>
-        )}
-        <div className="flex gap-2">
-          <dt className="text-gray-500">In flight</dt>
-          <dd>
-            {concurrency
-              ? `${concurrency.inFlight} of ${concurrency.limit}` +
-                (concurrency.queued ? `, ${concurrency.queued} queued` : '')
-              : 'idle'}
-          </dd>
-        </div>
-        <div className="flex gap-2">
-          <dt className="text-gray-500">Calls this run</dt>
-          <dd>
-            {usage?.calls ?? 0}
-            {usage?.failures ? `, ${usage.failures} failed` : ''}
-          </dd>
-        </div>
-      </dl>
+          {seatWindow && (
+            <div className="flex gap-2">
+              <dt className="text-subtle">Usage window</dt>
+              <dd className="text-ink">
+                {formatPercent(seat?.utilization ?? null)}
+                {seat?.resetsAt ? ` (resets ${new Date(seat.resetsAt).toLocaleTimeString()})` : ''}
+              </dd>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <dt className="text-subtle">In flight</dt>
+            <dd className="text-ink">
+              {concurrency
+                ? `${concurrency.inFlight} of ${concurrency.limit}` +
+                  (concurrency.queued ? `, ${concurrency.queued} queued` : '')
+                : 'idle'}
+            </dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-subtle">Calls this run</dt>
+            <dd className="text-ink">
+              {usage?.calls ?? 0}
+              {usage?.failures ? `, ${usage.failures} failed` : ''}
+            </dd>
+          </div>
+        </dl>
 
-      {outages.length > 0 && (
-        <ul className="space-y-1 text-sm text-red-800">
-          {outages.map((outage) => (
-            <li key={`${outage.scope}-${outage.expiresAt}`}>
-              {outage.scope === '*' ? 'All models' : outage.scope} paused until{' '}
-              {new Date(outage.expiresAt).toLocaleTimeString()}: {outage.reason}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+        {outages.length > 0 && (
+          <Notice tone="error">
+            <ul className="space-y-1">
+              {outages.map((outage) => (
+                <li key={`${outage.scope}-${outage.expiresAt}`}>
+                  {outage.scope === '*' ? 'All models' : outage.scope} paused until{' '}
+                  {new Date(outage.expiresAt).toLocaleTimeString()}: {outage.reason}
+                </li>
+              ))}
+            </ul>
+          </Notice>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -579,11 +591,7 @@ function AdminSettingsPageBody() {
   };
 
   if (isLoading || !form || !settings) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
+    return <Spinner />;
   }
 
   const providerEnabled = form.providersEnabled;
@@ -593,221 +601,233 @@ function AdminSettingsPageBody() {
     (model) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled)
   );
   const outputPathPreview = buildPathPreview(form.outputPathTemplate);
+  /* One card per seat this installation could run. Keyed on the LOCK, not on
+     the enabled tick: a seat an admin has unticked is exactly the one whose
+     readiness they want to read while deciding whether to tick it back on,
+     and a locked seat cannot run here however it is ticked. */
+  const seatProviders = (['claude-cli', 'codex-cli'] as const).filter(
+    (seatProvider) => !isProviderLocked(settings, seatProvider)
+  );
 
   return (
-    <div className="max-w-4xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="mt-2 text-sm text-gray-600">
+    <div>
+      {/* The shell already says "Settings" above the tabs, so this is the
+          page's own name - the tab it sits under - at the smaller size. */}
+      <header>
+        <h2 className="text-2xl font-bold tracking-tight text-ink">General</h2>
+        <p className="mt-1 text-sm text-muted">
           Configure builder defaults, enabled providers, and output storage.
         </p>
-      </div>
+      </header>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md">
-          {error}
+      {(error || successMessage) && (
+        <div className="mt-6 space-y-3">
+          {error && (
+            <Notice tone="error" role="alert">
+              {error}
+            </Notice>
+          )}
+          {successMessage && (
+            <Notice tone="success" role="status">
+              {successMessage}
+            </Notice>
+          )}
         </div>
       )}
 
-      {successMessage && (
-        <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-md">
-          {successMessage}
-        </div>
-      )}
-
-      <div className="bg-white rounded-lg shadow p-6 space-y-8">
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Output Storage</h2>
-            <p className="text-sm text-gray-600">
-              Generated resumes are saved under the base directory below, using the folder template you define.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-900">Base directory</label>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <input
-                type="text"
-                value={form.outputBaseDir}
-                onChange={(e) => setField('outputBaseDir', e.target.value)}
-                disabled={savingSection === 'output' || isBrowsingDirectory}
-                placeholder="/mnt/resume-archive"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button
-                type="button"
-                onClick={handleBrowseDirectory}
-                disabled={savingSection === 'output' || isBrowsingDirectory}
-                className="inline-flex items-center justify-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 sm:min-w-36"
-              >
-                {isBrowsingDirectory ? 'Opening...' : 'Browse...'}
-              </button>
-            </div>
-            <p className="text-xs text-gray-500">
-              Browse opens the folder picker on the backend machine, so mounted shared drives and network folders are selectable if that machine can access them.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-900">Folder template</label>
+      <Section
+        title="Output Storage"
+        description="Generated resumes are saved under the base directory below, using the folder template you define."
+      >
+        <Field
+          label="Base directory"
+          htmlFor="output-base-dir"
+          hint="Browse opens the folder picker on the backend machine, so mounted shared drives and network folders are selectable if that machine can access them."
+        >
+          <div className="flex flex-col gap-3 sm:flex-row">
             <input
+              id="output-base-dir"
               type="text"
-              value={form.outputPathTemplate}
-              onChange={(e) => setField('outputPathTemplate', e.target.value)}
-              disabled={savingSection === 'output'}
-              placeholder="/{{date}}/{{profile name}}/{{company name}}"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={form.outputBaseDir}
+              onChange={(e) => setField('outputBaseDir', e.target.value)}
+              disabled={savingSection === 'output' || isBrowsingDirectory}
+              placeholder="/mnt/resume-archive"
+              className="tl-input"
             />
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 space-y-2">
-              <div>
-                <span className="font-medium text-gray-900">Supported tokens:</span>{' '}
-                <code>{'{{date}}'}</code>, <code>{'{{profile name}}'}</code>, <code>{'{{company name}}'}</code>,{' '}
-                <code>{'{{row number}}'}</code>, <code>{'{{job title}}'}</code>
-              </div>
-              <div><span className="font-medium text-gray-900">Preview:</span> {outputPathPreview}</div>
-              <div><span className="font-medium text-gray-900">Saved preview:</span> {settings.outputPathPreview}</div>
-            </div>
-          </div>
-
-          <div className="flex justify-end">
             <button
               type="button"
-              onClick={handleSaveOutputStorage}
-              disabled={savingSection !== null && savingSection !== 'output'}
-              className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-blue-400"
+              onClick={handleBrowseDirectory}
+              disabled={savingSection === 'output' || isBrowsingDirectory}
+              className="tl-button-quiet sm:min-w-36"
             >
-              {savingSection === 'output' ? 'Saving...' : 'Save Output Storage'}
+              {isBrowsingDirectory ? 'Opening...' : 'Browse...'}
             </button>
           </div>
-        </section>
+        </Field>
 
-        {/* One card per seat this installation could run. Keyed on the LOCK, not
-            on the enabled tick: a seat an admin has unticked is exactly the one
-            whose readiness they want to read while deciding whether to tick it
-            back on, and a locked seat cannot run here however it is ticked. */}
-        {(['claude-cli', 'codex-cli'] as const)
-          .filter((seatProvider) => !isProviderLocked(settings, seatProvider))
-          .map((seatProvider) => (
-            <SubscriptionCard
-              key={seatProvider}
-              health={health}
-              healthError={healthError}
-              provider={seatProvider}
-              title={seatProvider === 'codex-cli' ? 'ChatGPT Subscription (Codex)' : 'Claude Subscription'}
-              seatWindow={seatProvider === 'claude-cli'}
-            />
-          ))}
+        <Field label="Folder template" htmlFor="output-path-template">
+          <input
+            id="output-path-template"
+            type="text"
+            value={form.outputPathTemplate}
+            onChange={(e) => setField('outputPathTemplate', e.target.value)}
+            disabled={savingSection === 'output'}
+            placeholder="/{{date}}/{{profile name}}/{{company name}}"
+            className="tl-input"
+          />
+          <Notice tone="neutral" className="mt-3 space-y-2">
+            <div>
+              <span className="font-medium">Supported tokens:</span>{' '}
+              <code className={styles.code}>{'{{date}}'}</code>,{' '}
+              <code className={styles.code}>{'{{profile name}}'}</code>,{' '}
+              <code className={styles.code}>{'{{company name}}'}</code>,{' '}
+              <code className={styles.code}>{'{{row number}}'}</code>,{' '}
+              <code className={styles.code}>{'{{job title}}'}</code>
+            </div>
+            <div className="break-all">
+              <span className="font-medium">Preview:</span> {outputPathPreview}
+            </div>
+            <div className="break-all">
+              <span className="font-medium">Saved preview:</span> {settings.outputPathPreview}
+            </div>
+          </Notice>
+        </Field>
 
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Model controls</h2>
-            <p className="text-sm text-gray-600">
-              What the model select offers, everywhere it appears - the builder and every profile
-              alike.
-            </p>
-          </div>
-          <SettingSwitch
-            id="browserChatEnabled"
-            checked={settings.browserChatEnabled}
-            disabled={savingSection !== null}
-            onChange={(next) =>
-              void saveSection(
-                'modelControls',
-                { browserChatEnabled: next },
-                next
-                  ? 'Browser mode is offered again.'
-                  : 'Browser mode is hidden, and no request can reach it.'
-              )
-            }
-            title="Offer browser-tab mode"
+        <div>
+          <button
+            type="button"
+            onClick={handleSaveOutputStorage}
+            disabled={savingSection !== null && savingSection !== 'output'}
+            className="tl-button"
           >
-            <strong>Default (browser)</strong> needs a Chrome running on this server that you have
-            signed in to by hand, which a headless box cannot have. Switch this off and the option
-            disappears from every model menu - here and on the builder - and a request naming it is
-            refused rather than left waiting for a browser that will never answer. The per-site
-            preferences below are kept, so switching it back on restores them.
-          </SettingSwitch>
-        </section>
+            {savingSection === 'output' ? 'Saving...' : 'Save Output Storage'}
+          </button>
+        </div>
+      </Section>
 
-        {/* Gone entirely when browser mode is off, rather than greyed: there is
-            nothing here to read or fix on an installation that has withdrawn it,
-            and the switch that brings it back lives in Model controls above - so
-            hiding this cannot strand anyone. */}
-        {settings.browserChatEnabled && (
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Browser Chat (free)</h2>
-            <p className="text-sm text-gray-600">
+      {seatProviders.length > 0 && (
+        <div className="tl-section">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {seatProviders.map((seatProvider) => (
+              <SubscriptionCard
+                key={seatProvider}
+                health={health}
+                healthError={healthError}
+                provider={seatProvider}
+                title={seatProvider === 'codex-cli' ? 'ChatGPT Subscription (Codex)' : 'Claude Subscription'}
+                seatWindow={seatProvider === 'claude-cli'}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Section
+        title="Model controls"
+        description="What the model select offers, everywhere it appears - the builder and every profile alike."
+      >
+        <SettingSwitch
+          id="browserChatEnabled"
+          checked={settings.browserChatEnabled}
+          disabled={savingSection !== null}
+          onChange={(next) =>
+            void saveSection(
+              'modelControls',
+              { browserChatEnabled: next },
+              next
+                ? 'Browser mode is offered again.'
+                : 'Browser mode is hidden, and no request can reach it.'
+            )
+          }
+          title="Offer browser-tab mode"
+        >
+          <strong>Default (browser)</strong> needs a Chrome running on this server that you have
+          signed in to by hand, which a headless box cannot have. Switch this off and the option
+          disappears from every model menu - here and on the builder - and a request naming it is
+          refused rather than left waiting for a browser that will never answer. The per-site
+          preferences below are kept, so switching it back on restores them.
+        </SettingSwitch>
+      </Section>
+
+      {/* Gone entirely when browser mode is off, rather than greyed: there is
+          nothing here to read or fix on an installation that has withdrawn it,
+          and the switch that brings it back lives in Model controls above - so
+          hiding this cannot strand anyone. */}
+      {settings.browserChatEnabled && (
+        <Section
+          title="Browser Chat (free)"
+          description={
+            <>
               <strong>Default (browser)</strong> drives chat tabs in browsers you start here and
               sign in to yourself. Nothing is metered and no API key is stored - the chat plan you
               already have is the quota. Claude and ChatGPT are both used; which one a given resume
               lands on is whichever browser is free, so there is one choice to make rather than
               three.
-            </p>
-            <p className="mt-2 text-sm text-gray-600">
-              One browser shows <strong>one</strong> chat tab, on its own port. That is not a
-              preference: a second tab in the same window is a background tab, and Chrome freezes
-              those. So <strong>every browser you add runs one more resume at a time</strong>.
-              There are two queues - one shared by every browser, one for the Claude CLI seat - and
-              neither has a length limit: whenever a browser frees, it takes the task that has
-              waited longest.
-            </p>
-          </div>
-
-          <div className="rounded-md border border-gray-200">
-            {form.browserChatEndpoints.length === 0 ? (
-              <p className="p-4 text-sm text-gray-600">
-                No debug ports registered yet. Register one below, then start it with{' '}
-                <code className="rounded bg-gray-100 px-1">npm run browser:debug</code> and sign in.
-              </p>
-            ) : (
-              <ul className="divide-y divide-gray-200">
-                {form.browserChatEndpoints.map((entry) => {
-                  const live = debugReport?.browsers.find((row) => row.port === entry.port);
-                  const site = live?.status.sites.find((row) => row.id === entry.siteId);
-                  return (
-                    <li key={entry.port} className="flex flex-wrap items-center gap-3 p-3">
-                      <span className="min-w-[9rem] text-sm font-medium text-gray-900">
-                        {getAIProviderLabel(entry.siteId)}
-                      </span>
-                      <span className="text-sm text-gray-600">port {entry.port}</span>
-                      <span className="text-sm">
-                        {!live || !live.status.running ? (
-                          <span className="text-gray-500">not running</span>
-                        ) : site?.open ? (
-                          <span className="text-green-700">running, tab open</span>
-                        ) : (
-                          <span className="text-amber-700">running, no tab yet</span>
-                        )}
-                      </span>
-                      <span className="ml-auto flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void unregisterBrowser(entry.port)}
-                          disabled={savingSection !== null}
-                          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                        >
-                          Unregister
-                        </button>
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+              {/* A block span rather than a second <p>: the kit puts the
+                  description inside one paragraph already. */}
+              <span className="mt-2 block">
+                One browser shows <strong>one</strong> chat tab, on its own port. That is not a
+                preference: a second tab in the same window is a background tab, and Chrome freezes
+                those. So <strong>every browser you add runs one more resume at a time</strong>.
+                There are two queues - one shared by every browser, one for the Claude CLI seat - and
+                neither has a length limit: whenever a browser frees, it takes the task that has
+                waited longest.
+              </span>
+            </>
+          }
+        >
+          {form.browserChatEndpoints.length === 0 ? (
+            <Notice tone="neutral">
+              No debug ports registered yet. Register one below, then start it with{' '}
+              <code className={styles.code}>npm run browser:debug</code> and sign in.
+            </Notice>
+          ) : (
+            <ul className="tl-rows">
+              {form.browserChatEndpoints.map((entry) => {
+                const live = debugReport?.browsers.find((row) => row.port === entry.port);
+                const site = live?.status.sites.find((row) => row.id === entry.siteId);
+                return (
+                  <li key={entry.port} className="flex flex-wrap items-center gap-3">
+                    <span className="min-w-[9rem] text-sm font-medium text-ink">
+                      {getAIProviderLabel(entry.siteId)}
+                    </span>
+                    <span className="text-sm text-muted">port {entry.port}</span>
+                    <span className="text-sm">
+                      {!live || !live.status.running ? (
+                        <Pill tone="grey">not running</Pill>
+                      ) : site?.open ? (
+                        <Pill tone="green">running, tab open</Pill>
+                      ) : (
+                        <Pill tone="amber">running, no tab yet</Pill>
+                      )}
+                    </span>
+                    <span className="ml-auto flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void unregisterBrowser(entry.port)}
+                        disabled={savingSection !== null}
+                        className="tl-button-quiet"
+                        data-size="sm"
+                      >
+                        Unregister
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
           <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700" htmlFor="newBrowserSite">
+            <div className="w-full sm:w-56">
+              <label className="tl-label" htmlFor="newBrowserSite">
                 Register a browser for
               </label>
               <select
                 id="newBrowserSite"
                 value={newBrowserSite}
                 onChange={(event) => setNewBrowserSite(event.target.value as AIProvider)}
-                className="mt-1 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                className="tl-input mt-2"
               >
                 {BROWSER_CHAT_PROVIDERS.map((provider) => (
                   <option key={provider} value={provider}>
@@ -816,8 +836,8 @@ function AdminSettingsPageBody() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700" htmlFor="newBrowserPort">
+            <div className="w-32">
+              <label className="tl-label" htmlFor="newBrowserPort">
                 on port
               </label>
               <input
@@ -828,14 +848,14 @@ function AdminSettingsPageBody() {
                 value={newBrowserPort}
                 placeholder="9222"
                 onChange={(event) => setNewBrowserPort(event.target.value)}
-                className="mt-1 w-32 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                className="tl-input mt-2"
               />
             </div>
             <button
               type="button"
               onClick={() => void registerBrowser()}
               disabled={savingSection !== null}
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              className="tl-button"
             >
               {savingSection === 'browserChat' ? 'Registering...' : 'Register'}
             </button>
@@ -843,12 +863,15 @@ function AdminSettingsPageBody() {
               type="button"
               onClick={() => void refreshDebugBrowsers()}
               disabled={isChecking || savingSection !== null}
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              className="tl-button-quiet"
+              // The primary beside it is 2.5rem; matched here, inline, because
+              // .tl-button-quiet is unlayered and outranks a min-h utility.
+              style={{ minHeight: '2.5rem' }}
             >
               {isChecking ? 'Checking...' : 'Check status'}
             </button>
             {debugCheckedAt ? (
-              <span className="self-center text-xs text-gray-500">
+              <span className="self-center text-xs text-subtle">
                 Last checked {debugCheckedAt}
               </span>
             ) : null}
@@ -859,7 +882,7 @@ function AdminSettingsPageBody() {
               be SIGNED OUT, so `active` comes from the provider's own probe
               rather than from the port. */}
           {debugReport ? (
-            <ul className="grid gap-2 sm:grid-cols-2">
+            <ul className="grid gap-3 sm:grid-cols-2">
               {debugReport.platforms.map((platform) => {
                 // Three states, not two. The port probe answers in milliseconds
                 // and the health check shells out and drives a tab, so for the
@@ -878,49 +901,32 @@ function AdminSettingsPageBody() {
                         ? 'active'
                         : 'inactive';
                 return (
-                  <li
-                    key={platform.id}
-                    className={`rounded-md border p-3 ${
-                      state === 'active' ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-gray-50'
-                    }`}
-                  >
+                  <li key={platform.id} className="tl-card p-4">
                     <div className="flex items-center gap-2">
-                      <span
-                        className={`inline-block h-2.5 w-2.5 rounded-full ${
-                          state === 'active'
-                            ? 'bg-green-500'
-                            : state === 'checking'
-                              ? 'animate-pulse bg-gray-300'
-                              : 'bg-gray-400'
-                        }`}
-                        aria-hidden
-                      />
                       {/* The frontend's label, not the one the server sent.
                           The rows above render getAIProviderLabel, and the two
                           vocabularies differ, so using the server's would put
                           one provider under two names in a single panel. */}
-                      <span className="text-sm font-medium text-gray-900">
+                      <span className="text-sm font-medium text-ink">
                         {getAIProviderLabel(platform.id)}
                       </span>
-                      <span
-                        className={`ml-auto text-xs font-medium ${
-                          state === 'active' ? 'text-green-700' : 'text-gray-600'
-                        }`}
-                      >
-                        {state === 'active'
-                          ? 'Active'
-                          : state === 'checking'
-                            ? 'Checking...'
-                            : 'Not active'}
+                      <span className="ml-auto">
+                        <Pill tone={state === 'active' ? 'green' : state === 'checking' ? 'sky' : 'grey'}>
+                          {state === 'active'
+                            ? 'Active'
+                            : state === 'checking'
+                              ? 'Checking...'
+                              : 'Not active'}
+                        </Pill>
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-gray-600">
+                    <p className="mt-2 break-words text-xs text-muted">
                       {state === 'unregistered'
                         ? 'No debug port registered for this platform yet. Register one below.'
                         : describeProviderHealth(health, platform.id, healthError)}
                     </p>
                     {platform.registeredPorts.length > 0 && (
-                      <p className="mt-1 text-xs text-gray-500">
+                      <p className="mt-1 text-xs text-subtle">
                         {`Port${platform.registeredPorts.length === 1 ? '' : 's'} ` +
                           `${platform.registeredPorts.join(', ')} registered · ` +
                           `${platform.runningPorts.length} reachable · ` +
@@ -934,11 +940,11 @@ function AdminSettingsPageBody() {
           ) : null}
 
           {debugReport && Object.keys(debugReport.queues).length > 0 ? (
-            <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Queues</p>
+            <div className="tl-card p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-subtle">Queues</p>
               <ul className="mt-2 space-y-1">
                 {Object.entries(debugReport.queues).map(([siteId, stats]) => (
-                  <li key={siteId} className="text-sm text-gray-700">
+                  <li key={siteId} className="text-sm text-muted">
                     {getAIProviderLabel(siteId as AIProvider)}: {stats.tabs} tab
                     {stats.tabs === 1 ? '' : 's'}, {stats.inUse} in use, {stats.queued} waiting
                   </li>
@@ -947,43 +953,41 @@ function AdminSettingsPageBody() {
             </div>
           ) : null}
 
-          <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
-            <p className="font-medium text-gray-900">Starting these browsers</p>
-            <p className="mt-1">
+          <Notice tone="neutral">
+            <p className="font-medium">Starting these browsers</p>
+            <p className="mt-1 text-muted">
               This app never starts one. Register the port here, then run the launcher yourself on
               the machine the backend is on:
             </p>
-            <pre className="mt-2 overflow-x-auto rounded bg-gray-900 px-3 py-2 text-xs text-gray-100">
-npm run browser:debug
-            </pre>
-            <p className="mt-2">
+            <pre className={styles.command}>npm run browser:debug</pre>
+            <p className="mt-2 text-muted">
               It starts every browser registered above, skipping any already running, and opens each
               one on its own chat site. Sign in inside each window once and leave it open. Each gets
               a profile directory of its own, because Chrome ignores the debug port on a profile
               that is already running.
             </p>
-          </div>
+          </Notice>
 
-          {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
+          {debugError ? <Status tone="error">{debugError}</Status> : null}
+        </Section>
+      )}
 
-        </section>
-        )}
-
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">AI Providers</h2>
-            <p className="text-sm text-gray-600">
-              Disabled providers are hidden in Resume Builder and rejected by the backend. A{' '}
-              {LOCK_ICON} provider is one this installation cannot run at all, and its switch is
-              fixed until that changes on the server. The free browser-chat providers drive a chat
-              tab you signed in to; the metered providers are keyed from{' '}
-              <code className="rounded bg-gray-100 px-1">.env</code> (<code className="rounded bg-gray-100 px-1">ANTHROPIC_API_KEY</code>,{' '}
-              <code className="rounded bg-gray-100 px-1">OPENAI_API_KEY</code>,{' '}
-              <code className="rounded bg-gray-100 px-1">DEEPSEEK_API_KEY</code>) and this app does
-              not store keys of its own. Each row below shows what the provider reports right now.
-            </p>
-          </div>
-
+      <Section
+        title="AI Providers"
+        description={
+          <>
+            Disabled providers are hidden in Resume Builder and rejected by the backend. A{' '}
+            {LOCK_ICON} provider is one this installation cannot run at all, and its switch is
+            fixed until that changes on the server. The free browser-chat providers drive a chat
+            tab you signed in to; the metered providers are keyed from{' '}
+            <code className={styles.code}>.env</code> (<code className={styles.code}>ANTHROPIC_API_KEY</code>,{' '}
+            <code className={styles.code}>OPENAI_API_KEY</code>,{' '}
+            <code className={styles.code}>DEEPSEEK_API_KEY</code>) and this app does
+            not store keys of its own. Each row below shows what the provider reports right now.
+          </>
+        }
+      >
+        <ul className="tl-rows overflow-hidden">
           {AI_PROVIDERS.filter(
             // A provider this installation has withdrawn has no row: there is
             // nothing to toggle and nothing to read, and a live health line
@@ -992,122 +996,119 @@ npm run browser:debug
           ).map((provider) => {
             const lock = settings.providerLocks.find((entry) => entry.id === provider);
             return (
-              <label
-                key={provider}
-                className={`flex items-center justify-between border rounded-md p-4 ${
-                  lock ? 'bg-gray-50' : ''
-                }`}
-              >
-                <div>
-                  <div className="font-medium text-gray-900">
-                    {lock && <span aria-hidden>{LOCK_ICON} </span>}
-                    {getAIProviderLabel(provider)}
-                    {lock && <span className="ml-2 text-xs font-normal text-amber-700">Locked</span>}
-                  </div>
-                  {/* One line, not two: the health probe for a locked provider
-                      already answers "locked, and here is why", so rendering
-                      the reason underneath it would just say it twice. */}
-                  {lock ? (
-                    // Plain, not amber. The badge beside the name already
-                    // carries the status; colouring the explanation as well
-                    // turns four lines of ordinary prose into an alarm about a
-                    // situation nobody can or need do anything about here.
-                    <div className="text-sm text-gray-500">{lock.reason}</div>
-                  ) : (
-                    <div className="text-sm text-gray-500">
-                      {describeProviderHealth(health, provider, healthError)}
-                    </div>
-                  )}
-                </div>
-                {/* The stored preference still shows through, and is still what
-                    comes back if the lock is ever lifted - it is just not
-                    something to change while ticking it would change nothing. */}
-                <input
-                  type="checkbox"
-                  checked={providerEnabled[provider]}
-                  disabled={savingSection === 'providers' || Boolean(lock)}
-                  onChange={(e) =>
-                    setField('providersEnabled', { ...form.providersEnabled, [provider]: e.target.checked })
-                  }
-                />
-              </label>
+              <li key={provider} className={lock ? 'bg-surface-muted' : undefined}>
+                <label className="flex cursor-pointer items-center justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium text-ink">
+                      <span>
+                        {lock && <span aria-hidden>{LOCK_ICON} </span>}
+                        {getAIProviderLabel(provider)}
+                      </span>
+                      {lock && <Pill tone="amber">Locked</Pill>}
+                    </span>
+                    {/* One line, not two: the health probe for a locked provider
+                        already answers "locked, and here is why", so rendering
+                        the reason underneath it would just say it twice. */}
+                    {lock ? (
+                      // Plain, not amber. The badge beside the name already
+                      // carries the status; colouring the explanation as well
+                      // turns four lines of ordinary prose into an alarm about a
+                      // situation nobody can or need do anything about here.
+                      <span className="mt-1 block break-words text-sm text-muted">{lock.reason}</span>
+                    ) : (
+                      <span className="mt-1 block break-words text-sm text-muted">
+                        {describeProviderHealth(health, provider, healthError)}
+                      </span>
+                    )}
+                  </span>
+                  {/* The stored preference still shows through, and is still what
+                      comes back if the lock is ever lifted - it is just not
+                      something to change while ticking it would change nothing. */}
+                  <input
+                    type="checkbox"
+                    className="tl-check shrink-0"
+                    checked={providerEnabled[provider]}
+                    disabled={savingSection === 'providers' || Boolean(lock)}
+                    onChange={(e) =>
+                      setField('providersEnabled', { ...form.providersEnabled, [provider]: e.target.checked })
+                    }
+                  />
+                </label>
+              </li>
             );
           })}
+        </ul>
 
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleSaveProviders}
-              disabled={savingSection !== null && savingSection !== 'providers'}
-              className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-blue-400"
-            >
-              {savingSection === 'providers' ? 'Saving...' : 'Save AI Providers'}
-            </button>
+        <div>
+          <button
+            type="button"
+            onClick={handleSaveProviders}
+            disabled={savingSection !== null && savingSection !== 'providers'}
+            className="tl-button"
+          >
+            {savingSection === 'providers' ? 'Saving...' : 'Save AI Providers'}
+          </button>
+        </div>
+      </Section>
+
+      <Section title="Builder Defaults" description="These values seed the main resume builder when it loads.">
+        <Field label="Default mode">
+          <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-ink">
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                className="tl-check"
+                checked={form.defaultMode === 'preview'}
+                onChange={() => setField('defaultMode', 'preview')}
+                disabled={savingSection === 'defaults'}
+              />
+              <span>Preview first</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                className="tl-check"
+                checked={form.defaultMode === 'generate'}
+                onChange={() => setField('defaultMode', 'generate')}
+                disabled={savingSection === 'defaults'}
+              />
+              <span>Generate directly</span>
+            </label>
           </div>
-        </section>
+        </Field>
 
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Builder Defaults</h2>
-            <p className="text-sm text-gray-600">
-              These values seed the main resume builder when it loads.
-            </p>
+        <Field label="Default theme">
+          <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-ink">
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                className="tl-check"
+                checked={form.defaultTheme === 'light'}
+                onChange={() => setField('defaultTheme', 'light')}
+                disabled={savingSection === 'defaults'}
+              />
+              <span>Light</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                className="tl-check"
+                checked={form.defaultTheme === 'dark'}
+                onChange={() => setField('defaultTheme', 'dark')}
+                disabled={savingSection === 'defaults'}
+              />
+              <span>Dark</span>
+            </label>
           </div>
+        </Field>
 
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-gray-900">Default mode</div>
-            <div className="flex gap-6">
+        <div className="space-y-4">
+          <Field label="Default resume target">
+            <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-ink">
               <label className="flex items-center gap-2">
                 <input
                   type="radio"
-                  checked={form.defaultMode === 'preview'}
-                  onChange={() => setField('defaultMode', 'preview')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Preview first</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={form.defaultMode === 'generate'}
-                  onChange={() => setField('defaultMode', 'generate')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Generate directly</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-gray-900">Default theme</div>
-            <div className="flex gap-6">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={form.defaultTheme === 'light'}
-                  onChange={() => setField('defaultTheme', 'light')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Light</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={form.defaultTheme === 'dark'}
-                  onChange={() => setField('defaultTheme', 'dark')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Dark</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            <div className="text-sm font-medium text-gray-900">Default resume target</div>
-            <div className="flex flex-wrap gap-6">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
+                  className="tl-check"
                   checked={form.defaultResumeSelection === 'single'}
                   onChange={() => setField('defaultResumeSelection', 'single')}
                   disabled={savingSection === 'defaults'}
@@ -1117,6 +1118,7 @@ npm run browser:debug
               <label className="flex items-center gap-2">
                 <input
                   type="radio"
+                  className="tl-check"
                   checked={form.defaultResumeSelection === 'all'}
                   onChange={() => setField('defaultResumeSelection', 'all')}
                   disabled={savingSection === 'defaults'}
@@ -1126,6 +1128,7 @@ npm run browser:debug
               <label className="flex items-center gap-2">
                 <input
                   type="radio"
+                  className="tl-check"
                   checked={form.defaultResumeSelection === 'group'}
                   onChange={() => setField('defaultResumeSelection', 'group')}
                   disabled={savingSection === 'defaults'}
@@ -1133,15 +1136,17 @@ npm run browser:debug
                 <span>Specific group</span>
               </label>
             </div>
+          </Field>
 
-            {form.defaultResumeSelection === 'single' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Default profile</label>
+          {form.defaultResumeSelection === 'single' && (
+            <Field label="Default profile" htmlFor="default-profile">
+              <div className="max-w-md">
                 <select
+                  id="default-profile"
                   value={form.defaultProfileId}
                   onChange={(e) => setField('defaultProfileId', e.target.value)}
                   disabled={savingSection === 'defaults'}
-                  className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="tl-input"
                 >
                   <option value="">Choose automatically</option>
                   {profiles.map((profile) => (
@@ -1150,22 +1155,24 @@ npm run browser:debug
                     </option>
                   ))}
                 </select>
-                {profiles.length === 0 && (
-                  <p className="mt-2 text-sm text-amber-700">
-                    No enabled profiles exist yet. Create one in Admin &gt; Profiles before setting a default.
-                  </p>
-                )}
               </div>
-            )}
+              {profiles.length === 0 && (
+                <Notice tone="warn" className="mt-3">
+                  No enabled profiles exist yet. Create one in Admin &gt; Profiles before setting a default.
+                </Notice>
+              )}
+            </Field>
+          )}
 
-            {form.defaultResumeSelection === 'group' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Default group</label>
+          {form.defaultResumeSelection === 'group' && (
+            <Field label="Default group" htmlFor="default-group">
+              <div className="max-w-md">
                 <select
+                  id="default-group"
                   value={form.defaultGroupId}
                   onChange={(e) => setField('defaultGroupId', e.target.value)}
                   disabled={savingSection === 'defaults'}
-                  className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="tl-input"
                 >
                   <option value="">Choose a group...</option>
                   {groups.map((group) => (
@@ -1174,22 +1181,24 @@ npm run browser:debug
                     </option>
                   ))}
                 </select>
-                {groups.length === 0 && (
-                  <p className="mt-2 text-sm text-amber-700">
-                    No groups exist yet. Create one in Admin &gt; Groups before using this default.
-                  </p>
-                )}
               </div>
-            )}
-          </div>
+              {groups.length === 0 && (
+                <Notice tone="warn" className="mt-3">
+                  No groups exist yet. Create one in Admin &gt; Groups before using this default.
+                </Notice>
+              )}
+            </Field>
+          )}
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Default AI model</label>
+        <Field label="Default AI model" htmlFor="default-model">
+          <div className="max-w-xl">
             <select
+              id="default-model"
               value={form.defaultModelId}
               onChange={(e) => setField('defaultModelId', e.target.value)}
               disabled={savingSection === 'defaults' || availableDefaultModels.length === 0}
-              className="w-full max-w-xl px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="tl-input"
             >
               {availableDefaultModels.map((model) => (
                 <option key={model.id} value={model.id}>
@@ -1197,56 +1206,56 @@ npm run browser:debug
                 </option>
               ))}
             </select>
-            <p className="mt-2 text-sm text-gray-600">
-              This is the default model used by Resume Builder when no prompt-level override is set.
-            </p>
-            {availableDefaultModels.length === 0 && (
-              <p className="mt-2 text-sm text-amber-700">
-                No enabled models are currently available. Add one in Settings &gt; Models or re-enable a provider.
-              </p>
-            )}
           </div>
+          <p className="mt-2 text-sm text-subtle">
+            This is the default model used by Resume Builder when no prompt-level override is set.
+          </p>
+          {availableDefaultModels.length === 0 && (
+            <Notice tone="warn" className="mt-3">
+              No enabled models are currently available. Add one in Settings &gt; Models or re-enable a provider.
+            </Notice>
+          )}
+        </Field>
 
-          <div className="space-y-3">
-            <div className="text-sm font-medium text-gray-900">Default generated files</div>
-            <p className="text-sm text-gray-600">
-              PDF files are always generated. Enable DOCX only for the outputs you want by default.
-            </p>
-            <div className="space-y-2">
-              <label className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={form.defaultResumeDocxEnabled}
-                  onChange={(e) => setField('defaultResumeDocxEnabled', e.target.checked)}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Generate DOCX resume by default</span>
-              </label>
-              <label className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={form.defaultCoverLetterDocxEnabled}
-                  onChange={(e) => setField('defaultCoverLetterDocxEnabled', e.target.checked)}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Generate DOCX cover letter by default</span>
-              </label>
-            </div>
+        <Field label="Default generated files">
+          <p className="text-sm text-muted">
+            PDF files are always generated. Enable DOCX only for the outputs you want by default.
+          </p>
+          <div className="mt-3 space-y-2 text-sm text-ink">
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                className="tl-check"
+                checked={form.defaultResumeDocxEnabled}
+                onChange={(e) => setField('defaultResumeDocxEnabled', e.target.checked)}
+                disabled={savingSection === 'defaults'}
+              />
+              <span>Generate DOCX resume by default</span>
+            </label>
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                className="tl-check"
+                checked={form.defaultCoverLetterDocxEnabled}
+                onChange={(e) => setField('defaultCoverLetterDocxEnabled', e.target.checked)}
+                disabled={savingSection === 'defaults'}
+              />
+              <span>Generate DOCX cover letter by default</span>
+            </label>
           </div>
+        </Field>
 
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleSaveDefaults}
-              disabled={savingSection !== null && savingSection !== 'defaults'}
-              className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-blue-400"
-            >
-              {savingSection === 'defaults' ? 'Saving...' : 'Save Builder Defaults'}
-            </button>
-          </div>
-        </section>
-
-      </div>
+        <div>
+          <button
+            type="button"
+            onClick={handleSaveDefaults}
+            disabled={savingSection !== null && savingSection !== 'defaults'}
+            className="tl-button"
+          >
+            {savingSection === 'defaults' ? 'Saving...' : 'Save Builder Defaults'}
+          </button>
+        </div>
+      </Section>
     </div>
   );
 }

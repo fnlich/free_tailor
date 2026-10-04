@@ -8,7 +8,7 @@ import {
   describePostedAt,
   type Notification,
 } from '@/lib/notifications';
-import { CARD, LABEL } from '@/components/pageChrome';
+import { Field, Notice, Section } from '@/components/ui/kit';
 
 /**
  * Posting to the notice board.
@@ -17,13 +17,6 @@ import { CARD, LABEL } from '@/components/pageChrome';
  * every account on it - which is why this page is administrator-only while
  * reading the same notices is open to everybody.
  */
-
-const INPUT =
-  'mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 ' +
-  'focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
-const BUTTON =
-  'rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 ' +
-  'disabled:cursor-not-allowed disabled:bg-gray-400';
 
 function NotificationsAdminBody() {
   const [items, setItems] = useState<Notification[]>([]);
@@ -99,79 +92,77 @@ function NotificationsAdminBody() {
   const now = new Date();
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Notifications</h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
+    <div>
+      <header>
+        <h2 className="text-2xl font-bold tracking-tight text-ink">Notifications</h2>
+        <p className="mt-1 text-sm text-muted">
           Everything posted here appears in the bell in every account&apos;s top bar, with an unread
           dot until they open it. Editing a notice corrects the text without marking it unread
           again.
         </p>
-      </div>
+      </header>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <Notice tone="error" role="alert" className="mt-6">
           {error}
-        </div>
+        </Notice>
       )}
 
-      <form className={CARD} onSubmit={post}>
-        <h2 className="text-lg font-semibold text-gray-900">Post a notification</h2>
+      <Section title="Post a notification">
+        <form onSubmit={post} className="space-y-6">
+          <Field label="Title" htmlFor="notice-title">
+            <input
+              id="notice-title"
+              className="tl-input"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              maxLength={200}
+              placeholder="Scheduled maintenance on Sunday"
+              required
+            />
+          </Field>
 
-        <label className="mt-4 block">
-          <span className={LABEL}>Title</span>
-          <input
-            className={INPUT}
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            maxLength={200}
-            placeholder="Scheduled maintenance on Sunday"
-            required
-          />
-        </label>
+          <Field label="Body" htmlFor="notice-body">
+            <textarea
+              id="notice-body"
+              className="tl-input"
+              rows={4}
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              maxLength={4000}
+              placeholder="Generation will be unavailable between 9am and 11am UTC."
+            />
+          </Field>
 
-        <label className="mt-4 block">
-          <span className={LABEL}>Body</span>
-          <textarea
-            className={INPUT}
-            rows={4}
-            value={body}
-            onChange={(event) => setBody(event.target.value)}
-            maxLength={4000}
-            placeholder="Generation will be unavailable between 9am and 11am UTC."
-          />
-        </label>
-
-        <div className="mt-4 flex justify-end">
-          <button type="submit" className={BUTTON} disabled={saving || !title.trim()}>
+          <button type="submit" className="tl-button" disabled={saving || !title.trim()}>
             {saving ? 'Posting...' : 'Post notification'}
           </button>
-        </div>
-      </form>
+        </form>
+      </Section>
 
-      <section className={CARD}>
-        <h2 className="text-lg font-semibold text-gray-900">Posted</h2>
-
+      <Section title="Posted">
         {loading ? (
-          <p className="mt-4 text-sm text-gray-500">Loading...</p>
+          <p className="text-sm text-subtle">Loading...</p>
         ) : items.length === 0 ? (
-          <p className="mt-4 text-sm text-gray-500">
+          <p className="text-sm text-muted">
             Nothing posted yet. Notices appear here newest first.
           </p>
         ) : (
-          <ul className="mt-4 divide-y divide-gray-200">
+          <ul className="tl-rows">
             {items.map((item) => (
-              <li key={item.id} className="py-4 first:pt-0 last:pb-0">
+              <li key={item.id}>
                 {editingId === item.id ? (
                   <div className="space-y-3">
                     <input
-                      className={INPUT}
+                      className="tl-input"
+                      aria-label="Title"
                       value={editTitle}
                       onChange={(event) => setEditTitle(event.target.value)}
                       maxLength={200}
                     />
                     <textarea
-                      className={INPUT}
+                      className="tl-input"
+                      aria-label="Body"
                       rows={3}
                       value={editBody}
                       onChange={(event) => setEditBody(event.target.value)}
@@ -180,7 +171,7 @@ function NotificationsAdminBody() {
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        className={BUTTON}
+                        className="tl-button"
                         disabled={saving || !editTitle.trim()}
                         onClick={() => void saveEdit(item.id)}
                       >
@@ -188,7 +179,10 @@ function NotificationsAdminBody() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        className="tl-button-quiet"
+                        // Level with Save beside it; inline, because
+                        // .tl-button-quiet is unlayered and outranks a utility.
+                        style={{ minHeight: '2.5rem' }}
                         onClick={() => setEditingId(null)}
                       >
                         Cancel
@@ -196,13 +190,13 @@ function NotificationsAdminBody() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-gray-900">{item.title}</p>
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm font-semibold text-ink">{item.title}</p>
                       {item.body && (
-                        <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600">{item.body}</p>
+                        <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted">{item.body}</p>
                       )}
-                      <p className="mt-2 text-xs text-gray-500">
+                      <p className="mt-2 text-xs text-subtle">
                         {describePostedAt(item.createdAt, now)}
                         {item.authorName ? ` · ${item.authorName}` : ''}
                       </p>
@@ -211,7 +205,8 @@ function NotificationsAdminBody() {
                     <div className="flex shrink-0 gap-2">
                       <button
                         type="button"
-                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                        className="tl-button-quiet"
+                        data-size="sm"
                         onClick={() => {
                           setEditingId(item.id);
                           setEditTitle(item.title);
@@ -222,7 +217,9 @@ function NotificationsAdminBody() {
                       </button>
                       <button
                         type="button"
-                        className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
+                        className="tl-button-quiet"
+                        data-size="sm"
+                        data-tone="danger"
                         onClick={() => void remove(item)}
                       >
                         Delete
@@ -234,7 +231,7 @@ function NotificationsAdminBody() {
             ))}
           </ul>
         )}
-      </section>
+      </Section>
     </div>
   );
 }

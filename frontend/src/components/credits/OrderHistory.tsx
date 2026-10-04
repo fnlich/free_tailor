@@ -8,29 +8,31 @@ import { formatDate } from '@/lib/format';
 import {
   formatAmount,
   isPaymentSettled,
-  paymentsApi,
   type Payment,
   type PaymentMethod,
+  paymentsApi,
   type PaymentState,
+  STATE_TONES,
 } from '@/lib/payments';
 
 const PAGE_SIZE = 10;
 
 /**
- * The words and colour each state gets in this table.
+ * The word each state gets in this table; its colour is STATE_TONES, shared
+ * with the return page and the administrator's list.
  *
  * Its own map rather than `STATE_LABELS`, which the order page and the admin
  * list share and which says "Waiting for payment" where a column of pills
  * wants one word. Keyed by the union, so a state added to the API without an
  * entry here is a compile error rather than a blank pill.
  */
-const STATUS: Record<PaymentState, { label: string; tone: 'green' | 'amber' | 'red' | 'grey' | 'sky' }> = {
-  paid: { label: 'Completed', tone: 'green' },
-  pending: { label: 'Pending', tone: 'amber' },
-  failed: { label: 'Failed', tone: 'red' },
-  expired: { label: 'Expired', tone: 'grey' },
-  refunding: { label: 'Refunding', tone: 'sky' },
-  refunded: { label: 'Refunded', tone: 'grey' },
+const STATUS: Record<PaymentState, string> = {
+  paid: 'Completed',
+  pending: 'Pending',
+  failed: 'Failed',
+  expired: 'Expired',
+  refunding: 'Refunding',
+  refunded: 'Refunded',
 };
 
 const COPY: Record<PaymentMethod, { heading: string; blurb: string; empty: string; label: string }> = {
@@ -139,7 +141,8 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
 }
 
 function OrderRow({ payment }: { payment: Payment }) {
-  const status = STATUS[payment.state] ?? { label: payment.state, tone: 'grey' as const };
+  const label = STATUS[payment.state] ?? payment.state;
+  const tone = STATE_TONES[payment.state] ?? 'grey';
   const settled = isPaymentSettled(payment);
   const id = encodeURIComponent(payment.id);
 
@@ -170,8 +173,8 @@ function OrderRow({ payment }: { payment: Payment }) {
         {settled ? payment.creditsGranted || payment.credits : '—'}
       </td>
       <td>
-        <span className="tl-pill" data-tone={status.tone}>
-          {status.label}
+        <span className="tl-pill" data-tone={tone}>
+          {label}
         </span>
       </td>
       <td>

@@ -1,0 +1,82 @@
+/*
+ * The imported range, drawn as the spreadsheet it came from.
+ *
+ * The cells are the content: their colours, borders and fonts come inline from
+ * the sheet's own formatting (getCellStyle) and stay exactly that in both
+ * themes, the way a resume preview stays paper. What is the app's own is the
+ * frame around them - the lettered and numbered headings - and those follow
+ * the kit's table header (.tl-table th) on the theme variables.
+ *
+ * A module rather than utilities because the html.dark shim at the end of
+ * globals.css is unlayered: it would recolour `bg-white` and every bare
+ * `textarea`, and the bare `border-*` width classes, out from under the grid.
+ */
+
+.grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
+}
+
+/* Headings stay put while the grid scrolls sideways inside its box. */
+.corner,
+.colHead,
+.rowHead {
+  position: sticky;
+  background: var(--rail);
+  border-right: 1px solid var(--line-subtle);
+  border-bottom: 1px solid var(--line-subtle);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.corner {
+  top: 0;
+  left: 0;
+  z-index: 3;
+}
+
+.colHead {
+  top: 0;
+  z-index: 2;
+  padding-inline: 0.5rem;
+}
+
+.rowHead {
+  left: 0;
+  z-index: 1;
+  padding-inline: 0.5rem;
+}
+
+/*
+ * The editable value inside a cell: no box of its own, so the cell's fill and
+ * type show through as the sheet set them. The second rule out-ranks the
+ * shim's `html.dark textarea`, which would otherwise paint a dark field with
+ * light text inside a white cell.
+ */
+.cellInput {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-style: inherit;
+  font-weight: inherit;
+}
+
+.cellInput:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+:global(html.dark) textarea.cellInput {
+  background: transparent;
+  color: inherit;
+  border-color: transparent;
+}

@@ -1,0 +1,42 @@
+/*
+ * The two colours on Accounts that are not a kit pill or notice, in both
+ * themes. A module because the html.dark shim at the end of globals.css is
+ * unlayered and beats every utility, and because `.tl-table td` sets the
+ * cell's own colour - so these sit on elements inside the cell.
+ */
+
+/* A ledger movement: credits in, credits out. */
+.gain,
+.loss {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gain {
+  color: #15803d;
+}
+
+.loss {
+  color: #b91c1c;
+}
+
+:global(html.dark) .gain {
+  color: #4ade80;
+}
+
+:global(html.dark) .loss {
+  color: #f87171;
+}
+
+
+/*
+ * The role, plan and balance controls inside a table row: the kit's field,
+ * a size down so a row of them reads as a table rather than a form. Element
+ * plus class, to out-rank `.tl-input` (unlayered, so a utility could not).
+ */
+select.compact,
+input.compact {
+  min-height: 2.125rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.875rem;
+}

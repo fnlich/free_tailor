@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
+import { Card, EmptyState, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
 import { adminApi, type PaymentTargetLimits } from '@/lib/api';
 import {
+  type AdminPayment,
   adminPaymentsApi,
   formatAmount,
   STATE_LABELS,
-  STATE_STYLES,
-  type AdminPayment,
+  STATE_TONES,
 } from '@/lib/payments';
 import { formatDate } from '@/lib/format';
+import styles from './page.module.css';
 
 /**
  * Every payment, for reconciliation and refunds.
@@ -85,7 +87,7 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-const LIMIT_FIELD = 'mt-1 w-full rounded-md border border-gray-300 px-3 py-2';
+const LIMIT_FIELD = 'tl-input mt-2';
 
 function LimitFields({
   draft,
@@ -101,26 +103,30 @@ function LimitFields({
   const feeBps = wholeNumber(draft.feeBps);
 
   return (
-    <div className="rounded-lg border border-gray-200 p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-900">{targetLabel(draft.target)}</h3>
+    <Card
+      title={targetLabel(draft.target)}
+      description={
+        <>
+          <span className="font-mono">{draft.target}</span> &middot; {dollars(min)} to{' '}
+          {dollars(max)}
+          {feeBps > 0 && ` · fee ${(feeBps / 100).toFixed(2)}%`}
+        </>
+      }
+      actions={
         <button
           type="button"
           onClick={onRemove}
-          className="text-xs font-medium text-red-700 hover:underline"
+          className="tl-button-quiet"
+          data-size="sm"
+          data-tone="danger"
         >
           Remove
         </button>
-      </div>
-      <p className="mt-0.5 text-xs text-gray-500">
-        <span className="font-mono">{draft.target}</span> &middot; {dollars(min)} to{' '}
-        {dollars(max)}
-        {feeBps > 0 && ` · fee ${(feeBps / 100).toFixed(2)}%`}
-      </p>
-
-      <div className="mt-3 grid gap-3 sm:grid-cols-4">
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Smallest (cents)</span>
+      }
+    >
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <label className="block">
+          <span className="tl-label">Smallest (cents)</span>
           <input
             type="number"
             min={1}
@@ -129,8 +135,8 @@ function LimitFields({
             className={LIMIT_FIELD}
           />
         </label>
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Largest (cents)</span>
+        <label className="block">
+          <span className="tl-label">Largest (cents)</span>
           <input
             type="number"
             min={1}
@@ -139,8 +145,8 @@ function LimitFields({
             className={LIMIT_FIELD}
           />
         </label>
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Fee (basis points)</span>
+        <label className="block">
+          <span className="tl-label">Fee (basis points)</span>
           <input
             type="number"
             min={0}
@@ -149,8 +155,8 @@ function LimitFields({
             className={LIMIT_FIELD}
           />
         </label>
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Fee (fixed cents)</span>
+        <label className="block">
+          <span className="tl-label">Fee (fixed cents)</span>
           <input
             type="number"
             min={0}
@@ -161,8 +167,8 @@ function LimitFields({
         </label>
       </div>
 
-      <label className="mt-3 block text-sm">
-        <span className="font-medium text-gray-700">Preset buttons (cents)</span>
+      <label className="mt-4 block">
+        <span className="tl-label">Preset buttons (cents)</span>
         <input
           type="text"
           inputMode="numeric"
@@ -172,7 +178,7 @@ function LimitFields({
           placeholder="500, 1000, 2500"
         />
       </label>
-    </div>
+    </Card>
   );
 }
 
@@ -241,90 +247,91 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   if (!loaded) return null;
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-6">
-      <h2 className="text-base font-semibold text-gray-900">Pricing</h2>
-      <p className="mt-1 text-sm text-gray-600">
-        Each payment records the price at the time it was made, so changing this never rewrites what
-        somebody has already paid.
-      </p>
+    <>
+      <Section
+        title="Pricing"
+        description="Each payment records the price at the time it was made, so changing this never rewrites what somebody has already paid."
+      >
+        <div className="grid gap-4 sm:grid-cols-3">
+          <label className="block">
+            <span className="tl-label">Price per credit (cents)</span>
+            <input
+              type="number"
+              min={1}
+              value={price}
+              onChange={(event) => setPrice(event.target.value)}
+              className="tl-input mt-2"
+            />
+          </label>
+          <label className="block">
+            <span className="tl-label">Smallest purchase</span>
+            <input
+              type="number"
+              min={1}
+              value={minCredits}
+              onChange={(event) => setMinCredits(event.target.value)}
+              className="tl-input mt-2"
+            />
+          </label>
+          <label className="block">
+            <span className="tl-label">Largest purchase</span>
+            <input
+              type="number"
+              min={1}
+              value={maxCredits}
+              onChange={(event) => setMaxCredits(event.target.value)}
+              className="tl-input mt-2"
+            />
+          </label>
+        </div>
+      </Section>
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-3">
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Price per credit (cents)</span>
-          <input
-            type="number"
-            min={1}
-            value={price}
-            onChange={(event) => setPrice(event.target.value)}
-            className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
-          />
-        </label>
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Smallest purchase</span>
-          <input
-            type="number"
-            min={1}
-            value={minCredits}
-            onChange={(event) => setMinCredits(event.target.value)}
-            className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
-          />
-        </label>
-        <label className="block text-sm">
-          <span className="font-medium text-gray-700">Largest purchase</span>
-          <input
-            type="number"
-            min={1}
-            value={maxCredits}
-            onChange={(event) => setMaxCredits(event.target.value)}
-            className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
-          />
-        </label>
-      </div>
-
-      <div className="mt-6 border-t border-gray-200 pt-5">
-        <h3 className="text-sm font-semibold text-gray-900">Card security</h3>
-        <label className="mt-3 flex items-start gap-3 text-sm">
+      <Section title="Card security">
+        <label className="tl-choice" data-on={require3ds}>
           <input
             type="checkbox"
             checked={require3ds}
             onChange={(event) => setRequire3ds(event.target.checked)}
-            className="mt-0.5 h-4 w-4 shrink-0"
           />
-          <span className="min-w-0">
-            <span className="font-medium text-gray-700">
+          <span className="min-w-0 text-sm">
+            <span className="block font-medium text-ink">
               Always ask the cardholder&apos;s bank to authenticate
             </span>
-            <span className="mt-1 block text-gray-600">
+            <span className="mt-1 block text-muted">
               Off, your payment provider decides when to challenge somebody, using its own risk
               rules. On, every card payment asks the bank &ndash; which is what moves
               responsibility for a disputed payment from you to the bank that issued the card.
             </span>
-            <span className="mt-1 block text-gray-600">
+            <span className="mt-1 block text-muted">
               It is not free: a challenge is a step a buyer can fail or give up on, and a card
               somebody has kept stops charging in one tap, because they have to confirm each
               time. That trade is yours to make, which is why this is a switch.
             </span>
           </span>
         </label>
-      </div>
+      </Section>
 
-      <div className="mt-6 border-t border-gray-200 pt-5">
-        <h3 className="text-sm font-semibold text-gray-900">Limits per payment method</h3>
-        <p className="mt-1 text-sm text-gray-600">
-          In cents, and the tighter of the two wins: a row here can narrow a method but never
-          take it past the credit bounds above. A method with no row falls back to those bounds
-          with no fee and no preset buttons, so removing a row is a way of switching its limits
-          off rather than a way of switching the method off.
-        </p>
-        <p className="mt-1 text-sm text-gray-600">
-          A fee is taken <span className="font-medium">out of</span> the amount charged, not added
-          to it - the buyer pays what they chose and receives the credits the remainder buys.
-          There are two methods to name here, <span className="font-mono">card</span> and{' '}
-          <span className="font-mono">crypto</span>; a row naming a coin is left over from when
-          this app chose the coin itself and no longer applies to anything.
-        </p>
-
-        <div className="mt-4 space-y-4">
+      <Section
+        title="Limits per payment method"
+        description={
+          <>
+            In cents, and the tighter of the two wins: a row here can narrow a method but never
+            take it past the credit bounds above. A method with no row falls back to those bounds
+            with no fee and no preset buttons, so removing a row is a way of switching its limits
+            off rather than a way of switching the method off.
+            {/* A block span rather than a second <p>: the kit puts the
+                description inside one paragraph already. */}
+            <span className="mt-2 block">
+              A fee is taken <span className="font-medium">out of</span> the amount charged, not added
+              to it - the buyer pays what they chose and receives the credits the remainder buys.
+              There are two methods to name here, <span className="font-mono">card</span> and{' '}
+              <span className="font-mono">crypto</span>; a row naming a coin is left over from when
+              this app chose the coin itself and no longer applies to anything.
+            </span>
+          </>
+        }
+      >
+        <div className="space-y-4">
           {limits.map((draft, index) => (
             <LimitFields
               key={draft.target}
@@ -340,14 +347,14 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
             />
           ))}
           {limits.length === 0 && (
-            <p className="text-sm text-gray-600">
+            <p className="text-sm text-muted">
               No rows. Saving with none restores the built-in defaults rather than leaving every
               method unbounded.
             </p>
           )}
         </div>
 
-        <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3">
           {/*
             `card or crypto`, and not the coin id this suggested for three
             commits after the coins were deleted. Two paragraphs above, this page
@@ -355,14 +362,14 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
             nothing - and then invited them to type one, and saved it without a
             word.
           */}
-          <label className="block text-sm">
-            <span className="font-medium text-gray-700">Add a target</span>
+          <label className="block w-64 max-w-full">
+            <span className="tl-label">Add a target</span>
             <input
               type="text"
               value={newTarget}
               onChange={(event) => setNewTarget(event.target.value)}
               placeholder="card or crypto"
-              className="mt-1 w-64 rounded-md border border-gray-300 px-3 py-2"
+              className="tl-input mt-2"
             />
           </label>
           <button
@@ -391,24 +398,147 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
               ]);
               setNewTarget('');
             }}
-            className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="tl-button-quiet"
+            // Level with the 2.5rem field beside it; inline, because
+            // .tl-button-quiet is unlayered and outranks a min-h utility.
+            style={{ minHeight: '2.5rem' }}
           >
             Add
           </button>
         </div>
-      </div>
 
-      {problem && <p className="mt-3 text-sm text-red-700">{problem}</p>}
-      {note && <p className="mt-3 text-sm text-green-700">{note}</p>}
+        <div>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={saving}
+            className="tl-button"
+          >
+            {saving ? 'Saving…' : 'Save pricing and limits'}
+          </button>
+          {problem && <Status tone="error">{problem}</Status>}
+          {note && <Status tone="ok">{note}</Status>}
+        </div>
+      </Section>
+    </>
+  );
+}
 
-      <button
-        type="button"
-        onClick={() => void save()}
-        disabled={saving}
-        className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-blue-400"
+/**
+ * Confirming a refund, as a dialog over the list.
+ *
+ * Escape and a click on the backdrop do what Cancel does, and nothing else -
+ * the refund itself only ever starts from the button. A refusal is repeated in
+ * here because the page's own notice is behind the backdrop while this is up -
+ * but only one from a press in THIS dialog, so a stale error left on the page
+ * by an earlier attempt does not greet the next payment opened.
+ */
+function RefundDialog({
+  payment,
+  note,
+  onNote,
+  refunding,
+  error,
+  onRefund,
+  onCancel,
+}: {
+  payment: AdminPayment;
+  note: string;
+  onNote: (value: string) => void;
+  refunding: boolean;
+  error: string;
+  onRefund: () => void;
+  onCancel: () => void;
+}) {
+  const [attempted, setAttempted] = useState(false);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="tl-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="refund-dialog-title"
+        className="tl-dialog max-w-lg p-6"
       >
-        {saving ? 'Saving…' : 'Save pricing and limits'}
-      </button>
+        <h2 id="refund-dialog-title" className="text-lg font-semibold text-ink">
+          Refund {formatAmount(payment.amountCents, payment.currency)} to{' '}
+          {payment.userEmail || 'this account'}?
+        </h2>
+        <p className="mt-2 text-sm text-muted">
+          {/*
+            Said BEFORE the button, because for crypto the answer
+            is "not by us" - and pressing it does NOTHING.
+            `refundPayment` answers 409 for every crypto provider
+            before touching the balance, so the old chain line
+            ("pressing this will reverse the credits only") was a
+            promise the server refuses. The old copy before that
+            said "the money goes back through chain" and let the
+            administrator discover the refusal by pressing, which
+            is a worse way to find out than reading it here.
+          */}
+          {payment.method === 'crypto' ? (
+            <>
+              {payment.provider === 'chain'
+                ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured.'
+                : payment.provider === 'coinbase'
+                  ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account.'
+                  : 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard.'}{' '}
+              Then adjust the balance from the accounts page. Pressing this reverses
+              nothing and will say so.
+            </>
+          ) : (
+            <>
+              The money goes back through {payment.provider}. Credits already spent
+              cannot be reversed - a balance never goes below zero - and this will say
+              how many were.
+            </>
+          )}
+        </p>
+        {attempted && error && (
+          <Notice tone="error" role="alert" className="mt-4">
+            {error}
+          </Notice>
+        )}
+        <input
+          type="text"
+          value={note}
+          onChange={(event) => onNote(event.target.value)}
+          placeholder="Why this is being refunded"
+          aria-label="Why this is being refunded"
+          autoFocus
+          className="tl-input mt-4"
+        />
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button type="button" onClick={onCancel} className="tl-button-quiet">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAttempted(true);
+              onRefund();
+            }}
+            disabled={refunding}
+            className="tl-button"
+            data-tone="danger"
+          >
+            {refunding ? 'Refunding…' : 'Refund it'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -496,191 +626,165 @@ function PaymentsBody() {
   };
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-      </div>
-    );
+    return <Spinner />;
   }
 
+  const confirmingPayment = payments.find((payment) => payment.id === confirming);
+
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Payments</h1>
-        <p className="mt-1 text-sm text-gray-600">
+    <div>
+      <header>
+        {/*
+          An h1 at the size of the other Administration pages' h2, and on
+          purpose: backend/test/e2e/browser.js waits for `h1:has-text("Payments")`
+          before it reads this page.
+        */}
+        <h1 className="text-2xl font-bold tracking-tight text-ink">Payments</h1>
+        <p className="mt-1 text-sm text-muted">
           Every credit purchase on this installation. Quote the reference when reconciling against
           your provider&apos;s dashboard.
           {total > payments.length && (
             <> Showing the newest {payments.length} of {total}.</>
           )}
         </p>
-      </div>
+      </header>
 
       <PricingCard onSaved={() => void load()} />
 
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">{error}</div>
-      )}
-      {message && (
-        <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-green-800">
-          {message}
-        </div>
-      )}
+      <div className="space-y-4 pt-8">
+        {error && (
+          <Notice tone="error" role="alert">
+            {error}
+          </Notice>
+        )}
+        {message && (
+          <Notice tone="success" role="status">
+            {message}
+          </Notice>
+        )}
 
-      {payments.length === 0 ? (
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <p className="text-lg font-semibold text-gray-900">No payments yet</p>
-          <p className="mt-2 text-sm text-gray-600">
+        {payments.length === 0 ? (
+          <EmptyState title="No payments yet">
             Purchases appear here as soon as somebody buys credits.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-          <ul className="divide-y divide-gray-200">
-            {payments.map((payment) => (
-              <li key={payment.id} className="p-4">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-sm font-semibold text-gray-900">
-                        {payment.reference}
-                      </span>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATE_STYLES[payment.state]}`}
-                      >
-                        {STATE_LABELS[payment.state]}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm text-gray-700">
-                      {payment.userEmail || payment.userId} &middot; {payment.credits} credits &middot;{' '}
-                      {formatAmount(payment.amountCents, payment.currency)} &middot; {payment.method}
-                    </p>
-                    <p className="mt-0.5 text-xs text-gray-500">
-                      {formatDate(payment.createdAt)}
-                      {payment.providerRef && (
-                        <>
-                          {' '}
-                          {/*
-                            `break-all`, as the transaction id above already
-                            has. Both are opaque provider identifiers with no
+          </EmptyState>
+        ) : (
+          <>
+            {/* `relative` so the sr-only Actions heading - absolutely positioned -
+                is held by this scroll box; otherwise it escapes the sideways
+                scroll and widens the whole page on a phone. */}
+            <div className="tl-table-box relative">
+              <table className="tl-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Date</th>
+                    <th scope="col">Reference</th>
+                    <th scope="col">Account</th>
+                    <th scope="col">Credits</th>
+                    <th scope="col">Amount</th>
+                    <th scope="col">Method</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">
+                      <span className="sr-only">Actions</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.map((payment) => (
+                    <tr key={payment.id}>
+                      <td className="whitespace-nowrap">{formatDate(payment.createdAt)}</td>
+                      <td>
+                        {/* Colours on inner elements: `.tl-table td` is
+                            unlayered and would beat a utility on the cell. */}
+                        <span className="whitespace-nowrap font-mono font-semibold text-ink">
+                          {payment.reference}
+                        </span>
+                        {payment.providerRef && (
+                          /*
+                            `break-all`: an opaque provider identifier with no
                             break opportunity - a Stripe session id runs to 66
-                            characters - and this was the only one of the two
-                            that could be clipped by its card.
-                          */}
-                          &middot;{' '}
-                          <span className="break-all font-mono">{payment.providerRef}</span>
-                        </>
-                      )}
-                    </p>
-                    {payment.state === 'refunded' && (
-                      <p className="mt-1 text-xs text-amber-700">
-                        {payment.refundedCredits} of {payment.credits} credits reversed
-                        {payment.refundedCredits < payment.credits &&
-                          ` - the other ${payment.credits - payment.refundedCredits} had been spent`}
-                        .
-                      </p>
-                    )}
-                    {payment.failure && (
-                      <p className="mt-1 text-xs text-red-700">{payment.failure}</p>
-                    )}
-                  </div>
-
-                  {payment.state === 'paid' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setConfirming(confirming === payment.id ? '' : payment.id);
-                        setNote('');
-                      }}
-                      className="rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-                    >
-                      Refund
-                    </button>
-                  )}
-                </div>
-
-                {confirming === payment.id && (
-                  <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-4">
-                    <p className="text-sm font-semibold text-red-900">
-                      Refund {formatAmount(payment.amountCents, payment.currency)} to{' '}
-                      {payment.userEmail || 'this account'}?
-                    </p>
-                    <p className="mt-1 text-sm text-red-800">
-                      {/*
-                        Said BEFORE the button, because for crypto the answer
-                        is "not by us" - and pressing it does NOTHING.
-                        `refundPayment` answers 409 for every crypto provider
-                        before touching the balance, so the old chain line
-                        ("pressing this will reverse the credits only") was a
-                        promise the server refuses. The old copy before that
-                        said "the money goes back through chain" and let the
-                        administrator discover the refusal by pressing, which
-                        is a worse way to find out than reading it here.
-                      */}
-                      {payment.method === 'crypto' ? (
-                        <>
-                          {payment.provider === 'chain'
-                            ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured.'
-                            : payment.provider === 'coinbase'
-                              ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account.'
-                              : 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard.'}{' '}
-                          Then adjust the balance from the accounts page. Pressing this reverses
-                          nothing and will say so.
-                        </>
-                      ) : (
-                        <>
-                          The money goes back through {payment.provider}. Credits already spent
-                          cannot be reversed - a balance never goes below zero - and this will say
-                          how many were.
-                        </>
-                      )}
-                    </p>
-                    <input
-                      type="text"
-                      value={note}
-                      onChange={(event) => setNote(event.target.value)}
-                      placeholder="Why this is being refunded"
-                      className="mt-3 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-                    />
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void refund(payment)}
-                        disabled={refunding === payment.id}
-                        className="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:bg-gray-400"
-                      >
-                        {refunding === payment.id ? 'Refunding…' : 'Refund it'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirming('')}
-                        className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-          {/*
-            The way past the first page. Shown only while there is more, so a
-            small installation never sees a button that would do nothing.
-          */}
-          {payments.length < total && (
-            <div className="border-t border-gray-200 p-4 text-center">
-              <button
-                type="button"
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
-                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                {loadingMore ? 'Loading…' : `Show older payments (${total - payments.length} more)`}
-              </button>
+                            characters - and without it the cell would stretch
+                            the table to fit it.
+                          */
+                          <span className="mt-1 block break-all font-mono text-xs text-subtle">
+                            {payment.providerRef}
+                          </span>
+                        )}
+                      </td>
+                      <td className="break-words">{payment.userEmail || payment.userId}</td>
+                      <td className="tabular-nums">{payment.credits}</td>
+                      <td className="whitespace-nowrap tabular-nums">
+                        {formatAmount(payment.amountCents, payment.currency)}
+                      </td>
+                      <td>
+                        <span className="capitalize">{payment.method}</span>
+                      </td>
+                      <td className="min-w-[10rem]">
+                        <Pill tone={STATE_TONES[payment.state] ?? 'grey'}>{STATE_LABELS[payment.state]}</Pill>
+                        {payment.state === 'refunded' && (
+                          <p className={styles.note} data-tone="warn">
+                            {payment.refundedCredits} of {payment.credits} credits reversed
+                            {payment.refundedCredits < payment.credits &&
+                              ` - the other ${payment.credits - payment.refundedCredits} had been spent`}
+                            .
+                          </p>
+                        )}
+                        {payment.failure && (
+                          <p className={styles.note} data-tone="error">
+                            {payment.failure}
+                          </p>
+                        )}
+                      </td>
+                      <td className="text-right">
+                        {payment.state === 'paid' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirming(confirming === payment.id ? '' : payment.id);
+                              setNote('');
+                            }}
+                            className="tl-button-quiet"
+                            data-size="sm"
+                            data-tone="danger"
+                          >
+                            Refund
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          )}
-        </div>
+            {/*
+              The way past the first page. Shown only while there is more, so a
+              small installation never sees a button that would do nothing.
+            */}
+            {payments.length < total && (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => void loadMore()}
+                  disabled={loadingMore}
+                  className="tl-button-quiet"
+                >
+                  {loadingMore ? 'Loading…' : `Show older payments (${total - payments.length} more)`}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {confirmingPayment && (
+        <RefundDialog
+          payment={confirmingPayment}
+          note={note}
+          onNote={setNote}
+          refunding={refunding === confirmingPayment.id}
+          error={error}
+          onRefund={() => void refund(confirmingPayment)}
+          onCancel={() => setConfirming('')}
+        />
       )}
     </div>
   );

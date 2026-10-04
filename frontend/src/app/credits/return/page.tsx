@@ -7,26 +7,12 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   formatAmount,
   isPaymentPending,
+  type Payment,
   paymentsApi,
   STATE_LABELS,
-  type Payment,
-  type PaymentState,
+  STATE_TONES,
 } from '@/lib/payments';
-import { EmptyState, Notice, Pill, Spinner, type PillTone } from '@/components/ui/kit';
-
-/**
- * The kit's pill colour for each state - the same ones the order history on
- * /credits gives them, so a payment reads alike on both pages. The words stay
- * `STATE_LABELS`, which say "Waiting for payment" where the table says one word.
- */
-const STATE_TONES: Record<PaymentState, PillTone> = {
-  paid: 'green',
-  pending: 'amber',
-  failed: 'red',
-  expired: 'grey',
-  refunding: 'sky',
-  refunded: 'grey',
-};
+import { EmptyState, Notice, Pill, Spinner } from '@/components/ui/kit';
 
 /**
  * Where a provider sends the browser back to.

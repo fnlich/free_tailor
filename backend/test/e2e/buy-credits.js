@@ -885,72 +885,52 @@ async function main() {
      * all. They are abandoned checkouts, which is exactly the state most rows
      * in a real payment history are in.
      */
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 12; index += 1) {
       await call(token, '/payments/checkout', {
         method: 'POST',
         body: JSON.stringify({ method: 'card', credits: cardTarget?.minCredits ?? 10 }),
       });
     }
 
-    console.log('\n=== The credits page: two columns, paged ===');
+    console.log('\n=== The credits page: tabs, and a paged order table ===');
     await page.setViewport(WIDE);
     await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
     await wait(900);
 
-    const headings = () =>
-      page.evaluate(() =>
-        Array.from(document.querySelectorAll('main h2')).map((node) => ({
-          text: node.textContent.trim(),
-          left: Math.round(node.getBoundingClientRect().left),
-          top: Math.round(node.getBoundingClientRect().top),
-        }))
-      );
-
-    const wide = await headings();
-    const payHeading = wide.find((entry) => entry.text === 'Payment history');
-    const creditHeading = wide.find((entry) => entry.text === 'Credit history');
-    check(
-      'both histories are on the page, and named as a pair',
-      Boolean(payHeading && creditHeading),
-      JSON.stringify(wide)
-    );
     /*
-     * Side by side, measured rather than assumed from the class name.
-     *
-     * `lg:grid-cols-2` in the markup proves nothing about what rendered: the
-     * page's own max-width has to grow at the same breakpoint or the two
-     * columns are 370px each inside a 768px well, and a Tailwind config change
-     * would take the layout apart silently.
+     * The page after the reference design: Card, Crypto and Credit History as
+     * tabs over one table at a time, ten rows a page, First / previous / next /
+     * Last. It used to show two histories side by side with a page-size select,
+     * and these checks used to say so.
      */
-    check(
-      'at 1440 they are side by side, not stacked',
-      payHeading && creditHeading &&
-        creditHeading.left > payHeading.left &&
-        Math.abs(creditHeading.top - payHeading.top) < 40,
-      JSON.stringify([payHeading, creditHeading])
+    const tabs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('main [role="tab"]')).map((tab) => ({
+        text: tab.textContent.trim(),
+        selected: tab.getAttribute('aria-selected') === 'true',
+      }))
     );
+    check(
+      'the histories are tabs - Card, Crypto, Credit History - with Card chosen',
+      tabs.map((tab) => tab.text).join(' / ') === 'Card / Crypto / Credit History' &&
+        tabs[0]?.selected === true,
+      JSON.stringify(tabs)
+    );
+    const cardHeading = await page.evaluate(() => document.querySelector('main h2')?.textContent.trim());
+    check('the Card tab is the card order history', cardHeading === 'Card Orders History', String(cardHeading));
 
-    /*
-     * And NOT at 1024, which is the decision most likely to be undone.
-     *
-     * `lg` is the obvious breakpoint and it is the wrong one here: the rail
-     * takes 240px of the window, so a 1024px screen leaves a 784px well and
-     * two 347px columns - narrow enough that every payment row wraps its
-     * status pill onto a second line. The split is worth having at `xl` and
-     * not before, and this is what says so.
-     */
-    await page.setViewport({ width: 1024, height: 900 });
-    await wait(600);
-    const medium = await headings();
-    const mediumPay = medium.find((entry) => entry.text === 'Payment history');
-    const mediumCredit = medium.find((entry) => entry.text === 'Credit history');
+    await clickText(page, 'main [role="tab"]', 'Credit History');
+    await wait(800);
+    const historyView = await page.evaluate(() => ({
+      heading: document.querySelector('main h2')?.textContent.trim(),
+      query: window.location.search,
+    }));
     check(
-      'at 1024 they are still stacked, because two columns there are too narrow',
-      mediumPay && mediumCredit && mediumCredit.top > mediumPay.top,
-      JSON.stringify([mediumPay, mediumCredit])
+      'Credit History is a tab of its own, kept in the URL',
+      historyView.heading === 'Credit History' && /tab=history/.test(historyView.query),
+      JSON.stringify(historyView)
     );
-    await page.setViewport(WIDE);
-    await wait(600);
+    await clickText(page, 'main [role="tab"]', 'Card');
+    await wait(800);
 
     const overflow = await page.evaluate(() => ({
       past: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
@@ -967,95 +947,75 @@ async function main() {
      */
     const readPager = () =>
       page.evaluate(() => {
-        const cards = Array.from(document.querySelectorAll('main h2')).map((h) => h.parentElement);
-        return cards.map((card) => ({
-          heading: card.querySelector('h2')?.textContent.trim() ?? '',
-          rows: card.querySelectorAll('ul > li').length,
-          count: Array.from(card.querySelectorAll('p'))
-            .map((p) => p.textContent.trim())
-            .find((text) => /\d+.\d+ of \d+/.test(text)) ?? '',
-          notice: Array.from(card.querySelectorAll('p'))
-            .map((p) => p.textContent.trim())
-            .find((text) => /could not be loaded/i.test(text)) ?? '',
-          size: card.querySelector('select')?.value ?? '',
-          first: card.querySelector('ul > li a')?.textContent.trim() ?? '',
-        }));
+        const main = document.querySelector('main');
+        const texts = Array.from(main.querySelectorAll('p')).map((p) => p.textContent.trim());
+        return {
+          heading: main.querySelector('h2')?.textContent.trim() ?? '',
+          rows: main.querySelectorAll('table tbody tr').length,
+          count: texts.find((text) => /Showing \d+.\d+ of \d+/.test(text)) ?? '',
+          notice: texts.find((text) => /could not be loaded/i.test(text)) ?? '',
+          first: main.querySelector('table tbody tr a')?.textContent.trim() ?? '',
+        };
       });
+    const press = (label) =>
+      page.evaluate((wanted) => {
+        const button = document.querySelector(`main button[aria-label="${wanted}"]`) ||
+          Array.from(document.querySelectorAll('main button')).find((node) => node.textContent.trim() === wanted);
+        if (!button || button.disabled) return false;
+        button.click();
+        return true;
+      }, label);
 
-    const opened = (await readPager()).find((card) => card.heading === 'Payment history');
+    const opened = await readPager();
     check(
-      'the payment list opens on five rows and says how many there are',
-      opened && opened.rows === 5 && opened.size === '5' && /of \d+ payments/.test(opened.count),
+      'the card list opens on ten rows and says how many there are',
+      opened.rows === 10 && /of (\d+)/.exec(opened.count)?.[1] > 10,
       JSON.stringify(opened)
     );
 
-    // Older, then the rows must actually be different ones.
-    const firstReference = await page.evaluate(
-      () => document.querySelector('main ul > li a')?.textContent.trim() ?? ''
-    );
-    await clickText(page, 'main button', 'Older');
+    // Next, then the rows must actually be different ones.
+    const firstReference = opened.first;
+    await press('Next page');
     await wait(700);
-    const afterOlder = await page.evaluate(
-      () => document.querySelector('main ul > li a')?.textContent.trim() ?? ''
-    );
+    const afterNext = await readPager();
     check(
-      'Older shows a different page of payments',
-      firstReference && afterOlder && firstReference !== afterOlder,
-      `${firstReference} -> ${afterOlder}`
+      'Next shows a different page of payments',
+      firstReference && afterNext.first && firstReference !== afterNext.first && /Showing 11/.test(afterNext.count),
+      `${firstReference} -> ${afterNext.first} (${afterNext.count})`
     );
 
-    await clickText(page, 'main button', 'Newer');
+    await press('Previous page');
     await wait(700);
-    const backAgain = await page.evaluate(
-      () => document.querySelector('main ul > li a')?.textContent.trim() ?? ''
-    );
-    check('and Newer comes back to the first one', backAgain === firstReference,
-      `${backAgain} vs ${firstReference}`);
+    const backAgain = await readPager();
+    check('and Previous comes back to the first one', backAgain.first === firstReference,
+      `${backAgain.first} vs ${firstReference}`);
 
-    // The size selector, which is the other half of what was asked for.
-    await page.select('main select', '20');
+    await press('Last');
     await wait(700);
-    const grown = (await readPager()).find((card) => card.heading === 'Payment history');
+    const last = await readPager();
+    const total = Number(/of (\d+)/.exec(last.count)?.[1] ?? 0);
     check(
-      'choosing 20 rows shows more of them',
-      grown && grown.rows > 5,
-      JSON.stringify(grown)
+      'Last goes to the final page, which ends at the total',
+      new RegExp(`–${total} of ${total}$`).test(last.count),
+      last.count
     );
+    await press('First');
+    await wait(700);
+    check('and First comes back to the top', (await readPager()).first === firstReference);
 
     /*
      * A page that fails, and the sentence that must not lie about it.
      *
      * A failed page deliberately keeps the rows that are already on screen - a
-     * failed page is not an empty history. But the offset had already moved,
-     * and the count sentence was drawn from THAT: pressing Older over a dropped
-     * connection left rows 1-20 under "21-40 of N", with both buttons live off
-     * an offset no row corresponded to and nothing on the page saying anything
-     * had gone wrong. The sentence is drawn from the server's own offset now,
-     * so it describes the rows it came with.
-     */
-    /*
-     * Back to five rows first, because Older has to be LIVE for this to test
-     * anything. At twenty rows of nineteen payments it is disabled, the click
-     * goes nowhere, no request is made, and the two checks below pass by
-     * describing a list that was never asked to move - which is how this test
-     * read on its first run.
-     */
-    await page.select('main select', '5');
-    await wait(700);
-    const beforeFailure = (await readPager()).find((card) => card.heading === 'Payment history');
-    check(
-      'the failed-page check starts with Older actually available',
-      beforeFailure && beforeFailure.rows === 5 && /of (\d+)/.exec(beforeFailure.count)?.[1] > 5,
-      JSON.stringify(beforeFailure)
-    );
-    /*
-     * EVERY matching request fails while the flag is up, not just the first.
+     * failed page is not an empty history - and the count is drawn from the
+     * server's own offset, so it keeps describing the rows it came with.
      *
+     * EVERY matching request fails while the flag is up, not just the first:
      * `apiFetch` tries a list of candidate API bases and moves to the next one
-     * whenever a fetch REJECTS - which is the whole point of that loop. Failing
-     * one request only sent the page to the second base, where it succeeded, and
-     * the checks below then described a page that had loaded perfectly well.
+     * whenever a fetch REJECTS, so failing one request only sent the page to
+     * the second base, where it succeeded.
      */
+    const beforeFailure = await readPager();
     await page.evaluate(() => {
       const real = window.fetch;
       window.__failPages = true;
@@ -1067,59 +1027,54 @@ async function main() {
         return real(...args);
       };
     });
-    await clickText(page, 'main button', 'Older');
+    check('the failed-page check starts with Next actually available', await press('Next page'));
     await wait(1200);
-    const failed = (await readPager()).find((card) => card.heading === 'Payment history');
+    const failed = await readPager();
     await page.evaluate(() => {
       window.__failPages = false;
     });
     check(
       'a page that could not be loaded keeps its rows',
-      failed && failed.rows === beforeFailure.rows && failed.first === beforeFailure.first,
+      failed.rows === beforeFailure.rows && failed.first === beforeFailure.first,
       JSON.stringify({ beforeFailure, failed })
     );
     check(
       'and the count still describes the rows that are on screen',
-      failed && failed.count === beforeFailure.count,
-      `${beforeFailure?.count} -> ${failed?.count}`
+      failed.count === beforeFailure.count,
+      `${beforeFailure.count} -> ${failed.count}`
     );
     check(
       'and says so rather than looking like nothing happened',
-      Boolean(failed?.notice),
+      Boolean(failed.notice),
       JSON.stringify(failed)
     );
 
-    // Back to a working page, so the checks below start from a known state.
-    await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
-    await wait(900);
-
     /*
-     * Stacked on a phone, and still not overflowing.
+     * On a phone, and still not overflowing.
      *
+     * The table is allowed to be wider than the screen - it scrolls sideways
+     * inside its own box, as the reference's does - so its cells are left out
+     * of the overflow sum and the box itself is held to the window instead.
      * Measured against the WINDOW as well as the document: `.tl-topbar` is
      * `position: fixed`, so `documentElement.scrollWidth` cannot see anything
-     * that escapes through it - the trap that let two overflow bugs through
-     * checks named "nothing hangs off the side".
+     * that escapes through it.
      */
     await page.setViewport(PHONE);
     await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
     await wait(900);
-    const narrow = await headings();
-    const narrowPay = narrow.find((entry) => entry.text === 'Payment history');
-    const narrowCredit = narrow.find((entry) => entry.text === 'Credit history');
-    check(
-      'at 390 the two columns stack',
-      narrowPay && narrowCredit && narrowCredit.top > narrowPay.top &&
-        Math.abs(narrowCredit.left - narrowPay.left) < 2,
-      JSON.stringify([narrowPay, narrowCredit])
-    );
+    const box = await page.evaluate(() => {
+      const node = document.querySelector('main .tl-table-box');
+      return node ? Math.round(node.getBoundingClientRect().right) - window.innerWidth : null;
+    });
+    check('at 390 the order table keeps to the window and scrolls inside its box', box !== null && box <= 1,
+      String(box));
     const narrowOverflow = await page.evaluate(() => ({
       past: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
       widest: Math.max(
         0,
-        ...Array.from(document.querySelectorAll('main *')).map(
-          (node) => Math.round(node.getBoundingClientRect().right) - window.innerWidth
-        )
+        ...Array.from(document.querySelectorAll('main *'))
+          .filter((node) => !node.closest('.tl-table-box'))
+          .map((node) => Math.round(node.getBoundingClientRect().right) - window.innerWidth)
       ),
       viewport: window.innerWidth,
     }));
@@ -1130,23 +1085,29 @@ async function main() {
     );
     await page.screenshot({ path: path.join(SHOTS, 'credits-2-phone.png') });
 
-    // And in the dark, where the select is the control most likely to come out
-    // unreadable: the shim restyles bare selects and nothing else here does.
+    // And in the dark, where a light box left behind by a utility the shim does
+    // not know is the thing most likely to come out unreadable.
     await page.evaluate(() => window.localStorage.setItem('tailor-theme', 'dark'));
     await page.setViewport(WIDE);
     await page.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
     await wait(900);
-    const darkSelect = await page.evaluate(() => {
-      const node = document.querySelector('main select');
-      if (!node) return null;
-      const style = getComputedStyle(node);
-      return { background: style.backgroundColor, color: style.color };
+    const dark = await page.evaluate(() => {
+      const read = (node) => {
+        if (!node) return null;
+        const style = getComputedStyle(node);
+        return { background: style.backgroundColor, color: style.color };
+      };
+      return {
+        table: read(document.querySelector('main .tl-table-box')),
+        pager: read(document.querySelector('main [aria-label="Pages"] button')),
+      };
     });
+    const white = 'rgb(255, 255, 255)';
     check(
-      'the page-size control is not white-on-white in dark mode',
-      darkSelect && darkSelect.background !== 'rgb(255, 255, 255)' &&
-        darkSelect.color !== 'rgb(255, 255, 255)',
-      JSON.stringify(darkSelect)
+      'the order table and its pager are not white boxes in dark mode',
+      dark.table && dark.pager && dark.table.background !== white && dark.pager.background !== white &&
+        dark.pager.color !== dark.pager.background,
+      JSON.stringify(dark)
     );
     await page.screenshot({ path: path.join(SHOTS, 'credits-3-wide-dark.png') });
   } finally {

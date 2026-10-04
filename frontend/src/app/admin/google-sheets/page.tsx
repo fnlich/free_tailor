@@ -5,17 +5,17 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 
 function AdminGoogleSheetsPageBody() {
   return (
-    <div className="max-w-5xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Google Sheets</h1>
-        <p className="mt-2 text-sm text-gray-600">
+    <div>
+      {/* The shell already says "Settings" above the tabs, so this is the
+          page's own name at the smaller size. */}
+      <header>
+        <h2 className="text-2xl font-bold tracking-tight text-ink">Google Sheets</h2>
+        <p className="mt-1 text-sm text-muted">
           Import a specific range from a Google Sheet by spreadsheet ID, tab name, numeric row bounds, and letter-based column bounds.
         </p>
-      </div>
+      </header>
 
-      <div className="rounded-lg bg-white p-6 shadow">
-        <GoogleSheetsRangeImporter />
-      </div>
+      <GoogleSheetsRangeImporter />
     </div>
   );
 }

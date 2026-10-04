@@ -8,6 +8,8 @@ import {
   parseSpreadsheetColumnInput,
   toSpreadsheetColumnLabel,
 } from '@/lib/sheet';
+import { Card, Field, Notice, Section } from '@/components/ui/kit';
+import styles from './GoogleSheetsRangeImporter.module.css';
 
 type SheetsImportFormState = {
   sheetId: string;
@@ -449,378 +451,382 @@ export default function GoogleSheetsRangeImporter() {
   const hasPendingChanges = JSON.stringify(editableValues) !== JSON.stringify(originalValues);
 
   return (
-    <section className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-900">Google Sheets Range Importer</h2>
-        <p className="text-sm text-gray-600">
-          Save named Google Sheet IDs here, then load tabs and import a numeric row range with spreadsheet-letter column bounds.
-        </p>
-      </div>
-
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-semibold text-gray-900">Saved Google Sheets</h3>
-            <p className="text-sm text-gray-600">Manage reusable spreadsheet IDs for the admin importer and builder.</p>
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-          <div className="space-y-3">
+    <div>
+      <Section
+        title="Saved Google Sheets"
+        description="Manage reusable spreadsheet IDs for the admin importer and builder."
+      >
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <div className="min-w-0">
             {isLoadingSavedSources ? (
-              <div className="rounded-md border border-gray-200 bg-white px-4 py-3 text-sm text-gray-500">
-                Loading saved Google Sheets...
-              </div>
+              <div className="tl-card px-4 py-3 text-sm text-muted">Loading saved Google Sheets...</div>
             ) : savedSources.length === 0 ? (
-              <div className="rounded-md border border-dashed border-gray-300 bg-white px-4 py-6 text-sm text-gray-500">
-                No saved Google Sheets yet.
-              </div>
+              <div className="tl-card px-4 py-6 text-sm text-muted">No saved Google Sheets yet.</div>
             ) : (
-              savedSources.map((source) => (
-                <div
-                  key={source.id}
-                  className={`rounded-lg border px-4 py-3 ${
-                    source.id === selectedSavedSourceId ? 'border-blue-300 bg-blue-50' : 'border-gray-200 bg-white'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedSavedSourceId(source.id)}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <div className="font-medium text-gray-900">{source.name}</div>
-                      <div className="mt-1 break-all text-xs text-gray-500">{source.sheetId}</div>
-                    </button>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleEditSavedSource(source)}
-                        disabled={isSavingSavedSource || isLoadingSheetTabs || isImportingSheetRange || isSavingSheetRange}
-                        className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSavedSource(source)}
-                        disabled={isSavingSavedSource || isLoadingSheetTabs || isImportingSheetRange || isSavingSheetRange}
-                        className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))
+              <ul className="tl-rows overflow-hidden">
+                {savedSources.map((source) => {
+                  const selected = source.id === selectedSavedSourceId;
+                  return (
+                    <li key={source.id} className={selected ? 'bg-accent-soft' : undefined}>
+                      <div className="flex items-start justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedSavedSourceId(source.id)}
+                          aria-pressed={selected}
+                          className="min-w-0 flex-1 text-left"
+                        >
+                          <span className={`block font-medium ${selected ? 'text-accent-ink' : 'text-ink'}`}>
+                            {source.name}
+                          </span>
+                          <span className="mt-1 block break-all text-xs text-subtle">{source.sheetId}</span>
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleEditSavedSource(source)}
+                            disabled={isSavingSavedSource || isLoadingSheetTabs || isImportingSheetRange || isSavingSheetRange}
+                            className="tl-button-quiet"
+                            data-size="sm"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSavedSource(source)}
+                            disabled={isSavingSavedSource || isLoadingSheetTabs || isImportingSheetRange || isSavingSheetRange}
+                            className="tl-button-quiet"
+                            data-size="sm"
+                            data-tone="danger"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
 
-          <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
-            <div className="text-sm font-medium text-gray-900">
-              {editingSavedSourceId ? 'Edit Saved Google Sheet' : 'Add Saved Google Sheet'}
-            </div>
-            <div className="space-y-3">
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-900">Name</label>
+          <Card title={editingSavedSourceId ? 'Edit Saved Google Sheet' : 'Add Saved Google Sheet'}>
+            <div className="space-y-5">
+              <Field label="Name" htmlFor="saved-sheet-name">
                 <input
+                  id="saved-sheet-name"
                   type="text"
                   value={savedSheetForm.name}
                   onChange={(e) => setSavedSheetForm((current) => ({ ...current, name: e.target.value }))}
                   disabled={isSavingSavedSource}
                   placeholder="Hiring Tracker"
-                  className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="tl-input"
                 />
-              </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-900">Google Sheet ID</label>
+              </Field>
+              <Field label="Google Sheet ID" htmlFor="saved-sheet-id">
                 <input
+                  id="saved-sheet-id"
                   type="text"
                   value={savedSheetForm.sheetId}
                   onChange={(e) => setSavedSheetForm((current) => ({ ...current, sheetId: e.target.value }))}
                   disabled={isSavingSavedSource}
                   placeholder="1abcDEFghIjklMNopQRstuVWxyz1234567890"
-                  className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="tl-input"
                 />
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleSaveSavedSource}
-                disabled={isSavingSavedSource}
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-blue-400"
-              >
-                {isSavingSavedSource ? 'Saving...' : editingSavedSourceId ? 'Update Saved Sheet' : 'Save Sheet'}
-              </button>
-              {editingSavedSourceId && (
+              </Field>
+              <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  onClick={resetSavedSheetForm}
+                  onClick={handleSaveSavedSource}
                   disabled={isSavingSavedSource}
-                  className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                  className="tl-button"
                 >
-                  Cancel
+                  {isSavingSavedSource ? 'Saving...' : editingSavedSourceId ? 'Update Saved Sheet' : 'Save Sheet'}
                 </button>
-              )}
+                {editingSavedSourceId && (
+                  <button
+                    type="button"
+                    onClick={resetSavedSheetForm}
+                    disabled={isSavingSavedSource}
+                    className="tl-button-quiet"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          </Card>
         </div>
-      </div>
+      </Section>
 
-      {sheetsError && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {sheetsError}
-        </div>
-      )}
+      <Section
+        title="Google Sheets Range Importer"
+        description="Save named Google Sheet IDs here, then load tabs and import a numeric row range with spreadsheet-letter column bounds."
+      >
+        {sheetsError && (
+          <Notice tone="error" role="alert">
+            {sheetsError}
+          </Notice>
+        )}
 
-      {sheetsSuccess && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-          {sheetsSuccess}
-        </div>
-      )}
+        {sheetsSuccess && (
+          <Notice tone="success" role="status">
+            {sheetsSuccess}
+          </Notice>
+        )}
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-900">Saved Google Sheet</label>
-          <select
-            value={selectedSavedSourceId}
-            onChange={(e) => setSelectedSavedSourceId(e.target.value)}
-            disabled={isLoadingSavedSources || isLoadingSheetTabs || isImportingSheetRange || savedSources.length === 0}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-          >
-            <option value="">
-              {savedSources.length ? 'Select a saved Google Sheet' : 'Save a Google Sheet above first'}
-            </option>
-            {savedSources.map((source) => (
-              <option key={source.id} value={source.id}>
-                {source.name}
-              </option>
-            ))}
-          </select>
-          {sheetsForm.sheetId && (
-            <div className="break-all text-xs text-gray-500">{sheetsForm.sheetId}</div>
-          )}
-        </div>
-        <div className="flex items-end">
-          <button
-            type="button"
-            onClick={handleLoadSheetTabs}
-            disabled={isLoadingSheetTabs || isImportingSheetRange || !sheetsForm.sheetId.trim()}
-            className="w-full rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 md:w-auto"
-          >
-            {isLoadingSheetTabs ? 'Loading Tabs...' : 'Load Tabs'}
-          </button>
-        </div>
-      </div>
-
-      {sheetsLookup && (
-        <div className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-          <div className="font-medium text-gray-900">{sheetsLookup.spreadsheetTitle}</div>
-          <div className="text-xs text-gray-500">Spreadsheet ID: {sheetsLookup.spreadsheetId}</div>
-        </div>
-      )}
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-900">Tab name</label>
-          <select
-            value={sheetsForm.tabName}
-            onChange={(e) => {
-              setSheetsField('tabName', e.target.value);
-              setSheetsResult(null);
-              setSheetsError('');
-            }}
-            disabled={isLoadingSheetTabs || isImportingSheetRange || !sheetsLookup?.tabs.length}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-          >
-            <option value="">
-              {sheetsLookup?.tabs.length ? 'Select a tab' : 'Load tabs first'}
-            </option>
-            {(sheetsLookup?.tabs ?? []).map((tab) => (
-              <option key={tab.sheetId} value={tab.title}>
-                {tab.title}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-          Enter columns using spreadsheet letters like `A`, `B`, or `AA`. Uppercase and lowercase both work.
-        </div>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-900">From row</label>
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={sheetsForm.fromRow}
-            onChange={(e) => setSheetsField('fromRow', e.target.value)}
-            disabled={isImportingSheetRange}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-900">To row</label>
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={sheetsForm.toRow}
-            onChange={(e) => setSheetsField('toRow', e.target.value)}
-            disabled={isImportingSheetRange}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-900">From column</label>
-          <input
-            type="text"
-            value={sheetsForm.fromCol}
-            onChange={(e) => setSheetsField('fromCol', e.target.value)}
-            disabled={isImportingSheetRange}
-            placeholder="A"
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-900">To column</label>
-          <input
-            type="text"
-            value={sheetsForm.toCol}
-            onChange={(e) => setSheetsField('toCol', e.target.value)}
-            disabled={isImportingSheetRange}
-            placeholder="E"
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-      </div>
-
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={handleImportSheetRange}
-          disabled={isImportingSheetRange || isLoadingSheetTabs || !sheetsForm.sheetId.trim() || !sheetsForm.tabName.trim()}
-          className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-blue-400"
-        >
-          {isImportingSheetRange ? 'Importing...' : 'Import Range'}
-        </button>
-      </div>
-
-      {sheetsResult && importedRange && (
-        <div className="space-y-3">
-          <div className="flex flex-col gap-3 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800 md:flex-row md:items-center md:justify-between">
-            <div>
-              Imported <span className="font-medium">{importedRange.a1Notation}</span> from{' '}
-              <span className="font-medium">{sheetsResult.spreadsheetTitle}</span>.
-            </div>
-            <button
-              type="button"
-              onClick={handleSaveSheetChanges}
-              disabled={!hasPendingChanges || isSavingSheetRange || isImportingSheetRange}
-              className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-green-400"
-            >
-              {isSavingSheetRange ? 'Saving...' : hasPendingChanges ? 'Save Changes' : 'No Changes'}
-            </button>
-          </div>
-
-          <div className="rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-            Preview mirrors the imported Google Sheets range layout. Edit any visible cell here, then save to push the updated values back to Google Sheets.
-          </div>
-
-          {!hasImportedCells && (
-            <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
-              The requested range was fetched successfully, but every returned cell is blank.
-            </div>
-          )}
-
-          <div className="overflow-auto rounded-xl border border-gray-300 bg-white shadow-sm">
-            <table className="border-separate border-spacing-0 text-sm text-gray-900">
-              <colgroup>
-                <col style={{ width: 56 }} />
-                {importedColumnWidths.map((width, index) => (
-                  <col key={importedColumnNumbers[index]} style={{ width }} />
-                ))}
-              </colgroup>
-              <thead>
-                <tr>
-                  <th className="sticky left-0 top-0 z-30 border-b border-r border-gray-300 bg-[#f8f9fa]" style={{ height: 36, minWidth: 56 }} />
-                  {importedColumnNumbers.map((columnNumber) => (
-                    <th
-                      key={columnNumber}
-                      className="sticky top-0 z-20 border-b border-r border-gray-300 bg-[#f8f9fa] px-2 text-center text-xs font-medium text-gray-600"
-                      style={{ height: 36 }}
-                    >
-                      {toSpreadsheetColumnLabel(columnNumber)}
-                    </th>
+        <Card>
+          <div className="space-y-6">
+            <Field label="Saved Google Sheet" htmlFor="range-saved-sheet">
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <select
+                  id="range-saved-sheet"
+                  value={selectedSavedSourceId}
+                  onChange={(e) => setSelectedSavedSourceId(e.target.value)}
+                  disabled={isLoadingSavedSources || isLoadingSheetTabs || isImportingSheetRange || savedSources.length === 0}
+                  className="tl-input"
+                >
+                  <option value="">
+                    {savedSources.length ? 'Select a saved Google Sheet' : 'Save a Google Sheet above first'}
+                  </option>
+                  {savedSources.map((source) => (
+                    <option key={source.id} value={source.id}>
+                      {source.name}
+                    </option>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {importedCells.map((row, rowIndex) => (
-                  <tr key={`${importedRange.fromRow + rowIndex}`} style={{ height: importedRowHeights[rowIndex] ?? 28 }}>
-                    <th
-                      className="sticky left-0 z-10 border-b border-r border-gray-300 bg-[#f8f9fa] px-2 text-center text-xs font-medium text-gray-600"
-                      style={{ width: 56, minWidth: 56 }}
-                    >
-                      {importedRange.fromRow + rowIndex}
-                    </th>
-                    {row.map((cell, columnIndex) => {
-                      const mergeKey = `${rowIndex}:${columnIndex}`;
-                      if (coveredCells.has(mergeKey)) {
-                        return null;
-                      }
+                </select>
+                <button
+                  type="button"
+                  onClick={handleLoadSheetTabs}
+                  disabled={isLoadingSheetTabs || isImportingSheetRange || !sheetsForm.sheetId.trim()}
+                  className="tl-button-quiet sm:min-w-32"
+                  // The select beside it is 2.5rem; matched inline, because
+                  // .tl-button-quiet is unlayered and outranks a min-h utility.
+                  style={{ minHeight: '2.5rem' }}
+                >
+                  {isLoadingSheetTabs ? 'Loading Tabs...' : 'Load Tabs'}
+                </button>
+              </div>
+              {sheetsForm.sheetId && (
+                <p className="mt-2 break-all text-xs text-subtle">{sheetsForm.sheetId}</p>
+              )}
+            </Field>
 
-                      const merge = mergeStarts.get(mergeKey);
-                      const rowSpan = merge ? merge.endRow - merge.startRow : 1;
-                      const colSpan = merge ? merge.endCol - merge.startCol : 1;
-                      const cellHeight = Array.from({ length: rowSpan }, (_, offset) => importedRowHeights[rowIndex + offset] ?? 28)
-                        .reduce((sum, value) => sum + value, 0);
-                      const cellValue = editableValues[rowIndex]?.[columnIndex] ?? cell.value;
-                      const format = cell.format;
-                      const wrapStrategy = format?.wrapStrategy;
+            {sheetsLookup && (
+              <Notice tone="neutral">
+                <p className="font-medium">{sheetsLookup.spreadsheetTitle}</p>
+                <p className="mt-0.5 break-all text-xs text-muted">Spreadsheet ID: {sheetsLookup.spreadsheetId}</p>
+              </Notice>
+            )}
 
-                      return (
-                        <td
-                          key={`${importedRange.fromRow + rowIndex}-${importedColumnNumbers[columnIndex]}`}
-                          rowSpan={rowSpan}
-                          colSpan={colSpan}
-                          className="px-2 align-top"
-                          style={{
-                            ...getCellStyle(cell, importedRowHeights[rowIndex]),
-                            minWidth: importedColumnWidths[columnIndex] ?? 120,
-                            height: cellHeight,
-                            paddingTop: 6,
-                            paddingRight: 8,
-                            paddingBottom: 6,
-                            paddingLeft: 8,
-                          }}
-                        >
-                          <textarea
-                            value={cellValue}
-                            onChange={(event) => handleCellValueChange(rowIndex, columnIndex, event.target.value)}
-                            spellCheck={false}
-                            disabled={isSavingSheetRange}
-                            rows={1}
-                            className="block w-full resize-none border-0 bg-white p-0 text-inherit focus:outline-none"
-                            style={{
-                              minHeight: Math.max(cellHeight - 12, 24),
-                              whiteSpace: wrapStrategy === 'WRAP' ? 'pre-wrap' : 'pre',
-                              overflow: 'hidden',
-                            }}
-                          />
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="grid gap-4 md:grid-cols-2 md:items-end">
+              <Field label="Tab name" htmlFor="range-tab-name">
+                <select
+                  id="range-tab-name"
+                  value={sheetsForm.tabName}
+                  onChange={(e) => {
+                    setSheetsField('tabName', e.target.value);
+                    setSheetsResult(null);
+                    setSheetsError('');
+                  }}
+                  disabled={isLoadingSheetTabs || isImportingSheetRange || !sheetsLookup?.tabs.length}
+                  className="tl-input"
+                >
+                  <option value="">
+                    {sheetsLookup?.tabs.length ? 'Select a tab' : 'Load tabs first'}
+                  </option>
+                  {(sheetsLookup?.tabs ?? []).map((tab) => (
+                    <option key={tab.sheetId} value={tab.title}>
+                      {tab.title}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Notice tone="info">
+                Enter columns using spreadsheet letters like `A`, `B`, or `AA`. Uppercase and lowercase both work.
+              </Notice>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label="From row" htmlFor="range-from-row">
+                <input
+                  id="range-from-row"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={sheetsForm.fromRow}
+                  onChange={(e) => setSheetsField('fromRow', e.target.value)}
+                  disabled={isImportingSheetRange}
+                  className="tl-input"
+                />
+              </Field>
+              <Field label="To row" htmlFor="range-to-row">
+                <input
+                  id="range-to-row"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={sheetsForm.toRow}
+                  onChange={(e) => setSheetsField('toRow', e.target.value)}
+                  disabled={isImportingSheetRange}
+                  className="tl-input"
+                />
+              </Field>
+              <Field label="From column" htmlFor="range-from-col">
+                <input
+                  id="range-from-col"
+                  type="text"
+                  value={sheetsForm.fromCol}
+                  onChange={(e) => setSheetsField('fromCol', e.target.value)}
+                  disabled={isImportingSheetRange}
+                  placeholder="A"
+                  className="tl-input"
+                />
+              </Field>
+              <Field label="To column" htmlFor="range-to-col">
+                <input
+                  id="range-to-col"
+                  type="text"
+                  value={sheetsForm.toCol}
+                  onChange={(e) => setSheetsField('toCol', e.target.value)}
+                  disabled={isImportingSheetRange}
+                  placeholder="E"
+                  className="tl-input"
+                />
+              </Field>
+            </div>
+
+            <div>
+              <button
+                type="button"
+                onClick={handleImportSheetRange}
+                disabled={isImportingSheetRange || isLoadingSheetTabs || !sheetsForm.sheetId.trim() || !sheetsForm.tabName.trim()}
+                className="tl-button"
+              >
+                {isImportingSheetRange ? 'Importing...' : 'Import Range'}
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-    </section>
+        </Card>
+
+        {sheetsResult && importedRange && (
+          <div className="space-y-3">
+            <Notice tone="success" className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                Imported <span className="font-medium">{importedRange.a1Notation}</span> from{' '}
+                <span className="font-medium">{sheetsResult.spreadsheetTitle}</span>.
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveSheetChanges}
+                disabled={!hasPendingChanges || isSavingSheetRange || isImportingSheetRange}
+                className="tl-button self-start md:self-auto"
+              >
+                {isSavingSheetRange ? 'Saving...' : hasPendingChanges ? 'Save Changes' : 'No Changes'}
+              </button>
+            </Notice>
+
+            <Notice tone="neutral">
+              Preview mirrors the imported Google Sheets range layout. Edit any visible cell here, then save to push the updated values back to Google Sheets.
+            </Notice>
+
+            {!hasImportedCells && (
+              <Notice tone="warn">
+                The requested range was fetched successfully, but every returned cell is blank.
+              </Notice>
+            )}
+
+            {/*
+              The kit's table box around the sheet's own grid. The cells keep the
+              colours, borders and fonts the spreadsheet gave them - that is the
+              content being previewed - and only the row and column headings are
+              the app's, from importer.module.css, in both themes.
+            */}
+            <div className="tl-table-box w-fit max-w-full">
+              <table className={styles.grid}>
+                <colgroup>
+                  <col style={{ width: 56 }} />
+                  {importedColumnWidths.map((width, index) => (
+                    <col key={importedColumnNumbers[index]} style={{ width }} />
+                  ))}
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th className={styles.corner} style={{ height: 36, minWidth: 56 }} />
+                    {importedColumnNumbers.map((columnNumber) => (
+                      <th
+                        key={columnNumber}
+                        className={styles.colHead}
+                        style={{ height: 36 }}
+                      >
+                        {toSpreadsheetColumnLabel(columnNumber)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {importedCells.map((row, rowIndex) => (
+                    <tr key={`${importedRange.fromRow + rowIndex}`} style={{ height: importedRowHeights[rowIndex] ?? 28 }}>
+                      <th
+                        className={styles.rowHead}
+                        style={{ width: 56, minWidth: 56 }}
+                      >
+                        {importedRange.fromRow + rowIndex}
+                      </th>
+                      {row.map((cell, columnIndex) => {
+                        const mergeKey = `${rowIndex}:${columnIndex}`;
+                        if (coveredCells.has(mergeKey)) {
+                          return null;
+                        }
+
+                        const merge = mergeStarts.get(mergeKey);
+                        const rowSpan = merge ? merge.endRow - merge.startRow : 1;
+                        const colSpan = merge ? merge.endCol - merge.startCol : 1;
+                        const cellHeight = Array.from({ length: rowSpan }, (_, offset) => importedRowHeights[rowIndex + offset] ?? 28)
+                          .reduce((sum, value) => sum + value, 0);
+                        const cellValue = editableValues[rowIndex]?.[columnIndex] ?? cell.value;
+                        const format = cell.format;
+                        const wrapStrategy = format?.wrapStrategy;
+
+                        return (
+                          <td
+                            key={`${importedRange.fromRow + rowIndex}-${importedColumnNumbers[columnIndex]}`}
+                            rowSpan={rowSpan}
+                            colSpan={colSpan}
+                            className="px-2 align-top"
+                            style={{
+                              ...getCellStyle(cell, importedRowHeights[rowIndex]),
+                              minWidth: importedColumnWidths[columnIndex] ?? 120,
+                              height: cellHeight,
+                              paddingTop: 6,
+                              paddingRight: 8,
+                              paddingBottom: 6,
+                              paddingLeft: 8,
+                            }}
+                          >
+                            <textarea
+                              value={cellValue}
+                              onChange={(event) => handleCellValueChange(rowIndex, columnIndex, event.target.value)}
+                              spellCheck={false}
+                              disabled={isSavingSheetRange}
+                              rows={1}
+                              className={styles.cellInput}
+                              style={{
+                                minHeight: Math.max(cellHeight - 12, 24),
+                                whiteSpace: wrapStrategy === 'WRAP' ? 'pre-wrap' : 'pre',
+                                overflow: 'hidden',
+                              }}
+                            />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Section>
+    </div>
   );
 }
