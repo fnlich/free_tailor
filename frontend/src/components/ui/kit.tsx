@@ -243,10 +243,13 @@ export function EmptyState({
   );
 }
 
-/** A load in progress, said out loud as well as drawn. */
-export function Spinner({ label = 'Loading...' }: { label?: string }) {
+/** A load in progress, said out loud as well as drawn. `compact` for inside a small panel. */
+export function Spinner({ label = 'Loading...', compact = false }: { label?: string; compact?: boolean }) {
   return (
-    <div className="flex items-center justify-center gap-3 py-12 text-sm text-muted" role="status">
+    <div
+      className={`flex items-center justify-center gap-3 text-sm text-muted ${compact ? 'py-3' : 'py-12'}`}
+      role="status"
+    >
       <span className="tl-spinner" aria-hidden />
       <span>{label}</span>
     </div>

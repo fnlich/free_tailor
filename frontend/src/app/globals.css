@@ -108,6 +108,8 @@
   --color-accent-soft: var(--accent-soft);
   --color-accent-ink: var(--accent-ink);
   --color-canvas: var(--canvas);
+  /* The hairline between rows and sections: border-hairline, divide-hairline. */
+  --color-hairline: var(--line-subtle);
   --color-rail: var(--rail);
   --color-coin: var(--coin);
 }
@@ -815,6 +817,11 @@ html.dark .shadow-2xl {
   opacity: 0.45;
 }
 
+.tl-button-quiet[data-shape='pill'] {
+  border-radius: 9999px;
+  padding-inline: 1.125rem;
+}
+
 /*
  * A bordered table in a rounded box, with a tinted header row: the order
  * history on /credits. Classes rather than utilities for the same reason as
@@ -852,6 +859,23 @@ html.dark .shadow-2xl {
 
 .tl-table tbody tr:last-child td {
   border-bottom: 0;
+}
+
+/*
+ * Alignment by attribute, because a utility on a cell loses to the unlayered
+ * cell rules above: <td data-align="right"> for figures and actions,
+ * data-valign="top" for a row whose cells wrap to different heights.
+ */
+.tl-table [data-align='right'] {
+  text-align: right;
+}
+
+.tl-table [data-align='center'] {
+  text-align: center;
+}
+
+.tl-table [data-valign='top'] {
+  vertical-align: top;
 }
 
 /*
@@ -1129,8 +1153,13 @@ html.dark .tl-pill[data-tone='violet'] {
   cursor: pointer;
 }
 
-.tl-choice:hover {
+.tl-choice:hover:not(:has(input:disabled)) {
   background: var(--surface-muted);
+}
+
+.tl-choice:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .tl-choice[data-on='true'] {
@@ -1270,6 +1299,18 @@ textarea.tl-input {
   background: var(--surface-muted);
   color: var(--text-subtle);
   cursor: not-allowed;
+}
+
+/*
+ * The shim's dark input rule names the element and three :not()s, which
+ * outranks the rule above and made a disabled field look editable in dark
+ * mode. This names as much, plus the class and the state.
+ */
+html.dark input.tl-input:disabled:not([type='radio']):not([type='checkbox']):not([type='color']),
+html.dark textarea.tl-input:disabled,
+html.dark select.tl-input:disabled {
+  background-color: var(--surface-muted);
+  color: var(--text-subtle);
 }
 
 @media (max-width: 767.98px) {
