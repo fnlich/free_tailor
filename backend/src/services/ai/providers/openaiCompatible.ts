@@ -60,7 +60,9 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
         provider: options.id,
         kind: 'auth',
         detail: `${descriptor.label} API key is not set`,
-        adminAction: `Add a ${descriptor.label} key under Admin -> Settings, or set ${descriptor.envKeyVar}.`,
+        adminAction:
+          `Set ${descriptor.envKeyVar} in the root .env and restart the backend - keys are read from the ` +
+          'environment only.',
       });
     }
     if (!client || clientKey !== apiKey) {

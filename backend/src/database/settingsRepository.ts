@@ -11,6 +11,20 @@ export function getSettingRaw(key: string): string | null {
 }
 
 /**
+ * The raw values stored under `key` and under every `key.<suffix>`, in key
+ * order - for a record that spills over into dated keys of its own, as a
+ * migration log does when the row it appends to has been edited into
+ * something it cannot append to. Compared by prefix rather than LIKE, so an
+ * underscore in a key is not a wildcard.
+ */
+export function getSettingFamilyRaw(key: string): string[] {
+  const rows = getDb()
+    .prepare('SELECT value FROM app_settings WHERE key = ? OR substr(key, 1, ?) = ? ORDER BY key')
+    .all(key, key.length + 1, `${key}.`) as Array<Pick<SettingRow, 'value'>>;
+  return rows.map((row) => row.value);
+}
+
+/**
  * Reads and parses a JSON settings value.
  * Throws when the stored value is not valid JSON so corrupted data is surfaced instead of silently replaced.
  */

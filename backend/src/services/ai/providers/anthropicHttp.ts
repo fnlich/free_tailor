@@ -107,7 +107,9 @@ export function createAnthropicHttpAdapter(options: { defaultModel: string }): A
           provider: PROVIDER_ID,
           kind: 'auth',
           detail: 'Anthropic API key is not set',
-          adminAction: 'Add an Anthropic key under Admin -> Settings, or set ANTHROPIC_API_KEY.',
+          adminAction:
+            'Set ANTHROPIC_API_KEY in the root .env and restart the backend - keys are read from the ' +
+            'environment only.',
         });
       }
 

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~20s with the tsc step, 749 tests)
+npm test                       # backend node:test suite (~20s with the tsc step, 757 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -231,7 +231,12 @@ API keys); the read-time tolerance - including the in-memory repair, onto a
 provider not locked here, of a row left with nothing it can run - has to
 stand on its own, because 006 sits after 003 in the chain and waits with it
 until an administrator exists. A deleted model that was never a browser one is still an
-error - do not widen the tolerance to "any unknown id".
+error - do not widen the tolerance to "any unknown id". 006's log,
+`migration-log.provider-schema-6`, is read back and so load-bearing: its
+`removedModelIds` keep an administrator's own browser model (a UUID) reading
+as the default after a restart, and its `leftRunning` limits the in-memory
+repair to a row still as 006 left it - after an admin's own save, a new lock
+fails by name.
 
 Both CLI providers share the spawn seam in `services/ai/providers/cli/`:
 `runner.ts` is the only module under `services/ai` that imports

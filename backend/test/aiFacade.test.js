@@ -337,6 +337,73 @@ test('a disabled provider is refused with a status a route can act on', async ()
   );
 });
 
+test('a metered API with no key says which key to set, and never names the Claude seat', async () => {
+  // Every provider shared the Claude seat's sentences, so a missing OpenAI key
+  // told the person to sign the Claude subscription in, and the advice said to
+  // add the key under Admin -> Settings, which has had no key panel since keys
+  // moved to the environment.
+  const ai = loadAi();
+  const { describeAiError } = require('../dist/middleware/aiErrors');
+  const { createAnthropicHttpAdapter } = require('../dist/services/ai/providers/anthropicHttp');
+  const { createOpenAICompatibleAdapter } = require('../dist/services/ai/providers/openaiCompatible');
+  const names = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY'];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+
+  const request = {
+    modelName: 'm',
+    stableSystem: '',
+    volatileSystem: '',
+    userBody: 'write something',
+    responseFormat: 'text',
+    sampling: {},
+    deadline: { remainingMs: () => 60_000 },
+    callSite: 'probe',
+  };
+  try {
+    for (const [provider, adapter, envVar] of [
+      ['claude', createAnthropicHttpAdapter({ defaultModel: 'claude-sonnet-4-20250514' }), 'ANTHROPIC_API_KEY'],
+      [
+        'openai',
+        createOpenAICompatibleAdapter({ id: 'openai', defaultModel: 'gpt-5.1', tokenLimitField: 'max_completion_tokens' }),
+        'OPENAI_API_KEY',
+      ],
+      [
+        'deepseek',
+        createOpenAICompatibleAdapter({ id: 'deepseek', defaultModel: 'deepseek-chat', tokenLimitField: 'max_tokens' }),
+        'DEEPSEEK_API_KEY',
+      ],
+    ]) {
+      const error = await adapter.complete(request).then(
+        () => assert.fail(`${provider} ran with no key`),
+        (failure) => failure
+      );
+      const described = describeAiError(error);
+      assert.equal(described.body.provider, provider);
+      assert.equal(described.body.code, 'auth');
+      assert.match(described.body.error, new RegExp(envVar), `${provider} names its own key`);
+      assert.doesNotMatch(described.body.error, /Claude|claude auth/);
+      assert.match(described.body.adminAction, new RegExp(`${envVar} in the root \\.env`));
+      assert.doesNotMatch(described.body.adminAction, /Admin -> Settings/);
+    }
+
+    // A key the API refuses, and a 429, reach the same kinds and read the same.
+    for (const kind of ['auth', 'rateLimited']) {
+      const described = describeAiError(new ai.AIProviderError({ provider: 'openai', kind, detail: 'HTTP' }));
+      assert.match(described.body.error, /OpenAI API/);
+      assert.doesNotMatch(described.body.error, /Claude/);
+    }
+    // And the Claude seat keeps the sentences that were always its own.
+    const seat = describeAiError(new ai.AIProviderError({ provider: 'claude-cli', kind: 'auth' }));
+    assert.match(seat.body.error, /claude auth login/);
+  } finally {
+    for (const name of names) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  }
+});
+
 test('an explicitly registered adapter wins, and the other providers still exist', async () => {
   // registerDefaults used to bail when the factory map was non-empty, so a
   // single overridden provider left every other one unregistered - and once

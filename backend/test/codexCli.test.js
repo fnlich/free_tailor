@@ -187,6 +187,34 @@ test('being signed out is reported as an auth problem, with what to run', async 
   );
 });
 
+test('what a person is told about a missing or signed-out Codex CLI names Codex, not the Claude seat', async () => {
+  // The shared sentences were written when the Claude seat was the only
+  // provider. A Codex failure told the person to install the Claude CLI, or to
+  // run `claude auth login` - on an install where that seat may be locked.
+  const missing = makeAdapter(null, {
+    outcome: { spawnError: Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' }) },
+  });
+  const signedOut = makeAdapter(null, {
+    lines: ['{"type":"turn.failed","message":"Not logged in. Run codex login."}'],
+  });
+  const { describeAiError } = require('../dist/middleware/aiErrors');
+
+  for (const [adapter, kind, said] of [
+    [missing.adapter, 'binaryMissing', /The Codex CLI is not installed/],
+    [signedOut.adapter, 'auth', /Codex subscription is not signed in.*codex login --device-auth/],
+  ]) {
+    const error = await adapter.complete(request()).then(
+      () => assert.fail('expected a failure'),
+      (failure) => failure
+    );
+    const described = describeAiError(error);
+    assert.equal(described.body.code, kind);
+    assert.equal(described.body.provider, 'codex-cli');
+    assert.match(described.body.error, said);
+    assert.doesNotMatch(described.body.error, /Claude|claude auth/);
+  }
+});
+
 test('the default model passes no -m at all, and a named one does', async () => {
   const { buildCodexArgv } = loadFresh('../dist/services/ai/providers/codexCli/argv');
 

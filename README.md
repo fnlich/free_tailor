@@ -882,7 +882,8 @@ first start after upgrading, migration 006 tidies the database once:
 - An install that ran only on the browsers - every other provider unticked or
   locked here, or every other model switched off - gets one back: a seat this
   machine can run, switched on with its models, or else a metered model it
-  already had, switched back on. The backend log says which; review it under
+  already had, switched back on - from a provider whose key is set in `.env`
+  before one whose key is not. The backend log says which; review it under
   Admin -> Settings and Admin -> Models.
 - It keeps a copy of the settings row first, in `app_settings` under
   `app-settings.backup.pre-browser-chat-removal` - verbatim, except that an API
@@ -899,12 +900,25 @@ account that `ADMIN_EMAILS` promotes at start-up lets it run at once), and it
 waits as well while the settings row is not valid JSON. A record that still
 names a browser provider - from a restored backup, a hand-edited row, or a page
 left open from before the upgrade - is read as the default, never as an error,
-and the backend log says so once per name; an install left with nothing it can
-run is read with the same repair the migration makes, in memory, until an
-administrator saves Settings. A run that was queued across the upgrade still
-finishes: a resume that was waiting for a browser is built on whatever its
-profile resolves to now - the profile's own model, or the app default - and is
-not charged again.
+and the backend log says so once per name. That includes an administrator's
+own browser model, whose id the migration logs, so a page that still names it
+works after a restart too.
+
+An install left with nothing it can run is repaired the same way in memory,
+until an administrator saves Settings - with one step more than the migration
+takes. With both seats locked and no metered model left at all, the migration
+adds none and leaves the row as it is; the app then offers a metered API's own
+default model in memory - from one whose key is set in `.env`, where there is
+one - which bills per token, or fails every generation until a key is set or a
+seat is unlocked. Saving Settings keeps it. The same repair covers a lock added
+after the upgrade, but only while the settings are still what the migration
+left: once an administrator has changed which providers or models are switched
+on, an install a later lock leaves with nothing fails by name, pointing at the
+lock, as it does on an install that never used browser chat.
+
+A run that was queued across the upgrade still finishes: a resume that was
+waiting for a browser is built on whatever its profile resolves to now - the
+profile's own model, or the app default - and is not charged again.
 
 `npm run browser:debug`, `npm run browser:doctor` and every `AI_WEB_*` variable
 no longer exist. A leftover `AI_WEB_*` line in `.env` is ignored and can be

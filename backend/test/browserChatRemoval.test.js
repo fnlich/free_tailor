@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
@@ -904,20 +905,47 @@ test('a queued choice naming a browser provider is resolved again; any other run
 
 /* ---------------------------------------------- with a seat locked here */
 
+const API_KEY_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY'];
+
 /**
  * Runs `fn` with `locked` locked on this machine, the way an operator's .env
  * would, and puts this file's both-seats-unlocked setting back afterwards.
  * The lock lists are read on every call, so nothing needs reloading for it.
+ *
+ * With exactly the API keys in `keys` set, and none other - whatever the shell
+ * running this exports - because with both seats locked a key is what decides
+ * which metered API a repair picks.
  */
-async function withLocks(locked, fn) {
+async function withLocks(locked, fn, keys = {}) {
   const unlocked = process.env.AI_UNLOCKED_PROVIDERS;
+  const savedKeys = Object.fromEntries(API_KEY_VARS.map((name) => [name, process.env[name]]));
   delete process.env.AI_UNLOCKED_PROVIDERS;
   process.env.AI_LOCKED_PROVIDERS = locked;
+  for (const name of API_KEY_VARS) {
+    if (keys[name]) process.env[name] = keys[name];
+    else delete process.env[name];
+  }
   try {
     return await fn();
   } finally {
     delete process.env.AI_LOCKED_PROVIDERS;
     process.env.AI_UNLOCKED_PROVIDERS = unlocked;
+    for (const name of API_KEY_VARS) {
+      if (savedKeys[name] === undefined) delete process.env[name];
+      else process.env[name] = savedKeys[name];
+    }
+  }
+}
+
+/** Captures what `fn` warns, and gives it back with the result. */
+async function captureWarnings(fn) {
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    return { result: await fn(), warnings };
+  } finally {
+    console.warn = warn;
   }
 }
 
@@ -1168,4 +1196,273 @@ test('a stored default naming a browser model is said once, as the other retired
   assert.equal(lines.length, 1, 'once, however many reads');
   assert.match(lines[0], /stored default model/);
   assert.match(lines[0], /claude-cli-sonnet/, 'naming what runs instead');
+});
+
+/* ------------------------------ which key, whose choice, and after a restart */
+
+const CURRENT_PROVIDERS = ['claude-cli', 'codex-cli', 'claude', 'openai', 'deepseek'];
+
+/** Every provider this build runs switched off, the browsers on. */
+const BROWSERS_ONLY = {
+  'claude-cli': false,
+  'codex-cli': false,
+  claude: false,
+  openai: false,
+  deepseek: false,
+  'claude-web': true,
+  'chatgpt-web': true,
+};
+
+function runMigration006(dbDir) {
+  const db = openDb(dbDir);
+  try {
+    return migrate006()(db);
+  } finally {
+    db.close();
+  }
+}
+
+test('with both seats locked, the repair picks the metered API whose key is set', async () => {
+  // Three metered APIs, each with a model of its own and all switched off, and
+  // catalog order breaking the tie: the Anthropic API was switched on - and
+  // 006 stored it as the default - on a box whose only key was OpenAI's, so
+  // every generation failed on the missing key.
+  for (const [envVar, provider, expectedDefault] of [
+    ['OPENAI_API_KEY', 'openai', 'openai-gpt-5-1'],
+    ['DEEPSEEK_API_KEY', 'deepseek', 'deepseek-chat'],
+  ]) {
+    await withLocks(
+      'claude-cli,codex-cli',
+      async () => {
+        const { dbDir } = freshStorage(`keyed-${provider}`);
+        const original = plantSettings(
+          dbDir,
+          browserEraSettings({
+            providersEnabled: BROWSERS_ONLY,
+            aiModels: [
+              model('claude-cli-sonnet', 'claude-cli', 'sonnet'),
+              model('codex-cli-default', 'codex-cli', 'default'),
+              model('anthropic-sonnet', 'claude', 'claude-sonnet-4-20250514'),
+              model('openai-gpt-5-1', 'openai', 'gpt-5.1'),
+              model('deepseek-chat', 'deepseek', 'deepseek-chat'),
+              model('claude-web-chat', 'claude-web', 'chat'),
+            ],
+          })
+        );
+
+        // Read before 006 has run.
+        const config = loadFresh('../dist/config/aiModelConfig');
+        const admin = await config.getAdminAppSettings();
+        assert.deepEqual(
+          CURRENT_PROVIDERS.filter((id) => admin.providersEnabled[id]),
+          [provider],
+          `with only ${envVar} set, ${provider} is what comes back`
+        );
+        assert.equal(admin.defaultModelId, expectedDefault);
+        assert.equal((await config.resolveRequestedAIModel()).provider, provider);
+        assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), original, 'in memory only');
+
+        // And 006 stores the same choice.
+        const report = runMigration006(dbDir);
+        assert.deepEqual(report.enabledProviders, [provider]);
+        assert.deepEqual(report.repointedDefaultModel, { from: 'claude-web-chat', to: expectedDefault });
+        assert.ok(
+          report.notes.some((note) => note.includes(`${envVar} set in .env`)),
+          'and its note says the provider it chose has its key'
+        );
+        const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
+        assert.equal(stored.providersEnabled.claude, false, 'the Anthropic API, with no key here, stays off');
+        assert.equal((await loadFresh('../dist/config/aiModelConfig').resolveRequestedAIModel()).provider, provider);
+      },
+      { [envVar]: 'sk-test' }
+    );
+  }
+
+  // A key set for an API the row has no model of its own for does not beat
+  // one it has. 006 never adds a key-billed model nobody chose, and the reader
+  // chooses among what 006 would, so the install does not change provider the
+  // moment its first administrator lets 006 run.
+  await withLocks(
+    'claude-cli,codex-cli',
+    async () => {
+      const { dbDir } = freshStorage('keyed-no-model');
+      plantSettings(
+        dbDir,
+        browserEraSettings({
+          providersEnabled: { ...BROWSERS_ONLY, openai: true },
+          aiModels: [
+            model('claude-cli-sonnet', 'claude-cli', 'sonnet'),
+            model('openai-gpt-5-1', 'openai', 'gpt-5.1', { enabled: false }),
+            model('claude-web-chat', 'claude-web', 'chat'),
+          ],
+        })
+      );
+      const before = await loadFresh('../dist/config/aiModelConfig').resolveRequestedAIModel();
+      runMigration006(dbDir);
+      const after = await loadFresh('../dist/config/aiModelConfig').resolveRequestedAIModel();
+      assert.equal(before.id, 'openai-gpt-5-1');
+      assert.equal(after.id, before.id, 'the same before 006 and after it');
+    },
+    { DEEPSEEK_API_KEY: 'sk-test' }
+  );
+});
+
+test('with both seats locked and no metered model left, the reader adds one in memory and 006 adds none', async () => {
+  // 006 never stores a key-billed model nobody chose, so it leaves this row as
+  // it is. Unreadable, the row would take down the pages that repair it, so
+  // the reader adds a metered API's own models in memory - the keyed one's -
+  // and only an administrator's save keeps them.
+  await withLocks(
+    'claude-cli,codex-cli',
+    async () => {
+      const { dbDir } = freshStorage('no-metered');
+      const original = plantSettings(
+        dbDir,
+        browserEraSettings({
+          providersEnabled: { ...BROWSERS_ONLY, 'claude-cli': true, 'codex-cli': true },
+          aiModels: [
+            model('claude-cli-sonnet', 'claude-cli', 'sonnet'),
+            model('codex-cli-default', 'codex-cli', 'default'),
+            model('claude-web-chat', 'claude-web', 'chat'),
+            model('chatgpt-web-chat', 'chatgpt-web', 'chat'),
+          ],
+        })
+      );
+
+      const before = loadFresh('../dist/config/aiModelConfig');
+      const listed = await before.listAvailableAIModels();
+      assert.deepEqual([...new Set(listed.map((entry) => entry.provider))], ['openai'], "the keyed API's seeds");
+      assert.equal((await before.getPublicAppSettings()).defaultModelId, 'openai-gpt-5-1');
+      assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), original, 'in memory only');
+
+      const report = runMigration006(dbDir);
+      assert.equal(report.seededModels, 0, '006 adds no metered model');
+      assert.deepEqual(report.enabledProviders, []);
+      assert.ok(report.notes.some((note) => /adding a metered API's own models there/.test(note)));
+      const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
+      assert.deepEqual(stored.aiModels.map((entry) => entry.id), ['claude-cli-sonnet', 'codex-cli-default']);
+
+      // Still the row 006 left, so it reads with the same repair.
+      const after = loadFresh('../dist/config/aiModelConfig');
+      assert.equal((await after.resolveRequestedAIModel()).id, 'openai-gpt-5-1');
+      assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), JSON.stringify(stored), 'and still writes nothing');
+    },
+    { OPENAI_API_KEY: 'sk-test' }
+  );
+});
+
+test("after 006, a lock under an administrator's own choice fails by name rather than undo it", async () => {
+  // The snapshot 006 keeps never goes away, and the repair once keyed on it
+  // alone. On every upgraded install, an administrator who switched the Codex
+  // seat or the OpenAI API off after the upgrade had it switched back on - and
+  // billed - by the next lock, with a log line blaming browser chat.
+  const { dbDir } = freshStorage('post-006-save');
+  plantSettings(dbDir, browserEraSettings());
+  runMigration006(dbDir);
+
+  // Their own choice, saved after the upgrade: the Claude seat alone.
+  await loadFresh('../dist/config/aiModelConfig').updateAppSettings({
+    providersEnabled: { 'claude-cli': true, 'codex-cli': false, claude: false, openai: false, deepseek: false },
+  });
+
+  await withLocks('claude-cli', async () => {
+    await assert.rejects(
+      () => loadFresh('../dist/config/aiModelConfig').getAdminAppSettings(),
+      /unlocked AI provider must remain enabled\. Locked in this installation: Claude \(subscription\)\./
+    );
+  });
+  await withLocks(
+    'claude-cli,codex-cli',
+    async () => {
+      const config = loadFresh('../dist/config/aiModelConfig');
+      await assert.rejects(() => config.getAdminAppSettings(), /unlocked AI provider must remain enabled/);
+      await assert.rejects(
+        () => config.resolveRequestedAIModel(),
+        /unlocked AI provider must remain enabled/,
+        'and nothing runs on the OpenAI API they switched off, key or no key'
+      );
+    },
+    { OPENAI_API_KEY: 'sk-test' }
+  );
+});
+
+test('a lock under the row 006 left, unchanged since, is still repaired - and the log names the lock', async () => {
+  const { dbDir } = freshStorage('post-006-lock');
+  plantSettings(dbDir, browserEraSettings({ providersEnabled: SEAT_AND_BROWSERS }));
+  runMigration006(dbDir);
+  // A save that leaves which providers and models are on alone is not a choice
+  // about them.
+  await loadFresh('../dist/config/aiModelConfig').updateAppSettings({ defaultMode: 'generate' });
+
+  await withLocks('claude-cli', async () => {
+    const { result: admin, warnings } = await captureWarnings(() =>
+      loadFresh('../dist/config/aiModelConfig').getAdminAppSettings()
+    );
+    assert.equal(admin.providersEnabled['codex-cli'], true);
+    assert.equal(admin.defaultModelId, 'codex-cli-default');
+    const line = warnings.find((entry) => entry.includes('"Codex (subscription)"'));
+    assert.ok(line, 'said once');
+    assert.match(line, /switch on can run on this machine \(locked here: claude-cli\)/, 'about the lock');
+    assert.match(line, /still what migration 006 left/);
+  });
+});
+
+test("an administrator's own browser model reads as the default after 006, across a restart", async () => {
+  // 006 deletes the record at boot, usually before anything has read it, so a
+  // process never saw its id. A builder tab left open across the upgrade got
+  // "was not found", and so - for good, as 006 does not run again - did every
+  // run of a profile that a stale editor saved the old choice back into.
+  const { dbDir } = freshStorage('uuid-after-006');
+  plantSettings(dbDir, browserEraSettings({ defaultModelId: 'openai-gpt-5-1' }));
+  runMigration006(dbDir);
+  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY).includes(OPERATOR_BROWSER_MODEL_ID), false);
+
+  const { result, warnings } = await captureWarnings(async () => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const preferences = loadFresh('../dist/config/aiPreferences');
+    return {
+      config,
+      requested: await config.resolveRequestedAIModel(OPERATOR_BROWSER_MODEL_ID),
+      again: await config.resolveRequestedAIModel(OPERATOR_BROWSER_MODEL_ID),
+      stored: await config.resolveStoredAIModelPreference(OPERATOR_BROWSER_MODEL_ID),
+      profile: await preferences.resolveAiChoice(undefined, {
+        profileSettings: { ai: { modelId: OPERATOR_BROWSER_MODEL_ID } },
+      }),
+    };
+  });
+  for (const key of ['requested', 'again', 'stored']) assert.equal(result[key].id, 'openai-gpt-5-1', key);
+  assert.equal(result.profile.modelId, 'openai-gpt-5-1');
+  assert.equal(
+    warnings.filter((line) => line.includes(`A request named "${OPERATOR_BROWSER_MODEL_ID}"`)).length,
+    1,
+    'said once'
+  );
+  // Still not "anything missing falls back".
+  await assert.rejects(() => result.config.resolveRequestedAIModel('deleted-model'), /was not found/);
+
+  // Every entry of the log counts: a later run's, and one under a dated key.
+  writeSettingRaw(
+    dbDir,
+    LOG_KEY,
+    JSON.stringify({ removedModelIds: [], at: '2026-06-01', laterRuns: [{ removedModelIds: ['later-run-model'] }] })
+  );
+  writeSettingRaw(dbDir, `${LOG_KEY}.2026-06-03T00:00:00.000Z`, JSON.stringify({ removedModelIds: ['dated-run-model'] }));
+  const config = loadFresh('../dist/config/aiModelConfig');
+  for (const id of ['later-run-model', 'dated-run-model']) {
+    assert.equal((await config.resolveRequestedAIModel(id)).id, 'openai-gpt-5-1', id);
+  }
+});
+
+test('the boot promotes the administrator - and so runs 006 - before the queue restore reads anything', () => {
+  // Restored first, the queue read a profile 006 cleared a moment later, and
+  // the log told the operator to fix a preference that was already fixed.
+  // Read from the source, as batchParallelism is: index.ts starts a server.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+  const listen = source.slice(source.indexOf('app.listen('));
+  const promote = listen.indexOf('applyConfiguredAdmins()');
+  const noAdmin = listen.indexOf('warnIfNoAdmin()');
+  const restore = listen.indexOf('restoreGenerationQueue()');
+  assert.ok(promote > 0 && noAdmin > 0 && restore > 0, 'all three are in the listen callback');
+  assert.ok(promote < restore, 'promotion first');
+  assert.ok(noAdmin < restore, 'and the warning that depends on it');
 });

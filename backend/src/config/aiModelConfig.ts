@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto';
 
-import { getSetting, getSettingRaw, setSetting } from '../database/settingsRepository';
-import { SETTINGS_BACKUP_KEY as BROWSER_CHAT_SNAPSHOT_KEY } from '../database/migrations/006_remove_browser_chat';
+import { getSetting, getSettingFamilyRaw, getSettingRaw, setSetting } from '../database/settingsRepository';
+import {
+  MIGRATION_LOG_KEY as BROWSER_CHAT_LOG_KEY,
+  SETTINGS_BACKUP_KEY as BROWSER_CHAT_SNAPSHOT_KEY,
+} from '../database/migrations/006_remove_browser_chat';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
 import { CODEX_DEFAULT_MODEL } from '../services/ai/providers/codexCli/options';
@@ -687,7 +690,8 @@ function normalizeAIModelProvider(value: unknown): AIProvider | null {
 }
 
 /**
- * Ids of stored model records dropped on read because their provider is retired.
+ * Ids of model records that ran on a retired provider: dropped on read, or
+ * deleted by migration 006.
  *
  * Remembered so that a reference to one - a profile's stored preference, a
  * request from a page loaded before the upgrade - is recognised as naming a
@@ -695,16 +699,70 @@ function normalizeAIModelProvider(value: unknown): AIProvider | null {
  * that "was not found". The shipped ids are listed in `RETIRED_MODEL_IDS`; this
  * covers the ones an administrator created, whose ids are random UUIDs.
  *
- * Only for the life of the process, and only ever added to. That is enough
- * while the records are still in the row, which is exactly while a reference to
- * one can be outstanding: migration 006 clears the references in the same pass
- * that deletes the records, and it runs before an administrator's first save
- * could normalize them away - on the boot or the sign-in that makes the first
- * administrator (see `applyConfiguredAdmins`). It deliberately does not grow
+ * Two sources, because a reference outlives the record it names. A read that
+ * finds such a record notes its id; and 006, which deletes the records at boot -
+ * usually before anything has read them - logs the ids it removed, which
+ * `learnRemovedModelIds` reads back. A builder tab left open across the
+ * upgrade, or a profile editor loaded before it that saves its old choice
+ * again, sends one long after the row is clean and the process that saw the
+ * record has restarted. Only ever added to, and it deliberately does not grow
  * into "any id that is missing falls back" - a model an administrator deleted
  * is still an error.
  */
 const droppedRetiredModelIds = new Set<string>();
+
+function isLogEntry(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Every run migration 006 has logged, oldest first: the first run's entry, the
+ * later runs appended to it, and any run logged under a dated key of its own.
+ * Read as data: an entry that is not an object is skipped, and a log row that
+ * does not parse reads as no log at all.
+ */
+function removalMigrationRuns(): Array<Record<string, unknown>> {
+  let values: string[];
+  try {
+    values = getSettingFamilyRaw(BROWSER_CHAT_LOG_KEY);
+  } catch {
+    return [];
+  }
+  const runs: Array<Record<string, unknown>> = [];
+  for (const raw of values) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!isLogEntry(parsed)) continue;
+    runs.push(parsed);
+    if (Array.isArray(parsed.laterRuns)) runs.push(...parsed.laterRuns.filter(isLogEntry));
+  }
+  return runs.sort((left, right) => String(left.at ?? '').localeCompare(String(right.at ?? '')));
+}
+
+/** Database paths whose 006 log has been read into `droppedRetiredModelIds`. */
+const learnedRemovalLogs = new Set<string>();
+
+/**
+ * Reads the model ids 006 removed into `droppedRetiredModelIds`, once per
+ * database a log exists for. Looked for again on each uncached settings read
+ * until there is one, because 006 can run in this process after its first read
+ * - on the sign-in or the promotion that makes the first administrator.
+ */
+function learnRemovedModelIds(path: string): void {
+  if (learnedRemovalLogs.has(path)) return;
+  const runs = removalMigrationRuns();
+  for (const run of runs) {
+    if (!Array.isArray(run.removedModelIds)) continue;
+    for (const id of run.removedModelIds) {
+      if (typeof id === 'string' && id.trim()) droppedRetiredModelIds.add(id.trim());
+    }
+  }
+  if (runs.length > 0) learnedRemovalLogs.add(path);
+}
 
 /**
  * One line per kind of browser chat residue, however many reads find it.
@@ -959,18 +1017,59 @@ function normalizeBoundedInteger(
 
 
 /**
- * Whether a stored row is one the browser chat removal may have left with
- * nothing to run on: it still names a browser provider, or migration 006
- * cleaned it - which the snapshot 006 keeps of every row it rewrote says, long
- * after the row itself stopped saying it.
+ * Whether the row still runs on exactly what migration 006 left it running on,
+ * as its log records: every provider switched on or off as it was, and the same
+ * models switched on. Saves that change nothing of that - the default mode,
+ * prices, the API key store the reader removes - leave it 006's row.
+ */
+function stillRunsAsMigrationLeftIt(
+  left: Record<string, unknown>,
+  providersEnabled: ProvidersEnabled,
+  aiModels: AIModelRecord[]
+): boolean {
+  const flags = isLogEntry(left.providersEnabled) ? left.providersEnabled : {};
+  // Only the providers the run recorded: one added to the catalog since reads
+  // as its default, which is not a choice anybody made.
+  if (AI_PROVIDER_IDS.some((id) => typeof flags[id] === 'boolean' && flags[id] !== providersEnabled[id])) {
+    return false;
+  }
+  const enabledIds = (models: AIModelRecord[]): string[] =>
+    models.filter((model) => model.enabled).map((model) => model.id).sort();
+  // null: the row had no list of its own, and inherited the seed models.
+  const was = Array.isArray(left.enabledModelIds)
+    ? left.enabledModelIds.filter((id): id is string => typeof id === 'string').sort()
+    : enabledIds(DEFAULT_MODEL_RECORDS);
+  const now = enabledIds(aiModels);
+  return was.length === now.length && was.every((id, index) => id === now[index]);
+}
+
+/**
+ * What makes a stored row that can run nothing the browser chat removal's
+ * doing, if anything does:
+ *
+ *   - 'residue': the row still names a browser provider. 006 has not reached
+ *     it, or a restored backup put the names back.
+ *   - 'migrated': 006 rewrote it - the snapshot 006 keeps of every row it
+ *     rewrote says so long after the row stops saying it - and it still runs on
+ *     exactly what 006 left it on. A lock added since leaves 006's row with
+ *     nothing, and that is still 006's to answer for.
+ *   - null: anything else, an administrator's own choice saved after 006
+ *     among them. A lock that leaves THAT with nothing is theirs to answer,
+ *     and the assert names it, as it does on an install that never ran browser
+ *     chat; repairing it would quietly switch back on - and bill - a provider
+ *     they had switched off.
  *
  * Asked only once a row has already failed to offer anything runnable, so the
- * extra read costs nothing on any read that succeeds.
+ * extra reads cost nothing on any read that succeeds.
  */
-function rowRanRetiredProviders(source: Record<string, unknown>): boolean {
+function retiredProviderTrace(
+  source: Record<string, unknown>,
+  providersEnabled: ProvidersEnabled,
+  aiModels: AIModelRecord[]
+): 'residue' | 'migrated' | null {
   const flags = source.providersEnabled;
   if (typeof flags === 'object' && flags !== null && Object.keys(flags).some((key) => isRetiredProviderId(key))) {
-    return true;
+    return 'residue';
   }
   if (
     Array.isArray(source.aiModels) &&
@@ -981,13 +1080,19 @@ function rowRanRetiredProviders(source: Record<string, unknown>): boolean {
         isRetiredProviderId((entry as Record<string, unknown>).provider)
     )
   ) {
-    return true;
+    return 'residue';
   }
   try {
-    return getSettingRaw(BROWSER_CHAT_SNAPSHOT_KEY) !== null;
+    if (getSettingRaw(BROWSER_CHAT_SNAPSHOT_KEY) === null) return null;
   } catch {
-    return false;
+    return null;
   }
+  const left = [...removalMigrationRuns()].reverse().find((run) => isLogEntry(run.leftRunning))?.leftRunning;
+  // A 006 that recorded no such thing ran on a build before this one, which
+  // only ever existed on its own development branch. Its row is taken as
+  // untouched, as every 006 row was before the log said otherwise.
+  if (!isLogEntry(left)) return 'migrated';
+  return stillRunsAsMigrationLeftIt(left, providersEnabled, aiModels) ? 'migrated' : null;
 }
 
 /**
@@ -1003,22 +1108,34 @@ function rowRanRetiredProviders(source: Record<string, unknown>): boolean {
  * switched on, and given a model that runs:
  *
  *   - not locked here - a locked seat switched on would repair nothing;
- *   - a keyless seat before a metered API, so the repair does not start billing;
+ *   - a seat, or a metered API the row has a model of its own for;
+ *   - a keyless seat before a metered API, so the repair does not start
+ *     billing; and a metered API whose key is set here before one whose key is
+ *     not, which would repair nothing either - so the key counts for more than
+ *     anything below it;
  *   - one the operator left switched on before one that has to be switched on,
- *     and one with a model already switched on before one without;
+ *     and one with a model already switched on before one without; catalog
+ *     order after that;
  *   - a seat's missing seed models added and, failing that, one of its own
- *     switched back on; a metered API's own model switched back on, and its
- *     seeds only when it has none.
+ *     switched back on; a metered API's own model switched back on.
  *
- * That is the repair migration 006 writes, made for the reason 001 switched the
- * seat on for an install that had run only on OpenRouter - and it is needed
- * after 006 too, because a lock can be added at any time and 006 runs once.
+ * That is the repair migration 006 writes, with one step more. 006 adds no
+ * key-billed model nobody chose, so with both seats locked and no metered model
+ * left in the row it leaves the row as it is. Here, only then, every metered
+ * API is considered by the same order and the one chosen is given its seed
+ * models - in memory, because a row that cannot be read at all takes down the
+ * pages that would repair it. 006 never stores them; an administrator's save is
+ * what keeps them. It is made for the reason 001 switched the seat on for an
+ * install that had run only on OpenRouter - and it is needed after 006 too,
+ * because a lock can be added at any time and 006 runs once.
  *
- * Only for a row that ran browser chat (`rowRanRetiredProviders`). Any other
- * row an operator left with nothing runnable - every provider they ticked
- * since locked in .env - still fails by name, pointing at the lock they set,
- * which is the place to undo it. And nothing is possible when every provider
- * is locked: the assert names the locks.
+ * Only for a row the removal answers for (`retiredProviderTrace`): one that
+ * still names a browser provider, or the row 006 left, unchanged since. Any
+ * other row an operator left with nothing runnable - every provider they ticked
+ * since locked in .env, after an administrator's save that followed 006 too -
+ * still fails by name, pointing at the lock they set, which is the place to
+ * undo it. And nothing is possible when every provider is locked: the assert
+ * names the locks.
  *
  * In memory only. Nothing here writes; 006, or the next save from the admin
  * page, persists it - so 006 still finds the residue and snapshots the row
@@ -1034,17 +1151,28 @@ function rescueRetiredProviderRow(
   if (anyProvider && getRunnableModels({ providersEnabled, aiModels }).length > 0) {
     return aiModels;
   }
-  if (!rowRanRetiredProviders(source)) {
+  const trace = retiredProviderTrace(source, providersEnabled, aiModels);
+  if (!trace) {
     return aiModels;
   }
 
-  // Lowest first, catalog order breaking ties: keyless over metered, then
-  // switched on over off, then one with a model already switched on.
+  // Lowest first, catalog order breaking ties: keyless, then metered with its
+  // key set here, then metered without; then switched on over off, then one
+  // with a model already switched on.
   const rank = (id: AIProvider): number =>
-    (providerRequiresApiKey(id) ? 4 : 0) +
+    (providerRequiresApiKey(id) ? (getEnvironmentApiKey(id) ? 4 : 8) : 0) +
     (providersEnabled[id] === true ? 0 : 2) +
     (aiModels.some((model) => model.provider === id && model.enabled) ? 0 : 1);
-  const target = AI_PROVIDER_IDS.filter((id) => !isProviderLocked(id)).sort((a, b) => rank(a) - rank(b))[0];
+  // From the providers 006 chooses among: a metered API only when the row has
+  // a model of its own for it. Otherwise a key set for an API the row has no
+  // model for would win here and lose in 006, and the install would change
+  // provider the moment its first administrator let 006 run. Only when none
+  // qualifies does this take its one step further, and consider them all.
+  const unlocked = AI_PROVIDER_IDS.filter((id) => !isProviderLocked(id));
+  const qualified = unlocked.filter(
+    (id) => !providerRequiresApiKey(id) || aiModels.some((model) => model.provider === id)
+  );
+  const target = (qualified.length > 0 ? qualified : unlocked).sort((a, b) => rank(a) - rank(b))[0];
   if (!target) {
     return aiModels;
   }
@@ -1060,7 +1188,8 @@ function rescueRetiredProviderRow(
     const own = () => rescued.filter((model) => model.provider === target);
     // A seat gets its missing seed models, as 006 gives it them; a metered API
     // that already has models of its own gets one of THOSE back rather than
-    // key-billed models nobody added. By id AND by provider and model name: the
+    // key-billed models nobody added, and one with none - the step further than
+    // 006, above - gets its seeds. By id AND by provider and model name: the
     // reader refuses two records for one pair, so a seed beside a record the
     // operator created under their own id would break the row it is repairing.
     if (!providerRequiresApiKey(target) || own().length === 0) {
@@ -1095,11 +1224,23 @@ function rescueRetiredProviderRow(
   }
 
   const locked = listLockedProviderIds();
+  const lockedHere = locked.length ? ` (locked here: ${locked.join(', ')})` : '';
+  // About the lock when the row no longer names a browser provider: that is
+  // what changed, and the browsers are only why the row is 006's.
+  const cause =
+    trace === 'residue'
+      ? `Nothing in the stored settings can run on this machine without the removed browser chat providers${lockedHere}`
+      : `Nothing the stored settings switch on can run on this machine${lockedHere}, and they are still what ` +
+        'migration 006 left when it removed the browser chat providers';
+  const envKeyVar = getProviderDescriptor(target).envKeyVar;
+  const billing = !providerRequiresApiKey(target)
+    ? ''
+    : getEnvironmentApiKey(target)
+      ? ' It bills per token.'
+      : ` No ${envKeyVar} is set either, so every generation fails until one is set in .env or a seat is unlocked.`;
   warnRetiredResidueOnce(
     `rescued:${target}`,
-    '[ai] Nothing in the stored settings can run on this machine without the removed browser chat ' +
-      `providers${locked.length ? ` (locked here: ${locked.join(', ')})` : ''}; reading ` +
-      `"${getCatalogProviderLabel(target)}" as ` +
+    `[ai] ${cause}; reading "${getCatalogProviderLabel(target)}" as ` +
       [
         switchedOn ? 'switched on' : '',
         added.length ? `given its models (${added.join(', ')})` : '',
@@ -1107,7 +1248,7 @@ function rescueRetiredProviderRow(
       ]
         .filter(Boolean)
         .join(', ') +
-      ' instead. Review it under Admin -> Settings and Admin -> Models, and save to keep it.'
+      ` instead.${billing} Review it under Admin -> Settings and Admin -> Models, and save to keep it.`
   );
   return rescued;
 }
@@ -1404,6 +1545,9 @@ async function readSettings(): Promise<AppSettings> {
     return cached.value;
   }
 
+  // Before anything resolves a model id against what this returns: every path
+  // that does reads settings first.
+  learnRemovedModelIds(path);
   const stored = getSetting<unknown>(APP_SETTINGS_KEY);
   if (stored === null) {
     const defaults = cloneDefaultSettings();

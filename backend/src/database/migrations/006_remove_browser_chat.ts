@@ -36,10 +36,11 @@ import type Database from 'better-sqlite3';
  *      browser-mode switch and debug-browser list go. A default that named one of
  *      them is repointed, and an install left with no enabled provider or no
  *      runnable model gets one back - a subscription seat where one is not
- *      locked on this machine. A snapshot of the row is taken first, once, under
- *      `SETTINGS_BACKUP_KEY`: verbatim, apart from any API key store an older
- *      release left in it, which the settings reader deletes from the row and
- *      which must not outlive it here.
+ *      locked on this machine, else a metered API it already has a model for,
+ *      the one whose key is set first. A snapshot of the row is taken first,
+ *      once, under `SETTINGS_BACKUP_KEY`: verbatim, apart from any API key
+ *      store an older release left in it, which the settings reader deletes
+ *      from the row and which must not outlive it here.
  *   2. Prompts. A model override naming a removed provider is cleared - cleared
  *      means "use the model chosen for the run" - after the row is copied into
  *      `PROMPTS_BACKUP_TABLE`.
@@ -80,14 +81,16 @@ const RETIRED_SETTINGS_KEYS = ['browserChatEnabled', 'browserChatEndpoints', 'br
  * The providers this build runs, and the flat flag an older row may carry for
  * each. Needed to decide whether anything is still switched on, the way the
  * settings reader decides it: a provider with no entry in `providersEnabled`
- * reads its flat flag, and with neither it reads as ON.
+ * reads its flat flag, and with neither it reads as ON. A metered provider
+ * names the variable its key comes from, because one with no key repairs
+ * nothing - every call on it fails.
  */
-const PROVIDERS: ReadonlyArray<{ id: string; legacyFlags: string[]; keyless: boolean }> = [
+const PROVIDERS: ReadonlyArray<{ id: string; legacyFlags: string[]; keyless: boolean; envKey?: string }> = [
   { id: 'claude-cli', legacyFlags: ['claudeCliEnabled', 'openrouterEnabled'], keyless: true },
   { id: 'codex-cli', legacyFlags: [], keyless: true },
-  { id: 'claude', legacyFlags: ['claudeEnabled'], keyless: false },
-  { id: 'openai', legacyFlags: ['openaiEnabled'], keyless: false },
-  { id: 'deepseek', legacyFlags: ['deepseekEnabled'], keyless: false },
+  { id: 'claude', legacyFlags: ['claudeEnabled'], keyless: false, envKey: 'ANTHROPIC_API_KEY' },
+  { id: 'openai', legacyFlags: ['openaiEnabled'], keyless: false, envKey: 'OPENAI_API_KEY' },
+  { id: 'deepseek', legacyFlags: ['deepseekEnabled'], keyless: false, envKey: 'DEEPSEEK_API_KEY' },
 ];
 
 const SEAT_DEFAULT_MODEL_ID = 'claude-cli-sonnet';
@@ -148,12 +151,13 @@ const SEAT_SEEDS: Readonly<Record<string, { defaultModelName: string; models: Se
  * The provider lock, read the way config/providerCatalog reads it: two env
  * lists, comma or space separated, with the unlock winning.
  *
- * The one machine fact this reads, and it has to. A lock is how an operator
- * says a seat cannot run here, and a repair that switched on - or repointed the
- * default onto - a locked seat would write a row the settings reader still
- * refuses, then stamp the version so nothing ever looked at it again. Spelled
- * out rather than imported, by the rule every migration here keeps. No provider
- * is locked by the catalog itself, so the environment is the whole answer.
+ * One of the two machine facts this reads, and it has to. A lock is how an
+ * operator says a seat cannot run here, and a repair that switched on - or
+ * repointed the default onto - a locked seat would write a row the settings
+ * reader still refuses, then stamp the version so nothing ever looked at it
+ * again. Spelled out rather than imported, by the rule every migration here
+ * keeps. No provider is locked by the catalog itself, so the environment is the
+ * whole answer.
  */
 function envProviderList(name: string): Set<string> {
   const raw = process.env[name];
@@ -169,6 +173,18 @@ function envProviderList(name: string): Set<string> {
 function lockedHere(id: string): boolean {
   if (envProviderList('AI_UNLOCKED_PROVIDERS').has(id)) return false;
   return envProviderList('AI_LOCKED_PROVIDERS').has(id);
+}
+
+/**
+ * The other machine fact: whether a metered provider has its key here. Keys
+ * come from the environment only, read the way the settings reader reads them.
+ * With both seats locked the repair has to pick a metered API, and the one
+ * whose key is set is the one that runs; picking by list order alone stored the
+ * Anthropic API on a box that only had an OpenAI key, and every generation
+ * failed on the missing key.
+ */
+function keyedHere(provider: (typeof PROVIDERS)[number]): boolean {
+  return Boolean(provider.envKey && process.env[provider.envKey]?.trim());
 }
 
 type Json = Record<string, unknown>;
@@ -325,6 +341,18 @@ export type BrowserChatRemovalReport = {
   clearedPromptOverrides: number;
   /** Profiles whose stored model preference was cleared, and what it was. */
   clearedProfilePreferences: Array<{ profileId: string; modelId: string }>;
+  /**
+   * What the run left the settings row running on, or null when it did not
+   * rewrite the row: every provider's switch as the settings reader will read
+   * it, and the ids of the models left switched on, sorted - null there when
+   * the row has no list of its own and inherits the seed models.
+   *
+   * Kept in the log because the reader repairs a row that can run nothing only
+   * while it is still the row this left. Once an administrator has changed
+   * which providers or models are on, a lock added later is theirs to answer,
+   * and the reader names it rather than undo their choice.
+   */
+  leftRunning: { providersEnabled: Record<string, boolean>; enabledModelIds: string[] | null } | null;
   notes: string[];
 };
 
@@ -466,13 +494,14 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
     usable(model.provider);
 
   /**
-   * The provider to bring back: one not locked here; a keyless seat before a
-   * metered API; one already switched on before one that has to be; one with a
-   * model already switched on before one without; catalog order after that.
-   * The settings reader repairs a row it reads by the same rule. A metered
-   * provider qualifies only when the row already has a model for it, because
-   * this never adds a key-billed model nobody chose - only switches one of
-   * theirs back on.
+   * The provider to bring back: one not locked here; a keyless seat, then a
+   * metered API whose key is set here, then one whose key is not; one already
+   * switched on before one that has to be; one with a model already switched
+   * on before one without; catalog order after that. A key outranks the
+   * operator's switch, because a metered API with no key repairs nothing. The
+   * settings reader repairs a row it reads by the same rule. A metered provider
+   * qualifies only when the row already has a model for it, because this never
+   * adds a key-billed model nobody chose - only switches one of theirs back on.
    */
   const repairTarget = (): string | null => {
     const ownModels = (id: string): Json[] =>
@@ -482,16 +511,26 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
         !lockedHere(provider.id) && (provider.keyless || !hasExplicitModels || ownModels(provider.id).length > 0)
     );
     const rank = (provider: (typeof PROVIDERS)[number]): number =>
-      (provider.keyless ? 0 : 4) +
+      (provider.keyless ? 0 : keyedHere(provider) ? 4 : 8) +
       (providerOn(settings, providersEnabled, provider.id) ? 0 : 2) +
       (!hasExplicitModels || ownModels(provider.id).some((model) => model.enabled !== false) ? 0 : 1);
     return [...candidates].sort((a, b) => rank(a) - rank(b))[0]?.id ?? null;
   };
 
+  /** What the note says about a metered provider's key; nothing for a seat. */
+  const keyNote = (id: string): string => {
+    const provider = PROVIDERS.find((entry) => entry.id === id);
+    if (!provider || provider.keyless) return '';
+    return keyedHere(provider)
+      ? ` It bills per token, on the ${provider.envKey} set in .env.`
+      : ` No ${provider.envKey} is set in .env, so it cannot run until one is - and nothing else here can.`;
+  };
+
   const lockedNote =
     'nothing this migration may bring back can run on this machine - the subscription seats are locked ' +
     '(AI_LOCKED_PROVIDERS), and it adds no metered model nobody chose - so the row was left that way. The ' +
-    'settings reader repairs it in memory where it can, and names the locks where it cannot.';
+    'settings reader repairs it in memory where it can - adding a metered API\'s own models there, which ' +
+    'this never stores - and names the locks where it cannot.';
 
   if (!PROVIDERS.some((provider) => usable(provider.id))) {
     const target = repairTarget();
@@ -499,7 +538,7 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
       switchOn(target);
       report.notes.push(
         'No provider this machine can run would have been left enabled once the browser chat providers ' +
-          `were removed, so ${target} was switched on. Review it under Admin > Settings.`
+          `were removed, so ${target} was switched on. Review it under Admin > Settings.${keyNote(target)}`
       );
     } else {
       report.notes.push(`No provider would have been left enabled, and ${lockedNote}`);
@@ -547,7 +586,7 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
         'No model this machine can run would have been left once the browser chat models were removed, ' +
           `so ${target}'s models were restored (${report.seededModels} added` +
           (report.reenabledModels.length ? `, ${report.reenabledModels.join(', ')} switched back on` : '') +
-          '). Review them under Admin > Models.'
+          `). Review them under Admin > Models.${keyNote(target)}`
       );
     } else {
       report.notes.push(`No model would have been left runnable, and ${lockedNote}`);
@@ -570,19 +609,25 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
   //    fallback takes the first runnable model in list order - which on an
   //    upgraded install can be a metered API model, quietly billing tokens for
   //    a default nobody chose. The Claude seat's default model first, then any
-  //    keyless model, and a metered one only when nothing else can run - all of
-  //    them models this machine can run, so a locked Claude seat lands on the
-  //    Codex seat, as a fresh install with that lock does.
+  //    keyless model, and a metered one only when nothing else can run - one
+  //    whose key is set before one whose key is not - all of them models this
+  //    machine can run, so a locked Claude seat lands on the Codex seat, as a
+  //    fresh install with that lock does.
   const currentDefault = typeof settings.defaultModelId === 'string' ? settings.defaultModelId.trim() : '';
   if (currentDefault && (RETIRED_MODEL_IDS.has(currentDefault) || removedIds.has(currentDefault))) {
     let replacement = '';
     if (hasExplicitModels) {
       const candidates = models.filter(runnable);
-      const keyless = (model: Json): boolean =>
-        PROVIDERS.some((provider) => provider.id === model.provider && provider.keyless);
+      const providerOf = (model: Json) => PROVIDERS.find((provider) => provider.id === model.provider);
+      const keyless = (model: Json): boolean => providerOf(model)?.keyless === true;
+      const keyed = (model: Json): boolean => {
+        const provider = providerOf(model);
+        return provider !== undefined && keyedHere(provider);
+      };
       const pick =
         candidates.find((model) => modelIdOf(model) === SEAT_DEFAULT_MODEL_ID) ??
         candidates.find(keyless) ??
+        candidates.find(keyed) ??
         candidates[0];
       replacement = pick ? modelIdOf(pick) : '';
     } else {
@@ -604,6 +649,18 @@ function migrateSettings(db: Database.Database, report: BrowserChatRemovalReport
     }
     report.repointedDefaultModel = { from: currentDefault, to: replacement };
   }
+
+  report.leftRunning = {
+    providersEnabled: Object.fromEntries(
+      PROVIDERS.map((provider) => [provider.id, providerOn(settings, providersEnabled, provider.id)])
+    ),
+    enabledModelIds: hasExplicitModels
+      ? models
+          .filter((model): model is Json => isObject(model) && model.enabled !== false)
+          .map((model) => modelIdOf(model))
+          .sort()
+      : null,
+  };
 
   db.prepare(
     `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
@@ -659,6 +716,12 @@ function migrateProfiles(db: Database.Database, report: BrowserChatRemovalReport
  * the earlier profiles already clean; a report that replaced the first would
  * lose what they were for good. A log row somebody edited into something that
  * is not an object is left alone, and the run goes under its own dated key.
+ *
+ * The settings reader reads it as well, every entry of it: the model ids each
+ * run removed - so a page left open from before the upgrade that names an
+ * administrator's own browser model still runs on the default after a restart,
+ * when the record itself is long gone - and what the latest run that rewrote
+ * the row left it running on.
  */
 function writeMigrationLog(db: Database.Database, report: BrowserChatRemovalReport): void {
   const at = new Date().toISOString();
@@ -710,6 +773,7 @@ export function migrate006(db: Database.Database): BrowserChatRemovalReport {
     repointedDefaultModel: null,
     clearedPromptOverrides: 0,
     clearedProfilePreferences: [],
+    leftRunning: null,
     notes: [],
   };
 
