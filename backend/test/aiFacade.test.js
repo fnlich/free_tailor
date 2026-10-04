@@ -43,8 +43,6 @@ function stubAdapter(overrides = {}) {
       maxOutputTokens: false,
       nativeJsonMode: 'json-schema',
       systemBlocks: true,
-      requiresApiKey: false,
-      credentialKind: 'subscription-seat',
       maxConcurrency: 4,
       ...overrides.capabilities,
     },
@@ -156,8 +154,8 @@ test('a provider with no system channel gets the instructions exactly once, not 
 
 test('a provider with no JSON mode is asked for sentinels; one that enforces JSON is not', async () => {
   // The instruction is chosen by what the TRANSPORT can enforce, not by its
-  // name. One that enforces nothing (nativeJsonMode 'none' - the metered
-  // Anthropic API today) needs the long instruction plus the markers the
+  // name. One that enforces nothing (nativeJsonMode 'none' - a CLI with no
+  // structured-output flag) needs the long instruction plus the markers the
   // extractor keys on. One with a native JSON mode is already constrained, and
   // asking IT for sentinels would put them inside the JSON it is obliged to
   // emit - turning the one output guaranteed to parse into one guaranteed not to.
@@ -188,11 +186,9 @@ test('a provider with no JSON mode is asked for sentinels; one that enforces JSO
   assert.match(unenforced, /No preamble/i, 'and told not to narrate, which is what it does by default');
   assert.match(unenforced, /trailing commas/i);
 
-  for (const nativeJsonMode of ['json-schema', 'response_format']) {
-    const enforced = await run({ nativeJsonMode });
-    assert.equal(enforced.includes(JSON_BEGIN_SENTINEL), false, `${nativeJsonMode} is not asked for sentinels`);
-    assert.match(enforced, /valid JSON only/);
-  }
+  const enforced = await run({ nativeJsonMode: 'json-schema' });
+  assert.equal(enforced.includes(JSON_BEGIN_SENTINEL), false, 'json-schema is not asked for sentinels');
+  assert.match(enforced, /valid JSON only/);
 });
 
 test('a prompt with no variables at all still produces a non-empty user turn', async () => {
@@ -300,8 +296,8 @@ test('a prompt record model override beats the caller, and a stale provider id s
   await ai.createPromptCompletion({
     promptId: 'analyze-job-description',
     promptValues: { jobDescription: 'A job' },
-    fallbackProvider: 'openai',
-    fallbackModelName: 'gpt-5.1',
+    fallbackProvider: 'codex-cli',
+    fallbackModelName: 'default',
     useExactPromptId: true,
   });
 
@@ -318,7 +314,7 @@ test('a disabled provider is refused with a status a route can act on', async ()
   // a second copy would write settings the facade never sees.
   const config = require('../dist/config/aiModelConfig');
   await config.updateAppSettings({
-    providersEnabled: { 'claude-cli': false, claude: true, openai: true, deepseek: true },
+    providersEnabled: { 'claude-cli': false, 'codex-cli': true },
   });
 
   const ai = loadAi();
@@ -337,71 +333,21 @@ test('a disabled provider is refused with a status a route can act on', async ()
   );
 });
 
-test('a metered API with no key says which key to set, and never names the Claude seat', async () => {
-  // Every provider shared the Claude seat's sentences, so a missing OpenAI key
-  // told the person to sign the Claude subscription in, and the advice said to
-  // add the key under Admin -> Settings, which has had no key panel since keys
-  // moved to the environment.
+test("each seat's failures name what that seat needs, never another seat's", async () => {
+  // Every provider shared the Claude seat's sentences once, so a signed-out
+  // Codex seat told the person to sign the Claude subscription in - on an
+  // install where that seat may well be locked.
   const ai = loadAi();
   const { describeAiError } = require('../dist/middleware/aiErrors');
-  const { createAnthropicHttpAdapter } = require('../dist/services/ai/providers/anthropicHttp');
-  const { createOpenAICompatibleAdapter } = require('../dist/services/ai/providers/openaiCompatible');
-  const names = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY'];
-  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-  for (const name of names) delete process.env[name];
 
-  const request = {
-    modelName: 'm',
-    stableSystem: '',
-    volatileSystem: '',
-    userBody: 'write something',
-    responseFormat: 'text',
-    sampling: {},
-    deadline: { remainingMs: () => 60_000 },
-    callSite: 'probe',
-  };
-  try {
-    for (const [provider, adapter, envVar] of [
-      ['claude', createAnthropicHttpAdapter({ defaultModel: 'claude-sonnet-4-20250514' }), 'ANTHROPIC_API_KEY'],
-      [
-        'openai',
-        createOpenAICompatibleAdapter({ id: 'openai', defaultModel: 'gpt-5.1', tokenLimitField: 'max_completion_tokens' }),
-        'OPENAI_API_KEY',
-      ],
-      [
-        'deepseek',
-        createOpenAICompatibleAdapter({ id: 'deepseek', defaultModel: 'deepseek-chat', tokenLimitField: 'max_tokens' }),
-        'DEEPSEEK_API_KEY',
-      ],
-    ]) {
-      const error = await adapter.complete(request).then(
-        () => assert.fail(`${provider} ran with no key`),
-        (failure) => failure
-      );
-      const described = describeAiError(error);
-      assert.equal(described.body.provider, provider);
-      assert.equal(described.body.code, 'auth');
-      assert.match(described.body.error, new RegExp(envVar), `${provider} names its own key`);
-      assert.doesNotMatch(described.body.error, /Claude|claude auth/);
-      assert.match(described.body.adminAction, new RegExp(`${envVar} in the root \\.env`));
-      assert.doesNotMatch(described.body.adminAction, /Admin -> Settings/);
-    }
-
-    // A key the API refuses, and a 429, reach the same kinds and read the same.
-    for (const kind of ['auth', 'rateLimited']) {
-      const described = describeAiError(new ai.AIProviderError({ provider: 'openai', kind, detail: 'HTTP' }));
-      assert.match(described.body.error, /OpenAI API/);
-      assert.doesNotMatch(described.body.error, /Claude/);
-    }
-    // And the Claude seat keeps the sentences that were always its own.
-    const seat = describeAiError(new ai.AIProviderError({ provider: 'claude-cli', kind: 'auth' }));
-    assert.match(seat.body.error, /claude auth login/);
-  } finally {
-    for (const name of names) {
-      if (saved[name] === undefined) delete process.env[name];
-      else process.env[name] = saved[name];
-    }
+  for (const kind of ['auth', 'rateLimited', 'binaryMissing']) {
+    const described = describeAiError(new ai.AIProviderError({ provider: 'codex-cli', kind, detail: 'x' }));
+    assert.match(described.body.error, /Codex/, kind);
+    assert.doesNotMatch(described.body.error, /Claude|claude auth/, kind);
   }
+  // And the Claude seat keeps the sentences that were always its own.
+  const seat = describeAiError(new ai.AIProviderError({ provider: 'claude-cli', kind: 'auth' }));
+  assert.match(seat.body.error, /claude auth login/);
 });
 
 test('an explicitly registered adapter wins, and the other providers still exist', async () => {
@@ -414,7 +360,11 @@ test('an explicitly registered adapter wins, and the other providers still exist
 
   const capabilities = ai.listProviderCapabilities();
   const ids = capabilities.map((entry) => entry.id).sort();
-  assert.deepEqual(ids, ['claude', 'claude-cli', 'codex-cli', 'deepseek', 'openai']);
+  // The subscription seats, and nothing else: the metered APIs are retired.
+  assert.deepEqual(ids, ['claude-cli', 'codex-cli', 'gemini-cli']);
+  for (const entry of capabilities) {
+    assert.equal('requiresApiKey' in entry, false, `${entry.id} has no key to require`);
+  }
   assert.equal(
     capabilities.find((entry) => entry.id === 'claude-cli').label,
     'stub',

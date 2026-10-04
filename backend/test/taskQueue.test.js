@@ -25,6 +25,10 @@ function codexSlots(count) {
   return Array.from({ length: count }, (_, index) => ({ id: `codex${index}`, queue: 'codex' }));
 }
 
+function geminiSlots(count) {
+  return Array.from({ length: count }, (_, index) => ({ id: `gemini${index}`, queue: 'gemini' }));
+}
+
 /**
  * A queue whose capacity is fixed, and a recorder for what ran where.
  *
@@ -392,8 +396,39 @@ test('the two CLI lanes do not take each other\'s work', async () => {
  * run.
  */
 test('the stats name exactly the lanes this build has', () => {
-  const harnessed = harness({ cli: cliSlots(2), codex: codexSlots(1) });
-  assert.deepEqual(Object.keys(harnessed.queue.stats()).sort(), ['cli', 'codex']);
+  const harnessed = harness({ cli: cliSlots(2), codex: codexSlots(1), gemini: geminiSlots(1) });
+  assert.deepEqual(Object.keys(harnessed.queue.stats()).sort(), ['cli', 'codex', 'gemini']);
+});
+
+test('the Gemini lane drains on its own slots, and its tasks say they run on the Gemini seat', async () => {
+  // A third seat with its own semaphore: a lane of its own, never filled from
+  // another seat's slots, and a running task reports the seat its lane is for
+  // rather than falling through to the Claude seat.
+  const harnessed = harness({ cli: cliSlots(1), codex: [], gemini: geminiSlots(2) });
+  const batch = harnessed.queue.submit([
+    harnessed.task('gemini-0', { queue: 'gemini' }),
+    harnessed.task('gemini-1', { queue: 'gemini' }),
+    harnessed.task('gemini-2', { queue: 'gemini' }),
+    harnessed.task('cli-0'),
+  ]);
+  await harnessed.queue.refreshCapacity();
+  await settle();
+
+  const where = Object.fromEntries(harnessed.started.map((entry) => [entry.label, entry.on]));
+  assert.deepEqual(Object.keys(where).sort(), ['cli-0', 'gemini-0', 'gemini-1'], 'each lane at its own width');
+  assert.equal(where['gemini-0'], 'gemini');
+  const runningOn = Object.fromEntries(
+    harnessed.queue
+      .snapshot(batch.id)
+      .tasks.filter((task) => task.state === 'running')
+      .map((task) => [task.profileName, task.runningOn])
+  );
+  assert.deepEqual(runningOn, { 'gemini-0': 'gemini-cli', 'gemini-1': 'gemini-cli', 'cli-0': 'claude-cli' });
+  assert.equal(harnessed.queue.stats().gemini.queued, 1, 'the third waits for a Gemini slot, not a free Claude one');
+
+  harnessed.finish('gemini-0');
+  await settle();
+  assert.ok(harnessed.started.some((entry) => entry.label === 'gemini-2'), 'and takes the slot that freed');
 });
 
 test('a task naming a lane this build lacks runs on the cli lane rather than waiting for ever', async () => {

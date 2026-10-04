@@ -9,24 +9,18 @@ const APP_SETTINGS_KEY = 'app-settings';
 test('app settings persist in the SQLite settings table', async () => {
   const { rootDir, dbDir } = useTempStorage('settings');
   const outputDir = path.join(rootDir, 'generated-output');
-  process.env.OPENAI_API_KEY = '';
-  process.env.ANTHROPIC_API_KEY = '';
-  process.env.OPENROUTER_API_KEY = '';
-  process.env.DEEPSEEK_API_KEY = '';
   const config = loadFresh('../dist/config/aiModelConfig');
 
   const defaults = await config.getAdminAppSettings();
-  assert.equal(defaults.openaiEnabled, true);
-  assert.equal(defaults.deepseekEnabled, true);
+  assert.equal(defaults.claudeCliEnabled, true);
+  assert.equal(defaults.providersEnabled['codex-cli'], true);
   assert.equal(defaults.defaultMode, 'preview');
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), null);
 
   const updated = await config.updateAppSettings({
     providersEnabled: {
       'claude-cli': true,
-      claude: true,
-      openai: false,
-      deepseek: true,
+      'codex-cli': false,
     },
     defaultMode: 'generate',
     defaultTheme: 'dark',
@@ -46,18 +40,18 @@ test('app settings persist in the SQLite settings table', async () => {
     }],
   });
 
-  assert.equal(updated.providersEnabled.openai, false);
-  assert.equal(updated.providersEnabled.claude, true);
+  assert.equal(updated.providersEnabled['codex-cli'], false);
   assert.equal(updated.providersEnabled['claude-cli'], true);
-  assert.equal(updated.providersEnabled.deepseek, true);
-  // The flat booleans stay on the wire, derived, so a browser tab loaded
-  // before this release keeps working.
-  assert.equal(updated.openaiEnabled, false);
-  assert.equal(updated.claudeEnabled, true);
+  assert.deepEqual(Object.keys(updated.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
+  // The Claude seat's flat boolean stays on the wire, derived, so a browser
+  // tab loaded before this release keeps working. The metered APIs' went with
+  // them.
   assert.equal(updated.claudeCliEnabled, true);
-  assert.equal(updated.deepseekEnabled, true);
-  // A subscription-seat provider has no key at all.
-  assert.equal(await config.getProviderApiKey('claude-cli'), '');
+  for (const retired of ['claudeEnabled', 'openaiEnabled', 'deepseekEnabled']) {
+    assert.equal(retired in updated, false, retired);
+  }
+  // There is no key to fetch for anything any more.
+  assert.equal(typeof config.getProviderApiKey, 'undefined');
   assert.equal(updated.defaultMode, 'generate');
   assert.equal(updated.defaultTheme, 'dark');
   assert.equal(updated.outputBaseDir, outputDir);
@@ -93,20 +87,19 @@ test('reading settings does not rewrite an existing settings record', async () =
 
   writeSettingRaw(dbDir, APP_SETTINGS_KEY, originalJson);
 
-  process.env.OPENAI_API_KEY = '';
-  process.env.ANTHROPIC_API_KEY = '';
-  process.env.OPENROUTER_API_KEY = '';
-  process.env.DEEPSEEK_API_KEY = '';
   const config = loadFresh('../dist/config/aiModelConfig');
 
   const loaded = await config.getAdminAppSettings();
   assert.equal(loaded.outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
+  // The metered flags in it are residue the reader ignores - and does not
+  // clean up: that is migration 007's job, after it has snapshotted the row.
+  assert.deepEqual(Object.keys(loaded.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), originalJson);
 });
 
 // The one exception to the rule above, and the reason it is an exception:
 // leaving the row alone would leave secrets in the database that nothing can
-// read, manage or remove now that the app keys metered providers from .env.
+// read, manage or remove - the app uses no API key at all any more.
 test('a settings row holding API keys is rewritten once, without them', async () => {
   const { rootDir, dbDir } = useTempStorage('settings-key-purge');
   writeSettingRaw(
@@ -125,9 +118,6 @@ test('a settings row holding API keys is rewritten once, without them', async ()
     })
   );
 
-  process.env.OPENAI_API_KEY = '';
-  process.env.ANTHROPIC_API_KEY = '';
-  process.env.DEEPSEEK_API_KEY = '';
   const config = loadFresh('../dist/config/aiModelConfig');
 
   await config.getAdminAppSettings();
@@ -150,10 +140,6 @@ test('invalid settings JSON is reported and never overwritten with defaults', as
 
   writeSettingRaw(dbDir, APP_SETTINGS_KEY, invalidJson);
 
-  process.env.OPENAI_API_KEY = '';
-  process.env.ANTHROPIC_API_KEY = '';
-  process.env.OPENROUTER_API_KEY = '';
-  process.env.DEEPSEEK_API_KEY = '';
   const config = loadFresh('../dist/config/aiModelConfig');
 
   await assert.rejects(
@@ -164,36 +150,36 @@ test('invalid settings JSON is reported and never overwritten with defaults', as
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), invalidJson);
 });
 
-test('app settings preserve at least one enabled provider, and keys come from the environment', async () => {
+test('app settings preserve at least one enabled provider, and no key reaches the settings', async () => {
   useTempStorage('settings-env');
-  process.env.OPENAI_API_KEY = 'openai-env-secret';
-  process.env.ANTHROPIC_API_KEY = '';
-  process.env.OPENROUTER_API_KEY = '';
-  process.env.DEEPSEEK_API_KEY = '';
-  const config = loadFresh('../dist/config/aiModelConfig');
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'leftover-openai-secret';
+  try {
+    const config = loadFresh('../dist/config/aiModelConfig');
 
-  await assert.rejects(
-    () => config.updateAppSettings({
-      providersEnabled: {
-        'claude-cli': false,
-        'codex-cli': false,
-        claude: false,
-        openai: false,
-        deepseek: false,
-      },
-    }),
-    /At least one AI model must remain enabled/
-  );
+    await assert.rejects(
+      () => config.updateAppSettings({
+        providersEnabled: {
+          'claude-cli': false,
+          'codex-cli': false,
+          'gemini-cli': false,
+          // A stale page still sends the retired switches; they are ignored, and
+          // cannot stand in for a seat.
+          openai: true,
+        },
+      }),
+      /At least one AI model must remain enabled/
+    );
 
-  // The environment is the only source now: there is no stored key that could
-  // shadow this one, and nothing on the admin wire that could carry it.
-  assert.equal(await config.getProviderApiKey('openai'), 'openai-env-secret');
-  process.env.OPENAI_API_KEY = 'rotated-in-the-environment';
-  assert.equal(await config.getProviderApiKey('openai'), 'rotated-in-the-environment');
-
-  const admin = await config.getAdminAppSettings();
-  assert.equal('apiKeys' in admin, false, 'the admin payload must not carry keys');
-  assert.equal(JSON.stringify(admin).includes('rotated-in-the-environment'), false);
+    // A key left in the environment from the metered days is read by nothing,
+    // and nothing on the admin wire could carry it.
+    const admin = await config.getAdminAppSettings();
+    assert.equal('apiKeys' in admin, false, 'the admin payload must not carry keys');
+    assert.equal(JSON.stringify(admin).includes('leftover-openai-secret'), false);
+  } finally {
+    if (saved === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = saved;
+  }
 });
 
 test('generated path helpers read output settings from the stored settings', async () => {
@@ -294,21 +280,39 @@ test('generated path helpers apply per-profile output file name templates', asyn
   );
 });
 
-test('a client that still sends the flat provider booleans is heard', async () => {
+test("a client that still sends the Claude seat's flat boolean is heard", async () => {
   // The stored row always carries a providersEnabled record, and the record
   // wins over the flat fields - so merging an older client's payload naively
   // made its provider toggle appear to save and change nothing.
   useTempStorage('settings-legacy-flags');
-  process.env.OPENAI_API_KEY = '';
-  process.env.ANTHROPIC_API_KEY = '';
-  process.env.DEEPSEEK_API_KEY = '';
   const config = loadFresh('../dist/config/aiModelConfig');
 
   await config.getAdminAppSettings();
-  const updated = await config.updateAppSettings({ openaiEnabled: false, deepseekEnabled: false });
+  const updated = await config.updateAppSettings({ claudeCliEnabled: false });
 
-  assert.equal(updated.providersEnabled.openai, false);
-  assert.equal(updated.providersEnabled.deepseek, false);
-  assert.equal(updated.providersEnabled['claude-cli'], true, 'untouched providers keep their setting');
-  assert.equal(updated.openaiEnabled, false);
+  assert.equal(updated.providersEnabled['claude-cli'], false);
+  assert.equal(updated.providersEnabled['codex-cli'], true, 'untouched providers keep their setting');
+  assert.equal(updated.claudeCliEnabled, false);
+});
+
+test("a stale page's metered flags are ignored without error, and never written", async () => {
+  // A Settings tab loaded before the metered APIs were removed still sends
+  // their flat flags. Refusing the save would stop it saving what it CAN
+  // change; reading them would mean nothing, since nothing serves them.
+  const { dbDir } = useTempStorage('settings-stale-metered-flags');
+  const config = loadFresh('../dist/config/aiModelConfig');
+
+  const updated = await config.updateAppSettings({
+    openaiEnabled: false,
+    claudeEnabled: 'junk',
+    deepseekEnabled: true,
+    defaultTheme: 'dark',
+  });
+  assert.equal(updated.defaultTheme, 'dark', 'the change it could make was saved');
+  assert.equal(updated.providersEnabled['claude-cli'], true);
+  const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
+  for (const retired of ['openaiEnabled', 'claudeEnabled', 'deepseekEnabled']) {
+    assert.equal(retired in stored, false, retired);
+  }
+  assert.deepEqual(Object.keys(stored.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
 });

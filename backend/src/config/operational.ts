@@ -3,17 +3,22 @@ import {
   envList,
   envRaw,
   envString,
-  envUrl,
   type EnvIntOptions,
   type EnvSource,
-  type EnvUrl,
 } from './envValue';
+import { PROVIDER_MODEL_OPTION_SETTINGS } from './providerModels';
+import {
+  GEMINI_CLI_INT_SETTINGS,
+  GEMINI_CLI_SETTINGS,
+  GEMINI_CLI_TIMEOUT_VARIABLES,
+  geminiCliTimeoutMs,
+  type GeminiCliTimeoutVariable,
+} from '../services/ai/providers/geminiCli/options';
 
 /**
  * The operational settings that used to be literals in the code.
  *
- * Timeouts, size caps, pool widths, vendor endpoints and third-party actor ids
- * that depend on the machine, the network or the plan an installation runs on
+ * Timeouts, size caps, pool widths and third-party actor ids that depend on the machine, the network or the plan an installation runs on
  * rather than on anything in this repository. Each one is here ONCE - name,
  * default, bounds and getter - so the value a module uses, the value
  * `.env.example` documents and the value the startup line reports cannot drift
@@ -24,9 +29,7 @@ import {
  *   - The default is exactly the literal it replaced. An installation that sets
  *     none of these behaves as it did before they existed.
  *   - Nothing here can stop the server from starting. Junk warns once and uses
- *     the default; out of range is clamped and warns once (`envValue.ts`). The
- *     base URLs are the one exception to "uses the default": a refused one
- *     leaves its provider unavailable rather than pointed at the vendor.
+ *     the default; out of range is clamped and warns once (`envValue.ts`).
  *   - The unit is in the name, and only the suffixes the codebase already used:
  *     _MS, _S, _DAYS, _MB, _BYTES.
  *
@@ -59,7 +62,6 @@ export const OPERATIONAL_INT_BOUNDS = {
   UPLOAD_MAX_MB: { fallback: 10, min: 1, max: 100, unit: 'MB' },
   HTTP_REQUEST_TIMEOUT_MS: { fallback: 900_000, min: 60_000, max: 3_600_000, unit: 'ms' },
   AI_REQUEST_TIMEOUT_MS: { fallback: 300_000, min: 5_000, max: 3_600_000, unit: 'ms' },
-  CLAUDE_MAX_ATTEMPTS: { fallback: 4, min: 1, max: 10, unit: 'attempt(s)' },
   AI_CLI_HEALTH_TIMEOUT_MS: { fallback: 20_000, min: 1_000, max: 120_000, unit: 'ms' },
   AI_CODEX_HEALTH_TIMEOUT_MS: { fallback: 15_000, min: 1_000, max: 120_000, unit: 'ms' },
   GENERATION_RENDER_CONCURRENCY: { fallback: 4, min: 1, max: 32, unit: 'render(s)' },
@@ -164,74 +166,13 @@ export function serverPort(env: EnvSource = process.env): number {
 /**
  * The wall-clock deadline of every AI call, in ms.
  *
- * The OUTER bound for the CLI seats: the time spent queued for a slot and the
- * child process both fit inside it, and a CLI call-site's own budget is
- * capped by it (the smaller of the two wins). See
- * `describeAiTimeoutsAboveRequestDeadline` for the case where a CLI budget is
- * set above it and so can never take effect.
- *
- * For the metered HTTP providers it is NOT a hard bound. The `claude` adapter
- * checks it between attempts, so it ends the retry loop but not an attempt in
- * flight; openai and deepseek do not consult it at all and run on the openai
- * SDK's own timeout (10 minutes per attempt, two retries). Only the caller's
- * cancel signal aborts a metered request mid-flight.
+ * The OUTER bound: the time spent queued for a seat's slot and the CLI child
+ * both fit inside it, and a CLI call-site's own budget is capped by it (the
+ * smaller of the two wins). See `describeAiTimeoutsAboveRequestDeadline` for
+ * the case where a CLI budget is set above it and so can never take effect.
  */
 export function aiRequestTimeoutMs(env: EnvSource = process.env): number {
   return readInt('AI_REQUEST_TIMEOUT_MS', env);
-}
-
-/*
- * The three metered endpoints. Each answers an EnvUrl, not a string: unset is
- * the vendor's endpoint, but a value that is set and refused (no scheme,
- * `user:password@`, a query...) is NOT - the provider is unavailable until it
- * is fixed, and sends nothing. See `envUrl` for why the vendor is never the
- * stand-in for an endpoint the operator named.
- */
-
-/**
- * The endpoint of the metered `claude` provider; the adapter appends /v1/messages.
- *
- * NOT ANTHROPIC_BASE_URL, and deliberately: the claude-cli provider passes that
- * name through to the `claude` child, so using it here would also redirect the
- * subscription seat. CLAUDE_* is scrubbed from the child and matches
- * CLAUDE_MODEL.
- */
-export function claudeBaseUrl(env: EnvSource = process.env): EnvUrl {
-  return envUrl('CLAUDE_BASE_URL', 'https://api.anthropic.com', {}, env);
-}
-
-/** The endpoint of the `deepseek` provider (an OpenAI-compatible client). */
-export function deepseekBaseUrl(env: EnvSource = process.env): EnvUrl {
-  return envUrl('DEEPSEEK_BASE_URL', 'https://api.deepseek.com', {}, env);
-}
-
-/**
- * The endpoint of the `openai` provider.
- *
- * The openai SDK has always read OPENAI_BASE_URL by itself; it is read here so
- * the value is validated (an absolute http(s) URL; plain http off this machine
- * is used as set, with a warning; anything unusable leaves the provider
- * unavailable rather than pointed at OpenAI), shows up in the startup line, and
- * is documented beside CLAUDE_BASE_URL and DEEPSEEK_BASE_URL. The default is the
- * SDK's own.
- */
-export function openaiBaseUrl(env: EnvSource = process.env): EnvUrl {
-  return envUrl('OPENAI_BASE_URL', 'https://api.openai.com/v1', {}, env);
-}
-
-/** How the startup line shows a base URL: the one in use, or that the one set was refused. */
-const shownUrl = (read: (env: EnvSource) => EnvUrl) => (env: EnvSource): string => {
-  const resolved = read(env);
-  return resolved.ok ? resolved.url : '(refused)';
-};
-
-/**
- * Attempts, counting the first, for the `claude` HTTP provider on 429/5xx/529
- * and network errors. Only that adapter has a retry loop of its own - openai and
- * deepseek retry inside their SDK - hence CLAUDE_ and not AI_HTTP_.
- */
-export function claudeMaxAttempts(env: EnvSource = process.env): number {
-  return readInt('CLAUDE_MAX_ATTEMPTS', env);
 }
 
 /** Timeout of `claude --version` and `claude auth status` in the health checks, in ms. */
@@ -250,6 +191,11 @@ export function aiCodexHealthTimeoutMs(env: EnvSource = process.env): number {
  * use. Not in OPERATIONAL_VARIABLES - they predate it and keep their own,
  * looser reading (below) - but kept here so the providers and the startup
  * warning about them read one list and one set of numbers.
+ *
+ * The Gemini seat's three (`AI_GEMINI_TIMEOUT_MS*`) are not in this object:
+ * they are newer than envValue.ts and read through it, with the rest of that
+ * seat's settings, in OPERATIONAL_VARIABLES. `cliTimeoutMs` still answers for
+ * them, through the seat's own reader, so the warning below covers all nine.
  */
 export const CLI_TIMEOUT_DEFAULTS_MS = {
   AI_CLI_TIMEOUT_MS: 180_000,
@@ -262,20 +208,42 @@ export const CLI_TIMEOUT_DEFAULTS_MS = {
 
 export type CliTimeoutVariable = keyof typeof CLI_TIMEOUT_DEFAULTS_MS;
 
+/** Every seat's per-call budget variable: the six above and the Gemini seat's three. */
+export type AnyCliTimeoutVariable = CliTimeoutVariable | GeminiCliTimeoutVariable;
+
+function isGeminiTimeout(name: AnyCliTimeoutVariable): name is GeminiCliTimeoutVariable {
+  return (GEMINI_CLI_TIMEOUT_VARIABLES as readonly string[]).includes(name);
+}
+
+/** The default of any seat's per-call budget, in ms. */
+export function cliTimeoutDefaultMs(name: AnyCliTimeoutVariable): number {
+  return isGeminiTimeout(name) ? GEMINI_CLI_INT_SETTINGS[name].fallback : CLI_TIMEOUT_DEFAULTS_MS[name];
+}
+
 /**
- * One CLI budget, read the way those providers have always read it.
+ * One CLI budget, read the way its provider reads it.
  *
- * `parseInt`, so `600000ms` is 600000 and `600000.5` is 600000; clamped to
- * 5000..3600000; the default for anything with no leading number - all without
- * a word, which is older than envValue.ts and left as it was so no install's
- * budgets move. The ONE reader of these six: the providers call it, and so does
- * the warning below, which therefore cannot disagree with them about a value.
+ * For the six older ones: `parseInt`, so `600000ms` is 600000 and `600000.5` is
+ * 600000; clamped to 5000..3600000; the default for anything with no leading
+ * number - all without a word, which is older than envValue.ts and left as it
+ * was so no install's budgets move. The Gemini seat's three go through that
+ * seat's own reader (envValue.ts, the same bounds, junk warned about once).
+ * The ONE reader of all nine: the providers call it or the reader it defers
+ * to, and so does the warning below, which therefore cannot disagree with them
+ * about a value.
  */
-export function cliTimeoutMs(name: CliTimeoutVariable, env: EnvSource = process.env): number {
+export function cliTimeoutMs(name: AnyCliTimeoutVariable, env: EnvSource = process.env): number {
+  if (isGeminiTimeout(name)) return geminiCliTimeoutMs(name, env);
   const parsed = Number.parseInt((env[name] ?? '').trim(), 10);
   if (!Number.isFinite(parsed)) return CLI_TIMEOUT_DEFAULTS_MS[name];
   return Math.min(3_600_000, Math.max(5_000, parsed));
 }
+
+/** Every seat's per-call budget variable, in the order the warning below walks them. */
+export const ALL_CLI_TIMEOUT_VARIABLES: readonly AnyCliTimeoutVariable[] = [
+  ...(Object.keys(CLI_TIMEOUT_DEFAULTS_MS) as CliTimeoutVariable[]),
+  ...GEMINI_CLI_TIMEOUT_VARIABLES,
+];
 
 /**
  * The CLI budgets that are set above the request deadline, and so do nothing.
@@ -288,7 +256,7 @@ export function cliTimeoutMs(name: CliTimeoutVariable, env: EnvSource = process.
  * Only a budget that is SET, and set to something other than its own default,
  * is reported. Lowering the request deadline below a CLI default is a
  * legitimate way to cap everything, and a budget AT its default is one nobody
- * chose: older copies of .env.example wrote all six out uncommented, so a
+ * chose: older copies of .env.example wrote the first six out uncommented, so a
  * `.env` made from one has them, and warning about those would tell the
  * operator to undo the cap they had just set. The value is read with
  * `cliTimeoutMs`, exactly as the providers read it; one with no leading number
@@ -298,10 +266,10 @@ export function describeAiTimeoutsAboveRequestDeadline(env: EnvSource = process.
   const deadline = aiRequestTimeoutMs(env);
   const warnings: string[] = [];
 
-  for (const name of Object.keys(CLI_TIMEOUT_DEFAULTS_MS) as CliTimeoutVariable[]) {
+  for (const name of ALL_CLI_TIMEOUT_VARIABLES) {
     if (envRaw(name, env) === null) continue;
     const value = cliTimeoutMs(name, env);
-    if (value === CLI_TIMEOUT_DEFAULTS_MS[name]) continue;
+    if (value === cliTimeoutDefaultMs(name)) continue;
     if (value > deadline) {
       warnings.push(
         `[ai] ${name}=${value} is longer than AI_REQUEST_TIMEOUT_MS=${deadline}, which bounds every AI call, ` +
@@ -629,31 +597,11 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     'services/ai/providers/codexCli/health.ts',
     aiCodexHealthTimeoutMs
   ),
-  {
-    name: 'CLAUDE_BASE_URL',
-    defaultValue: 'https://api.anthropic.com',
-    side: 'backend',
-    readAt: 'per-call',
-    readIn: 'services/ai/providers/anthropicHttp.ts',
-    current: shownUrl(claudeBaseUrl),
-  },
-  {
-    name: 'DEEPSEEK_BASE_URL',
-    defaultValue: 'https://api.deepseek.com',
-    side: 'backend',
-    readAt: 'per-call',
-    readIn: 'services/ai/providers/openaiCompatible.ts',
-    current: shownUrl(deepseekBaseUrl),
-  },
-  {
-    name: 'OPENAI_BASE_URL',
-    defaultValue: 'https://api.openai.com/v1',
-    side: 'backend',
-    readAt: 'per-call',
-    readIn: 'services/ai/providers/openaiCompatible.ts',
-    current: shownUrl(openaiBaseUrl),
-  },
-  intEntry('CLAUDE_MAX_ATTEMPTS', 'per-call', 'services/ai/providers/anthropicHttp.ts', claudeMaxAttempts),
+  // The model names Admin -> Models offers each seat.
+  ...PROVIDER_MODEL_OPTION_SETTINGS,
+  // The Gemini seat, every setting of it: it was written after this table, so
+  // nothing of it predates the table the way the other two seats' settings do.
+  ...GEMINI_CLI_SETTINGS,
 
   // Accounts: SMTP
   intEntry(
@@ -768,12 +716,10 @@ function formatSetting(name: string, value: string): string {
  *
  * Effective values, not raw ones: a value that was clamped is shown as the
  * number actually in use, and one that was junk (and warned about) is at its
- * default and so is not listed. A base URL that was refused is the exception:
- * it is at no default - its provider is unavailable - so it is listed as
- * `NAME=(refused)`, never with the value, which may hold a secret. That makes
- * this line the answer to "what is this install actually running with", which
- * is the question an operator has when something is slower or larger than they
- * expected. Frontend entries are skipped - this process does not apply them.
+ * default and so is not listed. That makes this line the answer to "what is
+ * this install actually running with", which is the question an operator has
+ * when something is slower or larger than they expected. Frontend entries are
+ * skipped - this process does not apply them.
  */
 export function describeNonDefaultOperationalSettings(env: EnvSource = process.env): string | null {
   const changed: string[] = [];

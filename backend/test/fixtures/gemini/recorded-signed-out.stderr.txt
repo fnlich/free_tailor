@@ -1,0 +1,10 @@
+Error authenticating: FatalAuthenticationError: Manual authorization is required but the current session is non-interactive. Please run the Gemini CLI in an interactive terminal to log in, provide a GEMINI_API_KEY, or ensure Application Default Credentials are configured.
+    at initOauthClient (file:///opt/gemini-capture/gemini/package/bundle/chunk-MLY4WQFO.js:279346:13)
+    at async createCodeAssistContentGenerator (file:///opt/gemini-capture/gemini/package/bundle/chunk-MLY4WQFO.js:311684:24)
+    at async file:///opt/gemini-capture/gemini/package/bundle/chunk-MLY4WQFO.js:312076:75
+    at async createContentGenerator (file:///opt/gemini-capture/gemini/package/bundle/chunk-MLY4WQFO.js:312029:21)
+    at async Config.refreshAuth (file:///opt/gemini-capture/gemini/package/bundle/chunk-MLY4WQFO.js:379666:29)
+    at async main (file:///opt/gemini-capture/gemini/package/bundle/gemini-J6X2T2ZI.js:17488:9) {
+  exitCode: 41
+}
+[31mManual authorization is required but the current session is non-interactive. Please run the Gemini CLI in an interactive terminal to log in, provide a GEMINI_API_KEY, or ensure Application Default Credentials are configured.[0m

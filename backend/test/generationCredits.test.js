@@ -228,7 +228,7 @@ test('a repeated hook cannot refund the same resume twice', async () => {
 
   // Exactly what a restart or a re-settle would do: the same task id refunding
   // a second time. The idempotency key makes it free.
-  h.credits.refundTaskUnit(batchId, batch.tasks[0].id, 'replayed');
+  h.credits.refundTaskUnit(batchId, batch.tasks[0].id, 1, 'replayed');
   assert.equal(h.balance(h.alice.id), afterFirst);
 });
 

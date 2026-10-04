@@ -23,10 +23,6 @@
  *   - A number outside its bounds is clamped to the nearest bound and warns once,
  *     so a value that is merely too big still moves things in the direction the
  *     operator meant.
- *   - The one exception is a URL (`envUrl`): its default is a vendor's endpoint,
- *     so "use the default" for a value set to somewhere else would send the
- *     traffic where the operator chose it not to go. A bad one is refused and
- *     the caller is told, rather than handed the default.
  *
  * Every primitive takes `(name, fallback, opts, env = process.env)`. The `env`
  * argument is the test seam: a test hands in a plain object and never has to
@@ -255,6 +251,12 @@ export function envEnum<T extends string>(
 export type EnvListOptions = {
   /** Every entry must match this (after `upperCase`, when set). */
   pattern?: RegExp;
+  /**
+   * A further rule every entry must pass, for one a pattern cannot say - a
+   * model name the CLI it is meant for would silently replace, say. Judged
+   * like the pattern: one entry that fails it rejects the whole value.
+   */
+  accept?: (entry: string) => boolean;
   upperCase?: boolean;
   expected?: string;
 };
@@ -279,123 +281,15 @@ export function envList(
     .split(/[\s,]+/)
     .map((entry) => (opts.upperCase ? entry.toUpperCase() : entry))
     .filter(Boolean);
-  const bad = opts.pattern ? entries.find((entry) => !opts.pattern!.test(entry)) : undefined;
+  const bad = entries.find(
+    (entry) =>
+      (opts.pattern !== undefined && !opts.pattern.test(entry)) ||
+      (opts.accept !== undefined && !opts.accept(entry))
+  );
   if (entries.length === 0 || bad !== undefined) {
     const what = bad !== undefined ? `has ${quote(bad)}, which is not ${opts.expected ?? 'accepted'}` : 'is empty';
     warnOnce(name, `${name}=${quote(raw)} ${what}; using ${quote(fallback.join(','))}.`);
     return [...fallback];
   }
   return entries;
-}
-
-/* --------------------------------------------------------------------- URLs */
-
-/**
- * Hosts that never leave the machine, where plain http costs nothing.
- *
- * WHATWG URL keeps the brackets on an IPv6 literal, so `[::1]` is what
- * `hostname` returns for http://[::1]:4000.
- */
-export function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (host === '[::1]' || host === '::1') return true;
-  return /^127(?:\.\d{1,3}){3}$/.test(host);
-}
-
-/**
- * What a URL setting resolved to.
- *
- * A refusal is its own outcome, never the fallback in disguise: see `envUrl`.
- * `problem` names the variable and says what is wrong without repeating the
- * value; `remedy` is the sentence to give an administrator.
- */
-export type EnvUrl = { ok: true; url: string } | { ok: false; problem: string; remedy: string };
-
-/**
- * An absolute http(s) base URL, with the trailing slash stripped.
- *
- * Unset or empty is the fallback - the vendor's endpoint. A value that is SET
- * is the operator's statement of where the traffic goes, and both ways of
- * second-guessing it would send it somewhere they did not name:
- *
- *   - Plain http is HONOURED, whatever the host, with one warning when the host
- *     is not this machine. An API key goes with every request, so http on a
- *     real network hands it to anybody on the path - but an operator who
- *     pointed OPENAI_BASE_URL at an Ollama or LM Studio box on the LAN, which
- *     the openai SDK always honoured, means that box.
- *   - A value that cannot be used is REFUSED, and the refusal is returned to
- *     the caller rather than replaced by the fallback. Every caller is an AI
- *     provider, and its fallback is the vendor: `localhost:11434/v1` (no
- *     scheme) or a gateway written with `user:password@` would otherwise send
- *     the prompt, the resume and the key to the very vendor the setting exists
- *     to route around - where before the openai SDK either failed the request
- *     or sent it to the operator's own host. So the provider that reads it
- *     sends nothing at all until the value is fixed or removed, and its health
- *     check says so. Nothing refuses to boot.
- *
- * Refused: anything that is not an absolute http(s) URL, an `@` anywhere (it
- * reads as `user:password@`, which Node's fetch refuses outright - and a
- * password with a `/` in it does not even parse as one), a query string and a
- * fragment (callers APPEND a path, `${base}/v1/messages`, which either breaks).
- *
- * The warning never repeats a refused value: it may hold a password or a key,
- * and the log is not where those belong. When the value parsed as http(s) and
- * has no `@`, its scheme, host and path are shown - what a valid value would
- * show on the startup line anyway.
- *
- * The slash is stripped so `https://gw.example/` and `https://gw.example` join
- * the same way.
- */
-export function envUrl(
-  name: string,
-  fallback: string,
-  _opts: Record<string, never> = {},
-  env: EnvSource = process.env
-): EnvUrl {
-  const raw = envRaw(name, env);
-  if (raw === null) return { ok: true, url: fallback };
-
-  let url: URL | null = null;
-  try {
-    url = new URL(raw);
-  } catch {
-    url = null;
-  }
-  const isHttp = url !== null && (url.protocol === 'http:' || url.protocol === 'https:');
-
-  const problem = raw.includes('@')
-    ? `${name} has an "@" in it, which reads as user:password@ credentials`
-    : !url || !isHttp
-      ? `${name} is not an absolute http(s) URL - it has to start with http:// or https://`
-      : url.search || url.hash
-        ? `${name}=${quote(`${url.protocol}//${url.host}${url.pathname}`)} has a query string or fragment`
-        : null;
-
-  if (problem || !url) {
-    const refusal = {
-      ok: false as const,
-      problem: problem ?? `${name} is not an absolute http(s) URL`,
-      remedy: `Fix ${name} in the root .env, or remove it to use ${fallback}, and restart the backend.`,
-    };
-    // Only the query-string case shows anything of the value, and never that part.
-    const withheld = problem?.includes('query string') ? 'neither is shown here' : 'the value is not repeated here';
-    warnOnce(
-      name,
-      `${refusal.problem} (${withheld}). It is refused, and NOT replaced by ${fallback}: whatever it ` +
-        'configures sends nothing until it is fixed or removed.'
-    );
-    return refusal;
-  }
-
-  const value = `${url.origin}${url.pathname}`.replace(/\/+$/, '');
-  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
-    warnOnce(
-      name,
-      `${name}=${quote(value)} uses plain http to a host that is not this machine, so the API key ` +
-        'sent with every request travels unencrypted. Using it as set; put it behind https or a ' +
-        'localhost tunnel if that network is not one you trust.'
-    );
-  }
-  return { ok: true, url: value };
 }

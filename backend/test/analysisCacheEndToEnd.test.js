@@ -30,8 +30,6 @@ function setUp(name, promptText = 'Analyze this.\n[[jobDescription]]') {
       maxOutputTokens: false,
           nativeJsonMode: 'json-schema',
       systemBlocks: true,
-      requiresApiKey: false,
-      credentialKind: 'subscription-seat',
       maxConcurrency: 4,
     },
     defaultModelName: () => 'sonnet',

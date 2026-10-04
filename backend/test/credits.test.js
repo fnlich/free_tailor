@@ -121,7 +121,7 @@ test('an admin is exempt, and every refund against an exempt run is a no-op', ()
   // No reservation row exists, so the refund path finds nothing rather than
   // having to remember to re-check the role.
   assert.equal(credits.getReservation('bat_1'), null);
-  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 'failed'), 0);
+  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'failed'), 0);
   assert.equal(users.getUserById(admin.id).credits, 5, 'a refund cannot invent credits');
 });
 
@@ -132,12 +132,12 @@ test('a unit that did not deliver gives its credit back, once', () => {
   credits.setBalance(alice.id, 10, 'admin-1');
   credits.reserveCredits(users.getUserById(alice.id), 3, { kind: 'batch', id: 'bat_1' });
 
-  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 'failed'), 1);
+  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'failed'), 1);
   assert.equal(users.getUserById(alice.id).credits, 8);
 
   // The same task again. A queue hook can fire twice - after a restart, or on a
   // re-settle - and the idempotency key is what makes the second one free.
-  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 'failed'), 0);
+  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'failed'), 0);
   assert.equal(users.getUserById(alice.id).credits, 8);
 });
 
@@ -151,9 +151,9 @@ test('a run can never refund more than it was charged', () => {
 
   // Three distinct tasks against a two-unit reservation. The third is capped in
   // SQL, so a caller that invented a fresh key still cannot over-refund.
-  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 'failed'), 1);
-  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_2', 'failed'), 1);
-  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_3', 'failed'), 0);
+  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'failed'), 1);
+  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_2', 1, 'failed'), 1);
+  assert.equal(credits.refundTaskUnit('bat_1', 'tsk_3', 1, 'failed'), 0);
 
   assert.equal(users.getUserById(alice.id).credits, 10, 'back to where it started, never above');
 });
@@ -164,7 +164,7 @@ test('releasing sweeps what is left, for a run that never accounted for itself',
   const alice = users.createUser({ email: 'alice@example.com' });
   credits.setBalance(alice.id, 10, 'admin-1');
   credits.reserveCredits(users.getUserById(alice.id), 5, { kind: 'request', id: 'res_1' });
-  credits.refundUnits('res_1', 2, 'two failed');
+  credits.refundTaskUnit('res_1', 'tsk_1', 2, 'two credits failed');
 
   assert.equal(credits.releaseReservation('res_1', 'done'), 3, 'the three still outstanding');
   assert.equal(users.getUserById(alice.id).credits, 10);
@@ -172,7 +172,7 @@ test('releasing sweeps what is left, for a run that never accounted for itself',
   // Closed, so a late refund cannot reopen it and hand back credits twice.
   assert.equal(credits.getReservation('res_1').state, 'closed');
   assert.equal(credits.releaseReservation('res_1', 'again'), 0);
-  assert.equal(credits.refundTaskUnit('res_1', 'tsk_late', 'late'), 0);
+  assert.equal(credits.refundTaskUnit('res_1', 'tsk_late', 1, 'late'), 0);
   assert.equal(users.getUserById(alice.id).credits, 10);
 });
 
@@ -186,8 +186,8 @@ test('a fully delivered run releases nothing', () => {
   // Nothing failed, so nothing is refunded and the run SETTLES: what was not
   // refunded was delivered, and its credits are spent. Four resumes, four
   // credits. Releasing instead would hand all four back - which is to say it
-  // would make every successful run free.
-  assert.equal(credits.refundUnits('res_1', 0, 'none failed'), 0);
+  // would make every successful run free. A refund of nothing writes nothing.
+  assert.equal(credits.refundTaskUnit('res_1', 'tsk_free', 0, 'free model'), 0);
   assert.equal(credits.settleRun('res_1'), true);
   assert.equal(users.getUserById(alice.id).credits, 6);
 
@@ -203,8 +203,8 @@ test('the balance always equals the sum of the ledger', () => {
 
   credits.setBalance(alice.id, 20, 'admin-1');
   credits.reserveCredits(users.getUserById(alice.id), 6, { kind: 'batch', id: 'bat_1' });
-  credits.refundTaskUnit('bat_1', 'tsk_1', 'failed');
-  credits.refundTaskUnit('bat_1', 'tsk_2', 'cancelled');
+  credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'failed');
+  credits.refundTaskUnit('bat_1', 'tsk_2', 1, 'cancelled');
   credits.releaseReservation('bat_1', 'done');
   credits.grantCredits(alice.id, 5, 'admin-1', 'top-up');
 
@@ -220,7 +220,7 @@ test('every movement is explainable, and the reserve does not claim to be a deli
   const alice = users.createUser({ email: 'alice@example.com' });
   credits.setBalance(alice.id, 9, 'admin-1', 'opening');
   credits.reserveCredits(users.getUserById(alice.id), 2, { kind: 'batch', id: 'bat_1', label: '1 job x 2 profiles' });
-  credits.refundTaskUnit('bat_1', 'tsk_1', 'Ada / Acme: failed');
+  credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'Ada / Acme: failed');
 
   const reasons = credits.getLedger(alice.id).map((entry) => entry.reason);
   assert.deepEqual(reasons, ['generation-refund', 'generation-reserve', 'admin-set']);
@@ -248,7 +248,7 @@ test('the held figure shows what a run is holding while it is in flight', () => 
   assert.equal(status.held, 4);
   assert.equal(status.exempt, false);
 
-  credits.refundTaskUnit('bat_1', 'tsk_1', 'failed');
+  credits.refundTaskUnit('bat_1', 'tsk_1', 1, 'failed');
   status = credits.getStatus(users.getUserById(alice.id));
   assert.equal(status.balance, 7);
   assert.equal(status.held, 3);

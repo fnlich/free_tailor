@@ -75,15 +75,15 @@ test('prompt service creates, previews, updates, and deletes custom prompts in t
     name: 'Greeting Prompt Updated',
     content: 'Hi [[name]]',
     responseFormat: 'text',
-    modelProvider: 'openai',
-    modelName: 'gpt-5-mini',
+    modelProvider: 'codex-cli',
+    modelName: 'gpt-6-luna',
     allowedVariables: [{ name: 'name' }],
   });
 
   assert.equal(updated.name, 'Greeting Prompt Updated');
   assert.equal(updated.content, 'Hi [[name]]');
-  assert.equal(updated.modelProvider, 'openai');
-  assert.equal(updated.modelName, 'gpt-5-mini');
+  assert.equal(updated.modelProvider, 'codex-cli');
+  assert.equal(updated.modelName, 'gpt-6-luna');
 
   assert.equal(await promptService.deletePrompt(created.id), true);
   assert.equal(await promptService.getPromptById(created.id), null);
@@ -107,8 +107,8 @@ test('prompt service supports multiple prompt variants per feature and active se
     name: 'Filter Variant B',
     featureKey: 'filter-google-sheet-job',
     content: 'Variant B [[jobContent]]',
-    modelProvider: 'claude',
-    modelName: 'claude-sonnet-4-20250514',
+    modelProvider: 'codex-cli',
+    modelName: 'default',
   });
 
   const prompts = await promptService.listPrompts();
@@ -129,8 +129,8 @@ test('prompt service supports multiple prompt variants per feature and active se
 
   const runtimePrompt = await promptService.getRuntimePromptByFeature('filter-google-sheet-job');
   assert.equal(runtimePrompt?.id, variantB.id);
-  assert.equal(runtimePrompt?.modelProvider, 'claude');
-  assert.equal(runtimePrompt?.modelName, 'claude-sonnet-4-20250514');
+  assert.equal(runtimePrompt?.modelProvider, 'codex-cli');
+  assert.equal(runtimePrompt?.modelName, 'default');
 
   const activePrompts = JSON.parse(readSettingRaw(dbDir, 'active-prompts'));
   assert.equal(activePrompts['filter-google-sheet-job'], variantB.id);

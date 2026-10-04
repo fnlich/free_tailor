@@ -6,12 +6,10 @@ import {
 } from '../../config/aiModelConfig';
 import { aiRequestTimeoutMs } from '../../config/operational';
 import {
-  AI_PROVIDER_IDS,
   coerceProviderId,
   getProviderLabel,
   getProviderLockReason,
   isProviderLocked,
-  providerRequiresApiKey,
 } from '../../config/providerCatalog';
 import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
@@ -30,11 +28,10 @@ import {
 /**
  * The one entry point every AI call in this app goes through.
  *
- * `claude-cli` is the default because the app's premise is a subscription seat
- * rather than metered tokens. This constant matters more than it looks: two
- * callers (profile extraction and template extraction) pass no provider at all,
- * so a default left pointing at a metered provider would keep billing for them
- * with nothing in the UI to say so.
+ * `claude-cli` is the provider a call that names none starts from. Two callers
+ * (profile extraction and template extraction) pass no provider at all, and
+ * when an administrator has switched this seat off or the deployment locks it,
+ * such a call is rerouted rather than failed - see `runAssembled`.
  */
 export const DEFAULT_PROVIDER: AIProvider = 'claude-cli';
 
@@ -189,22 +186,16 @@ async function runAssembled(
     // than fail, so a caller with no provider setting of its own does not
     // become unusable the moment an admin unticks a box.
     //
-    // A keyless seat first, so unticking one seat moves these calls onto the
-    // other rather than onto a metered default. With no keyless seat left - both
-    // locked here, say - the call runs on the app's default MODEL, the one the
-    // settings page shows and every other call that names nothing runs on.
-    // Catalog order alone would put it on whichever metered provider sorts
-    // first, which is not the default anybody chose: it billed a provider
-    // nobody picked, or failed asking for a sign-in on a seat that is locked.
-    let alternative = AI_PROVIDER_IDS.find(
-      (id) => isProviderEnabled(id, settings) && !providerRequiresApiKey(id)
-    );
-    if (!alternative) {
-      const fallback = await resolveRequestedAIModel().catch(() => null);
-      if (fallback && isProviderEnabled(fallback.provider, settings)) {
-        alternative = fallback.provider;
-        reroutedModelName = fallback.modelName;
-      }
+    // Onto the app's default MODEL first - the one the settings page shows and
+    // every other call that names nothing runs on - so the reroute lands where
+    // an administrator pointed the install rather than on whichever seat sorts
+    // first in the catalog. Only when that cannot run does it take the first
+    // enabled seat, on the seat's own default model.
+    let alternative: AIProvider | undefined;
+    const fallback = await resolveRequestedAIModel().catch(() => null);
+    if (fallback && isProviderEnabled(fallback.provider, settings)) {
+      alternative = fallback.provider;
+      reroutedModelName = fallback.modelName;
     }
     alternative ??= getDefaultEnabledProvider(settings);
     if (!isProviderEnabled(alternative, settings)) {
@@ -269,15 +260,12 @@ async function runAssembled(
     },
     // AI_REQUEST_TIMEOUT_MS, read per call. No caller passes `timeoutMs`
     // today, so in practice this IS the deadline of every AI call - which is
-    // why it is a setting: a slow seat, a long tailoring prompt or a gateway
-    // in front of a metered API all need more than five minutes on some
-    // installs and nothing in the code could say which. It bounds the wait
-    // for a CLI slot and the CLI child (the smaller of this and the call
-    // site's AI_CLI_TIMEOUT_MS* / AI_CODEX_TIMEOUT_MS* wins, and startup warns
-    // when one of those is set above this), and the `claude` HTTP adapter
-    // checks it before each attempt. It does NOT abort a metered HTTP request
-    // already in flight: see the notes in anthropicHttp.ts and
-    // openaiCompatible.ts.
+    // why it is a setting: a slow seat or a long tailoring prompt needs more
+    // than five minutes on some installs and nothing in the code could say
+    // which. It bounds the wait for a seat's slot and the CLI child (the
+    // smaller of this and the call site's AI_CLI_TIMEOUT_MS* /
+    // AI_CODEX_TIMEOUT_MS* wins, and startup warns when one of those is set
+    // above this).
     deadline: createDeadline(input.timeoutMs ?? aiRequestTimeoutMs()),
     signal: input.signal,
     callSite: input.callSite,
@@ -352,8 +340,9 @@ export async function createRawCompletion(input: CreateRawCompletionInput): Prom
     {
       provider: input.provider || DEFAULT_PROVIDER,
       modelName: input.modelName,
-      // The bid assistant has no provider setting of its own, so an unnamed
-      // provider here is the default rather than a choice.
+      // The bid assistant passes the app default model it resolved, which is a
+      // choice; a caller that names no provider gets the default instead, and
+      // is rerouted rather than failed when an admin has switched it off.
       explicit: Boolean(input.provider),
     },
     {

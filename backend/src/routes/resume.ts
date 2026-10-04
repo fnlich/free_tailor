@@ -1,13 +1,13 @@
 import { Router, Request, Response } from 'express';
 import {
+  describeCharge,
   InsufficientCreditsError,
   newReservationId,
-  refundUnits,
   releaseReservation,
   reserveCredits,
   settleRun,
 } from '../services/credits';
-import { requireUser } from '../middleware/auth';
+import { isAdmin, requireUser } from '../middleware/auth';
 import path from 'path';
 import {
   analyzeJobDescription,
@@ -22,13 +22,15 @@ import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterG
 import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
 import { ownerOfGeneratedFile } from '../database/orderRepository';
 import { getTemplateById } from '../extractors/templateExtractor';
-import { getPublicAppSettings } from '../config/aiModelConfig';
+import { getUserAppSettings, type ModelRequestOptions } from '../config/aiModelConfig';
 import {
   normalizeAiPreferences,
   resolveAiChoice,
+  resolvePricedAiChoice,
   type AiChoice,
   type AiPreferences,
 } from '../config/aiPreferences';
+import { ModelUnavailableError, modelUnavailableBody } from '../config/modelErrors';
 import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
@@ -124,10 +126,16 @@ function getProfileAnalyzeJobPromptId(profile?: Profile): string {
   return profile?.profileSettings?.analyzeJobPromptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
 }
 
-// Get enabled AI models
+/**
+ * The models a signed-in account may pick, and the builder's defaults.
+ *
+ * Every account reads this, so it is the slim `UserAppSettings` and nothing
+ * more: ids and display names, no providers, CLI model names, prices, locks or
+ * the administrator's shared sheets. Admin pages read /api/admin/settings.
+ */
 router.get('/models', async (req: Request, res: Response) => {
   try {
-    const settings = await getPublicAppSettings();
+    const settings = await getUserAppSettings();
     res.json(settings);
   } catch {
     res.status(500).json({ error: 'Failed to fetch settings' });
@@ -165,7 +173,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body));
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), null, { admin: isAdmin(req) });
     const analysis = await analyzeJobDescription(
       jobDescription,
       selectedModel,
@@ -176,6 +184,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
     res.json(analysis);
   } catch (error) {
     console.error('Error analyzing job description:', error);
+    if (sendModelUnavailable(req, res, error)) return;
     if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to analyze job description'
@@ -195,7 +204,7 @@ router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body));
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), null, { admin: isAdmin(req) });
     const result = await analyzeJobDescriptionPromptRaw(
       jobDescription,
       selectedModel,
@@ -204,6 +213,7 @@ router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
     res.json(result);
   } catch (error) {
     console.error('Error testing job description prompt:', error);
+    if (sendModelUnavailable(req, res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to test job description prompt',
     });
@@ -229,7 +239,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body));
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), null, { admin: isAdmin(req) });
 
     const validJobs: Array<{
       customId: string;
@@ -311,7 +321,6 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
     });
 
     res.json({
-      provider: selectedModel.provider,
       analyzed: analyses.length,
       analyses,
       failed: failures.length,
@@ -319,6 +328,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error analyzing multiple job descriptions:', error);
+    if (sendModelUnavailable(req, res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to analyze job descriptions',
     });
@@ -387,11 +397,23 @@ function readAiOverrides(body: unknown): AiPreferences {
   });
 }
 
+/**
+ * Answers a request whose `model` cannot be used, and says whether it did.
+ * Ahead of the AI error mapping in every handler that resolves a model: it is
+ * the request that is wrong, not a provider that failed.
+ */
+function sendModelUnavailable(req: Request, res: Response, error: unknown): boolean {
+  if (!(error instanceof ModelUnavailableError) || res.headersSent) return false;
+  res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
+  return true;
+}
+
 async function tailorResumesForProfiles(
   profiles: Profile[],
   analysis: JobAnalysis,
   requestChoice: AiChoice,
   overrides: AiPreferences,
+  options: ModelRequestOptions,
   signal?: AbortSignal
 ): Promise<{
   tailoredByProfileId: Map<string, TailoredContent>;
@@ -420,7 +442,7 @@ async function tailorResumesForProfiles(
   // same answer.
   const capacity = await resolveBatchCapacity(requestChoice);
   const outcomes = await mapWithConcurrency(profiles, capacity.limit, async (profile) =>
-    tailorResume(profile, analysis, await resolveAiChoice(overrides, profile), signal)
+    tailorResume(profile, analysis, await resolveAiChoice(overrides, profile, options), signal)
   );
 
   outcomes.forEach((outcome, index) => {
@@ -445,523 +467,6 @@ async function tailorResumesForProfiles(
   };
 }
 
-// Generate for all profiles at once
-router.post('/generate-all', async (req: Request, res: Response) => {
-  try {
-    const {
-      templateId,
-      jobDescription,
-      jobAnalysis,
-      companyName,
-      role,
-      model,
-      profileIds,
-      format = 'both',
-      includeCoverLetterDocx,
-    } = req.body;
-
-    const appSettings = await getPublicAppSettings();
-    const aiOverrides = readAiOverrides(req.body);
-    const selectedModel = await resolveAiChoice(aiOverrides);
-
-    if (!companyName?.trim()) {
-      res.status(400).json({ error: 'Company name is required' });
-      return;
-    }
-
-    // Load profiles
-    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
-    if (profiles.length === 0) {
-      res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
-      return;
-    }
-
-    /**
-     * The charge, above the analysis rather than beside the file writes.
-     *
-     * It has to sit here: the tailoring below spends the model budget for every
-     * profile before anything is written, so a check placed next to the writes
-     * would refuse a run the account had already paid the expensive part of.
-     */
-    const reservation = newReservationId();
-    reserveCredits(req.user!, profiles.length, {
-      kind: 'request',
-      id: reservation,
-      label: `Generate for ${profiles.length} profile(s)`,
-    });
-    try {
-
-    let analysis: JobAnalysis | undefined;
-
-    const trimmedJobDescription = jobDescription?.trim();
-
-    if (trimmedJobDescription && trimmedJobDescription.length > 50) {
-      analysis = jobAnalysis || await analyzeJobDescription(
-        trimmedJobDescription,
-        selectedModel,
-        getProfileAnalyzeJobPromptId(profiles[0]),
-        requestSignal(req, res)
-      );
-    }
-
-    const resolvedRole = resolveGenerationRole(role, analysis);
-    if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
-      res.status(400).json({ error: 'Role is required' });
-      return;
-    }
-
-    const normalizedCompanyName = companyName.trim();
-    const results: { profileId: string; profileName: string; pdf?: string; docx?: string; coverLetterPdf?: string; coverLetterDocx?: string }[] = [];
-    const failures: Array<{ profileId: string; profileName: string; companyName: string; error: string }> = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
-    const formatNorm = (format as string) === 'both' ? 'both' : format === 'docx' ? 'docx' : 'pdf';
-    const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
-    const bulkTailoring = analysis
-      ? await tailorResumesForProfiles(
-          profiles,
-          analysis,
-          selectedModel,
-          aiOverrides,
-          requestSignal(req, res)
-        )
-      : null;
-
-    // The tailoring above already ran every profile at once; this is what came
-    // after it, and it was still one profile at a time. That is not a small
-    // remainder: a profile with no cover letter in its tailored content needs a
-    // second model call, so a batch of ten with no job description was ten full
-    // calls end to end with every seat slot but one idle.
-    const capacity = await resolveBatchCapacity(selectedModel);
-    const buildable = profiles.filter((profile): profile is Profile => Boolean(profile));
-    console.log(
-      `[Resume timing] generate-all: ${buildable.length} resume${buildable.length === 1 ? '' : 's'}, ` +
-        `${capacity.limit} at a time (${capacity.reason})`
-    );
-
-    const outcomes = await mapWithConcurrency(buildable, capacity.limit, async (profile) => {
-      const template = await resolveTemplateForProfile(profile, templateId);
-      if (!template) {
-        throw new Error('Default template not available');
-      }
-
-      const tailoringFailure = bulkTailoring?.failures.find((item) => item.profileId === profile.id);
-      if (tailoringFailure) {
-        throw new Error(tailoringFailure.error);
-      }
-
-      let tailoredContent: TailoredContent | undefined;
-      if (analysis) {
-        tailoredContent = bulkTailoring
-          ? bulkTailoring.tailoredByProfileId.get(profile.id)
-          : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
-      }
-
-      let coverLetterBody: string;
-      if (tailoredContent?.coverLetter?.trim()) {
-        coverLetterBody = tailoredContent.coverLetter.trim();
-      } else {
-        coverLetterBody = await generateCoverLetter(
-          profile,
-          normalizedCompanyName,
-          resolvedRole,
-          selectedModel,
-          requestSignal(req, res)
-        );
-      }
-      const pathInfo = await getGeneratedOutputPath(profile, normalizedCompanyName, resolvedRole, {
-        accountName: accountFolderName(req.user),
-      });
-      const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
-      const coverLetterDocxPath = generateCoverLetterDocx
-        ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
-        : undefined;
-
-      const entry: (typeof results)[0] = {
-        profileId: profile.id,
-        profileName: profile.name,
-        coverLetterPdf: coverLetterPdfPath,
-        coverLetterDocx: coverLetterDocxPath,
-      };
-      if (formatNorm === 'both') {
-        const [pdfFilename, docxFilename] = await Promise.all([
-          generateResumePDF(profile, template, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole),
-          generateResumeDOCX(profile, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole)
-        ]);
-        entry.pdf = pdfFilename;
-        entry.docx = docxFilename;
-      } else {
-        const filename = formatNorm === 'docx'
-          ? await generateResumeDOCX(profile, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole)
-          : await generateResumePDF(profile, template, tailoredContent, pathInfo, normalizedCompanyName, resolvedRole);
-        entry[formatNorm] = filename;
-      }
-      return { entry, tailoredContent };
-    });
-
-    // Input order, not completion order: the page lists what comes back, and a
-    // list that reshuffled itself by how fast each call happened to be would
-    // read as a different batch every run.
-    outcomes.forEach((outcome, index) => {
-      const profile = buildable[index];
-      if (outcome.ok) {
-        collectUnconfirmedSkillMaps(
-          outcome.value.tailoredContent,
-          unconfirmedHardMap,
-          unconfirmedSoftMap
-        );
-        results.push(outcome.value.entry);
-        return;
-      }
-      const message = describeFailure(outcome.error, 'Failed to generate resume');
-      console.error(
-        `Error generating resume for profile ${profile.id} (${profile.name}) at ${normalizedCompanyName}:`,
-        outcome.error
-      );
-      failures.push({
-        profileId: profile.id,
-        profileName: profile.name,
-        companyName: normalizedCompanyName,
-        error: message,
-      });
-    });
-
-    // Every profile that did not produce a resume gives its credit back. A
-    // profile skipped before it was ever attempted counts too, which is why
-    // this is measured against what was reserved rather than against
-    // `buildable`.
-    refundUnits(
-      reservation,
-      profiles.length - results.length,
-      `${profiles.length - results.length} of ${profiles.length} did not build`
-    );
-    // Accounted for: the failures have been refunded and the rest delivered, so
-    // what is still held is exactly what was earned. The `finally` below then
-    // finds a closed reservation and does nothing.
-    settleRun(reservation);
-
-    res.json({
-      generated: results.length,
-      results,
-      failed: failures.length,
-      failures,
-      failedCompanies: failures.length > 0 ? [normalizedCompanyName] : [],
-      tailored: !!analysis,
-      unconfirmedHardSkills: bulkTailoring?.unconfirmedHardSkills ?? Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
-    });
-    } finally {
-      // Sweeps anything still outstanding - the whole reservation when the body
-      // threw before settling, nothing when it completed normally.
-      releaseReservation(reservation, 'The run did not finish.');
-    }
-  } catch (error) {
-    if (error instanceof InsufficientCreditsError) {
-      res.status(402).json({
-        error: error.message,
-        code: 'insufficient-credits',
-        needed: error.needed,
-        balance: error.balance,
-      });
-      return;
-    }
-    console.error('Error generating resumes for all profiles:', error);
-    if (sendAiError(res, error)) return;
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to generate resumes'
-    });
-  }
-});
-
-router.post('/generate-multi-job', async (req: Request, res: Response) => {
-  try {
-    const {
-      templateId,
-      jobs,
-      model,
-      profileIds,
-      format = 'both',
-      includeCoverLetterDocx,
-    } = req.body as {
-      templateId?: string;
-      jobs?: Array<{
-        companyName?: string;
-        role?: string;
-        jobDescription?: string;
-        jobAnalysis?: JobAnalysis;
-        sourceRowNumber?: number;
-      }>;
-      model?: string;
-      profileIds?: string[];
-      format?: 'pdf' | 'docx' | 'both';
-      includeCoverLetterDocx?: boolean;
-    };
-
-    const aiOverrides = readAiOverrides(req.body);
-    const selectedModel = await resolveAiChoice(aiOverrides);
-
-    if (!Array.isArray(jobs) || jobs.length === 0) {
-      res.status(400).json({ error: 'At least one job is required' });
-      return;
-    }
-
-    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
-    if (profiles.length === 0) {
-      res.status(400).json({ error: 'No matching profiles available. Add profiles in Admin or update group members.' });
-      return;
-    }
-
-    const appSettings = await getPublicAppSettings();
-    const normalizedJobs = jobs.map((job, index) => {
-      const normalizedCompanyName = typeof job.companyName === 'string' ? job.companyName.trim() : '';
-      const trimmedJobDescription = typeof job.jobDescription === 'string' ? job.jobDescription.trim() : '';
-
-      if (!normalizedCompanyName) {
-        throw new Error(`Job ${index + 1} is missing a company name`);
-      }
-
-      const analysis = job.jobAnalysis;
-      const resolvedRole = resolveGenerationRole(job.role, analysis);
-      if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
-        throw new Error(`Job ${index + 1} (${normalizedCompanyName}) is missing a role`);
-      }
-
-      return {
-        companyName: normalizedCompanyName,
-        role: resolvedRole,
-        jobDescription: trimmedJobDescription,
-        analysis,
-        sourceRowNumber: job.sourceRowNumber,
-      };
-    });
-
-    /**
-     * The charge, as one multiplication before the first analysis.
-     *
-     * This is the largest call in the app - M jobs by N profiles, with no cap on
-     * either - so decrementing as it went would refuse the thirtieth unit after
-     * twenty-nine resumes already existed and thirty model calls had been paid
-     * for. A refusal that arrives after the cost is not a refusal.
-     */
-    const multiReservation = newReservationId();
-    const multiUnits = normalizedJobs.length * profiles.length;
-    reserveCredits(req.user!, multiUnits, {
-      kind: 'request',
-      id: multiReservation,
-      label: `${normalizedJobs.length} job(s) x ${profiles.length} profile(s)`,
-    });
-    try {
-
-    /**
-     * The analysis for one job, run once however many profiles want it.
-     *
-     * Memoised on the PROMISE, not on the result, so three profiles starting
-     * the same job at the same moment share one call rather than racing to make
-     * three. The job may already carry an analysis - a caller that did its own -
-     * and then nothing is called at all.
-     *
-     * It runs INSIDE the unit that needs it rather than in a pass of its own
-     * beforehand. A separate pass would be a second wave: thirty analyses, then
-     * thirty builds, with every slot idle between the two whenever one job's
-     * analysis ran long. Here a unit is the whole of one resume - analyse, then
-     * build - so a slot that takes a task keeps it until that resume is done,
-     * which is what the queue is supposed to look like.
-     */
-    const analysisByJob = new Map<string, Promise<JobAnalysis | undefined>>();
-    const analysisFor = (job: (typeof normalizedJobs)[number]): Promise<JobAnalysis | undefined> => {
-      if (job.analysis) return Promise.resolve(job.analysis);
-      if (!job.jobDescription || job.jobDescription.length <= 50) return Promise.resolve(undefined);
-
-      const key = `${job.sourceRowNumber ?? ''}\u0000${job.companyName}\u0000${job.jobDescription}`;
-      const existing = analysisByJob.get(key);
-      if (existing) return existing;
-
-      const started = analyzeJobDescription(
-        job.jobDescription,
-        selectedModel,
-        undefined,
-        requestSignal(req, res)
-      );
-      analysisByJob.set(key, started);
-      return started;
-    };
-
-    const formatNorm = (format as string) === 'both' ? 'both' : format === 'docx' ? 'docx' : 'pdf';
-    const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
-    const results: Array<{
-      profileId: string;
-      profileName: string;
-      companyName: string;
-      role: string;
-      pdf?: string;
-      docx?: string;
-      coverLetterPdf?: string;
-      coverLetterDocx?: string;
-    }> = [];
-    const failures: Array<{ profileId: string; profileName: string; companyName: string; error: string }> = [];
-    const failedCompanies = new Set<string>();
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
-    // Whether any resume was actually tailored. Read from what the units DID,
-    // not from what the request arrived with: the analysis now happens inside
-    // the batch, so the request usually arrives carrying none.
-    let anyTailored = false;
-
-    /**
-     * One unit of work: this profile, for this job.
-     *
-     * Flattened before anything runs, rather than left as nested loops, so the
-     * whole grid is a single queue. Nested, a slow job at the head held every
-     * profile behind it even when other slots sat idle - the outer loop
-     * could not move on until the inner one finished, and the inner one was one
-     * at a time as well.
-     */
-    const units = normalizedJobs.flatMap((job) => profiles.map((profile) => ({ job, profile })));
-
-    // How wide to run, taken from the CHOSEN PROVIDER's real capacity: the
-    // seat's process slots, or the default for a metered API. See
-    // `resolveBatchCapacity`. The queues themselves are already there - each
-    // seat's semaphore hands a free slot to the head of its line as one is
-    // released - so this only has to offer them enough work to stay busy.
-    const capacity = await resolveBatchCapacity(selectedModel);
-    console.log(
-      `[Resume timing] multi-job batch: ${units.length} resume${units.length === 1 ? '' : 's'}, ` +
-        `${capacity.limit} at a time (${capacity.reason})`
-    );
-
-    const outcomes = await mapWithConcurrency(units, capacity.limit, async ({ job, profile }) => {
-      const template = await resolveTemplateForProfile(profile, templateId);
-      if (!template) {
-        throw new Error('Default template not available');
-      }
-
-      const analysis = await analysisFor(job);
-
-      let tailoredContent: TailoredContent | undefined;
-      if (analysis) {
-        tailoredContent = await tailorResume(
-          profile,
-          analysis,
-          selectedModel,
-          requestSignal(req, res)
-        );
-      }
-
-      let coverLetterBody: string;
-      if (tailoredContent?.coverLetter?.trim()) {
-        coverLetterBody = tailoredContent.coverLetter.trim();
-      } else {
-        coverLetterBody = await generateCoverLetter(
-          profile,
-          job.companyName,
-          job.role,
-          selectedModel,
-          requestSignal(req, res)
-        );
-      }
-
-      const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, {
-        sourceRowNumber: job.sourceRowNumber,
-        accountName: accountFolderName(req.user),
-      });
-      const coverLetterPdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
-      const coverLetterDocxPath = generateCoverLetterDocx
-        ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
-        : undefined;
-
-      const entry: (typeof results)[0] = {
-        profileId: profile.id,
-        profileName: profile.name,
-        companyName: job.companyName,
-        role: job.role,
-        coverLetterPdf: coverLetterPdfPath,
-        coverLetterDocx: coverLetterDocxPath,
-      };
-
-      if (formatNorm === 'both') {
-        const [pdfFilename, docxFilename] = await Promise.all([
-          generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
-          generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role),
-        ]);
-        entry.pdf = pdfFilename;
-        entry.docx = docxFilename;
-      } else {
-        const filename = formatNorm === 'docx'
-          ? await generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role)
-          : await generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role);
-        entry[formatNorm] = filename;
-      }
-
-      return { entry, tailoredContent, tailored: Boolean(analysis) };
-    });
-
-    // Collected in INPUT order, not completion order. `mapWithConcurrency`
-    // preserves the index, and the page lists what comes back - so results that
-    // reordered themselves by how fast each model call happened to be would
-    // read as a different batch every run.
-    outcomes.forEach((outcome, index) => {
-      const { job, profile } = units[index];
-      if (outcome.ok) {
-        collectUnconfirmedSkillMaps(
-          outcome.value.tailoredContent,
-          unconfirmedHardMap,
-          unconfirmedSoftMap
-        );
-        if (outcome.value.tailored) anyTailored = true;
-        results.push(outcome.value.entry);
-        return;
-      }
-      const message = describeFailure(outcome.error, 'Failed to generate resume');
-      console.error(
-        `Error generating resume for profile ${profile.id} (${profile.name}) at ${job.companyName}:`,
-        outcome.error
-      );
-      failures.push({
-        profileId: profile.id,
-        profileName: profile.name,
-        companyName: job.companyName,
-        error: message,
-      });
-      failedCompanies.add(job.companyName);
-    });
-
-    refundUnits(
-      multiReservation,
-      multiUnits - results.length,
-      `${multiUnits - results.length} of ${multiUnits} did not build`
-    );
-    settleRun(multiReservation);
-
-    res.json({
-      generated: results.length,
-      failed: failures.length,
-      results,
-      failures,
-      failedCompanies: Array.from(failedCompanies),
-      tailored: anyTailored,
-      unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
-    });
-    } finally {
-      releaseReservation(multiReservation, 'The run did not finish.');
-    }
-  } catch (error) {
-    if (error instanceof InsufficientCreditsError) {
-      res.status(402).json({
-        error: error.message,
-        code: 'insufficient-credits',
-        needed: error.needed,
-        balance: error.balance,
-      });
-      return;
-    }
-    console.error('Error generating resumes for multiple jobs:', error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to generate resumes for multiple jobs',
-    });
-  }
-});
-
 // Preview resumes for all profiles
 router.post('/preview-all', async (req: Request, res: Response) => {
   try {
@@ -980,7 +485,8 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     };
 
     const aiOverrides = readAiOverrides(req.body);
-    const selectedModel = await resolveAiChoice(aiOverrides);
+    const requestOptions: ModelRequestOptions = { admin: isAdmin(req) };
+    const selectedModel = await resolveAiChoice(aiOverrides, null, requestOptions);
 
     const profiles = await loadAllProfiles(req.user ?? null, profileIds);
     if (profiles.length === 0) {
@@ -1014,6 +520,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
           analysis,
           selectedModel,
           aiOverrides,
+          requestOptions,
           requestSignal(req, res)
         )
       : null;
@@ -1076,6 +583,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error previewing resumes for all profiles:', error);
+    if (sendModelUnavailable(req, res, error)) return;
     if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to preview resumes'
@@ -1100,7 +608,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       format = 'pdf',
       includeCoverLetterDocx,
     }: GenerateResumeRequest = req.body;
-    const appSettings = await getPublicAppSettings();
+    const appSettings = await getUserAppSettings();
 
     if (!profileId) {
       res.status(400).json({ error: 'Profile ID is required' });
@@ -1123,26 +631,34 @@ router.post('/generate', async (req: Request, res: Response) => {
       return;
     }
 
-    // One resume, one credit - however many files it writes. A run asking for
-    // PDF and DOCX plus a cover letter produces four files and still costs one,
-    // because what was asked for is one tailored resume.
+    // Resolved BEFORE the charge, because the charge is this model's price.
+    // Not at the top of the handler: the model is a per-profile setting, so
+    // the profile has to be loaded before it can be read. The request's own
+    // override still wins - and one it may not use is refused here, before
+    // anything is taken.
+    const { choice: selectedModel, creditCost } = await resolvePricedAiChoice(
+      readAiOverrides(req.body),
+      profile,
+      { admin: isAdmin(req) }
+    );
+
+    // One resume, one price - however many files it writes. A run asking for
+    // PDF and DOCX plus a cover letter produces four files and is still one
+    // resume, because what was asked for is one tailored resume.
     //
     // Note where this ISN'T: /preview below has the identical shape and is NOT
     // charged, because it writes no file and its tailored output is handed back
     // for /batches to reuse. Charging both would bill the ordinary
     // preview-then-generate flow twice for one piece of model work.
     const singleReservation = newReservationId();
-    reserveCredits(req.user!, 1, {
+    reserveCredits(req.user!, creditCost, {
       kind: 'request',
       id: singleReservation,
-      label: `${profile.name} / ${companyName}`,
+      label: `${profile.name} / ${companyName.trim()} - ${describeCharge([
+        { modelLabel: selectedModel.modelLabel, credits: creditCost },
+      ])}`,
     });
     try {
-
-    // Resolved here rather than at the top of the handler: the model
-    // is a per-profile setting, so the profile has to be loaded
-    // before they can be read. The request's own overrides still win.
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile);
 
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
@@ -1264,12 +780,12 @@ router.post('/generate', async (req: Request, res: Response) => {
         unconfirmedSoftSkills,
       });
     }
-    // The resume exists, so the credit is spent.
+    // The resume exists, so its price is spent.
     settleRun(singleReservation);
     } finally {
       // A no-op on the happy path, because `settleRun` above already closed it
-      // with its one credit spent. On a throw nothing settled it, so this
-      // sweeps the credit back - which is the whole reason the body is wrapped
+      // with the resume's price spent. On a throw nothing settled it, so this
+      // sweeps the price back - which is the whole reason the body is wrapped
       // rather than refunded at each exit.
       releaseReservation(singleReservation, 'The run did not finish.');
     }
@@ -1284,6 +800,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       return;
     }
     console.error('Error generating resume:', error);
+    if (sendModelUnavailable(req, res, error)) return;
     if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to generate resume'
@@ -1317,7 +834,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     // Resolved here rather than at the top of the handler: the model
     // is a per-profile setting, so the profile has to be loaded
     // before they can be read. The request's own overrides still win.
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile);
+    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile, { admin: isAdmin(req) });
 
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
@@ -1354,6 +871,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     res.json({ html, tailored: !!tailoredContent, tailoredContent });
   } catch (error) {
     console.error('Error generating preview:', error);
+    if (sendModelUnavailable(req, res, error)) return;
     if (sendAiError(res, error)) return;
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to generate preview'

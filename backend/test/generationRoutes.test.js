@@ -253,9 +253,10 @@ test('cancelling reports what it dropped, and twice is not an error', async () =
 
 test('a task routes to a queue by the profile model, not by the request', async () => {
   const { routeFor } = loadFresh('../dist/routes/generation');
-  // The Claude seat and the metered providers share a lane: the metered ones
-  // have no local resource to wait for, so the lane is only a throttle for them.
   assert.deepEqual(routeFor({ provider: 'claude-cli' }), { queue: 'cli' });
+  // A retired provider - a choice stored before the upgrade - lands on the
+  // Claude seat's lane, the lane of last resort; the restore resolves such a
+  // choice again before it runs.
   assert.deepEqual(routeFor({ provider: 'claude' }), { queue: 'cli' });
   assert.deepEqual(routeFor({ provider: 'openai' }), { queue: 'cli' });
   assert.deepEqual(routeFor({ provider: 'deepseek' }), { queue: 'cli' });
@@ -266,6 +267,8 @@ test('a task routes to a queue by the profile model, not by the request', async 
   // stranding the larger of the two, or letting tasks blocked on the smaller
   // squat on slots the other provider's work needed.
   assert.deepEqual(routeFor({ provider: 'codex-cli' }), { queue: 'codex' });
+  // Nor does Gemini, for the same reason: AI_GEMINI_CONCURRENCY sizes its own.
+  assert.deepEqual(routeFor({ provider: 'gemini-cli' }), { queue: 'gemini' });
 });
 
 test('a page loaded before the upgrade that still names the browser entry gets the default', async () => {
@@ -283,11 +286,11 @@ test('a page loaded before the upgrade that still names the browser entry gets t
     assert.equal(response.status, 202);
     const body = await response.json();
     assert.equal(body.total, 2);
-    assert.deepEqual(Object.keys(body.queues).sort(), ['cli', 'codex'], 'no lane for the removed providers');
+    assert.deepEqual(Object.keys(body.queues).sort(), ['cli', 'codex', 'gemini'], 'no lane for the removed providers');
     assert.equal(body.queues.cli.queued + body.queues.cli.running, 2, 'both resumes are on the seat');
 
     const stats = await (await server.call('/queues')).json();
-    assert.deepEqual(Object.keys(stats).sort(), ['cli', 'codex']);
+    assert.deepEqual(Object.keys(stats).sort(), ['cli', 'codex', 'gemini']);
   } finally {
     server.close();
   }

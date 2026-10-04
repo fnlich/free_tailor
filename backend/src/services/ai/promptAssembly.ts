@@ -35,7 +35,7 @@ export const JSON_ONLY_SYSTEM_PROMPT =
  * What to say to a provider that enforces nothing.
  *
  * Chosen by capability, not by name: any transport whose `nativeJsonMode` is
- * `none` gets it - today the metered Anthropic API. Every clause here is a
+ * `none` gets it - a CLI with no structured-output flag. Every clause here is a
  * failure a model left to itself actually produces:
  *
  *   - It opens with a sentence of preamble ("Here's the tailored resume:") and

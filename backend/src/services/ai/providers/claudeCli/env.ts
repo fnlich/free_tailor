@@ -7,9 +7,11 @@
  * `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` - the CLI resolves credentials
  * in a fixed order and an API key WINS over the subscription. Left in place it
  * produces identical answers at identical latency and bills every one of them,
- * which is exactly what this provider exists to avoid. This app documents
- * `ANTHROPIC_API_KEY` in `.env.example` and reads it for the separate `claude`
- * HTTP provider, so it is very likely to be present.
+ * which is exactly what this provider exists to avoid. This app reads no key
+ * of its own any more, but an install upgraded from one that ran the metered
+ * Anthropic API still has `ANTHROPIC_API_KEY` in its `.env`. Always stripped:
+ * there is no switch to let one through, because the app runs on subscription
+ * seats only.
  *
  * `CLAUDECODE` and `CLAUDE_*` - set when the server is itself launched from
  * inside a Claude Code session, which is the normal development loop. Left in
@@ -32,11 +34,7 @@
  * proxy variables are the operator's configuration and this module has no
  * business editing them.
  */
-export function buildChildEnv(
-  parent: NodeJS.ProcessEnv = process.env,
-  options: { allowApiKey?: boolean } = {}
-): NodeJS.ProcessEnv {
-  const allowApiKey = options.allowApiKey === true;
+export function buildChildEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const child: NodeJS.ProcessEnv = {};
 
   for (const [name, value] of Object.entries(parent)) {
@@ -49,7 +47,7 @@ export function buildChildEnv(
     if (name.startsWith('CLAUDE_') && name !== 'CLAUDE_CONFIG_DIR') {
       continue;
     }
-    if ((name === 'ANTHROPIC_API_KEY' || name === 'ANTHROPIC_AUTH_TOKEN') && !allowApiKey) {
+    if (name === 'ANTHROPIC_API_KEY' || name === 'ANTHROPIC_AUTH_TOKEN') {
       continue;
     }
     if (name === 'MAX_THINKING_TOKENS') {

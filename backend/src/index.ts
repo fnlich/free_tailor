@@ -36,6 +36,7 @@ import bidAssistantRoutes from './routes/bidAssistant';
 import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
+import { describeRetiredProviderVariables } from './config/providerCatalog';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
 import { applyProxyTrust } from './config/proxyTrust';
 import {
@@ -333,6 +334,11 @@ const server = app.listen(PORT, HOST, () => {
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
+  // An upgraded .env still holding the metered providers' keys or the seats'
+  // old allow-a-key switches: nothing reads them, and saying so once here is
+  // the only way an operator learns it. Names only - never a value.
+  const retiredVariables = describeRetiredProviderVariables();
+  if (retiredVariables) console.warn(retiredVariables);
   // Reachable whenever ADMIN_EMAILS is set and somebody else signs in first -
   // that path never falls back to the first-account rule, so the install can
   // genuinely end up with nobody who can administer it.

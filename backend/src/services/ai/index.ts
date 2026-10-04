@@ -23,6 +23,7 @@ export { JSON_ONLY_SYSTEM_PROMPT } from './promptAssembly';
 export {
   checkProviderHealth,
   getClaudeCliAdapter,
+  getGeminiCliAdapter,
   listProviderCapabilities,
   preflightAllProviders,
   registerAdapter,

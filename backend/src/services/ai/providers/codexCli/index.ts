@@ -89,8 +89,6 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     // `--json-schema`, but the capability is the same from outside.
     nativeJsonMode: 'json-schema',
     systemBlocks: false,
-    requiresApiKey: false,
-    credentialKind: 'subscription-seat',
     maxConcurrency: config.concurrency,
   };
 
@@ -108,7 +106,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     try {
       const value = await check({
         binary: config.binary,
-        env: buildCodexChildEnv(process.env, { allowApiKey: config.allowApiKey }),
+        env: buildCodexChildEnv(process.env),
       });
       cachedHealth = { value, at: now() };
       return value;
@@ -186,7 +184,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
       const outcome = await runner.run({
         binary: config.binary,
         argv,
-        env: buildCodexChildEnv(process.env, { allowApiKey: config.allowApiKey }),
+        env: buildCodexChildEnv(process.env),
         cwd: config.workdir,
         stdin,
         deadlineMs: Math.max(

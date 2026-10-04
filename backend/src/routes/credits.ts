@@ -19,6 +19,8 @@ router.use(requireUser);
 router.get('/', (req: Request, res: Response) => {
   res.json({
     ...getStatus(req.user!),
+    // The DEFAULT price, kept for a page loaded before prices were per model.
+    // What a run costs now is its quote: POST /api/generation/quote.
     perResume: CREDITS_PER_RESUME,
   });
 });

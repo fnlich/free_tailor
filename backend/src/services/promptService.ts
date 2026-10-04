@@ -25,7 +25,7 @@ import {
   PromptValidation,
   PromptVariableDefinition,
 } from '../types/prompt';
-import { normalizePromptModelSelection } from './aiModelCatalog';
+import { normalizePromptModelOverride, normalizePromptModelSelection } from './aiModelCatalog';
 import type { AIProvider } from '../types/template';
 
 const CUSTOM_PROMPT_PREFIX = 'custom-';
@@ -960,7 +960,7 @@ export async function createPrompt(input: PromptCreateInput): Promise<PromptReco
   const name = normalizePromptName(input.name);
   const description = normalizePromptDescription(input.description);
   const content = normalizePromptContent(input.content);
-  const modelSelection = normalizePromptModelSelection(input.modelProvider, input.modelName);
+  const modelSelection = normalizePromptModelOverride(input.modelProvider, input.modelName);
   const draftContext = resolveCreateDraftContext(input);
 
   if (!name) {
@@ -1035,11 +1035,16 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
   if (getPromptFeatureDefinitionById(id)) {
     const feature = getPromptFeatureDefinitionById(id);
     if (!feature) return null;
-    const modelSelection = normalizePromptModelSelection(input.modelProvider, input.modelName);
+    const existing = await readBuiltInPromptSource(id);
+    // Compared with the override the prompt reads as having now - its stored
+    // one, else the shipped one - so saving the text alone never trips over it.
+    const modelSelection = normalizePromptModelOverride(input.modelProvider, input.modelName, {
+      provider: existing?.parsed.modelProvider ?? feature.modelProvider,
+      modelName: existing?.parsed.modelName ?? feature.modelName,
+    });
     const allowedVariables = resolveFeatureAllowedVariables(content, feature.allowedVariables);
 
     assertValidPromptDraft(content, allowedVariables);
-    const existing = await readBuiltInPromptSource(id);
     writeStoredPrompt(id, {
       id,
       featureKey: feature.key,
@@ -1060,9 +1065,10 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
   const name = normalizePromptName(input.name ?? current.name);
   const description = normalizePromptDescription(input.description ?? current.description);
   const draftContext = resolveUpdateDraftContext(input, current);
-  const modelSelection = normalizePromptModelSelection(
+  const modelSelection = normalizePromptModelOverride(
     input.modelProvider ?? current.modelProvider,
-    input.modelName ?? current.modelName
+    input.modelName ?? current.modelName,
+    { provider: current.modelProvider, modelName: current.modelName }
   );
 
   if (!name) {

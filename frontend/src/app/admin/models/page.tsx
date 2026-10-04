@@ -5,15 +5,19 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   adminApi,
   AdminAppSettings,
-  AI_PROVIDERS,
   AIModelRecord,
   AIProvider,
   coerceProvider,
+  DEFAULT_CREDITS_PER_RESUME,
+  describeProviderModel,
+  findProviderModelOption,
+  formatCreditsPerResume,
   getAIProviderLabel,
   isProviderLocked,
   isProviderOffered,
   LOCK_ICON,
-  PROVIDER_META,
+  MAX_CREDITS_PER_RESUME,
+  ProviderModelNameOption,
 } from '@/lib/api';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 
@@ -21,17 +25,10 @@ type ModelDraft = {
   name: string;
   provider: AIProvider;
   modelName: string;
+  /** Kept as typed, so the field can be cleared and retyped; parsed on save. */
+  creditsPerResume: string;
   description: string;
   enabled: boolean;
-};
-
-const EMPTY_DRAFT: ModelDraft = {
-  name: '',
-  // The keyless subscription provider is the sensible default to add to.
-  provider: 'claude-cli',
-  modelName: '',
-  description: '',
-  enabled: true,
 };
 
 function lockReason(settings: AdminAppSettings, provider: AIProvider): string {
@@ -43,14 +40,74 @@ function toDraft(model: AIModelRecord): ModelDraft {
     name: model.name,
     provider: model.provider,
     modelName: model.modelName,
+    creditsPerResume: String(model.creditsPerResume),
     description: model.description,
     enabled: model.enabled,
   };
 }
 
+/** The model names a seat offers, from the server's list for it. */
+function optionsFor(settings: AdminAppSettings, provider: AIProvider): ProviderModelNameOption[] {
+  return settings.providerModelOptions.find((entry) => entry.provider === provider)?.models ?? [];
+}
+
+/**
+ * Whether another record already uses this provider and model name.
+ *
+ * The server refuses a second record for the same pair - it is how a request
+ * naming `provider:modelName` resolves to exactly one model - so the form marks
+ * those options rather than letting a save fail over them.
+ */
+function isTaken(
+  settings: AdminAppSettings,
+  provider: AIProvider,
+  modelName: string,
+  exceptId: string | null
+): boolean {
+  const wanted = modelName.toLowerCase();
+  return settings.aiModels.some(
+    (model) => model.id !== exceptId && model.provider === provider && model.modelName.toLowerCase() === wanted
+  );
+}
+
+/**
+ * The model name a provider switch lands on: the seat's first option no other
+ * record uses, or its first option when every one is taken (the save then says
+ * why). Empty only for a seat the server listed no names for.
+ */
+function firstModelName(settings: AdminAppSettings, provider: AIProvider, exceptId: string | null): string {
+  const options = optionsFor(settings, provider);
+  return (options.find((option) => !isTaken(settings, provider, option.value, exceptId)) ?? options[0])?.value ?? '';
+}
+
+/** A blank form on the first seat, with that seat's first free model name. */
+function emptyDraft(settings: AdminAppSettings | null): ModelDraft {
+  const provider = settings?.providerModelOptions[0]?.provider ?? 'claude-cli';
+  return {
+    name: '',
+    provider,
+    modelName: settings ? firstModelName(settings, provider, null) : '',
+    creditsPerResume: String(DEFAULT_CREDITS_PER_RESUME),
+    description: '',
+    enabled: true,
+  };
+}
+
+/**
+ * The price as the server will take it: a whole number of credits from 0 to
+ * the cap, or null. Checked here so the message names the field, the same way
+ * the server's refusal does.
+ */
+function parseCreditsPerResume(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const credits = Number(trimmed);
+  return Number.isSafeInteger(credits) && credits <= MAX_CREDITS_PER_RESUME ? credits : null;
+}
+
 function ModelsPageBody() {
   const [settings, setSettings] = useState<AdminAppSettings | null>(null);
-  const [draft, setDraft] = useState<ModelDraft>(EMPTY_DRAFT);
+  const [draft, setDraft] = useState<ModelDraft>(() => emptyDraft(null));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -65,7 +122,11 @@ function ModelsPageBody() {
     try {
       setIsLoading(true);
       setError('');
-      setSettings(await adminApi.getSettings());
+      const loaded = await adminApi.getSettings();
+      setSettings(loaded);
+      // The blank form needs the seat lists to pick its model name from, and
+      // they arrive with the settings.
+      setDraft(emptyDraft(loaded));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load models');
     } finally {
@@ -73,14 +134,29 @@ function ModelsPageBody() {
     }
   };
 
-  const resetDraft = () => {
-    setDraft(EMPTY_DRAFT);
+  const resetDraft = (next: AdminAppSettings | null = settings) => {
+    setDraft(emptyDraft(next));
     setEditingId(null);
+  };
+
+  const handleProviderChange = (value: string) => {
+    if (!settings) return;
+    const provider = coerceProvider(value);
+    if (!provider) return;
+    // The model name belongs to the provider, so a switch starts it over on
+    // the new seat's list rather than carrying a name that seat may not have.
+    setDraft((current) => ({
+      ...current,
+      provider,
+      modelName:
+        provider === current.provider ? current.modelName : firstModelName(settings, provider, editingId),
+    }));
   };
 
   const handleSubmit = async () => {
     const name = draft.name.trim();
     const modelName = draft.modelName.trim();
+    const creditsPerResume = parseCreditsPerResume(draft.creditsPerResume);
 
     if (!name) {
       setError('Display name is required.');
@@ -88,7 +164,12 @@ function ModelsPageBody() {
     }
 
     if (!modelName) {
-      setError('Provider model name is required.');
+      setError('Choose a model.');
+      return;
+    }
+
+    if (creditsPerResume === null) {
+      setError(`Price per resume must be a whole number of credits from 0 to ${MAX_CREDITS_PER_RESUME}.`);
       return;
     }
 
@@ -96,24 +177,20 @@ function ModelsPageBody() {
       setIsSaving(true);
       setError('');
       setStatus('');
+      const fields = {
+        name,
+        provider: draft.provider,
+        modelName,
+        creditsPerResume,
+        description: draft.description.trim(),
+        enabled: draft.enabled,
+      };
       const updated = editingId
-        ? await adminApi.updateModel(editingId, {
-            name,
-            provider: draft.provider,
-            modelName,
-            description: draft.description.trim(),
-            enabled: draft.enabled,
-          })
-        : await adminApi.createModel({
-            name,
-            provider: draft.provider,
-            modelName,
-            description: draft.description.trim(),
-            enabled: draft.enabled,
-          });
+        ? await adminApi.updateModel(editingId, fields)
+        : await adminApi.createModel(fields);
       setSettings(updated);
       setStatus(editingId ? 'Model updated.' : 'Model created.');
-      resetDraft();
+      resetDraft(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save model');
     } finally {
@@ -138,7 +215,7 @@ function ModelsPageBody() {
       const updated = await adminApi.deleteModel(model.id);
       setSettings(updated);
       if (editingId === model.id) {
-        resetDraft();
+        resetDraft(updated);
       }
       setStatus('Model deleted.');
     } catch (err) {
@@ -153,6 +230,8 @@ function ModelsPageBody() {
       setIsSaving(true);
       setError('');
       setStatus('');
+      // `{enabled}` alone: the server keeps every other field, the price
+      // included, so a toggle can never reprice a model by accident.
       const updated = await adminApi.updateModel(model.id, { enabled: !model.enabled });
       setSettings(updated);
       if (editingId === model.id) {
@@ -182,17 +261,36 @@ function ModelsPageBody() {
   };
 
   if (isLoading || !settings) {
-    return <Spinner />;
+    return (
+      <>
+        {error && (
+          <Notice tone="error" role="alert">
+            {error}
+          </Notice>
+        )}
+        {isLoading && <Spinner />}
+      </>
+    );
   }
 
   const providerEnabled = settings.providersEnabled;
+  const draftOptions = optionsFor(settings, draft.provider);
+  /*
+   * A record saved with a name the seat's list does not hold - typed before
+   * the list existed, or since narrowed through .env - keeps its name as an
+   * extra option while it is edited, so its display name, price and
+   * description can still be changed. Choosing a listed name replaces it.
+   */
+  const draftListedOption = findProviderModelOption(settings.providerModelOptions, draft.provider, draft.modelName);
+  const draftCredits = parseCreditsPerResume(draft.creditsPerResume);
 
   return (
     <div>
       <header>
         <h2 className="text-2xl font-bold tracking-tight text-ink">Models</h2>
         <p className="mt-1 text-sm text-muted">
-          Manage the runtime model library used by Resume Builder and prompt overrides.
+          The models people choose from in the Resume Builder and on their profiles, by the display name
+          you give each one, and what one resume on it costs.
         </p>
       </header>
 
@@ -213,10 +311,10 @@ function ModelsPageBody() {
 
       <Section
         title={editingId ? 'Edit Model' : 'Add Model'}
-        description="Save a provider, display name, and exact runtime model string."
+        description="People see the display name and nothing else; the provider and model name decide what runs."
         actions={
           editingId && (
-            <button type="button" onClick={resetDraft} disabled={isSaving} className="tl-button-quiet">
+            <button type="button" onClick={() => resetDraft()} disabled={isSaving} className="tl-button-quiet">
               Cancel Edit
             </button>
           )
@@ -230,7 +328,7 @@ function ModelsPageBody() {
               value={draft.name}
               onChange={(e) => setDraft((current) => ({ ...current, name: e.target.value }))}
               disabled={isSaving}
-              placeholder="GPT-5 mini"
+              placeholder="Claude Sonnet"
               className="tl-input"
             />
           </Field>
@@ -239,36 +337,78 @@ function ModelsPageBody() {
             <select
               id="model-provider"
               value={draft.provider}
-              onChange={(e) =>
-                setDraft((current) => ({
-                  ...current,
-                  provider: coerceProvider(e.target.value) ?? current.provider,
-                }))
-              }
+              onChange={(e) => handleProviderChange(e.target.value)}
               disabled={isSaving}
               className="tl-input"
             >
-              {AI_PROVIDERS.map((provider) => (
+              {settings.providerModelOptions.map((entry) => (
                 // Still offered, not removed: a model row for a locked
                 // provider is worth writing down now so it is simply there if
                 // the lock is ever lifted.
-                <option key={provider} value={provider}>
-                  {isProviderLocked(settings, provider)
-                    ? `${LOCK_ICON} ${getAIProviderLabel(provider)} (locked)`
-                    : getAIProviderLabel(provider)}
+                <option key={entry.provider} value={entry.provider}>
+                  {isProviderLocked(settings, entry.provider)
+                    ? `${LOCK_ICON} ${entry.label} (locked)`
+                    : entry.label}
                 </option>
               ))}
             </select>
           </Field>
 
-          <Field label="Model name" htmlFor="model-runtime-name">
-            <input
+          <Field
+            label="Model name"
+            htmlFor="model-runtime-name"
+            hint={
+              draftOptions.length === 0
+                ? 'The server listed no model names for this provider.'
+                : undefined
+            }
+          >
+            <select
               id="model-runtime-name"
-              type="text"
-              value={draft.modelName}
+              // The listed spelling, so a name stored as `Sonnet` still shows
+              // as the `sonnet` option; the draft keeps what was stored, so an
+              // untouched name is not sent back as a change.
+              value={draftListedOption?.value ?? draft.modelName}
               onChange={(e) => setDraft((current) => ({ ...current, modelName: e.target.value }))}
+              disabled={isSaving || (draftOptions.length === 0 && !draft.modelName)}
+              className="tl-input"
+            >
+              {draft.modelName && !draftListedOption && (
+                <option value={draft.modelName}>{draft.modelName} (current - not in the list)</option>
+              )}
+              {draftOptions.length === 0 && !draft.modelName && <option value="">No model names</option>}
+              {draftOptions.map((option) => {
+                const taken = isTaken(settings, draft.provider, option.value, editingId);
+                return (
+                  <option key={option.value} value={option.value} disabled={taken}>
+                    {taken ? `${option.label} (already added)` : option.label}
+                  </option>
+                );
+              })}
+            </select>
+          </Field>
+
+          <Field
+            label="Price per resume (credits)"
+            htmlFor="model-credits-per-resume"
+            hint={
+              draftCredits === null
+                ? `A whole number from 0 to ${MAX_CREDITS_PER_RESUME}.`
+                : draftCredits === 0
+                  ? 'Free - a resume on this model costs nothing.'
+                  : `${formatCreditsPerResume(draftCredits)}. 0 makes it free.`
+            }
+          >
+            <input
+              id="model-credits-per-resume"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={MAX_CREDITS_PER_RESUME}
+              step={1}
+              value={draft.creditsPerResume}
+              onChange={(e) => setDraft((current) => ({ ...current, creditsPerResume: e.target.value }))}
               disabled={isSaving}
-              placeholder={PROVIDER_META[draft.provider]?.modelNameHint ?? 'model name'}
               className="tl-input"
             />
           </Field>
@@ -280,7 +420,7 @@ function ModelsPageBody() {
               value={draft.description}
               onChange={(e) => setDraft((current) => ({ ...current, description: e.target.value }))}
               disabled={isSaving}
-              placeholder="Fast structured extraction model"
+              placeholder="Optional - a note for administrators"
               className="tl-input"
             />
           </Field>
@@ -319,6 +459,7 @@ function ModelsPageBody() {
               <tr>
                 <th scope="col">Model</th>
                 <th scope="col">Provider</th>
+                <th scope="col">Price</th>
                 <th scope="col">Status</th>
                 <th scope="col">Updated</th>
                 <th scope="col">
@@ -335,6 +476,12 @@ function ModelsPageBody() {
                 // MANAGEABLE here - that is why the admin list is the raw one - but
                 // it must read as off and must not be settable as the default.
                 const providerIsEnabled = isProviderOffered(settings, model.provider, providerEnabled);
+                // Still runnable - the server never checks a stored name against
+                // the list - but worth a look: it may be a name the CLI no longer
+                // takes, and it cannot be picked again once changed.
+                const isListed = Boolean(
+                  findProviderModelOption(settings.providerModelOptions, model.provider, model.modelName)
+                );
 
                 return (
                   <tr key={model.id}>
@@ -342,7 +489,12 @@ function ModelsPageBody() {
                       {/* Colours on inner elements: `.tl-table td` is unlayered
                           and would beat a utility on the cell itself. */}
                       <p className="font-semibold text-ink">{model.name}</p>
-                      <p className="mt-0.5 break-all font-mono text-xs text-ink">{model.modelName}</p>
+                      <p className="mt-0.5 text-xs text-ink">
+                        {describeProviderModel(settings.providerModelOptions, model.provider, model.modelName)}
+                        {isListed && (
+                          <span className="ml-1.5 break-all font-mono text-subtle">{model.modelName}</span>
+                        )}
+                      </p>
                       <p className="mt-1 text-sm text-muted">
                         {model.description || 'No description provided.'}
                       </p>
@@ -355,6 +507,9 @@ function ModelsPageBody() {
                     </td>
                     <td className="whitespace-nowrap">
                       <Pill tone="grey">{getAIProviderLabel(model.provider)}</Pill>
+                    </td>
+                    <td className="whitespace-nowrap">
+                      <span className="text-ink">{formatCreditsPerResume(model.creditsPerResume)}</span>
                     </td>
                     <td>
                       <div className="flex flex-wrap gap-1.5">
@@ -369,6 +524,7 @@ function ModelsPageBody() {
                         {model.enabled && !providerIsEnabled && !providerIsLocked && (
                           <Pill tone="amber">Provider off</Pill>
                         )}
+                        {!isListed && <Pill tone="amber">Not in model list</Pill>}
                       </div>
                     </td>
                     {/* The column says "Updated", so the cell is the date alone. */}

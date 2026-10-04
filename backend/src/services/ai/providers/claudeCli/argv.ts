@@ -1,5 +1,8 @@
 import { warnOnce } from '../../telemetry';
+import { isClaudeCliModelName } from './modelNames';
 import { MAX_SYSTEM_PROMPT_ARG_BYTES, type CliEffort } from './options';
+
+export { CLI_MODEL_ALIASES } from './modelNames';
 
 /**
  * Command-line construction for one `claude -p` turn.
@@ -35,19 +38,6 @@ export const CLI_BASE_SYSTEM_PROMPT =
   'no explanation, and no commentary afterwards. You have no tools and no ' +
   'filesystem; write your answer directly into the reply.';
 
-/** Model aliases the CLI resolves to the current model in that family. */
-export const CLI_MODEL_ALIASES: ReadonlySet<string> = new Set([
-  'default',
-  'opus',
-  'sonnet',
-  'haiku',
-  'fable',
-  'sonnet[1m]',
-]);
-
-/** Full model names the CLI accepts, e.g. `claude-sonnet-5`, `claude-opus-4-1`. */
-const CANONICAL_MODEL = /^claude-[a-z0-9]+(?:-[a-z0-9]+)*$/i;
-
 /**
  * Narrows a stored model name to something the CLI will actually serve.
  *
@@ -64,7 +54,7 @@ export function resolveCliModel(requested: string | undefined, fallback: string)
   if (!name) {
     return fallback;
   }
-  if (CLI_MODEL_ALIASES.has(name) || CANONICAL_MODEL.test(name)) {
+  if (isClaudeCliModelName(name)) {
     return name;
   }
   warnOnce(

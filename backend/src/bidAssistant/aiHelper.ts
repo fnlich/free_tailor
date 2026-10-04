@@ -1,3 +1,4 @@
+import { resolveRequestedAIModel } from '../config/aiModelConfig';
 import { createRawCompletion } from '../services/ai';
 import { extractJSON } from '../utils/json';
 
@@ -318,8 +319,14 @@ export async function generateAnswers(
     return {};
   }
 
+  // The app default model, as every call that names none runs on: a record an
+  // administrator added and named, rather than a seat on whatever its own CLI
+  // defaults to. The Bid Assistant has no model picker of its own.
+  const model = await resolveRequestedAIModel();
   const responseText = await createRawCompletion({
     callSite: 'bid-assistant-answers',
+    provider: model.provider,
+    modelName: model.modelName,
     system: SYSTEM_PROMPT,
     user: buildBatchPrompt(profiles, jobTitle, companyName, jobDescription, normalizedQuestions, promptTemplate),
     responseFormat: 'json',

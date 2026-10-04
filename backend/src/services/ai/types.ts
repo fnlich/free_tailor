@@ -1,7 +1,4 @@
 import type { AIProvider } from '../../types/template';
-// Type-only, so nothing is imported at runtime and the no-side-effects
-// rule this module's docstring states still holds.
-import type { CredentialKind } from '../../config/providerCatalog';
 
 /**
  * Contracts for the AI transport layer.
@@ -28,7 +25,7 @@ export type SamplingHints = {
 
 /**
  * A wall-clock budget for one completion, shared by every layer that can wait:
- * the concurrency semaphore, the subprocess, and the HTTP retry loops.
+ * the concurrency semaphore and the subprocess.
  */
 export interface Deadline {
   readonly totalMs: number;
@@ -55,8 +52,8 @@ export type CompletionRequest = {
   /**
    * System text that is byte-stable for a given prompt: the literal preamble
    * before the first `[[variable]]`. Kept separate from the user body because
-   * that is the shape the Anthropic API and the CLI's `--system-prompt` both
-   * want, and because it keeps per-call data out of the instruction channel.
+   * that is the shape a CLI's own system-prompt channel wants, and because it
+   * keeps per-call data out of the instruction channel.
    */
   readonly stableSystem: string;
   /** System text that varies with the call, e.g. the JSON-only instruction. */
@@ -110,11 +107,9 @@ export type ProviderCapabilities = {
   readonly label: string;
   readonly temperature: boolean;
   readonly maxOutputTokens: boolean;
-  readonly nativeJsonMode: 'response_format' | 'json-schema' | 'none';
+  readonly nativeJsonMode: 'json-schema' | 'none';
   /** false => the facade folds system text into the head of the user body. */
   readonly systemBlocks: boolean;
-  readonly requiresApiKey: boolean;
-  readonly credentialKind: CredentialKind;
   /** Simultaneous in-flight calls this provider tolerates. */
   readonly maxConcurrency: number;
 };

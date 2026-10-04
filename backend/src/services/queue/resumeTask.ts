@@ -1,5 +1,9 @@
 import { resolveAiChoice, type AiChoice } from '../../config/aiPreferences';
-import { isRetiredProviderId } from '../../config/providerCatalog';
+import {
+  isRetiredProviderId,
+  RETIRED_FAMILY_DESCRIPTION,
+  retiredProviderFamily,
+} from '../../config/providerCatalog';
 import { generationRenderConcurrency } from '../../config/operational';
 import { getTemplateById } from '../../extractors/templateExtractor';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
@@ -52,6 +56,15 @@ export type ResumeTaskPayload = {
   format: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx: boolean;
   choice: AiChoice;
+  /**
+   * What this resume was charged, in credits: the `creditsPerResume` of the
+   * model `choice` resolved to at submit. Snapshotted, and outside `choice`,
+   * because a choice can be resolved again after a restart and a refund must
+   * give back what was TAKEN, not what the model costs by then. Absent on a task
+   * queued before prices were per model, which was charged - and refunds - the
+   * default.
+   */
+  creditCost?: number;
   /** Tailored content a preview already produced, so the model is not re-asked. */
   tailoredContent?: import('../../types/template').TailoredContent;
   /**
@@ -168,13 +181,14 @@ export function namesRetiredProvider(choice: unknown): choice is AiChoice {
  * The task's choice, or a fresh one when it names a retired provider.
  *
  * A choice is resolved when the batch is submitted and written to disk with
- * the task, so a task queued before the browser chat providers were removed can
- * come back from a restart still naming one - or the "either site" route they
- * offered. Run as stored, it would fail every attempt against a provider nothing
+ * the task, so a task queued before the browser chat providers or the metered
+ * APIs were removed can come back from a restart still naming one - or the
+ * "either site" route the browsers offered. Run as stored, it would fail every attempt against a provider nothing
  * serves and then be refunded, and the person who queued it would get nothing.
- * The credit paid for a resume, not for a model, so the choice is resolved
- * again from the profile exactly as a new submission would resolve it: the
- * profile's own model, or the app default.
+ * So the choice is resolved again from the profile exactly as a new submission
+ * would resolve it: the profile's own model, or the app default. The PRICE is
+ * not: what the task was charged is snapshotted on its payload (`creditCost`)
+ * and is what a failure refunds, whichever model it ends up running on.
  *
  * The restore does this first, so such a task is placed in the lane of the
  * provider it will actually run on (see `restoreGenerationQueue`); asking again
@@ -185,10 +199,12 @@ export async function currentChoice(choice: AiChoice, profile: Profile): Promise
   if (!namesRetiredProvider(stored)) return choice;
 
   const fresh = await resolveAiChoice(undefined, profile);
+  const family = retiredProviderFamily(stored.provider) ?? 'browser-chat';
   warnOnce(
     `retiredQueuedChoice:${stored.provider}->${fresh.provider}/${fresh.modelName}`,
-    `A queued resume was set to run on "${stored.provider}", one of the removed browser chat ` +
-      `providers; it runs on ${fresh.provider}/${fresh.modelName} instead, resolved from its profile.`
+    `A queued resume was set to run on "${stored.provider}", one of the removed ` +
+      `${RETIRED_FAMILY_DESCRIPTION[family]}; it runs on ${fresh.provider}/${fresh.modelName} instead, ` +
+      'resolved from its profile.'
   );
   return fresh;
 }

@@ -64,7 +64,10 @@ test('every batch endpoint takes its width from the chosen provider', () => {
   const fanOuts = [...source.matchAll(/mapWithConcurrency\(\s*[\w.]+\s*,\s*([^,]+),/g)].map(
     (match) => match[1].trim()
   );
-  assert.ok(fanOuts.length >= 4, `expected every batch path to fan out, found ${fanOuts.length}`);
+  // The multi-job analysis, the per-profile tailoring and the preview of every
+  // profile. (The synchronous generate-all and multi-job generate paths were
+  // deleted; generation goes through the queue, which sizes each seat's lane.)
+  assert.ok(fanOuts.length >= 3, `expected every batch path to fan out, found ${fanOuts.length}`);
   for (const width of fanOuts) {
     assert.match(
       width,
@@ -87,11 +90,14 @@ test('results are collected by input index, not completion order', () => {
   // back. Pushing in completion order would reshuffle the list by how fast each
   // model call happened to be, so the same batch would read differently twice.
   const source = routeSource();
-  const collectors = [...source.matchAll(/outcomes\.forEach\(\(outcome, index\)/g)];
-  assert.ok(collectors.length >= 2, 'both generate paths must collect by index');
+  const collectors = [
+    ...source.matchAll(/[oO]utcomes\.forEach\(\(outcome, index\)/g),
+    ...source.matchAll(/for \(const \[index, outcome\] of \w*[oO]utcomes\.entries\(\)\)/g),
+  ];
+  assert.ok(collectors.length >= 3, 'every batch path - analysis, tailoring, preview - must collect by index');
   assert.doesNotMatch(
     source,
-    /outcomes\.forEach\(\(outcome\)\s*=>/,
+    /[oO]utcomes\.forEach\(\(outcome\)\s*=>/,
     'a collector that ignores the index cannot restore input order'
   );
 });

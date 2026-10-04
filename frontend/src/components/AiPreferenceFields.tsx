@@ -1,11 +1,7 @@
 'use client';
 
-import {
-  AIModelRecord,
-  AiPreferences,
-  LOCK_ICON,
-  ProviderLock,
-} from '@/lib/api';
+import { AiPreferences, PublicModelOption } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 /**
  * What inheriting resolves to, so the inherit option can name it.
@@ -20,17 +16,22 @@ export type InheritedAiChoice = {
 type Props = {
   value: AiPreferences;
   onChange: (next: AiPreferences) => void;
-  models: AIModelRecord[];
   /**
-   * Providers this installation cannot run. Their models are listed too, as
-   * unselectable rows behind a padlock - a model that simply vanishes from the
-   * menu looks like a bug, and someone who came here to pick it deserves to be
-   * told why they cannot.
+   * The models this account can run, by display name. Nothing else: which
+   * provider runs a model, what it is called on the server and what it costs
+   * are an administrator's business, and the cost of a run is shown as its own
+   * line by the builder rather than inside an option label.
    */
-  providerLocks?: ProviderLock[];
+  models: PublicModelOption[];
   inherited: InheritedAiChoice;
   /** Where an unset field falls back to: "app default", "profile", ... */
   inheritedFrom: string;
+  /**
+   * Whether `models` is the server's answer yet. Until it is, a saved choice is
+   * not called unavailable - an empty list that has not arrived, or that failed
+   * to, says nothing about whether the model still exists.
+   */
+  modelsLoaded?: boolean;
   disabled?: boolean;
   idPrefix: string;
 };
@@ -45,18 +46,6 @@ const SELECT_CLASS = 'tl-input';
 
 const LABEL_CLASS = 'tl-label mb-2';
 const HINT_CLASS = 'mt-2 text-sm text-subtle';
-/**
- * The locked-provider note, as plain running text.
- *
- * It used to be an amber panel with a border and a padlock, which made four
- * lines of explanation read as an alarm - and this is not an alarm. Nothing is
- * broken and nothing needs doing: a provider this build does not offer is a
- * fact about the installation, and the sentence is there so the greyed row in
- * the menu above is not a mystery. Quiet grey text under the field it explains
- * says that; a coloured box shouting at somebody who has done nothing wrong
- * does not.
- */
-const LOCK_HINT_CLASS = 'mt-1 text-sm text-subtle';
 
 /**
  * The model select.
@@ -70,23 +59,25 @@ export default function AiPreferenceFields({
   value,
   onChange,
   models,
-  providerLocks = [],
   inherited,
   inheritedFrom,
+  modelsLoaded = true,
   disabled = false,
   idPrefix,
 }: Props) {
-  const enabledModels = models.filter((model) => model.enabled);
+  const { account } = useAuth();
+  const isAdmin = account?.role === 'admin';
   const inheritOption = (what: string) => `Use the ${inheritedFrom} (${what})`;
-  const lockedModels = providerLocks.flatMap((lock) =>
-    lock.models.filter((model) => model.enabled).map((model) => ({ model, lock }))
-  );
-  // Only the locks with something to show. A provider locked on a build that
-  // has no model record for it has nothing to grey out, and an empty group
-  // label under the menu would be a heading over nothing.
-  const shownLocks = providerLocks.filter((lock) =>
-    lockedModels.some((entry) => entry.lock.id === lock.id)
-  );
+  /*
+   * A saved choice that is no longer on offer - the model was disabled, removed
+   * or can no longer run here. The server already runs such a profile on the
+   * app default, so that is what the option says, and it is kept as the
+   * selected row: a controlled select whose value matches nothing silently
+   * shows its first option, which would claim the choice was "inherit" while
+   * the stale id was still in the form.
+   */
+  const staleModelId =
+    modelsLoaded && value.modelId && !models.some((model) => model.id === value.modelId) ? value.modelId : '';
 
   const chooseModel = (modelId: string) => {
     onChange({ ...value, modelId: modelId || undefined });
@@ -106,28 +97,26 @@ export default function AiPreferenceFields({
           className={SELECT_CLASS}
         >
           <option value="">{inheritOption(inherited.modelLabel)}</option>
-          {enabledModels.map((model) => (
+          {staleModelId && (
+            <option value={staleModelId} disabled>
+              Unavailable model - the {inheritedFrom} is used
+            </option>
+          )}
+          {models.map((model) => (
             <option key={model.id} value={model.id}>
               {model.name}
             </option>
           ))}
-          {lockedModels.map(({ model, lock }) => (
-            // `disabled` is what actually prevents the choice; the padlock is
-            // there because a greyed row alone does not say why.
-            <option key={model.id} value={model.id} disabled title={lock.reason}>
-              {LOCK_ICON} {model.name} — locked
-            </option>
-          ))}
         </select>
-        <p className={HINT_CLASS}>Models are configured under Admin &rarr; Models.</p>
-        {shownLocks.map((lock) => (
-          <p key={lock.id} className={LOCK_HINT_CLASS}>
-            {lock.label} is not available in this installation. {lock.reason}
+        {staleModelId && (
+          <p className={HINT_CLASS}>
+            The model chosen here is no longer available, so the {inheritedFrom} is used. Choose another to
+            replace it.
           </p>
-        ))}
+        )}
+        {/* Where the list comes from, for the one person who can change it. */}
+        {isAdmin && <p className={HINT_CLASS}>Models are configured under Admin &rarr; Models.</p>}
       </div>
-
-
     </div>
   );
 }

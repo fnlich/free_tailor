@@ -238,10 +238,10 @@ test('the default model passes no -m at all, and a named one does', async () => 
  *
  * An API key OUTRANKS the subscription in the CLI's own resolution order, so a
  * child that inherits one produces identical answers at identical latency and
- * bills every single one. This repository documents OPENAI_API_KEY and its
- * separate `openai` provider reads it, so on most installs it IS set.
+ * bills every single one. An install upgraded from one that ran the metered
+ * OpenAI API still has OPENAI_API_KEY in its .env, so on many installs it IS set.
  */
-test('OPENAI_API_KEY never reaches the child unless it is allowed on purpose', () => {
+test('OPENAI_API_KEY never reaches the child, and nothing lets it through', () => {
   const { buildCodexChildEnv } = loadFresh('../dist/services/ai/providers/codexCli/env');
 
   const parent = {
@@ -252,22 +252,65 @@ test('OPENAI_API_KEY never reaches the child unless it is allowed on purpose', (
     OPENAI_BASE_URL: 'https://example.invalid/v1',
     CODEX_API_KEY: 'also-no',
     CODEX_ACCESS_TOKEN: 'also-no',
+    AI_CODEX_ALLOW_API_KEY: '1',
   };
 
-  const child = buildCodexChildEnv(parent);
-  assert.equal(child.OPENAI_API_KEY, undefined);
-  assert.equal(child.OPENAI_BASE_URL, undefined, 'a base URL is the other half of a redirection');
-  assert.equal(child.CODEX_API_KEY, undefined);
-  assert.equal(child.CODEX_ACCESS_TOKEN, undefined);
+  // The second call is an old caller's option: AI_CODEX_ALLOW_API_KEY used to
+  // open this, and the app runs on subscription seats only now.
+  for (const child of [buildCodexChildEnv(parent), buildCodexChildEnv(parent, { allowApiKey: true })]) {
+    assert.equal(child.OPENAI_API_KEY, undefined);
+    assert.equal(child.OPENAI_BASE_URL, undefined, 'a base URL is the other half of a redirection');
+    assert.equal(child.CODEX_API_KEY, undefined);
+    assert.equal(child.CODEX_ACCESS_TOKEN, undefined);
 
-  // Kept, and this is the exact analogue of CLAUDE_CONFIG_DIR: it is where the
-  // operator's `codex login` lives, so dropping it signs the child out.
-  assert.equal(child.CODEX_HOME, '/home/app/.codex');
-  assert.equal(child.PATH, '/usr/bin');
+    // Kept, and this is the exact analogue of CLAUDE_CONFIG_DIR: it is where the
+    // operator's `codex login` lives, so dropping it signs the child out.
+    assert.equal(child.CODEX_HOME, '/home/app/.codex');
+    assert.equal(child.PATH, '/usr/bin');
+  }
+});
 
-  // The escape hatch, off by default, for an operator who means it.
-  const allowed = buildCodexChildEnv(parent, { allowApiKey: true });
-  assert.equal(allowed.OPENAI_API_KEY, 'sk-live-should-not-be-here');
+/** `codex login status` answering `said`, with execFile stubbed so nothing is spawned. */
+async function codexHealthSaying(said) {
+  const childProcess = require('child_process');
+  const { checkCodexCliHealth } = require('../dist/services/ai/providers/codexCli/health');
+  const real = childProcess.execFile;
+  childProcess.execFile = (_command, _args, _options, callback) => {
+    process.nextTick(() => callback(null, said, ''));
+    return { pid: 0 };
+  };
+  try {
+    return await checkCodexCliHealth({ binary: 'codex', env: {}, timeoutMs: 1_000 });
+  } finally {
+    childProcess.execFile = real;
+  }
+}
+
+test('a Codex CLI signed in with an API key is NOT signed in to a subscription', async () => {
+  // `codex login --with-api-key` stores the key in CODEX_HOME, out of the env
+  // strip's reach, and every call on it would bill per token.
+  for (const said of [
+    'Logged in using an API key - sk-proj-***ABCD\n',
+    'Logged in using Amazon Bedrock API key\n',
+    'Logged in using Amazon Bedrock AWS access keys\n',
+  ]) {
+    const health = await codexHealthSaying(said);
+    assert.equal(health.ok, false, said);
+    assert.equal(health.loggedIn, false, said);
+    assert.match(health.detail, /not a ChatGPT subscription/, said);
+    assert.match(health.detail, /codex login --device-auth/, said);
+    assert.doesNotMatch(health.detail, /sk-proj|ABCD/, 'the masked key is not repeated');
+  }
+});
+
+test('a Codex CLI signed in with ChatGPT is ready, and a signed-out one says so', async () => {
+  const signedIn = await codexHealthSaying('Logged in using ChatGPT\n');
+  assert.equal(signedIn.ok, true);
+  assert.equal(signedIn.detail, 'Logged in using ChatGPT');
+
+  const signedOut = await codexHealthSaying('Not logged in\n');
+  assert.equal(signedOut.ok, false);
+  assert.match(signedOut.detail, /Not signed in/);
 });
 
 test('sampling hints the CLI has no flag for are reported, not silently dropped', async () => {

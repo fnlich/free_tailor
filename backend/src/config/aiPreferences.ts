@@ -1,4 +1,9 @@
-import { resolveRequestedAIModel, resolveStoredAIModelPreference } from './aiModelConfig';
+import {
+  resolveRequestedAIModel,
+  resolveStoredAIModelPreference,
+  type AIModelRecord,
+  type ModelRequestOptions,
+} from './aiModelConfig';
 import type { AIProvider } from '../types/template';
 
 /**
@@ -56,35 +61,80 @@ export type AiChoice = {
 };
 
 /**
- * Resolves the choice for one call: request override, then profile, then the
+ * The model record one call runs on: request override, then profile, then the
  * app default.
  *
- * `profile` is optional because one call in a batch is not per profile - the
- * job description is analysed once and shared - and that call has no profile
- * whose preference could apply.
+ * The two ids are resolved differently on purpose. One was chosen for this run
+ * and must be honoured or refused; the other was stored on a profile some time
+ * ago, and one that cannot run any more is stale rather than wrong - see
+ * resolveStoredAIModelPreference. A model on a removed provider is neither:
+ * whichever layer names one, it runs on the app default.
  */
-export async function resolveAiChoice(
+async function resolveAiModel(
   overrides: AiPreferences | undefined,
-  profile?: { profileSettings?: { ai?: AiPreferences } } | null
-): Promise<AiChoice> {
+  profile: { profileSettings?: { ai?: AiPreferences } } | null | undefined,
+  options: ModelRequestOptions
+): Promise<AIModelRecord> {
   const profilePreferences = normalizeAiPreferences(profile?.profileSettings?.ai);
   const overridePreferences = normalizeAiPreferences(overrides);
+  return overridePreferences.modelId
+    ? resolveRequestedAIModel(overridePreferences.modelId, options)
+    : resolveStoredAIModelPreference(profilePreferences.modelId);
+}
 
-  // The two ids are resolved differently on purpose. One was chosen for this
-  // run and must be honoured or refused; the other was stored on a profile
-  // some time ago, and a provider locked since then makes it stale rather than
-  // wrong - see resolveStoredAIModelPreference. A model on a removed provider
-  // is neither: whichever layer names one, it runs on the app default.
-  const model = overridePreferences.modelId
-    ? await resolveRequestedAIModel(overridePreferences.modelId)
-    : await resolveStoredAIModelPreference(profilePreferences.modelId);
-
+function toChoice(model: AIModelRecord): AiChoice {
   return {
     provider: model.provider,
     modelName: model.modelName,
     modelId: model.id,
     modelLabel: model.name,
   };
+}
+
+/**
+ * Resolves the choice for one call: request override, then profile, then the
+ * app default.
+ *
+ * `profile` is optional because one call in a batch is not per profile - the
+ * job description is analysed once and shared - and that call has no profile
+ * whose preference could apply. `options.admin` is the viewer's role, which
+ * decides the forms a request override may take (see ModelRequestOptions).
+ */
+export async function resolveAiChoice(
+  overrides: AiPreferences | undefined,
+  profile?: { profileSettings?: { ai?: AiPreferences } } | null,
+  options: ModelRequestOptions = {}
+): Promise<AiChoice> {
+  return toChoice(await resolveAiModel(overrides, profile, options));
+}
+
+/**
+ * A choice, and what one resume built on it costs.
+ *
+ * Two fields rather than a price inside the choice. The choice is written onto
+ * a queued task and can be resolved AGAIN after a restart - a task queued
+ * before a provider was retired is moved onto the default model - and a price
+ * carried inside it would be re-priced along with it. What a resume costs is
+ * decided once, when it is asked for and charged, and stays what was charged.
+ */
+export type PricedAiChoice = {
+  choice: AiChoice;
+  /** `creditsPerResume` of the model the choice landed on, at the moment it was resolved. */
+  creditCost: number;
+};
+
+/**
+ * `resolveAiChoice`, plus the price of a resume on the model it resolved to.
+ * Every path that charges for a resume resolves through this, so the price is
+ * always that of the model the resume actually runs on.
+ */
+export async function resolvePricedAiChoice(
+  overrides: AiPreferences | undefined,
+  profile?: { profileSettings?: { ai?: AiPreferences } } | null,
+  options: ModelRequestOptions = {}
+): Promise<PricedAiChoice> {
+  const model = await resolveAiModel(overrides, profile, options);
+  return { choice: toChoice(model), creditCost: model.creditsPerResume };
 }
 
 /** One line for the generation logs, so a run says what it ran with. */

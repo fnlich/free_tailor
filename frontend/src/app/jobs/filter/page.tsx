@@ -12,13 +12,12 @@ import {
   type AccountSheet,
 } from '@/lib/sheet';
 import {
-  getAIProviderLabel,
+  adminApi,
   GoogleSheetJobFilterResponse,
   GoogleSheetSource,
   GoogleSheetTab,
   importApi,
   jobsApi,
-  resumeApi,
 } from '@/lib/api';
 
 type FilterFormState = {
@@ -60,12 +59,19 @@ export default function JobFilterPage() {
     setForm((current) => ({ ...current, [field]: value }));
   };
 
+  /*
+   * The shared sheets are an administrator's, configured under Admin, and only
+   * an administrator may filter one - so only an administrator's page asks for
+   * them, from the admin settings that hold them. Everybody else filters their
+   * own job sheet, which needs no list at all.
+   */
   useEffect(() => {
+    if (!isAdmin) return;
     let isMounted = true;
 
     const loadSettings = async () => {
       try {
-        const nextSettings = await resumeApi.getModels();
+        const nextSettings = await adminApi.getSettings();
         if (!isMounted) {
           return;
         }
@@ -80,7 +86,7 @@ export default function JobFilterPage() {
           return;
         }
 
-        setError(err instanceof Error ? err.message : 'Failed to load app settings');
+        setError(err instanceof Error ? err.message : 'Failed to load the shared Google Sheets');
       }
     };
 
@@ -89,7 +95,7 @@ export default function JobFilterPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     void (async () => {
@@ -375,14 +381,17 @@ export default function JobFilterPage() {
           </>
           )}
 
-          <Notice tone="info">
-            Uses the live <span className="font-semibold">Filter Google Sheet Job</span> prompt from{' '}
-            prompt library. Edit it in{' '}
-            <Link href="/admin/prompts" className="font-semibold underline underline-offset-2">
-              Admin Prompts
-            </Link>{' '}
-            and changes will apply here automatically.
-          </Notice>
+          {/* Where the prompt lives is for the person who can edit it. */}
+          {isAdmin && (
+            <Notice tone="info">
+              Uses the live <span className="font-semibold">Filter Google Sheet Job</span> prompt from{' '}
+              prompt library. Edit it in{' '}
+              <Link href="/admin/prompts" className="font-semibold underline underline-offset-2">
+                Admin Prompts
+              </Link>{' '}
+              and changes will apply here automatically.
+            </Notice>
+          )}
 
           <div className="flex flex-wrap gap-3">
             <button
@@ -405,7 +414,8 @@ export default function JobFilterPage() {
           </Notice>
         )}
 
-        {!hasSavedSheets && (
+        {/* Only where a shared sheet was asked for: the own-sheet path needs none. */}
+        {isAdmin && target === 'shared' && !hasSavedSheets && (
           <Notice tone="warn" className="mt-4">
             Save at least one Google Sheet in the Admin Google Sheets panel before using this filter.
           </Notice>
@@ -425,8 +435,9 @@ export default function JobFilterPage() {
               {(
                 [
                   ['Scanned', summary.scannedRows],
-                  ['Runtime provider', getAIProviderLabel(summary.provider)],
-                  ['Runtime model', summary.modelName || 'default'],
+                  // The administrator's name for the model, never the provider
+                  // or the CLI's own id for it.
+                  ['Model', summary.modelLabel || 'App default'],
                   ['Scraped pages', summary.scrapedRows],
                   ['Skipped rows', summary.skippedRows],
                   ['Rows with errors', summary.errorRows],

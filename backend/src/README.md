@@ -33,10 +33,15 @@ ai/
   concurrency.ts     AsyncSemaphore, mapWithConcurrency.
   telemetry.ts       Per-call-site token, cost and latency accounting; warnOnce.
   providers/
-    claudeCli/       The `claude` CLI. See below.
-    anthropicHttp.ts Anthropic Messages API (metered).
-    openaiCompatible.ts OpenAI and DeepSeek (metered), which share a wire format.
+    claudeCli/       The `claude` CLI on the Claude subscription. See below.
+    codexCli/        The `codex` CLI on the ChatGPT subscription.
+    cli/             The spawn seam both share: runner.ts and resolveBinary.ts.
 ```
+
+Every provider is a subscription seat signed in on the server; none holds an
+API key. The metered APIs (`claude`, `openai`, `deepseek`) are retired, not
+aliased - see `RETIRED_PROVIDER_IDS` in `config/providerCatalog.ts` and
+migration 007.
 
 ### `providers/claudeCli/`
 

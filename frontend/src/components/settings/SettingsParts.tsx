@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
  * The account's Settings tabs are built from the shared kit; this file only
  * adds the one piece that is theirs alone - the `<main>` they render into.
  */
-export { Field, Notice, Section, StaticValue, Status } from '@/components/ui/kit';
+export { ErrorNotice, Field, Notice, Section, StaticValue, Status } from '@/components/ui/kit';
 
 /**
  * The `<main>` every account tab renders into.

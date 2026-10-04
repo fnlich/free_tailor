@@ -41,14 +41,14 @@ test('an absent field inherits rather than resetting the layer beneath it', asyn
   useTempStorage('ai-preferences-inherit');
   const config = loadFresh('../dist/config/aiModelConfig');
   const { resolveAiChoice } = loadFresh('../dist/config/aiPreferences');
-  const profile = { profileSettings: { ai: { modelId: 'openai-gpt-5-1' } } };
+  const profile = { profileSettings: { ai: { modelId: 'claude-cli-opus' } } };
 
-  assert.equal((await resolveAiChoice({ modelId: 'openai-gpt-5' }, profile)).modelId, 'openai-gpt-5');
-  assert.equal((await resolveAiChoice({}, profile)).modelId, 'openai-gpt-5-1', 'an empty request inherits');
-  assert.equal((await resolveAiChoice(undefined, profile)).modelId, 'openai-gpt-5-1');
+  assert.equal((await resolveAiChoice({ modelId: 'claude-cli-haiku' }, profile)).modelId, 'claude-cli-haiku');
+  assert.equal((await resolveAiChoice({}, profile)).modelId, 'claude-cli-opus', 'an empty request inherits');
+  assert.equal((await resolveAiChoice(undefined, profile)).modelId, 'claude-cli-opus');
   assert.equal(
     (await resolveAiChoice({}, { profileSettings: { ai: {} } })).modelId,
-    (await config.getPublicAppSettings()).defaultModelId,
+    (await config.getUserAppSettings()).defaultModelId,
     'and with neither naming a model, the app default'
   );
 });

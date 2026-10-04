@@ -68,23 +68,33 @@ function formatPercent(value: number | null): string {
 }
 
 /**
+ * How a seat's sign-in reads. The raw `authMethod` is shown for anything not
+ * named here, so a sign-in this page has never heard of is still visible.
+ */
+const AUTH_METHOD_LABELS: Record<string, string> = {
+  oauth_token: 'Subscription (OAuth)',
+  'oauth-personal': 'Google account (OAuth)',
+};
+
+/**
  * Readiness of one subscription seat.
  *
- * A seat fails in ways an API key cannot - the binary is not on PATH, the
- * sign-in expired, the five-hour window is spent - and none of those are
- * visible from a settings page that only knows how to render a key.
+ * A seat fails in ways a settings form cannot see - the binary is not on PATH,
+ * the sign-in expired, the five-hour window is spent - so each one gets a card
+ * that says which.
  *
- * Takes the PROVIDER, because there are two seats now. Hard-coded to
- * `claude-cli`, this card left the Codex seat with no readiness anywhere: the
- * numbers were already on the wire (`concurrency` and `usage.byProvider` are
- * both keyed per provider) and simply never read, so an operator whose `codex`
- * was unsigned-in or off PATH had nothing on the page saying so.
+ * Takes the PROVIDER, one card per seat. Hard-coded to `claude-cli`, this card
+ * once left the Codex seat with no readiness anywhere: the numbers were already
+ * on the wire (`concurrency` and `usage.byProvider` are both keyed per
+ * provider) and simply never read, so an operator whose `codex` was
+ * unsigned-in or off PATH had nothing on the page saying so.
  *
  * `seatWindow` is opt-in for the same honest reason: `subscription` on the wire
- * is ONE object, the Claude adapter's, because the Codex adapter deliberately
- * models no usage window or outage table - inventing the shape of a refusal
- * nobody has seen produces a confidently wrong message at the worst moment. An
- * absent window on the Codex card is the truth; an absent in-flight row was not.
+ * is ONE object, the Claude adapter's, because the Codex and Gemini adapters
+ * deliberately model no usage window or outage table - inventing the shape of a
+ * refusal nobody has seen produces a confidently wrong message at the worst
+ * moment. An absent window on those cards is the truth; an absent in-flight row
+ * was not.
  */
 function SubscriptionCard({
   health,
@@ -102,8 +112,8 @@ function SubscriptionCard({
   const provider = health?.providers.find((item) => item.id === providerId);
   const seat = seatWindow ? health?.subscription.seat : undefined;
   const outages = seatWindow ? health?.subscription.outages ?? [] : [];
-  // This provider's own numbers. The process-wide totals include every metered
-  // provider, and reporting those here would credit them to the seat.
+  // This provider's own numbers. The process-wide totals include every seat,
+  // and reporting those here would credit the others' calls to this one.
   const usage = health?.usage.byProvider[providerId];
   const concurrency = health?.concurrency[providerId];
 
@@ -142,7 +152,9 @@ function SubscriptionCard({
           <div className="flex gap-2">
             <dt className="text-subtle">Sign-in</dt>
             <dd className="text-ink">
-              {provider?.authMethod === 'oauth_token' ? 'Subscription (OAuth)' : provider?.authMethod ?? 'unknown'}
+              {provider?.authMethod
+                ? AUTH_METHOD_LABELS[provider.authMethod] ?? provider.authMethod
+                : 'unknown'}
             </dd>
           </div>
           {seatWindow && (
@@ -421,9 +433,7 @@ function AdminSettingsPageBody() {
      the enabled tick: a seat an admin has unticked is exactly the one whose
      readiness they want to read while deciding whether to tick it back on,
      and a locked seat cannot run here however it is ticked. */
-  const seatProviders = (['claude-cli', 'codex-cli'] as const).filter(
-    (seatProvider) => !isProviderLocked(settings, seatProvider)
-  );
+  const seatProviders = AI_PROVIDERS.filter((seatProvider) => !isProviderLocked(settings, seatProvider));
 
   return (
     <div>
@@ -530,7 +540,7 @@ function AdminSettingsPageBody() {
                 health={health}
                 healthError={healthError}
                 provider={seatProvider}
-                title={seatProvider === 'codex-cli' ? 'ChatGPT Subscription (Codex)' : 'Claude Subscription'}
+                title={getAIProviderLabel(seatProvider)}
                 seatWindow={seatProvider === 'claude-cli'}
               />
             ))}
@@ -544,12 +554,10 @@ function AdminSettingsPageBody() {
           <>
             Disabled providers are hidden in Resume Builder and rejected by the backend. A{' '}
             {LOCK_ICON} provider is one this installation cannot run at all, and its switch is
-            fixed until that changes on the server. The subscription seats need no key - they use
-            the CLI signed in on the server; the metered providers are keyed from{' '}
-            <code className={styles.code}>.env</code> (<code className={styles.code}>ANTHROPIC_API_KEY</code>,{' '}
-            <code className={styles.code}>OPENAI_API_KEY</code>,{' '}
-            <code className={styles.code}>DEEPSEEK_API_KEY</code>) and this app does
-            not store keys of its own. Each row below shows what the provider reports right now.
+            fixed until that changes on the server. Every provider is a subscription seat: the{' '}
+            <code className={styles.code}>claude</code>, <code className={styles.code}>codex</code> or{' '}
+            <code className={styles.code}>gemini</code> command-line tool, signed in on the server.
+            Each row below shows what the provider reports right now.
           </>
         }
       >

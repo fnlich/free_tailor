@@ -20,7 +20,31 @@ Coverage currently focuses on:
 
 - SQLite-backed skills CRUD and seeding from the static skill library
 - prompt CRUD, rendering, activation, and validation
-- app settings persistence and the provider migration
+- app settings persistence and the provider migrations, among them the two
+  removals - the browser chat providers (006, `browserChatRemoval.test.js`) and
+  the metered API providers (007, `meteredRemoval.test.js`) - each pinned both
+  as the migration and as the read-time tolerance that stands without it
+- the Gemini seat wired in - catalog, registry, health card, operational
+  settings, fresh-install seeds - and migration 008, which gives an upgraded
+  model list the Gemini model and renames untouched seed names
+  (`geminiSeat.test.js`)
+- model administration: the per-seat model-name lists and their `.env`
+  overrides, the admin payload that serves them, create and edit validation,
+  Set Default refusing a model that cannot run, and prompt overrides checked
+  against the same lists (`modelAdministration.test.js`)
+- the price per resume: the `creditsPerResume` field on every record (seeded,
+  read as the default without a write-back, clamped on read, refused by name on
+  a save, kept by a partial edit), the credit primitives taking an amount, and
+  the queue refunding each task's snapshotted price - restored tasks included
+  (`modelPricing.test.js`); and through the routes, the quote, a mixed-price
+  batch charged the sum and refunded per task, the 402, free models, the
+  exempt administrator and `/resume/generate` resolving before it charges
+  (`generationPricing.test.js`)
+- what an ordinary account may know of models: the slim `GET
+  /api/resume/models`, a stored choice falling back while a requested one is
+  refused with one generic sentence, the provider request forms kept for
+  administrators, the profile-save check, and the job filter and Bid Assistant
+  on the app default model (`userModelAccess.test.js`)
 - the Claude CLI provider: argv, child environment, event reduction, failure
   classification, rate limits, outages and concurrency
 - the platform-dependent decisions - the default database directory, Windows
@@ -35,16 +59,12 @@ Coverage currently focuses on:
 - current auth middleware behavior
 - the operational settings read from `.env`: the shared readers and their
   policy - empty means default, junk warns once and falls back, out of range
-  clamps, and a URL that is set but unusable is refused rather than replaced by
-  the vendor's endpoint, with no secret from it in the warning
-  (`envValue.test.js`); every setting's default, bounds and the startup
+  clamps (`envValue.test.js`); every setting's default, bounds and the startup
   line (`operational.test.js`); and that each setting reaches the thing it
   controls, with fetch, nodemailer and puppeteer's launch stubbed
   (`operationalWiring.test.js`), and the same for the AI layer's own - the
-  request deadline, the metered base URLs (and that a refused one sends no
-  request anywhere and fails the health check) and attempt count, the headers
-  DeepSeek is sent and the CLI health-probe timeouts - with fetch and
-  `execFile` stubbed (`aiOperationalWiring.test.js`)
+  request deadline and the CLI health-probe timeouts - with `execFile` stubbed
+  (`aiOperationalWiring.test.js`)
 - the job scrapers' SCRAPER_* and APIFY_* settings: the actor inputs each
   mapper builds from them (`scraperFilters.test.js`); the actor id, run
   timeout and input every provider sends - identical to the old literals when

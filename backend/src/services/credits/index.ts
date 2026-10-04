@@ -15,6 +15,7 @@ import {
   settleReservation,
 } from '../../database/creditRepository';
 import { getUserById } from '../../database/userRepository';
+import { DEFAULT_CREDITS_PER_RESUME } from '../../config/creditsPerResume';
 import type { UserAccount } from '../../types/account';
 import { InsufficientCreditsError } from './errors';
 import type { CreditStatus, LedgerEntry, ReserveResult } from './types';
@@ -25,23 +26,35 @@ export type { CreditReason, CreditStatus, LedgerEntry, Reservation, ReserveResul
 /**
  * What a credit buys, and who pays.
  *
- * ONE CREDIT BUYS ONE DELIVERABLE UNIT - one (profile x job) pair - however many
- * files that unit writes. A run asking for both PDF and DOCX plus a cover letter
- * produces four files and costs one credit, because what the person asked for is
- * one tailored resume.
+ * A RESUME COSTS WHAT ITS MODEL COSTS. Each model record carries a
+ * `creditsPerResume` an administrator sets under Admin -> Models (0 is free),
+ * and one deliverable unit - one (profile x job) pair - is charged that once,
+ * however many files it writes. A run asking for both PDF and DOCX plus a cover
+ * letter produces four files and costs one resume's price, because what the
+ * person asked for is one tailored resume.
  *
  * The charge happens at SUBMIT, before the first model call, and every unit that
- * does not deliver gives its credit back. The invariant is: credits spent equals
- * resumes delivered.
+ * does not deliver gives its own price back. The invariant is: credits spent
+ * equals the price of the resumes delivered.
  *
  * Charging at submit rather than on delivery is forced by the architecture, not
  * chosen for convenience. The queued path hands back a batch id and returns
  * before any work runs, and by the time a task executes there is no request and
  * no user attached to it - so the only moment a charge can be both truthful and
- * attributable is when the work is asked for.
+ * attributable is when the work is asked for. Which is also why the price is
+ * SNAPSHOTTED then, onto each queued task: an administrator repricing a model
+ * mid-batch changes what the next submission costs, never what a refund of this
+ * one gives back.
  */
 
-export const CREDITS_PER_RESUME = 1;
+/**
+ * What a resume costs when nothing names a price: the default every seed and
+ * every record saved before prices existed carry, and what a task queued
+ * before the upgrade - with no price of its own on it - refunds. `GET
+ * /api/credits` still sends it as `perResume` for a page loaded before prices
+ * were per model.
+ */
+export const CREDITS_PER_RESUME = DEFAULT_CREDITS_PER_RESUME;
 
 /**
  * How many credits a brand-new account gets. Zero unless an operator says
@@ -75,13 +88,18 @@ export function newReservationId(): string {
 /**
  * Takes the whole cost of a run up front, or refuses it.
  *
+ * `credits` is the cost itself - the sum of what each resume in the run costs
+ * on its own model - not a count of resumes to multiply by a price: since
+ * prices are per model, only the caller that resolved each resume's model knows
+ * the total.
+ *
  * Throws `InsufficientCreditsError` rather than returning a flag, because every
  * caller's correct response is to stop - and a boolean that a handler forgets to
  * check would mean an uncharged run rather than a visible failure.
  */
 export function reserveCredits(
   account: UserAccount,
-  units: number,
+  credits: number,
   ref: { kind: string; id: string; label?: string }
 ): ReserveResult {
   if (isExempt(account)) {
@@ -91,7 +109,9 @@ export function reserveCredits(
     return { id: ref.id, userId: account.id, units: 0, exempt: true };
   }
 
-  const cost = Math.max(0, Math.floor(units)) * CREDITS_PER_RESUME;
+  const cost = Math.max(0, Math.floor(credits));
+  // A run on free models takes nothing and writes nothing, so it leaves no row
+  // in the account's history - and an account with no credits can run it.
   if (cost === 0) return { id: ref.id, userId: account.id, units: 0, exempt: false };
 
   const outcome = debitAndReserve({
@@ -107,31 +127,47 @@ export function reserveCredits(
   return { id: ref.id, userId: account.id, units: cost, exempt: false };
 }
 
-/** Gives back the credits for units that did not deliver. */
-export function refundUnits(
-  reservationId: string,
-  units: number,
-  note: string,
-  idempotencyKey = `refund:${reservationId}:${units}`
-): number {
-  return refundAgainstReservation({
-    reservationId,
-    units,
-    reason: 'generation-refund',
-    idempotencyKey,
-    note,
-  }).refunded;
-}
-
-/** Gives back one unit, keyed on the task so a repeated hook cannot double-refund. */
-export function refundTaskUnit(batchId: string, taskId: string, note: string): number {
+/**
+ * Gives back what one unit that did not deliver was charged, keyed on the task
+ * so a repeated hook cannot double-refund.
+ *
+ * `credits` is that unit's own price, as snapshotted when it was charged - not
+ * whatever its model costs now. The reservation's refund cap still holds in
+ * SQL, so no mixture of refunds can return more than the run took.
+ */
+export function refundTaskUnit(batchId: string, taskId: string, credits: number, note: string): number {
   return refundAgainstReservation({
     reservationId: batchId,
-    units: CREDITS_PER_RESUME,
+    units: Math.max(0, Math.floor(credits)),
     reason: 'generation-refund',
     idempotencyKey: `refund:task:${taskId}`,
     note,
   }).refunded;
+}
+
+/**
+ * A charge's line in the account's credit history, by model: "3 resumes: 2 x
+ * Claude Sonnet @ 2, 1 x Codex @ 1 = 5 credits".
+ *
+ * By the display name an administrator gave each model, which is the only name
+ * an ordinary account is shown, and in the order the models first appear.
+ * Written once, with the reservation, so it says what was charged at the time
+ * whatever the models cost later.
+ */
+export function describeCharge(units: ReadonlyArray<{ modelLabel: string; credits: number }>): string {
+  const groups = new Map<string, { modelLabel: string; credits: number; count: number }>();
+  for (const unit of units) {
+    const key = `${unit.modelLabel}\u0000${unit.credits}`;
+    const group = groups.get(key);
+    if (group) group.count += 1;
+    else groups.set(key, { modelLabel: unit.modelLabel, credits: unit.credits, count: 1 });
+  }
+  const total = units.reduce((sum, unit) => sum + unit.credits, 0);
+  const parts = [...groups.values()].map((group) => `${group.count} x ${group.modelLabel} @ ${group.credits}`);
+  return (
+    `${units.length} resume${units.length === 1 ? '' : 's'}: ${parts.join(', ')} = ` +
+    `${total} credit${total === 1 ? '' : 's'}`
+  );
 }
 
 /**

@@ -13,6 +13,8 @@ interface ResumePreviewProps {
   isOpen: boolean;
   generationStep?: string;
   sidebar?: ReactNode;
+  /** What generating will cost, shown beside the button that does it. */
+  costNote?: ReactNode;
 }
 
 export default function ResumePreview({
@@ -24,6 +26,7 @@ export default function ResumePreview({
   isOpen,
   generationStep,
   sidebar,
+  costNote,
 }: ResumePreviewProps) {
   if (!isOpen) return null;
 
@@ -40,6 +43,7 @@ export default function ResumePreview({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {costNote}
             <button
               onClick={onGenerate}
               disabled={isGenerating}

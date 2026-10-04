@@ -3,12 +3,15 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import {
+  adminApi,
   profilesApi,
   groupsApi,
   resumeApi,
-  DEFAULT_PUBLIC_APP_SETTINGS,
-  PublicAppSettings,
+  DEFAULT_USER_APP_SETTINGS,
+  UserAppSettings,
   AiPreferences,
+  GoogleSheetSource,
+  isInsufficientCredits,
   normalizeAiPreferences,
   toAiRequestOverrides,
   Profile,
@@ -22,6 +25,7 @@ import {
   rememberBatch,
   rememberedBatch,
   type BatchSnapshot,
+  type GenerationQuote,
   type SubmitBatchRequest,
 } from '@/lib/generationQueue';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
@@ -88,8 +92,74 @@ function getAnalysisJobTitle(analysis?: JobAnalysis): string {
   return analysis?.jobMeta?.title?.trim() ?? '';
 }
 
+/**
+ * The job a quote is priced against.
+ *
+ * A placeholder, because what a resume costs depends on the profile and the
+ * model it resolves to and never on the job - and the quote is wanted before
+ * anybody has typed a company name. The server still validates a quote's jobs
+ * the way it validates a real submission's, so this one is complete.
+ */
+const QUOTE_JOBS: SubmitBatchRequest['jobs'] = [{ companyName: 'Quote', role: 'Quote' }];
+
+/** A 402 from a run, as the sentence the page shows for it. */
+type CreditShortfall = { message: string };
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * What a run will cost, beside the button that starts it.
+ *
+ * A refused run's shortfall takes its place, with the way to fix it - inside
+ * the preview dialogs too, which cover the page's own error area.
+ */
+function CostLine({
+  quote,
+  shortfall = null,
+  label = 'This run',
+}: {
+  quote: GenerationQuote | null;
+  /** Passed only where the page's own notice is hidden: inside a dialog. */
+  shortfall?: CreditShortfall | null;
+  /** What is being priced: "This run", or one sheet row when the row count is not known yet. */
+  label?: string;
+}) {
+  if (shortfall) {
+    return (
+      <span className="tl-status" data-tone="error" role="alert">
+        {shortfall.message}{' '}
+        <Link href="/credits" className="tl-link">
+          Buy credits
+        </Link>
+      </span>
+    );
+  }
+  if (!quote) return null;
+  if (quote.exempt) return <span className="text-sm text-muted">Administrators are not charged</span>;
+  const short = quote.credits > quote.balance;
+  return (
+    <span className={short ? 'tl-status' : 'text-sm text-muted'} data-tone={short ? 'error' : undefined}>
+      {label}: {plural(quote.resumes, 'resume')} ·{' '}
+      {plural(quote.credits, 'credit')} · balance {quote.balance}
+      {short && (
+        <>
+          {' '}
+          ·{' '}
+          <Link href="/credits" className="tl-link">
+            Buy credits
+          </Link>
+        </>
+      )}
+    </span>
+  );
+}
+
 export default function Home() {
-  const { account } = useAuth();
+  // `refresh` re-reads the account after a run, so the balance in the top bar
+  // moves when credits are spent or refunded rather than on the next reload.
+  const { account, refresh: refreshAccount } = useAuth();
   const isAdmin = account?.role === 'admin';
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -113,7 +183,18 @@ export default function Home() {
   const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState('');
   const [jobDescription, setJobDescription] = useState('');
-  const [modelSettings, setModelSettings] = useState<PublicAppSettings>(DEFAULT_PUBLIC_APP_SETTINGS);
+  const [modelSettings, setModelSettings] = useState<UserAppSettings>(DEFAULT_USER_APP_SETTINGS);
+  /** The administrator's saved sheets, loaded only for an administrator. */
+  const [sharedSheetSources, setSharedSheetSources] = useState<GoogleSheetSource[]>([]);
+  /**
+   * The quote for the run the page is set up for, tagged with the request it
+   * answers so a slow answer to an earlier selection is never shown as the
+   * price of the current one.
+   */
+  const [quoteResult, setQuoteResult] = useState<{ key: string; quote: GenerationQuote | null } | null>(null);
+  /** Bumped after every run, so the balances on the page are re-read. */
+  const [runRevision, setRunRevision] = useState(0);
+  const [shortfall, setShortfall] = useState<CreditShortfall | null>(null);
   const [jobAnalysis, setJobAnalysis] = useState<JobAnalysis | null>(null);
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewTailored, setPreviewTailored] = useState(false);
@@ -187,8 +268,8 @@ export default function Home() {
   // profile pointing at a model this installation has since locked falls back
   // to the app default, and this label has to name what will really be used.
   const inheritedModel =
-    modelSettings.aiModels.find((model) => model.id === profilePreferences.modelId) ??
-    modelSettings.aiModels.find((model) => model.id === modelSettings.defaultModelId);
+    modelSettings.models.find((model) => model.id === profilePreferences.modelId) ??
+    modelSettings.models.find((model) => model.id === modelSettings.defaultModelId);
   const inheritedChoice = {
     modelLabel: inheritedModel?.name || 'the first enabled model',
   };
@@ -198,7 +279,7 @@ export default function Home() {
       const [profilesData, groupsData, modelData, ownSheet] = await Promise.all([
         profilesApi.getAll({ includeDisabled: true }),
         groupsApi.getAll().catch(() => []),
-        resumeApi.getModels().catch(() => DEFAULT_PUBLIC_APP_SETTINGS),
+        resumeApi.getModels().catch(() => DEFAULT_USER_APP_SETTINGS),
         // Never fatal to this page: the import dialog is one feature of it, and
         // a Google outage must not stop the builder from loading.
         sheetApi.get().catch(() => null),
@@ -282,8 +363,132 @@ export default function Home() {
           ]
         : [];
 
-    return isAdmin ? [...own, ...modelSettings.googleSheetsSources] : own;
-  }, [accountSheet, isAdmin, modelSettings.googleSheetsSources]);
+    return isAdmin ? [...own, ...sharedSheetSources] : own;
+  }, [accountSheet, isAdmin, sharedSheetSources]);
+
+  /*
+   * The saved sources live in the administrator's settings, which nobody else
+   * may read - so only an administrator's builder asks for them. Never fatal:
+   * the account's own sheet is the import every account has.
+   */
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    adminApi
+      .getSettings()
+      .then((settings) => {
+        if (!cancelled) setSharedSheetSources(settings.googleSheetsSources);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin]);
+
+  /**
+   * The profiles a manual run will build for, exactly as the run picks them:
+   * the selected one, every enabled profile, or the chosen group's enabled
+   * members. What the "Generate All" count and the quote both read, so neither
+   * counts a profile the run would skip.
+   */
+  const manualRunProfiles = useMemo<Profile[]>(() => {
+    if (generateMode === 'single') return profiles.filter((profile) => profile.id === selectedProfileId);
+    if (multipleTarget === 'all') return profiles;
+    const group = groups.find((entry) => entry.id === selectedGroupId);
+    return group ? profiles.filter((profile) => group.profileIds.includes(profile.id)) : [];
+  }, [generateMode, groups, multipleTarget, profiles, selectedGroupId, selectedProfileId]);
+
+  /** The same for a sheet import's target. */
+  const sheetsRunProfiles = useMemo<Profile[]>(() => {
+    if (sheetsTargetMode === 'single') return profiles.filter((profile) => profile.id === selectedSheetsProfileId);
+    if (sheetsTargetMode === 'all') return profiles;
+    const group = groups.find((entry) => entry.id === selectedSheetsGroupId);
+    return group ? profiles.filter((profile) => group.profileIds.includes(profile.id)) : [];
+  }, [groups, profiles, selectedSheetsGroupId, selectedSheetsProfileId, sheetsTargetMode]);
+
+  /**
+   * What to price: the run the page is set up for, as the request that would
+   * start it. Finalising multiple previews builds only the profiles that have
+   * preview content, so those are what it prices.
+   */
+  const quoteRequest = useMemo(() => {
+    let target: Profile[] = [];
+    if (builderMode === 'sheets') {
+      target = sheetsRunProfiles;
+    } else if (builderMode === 'manual') {
+      target = manualRunProfiles;
+      if (generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0) {
+        const ready = new Set(
+          multiplePreviews.filter((preview) => preview.tailoredContent).map((preview) => preview.profileId)
+        );
+        target = target.filter((profile) => ready.has(profile.id));
+      }
+    }
+    if (target.length === 0) return null;
+    const profileIds = target.map((profile) => profile.id);
+    const body: SubmitBatchRequest = {
+      ...(aiOverrides.modelId ? { model: aiOverrides.modelId } : {}),
+      profileIds,
+      jobs: QUOTE_JOBS,
+    };
+    return { key: `${profileIds.join(',')}|${aiOverrides.modelId ?? ''}|${runRevision}`, body };
+  }, [
+    aiOverrides.modelId,
+    autoGenerate,
+    builderMode,
+    generateMode,
+    manualRunProfiles,
+    multiplePreviews,
+    runRevision,
+    sheetsRunProfiles,
+  ]);
+
+  useEffect(() => {
+    if (!quoteRequest) return;
+    let cancelled = false;
+    // No line rather than a wrong one: a quote that fails (a model that is no
+    // longer on offer, a server from before quotes) leaves the run to say so.
+    generationApi.quote(quoteRequest.body).then(
+      (quote) => {
+        if (!cancelled) setQuoteResult({ key: quoteRequest.key, quote });
+      },
+      () => {
+        if (!cancelled) setQuoteResult({ key: quoteRequest.key, quote: null });
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [quoteRequest]);
+
+  const quote = quoteRequest && quoteResult?.key === quoteRequest.key ? quoteResult.quote : null;
+
+  // The top bar's balance, after a run. Not on mount: the shell has just read it.
+  useEffect(() => {
+    if (runRevision === 0) return;
+    void refreshAccount();
+  }, [refreshAccount, runRevision]);
+
+  /**
+   * A failed run, as the page reports it. A 402 is the one failure with a
+   * remedy the person can take themselves, so it gets the numbers and a way to
+   * buy credits rather than a bare sentence.
+   */
+  const reportRunFailure = (err: unknown, fallback: string) => {
+    if (isInsufficientCredits(err)) {
+      const needed = err.number('needed');
+      const balance = err.number('balance');
+      setShortfall({
+        message:
+          needed !== undefined && balance !== undefined
+            ? `This run needs ${plural(needed, 'credit')}, and your balance is ${balance}.`
+            : err.message,
+      });
+      return;
+    }
+    setError(err instanceof Error ? err.message : fallback);
+  };
+
   const hasImportableSheet = sheetImportSources.length > 0;
   /** Why there is nothing to import from, in the words that fit the reason. */
   const sheetImportNotice =
@@ -347,6 +552,8 @@ export default function Home() {
       setIsGenerating(false);
       setGenerationStep('');
       clearGenerationProgress();
+      // Its failed resumes were refunded as it ran.
+      afterRun();
       if (snapshot) {
         setSuccessMessage(
           `Finished ${snapshot.completed} of ${snapshot.total} resume(s) from a run started earlier.`
@@ -416,6 +623,15 @@ export default function Home() {
 
   const clearGenerationProgress = () => {
     setGenerationProgress(null);
+  };
+
+  /**
+   * After anything that spends or returns credits: the top bar's balance, and
+   * the cost line's, are re-read rather than left at what they said before.
+   * Only the counter moves here; the re-reads hang off it.
+   */
+  const afterRun = () => {
+    setRunRevision((revision) => revision + 1);
   };
 
   const updateGenerationProgress = (
@@ -658,6 +874,7 @@ export default function Home() {
 
     setIsGenerating(true);
     setError('');
+    setShortfall(null);
     setSuccessMessage('');
     setPlacedOrder(null);
     resetGenerationOutputs();
@@ -710,11 +927,12 @@ export default function Home() {
         );
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not place that order.');
+      reportRunFailure(err, 'Could not place that order.');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
       clearGenerationProgress();
+      afterRun();
     }
   };
 
@@ -753,6 +971,7 @@ export default function Home() {
 
     setIsGenerating(true);
     setError('');
+    setShortfall(null);
     setSuccessMessage('');
     setPreviewHtml('');
     setPreviewTailored(false);
@@ -870,11 +1089,12 @@ export default function Home() {
         setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate resume');
+      reportRunFailure(err, 'Failed to generate resume');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
       clearGenerationProgress();
+      afterRun();
     }
   };
 
@@ -1220,6 +1440,7 @@ export default function Home() {
 
     setIsGenerating(true);
     setError('');
+    setShortfall(null);
     setSuccessMessage('');
 
     try {
@@ -1248,11 +1469,12 @@ export default function Home() {
       setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills));
       setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate resume');
+      reportRunFailure(err, 'Failed to generate resume');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
       clearGenerationProgress();
+      afterRun();
     }
   };
 
@@ -1353,6 +1575,7 @@ export default function Home() {
 
     setIsGenerating(true);
     setError('');
+    setShortfall(null);
     setSuccessMessage('');
 
     try {
@@ -1427,11 +1650,12 @@ export default function Home() {
       setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
       setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate resume');
+      reportRunFailure(err, 'Failed to generate resume');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
       clearGenerationProgress();
+      afterRun();
     }
   };
 
@@ -1552,6 +1776,18 @@ export default function Home() {
           actions={
             builderMode !== null && (
               <>
+                {/* No shortfall here: the notice under the header carries it. */}
+                <CostLine
+                  quote={quote}
+                  label={
+                    builderMode === 'sheets'
+                      ? 'Each sheet row'
+                      : autoGenerate
+                        ? 'This run'
+                        : // The button previews, which is free; generating is what costs.
+                          'Generating'
+                  }
+                />
                 <button
                   type="button"
                   onClick={() => {
@@ -1590,7 +1826,7 @@ export default function Home() {
                           ? 'Generate Resume'
                           : 'Analyze & Preview'
                         : autoGenerate
-                          ? `Generate All (${profiles.length} profiles)`
+                          ? `Generate All (${plural(manualRunProfiles.length, 'profile')})`
                           : 'Analyze & Preview'
                     )}
                   </button>
@@ -1623,6 +1859,25 @@ export default function Home() {
               <span className="min-w-0 break-words">{error}</span>
               <button
                 onClick={() => setError('')}
+                className="-my-1 shrink-0 px-1 text-lg font-bold leading-none"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </Notice>
+          )}
+
+          {shortfall && (
+            <Notice tone="error" className="flex items-start justify-between gap-4">
+              <span className="min-w-0 break-words">
+                {shortfall.message} Buy more on the{' '}
+                <Link href="/credits" className="font-semibold underline underline-offset-2">
+                  Credits page
+                </Link>
+                , or choose a model that costs less.
+              </span>
+              <button
+                onClick={() => setShortfall(null)}
                 className="-my-1 shrink-0 px-1 text-lg font-bold leading-none"
                 aria-label="Dismiss"
               >
@@ -1858,8 +2113,7 @@ export default function Home() {
                       idPrefix="builder-ai"
                       value={aiOverrides}
                       onChange={setAiOverrides}
-                      models={modelSettings.aiModels}
-                      providerLocks={modelSettings.providerLocks}
+                      models={modelSettings.models}
                       inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
                       inherited={inheritedChoice}
                       disabled={isGenerating}
@@ -2063,6 +2317,7 @@ export default function Home() {
                   >
                     Next
                   </button>
+                  <CostLine quote={quote} shortfall={shortfall} />
                   <button
                     onClick={handleFinalizeGenerateMultiple}
                     disabled={isGenerating}
@@ -2145,6 +2400,7 @@ export default function Home() {
             isOpen={isSinglePreviewOpen}
             onClose={() => setIsSinglePreviewOpen(false)}
             generationStep={generationStep}
+            costNote={<CostLine quote={quote} shortfall={shortfall} />}
             sidebar={
               <>
                 {unconfirmedPanel}
@@ -2201,7 +2457,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="mt-auto py-6 text-center text-sm text-subtle">
-        <p>Tailor - Powered by your Claude subscription, with OpenAI, Anthropic and DeepSeek as options</p>
+        <p>Tailor</p>
       </footer>
     </>
   );

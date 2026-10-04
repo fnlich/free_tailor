@@ -19,7 +19,9 @@
  * Every claim below is checkable in the code:
  *   - credits are per account: `credit_ledger` rows carry a user id and there
  *     is no transfer path anywhere in the app;
- *   - a preview costs nothing: `CREDITS_PER_RESUME` is charged on a build;
+ *   - a resume costs its model's credits, and a preview nothing: the price is
+ *     the model's `creditsPerResume`, reserved when a build is submitted, and
+ *     the builder's cost line is the server's own quote of that same sum;
  *   - only a signed webhook credits: `routes/paymentWebhooks.ts`;
  *   - a refund reverses what is left and reports the shortfall:
  *     `refundPayment` measures the balance either side and clamps at zero;
@@ -69,7 +71,7 @@ export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) 
         title="Before you pay"
         points={[
           'Credits are added to this account. There is no way to move them to another account, so check you are signed in as the person who should have them.',
-          'One credit builds one resume. Previews are free and unlimited, so you can see the result before you spend anything.',
+          'Each resume costs the credits set for the model it is built with, and the builder shows what a run will cost before you start it. Previews are free and unlimited, so you can see the result before you spend anything.',
           'Credits arrive when the payment is confirmed by the provider, not when this page says so. That is usually within a minute.',
         ]}
       />

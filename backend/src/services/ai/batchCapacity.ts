@@ -1,4 +1,5 @@
 import type { AIProvider } from '../../types/template';
+import { geminiCliConcurrency } from './providers/geminiCli/options';
 
 /**
  * How many items of a batch may be in flight at once.
@@ -6,8 +7,9 @@ import type { AIProvider } from '../../types/template';
  * The number is a property of the CHOSEN PROVIDER, not of the batch, and that
  * is the whole of this module. Each subscription seat spawns a process per call
  * behind a semaphore of its own - `AI_CLI_CONCURRENCY` for Claude,
- * `AI_CODEX_CONCURRENCY` for Codex - so a fixed fan-out is wrong for one of them
- * whenever the two are sized differently: above a seat's ceiling the extra items
+ * `AI_CODEX_CONCURRENCY` for Codex, `AI_GEMINI_CONCURRENCY` for Gemini - so a
+ * fixed fan-out is wrong for some of them whenever they are sized differently,
+ * as they are by default: above a seat's ceiling the extra items
  * only wait in a queue nobody can see, and below it the seat sits partly idle.
  * Both look like the app being slow and neither is visible from the page.
  *
@@ -24,11 +26,10 @@ function configuredOverride(env: NodeJS.ProcessEnv): number | null {
 }
 
 /**
- * Where the fan-out lands when nothing else can be worked out.
- *
- * The metered HTTP providers have no local resource to count - their limit is
- * the vendor's, not this machine's - so they keep the number this app has
- * always used for them.
+ * Where the fan-out lands when nothing else can be worked out: a provider id
+ * this build has no seat for - a retired one on a choice stored before the
+ * upgrade, which the queue resolves again before it runs - gets the number
+ * this app has always offered.
  */
 const DEFAULT_BATCH_CONCURRENCY = 4;
 
@@ -44,7 +45,7 @@ export function cliConcurrency(env: NodeJS.ProcessEnv = process.env): number {
  *
  * A SECOND reader, not a shared one, because the two seats are sized separately
  * and conflating them is the bug this exists to prevent: Codex used to fall
- * through to the metered-provider default below, which was right only by the
+ * through to the catch-all default below, which was right only by the
  * coincidence that both defaults are 4.
  */
 export function codexConcurrency(env: NodeJS.ProcessEnv = process.env): number {
@@ -91,6 +92,14 @@ export async function resolveBatchCapacity(
     // queue in one direction and an idle seat in the other.
     const limit = codexConcurrency(env);
     return { limit, reason: `${limit} Codex CLI slot${limit === 1 ? '' : 's'}` };
+  }
+
+  if (choice.provider === 'gemini-cli') {
+    // Imported rather than mirrored: the Gemini seat's reader is a leaf that
+    // takes an environment, so the lane, this and the semaphore all ask the
+    // one function and cannot disagree about a value.
+    const limit = geminiCliConcurrency(env);
+    return { limit, reason: `${limit} Gemini CLI slot${limit === 1 ? '' : 's'}` };
   }
 
   return {

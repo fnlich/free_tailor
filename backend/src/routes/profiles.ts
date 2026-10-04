@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import pdf from 'pdf-parse';
-import { CreateProfileDTO } from '../types/profile';
-import { requireUser } from '../middleware/auth';
+import { CreateProfileDTO, Profile } from '../types/profile';
+import { isAdmin, requireUser } from '../middleware/auth';
+import { checkProfileModelChoice } from '../config/aiModelConfig';
+import { ModelUnavailableError, modelUnavailableBody } from '../config/modelErrors';
 import { pdfUpload } from '../middleware/pdfUpload';
 import { extractProfileFromResume } from '../services/resumeService';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
@@ -29,6 +31,22 @@ const router = Router();
  * all of that to whoever asks.
  */
 router.use(requireUser);
+
+/**
+ * A built profile with its model choice checked against the list its owner
+ * picks from, before anything is stored. A changed choice the owner could not
+ * have picked is refused (see checkProfileModelChoice); a retired one from a
+ * page loaded before the upgrade is stored as inheriting.
+ */
+async function withCheckedModelChoice(built: Profile, stored?: Profile): Promise<Profile> {
+  const settings = built.profileSettings;
+  if (!settings) return built;
+  const modelId = await checkProfileModelChoice(settings.ai?.modelId, stored?.profileSettings?.ai?.modelId);
+  return {
+    ...built,
+    profileSettings: { ...settings, ai: modelId ? { ...settings.ai, modelId } : {} },
+  };
+}
 
 // Get all profiles this account can see
 router.get('/', (req: Request, res: Response) => {
@@ -57,11 +75,11 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
 });
 
 // Create profile
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     assertCanAddProfile(req.user!);
     const profile = saveProfile({
-      ...buildNewProfile(req.body as CreateProfileDTO, uuidv4()),
+      ...(await withCheckedModelChoice(buildNewProfile(req.body as CreateProfileDTO, uuidv4()))),
       // Set here rather than taken from the body: a client that could name the
       // owner could hand a profile to somebody else, or to nobody.
       ownerId: req.user!.id,
@@ -72,6 +90,10 @@ router.post('/', (req: Request, res: Response) => {
       res.status(402).json({ error: error.message, code: 'profile-limit', limit: error.limit });
       return;
     }
+    if (error instanceof ModelUnavailableError) {
+      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
+      return;
+    }
     console.error('Error creating profile:', error);
     const message = error instanceof Error ? error.message : 'Failed to create profile';
     const status = /output (token|file name)/i.test(message) ? 400 : 500;
@@ -80,7 +102,7 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // Update profile
-router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
+router.put('/:id', async (req: Request<{ id: string }>, res: Response) => {
   const existingProfile = getProfileFor(req.user!, req.params.id);
   if (!existingProfile) {
     res.status(404).json({ error: 'Profile not found' });
@@ -89,7 +111,10 @@ router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
 
   try {
     const updatedProfile = saveProfile({
-      ...buildUpdatedProfile(existingProfile, req.body as CreateProfileDTO),
+      ...(await withCheckedModelChoice(
+        buildUpdatedProfile(existingProfile, req.body as CreateProfileDTO),
+        existingProfile
+      )),
       // Carried through explicitly. `buildUpdatedProfile` composes a new object
       // from the DTO, and an owner dropped by an edit would make the profile
       // vanish from its owner's list on save.
@@ -97,6 +122,10 @@ router.put('/:id', (req: Request<{ id: string }>, res: Response) => {
     });
     res.json(updatedProfile);
   } catch (error) {
+    if (error instanceof ModelUnavailableError) {
+      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
+      return;
+    }
     res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to update profile' });
   }
 });

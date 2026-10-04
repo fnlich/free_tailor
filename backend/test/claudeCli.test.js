@@ -209,6 +209,9 @@ test('the child environment drops the API key and the parent session, and keeps 
     CLAUDE_CODE_SESSION_ID: 'parent-session',
     CLAUDE_CODE_ENTRYPOINT: 'cli',
     CLAUDE_CONFIG_DIR: '/home/app/.claude',
+    // A leftover from the removed metered `claude` provider: a CLAUDE_* name,
+    // so it goes with the rest, while ANTHROPIC_BASE_URL is the child's own.
+    CLAUDE_BASE_URL: 'https://gw.example',
   };
 
   const child = env.buildChildEnv(parent);
@@ -233,9 +236,26 @@ test('the child environment drops the API key and the parent session, and keeps 
   assert.equal(child.HOME, '/home/app');
   assert.equal(child.ANTHROPIC_BASE_URL, 'https://api.anthropic.com');
   assert.equal(child.HTTPS_PROXY, 'http://proxy:3128');
+  assert.equal('CLAUDE_BASE_URL' in child, false);
+});
 
-  const opted = env.buildChildEnv(parent, { allowApiKey: true });
-  assert.equal(opted.ANTHROPIC_API_KEY, 'sk-ant-should-not-reach-the-child');
+test('there is no switch that lets an API key reach the child', () => {
+  // AI_CLI_ALLOW_API_KEY used to; the app runs on subscription seats only now,
+  // and a leftover value - or an old caller's option - changes nothing.
+  const parent = { ANTHROPIC_API_KEY: 'sk-ant-x', ANTHROPIC_AUTH_TOKEN: 'tok', AI_CLI_ALLOW_API_KEY: '1' };
+  for (const child of [env.buildChildEnv(parent), env.buildChildEnv(parent, { allowApiKey: true })]) {
+    assert.equal('ANTHROPIC_API_KEY' in child, false);
+    assert.equal('ANTHROPIC_AUTH_TOKEN' in child, false);
+  }
+  const { readClaudeCliConfig } = require('../dist/services/ai/providers/claudeCli/options');
+  const saved = process.env.AI_CLI_ALLOW_API_KEY;
+  process.env.AI_CLI_ALLOW_API_KEY = '1';
+  try {
+    assert.equal('allowApiKey' in readClaudeCliConfig(), false);
+  } finally {
+    if (saved === undefined) delete process.env.AI_CLI_ALLOW_API_KEY;
+    else process.env.AI_CLI_ALLOW_API_KEY = saved;
+  }
 });
 
 // -- event reduction ------------------------------------------------------- //
@@ -525,12 +545,19 @@ test('an API key reaching the child aborts the call rather than billing silently
   const runner = makeFakeCliRunner({ lines: readCliFixture('api-key-billing') });
   await assert.rejects(
     () => makeAdapter(runner).complete(makeRequest()),
-    (error) => error.kind === 'auth' && /billed per token/.test(error.message)
+    (error) =>
+      error.kind === 'auth' &&
+      /billed per token/.test(error.message) &&
+      !/AI_CLI_ALLOW_API_KEY/.test(error.adminAction ?? '')
   );
 
+  // And with no way to accept it: an old config that still carries the
+  // switch it used to take is refused the same.
   const allowed = makeFakeCliRunner({ lines: readCliFixture('api-key-billing') });
-  const result = await makeAdapter(allowed, { allowApiKey: true }).complete(makeRequest());
-  assert.equal(result.text, '{"capital": "Paris"}');
+  await assert.rejects(
+    () => makeAdapter(allowed, { allowApiKey: true }).complete(makeRequest()),
+    (error) => error.kind === 'auth'
+  );
 });
 
 test('a response cut off by the model output limit fails instead of returning a fragment', async () => {

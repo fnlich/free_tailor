@@ -1,0 +1,25 @@
+{
+  "security": {
+    "auth": { "selectedType": "oauth-personal", "enforcedType": "oauth-personal" },
+    "folderTrust": { "enabled": false }
+  },
+  "tools": { "core": [], "sandbox": false },
+  "mcp": { "allowed": [] },
+  "admin": { "mcp": { "enabled": false }, "extensions": { "enabled": false }, "skills": { "enabled": false } },
+  "skills": { "enabled": false },
+  "hooksConfig": { "enabled": false },
+  "privacy": { "usageStatisticsEnabled": false },
+  "telemetry": { "enabled": false },
+  "billing": { "overageStrategy": "never" },
+  "general": {
+    "checkpointing": { "enabled": false },
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false,
+    "maxAttempts": 3,
+    "sessionRetention": { "enabled": true, "maxAge": "1d" }
+  },
+  "context": { "includeDirectoryTree": false, "discoveryMaxDirs": 1 },
+  "model": { "maxSessionTurns": 2 },
+  "experimental": { "autoMemory": false },
+  "ide": { "enabled": false }
+}

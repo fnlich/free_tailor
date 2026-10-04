@@ -76,7 +76,6 @@ export type ClaudeCliConfig = {
   /** Per-call-site overrides; the tailor call is far longer than the rest. */
   timeoutMsByCallSite: Record<string, number>;
   workdir: string;
-  allowApiKey: boolean;
   allowOverage: boolean;
   maxOutputBytes: number;
   maxBudgetUsd: number;
@@ -143,7 +142,6 @@ export function readClaudeCliConfig(): ClaudeCliConfig {
       'filter-google-sheet-job': cliTimeoutMs('AI_CLI_TIMEOUT_MS_FILTER'),
     },
     workdir: flag('AI_CLI_WORKDIR', '') || defaultWorkdir(),
-    allowApiKey: boolFlag('AI_CLI_ALLOW_API_KEY', false),
     allowOverage: boolFlag('AI_CLI_ALLOW_OVERAGE', false),
     maxOutputBytes: intFlag('AI_CLI_MAX_OUTPUT_BYTES', 25_000_000, 100_000, 500_000_000),
     maxBudgetUsd: Number.parseFloat(flag('AI_CLI_MAX_BUDGET_USD', '0')) || 0,

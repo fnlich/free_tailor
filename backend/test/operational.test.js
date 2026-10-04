@@ -35,7 +35,6 @@ const INT_GETTERS = {
   UPLOAD_MAX_MB: op.uploadMaxMb,
   HTTP_REQUEST_TIMEOUT_MS: op.httpRequestTimeoutMs,
   AI_REQUEST_TIMEOUT_MS: op.aiRequestTimeoutMs,
-  CLAUDE_MAX_ATTEMPTS: op.claudeMaxAttempts,
   AI_CLI_HEALTH_TIMEOUT_MS: op.aiCliHealthTimeoutMs,
   AI_CODEX_HEALTH_TIMEOUT_MS: op.aiCodexHealthTimeoutMs,
   GENERATION_RENDER_CONCURRENCY: op.generationRenderConcurrency,
@@ -58,7 +57,6 @@ const OLD_LITERALS = {
   UPLOAD_MAX_MB: 10,
   HTTP_REQUEST_TIMEOUT_MS: 15 * 60_000,
   AI_REQUEST_TIMEOUT_MS: 300_000,
-  CLAUDE_MAX_ATTEMPTS: 4,
   AI_CLI_HEALTH_TIMEOUT_MS: 20_000,
   AI_CODEX_HEALTH_TIMEOUT_MS: 15_000,
   GENERATION_RENDER_CONCURRENCY: 4,
@@ -158,44 +156,6 @@ test('PORT: a valid port is used, anything else warns and uses 3001 - never a cr
     assert.equal(value, 3001, raw);
     assert.equal(warnings.length, 1, raw);
   }
-});
-
-/* ================================================================== AI URLs */
-
-test('the three metered base URLs default to the vendor endpoints', () => {
-  assert.deepEqual(op.claudeBaseUrl({}), { ok: true, url: 'https://api.anthropic.com' });
-  assert.deepEqual(op.deepseekBaseUrl({}), { ok: true, url: 'https://api.deepseek.com' });
-  assert.deepEqual(op.openaiBaseUrl({}), { ok: true, url: 'https://api.openai.com/v1' });
-  assert.deepEqual(op.openaiBaseUrl({ OPENAI_BASE_URL: '' }), { ok: true, url: 'https://api.openai.com/v1' });
-});
-
-test('a base URL override is validated and normalized', () => {
-  assert.equal(op.claudeBaseUrl({ CLAUDE_BASE_URL: 'https://gateway.example/anthropic/' }).url, 'https://gateway.example/anthropic');
-  assert.equal(op.deepseekBaseUrl({ DEEPSEEK_BASE_URL: 'http://127.0.0.1:4000' }).url, 'http://127.0.0.1:4000');
-  assert.equal(op.openaiBaseUrl({ OPENAI_BASE_URL: 'https://llm.example/v1' }).url, 'https://llm.example/v1');
-
-  const http = withWarnings(() => op.claudeBaseUrl({ CLAUDE_BASE_URL: 'http://gateway.example' }));
-  assert.equal(http.value.url, 'http://gateway.example', 'an operator-set endpoint is never swapped for the vendor');
-  assert.equal(http.warnings.length, 1);
-  assert.match(http.warnings[0], /CLAUDE_BASE_URL/);
-});
-
-test('a base URL that is set but refused is not the vendor endpoint: it is a refusal', () => {
-  for (const [read, name, vendor] of [
-    [op.claudeBaseUrl, 'CLAUDE_BASE_URL', 'https://api.anthropic.com'],
-    [op.deepseekBaseUrl, 'DEEPSEEK_BASE_URL', 'https://api.deepseek.com'],
-    [op.openaiBaseUrl, 'OPENAI_BASE_URL', 'https://api.openai.com/v1'],
-  ]) {
-    const { value, warnings } = withWarnings(() => read({ [name]: 'gateway.corp:8443' }));
-    assert.equal(value.ok, false, name);
-    assert.match(value.problem, new RegExp(`^${name}[ =]`));
-    assert.ok(value.remedy.includes(vendor), `${name}: the remedy says what removing it would mean`);
-    assert.equal(warnings.length, 1, name);
-  }
-});
-
-test('CLAUDE_BASE_URL is its own name: ANTHROPIC_BASE_URL belongs to the claude CLI child', () => {
-  assert.equal(op.claudeBaseUrl({ ANTHROPIC_BASE_URL: 'https://elsewhere.example' }).url, 'https://api.anthropic.com');
 });
 
 /* ============================================================ AI timeouts */
@@ -459,16 +419,17 @@ test('the startup line names every non-default setting once, with its EFFECTIVE 
   assert.equal(line.split('\n').length, 1, 'one line');
 });
 
-test('the startup line lists a refused base URL as refused - never at the default, never with its value', () => {
-  // A refused base URL leaves its provider unavailable, so leaving it off the
-  // line would read as "not set, using the vendor", which is the opposite.
+test('the startup line knows nothing of the retired metered variables, and so never prints one', () => {
+  // They left the table with the metered providers; a leftover one is named -
+  // never with its value - by its own startup warning instead.
+  for (const name of ['CLAUDE_BASE_URL', 'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'CLAUDE_MAX_ATTEMPTS']) {
+    assert.equal(op.OPERATIONAL_VARIABLES.some((entry) => entry.name === name), false, name);
+  }
   const { value: line } = withWarnings(() =>
     op.describeNonDefaultOperationalSettings({
       OPENAI_BASE_URL: 'https://user:hunter2@gw.example/v1',
-      DEEPSEEK_BASE_URL: 'https://ds.example/',
+      CLAUDE_MAX_ATTEMPTS: '2',
     })
   );
-  assert.match(line, /OPENAI_BASE_URL=\(refused\)/);
-  assert.match(line, /DEEPSEEK_BASE_URL=https:\/\/ds\.example(,|$)/);
-  assert.doesNotMatch(line, /hunter2/);
+  assert.equal(line, null);
 });

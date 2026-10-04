@@ -4,6 +4,7 @@ import { AI_PROVIDER_IDS, getProviderDescriptor } from '../config/providerCatalo
 import {
   checkProviderHealth,
   getClaudeCliAdapter,
+  getGeminiCliAdapter,
   getSemaphoreStats,
   getUsageSnapshot,
   listProviderCapabilities,
@@ -12,10 +13,9 @@ import {
 /**
  * Provider readiness for the admin UI.
  *
- * A subscription seat can fail in ways an API key cannot - the binary is not on
- * PATH, the sign-in expired, the five-hour window is spent - and none of those
- * are visible from a settings page that only knows how to render a key. This
- * endpoint is what the "Claude Subscription" card reads.
+ * A subscription seat can fail in ways a settings page cannot see - the binary
+ * is not on PATH, the sign-in expired, the five-hour window is spent. This
+ * endpoint is what the seat cards on the admin Settings page read.
  */
 const router = express.Router();
 /**
@@ -39,8 +39,6 @@ router.get('/health', async (_req: Request, res: Response) => {
           id,
           label: descriptor.label,
           summary: descriptor.summary,
-          credentialKind: descriptor.credentialKind,
-          requiresApiKey: descriptor.requiresApiKey,
           ok: health.ok,
           detail: health.detail,
           warning: health.warning ?? null,
@@ -52,6 +50,7 @@ router.get('/health', async (_req: Request, res: Response) => {
     );
 
     const cli = getClaudeCliAdapter();
+    const gemini = getGeminiCliAdapter();
 
     const snapshot = getUsageSnapshot();
     const usageRows = snapshot.entries.map((entry) => ({
@@ -61,7 +60,7 @@ router.get('/health', async (_req: Request, res: Response) => {
     }));
 
     // Totalled PER PROVIDER. A single process-wide total attributed every
-    // metered provider's calls to the subscription seat on the admin card.
+    // seat's calls to the Claude seat on the admin card.
     const usageByProvider: Record<string, { calls: number; failures: number; inputTokens: number; outputTokens: number; costUsd: number }> = {};
     for (const entry of usageRows) {
       const totals = (usageByProvider[entry.provider] ??= {
@@ -83,6 +82,13 @@ router.get('/health', async (_req: Request, res: Response) => {
       subscription: {
         seat: cli.seatUsage(),
         outages: cli.outages(),
+      },
+      // Every seat that holds itself off after a failure, keyed by provider.
+      // `subscription.outages` above is the Claude seat's, kept where an
+      // already-loaded page reads it; Codex keeps no holds of its own.
+      outagesByProvider: {
+        'claude-cli': cli.outages(),
+        'gemini-cli': gemini?.outages() ?? [],
       },
       concurrency: getSemaphoreStats(),
       usage: { entries: usageRows, totals: snapshot.totals, byProvider: usageByProvider },

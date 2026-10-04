@@ -2,14 +2,12 @@
 
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import {
-  AI_PROVIDERS,
-  AIProvider,
-  coerceProvider,
-  DEFAULT_PUBLIC_APP_SETTINGS,
+  adminApi,
+  AdminAppSettings,
+  AIModelRecord,
   getAIProviderLabel,
   isProviderOffered,
   PromptSummary,
-  PublicAppSettings,
   promptsApi,
   resumeApi,
 } from '@/lib/api';
@@ -35,8 +33,6 @@ type OutputKeySummary = {
   key: string;
   count: number;
 };
-
-const DEFAULT_MODEL_SETTINGS: PublicAppSettings = DEFAULT_PUBLIC_APP_SETTINGS;
 
 const KIND_LABELS: Record<HighlightKind, string> = {
   required: 'Required',
@@ -66,24 +62,24 @@ const OUTPUT_KEY_CLASSES = [
 ];
 
 /**
- * Whether this page may offer a provider at all.
+ * The models this page may run: enabled, on a provider this installation
+ * offers.
  *
- * `isProviderOffered` and nothing else. A private copy that reads only
- * `providersEnabled` drops the LOCK clause, so a provider this machine cannot
- * run is offered here unlabelled and picking it produces a backend error - and
- * the next clause the backend's rule grows is missed here as well.
+ * `isProviderOffered` and nothing else for the provider half. A private copy
+ * that reads only `providersEnabled` drops the LOCK clause, so a model this
+ * machine cannot run is offered here and picking it produces a backend error -
+ * and the next clause the backend's rule grows is missed here as well.
  */
-function isEnabled(settings: PublicAppSettings, provider: AIProvider): boolean {
-  return isProviderOffered(settings, provider, settings.providersEnabled);
+function runnableModels(settings: AdminAppSettings): AIModelRecord[] {
+  return settings.aiModels.filter(
+    (model) => model.enabled && isProviderOffered(settings, model.provider, settings.providersEnabled)
+  );
 }
 
-/**
- * The first offered provider in catalog order, which puts the keyless
- * subscription seat ahead of every metered one. Both of these used to end in
- * an unguarded fall-through to DeepSeek.
- */
-function pickDefaultProvider(settings: PublicAppSettings): AIProvider {
-  return AI_PROVIDERS.find((provider) => isEnabled(settings, provider)) ?? AI_PROVIDERS[0];
+/** The app default when it can run, otherwise the first model that can. */
+function pickDefaultModelId(settings: AdminAppSettings): string {
+  const models = runnableModels(settings);
+  return (models.find((model) => model.id === settings.defaultModelId) ?? models[0])?.id ?? '';
 }
 
 function normalizeTerm(value: string): string {
@@ -282,10 +278,15 @@ function renderHighlightedText(text: string, matches: HighlightMatch[]): ReactNo
 function TestPageBody() {
   const [jobDescription, setJobDescription] = useState('');
   const [analysis, setAnalysis] = useState<unknown>(null);
-  const [selectedModel, setSelectedModel] = useState<AIProvider>('claude-cli');
+  /*
+   * A MODEL id, the way every other caller names what to run - not a bare
+   * provider, which ran whichever of that provider's models came first, so the
+   * test could not be pointed at the model a real run would use.
+   */
+  const [selectedModelId, setSelectedModelId] = useState('');
   const [analyzePrompts, setAnalyzePrompts] = useState<PromptSummary[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState('analyze-job-description');
-  const [modelSettings, setModelSettings] = useState<PublicAppSettings>(DEFAULT_MODEL_SETTINGS);
+  const [models, setModels] = useState<AIModelRecord[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
@@ -294,18 +295,21 @@ function TestPageBody() {
     const loadSettings = async () => {
       try {
         const [settings, promptList] = await Promise.all([
-          resumeApi.getModels(),
+          adminApi.getSettings(),
           promptsApi.getAll(),
         ]);
         const analyzerPrompts = promptList.filter((prompt) => prompt.featureKey === 'analyze-job-description');
-        setModelSettings(settings);
+        const offered = runnableModels(settings);
+        setModels(offered);
         setAnalyzePrompts(analyzerPrompts);
         setSelectedPromptId((current) =>
           analyzerPrompts.some((prompt) => prompt.id === current)
             ? current
             : analyzerPrompts[0]?.id ?? 'analyze-job-description'
         );
-        setSelectedModel((current) => (isEnabled(settings, current) ? current : pickDefaultProvider(settings)));
+        setSelectedModelId((current) =>
+          offered.some((model) => model.id === current) ? current : pickDefaultModelId(settings)
+        );
         setStoredDefaultTheme(settings.defaultTheme);
         applyTheme(getStoredTheme() ?? settings.defaultTheme);
       } catch (err) {
@@ -343,7 +347,7 @@ function TestPageBody() {
     setStatus('');
 
     try {
-      const result = await resumeApi.analyzePromptTest(trimmed, { model: selectedModel }, selectedPromptId);
+      const result = await resumeApi.analyzePromptTest(trimmed, { model: selectedModelId }, selectedPromptId);
       setAnalysis(result);
       setStatus('Analysis complete.');
     } catch (err) {
@@ -354,8 +358,7 @@ function TestPageBody() {
     }
   };
 
-  const enabledProviders = AI_PROVIDERS.filter((provider) => isEnabled(modelSettings, provider));
-  const hasAnyProvider = enabledProviders.length > 0;
+  const hasAnyModel = models.length > 0;
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8">
@@ -371,7 +374,7 @@ function TestPageBody() {
         </Pill>
       </div>
 
-      <Section title="Analyzer" description="The job description to run, the analyze prompt to run it through, and the provider to run it on.">
+      <Section title="Analyzer" description="The job description to run, the analyze prompt to run it through, and the model to run it on.">
         <form onSubmit={handleAnalyze} className="space-y-6">
           <Field label="Job description" htmlFor="prompt-test-description">
             <textarea
@@ -405,17 +408,18 @@ function TestPageBody() {
               </select>
             </Field>
 
-            <Field label="Model provider" htmlFor="prompt-test-provider">
+            <Field label="Model" htmlFor="prompt-test-model">
               <select
-                id="prompt-test-provider"
-                value={selectedModel}
-                onChange={(event) => setSelectedModel(coerceProvider(event.target.value) ?? selectedModel)}
+                id="prompt-test-model"
+                value={selectedModelId}
+                onChange={(event) => setSelectedModelId(event.target.value)}
                 className="tl-input"
-                disabled={!hasAnyProvider || isAnalyzing}
+                disabled={!hasAnyModel || isAnalyzing}
               >
-                {enabledProviders.map((provider) => (
-                  <option key={provider} value={provider}>
-                    {getAIProviderLabel(provider)}
+                {!hasAnyModel && <option value="">No model can run</option>}
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {`${model.name} (${getAIProviderLabel(model.provider)})`}
                   </option>
                 ))}
               </select>
@@ -425,7 +429,7 @@ function TestPageBody() {
           <div>
             <button
               type="submit"
-              disabled={isAnalyzing || !hasAnyProvider}
+              disabled={isAnalyzing || !hasAnyModel}
               className="tl-button"
             >
               <span aria-hidden="true">{"->"}</span>

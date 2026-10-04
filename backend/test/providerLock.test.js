@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
+const { loadFresh, readSettingRaw, useTempStorage, writeStaticJson } = require('./helpers');
 
 /**
  * The provider lock.
@@ -9,18 +9,19 @@ const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
  * A lock says "this deployment cannot run that provider" - a different claim
  * from the admin's enable switch, and the two must not be able to stand in for
  * one another. What is pinned here is that a locked provider cannot be
- * dispatched to by ANY of the ways a model can be named, that the UI is still
- * told about it so it can show a padlock rather than silently dropping the
- * model, and that an install locked out of a provider lands on a model that
- * works.
+ * dispatched to by ANY of the ways a model can be named, that an administrator
+ * is still told about it - with the models behind it and why - while an
+ * ordinary account simply does not see those models, and that an install
+ * locked out of a provider lands on a model that works.
  *
- * Nothing is locked in the shipped catalog any more - both subscription seats
- * are offered, and the Claude seat is the default. So the subject here is an
- * operator who locks the seats out with AI_LOCKED_PROVIDERS, which is the same
+ * Nothing is locked in the shipped catalog - every subscription seat is
+ * offered, and the Claude seat is the default. So the subject here is an
+ * operator who locks a seat out with AI_LOCKED_PROVIDERS, which is the same
  * machinery the catalog lock used and the case that still happens for real: a
- * box with no `claude` or `codex` binary signed in. With both seats locked
- * nothing keyless is left, so what such an install lands on is a METERED
- * provider: it runs once a key is in .env, and it bills for what it runs.
+ * box with no `claude` binary signed in. Every provider is a seat now, so what
+ * such an install lands on is the next seat - never anything billed per token -
+ * and with EVERY seat locked nothing can run at all, which the settings read
+ * survives and a run is refused over.
  */
 
 /** Both lock lists are read from the environment on every call; reset between tests. */
@@ -31,61 +32,77 @@ function withLock({ locked, unlocked } = {}) {
   else delete process.env.AI_UNLOCKED_PROVIDERS;
 }
 
-/**
- * The case every test here is about: the CLI seats locked out by the operator.
- *
- * BOTH of them, because there are two now - the Claude subscription and the
- * ChatGPT one - and the subject is a box with no CLI seat signed in at all.
- * Locking one alone stopped testing that: the fallback simply landed on the
- * other seat, which is correct behaviour and not what these assertions are
- * about.
- */
+/** The case most tests here are about: the Claude seat - the default - locked out by the operator. */
 function lockSeat() {
-  withLock({ locked: 'claude-cli,codex-cli' });
+  withLock({ locked: 'claude-cli' });
 }
+
+/** Every seat this build has, read from the catalog so a seat added later is locked too. */
+function lockEverySeat() {
+  const { AI_PROVIDER_IDS } = require('../dist/config/providerCatalog');
+  withLock({ locked: AI_PROVIDER_IDS.join(',') });
+}
+
+/** A stub adapter that records what it was asked to run. */
+const stubAdapter = (id, calls) => () => ({
+  id,
+  capabilities: {
+    id, label: 'stub', temperature: false, maxOutputTokens: false,
+    nativeJsonMode: 'json-schema', systemBlocks: true, maxConcurrency: 4,
+  },
+  defaultModelName: () => `${id}-own-default`,
+  health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
+  async complete(request) {
+    calls.push({ provider: id, modelName: request.modelName });
+    return { text: '{"ok":true}', resolvedModel: request.modelName, providerId: id, droppedParams: [], latencyMs: 1 };
+  },
+});
 
 test.beforeEach(() => withLock());
 test.after(() => withLock());
 
-test('a seat the operator locked out says so instead of disappearing', async () => {
+test('a seat the operator locked out says so to an administrator, and is simply absent for everyone else', async () => {
   useTempStorage('lock-public');
   lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
-  const settings = await config.getPublicAppSettings();
+  const user = await config.getUserAppSettings();
 
-  // Not offered as something to run...
-  assert.equal(
-    settings.aiModels.some((model) => model.provider === 'claude-cli'),
-    false,
+  // Not offered as something to run, and not described either: an ordinary
+  // account is shown the models it can pick and nothing about why others are
+  // missing - the lock reason names CLI commands and .env variables.
+  assert.deepEqual(
+    user.models.map((model) => model.id),
+    ['codex-cli-default', 'gemini-cli-auto'],
     'a locked provider contributes no runnable model'
   );
+  assert.equal('providerLocks' in user, false);
 
-  // ...but still described, with the models it would have offered, so a picker
-  // can grey them out rather than leave the user wondering where they went.
-  const lock = settings.providerLocks.find((entry) => entry.id === 'claude-cli');
+  // The administrator is told, with the models it would have offered, so Admin
+  // -> Models can say why they do not run rather than leave them looking broken.
+  const admin = await config.getAdminAppSettings();
+  const lock = admin.providerLocks.find((entry) => entry.id === 'claude-cli');
   assert.ok(lock, 'the lock is reported');
-  assert.equal(lock.label, 'Claude (subscription)');
+  assert.equal(lock.label, 'Claude (Subscription)');
   assert.match(lock.reason, /subscription seat/i);
   assert.ok(
     lock.models.some((model) => model.id === 'claude-cli-sonnet'),
     'the models behind the lock come with it'
   );
 
-  // And the default is one that can actually run. With both seats locked
-  // nothing free is left, so it is the first metered model in the seed list -
-  // not a locked model that would fail every generate.
-  assert.equal(settings.defaultModelId, 'openai-gpt-5-1');
-  assert.ok(settings.aiModels.some((model) => model.id === settings.defaultModelId));
+  // And the default is one that can actually run: the next seat's, not a
+  // locked model that would fail every generate.
+  assert.equal(user.defaultModelId, 'codex-cli-default');
+  assert.equal(admin.defaultModelId, 'codex-cli-default');
 });
 
 test('the subscription seat is offered, and is the default, when nothing locks it', async () => {
   useTempStorage('lock-seat-offered');
   const config = loadFresh('../dist/config/aiModelConfig');
-  const settings = await config.getPublicAppSettings();
+  const settings = await config.getUserAppSettings();
 
-  assert.deepEqual(settings.providerLocks, [], 'nothing is locked in the shipped catalog');
+  assert.deepEqual((await config.getAdminAppSettings()).providerLocks, [], 'nothing is locked in the shipped catalog');
   assert.ok(
-    settings.aiModels.some((model) => model.id === 'claude-cli-sonnet'),
+    settings.models.some((model) => model.id === 'claude-cli-sonnet'),
     'the CLI seat is pickable'
   );
   assert.equal(settings.defaultModelId, 'claude-cli-sonnet');
@@ -96,10 +113,10 @@ test('AI_UNLOCKED_PROVIDERS lifts the lock', async () => {
   // Named in both lists. Unlock wins, so the escape hatch stays an escape hatch.
   withLock({ locked: 'claude-cli', unlocked: 'claude-cli' });
   const config = loadFresh('../dist/config/aiModelConfig');
-  const settings = await config.getPublicAppSettings();
+  const settings = await config.getUserAppSettings();
 
-  assert.deepEqual(settings.providerLocks, []);
-  assert.ok(settings.aiModels.some((model) => model.id === 'claude-cli-sonnet'));
+  assert.deepEqual((await config.getAdminAppSettings()).providerLocks, []);
+  assert.ok(settings.models.some((model) => model.id === 'claude-cli-sonnet'));
   assert.equal(settings.defaultModelId, 'claude-cli-sonnet');
 });
 
@@ -110,21 +127,29 @@ test('every way of naming a locked model is refused, and says why', async () => 
 
   // By model id, by bare provider id, and by the "provider:modelName" form -
   // three separate branches in the resolver, and a lock that only closed one
-  // of them would be no lock at all.
+  // of them would be no lock at all. The last two are an administrator's forms.
+  // Everyone is told the same one sentence; the cause is the detail, which only
+  // an administrator is sent.
   for (const requested of ['claude-cli-sonnet', 'claude-cli', 'claude-cli:sonnet']) {
     await assert.rejects(
-      () => config.resolveRequestedAIModel(requested),
-      /locked in this installation/i,
+      () => config.resolveRequestedAIModel(requested, { admin: true }),
+      {
+        name: 'ModelUnavailableError',
+        message: "That model isn't available. Choose another, or contact your administrator.",
+        detail: /locked in this installation/i,
+      },
       `naming the model as "${requested}" is refused`
     );
   }
 
   // A model that is merely provider-disabled still reports as disabled: the
-  // two messages point at different fixes and must not be merged.
-  await config.updateAppSettings({
-    providersEnabled: { 'claude-cli': true, claude: true, openai: false, deepseek: true },
+  // two causes point at different fixes and must not be merged.
+  withLock();
+  await config.updateAppSettings({ providersEnabled: { 'claude-cli': true, 'codex-cli': false } });
+  await assert.rejects(() => config.resolveRequestedAIModel('codex-cli-default'), {
+    name: 'ModelUnavailableError',
+    detail: /disabled by admin/i,
   });
-  await assert.rejects(() => config.resolveRequestedAIModel('openai-gpt-5-1'), /disabled by admin/i);
 });
 
 test('a request that names no provider reroutes off the locked one', async () => {
@@ -137,10 +162,9 @@ test('a request that names no provider reroutes off the locked one', async () =>
   // The admin's own choice is unchanged underneath - unlocking later restores
   // exactly what they had picked.
   assert.equal(config.isProviderAdminEnabled('claude-cli', settings), true);
-  // Keyless first - and with both seats locked there is no keyless provider
-  // left, so the fallback is the first unlocked one in catalog order: the
-  // metered Anthropic API.
-  assert.equal(config.getDefaultEnabledProvider(settings), 'claude');
+  // The first seat that can run, in catalog order. Every provider is a seat, so
+  // nothing down the list bills per token.
+  assert.equal(config.getDefaultEnabledProvider(settings), 'codex-cli');
 });
 
 test('a profile that had picked the locked model keeps working', async () => {
@@ -155,30 +179,28 @@ test('a profile that had picked the locked model keeps working', async () => {
   const stored = await preferences.resolveAiChoice(undefined, {
     profileSettings: { ai: { modelId: 'claude-cli-sonnet' } },
   });
-  // It lands on the app default, which with both seats locked is metered.
-  assert.equal(stored.provider, 'openai');
-  assert.equal(stored.modelId, 'openai-gpt-5-1');
+  // It lands on the app default, which with the Claude seat locked is the next seat's.
+  assert.equal(stored.provider, 'codex-cli');
+  assert.equal(stored.modelId, 'codex-cli-default');
 
   // Named in THIS request, it is refused instead - somebody just picked it,
-  // and quietly running something else would be worse than saying no.
-  await assert.rejects(
-    () => preferences.resolveAiChoice({ modelId: 'claude-cli-sonnet' }, null),
-    /locked in this installation/i
-  );
-
-  // A stored id for a provider that is merely disabled is still an error: it
-  // is the LOCK that makes a stored preference stale, not any failure to
-  // resolve, and swallowing the rest would hide real misconfiguration.
-  await config.updateAppSettings({
-    providersEnabled: { 'claude-cli': true, claude: true, openai: false, deepseek: true },
+  // and quietly running something else would also quietly charge another
+  // model's price.
+  await assert.rejects(() => preferences.resolveAiChoice({ modelId: 'claude-cli-sonnet' }, null), {
+    name: 'ModelUnavailableError',
+    detail: /locked in this installation/i,
   });
-  await assert.rejects(
-    () =>
-      preferences.resolveAiChoice(undefined, {
-        profileSettings: { ai: { modelId: 'openai-gpt-5-1' } },
-      }),
-    /disabled by admin/i
-  );
+
+  // A stored id whose provider an administrator merely switched off is stale in
+  // the same way: its owner did not do it and cannot see why, since an ordinary
+  // account is only ever shown the models that run. It falls back too, and the
+  // log names the cause for the administrator who can fix it.
+  withLock();
+  await config.updateAppSettings({ providersEnabled: { 'claude-cli': true, 'codex-cli': false } });
+  const offSeat = await preferences.resolveAiChoice(undefined, {
+    profileSettings: { ai: { modelId: 'codex-cli-default' } },
+  });
+  assert.equal(offSeat.modelId, 'claude-cli-sonnet');
 });
 
 test('settings that would leave only locked providers enabled are refused', async () => {
@@ -188,11 +210,7 @@ test('settings that would leave only locked providers enabled are refused', asyn
 
   await assert.rejects(
     () =>
-      config.updateAppSettings({
-        providersEnabled: {
-          'claude-cli': true, 'codex-cli': true, claude: false, openai: false, deepseek: false,
-        },
-      }),
+      config.updateAppSettings({ providersEnabled: { 'claude-cli': true, 'codex-cli': false, 'gemini-cli': false } }),
     /unlocked AI provider/i
   );
 });
@@ -215,85 +233,90 @@ test('a prompt pinned to the locked provider runs instead of failing', async () 
 
   const ai = loadFresh('../dist/services/ai/index');
   ai.resetRegistryForTests();
-
-  const requests = [];
-  ai.registerAdapter('openai', () => ({
-    id: 'openai',
-    capabilities: {
-      id: 'openai', label: 'stub', temperature: false, maxOutputTokens: false,
-      nativeJsonMode: 'json-schema', systemBlocks: true, requiresApiKey: false,
-      credentialKind: 'api-key', maxConcurrency: 4,
-    },
-    defaultModelName: () => 'gpt-5.1',
-    health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
-    async complete(request) {
-      requests.push(request);
-      return { text: '{"ok":true}', resolvedModel: request.modelName, providerId: 'openai', droppedParams: [], latencyMs: 1 };
-    },
-  }));
+  const calls = [];
+  ai.registerAdapter('codex-cli', stubAdapter('codex-cli', calls));
 
   await ai.createPromptCompletion({
     promptId: 'analyze-job-description',
     promptValues: { jobDescription: 'A job' },
-    fallbackProvider: 'openai',
-    fallbackModelName: 'gpt-5.1',
+    fallbackProvider: 'codex-cli',
+    fallbackModelName: 'gpt-6-luna',
     useExactPromptId: true,
   });
 
-  assert.equal(requests.length, 1, 'the call ran on the caller\'s provider');
-  assert.equal(requests[0].modelName, 'gpt-5.1');
+  assert.deepEqual(calls, [{ provider: 'codex-cli', modelName: 'gpt-6-luna' }], "the call ran on the caller's provider");
 });
 
-test('with only the Claude seat locked, the default is the other seat rather than a metered model', async () => {
-  // The case the keyless-first rule is for. Locking one seat must move a fresh
-  // install onto the seat that is left, not onto the first model that bills.
+test('with only the Claude seat locked, a fresh install defaults to the next seat', async () => {
   useTempStorage('lock-one-seat');
-  withLock({ locked: 'claude-cli' });
+  lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
-  const settings = await config.getPublicAppSettings();
+  const settings = await config.getUserAppSettings();
 
   assert.equal(settings.defaultModelId, 'codex-cli-default');
   assert.equal(config.getDefaultEnabledProvider(await config.getAIModelSettings()), 'codex-cli');
 });
 
-test('a call that names no provider runs on the app default once no seat is left', async () => {
+test('a call that names no provider runs on the app default MODEL, not on a seat\'s own default', async () => {
   // The bid assistant names no provider, so every call it makes is rerouted
-  // off the locked seat. A keyless seat still wins when one is left; with both
-  // locked there is none, and catalog order alone put the call on the Anthropic
-  // API while the app default was an OpenAI model - billing a provider nobody
-  // picked, or failing with a sign-in message for a seat that is locked. It
-  // runs on what the settings page shows as the default instead.
+  // off the locked seat - onto what the settings page shows as the default, so
+  // the model an administrator chose is the one it runs on.
   useTempStorage('lock-raw-default');
   lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
   const ai = loadFresh('../dist/services/ai/index');
   ai.resetRegistryForTests();
-
   const calls = [];
-  const stub = (id) => () => ({
-    id,
-    capabilities: {
-      id, label: 'stub', temperature: false, maxOutputTokens: false,
-      nativeJsonMode: 'json-schema', systemBlocks: true, requiresApiKey: false,
-      credentialKind: 'api-key', maxConcurrency: 4,
-    },
-    defaultModelName: () => `${id}-own-default`,
-    health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
-    async complete(request) {
-      calls.push({ provider: id, modelName: request.modelName });
-      return { text: '{"ok":true}', resolvedModel: request.modelName, providerId: id, droppedParams: [], latencyMs: 1 };
-    },
-  });
-  for (const id of ['codex-cli', 'claude', 'openai', 'deepseek']) ai.registerAdapter(id, stub(id));
+  ai.registerAdapter('codex-cli', stubAdapter('codex-cli', calls));
 
-  const expected = await config.resolveRequestedAIModel();
-  assert.equal(expected.provider, 'openai', 'the default with both seats locked');
   await ai.createRawCompletion({ callSite: 'bid-assistant', system: 'Be brief.', user: 'Hello.' });
-  assert.deepEqual(calls, [{ provider: 'openai', modelName: expected.modelName }]);
+  assert.deepEqual(calls, [{ provider: 'codex-cli', modelName: 'default' }], "the seed default's model name");
 
-  // One seat left: the free seat beats the metered default, on its own model.
-  withLock({ locked: 'claude-cli' });
+  // An administrator's own model as the default: that is what runs. On a
+  // database of its own, because the facade reads settings through its own
+  // module instance, whose short cache is keyed on the database path.
+  useTempStorage('lock-raw-default-own-model');
+  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna' });
+  const luna = created.aiModels.find((model) => model.modelName === 'gpt-6-luna');
+  await config.updateAppSettings({ defaultModelId: luna.id });
   calls.length = 0;
   await ai.createRawCompletion({ callSite: 'bid-assistant', system: 'Be brief.', user: 'Hello.' });
-  assert.deepEqual(calls, [{ provider: 'codex-cli', modelName: 'codex-cli-own-default' }]);
+  assert.deepEqual(calls, [{ provider: 'codex-cli', modelName: 'gpt-6-luna' }]);
+});
+
+test('with every seat locked, settings still read - no runnable model, the locks listed - and a run is refused', async () => {
+  // Nothing metered is left to fall back on, so a box with no CLI signed in at
+  // all is a real state. Refusing every settings READ would take down the admin
+  // pages that say why; the read degrades instead, and saves keep the assert.
+  const { dbDir } = useTempStorage('lock-every-seat');
+  const config = loadFresh('../dist/config/aiModelConfig');
+  await config.updateAppSettings({ defaultTheme: 'dark' });
+  const stored = readSettingRaw(dbDir, 'app-settings');
+
+  lockEverySeat();
+  config.invalidateSettingsCache();
+  const { AI_PROVIDER_IDS } = require('../dist/config/providerCatalog');
+
+  const user = await config.getUserAppSettings();
+  assert.deepEqual(user.models, [], 'nothing is offered to run');
+  assert.equal(user.defaultModelId, '');
+  assert.equal(user.defaultTheme, 'dark', 'the rest of the row reads as stored');
+
+  const admin = await config.getAdminAppSettings();
+  assert.deepEqual(admin.providerLocks.map((lock) => lock.id), [...AI_PROVIDER_IDS]);
+  assert.ok(admin.aiModels.some((model) => model.id === 'claude-cli-sonnet'), 'the admin still sees every model');
+  assert.equal(readSettingRaw(dbDir, 'app-settings'), stored, 'reading does not rewrite the row');
+  assert.equal(
+    JSON.parse(stored).defaultModelId,
+    'claude-cli-sonnet',
+    'the stored default is kept, so lifting the lock restores it'
+  );
+
+  await assert.rejects(() => config.resolveRequestedAIModel(), /every AI provider is locked/i);
+  await assert.rejects(() => config.updateAppSettings({ defaultTheme: 'light' }), /unlocked AI provider/i);
+
+  // A fresh install with every seat locked reads too.
+  useTempStorage('lock-every-seat-fresh');
+  const fresh = loadFresh('../dist/config/aiModelConfig');
+  assert.deepEqual((await fresh.getUserAppSettings()).models, []);
 });

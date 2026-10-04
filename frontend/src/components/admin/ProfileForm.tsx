@@ -20,8 +20,8 @@ import {
   SkillCategoryGroup,
   TechnicalSkillsLayout,
   AiPreferences,
-  PublicAppSettings,
-  DEFAULT_PUBLIC_APP_SETTINGS,
+  UserAppSettings,
+  DEFAULT_USER_APP_SETTINGS,
   normalizeAiPreferences,
 } from '@/lib/api';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
@@ -249,7 +249,13 @@ export default function ProfileForm({
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
   const [hardSkillLibrary, setHardSkillLibrary] = useState<string[]>([]);
-  const [appSettings, setAppSettings] = useState<PublicAppSettings>(DEFAULT_PUBLIC_APP_SETTINGS);
+  const [appSettings, setAppSettings] = useState<UserAppSettings>(DEFAULT_USER_APP_SETTINGS);
+  /**
+   * Whether the model list really arrived. An empty list from a failed request
+   * must not be read as "nothing is available": that would drop a perfectly
+   * good saved choice on the next save.
+   */
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [experienceSkillInputs, setExperienceSkillInputs] = useState<Record<number, string>>({});
 
   useEffect(() => {
@@ -271,7 +277,13 @@ export default function ProfileForm({
   // The model list and the app's own default, so the inherit
   // option can say what inheriting actually gets you.
   useEffect(() => {
-    resumeApi.getModels().then(setAppSettings).catch(() => setAppSettings(DEFAULT_PUBLIC_APP_SETTINGS));
+    resumeApi
+      .getModels()
+      .then((settings) => {
+        setAppSettings(settings);
+        setModelsLoaded(true);
+      })
+      .catch(() => setAppSettings(DEFAULT_USER_APP_SETTINGS));
   }, []);
 
   // Template IDs already selected by other profiles (exclude current profile when editing)
@@ -298,6 +310,26 @@ export default function ProfileForm({
       ...formData,
       profileSettings: { ...formData.profileSettings, ai },
     });
+  };
+
+  /**
+   * The model choice as it can be saved.
+   *
+   * A choice that is no longer on offer is saved as "inherit". The server runs
+   * such a profile on the app default already, and it refuses to SAVE a model
+   * this account cannot pick - so keeping the stale id would make every later
+   * edit of this profile fail over a setting the picker shows as unavailable.
+   */
+  const savableAiPreferences = (ai: AiPreferences): AiPreferences => {
+    const preferences = normalizeAiPreferences(ai);
+    if (
+      modelsLoaded &&
+      preferences.modelId &&
+      !appSettings.models.some((model) => model.id === preferences.modelId)
+    ) {
+      return {};
+    }
+    return preferences;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -340,7 +372,7 @@ export default function ProfileForm({
           technicalSkillsLayout: normalizeTechnicalSkillsLayout(
             formData.profileSettings.technicalSkillsLayout
           ),
-          ai: normalizeAiPreferences(formData.profileSettings.ai),
+          ai: savableAiPreferences(formData.profileSettings.ai),
         },
         skills: formData.hardSkills,
         // Sent whether or not the layout is grouped. The grouping is storage
@@ -632,12 +664,12 @@ export default function ProfileForm({
           idPrefix="profile-ai"
           value={formData.profileSettings.ai}
           onChange={updateAiPreferences}
-          models={appSettings.aiModels}
-          providerLocks={appSettings.providerLocks}
+          models={appSettings.models}
+          modelsLoaded={modelsLoaded}
           inheritedFrom="app default"
           inherited={{
             modelLabel:
-              appSettings.aiModels.find((model) => model.id === appSettings.defaultModelId)?.name ||
+              appSettings.models.find((model) => model.id === appSettings.defaultModelId)?.name ||
               'the first enabled model',
           }}
         />

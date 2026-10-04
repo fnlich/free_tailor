@@ -9,7 +9,7 @@ import { readEnvFileText } from './envFile';
  * evaluated depth-first before the importing module's own statements, so a
  * `dotenv.config()` written in the body of index.ts runs AFTER every module it
  * imports has already been evaluated - which meant module-scope reads such as
- * `process.env.OPENAI_MODEL` in aiModelCatalog never saw the file at all.
+ * `process.env.AI_CLI_MODEL` in aiModelCatalog never saw the file at all.
  * Putting the load in its own module makes "first import wins" do the work.
  *
  * `override: true` semantics are preserved below: the checked-in `.env` beats

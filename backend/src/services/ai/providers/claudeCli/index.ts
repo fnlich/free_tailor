@@ -75,8 +75,6 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     maxOutputTokens: false,
     nativeJsonMode: 'json-schema',
     systemBlocks: true,
-    requiresApiKey: false,
-    credentialKind: 'subscription-seat',
     maxConcurrency: config.concurrency,
   };
 
@@ -92,7 +90,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     try {
       const value = await check({
         binary: config.binary,
-        env: buildChildEnv(process.env, { allowApiKey: config.allowApiKey }),
+        env: buildChildEnv(process.env),
       });
       cachedHealth = { value, at: now() };
       return value;
@@ -183,7 +181,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       const outcome = await runner.run({
         binary: config.binary,
         argv: invocation.argv,
-        env: buildChildEnv(process.env, { allowApiKey: config.allowApiKey }),
+        env: buildChildEnv(process.env),
         cwd: config.workdir,
         stdin,
         deadlineMs: Math.max(1_000, Math.min(request.deadline.remainingMs(), resolveTimeoutMs(config, request.callSite))),
@@ -252,8 +250,9 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
 
       // A key reaching the child means this call is billed per token, which is
       // the exact failure this provider exists to prevent - and it is
-      // otherwise completely invisible. Free to assert, so assert it.
-      if (state.apiKeySource && state.apiKeySource !== 'none' && !config.allowApiKey) {
+      // otherwise completely invisible. Free to assert, so assert it, and with
+      // no switch to accept it: the app runs on subscription seats only.
+      if (state.apiKeySource && state.apiKeySource !== 'none') {
         // Held as an outage too. Failing only this call leaves the operator
         // free to retry straight into another billed request; every call until
         // the environment is fixed would be metered.
@@ -263,7 +262,9 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
           `the CLI reported apiKeySource="${state.apiKeySource}", so this call was billed per token rather than run on the subscription`,
           {
             adminAction:
-              'An ANTHROPIC_API_KEY reached the claude subprocess. Remove it from the server environment, or set AI_CLI_ALLOW_API_KEY=1 to accept metered billing deliberately.',
+              'An API key reached the claude subprocess (an apiKeyHelper in its settings, or a key the ' +
+              'environment strip cannot see). Remove it from the server, then run `claude auth status` as ' +
+              'the service user and confirm it reports the subscription.',
           }
         );
       }

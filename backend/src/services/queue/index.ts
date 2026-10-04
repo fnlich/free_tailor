@@ -8,7 +8,8 @@ import {
 } from '../../database/generationRepository';
 import { getProfile } from '../../database/profileRepository';
 import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
-import { closeIfSettled, refundTaskUnit } from '../credits';
+import { geminiCliConcurrency } from '../ai/providers/geminiCli/options';
+import { closeIfSettled, CREDITS_PER_RESUME, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
 import {
   isQueueName,
@@ -31,7 +32,7 @@ import {
   type ResumeJob,
 } from './resumeTask';
 
-export { TaskQueue, registerTaskRunner, newBatchId, isQueueName, QUEUE_NAMES } from './taskQueue';
+export { TaskQueue, registerTaskRunner, newBatchId, isQueueName, QUEUE_NAMES, LANE_PROVIDER } from './taskQueue';
 export type {
   Assignment,
   Batch,
@@ -71,8 +72,7 @@ export {
  * administrator saves changes how many processes a seat may run.
  */
 async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capacity> {
-  // `cli` carries the Claude seat AND the metered HTTP providers, which have no
-  // local resource of their own and for whom this is only a throttle.
+  // `cli` is the Claude seat's lane, sized like its semaphore.
   const cli: Slot[] = Array.from({ length: cliConcurrency(env) }, (_, index) => ({
     id: `cli:${index}`,
     queue: 'cli' as const,
@@ -83,7 +83,13 @@ async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capac
     queue: 'codex' as const,
   }));
 
-  return { cli, codex };
+  // The Gemini seat's, from the same reader its adapter sizes its semaphore with.
+  const gemini: Slot[] = Array.from({ length: geminiCliConcurrency(env) }, (_, index) => ({
+    id: `gemini:${index}`,
+    queue: 'gemini' as const,
+  }));
+
+  return { cli, codex, gemini };
 }
 
 /** The batch's serializable half: everything but the tasks and the controller. */
@@ -137,6 +143,20 @@ const store: QueueStore = {
 let queue: TaskQueue | null = null;
 
 /**
+ * What a task was charged, read back from its payload for the refund.
+ *
+ * The snapshot when it carries a sane one; otherwise the default, which is
+ * exactly what every task without one was charged - a resume queued before
+ * prices were per model, restored from disk after the upgrade, and the stub
+ * payloads the queue's own tests run. Never re-priced from the model: see
+ * ResumeTaskPayload.creditCost.
+ */
+export function taskCreditCost(payload: unknown): number {
+  const cost = (payload as { creditCost?: unknown } | null | undefined)?.creditCost;
+  return typeof cost === 'number' && Number.isInteger(cost) && cost >= 0 ? cost : CREDITS_PER_RESUME;
+}
+
+/**
  * The one queue, shared by every request in the process.
  *
  * Process-wide is the whole point: two pages submitting batches must end up in
@@ -167,12 +187,16 @@ export function getGenerationQueue(): TaskQueue {
        *  every batch that was not placed as an order, which is most of them. */
       taskStarted: (task) => recordTaskStarted(task),
       /**
-       * Gives a credit back for every unit that did not deliver.
+       * Gives back what each unit that did not deliver was charged.
        *
        * The hook needs no identity plumbing at all: a reservation's id IS the
        * batch id, and it carries the account. That is why there is no user id on
        * the task payload and no owner column on generation_tasks - the one thing
        * a refund needs, it already has in `task.batchId`.
+       *
+       * What it gives back is the unit's own snapshotted price (`taskCreditCost`),
+       * not its model's price now - a batch can mix models at different prices,
+       * and an administrator can reprice one while the batch runs.
        *
        * A task that reached 'done' wrote a file, so its credit is spent and
        * stays spent. Note the asymmetry with the line below: a unit that FAILED
@@ -191,6 +215,7 @@ export function getGenerationQueue(): TaskQueue {
           refundTaskUnit(
             task.batchId,
             task.id,
+            taskCreditCost(task.payload),
             `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
           );
         }
@@ -229,7 +254,7 @@ export function getGenerationQueue(): TaskQueue {
  *
  * Not a test seam for the dispatcher. It makes the reading callable with an
  * environment of the caller's choosing, which is the only way to pin that the
- * two CLI lanes are sized from two different variables.
+ * three CLI lanes are sized from three different variables.
  */
 export function readCapacityForTests(env: NodeJS.ProcessEnv): Promise<Capacity> {
   return readCapacity(env);
@@ -255,9 +280,15 @@ export type RestoreReport = {
   pruned: number;
 };
 
-/** The lane `routeFor` gives new work on `provider`: Codex's own, else `cli`. */
-function laneFor(provider: unknown): QueueName {
-  return provider === 'codex-cli' ? 'codex' : 'cli';
+/**
+ * The lane `routeFor` gives new work on `provider`: each seat's own, and `cli`
+ * for anything else - a retired provider on a choice stored before the
+ * upgrade, which the restore resolves again before it runs.
+ */
+export function laneFor(provider: unknown): QueueName {
+  if (provider === 'codex-cli') return 'codex';
+  if (provider === 'gemini-cli') return 'gemini';
+  return 'cli';
 }
 
 /**

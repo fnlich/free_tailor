@@ -1,15 +1,25 @@
 import { Router, type Request, type Response } from 'express';
-import { InsufficientCreditsError, releaseReservation, reserveCredits } from '../services/credits';
-import { requireUser } from '../middleware/auth';
-import { getPublicAppSettings } from '../config/aiModelConfig';
-import { resolveAiChoice, type AiPreferences } from '../config/aiPreferences';
+import {
+  describeCharge,
+  getStatus,
+  InsufficientCreditsError,
+  isExempt,
+  releaseReservation,
+  reserveCredits,
+} from '../services/credits';
+import { isAdmin, requireUser } from '../middleware/auth';
+import { getUserAppSettings } from '../config/aiModelConfig';
+import { resolvePricedAiChoice, type AiPreferences, type PricedAiChoice } from '../config/aiPreferences';
+import { ModelUnavailableError, modelUnavailableBody } from '../config/modelErrors';
 import { listProfilesFor, type Viewer } from '../database/profileRepository';
 import { describeFailure } from '../middleware/aiErrors';
 import {
   getGenerationQueue,
+  laneFor,
   newBatchId,
   persistNewBatch,
   RESUME_TASK_KIND,
+  taskCreditCost,
   type Batch,
   type BatchSnapshot,
   type ResumeJob,
@@ -147,17 +157,14 @@ function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
  * happened to come first.
  */
 export function routeFor(choice: { provider: string }): { queue: QueueName } {
-  // Codex has its own lane because it has its own semaphore, sized by its own
-  // variable. Sharing the Claude seat's lane meant the dispatcher offered
-  // `AI_CLI_CONCURRENCY` slots into an `AI_CODEX_CONCURRENCY` pool, so one of
-  // the two was always wrong.
-  if (choice.provider === 'codex-cli') {
-    return { queue: 'codex' };
-  }
-  // Everything else runs on the Claude seat's queue: that CLI, and the metered
-  // HTTP providers, which have no local resource of their own and would
-  // otherwise need a lane that does nothing.
-  return { queue: 'cli' };
+  // Each seat has its own lane because each has its own semaphore, sized by
+  // its own variable. Sharing the Claude seat's lane meant the dispatcher
+  // offered `AI_CLI_CONCURRENCY` slots into an `AI_CODEX_CONCURRENCY` pool, so
+  // one of the two was always wrong. The Claude seat's lane is also the lane of
+  // last resort: a provider id this build has no seat for - a retired one on a
+  // choice stored before the upgrade - lands there, and the restore resolves
+  // such a choice again before it runs. The same rule the restore places by.
+  return { queue: laneFor(choice.provider) };
 }
 
 /**
@@ -178,7 +185,33 @@ export type BuildTaskOptions = {
    * start overwriting each other.
    */
   accountFolder?: string;
+  /**
+   * Whether the submitter is an administrator, which decides the forms the
+   * request's `model` may take (see ModelRequestOptions). Absent is not one.
+   */
+  admin?: boolean;
 };
+
+/**
+ * The model each profile runs on, and what a resume on it costs.
+ *
+ * Resolved once per profile rather than once per task: the choice is a profile
+ * setting, and a thirty-job batch would otherwise read the settings row thirty
+ * times per profile to get the same answer. The ONE resolution both the
+ * submission and its quote use, so a quote is what the submission charges.
+ */
+async function resolveProfileChoices(
+  body: SubmitBody,
+  profiles: Profile[],
+  options: Pick<BuildTaskOptions, 'admin'>
+): Promise<Map<string, PricedAiChoice>> {
+  const overrides = readAiOverrides(body);
+  const choices = new Map<string, PricedAiChoice>();
+  for (const profile of profiles) {
+    choices.set(profile.id, await resolvePricedAiChoice(overrides, profile, { admin: options.admin === true }));
+  }
+  return choices;
+}
 
 export async function buildTasks(
   body: SubmitBody,
@@ -187,25 +220,17 @@ export async function buildTasks(
   batchId: string,
   options: BuildTaskOptions = {}
 ): Promise<Array<TaskDescriptor<ResumeTaskResult>>> {
-  const overrides = readAiOverrides(body);
   const format = body.format === 'docx' ? 'docx' : body.format === 'pdf' ? 'pdf' : 'both';
   const includeCoverLetterDocx = body.includeCoverLetterDocx !== false;
   const tailoredByProfile = (body.tailoredContentByProfileId ?? {}) as Record<string, never>;
-
-  // Resolved once per profile rather than once per task: the choice is a profile
-  // setting, and a thirty-job batch would otherwise read the settings row thirty
-  // times per profile to get the same answer.
-  const choices = new Map<string, Awaited<ReturnType<typeof resolveAiChoice>>>();
-  for (const profile of profiles) {
-    choices.set(profile.id, await resolveAiChoice(overrides, profile));
-  }
+  const choices = await resolveProfileChoices(body, profiles, options);
 
   const descriptors: Array<TaskDescriptor<ResumeTaskResult>> = [];
   // Jobs outer, profiles inner, so the queue order reads down the sheet the way
   // the person who imported it expects.
   for (const [jobIndex, job] of jobs.entries()) {
     for (const profile of profiles) {
-      const choice = choices.get(profile.id)!;
+      const { choice, creditCost } = choices.get(profile.id)!;
       descriptors.push({
         queue: routeFor(choice).queue,
         label: {
@@ -232,6 +257,9 @@ export async function buildTasks(
           format,
           includeCoverLetterDocx,
           choice,
+          // What this resume is charged, fixed now: the reservation is the sum
+          // of these, and a failure refunds exactly its own.
+          creditCost,
           // Carried rather than looked up when the task runs, so the second
           // half of an order cannot land somewhere else because a setting was
           // edited, or because midnight passed, while it was queued.
@@ -244,6 +272,24 @@ export async function buildTasks(
     }
   }
   return descriptors;
+}
+
+/**
+ * What a list of tasks costs, and the line the account's credit history shows
+ * for it - by each task's model display name, so a mixed batch reads as what it
+ * was charged.
+ */
+export function chargeFor(descriptors: Array<TaskDescriptor<ResumeTaskResult>>): { credits: number; label: string } {
+  const units = descriptors.map((descriptor) => {
+    const payload = descriptor.payload as ResumeTaskPayload;
+    // Read the way the refund hook reads it, so what is charged and what a
+    // failure gives back can never be worked out two different ways.
+    return { modelLabel: payload.choice.modelLabel, credits: taskCreditCost(payload) };
+  });
+  return {
+    credits: units.reduce((sum, unit) => sum + unit.credits, 0),
+    label: describeCharge(units),
+  };
 }
 
 /** The results and failures of a batch, in submitted order. */
@@ -303,7 +349,7 @@ router.post('/batches', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as SubmitBody;
     const asOrder = body.asOrder === true;
-    const settings = await getPublicAppSettings();
+    const settings = await getUserAppSettings();
     // An order does not use the administrator's template, so it must not be
     // held to that template's requirements: refusing a sheet row for having no
     // role, to fill a `{{job title}}` segment an order never renders, is a
@@ -324,7 +370,9 @@ router.post('/batches', async (req: Request, res: Response) => {
     const batchId = newBatchId();
     const descriptors = await buildTasks(body, jobs, profiles, batchId, {
       accountFolder: accountFolderName(req.user),
+      admin: isAdmin(req),
     });
+    const charge = chargeFor(descriptors);
 
     /**
      * The charge, before the first model call.
@@ -336,11 +384,15 @@ router.post('/batches', async (req: Request, res: Response) => {
      * Per handler rather than as router middleware, and that is the guarantee
      * that keeps previews free: this router also serves reads, and a blanket
      * charge would catch anything added later by accident.
+     *
+     * The SUM of what each resume costs on the model it resolved to, so a
+     * batch whose profiles run on differently priced models is charged each at
+     * its own price, and a 402 names the whole amount.
      */
-    reserveCredits(req.user!, descriptors.length, {
+    reserveCredits(req.user!, charge.credits, {
       kind: 'batch',
       id: batchId,
-      label: `${jobs.length} job(s) x ${profiles.length} profile(s)`,
+      label: charge.label,
     });
 
     const queue = getGenerationQueue();
@@ -455,6 +507,10 @@ router.post('/batches', async (req: Request, res: Response) => {
       res.status(400).json({ error: error.message });
       return;
     }
+    if (error instanceof ModelUnavailableError) {
+      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
+      return;
+    }
     if (error instanceof InsufficientCreditsError) {
       res.status(402).json({
         error: error.message,
@@ -466,6 +522,49 @@ router.post('/batches', async (req: Request, res: Response) => {
     }
     console.error('Error queueing a generation batch:', error);
     res.status(500).json({ error: describeFailure(error, 'Failed to queue the batch') });
+  }
+});
+
+/**
+ * What a submission WOULD cost, without submitting anything.
+ *
+ * Takes the body `POST /batches` takes and resolves each profile's model the
+ * way it does (`resolveProfileChoices`), so the figure is what that submission
+ * would charge. Answers `{ resumes, credits, balance, exempt }` and nothing
+ * about which models or seats: the builder shows it as one line beside the
+ * generate button, and re-asks whenever the selection or the model changes.
+ *
+ * Lenient where the submission is strict, on purpose. The builder asks while
+ * the form is still being filled in, and a missing company name or role does
+ * not change what anything costs - so jobs are counted, not validated, and no
+ * profiles or no jobs is a quote of nothing rather than an error. The one
+ * refusal is a request naming a model it may not use (400), because the
+ * submission would be refused over it too. `credits` is the full amount even
+ * for an administrator, who is not charged it: `exempt` says so.
+ *
+ * Reads only. No reservation, no task, no model call.
+ */
+router.post('/quote', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as SubmitBody;
+    const jobCount = Array.isArray(body.jobs) ? body.jobs.length : 0;
+    const profiles = jobCount > 0 ? loadProfiles(req.user ?? null, body.profileIds) : [];
+    const choices = await resolveProfileChoices(body, profiles, { admin: isAdmin(req) });
+
+    const perJob = [...choices.values()].reduce((sum, priced) => sum + priced.creditCost, 0);
+    res.json({
+      resumes: jobCount * profiles.length,
+      credits: jobCount * perJob,
+      balance: getStatus(req.user!).balance,
+      exempt: isExempt(req.user!),
+    });
+  } catch (error) {
+    if (error instanceof ModelUnavailableError) {
+      res.status(error.status).json(modelUnavailableBody(error, isAdmin(req)));
+      return;
+    }
+    console.error('Error quoting a generation batch:', error);
+    res.status(500).json({ error: describeFailure(error, 'Failed to price the run') });
   }
 });
 

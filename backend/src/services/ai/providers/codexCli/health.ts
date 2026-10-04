@@ -18,6 +18,14 @@ import type { ProviderHealth } from '../../types';
  * match the known negative, and treat anything else as signed in while
  * reporting the line verbatim. A new phrasing of "not logged in" would be the
  * one way this misreads, which is why the raw line is always shown.
+ *
+ * One positive is matched as a negative: a sign-in on an API KEY. 0.160.0
+ * prints "Logged in using an API key - sk-...", and the Bedrock sign-ins name
+ * an API key or AWS access keys the same way. Every call on one of those bills
+ * per token, which is the one thing a subscription seat is here to avoid, and
+ * `codex login --with-api-key` stores the key in CODEX_HOME where the child
+ * environment strip cannot reach it. So it reads as not signed in to a
+ * subscription, with the remedy - and the key's masked tail is not repeated.
  */
 
 export type CodexCliHealth = ProviderHealth & {
@@ -26,6 +34,9 @@ export type CodexCliHealth = ProviderHealth & {
 };
 
 const SIGNED_OUT = /not\s+logged\s+in|no\s+credentials|please\s+run\s+`?codex\s+login/i;
+
+/** "Logged in using an API key - sk-...", "...Amazon Bedrock API key", "...AWS access keys". */
+const SIGNED_IN_WITH_KEY = /logged\s+in\s+using\b[^\n]*?\b(?:api\s*key|access\s+keys?)\b/i;
 
 function run(
   binary: string,
@@ -118,6 +129,22 @@ export async function checkCodexCliHealth(options: {
         `Not signed in (\`codex login status\` said: ${firstLine}). Run ` +
         '`codex login --device-auth` as the user this server runs as - it prints a code you ' +
         'approve from any other browser, so no display is needed on the server.',
+      checkedAt,
+    };
+  }
+
+  const keyLine = said.split('\n').map((line) => line.trim()).find((line) => SIGNED_IN_WITH_KEY.test(line));
+  if (keyLine) {
+    // Up to the " - " that introduces the masked key, which stays out of the log.
+    const how = keyLine.split(/\s+-\s+/)[0];
+    return {
+      ok: false,
+      loggedIn: false,
+      binary: options.binary,
+      detail:
+        `Signed in with an API key, not a ChatGPT subscription (\`codex login status\` said: ${how}). ` +
+        'This app runs Codex on a subscription only. Run `codex logout`, then `codex login --device-auth` ' +
+        'as the user this server runs as and sign in with ChatGPT.',
       checkedAt,
     };
   }

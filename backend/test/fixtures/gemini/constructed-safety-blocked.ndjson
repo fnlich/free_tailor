@@ -1,0 +1,4 @@
+{"type":"init","timestamp":"2026-10-04T12:54:35.456Z","session_id":"ac2dcc24-7ca2-4ed2-8231-09dd67820e85","model":"gemini-2.5-flash"}
+{"type":"message","timestamp":"2026-10-04T12:54:35.457Z","role":"user","content":"What is the capital of France?\n"}
+{"type":"error","timestamp":"2026-10-04T12:54:42.479Z","severity":"error","message":"The model response was blocked due to safety settings."}
+{"type":"result","timestamp":"2026-10-04T12:54:42.479Z","status":"error","stats":{"total_tokens":1176,"input_tokens":1176,"output_tokens":0,"cached":0,"input":1176,"duration_ms":7023,"tool_calls":0,"models":{"gemini-2.5-flash":{"total_tokens":1176,"input_tokens":1176,"output_tokens":0,"cached":0,"input":1176}}}}

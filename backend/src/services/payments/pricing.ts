@@ -237,8 +237,9 @@ export async function presetsFor(
  * The fee rounds UP and the credits round DOWN, so the residue - at most one
  * credit's price less a cent - stays with the house. That is a choice, and the
  * reason to write it down rather than pick the flattering direction: rounding
- * the other way hands out a credit whose cash never arrived, and a credit is a
- * rendered resume with a real cost behind it.
+ * the other way hands out a credit whose cash never arrived, and a credit buys
+ * rendered resumes - each costing what its model is priced at - with a real
+ * cost behind them.
  *
  * What the buyer is shown is `credits * unitPriceCents`, not `netCents`, so the
  * figure on the summary is exactly what lands on the balance.

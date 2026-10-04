@@ -1,16 +1,10 @@
+import { listAdminAIModels, resolveRequestedAIModel } from '../config/aiModelConfig';
+import { findProviderModelOption } from '../config/providerModels';
 import type { AIProvider } from '../types/template';
 import { extractJSON } from '../utils/json';
-import { createPromptCompletion } from './ai';
+import { createPromptCompletion, resolvePromptExecutionConfig } from './ai';
 import { renderPrompt } from './promptService';
 
-/**
- * The provider a sheet-filter row runs on when nothing else names one.
- *
- * Sheet filtering is the highest-volume AI call in the app - one per row - so
- * it is the call that most wants a subscription seat rather than metered
- * tokens.
- */
-export const JOB_FILTER_PROVIDER: AIProvider = 'claude-cli';
 export const JOB_FILTER_PROMPT_ID = 'filter-google-sheet-job';
 export const JOB_FILTER_MIN_CONTENT_LENGTH = 50;
 
@@ -225,11 +219,48 @@ export function buildJobFilterPromptValues(jobContent: string, jobLink = ''): Re
   };
 }
 
+/**
+ * The model a sheet filter runs on, and the name it is reported by.
+ *
+ * The app default model - a record an administrator added under Admin ->
+ * Models, and the one the settings page shows as the default - rather than a
+ * seat on whatever its CLI defaults to, so the filter runs on a model somebody
+ * chose and can be named by the name they gave it. The filter prompt's own
+ * override (Admin -> Prompts) still wins, as it does for every prompt, read the
+ * way the call itself will read it.
+ *
+ * `modelLabel` is the display name, which is the only name for a model an
+ * ordinary account is shown: never a seat or a CLI model name. An override
+ * names a provider and a model name rather than a record, so it is reported by
+ * the record an administrator made for that pair, or failing one, by the
+ * option's label.
+ */
+export type JobFilterModel = { provider: AIProvider; modelName: string; modelLabel: string };
+
+export async function resolveJobFilterModel(): Promise<JobFilterModel> {
+  const model = await resolveRequestedAIModel();
+  const config = await resolvePromptExecutionConfig(JOB_FILTER_PROMPT_ID, model.provider, model.modelName);
+  const modelName = config.modelName ?? model.modelName;
+  if (config.provider === model.provider && modelName === model.modelName) {
+    return { provider: model.provider, modelName, modelLabel: model.name };
+  }
+
+  const record = (await listAdminAIModels()).find(
+    (entry) => entry.provider === config.provider && entry.modelName.toLowerCase() === modelName.toLowerCase()
+  );
+  return {
+    provider: config.provider,
+    modelName,
+    modelLabel: record?.name ?? findProviderModelOption(config.provider, modelName)?.label ?? modelName,
+  };
+}
+
 export async function evaluateJobContentAgainstFilter(input: {
   jobContent: string;
   jobLink?: string;
-  provider?: AIProvider;
-  modelName?: string;
+  /** What `resolveJobFilterModel` resolved, once per run rather than once per row. */
+  provider: AIProvider;
+  modelName: string;
   signal?: AbortSignal;
 }): Promise<JobFilterAnalysis> {
   const jobContent = normalizeText(input.jobContent);
@@ -243,7 +274,7 @@ export async function evaluateJobContentAgainstFilter(input: {
   const responseText = await createPromptCompletion({
     promptId: JOB_FILTER_PROMPT_ID,
     promptValues: buildJobFilterPromptValues(jobContent, input.jobLink),
-    fallbackProvider: input.provider || JOB_FILTER_PROVIDER,
+    fallbackProvider: input.provider,
     fallbackModelName: input.modelName,
     maxTokens: 500,
     temperature: 0,

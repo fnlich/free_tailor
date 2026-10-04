@@ -1,24 +1,19 @@
 import { AI_PROVIDER_IDS, getProviderLockReason } from '../../config/providerCatalog';
-import {
-  DEFAULT_CLAUDE_MODEL,
-  DEFAULT_DEEPSEEK_MODEL,
-  DEFAULT_OPENAI_MODEL,
-} from '../aiModelCatalog';
 import type { AIProvider } from '../../types/template';
 import { AIProviderError } from './errors';
-import { createAnthropicHttpAdapter } from './providers/anthropicHttp';
 import { createClaudeCliAdapter, type ClaudeCliAdapter } from './providers/claudeCli';
 import { createCodexCliAdapter } from './providers/codexCli';
-import { createOpenAICompatibleAdapter } from './providers/openaiCompatible';
+import { createGeminiCliAdapter, type GeminiCliAdapter } from './providers/geminiCli';
 import type { AIProviderAdapter, ProviderCapabilities, ProviderHealth } from './types';
 
 /**
  * Provider lookup.
  *
- * This replaces a hand-written if-chain in which `'claude'` was never tested by
- * name - it was the fallthrough - so adding or removing a provider meant
- * editing a branch nobody could see was exhaustive. A map plus the catalog's
- * `satisfies Record<AIProvider, ...>` makes an omission a compile error.
+ * This replaces a hand-written if-chain in which the last provider was never
+ * tested by name - it was the fallthrough - so adding or removing a provider
+ * meant editing a branch nobody could see was exhaustive. A map plus the
+ * catalog's `satisfies Record<AIProvider, ...>` makes an omission a compile
+ * error.
  *
  * Adapters are built lazily on first use and cached, so importing this module
  * costs nothing and touches no configuration.
@@ -54,23 +49,7 @@ function registerDefaults(): void {
   defaultsRegistered = true;
   registerDefault('claude-cli', () => createClaudeCliAdapter());
   registerDefault('codex-cli', () => createCodexCliAdapter());
-  registerDefault('claude', () => createAnthropicHttpAdapter({ defaultModel: DEFAULT_CLAUDE_MODEL }));
-  registerDefault('openai', () =>
-    createOpenAICompatibleAdapter({
-      id: 'openai',
-      defaultModel: DEFAULT_OPENAI_MODEL,
-      tokenLimitField: 'max_completion_tokens',
-    })
-  );
-  // Neither OpenAI-compatible entry names an endpoint: the adapter reads
-  // OPENAI_BASE_URL / DEEPSEEK_BASE_URL by id, on each call.
-  registerDefault('deepseek', () =>
-    createOpenAICompatibleAdapter({
-      id: 'deepseek',
-      defaultModel: DEFAULT_DEEPSEEK_MODEL,
-      tokenLimitField: 'max_tokens',
-    })
-  );
+  registerDefault('gemini-cli', () => createGeminiCliAdapter());
 }
 
 export function getAdapter(id: AIProvider): AIProviderAdapter {
@@ -95,6 +74,17 @@ export function getAdapter(id: AIProvider): AIProviderAdapter {
 /** The CLI adapter, typed, for the admin health endpoint's extra readings. */
 export function getClaudeCliAdapter(): ClaudeCliAdapter {
   return getAdapter('claude-cli') as ClaudeCliAdapter;
+}
+
+/**
+ * The Gemini seat's adapter, typed, for its outage holds on the same card.
+ *
+ * Null when something other than the built-in holds the id - a test's stub has
+ * no `outages()` to read, and the card must not throw over it.
+ */
+export function getGeminiCliAdapter(): GeminiCliAdapter | null {
+  const adapter = getAdapter('gemini-cli') as Partial<GeminiCliAdapter>;
+  return typeof adapter.outages === 'function' ? (adapter as GeminiCliAdapter) : null;
 }
 
 export function listProviderCapabilities(): ProviderCapabilities[] {

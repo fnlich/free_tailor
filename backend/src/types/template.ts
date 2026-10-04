@@ -63,25 +63,25 @@ export interface JobAnalysis {
 }
 
 /**
- * The AI providers this app can run a completion on.
+ * The AI providers this app can run a completion on: subscription seats only,
+ * each a CLI the operator signed in on this machine.
  *
  * `claude-cli` drives the locally installed `claude` binary against the
- * operator's Claude subscription seat; `claude` is the metered Anthropic HTTP
- * API. They are deliberately separate ids: conflating a keyless seat with a
- * billed API key is exactly the invisible-spend failure this app avoids.
+ * operator's Claude subscription; `codex-cli` drives `codex` against a ChatGPT
+ * subscription; `gemini-cli` drives `gemini` against a signed-in Google
+ * account. None holds an API key, and each strips or blanks any key in its
+ * child's environment, because a key outranks the subscription in every one of
+ * these CLIs and would move every call onto metered billing while looking
+ * identical.
  *
  * The former `openrouter` id was replaced by `claude-cli`; stored records that
  * still carry it are coerced by `coerceProviderId` in config/providerCatalog.
- * The former `claude-web` and `chatgpt-web` ids were retired outright, with no
- * replacement: stored records naming them are dropped or ignored on read - see
- * `RETIRED_PROVIDER_IDS` there.
+ * Two families were retired outright, with no replacement: the browser chat
+ * providers (`claude-web`, `chatgpt-web`) and the metered APIs (`claude`, the
+ * Anthropic API, plus `openai` and `deepseek`). Stored records naming them are
+ * dropped or ignored on read - see `RETIRED_PROVIDER_IDS` there.
  */
-export type AIProvider =
-  | 'claude-cli'
-  | 'codex-cli'
-  | 'claude'
-  | 'openai'
-  | 'deepseek';
+export type AIProvider = 'claude-cli' | 'codex-cli' | 'gemini-cli';
 
 export type RawNestedJobAnalysis = Partial<JobAnalysis> & {
   jobMeta?: {

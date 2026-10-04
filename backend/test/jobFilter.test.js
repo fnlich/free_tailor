@@ -166,10 +166,3 @@ test('buildJobFilterPrompt renders the managed prompt with jobContent and legacy
     'Analyze Remote role in the US. from https://jobs.example.com/1 and legacy Remote role in the US..'
   );
 });
-
-test('the job filter runs on the subscription seat by default', () => {
-  // The highest-volume AI call in the app - one per sheet row - so the one
-  // that most wants a seat rather than metered tokens. Flipping this constant
-  // was previously completely silent.
-  assert.equal(jobFilter.JOB_FILTER_PROVIDER, 'claude-cli');
-});

@@ -4,13 +4,13 @@ import { useEffect, useState } from 'react';
 
 import { IconExternal } from '@/components/icons';
 import {
+  ErrorNotice,
   Field,
   Notice,
   Section,
   SettingsPage,
   StaticValue,
 } from '@/components/settings/SettingsParts';
-import { operatorDetail } from '@/lib/api';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
 
 const VISIBILITY_OPTIONS: Array<{ value: SheetVisibility; label: string; summary: string }> = [
@@ -32,13 +32,12 @@ const VISIBILITY_OPTIONS: Array<{ value: SheetVisibility; label: string; summary
  */
 export default function JobSheetSettingsPage() {
   const [sheet, setSheet] = useState<AccountSheet | null>(null);
-  const [sheetError, setSheetError] = useState<string | null>(null);
   /*
-   * The operator half of a Sheets failure, which the server sends to
-   * administrators only. Absent for everybody else, so rendering it
-   * unconditionally is safe - there is nothing to render.
+   * The failure itself rather than its text: <ErrorNotice> turns it into the
+   * reader's sentence, and for an administrator adds the operator half the
+   * server attaches to a Sheets failure (and withholds from everybody else).
    */
-  const [sheetDetail, setSheetDetail] = useState<string | null>(null);
+  const [sheetError, setSheetError] = useState<unknown>(null);
   const [sharing, setSharing] = useState(false);
 
   /**
@@ -53,8 +52,7 @@ export default function JobSheetSettingsPage() {
       try {
         setSheet(await sheetApi.get());
       } catch (caught) {
-        setSheetError(caught instanceof Error ? caught.message : 'Could not load your sheet.');
-        setSheetDetail(operatorDetail(caught));
+        setSheetError(caught ?? new Error('Could not load your sheet.'));
       }
     })();
   }, []);
@@ -62,7 +60,6 @@ export default function JobSheetSettingsPage() {
   const changeVisibility = async (visibility: SheetVisibility) => {
     setSharing(true);
     setSheetError(null);
-    setSheetDetail(null);
     try {
       const result = await sheetApi.setVisibility(visibility);
       // Stored from the response rather than from the option that was picked:
@@ -70,8 +67,7 @@ export default function JobSheetSettingsPage() {
       // is actually true.
       setSheet((current) => (current ? { ...current, visibility: result.visibility } : current));
     } catch (caught) {
-      setSheetError(caught instanceof Error ? caught.message : 'Could not change the sharing.');
-      setSheetDetail(operatorDetail(caught));
+      setSheetError(caught ?? new Error('Could not change the sharing.'));
     } finally {
       setSharing(false);
     }
@@ -82,13 +78,7 @@ export default function JobSheetSettingsPage() {
    * failed lives: a failed load has no sheet to share, and a failed change has
    * a sheet whose sharing section is the place the reader is looking.
    */
-  const errorNotice = sheetError && (
-    <Notice tone="error" role="alert">
-      <p>{sheetError}</p>
-      {/* Administrators only: the server withholds this from everyone else. */}
-      {sheetDetail && <p className="mt-2 text-xs opacity-90">{sheetDetail}</p>}
-    </Notice>
-  );
+  const errorNotice = <ErrorNotice error={sheetError} fallback="Your job sheet could not be reached" />;
 
   return (
     <SettingsPage>
@@ -105,7 +95,7 @@ export default function JobSheetSettingsPage() {
       >
         {!sheet && errorNotice}
 
-        {!sheet && !sheetError && (
+        {!sheet && sheetError == null && (
           <p className="text-sm text-muted" role="status">
             {/* The honest wording. On a new account this call is creating the
                 spreadsheet, and "loading" would undersell how long that takes. */}

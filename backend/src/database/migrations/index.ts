@@ -24,6 +24,16 @@ import {
   BROWSER_CHAT_REMOVAL_SCHEMA_VERSION,
   type BrowserChatRemovalReport,
 } from './006_remove_browser_chat';
+import {
+  migrate007,
+  METERED_REMOVAL_SCHEMA_VERSION,
+  type MeteredRemovalReport,
+} from './007_remove_metered_providers';
+import {
+  migrate008,
+  GEMINI_SEED_SCHEMA_VERSION,
+  type GeminiSeedMigrationReport,
+} from './008_seed_gemini_and_rename_seeds';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -98,6 +108,37 @@ function describeBrowserChatRemoval(report: BrowserChatRemovalReport): string {
   return parts.length ? parts.join(', ') : 'nothing to change';
 }
 
+function describeMeteredRemoval(report: MeteredRemovalReport): string {
+  const parts: string[] = [];
+  if (report.removedModels) parts.push(`${report.removedModels} metered API model(s) removed`);
+  if (report.removedProviderFlags.length || report.removedSettingsKeys.length) {
+    parts.push('metered API settings removed');
+  }
+  if (report.enabledProviders.length) parts.push(`${report.enabledProviders.join(' and ')} switched on`);
+  if (report.seededModels) parts.push(`${report.seededModels} subscription model(s) added`);
+  if (report.reenabledModels.length) parts.push(`${report.reenabledModels.join(', ')} switched back on`);
+  if (report.repointedDefaultModel) {
+    parts.push(
+      `default model ${report.repointedDefaultModel.from} -> ${report.repointedDefaultModel.to || '(app default)'}`
+    );
+  }
+  if (report.clearedPromptOverrides) parts.push(`${report.clearedPromptOverrides} prompt override(s) cleared`);
+  if (report.clearedProfilePreferences.length) {
+    parts.push(`${report.clearedProfilePreferences.length} profile model preference(s) cleared`);
+  }
+  if (report.scrubbedLegacySnapshot) parts.push('API keys deleted from the 001 snapshot');
+  return parts.length ? parts.join(', ') : 'nothing to change';
+}
+
+function describeGeminiSeed(report: GeminiSeedMigrationReport): string {
+  const parts: string[] = [];
+  if (report.appendedModelIds.length) parts.push('Gemini model record added');
+  if (report.renamedModels.length) {
+    parts.push(`${report.renamedModels.length} seed model(s) renamed without "(subscription)"`);
+  }
+  return parts.length ? parts.join(', ') : 'nothing to change';
+}
+
 /**
  * What the runner needs back from a migration, whatever else it reports.
  *
@@ -130,6 +171,12 @@ type MigrationStep = {
  * version 1 only for 6 to take them out again. The runner compares
  * `current >= version`, so a gap in the numbers costs nothing - an install at 1
  * goes straight on to 3.
+ *
+ * The chain is 1, 3-8, and a step that defers stops the ones after it: 3 waits
+ * for the first administrator, 6 and 7 each wait on a settings row that names
+ * what they remove but does not parse, and 8 on one whose model list does not.
+ * So 7 can stay unrun for as long as 3 does, and the read-time tolerance for
+ * what it removes has to stand on its own.
  */
 const MIGRATIONS: readonly MigrationStep[] = [
   {
@@ -179,6 +226,32 @@ const MIGRATIONS: readonly MigrationStep[] = [
         deferred: report.deferred,
         notes: report.notes,
         summary: describeBrowserChatRemoval(report),
+      };
+    },
+  },
+  {
+    version: METERED_REMOVAL_SCHEMA_VERSION,
+    label: 'Metered provider removal',
+    apply: (db) => {
+      const report = migrate007(db);
+      return {
+        ran: report.ran,
+        deferred: report.deferred,
+        notes: report.notes,
+        summary: describeMeteredRemoval(report),
+      };
+    },
+  },
+  {
+    version: GEMINI_SEED_SCHEMA_VERSION,
+    label: 'Gemini model and seed name migration',
+    apply: (db) => {
+      const report = migrate008(db);
+      return {
+        ran: report.ran,
+        deferred: report.deferred,
+        notes: report.notes,
+        summary: describeGeminiSeed(report),
       };
     },
   },
@@ -245,6 +318,8 @@ export {
   CREDIT_LEDGER_SCHEMA_VERSION,
   CODEX_MODEL_SCHEMA_VERSION,
   BROWSER_CHAT_REMOVAL_SCHEMA_VERSION,
+  METERED_REMOVAL_SCHEMA_VERSION,
+  GEMINI_SEED_SCHEMA_VERSION,
 };
 export type {
   MigrationReport,
@@ -252,4 +327,6 @@ export type {
   CreditLedgerMigrationReport,
   CodexModelMigrationReport,
   BrowserChatRemovalReport,
+  MeteredRemovalReport,
+  GeminiSeedMigrationReport,
 };

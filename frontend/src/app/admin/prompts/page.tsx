@@ -5,11 +5,15 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 import {
   type PromptCategoryId,
   adminApi,
-  AIModelOption,
+  AdminAppSettings,
   AIProvider,
-  DEFAULT_PUBLIC_APP_SETTINGS,
+  coerceProvider,
+  describeProviderModel,
+  findProviderModelOption,
   getAIProviderLabel,
+  isProviderLocked,
   isProviderOffered,
+  ProviderModelOptions,
   promptsApi,
   PromptFeatureKey,
   PromptPreviewResult,
@@ -18,7 +22,6 @@ import {
   PromptSummary,
   PromptValidation,
   PromptVariableDefinition,
-  PublicAppSettings,
 } from '@/lib/api';
 import { formatDate } from '@/lib/format';
 import { Field, Notice, Pill, Spinner, StaticValue } from '@/components/ui/kit';
@@ -149,10 +152,15 @@ function getFeatureRank(featureKey: PromptFeatureKey): number {
 
 function PromptsPageBody() {
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
-  const [modelOptions, setModelOptions] = useState<AIModelOption[]>([]);
+  /*
+   * The same per-seat model-name lists the Models form offers, which are also
+   * what the server checks an override against when the prompt is saved - so
+   * the selects below can only produce an override that saves.
+   */
+  const [providerModelOptions, setProviderModelOptions] = useState<ProviderModelOptions[]>([]);
   // Seeded empty rather than optimistically all-true: an all-true seed made
-  // the model dropdown briefly offer models from providers the admin had
-  // disabled, with no "(provider disabled)" suffix to say so.
+  // the provider dropdown briefly offer providers the admin had disabled, with
+  // no "(provider disabled)" suffix to say so.
   const [enabledProviders, setEnabledProviders] = useState<Record<AIProvider, boolean>>(
     () => ({}) as Record<AIProvider, boolean>
   );
@@ -165,9 +173,9 @@ function PromptsPageBody() {
    * fragile reason to be correct, and it is one release from being wrong.
    */
   const [offerSettings, setOfferSettings] = useState<
-    Pick<PublicAppSettings, 'providerLocks'>
+    Pick<AdminAppSettings, 'providerLocks'>
   >(() => ({
-    providerLocks: DEFAULT_PUBLIC_APP_SETTINGS.providerLocks,
+    providerLocks: [],
   }));
   const providerOffered = (provider: AIProvider): boolean =>
     isProviderOffered(offerSettings, provider, enabledProviders);
@@ -349,14 +357,11 @@ function PromptsPageBody() {
 
     const loadRuntimeConfig = async () => {
       try {
-        const [options, settings] = await Promise.all([
-          promptsApi.getModelOptions(),
-          adminApi.getAIModels(),
-        ]);
+        const settings = await adminApi.getAIModels();
 
         if (!isMounted) return;
 
-        setModelOptions(options);
+        setProviderModelOptions(settings.providerModelOptions);
         setEnabledProviders(settings.providersEnabled);
         setOfferSettings({ providerLocks: settings.providerLocks });
       } catch (err) {
@@ -569,15 +574,32 @@ function PromptsPageBody() {
     }));
   };
 
-  const selectedModelOptionId =
-    draft?.modelProvider && draft.modelName
-      ? (
-          modelOptions.find(
-            (option) =>
-              option.provider === draft.modelProvider && option.modelName === draft.modelName
-          )?.id ?? ''
-        )
-      : '';
+  /** The override's model names: the chosen seat's list. */
+  const overrideModelNames = draft?.modelProvider
+    ? providerModelOptions.find((entry) => entry.provider === draft.modelProvider)?.models ?? []
+    : [];
+  const overrideListedOption = draft?.modelProvider
+    ? findProviderModelOption(providerModelOptions, draft.modelProvider, draft.modelName)
+    : null;
+
+  /**
+   * A provider pick starts the model name over on that seat's first name,
+   * because a name from one seat means nothing to another. Clearing the
+   * provider clears the override.
+   */
+  const chooseOverrideProvider = (value: string) => {
+    const provider = coerceProvider(value);
+    updateDraft((current) => {
+      if (!provider) return { ...current, modelProvider: undefined, modelName: undefined };
+      if (provider === current.modelProvider) return current;
+      const first = providerModelOptions.find((entry) => entry.provider === provider)?.models[0]?.value;
+      return { ...current, modelProvider: provider, modelName: first };
+    });
+  };
+
+  /** How a stored override reads: "Claude (Subscription) / Sonnet". */
+  const describeOverride = (provider: AIProvider, modelName: string) =>
+    `${getAIProviderLabel(provider)} / ${describeProviderModel(providerModelOptions, provider, modelName)}`;
 
   const selectedFeatureHasPendingChange =
     !!selectedFeatureGroup &&
@@ -707,7 +729,7 @@ function PromptsPageBody() {
                       )}
                       {prompt.modelProvider && prompt.modelName && (
                         <div className="mt-2 text-xs text-subtle">
-                          {getAIProviderLabel(prompt.modelProvider)} / {prompt.modelName}
+                          {describeOverride(prompt.modelProvider, prompt.modelName)}
                         </div>
                       )}
                     </div>
@@ -800,41 +822,73 @@ function PromptsPageBody() {
                     </Field>
                   </div>
 
-                  <Field
-                    label="Runtime Model"
-                    htmlFor="prompt-model"
-                    hint={
-                      draft.modelProvider && draft.modelName
-                        ? `Saved override: ${getAIProviderLabel(draft.modelProvider)} / ${draft.modelName}`
-                        : undefined
-                    }
-                  >
-                    <select
-                      id="prompt-model"
-                      value={selectedModelOptionId}
-                      onChange={(event) => {
-                        const nextId = event.target.value;
-                        const nextOption = modelOptions.find((option) => option.id === nextId) ?? null;
-                        updateDraft((current) => ({
-                          ...current,
-                          modelProvider: nextOption?.provider,
-                          modelName: nextOption?.modelName,
-                        }));
-                      }}
-                      className="tl-input"
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <Field
+                      label="Model override: provider"
+                      htmlFor="prompt-model-provider"
+                      hint={
+                        draft.modelProvider && draft.modelName
+                          ? `Saved override: ${describeOverride(draft.modelProvider, draft.modelName)}`
+                          : 'Without an override the prompt runs on the model chosen for the run.'
+                      }
                     >
-                      <option value="">Use runtime default</option>
-                      {modelOptions.map((option) => (
-                        <option
-                          key={option.id}
-                          value={option.id}
-                          disabled={!providerOffered(option.provider)}
-                        >
-                          {option.label}{!providerOffered(option.provider) ? ' (provider disabled)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
+                      <select
+                        id="prompt-model-provider"
+                        value={draft.modelProvider ?? ''}
+                        onChange={(event) => chooseOverrideProvider(event.target.value)}
+                        className="tl-input"
+                      >
+                        <option value="">Use runtime default</option>
+                        {providerModelOptions.map((entry) => {
+                          const offered = providerOffered(entry.provider);
+                          const suffix = offered
+                            ? ''
+                            : isProviderLocked(offerSettings, entry.provider)
+                              ? ' (locked)'
+                              : ' (provider disabled)';
+                          return (
+                            // A provider that cannot run is not offered for a
+                            // new override; one already saved still shows as
+                            // selected, with the reason beside it.
+                            <option
+                              key={entry.provider}
+                              value={entry.provider}
+                              disabled={!offered && entry.provider !== draft.modelProvider}
+                            >
+                              {entry.label}
+                              {suffix}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </Field>
+                    <Field label="Model override: model name" htmlFor="prompt-model-name">
+                      <select
+                        id="prompt-model-name"
+                        value={overrideListedOption?.value ?? draft.modelName ?? ''}
+                        onChange={(event) =>
+                          updateDraft((current) => ({ ...current, modelName: event.target.value || undefined }))
+                        }
+                        disabled={!draft.modelProvider}
+                        className="tl-input"
+                      >
+                        {!draft.modelProvider && <option value="">Choose a provider first</option>}
+                        {draft.modelProvider && draft.modelName && !overrideListedOption && (
+                          // Saved before the list existed, or since dropped from
+                          // it: kept so saving the prompt does not change it.
+                          <option value={draft.modelName}>{draft.modelName} (current - not in the list)</option>
+                        )}
+                        {draft.modelProvider && !draft.modelName && overrideModelNames.length === 0 && (
+                          <option value="">No model names listed</option>
+                        )}
+                        {overrideModelNames.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
 
                   <Field label="Description" htmlFor="prompt-description">
                     <input

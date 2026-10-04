@@ -10,11 +10,11 @@ import {
   type AccountSheet,
 } from '@/lib/sheet';
 import {
+  adminApi,
   GoogleSheetSource,
   GoogleSheetTab,
   importApi,
   jobsApi,
-  resumeApi,
   ScraperExportResponse,
   ScraperJob,
   ScraperJobType,
@@ -229,8 +229,7 @@ export default function JobsPage() {
 
     const loadInitialData = async () => {
       try {
-        const [settings, providers, scraperSettings] = await Promise.all([
-          resumeApi.getModels(),
+        const [providers, scraperSettings] = await Promise.all([
           jobsApi.getScraperProviders(),
           // A backend older than this endpoint answers 404: the form then runs
           // on the server's defaults without naming them, rather than failing.
@@ -240,7 +239,6 @@ export default function JobsPage() {
           return;
         }
 
-        setSheetSources(settings.googleSheetsSources);
         setProviderCatalog(providers);
         setDefaultLocation(scraperSettings.defaultLocation);
         setRunTimeoutS(scraperSettings.runTimeoutS);
@@ -257,22 +255,11 @@ export default function JobsPage() {
 
           return next;
         });
-        setSheetExportForm((current) => {
-          if (current.sheetId.trim()) {
-            return current;
-          }
-
-          return {
-            ...current,
-            sheetId: settings.googleSheetsSources[0]?.sheetId ?? '',
-          };
-        });
       } catch {
         if (!isMounted) {
           return;
         }
 
-        setSheetSources([]);
         setProviderCatalog([]);
       }
     };
@@ -283,6 +270,35 @@ export default function JobsPage() {
       isMounted = false;
     };
   }, []);
+
+  /*
+   * The shared sheets belong to the administrator who saved them, and only the
+   * administrator's export panel offers them - so only an administrator's page
+   * asks for them, from the admin settings that hold them.
+   */
+  useEffect(() => {
+    if (!isAdmin) return;
+    let isMounted = true;
+
+    void (async () => {
+      try {
+        const settings = await adminApi.getSettings();
+        if (!isMounted) return;
+        setSheetSources(settings.googleSheetsSources);
+        setSheetExportForm((current) =>
+          current.sheetId.trim()
+            ? current
+            : { ...current, sheetId: settings.googleSheetsSources[0]?.sheetId ?? '' }
+        );
+      } catch {
+        if (isMounted) setSheetSources([]);
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAdmin]);
 
   useEffect(() => {
     if (resultCap !== null && limit > resultCap) {

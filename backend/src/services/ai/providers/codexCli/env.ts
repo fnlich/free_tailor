@@ -5,9 +5,9 @@
  * order and an API key WINS over the ChatGPT subscription, so leaving it in
  * place produces identical answers at identical latency and bills every one of
  * them - which is precisely what a subscription-seat provider exists to avoid.
- * This is not hypothetical here: `.env.example` documents that variable and the
- * separate `openai` HTTP provider reads it, so on most installs running this
- * app it is already set.
+ * This is not hypothetical here: an install upgraded from one that ran the
+ * metered OpenAI API still has that variable in its `.env`, though nothing in
+ * the app reads it any more.
  *
  * `OPENAI_BASE_URL` goes with it. A key and a base URL are two halves of the
  * same redirection, and honouring one while dropping the other would point the
@@ -17,6 +17,11 @@
  * `codex login --with-api-key` and `--with-access-token` read exactly these, so
  * an operator who once exported one would silently override the seat.
  *
+ * All four always go: there is no switch to let a key through, because the app
+ * runs on subscription seats only. A key `codex login --with-api-key` stored in
+ * CODEX_HOME is out of this strip's reach, so the health check reports such a
+ * sign-in as not signed in to a subscription.
+ *
  * `CODEX_HOME` is KEPT, deliberately and by exact analogy with
  * `CLAUDE_CONFIG_DIR` on the other provider: it is where the operator's
  * `codex login` actually lives, and dropping it signs the child out.
@@ -25,11 +30,7 @@
  * are the operator's configuration and this module has no business editing
  * them.
  */
-export function buildCodexChildEnv(
-  parent: NodeJS.ProcessEnv = process.env,
-  options: { allowApiKey?: boolean } = {}
-): NodeJS.ProcessEnv {
-  const allowApiKey = options.allowApiKey === true;
+export function buildCodexChildEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const child: NodeJS.ProcessEnv = {};
 
   const billingOverrides = new Set([
@@ -41,7 +42,7 @@ export function buildCodexChildEnv(
 
   for (const [name, value] of Object.entries(parent)) {
     if (value === undefined) continue;
-    if (billingOverrides.has(name) && !allowApiKey) continue;
+    if (billingOverrides.has(name)) continue;
     child[name] = value;
   }
 

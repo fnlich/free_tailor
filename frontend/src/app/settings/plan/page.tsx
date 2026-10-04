@@ -101,7 +101,7 @@ export default function PlanSettingsPage() {
 
       <Section
         title="Credits"
-        description="Bought and spent apart from your plan. One credit builds one resume, however many files it produces."
+        description="Bought and spent apart from your plan. Each resume costs the credits set for the model it is built with, however many files it produces."
       >
         <div>
           <Link href="/credits" className="tl-button-quiet">

@@ -30,18 +30,11 @@ export type CodexCliConfig = {
   defaultTimeoutMs: number;
   timeoutMsByCallSite: Record<string, number>;
   workdir: string;
-  allowApiKey: boolean;
   maxOutputBytes: number;
 };
 
 function flag(name: string, fallback = ''): string {
   return (process.env[name] ?? '').trim() || fallback;
-}
-
-function boolFlag(name: string, fallback: boolean): boolean {
-  const raw = (process.env[name] ?? '').trim().toLowerCase();
-  if (!raw) return fallback;
-  return !['0', 'false', 'no', 'off'].includes(raw);
 }
 
 function intFlag(name: string, fallback: number, min: number, max: number): number {
@@ -91,17 +84,6 @@ export function readCodexCliConfig(): CodexCliConfig {
       'filter-google-sheet-job': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_FILTER'),
     },
     workdir: flag('AI_CODEX_WORKDIR') || defaultWorkdir(),
-    /*
-     * OFF, and this is the single most important default in the file.
-     *
-     * Codex resolves credentials in a fixed order and an API KEY WINS over the
-     * ChatGPT subscription. Left in the child's environment it produces
-     * identical answers at identical latency and bills every one of them -
-     * which is exactly what this provider exists to avoid. This repository
-     * documents `OPENAI_API_KEY` in `.env.example` and reads it for the
-     * separate `openai` HTTP provider, so it is very likely to be present.
-     */
-    allowApiKey: boolFlag('AI_CODEX_ALLOW_API_KEY', false),
     maxOutputBytes: intFlag('AI_CODEX_MAX_OUTPUT_BYTES', 8_000_000, 100_000, 64_000_000),
   };
 }

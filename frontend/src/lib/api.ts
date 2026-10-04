@@ -204,6 +204,14 @@ export function isProfileLimit(error: unknown): error is ApiResponseError {
 }
 
 /**
+ * A run was refused for want of credits: 402 `insufficient-credits`, with the
+ * credits the run needs and the balance it found as `needed` and `balance`.
+ */
+export function isInsufficientCredits(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.code === 'insufficient-credits';
+}
+
+/**
  * Set by frontend/scripts/next.mjs, and ONLY when it detected that
  * NEXT_PUBLIC_API_URL names a different port on this machine than the `PORT`
  * the backend listens on. That is the one failure a browser cannot describe:
@@ -380,56 +388,36 @@ export async function apiFetch<T>(
 }
 
 /**
- * `claude-cli` runs the server's local `claude` binary on a Claude
- * subscription seat; `claude` is the metered Anthropic API. They are separate
- * ids on purpose - one costs nothing per request and the other bills.
- *
- * The former `openrouter` id was replaced by `claude-cli`.
- */
-/**
  * Which kind of prompt this is. Sent by the server with every prompt, derived
  * from the feature it is attached to rather than stored on it.
  */
 export type PromptCategoryId = 'extracting' | 'building' | 'other';
 
-export type AIProvider =
-  | 'claude-cli'
-  | 'codex-cli'
-  | 'claude'
-  | 'openai'
-  | 'deepseek';
+/**
+ * The three subscription seats: the server's own `claude`, `codex` and
+ * `gemini` command-line tools, each signed in to a subscription account. There
+ * is no API-key provider any more - the metered ones were retired, like the
+ * browser-chat ones before them, and a row still naming one reads as the
+ * default on the server rather than arriving here.
+ */
+export type AIProvider = 'claude-cli' | 'codex-cli' | 'gemini-cli';
 
 export type ProviderMeta = {
   label: string;
-  requiresApiKey: boolean;
-  /** Placeholder for the model-name field on the Models admin page. */
-  modelNameHint: string;
 };
 
 /**
- * Mirrors backend/src/config/providerCatalog.ts. `satisfies` makes a missing
- * entry a build error rather than a label that silently reads as another
- * provider - which is what the old label function did, falling through to
- * "DeepSeek" for anything it did not recognise.
+ * Mirrors backend/src/config/providerCatalog.ts, labels and order included.
+ * `satisfies` makes a missing entry a build error rather than a label that
+ * silently reads as another provider.
+ *
+ * Administrator-facing only. Nothing an ordinary account sees names a provider:
+ * the user model list is display names (`PublicModelOption`).
  */
 export const PROVIDER_META = {
-  'claude-cli': {
-    label: 'Claude (subscription)',
-    requiresApiKey: false,
-    modelNameHint: 'sonnet, opus, haiku',
-  },
-  'codex-cli': {
-    label: 'Codex (subscription)',
-    requiresApiKey: false,
-    // Not a list of ids, because Codex resolves its catalog from the signed-in
-    // account at runtime - so what is valid here depends on the plan, and a
-    // hint naming specific models would be wrong for somebody. `default` means
-    // "whatever that account uses", which is the one answer true everywhere.
-    modelNameHint: 'default, or a model your ChatGPT plan offers',
-  },
-  claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
-  openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },
-  deepseek: { label: 'DeepSeek', requiresApiKey: true, modelNameHint: 'deepseek-v4-flash' },
+  'claude-cli': { label: 'Claude (Subscription)' },
+  'codex-cli': { label: 'Codex (Subscription)' },
+  'gemini-cli': { label: 'Gemini (Subscription)' },
 } as const satisfies Record<AIProvider, ProviderMeta>;
 
 export const AI_PROVIDERS: AIProvider[] = Object.keys(PROVIDER_META) as AIProvider[];
@@ -471,6 +459,18 @@ export interface GoogleSheetSource {
   updatedAt: string;
 }
 
+/**
+ * What a resume costs on a model that does not say, and the most it may be set
+ * to. Mirrors the backend's DEFAULT_CREDITS_PER_RESUME and its mutation bounds;
+ * the server is the one that enforces them.
+ */
+export const DEFAULT_CREDITS_PER_RESUME = 1;
+export const MAX_CREDITS_PER_RESUME = 1000;
+
+/**
+ * One model an administrator added. Administrator-facing: the provider, the
+ * CLI's model name and the price never reach an ordinary account's payload.
+ */
 export interface AIModelRecord {
   id: string;
   name: string;
@@ -478,8 +478,66 @@ export interface AIModelRecord {
   modelName: string;
   description: string;
   enabled: boolean;
+  /**
+   * Whole credits one resume on this model costs; 0 is free. Named for what it
+   * counts, not "price": `creditPriceCents` already means money per credit.
+   */
+  creditsPerResume: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/** A model as an ordinary account sees it: something to pick, by name. */
+export interface PublicModelOption {
+  id: string;
+  name: string;
+}
+
+/** One entry of a seat's model-name list: the CLI's value, and how to show it. */
+export interface ProviderModelNameOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * The model names one seat offers the Models form, from the server
+ * (config/providerModels.ts), so the select can only produce a name the server
+ * will accept.
+ */
+export interface ProviderModelOptions {
+  provider: AIProvider;
+  label: string;
+  models: ProviderModelNameOption[];
+}
+
+/**
+ * The option a record's model name matches, if any - compared without case,
+ * the way the server matches it.
+ */
+export function findProviderModelOption(
+  options: ProviderModelOptions[],
+  provider: AIProvider,
+  modelName: string | undefined
+): ProviderModelNameOption | null {
+  const wanted = (modelName ?? '').trim().toLowerCase();
+  if (!wanted) return null;
+  const entry = options.find((option) => option.provider === provider);
+  return entry?.models.find((model) => model.value.toLowerCase() === wanted) ?? null;
+}
+
+/** "Sonnet" for `sonnet`, or the stored name itself when no option names it. */
+export function describeProviderModel(
+  options: ProviderModelOptions[],
+  provider: AIProvider,
+  modelName: string
+): string {
+  return findProviderModelOption(options, provider, modelName)?.label ?? modelName;
+}
+
+/** "Free", or "3 credits / resume". */
+export function formatCreditsPerResume(credits: number): string {
+  if (credits <= 0) return 'Free';
+  return `${credits} credit${credits === 1 ? '' : 's'} / resume`;
 }
 
 export type ScraperSource = 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
@@ -574,8 +632,12 @@ export interface GoogleSheetJobFilterResponse {
   spreadsheetId: string;
   spreadsheetTitle: string;
   selectedTab: string;
-  provider: AIProvider;
-  modelName: string;
+  /**
+   * The display name of the model the filter ran on - an administrator's own
+   * name for it, never a provider or a CLI model id. Optional because a server
+   * from before it sent neither.
+   */
+  modelLabel?: string;
   startRow: number;
   endRow: number;
   jobLinkCol: number;
@@ -632,11 +694,11 @@ export function normalizeAiPreferences(value: unknown): AiPreferences {
 /**
  * One provider this installation cannot run, and the models it would offer.
  *
- * Sent so a picker can keep those models on screen behind a padlock instead of
- * dropping them: a model that silently disappears reads as a bug, and "you
- * cannot pick this, and here is why" is the thing the user actually needs.
- * They are carried separately from `aiModels` because that list is the set of
- * models a request may name.
+ * Administrator-only. The Models and Settings pages keep those models on screen
+ * behind a padlock, with the reason, because the person reading them is the one
+ * who can lift the lock. An ordinary account is never sent this: its model list
+ * simply does not contain what cannot run, and the reasons name sign-in commands
+ * and server variables that mean nothing to anyone but an administrator.
  */
 export interface ProviderLock {
   id: AIProvider;
@@ -645,10 +707,12 @@ export interface ProviderLock {
   models: AIModelRecord[];
 }
 
-// Admin API
-export interface PublicAppSettings {
-  /** Canonical enable flags, keyed by provider id. */
-  providersEnabled: Record<AIProvider, boolean>;
+/**
+ * The builder defaults an administrator sets, which every account's builder
+ * starts from. Shared by both payloads, so the user one and the admin one
+ * cannot drift into reading the same field two ways.
+ */
+export interface BuilderDefaults {
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
   defaultResumeSelection: DefaultResumeSelection;
@@ -657,15 +721,38 @@ export interface PublicAppSettings {
   defaultModelId: string;
   defaultResumeDocxEnabled: boolean;
   defaultCoverLetterDocxEnabled: boolean;
+}
+
+/**
+ * GET /resume/models: what any signed-in account may know about models.
+ *
+ * Display names and ids, and nothing else - no provider, no CLI model name, no
+ * price, no locks, no sheet sources. A person picks a model by the name an
+ * administrator gave it; the cost of a run is a separate quote
+ * (`generationApi.quote`), never part of the option label.
+ */
+export interface UserAppSettings extends BuilderDefaults {
+  /** Runnable models, in the administrator's order. `defaultModelId` is one of them, or ''. */
+  models: PublicModelOption[];
   outputPathUsesJobTitle: boolean;
-  /** What a run uses when nothing overrides it, and the values on offer. */
+}
+
+/**
+ * The administrator's settings payload. Its own type rather than an extension
+ * of the user one: it carries the RAW model records (so a disabled or locked one
+ * stays manageable), the locks with their reasons, the per-seat model-name
+ * lists and the shared sheet sources - everything the user payload leaves out.
+ */
+export interface AdminAppSettings extends BuilderDefaults {
+  /** Canonical enable flags, keyed by provider id. */
+  providersEnabled: Record<AIProvider, boolean>;
+  outputPathUsesJobTitle: boolean;
   aiModels: AIModelRecord[];
   googleSheetsSources: GoogleSheetSource[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
-}
-
-export interface AdminAppSettings extends PublicAppSettings {
+  /** Every seat in catalog order, locked ones included, with the model names it offers. */
+  providerModelOptions: ProviderModelOptions[];
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
@@ -753,8 +840,8 @@ function normalizeGoogleSheetSources(value: unknown): GoogleSheetSource[] {
 
 /**
  * Reads the enable flags, accepting the canonical record and the flat
- * per-provider booleans an older backend sends (including `openrouterEnabled`,
- * which was the flag for the provider `claude-cli` replaced).
+ * `claudeCliEnabled` an older backend sends (and `openrouterEnabled`, the flag
+ * for the provider `claude-cli` replaced).
  */
 function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIProvider, boolean> {
   const record =
@@ -762,14 +849,11 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
       ? (source.providersEnabled as Record<string, unknown>)
       : null;
 
-  // Partial on purpose, mirroring the backend catalog: a provider added after
-  // these flat flags stopped being written has none, and inventing one would
+  // Partial on purpose, mirroring the backend catalog: the seats added after
+  // the flat flags stopped being written have none, and inventing one would
   // only be a field with no writer.
   const legacyField: Partial<Record<AIProvider, string>> = {
     'claude-cli': 'claudeCliEnabled',
-    claude: 'claudeEnabled',
-    openai: 'openaiEnabled',
-    deepseek: 'deepseekEnabled',
   };
 
   const result = {} as Record<AIProvider, boolean>;
@@ -794,14 +878,7 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
   return result;
 }
 
-/** The shape used before any settings have loaded. Exported so pages that
- * need an optimistic default do not each hand-copy a literal that has to stay
- * structurally identical to this interface. */
-export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
-  providersEnabled: AI_PROVIDERS.reduce(
-    (acc, provider) => ({ ...acc, [provider]: true }),
-    {} as Record<AIProvider, boolean>
-  ),
+const DEFAULT_BUILDER_DEFAULTS: BuilderDefaults = {
   defaultMode: 'preview',
   defaultTheme: 'light',
   defaultResumeSelection: 'single',
@@ -810,11 +887,26 @@ export const DEFAULT_PUBLIC_APP_SETTINGS: PublicAppSettings = {
   defaultModelId: '',
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
-  outputPathUsesJobTitle: true,
-  aiModels: [],
-  googleSheetsSources: [],
-  providerLocks: [],
 };
+
+/** The shape used before any settings have loaded. Exported so pages that
+ * need an optimistic default do not each hand-copy a literal that has to stay
+ * structurally identical to this interface. */
+export const DEFAULT_USER_APP_SETTINGS: UserAppSettings = {
+  ...DEFAULT_BUILDER_DEFAULTS,
+  models: [],
+  outputPathUsesJobTitle: true,
+};
+
+/**
+ * A credit count as the server meant it: a whole number from 0 up. A record
+ * from a server that predates the field costs the default, which is what that
+ * server charged.
+ */
+function readCreditsPerResume(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return DEFAULT_CREDITS_PER_RESUME;
+  return Math.min(Math.floor(value), MAX_CREDITS_PER_RESUME);
+}
 
 function normalizeModelRecords(value: unknown): AIModelRecord[] {
   if (!Array.isArray(value)) return [];
@@ -835,12 +927,65 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
           modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
           description: typeof entry.description === 'string' ? entry.description : '',
           enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
+          creditsPerResume: readCreditsPerResume(entry.creditsPerResume),
           createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
           updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
         } satisfies AIModelRecord,
       ];
     })
     .filter((entry) => entry.id && entry.modelName);
+}
+
+/**
+ * The user model list: an id and a name, or nothing.
+ *
+ * Deliberately keeps no provider, so an entry is never dropped for naming one
+ * this build does not know - the server already decided it can run.
+ */
+function normalizePublicModelOptions(value: unknown): PublicModelOption[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    const name = typeof record.name === 'string' ? record.name.trim() : '';
+    if (!id || !name || seen.has(id)) return [];
+    seen.add(id);
+    return [{ id, name }];
+  });
+}
+
+/**
+ * The per-seat model-name lists. A server that predates them sends none, and
+ * then every seat is offered with an empty list - the form says so rather than
+ * inventing names the server might refuse.
+ */
+function normalizeProviderModelOptions(value: unknown): ProviderModelOptions[] {
+  if (!Array.isArray(value)) {
+    return AI_PROVIDERS.map((provider) => ({ provider, label: getAIProviderLabel(provider), models: [] }));
+  }
+  const seenProviders = new Set<AIProvider>();
+  return value.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    const provider = coerceProvider(record.provider);
+    if (!provider || seenProviders.has(provider)) return [];
+    seenProviders.add(provider);
+    const seenValues = new Set<string>();
+    const models = (Array.isArray(record.models) ? record.models : []).flatMap((model) => {
+      if (typeof model !== 'object' || model === null) return [];
+      const option = model as Record<string, unknown>;
+      const optionValue = typeof option.value === 'string' ? option.value.trim() : '';
+      if (!optionValue || seenValues.has(optionValue.toLowerCase())) return [];
+      seenValues.add(optionValue.toLowerCase());
+      const label = typeof option.label === 'string' && option.label.trim() ? option.label.trim() : optionValue;
+      return [{ value: optionValue, label }];
+    });
+    const label =
+      typeof record.label === 'string' && record.label.trim() ? record.label.trim() : getAIProviderLabel(provider);
+    return [{ provider, label, models }];
+  });
 }
 
 /**
@@ -867,14 +1012,14 @@ function normalizeProviderLocks(value: unknown): ProviderLock[] {
 
 /**
  * The padlock, as one constant: the glyph has to mean the same thing on the
- * builder, the profile form, the provider list and the model table, and four
- * hand-typed emoji is how that stops being true.
+ * provider list, the model table and the Models form, and three hand-typed
+ * emoji is how that stops being true. Administrator pages only.
  */
 export const LOCK_ICON = '\u{1F512}';
 
 /** Whether this installation can run the provider at all. */
 export function isProviderLocked(
-  settings: Pick<PublicAppSettings, 'providerLocks'>,
+  settings: Pick<AdminAppSettings, 'providerLocks'>,
   provider: AIProvider
 ): boolean {
   return settings.providerLocks.some((lock) => lock.id === provider);
@@ -891,13 +1036,13 @@ export function isProviderLocked(
  * would refuse - so the next clause added to the backend has exactly one place
  * to be mirrored rather than three to be missed.
  *
- * The PUBLIC model list is already filtered server-side and needs none of this.
+ * The USER model list is already filtered server-side and needs none of this.
  * Admin screens are what need it: they are deliberately served the RAW list so
  * every record stays manageable, which is right, and means they must apply the
  * offer rule themselves.
  */
 export function isProviderOffered(
-  settings: Pick<PublicAppSettings, 'providerLocks'>,
+  settings: Pick<AdminAppSettings, 'providerLocks'>,
   provider: AIProvider,
   providersEnabled?: Record<AIProvider, boolean>
 ): boolean {
@@ -907,12 +1052,8 @@ export function isProviderOffered(
   return providersEnabled ? providersEnabled[provider] === true : true;
 }
 
-function normalizePublicAppSettings(value: unknown): PublicAppSettings {
-  const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<PublicAppSettings> &
-    Record<string, unknown>;
-
+function normalizeBuilderDefaults(source: Record<string, unknown>): BuilderDefaults {
   return {
-    providersEnabled: normalizeProvidersEnabled(source),
     defaultMode: source.defaultMode === 'generate' ? 'generate' : 'preview',
     defaultTheme: source.defaultTheme === 'dark' ? 'dark' : 'light',
     defaultResumeSelection:
@@ -926,19 +1067,39 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
       typeof source.defaultResumeDocxEnabled === 'boolean' ? source.defaultResumeDocxEnabled : true,
     defaultCoverLetterDocxEnabled:
       typeof source.defaultCoverLetterDocxEnabled === 'boolean' ? source.defaultCoverLetterDocxEnabled : true,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeUserAppSettings(value: unknown): UserAppSettings {
+  const source = asRecord(value);
+  return {
+    ...normalizeBuilderDefaults(source),
+    // `aiModels` is what a server from before the slim payload calls the list.
+    // Only its ids and names are read, so nothing else it carried is kept.
+    models: normalizePublicModelOptions(Array.isArray(source.models) ? source.models : source.aiModels),
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
-    aiModels: normalizeModelRecords(source.aiModels),
-    providerLocks: normalizeProviderLocks(source.providerLocks),
-    googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
   };
 }
 
 function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
-  const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<AdminAppSettings>;
+  const source = asRecord(value);
 
   return {
-    ...normalizePublicAppSettings(source),
+    ...normalizeBuilderDefaults(source),
+    providersEnabled: normalizeProvidersEnabled(source),
+    outputPathUsesJobTitle:
+      typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
+    aiModels: normalizeModelRecords(source.aiModels),
+    googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
+    providerLocks: normalizeProviderLocks(source.providerLocks),
+    providerModelOptions: normalizeProviderModelOptions(source.providerModelOptions),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
@@ -950,7 +1111,9 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
   };
 }
 
-export interface AdminAppSettingsUpdate extends Partial<PublicAppSettings> {
+export interface AdminAppSettingsUpdate extends Partial<BuilderDefaults> {
+  providersEnabled?: Record<AIProvider, boolean>;
+  googleSheetsSources?: GoogleSheetSource[];
   outputBaseDir?: string;
   outputPathTemplate?: string;
   creditPriceCents?: number;
@@ -1068,8 +1231,6 @@ export interface ProviderHealthReport {
     id: AIProvider;
     label: string;
     summary: string;
-    credentialKind: 'api-key' | 'subscription-seat';
-    requiresApiKey: boolean;
     ok: boolean;
     detail: string;
     warning: string | null;
@@ -1153,7 +1314,7 @@ export const adminApi = {
     })),
 
   listModels: async () =>
-    (await apiFetch<{ models: AIModelRecord[] }>('/admin/models')).models,
+    normalizeModelRecords((await apiFetch<{ models: unknown }>('/admin/models')).models),
 
   createModel: async (data: {
     name: string;
@@ -1161,6 +1322,7 @@ export const adminApi = {
     modelName: string;
     description?: string;
     enabled?: boolean;
+    creditsPerResume?: number;
   }) =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/models', {
       method: 'POST',
@@ -1175,6 +1337,7 @@ export const adminApi = {
       modelName?: string;
       description?: string;
       enabled?: boolean;
+      creditsPerResume?: number;
     }
   ) =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>(`/admin/models/${id}`, {
@@ -1472,14 +1635,6 @@ export type PromptFeatureKey =
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume'
   | 'filter-google-sheet-job';
-
-export interface AIModelOption {
-  id: string;
-  label: string;
-  provider: AIProvider;
-  modelName: string;
-  description: string;
-}
 
 export interface PromptVariableDefinition {
   name: string;
@@ -1845,8 +2000,6 @@ export const promptsApi = {
       method: 'POST',
     }),
 
-  getModelOptions: () => apiFetch<AIModelOption[]>('/prompts/models'),
-
   validateDraft: (data: {
     id?: string;
     content?: string;
@@ -1872,7 +2025,7 @@ export const promptsApi = {
 
 // Resume API
 export const resumeApi = {
-  getModels: async () => normalizePublicAppSettings(await apiFetch<PublicAppSettings>('/resume/models')),
+  getModels: async () => normalizeUserAppSettings(await apiFetch<unknown>('/resume/models')),
 
   analyze: (jobDescription: string, overrides: AiRequestOverrides = {}, promptId?: string) =>
     apiFetch<JobAnalysis>('/resume/analyze', {

@@ -8,11 +8,12 @@ const { useTempStorage } = require('./helpers');
  *
  * Each subscription seat spawns a process per call behind its own semaphore,
  * sized by its own variable - `AI_CLI_CONCURRENCY` for Claude,
- * `AI_CODEX_CONCURRENCY` for Codex. A fan-out above a seat's ceiling is not
+ * `AI_CODEX_CONCURRENCY` for Codex, `AI_GEMINI_CONCURRENCY` for Gemini. A
+ * fan-out above a seat's ceiling is not
  * throughput, it is a queue with a longer wait at the end; one below it leaves
  * the seat partly idle for the whole run. Neither is visible from the page; both
- * look like the app being slow. The metered providers have no local resource to
- * count, and keep the number this app has always used for them.
+ * look like the app being slow. A provider id with no seat - a retired one on a
+ * choice stored before the upgrade - gets the number this app has always used.
  */
 
 function loadCapacity() {
@@ -23,10 +24,10 @@ function loadCapacity() {
 
 test('an operator override wins over everything worked out', async () => {
   const { resolveBatchCapacity } = loadCapacity();
-  for (const provider of ['claude-cli', 'codex-cli', 'openai']) {
+  for (const provider of ['claude-cli', 'codex-cli', 'gemini-cli']) {
     const capacity = await resolveBatchCapacity(
       { provider },
-      { AI_BATCH_CONCURRENCY: '3', AI_CLI_CONCURRENCY: '8', AI_CODEX_CONCURRENCY: '8' }
+      { AI_BATCH_CONCURRENCY: '3', AI_CLI_CONCURRENCY: '8', AI_CODEX_CONCURRENCY: '8', AI_GEMINI_CONCURRENCY: '8' }
     );
     assert.equal(capacity.limit, 3, `${provider} takes the override`);
     assert.match(capacity.reason, /AI_BATCH_CONCURRENCY=3/);
@@ -48,14 +49,6 @@ test('the subscription seat runs at its own process limit', async () => {
   assert.equal(cliConcurrency({ AI_CLI_CONCURRENCY: 'lots' }), 4);
 });
 
-test('a metered provider keeps the number this app has always used', async () => {
-  const { resolveBatchCapacity } = loadCapacity();
-  for (const provider of ['claude', 'openai', 'deepseek']) {
-    const capacity = await resolveBatchCapacity({ provider }, {});
-    assert.equal(capacity.limit, 4, `${provider} has no local resource to count`);
-  }
-});
-
 test('no width depends on the settings database', async () => {
   // Every number above comes from the environment. A database that cannot be
   // opened - a path under a regular FILE, so creating it fails at once with
@@ -64,28 +57,29 @@ test('no width depends on the settings database', async () => {
   delete require.cache[require.resolve('../dist/services/ai/batchCapacity')];
   process.env.DB_DIR = '/etc/hosts/not-a-directory';
   const { resolveBatchCapacity } = require('../dist/services/ai/batchCapacity');
-  const env = { AI_CLI_CONCURRENCY: '6', AI_CODEX_CONCURRENCY: '5' };
+  const env = { AI_CLI_CONCURRENCY: '6', AI_CODEX_CONCURRENCY: '5', AI_GEMINI_CONCURRENCY: '3' };
 
   assert.equal((await resolveBatchCapacity({ provider: 'claude-cli' }, env)).limit, 6);
   assert.equal((await resolveBatchCapacity({ provider: 'codex-cli' }, env)).limit, 5);
-  for (const provider of ['claude', 'openai', 'deepseek']) {
-    assert.equal((await resolveBatchCapacity({ provider }, env)).limit, 4, provider);
-  }
+  assert.equal((await resolveBatchCapacity({ provider: 'gemini-cli' }, env)).limit, 3);
+  assert.equal((await resolveBatchCapacity({ provider: 'openai' }, env)).limit, 4, 'a retired id too');
 });
 
 test('a choice naming a removed provider is sized like any other, not refused', async () => {
-  // A task resolved before the browser chat providers were removed can still
-  // carry one of their ids. The runner resolves it again before any call, so
-  // all this has to do is not throw.
+  // A task resolved before the browser chat providers or the metered APIs were
+  // removed can still carry one of their ids. The runner resolves it again
+  // before any call, so all this has to do is not throw.
   const { resolveBatchCapacity } = loadCapacity();
-  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {});
-  assert.equal(capacity.limit, 4);
+  for (const provider of ['claude-web', 'claude', 'openai', 'deepseek']) {
+    const capacity = await resolveBatchCapacity({ provider }, {});
+    assert.equal(capacity.limit, 4, provider);
+  }
 });
 
 /**
  * The Codex seat, which is a SEPARATE number from the Claude one.
  *
- * It used to fall past every branch into the metered-HTTP default, and that was
+ * It used to fall past every branch into the catch-all default, and that was
  * right only by the coincidence that both defaults are 4. The two cases below
  * are the ones the coincidence hid.
  */
@@ -121,14 +115,42 @@ test('each CLI seat is sized from its own variable, and they do not share a lane
   const capacity = await queueModule.readCapacityForTests({
     AI_CLI_CONCURRENCY: '3',
     AI_CODEX_CONCURRENCY: '7',
+    AI_GEMINI_CONCURRENCY: '5',
   });
 
-  assert.deepEqual(Object.keys(capacity).sort(), ['cli', 'codex'], 'one lane per seat, and no other');
-  assert.equal(capacity.cli.length, 3, 'the Claude seat and the metered providers');
+  assert.deepEqual(Object.keys(capacity).sort(), ['cli', 'codex', 'gemini'], 'one lane per seat, and no other');
+  assert.equal(capacity.cli.length, 3, 'the Claude seat, from AI_CLI_CONCURRENCY');
   assert.equal(capacity.codex.length, 7, 'the Codex seat, from AI_CODEX_CONCURRENCY');
+  assert.equal(capacity.gemini.length, 5, 'the Gemini seat, from AI_GEMINI_CONCURRENCY');
   assert.ok(
     capacity.cli.every((slot) => slot.queue === 'cli') &&
-      capacity.codex.every((slot) => slot.queue === 'codex'),
+      capacity.codex.every((slot) => slot.queue === 'codex') &&
+      capacity.gemini.every((slot) => slot.queue === 'gemini'),
     'and the slots say which lane they belong to, which is what keeps the pools apart'
   );
+  // Unset, the Gemini lane is its seat's default width, which is narrower than
+  // the other two: a Google-account seat hits its per-minute limit sooner.
+  assert.equal((await queueModule.readCapacityForTests({})).gemini.length, 2);
+});
+
+test('the Gemini seat runs at its own process limit, read by the one reader its adapter uses', async () => {
+  const { resolveBatchCapacity } = loadCapacity();
+  const { geminiCliConcurrency, readGeminiCliConfig } = require('../dist/services/ai/providers/geminiCli/options');
+
+  const capacity = await resolveBatchCapacity(
+    { provider: 'gemini-cli' },
+    { AI_GEMINI_CONCURRENCY: '6', AI_CLI_CONCURRENCY: '4', AI_CODEX_CONCURRENCY: '4' }
+  );
+  assert.equal(capacity.limit, 6);
+  assert.match(capacity.reason, /Gemini CLI slot/);
+
+  // The batch width, the lane and the adapter's semaphore are one number: the
+  // adapter is built from readGeminiCliConfig, which reads the same getter.
+  for (const value of ['1', '6', '999', 'lots', '']) {
+    const env = { AI_GEMINI_CONCURRENCY: value };
+    const width = (await resolveBatchCapacity({ provider: 'gemini-cli' }, env)).limit;
+    assert.equal(width, geminiCliConcurrency(env), value);
+    assert.equal(width, readGeminiCliConfig(env).concurrency, value);
+  }
+  assert.equal(geminiCliConcurrency({}), 2, 'its own default, not the other seats\' 4');
 });

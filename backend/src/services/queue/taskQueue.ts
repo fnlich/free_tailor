@@ -9,10 +9,9 @@ import { randomUUID } from 'crypto';
  * thing that performs it - which is what lets a batch outlive the page that
  * started it.
  *
- * Two queues, because there are two resources: the Claude seat, which also
- * carries the metered APIs, and the Codex seat. Each draws from its own lane at
- * its own concurrency, so a stalled seat cannot hold up the other and one
- * seat's backlog cannot starve the other's work.
+ * One queue per resource, and each subscription seat is one. Each draws from
+ * its own lane at its own concurrency, so a stalled seat cannot hold up
+ * another and one seat's backlog cannot starve another's work.
  *
  * Why a dispatcher at all, when each seat's semaphore already has a FIFO waiter
  * list: a call queued at the semaphore is ALREADY RUNNING ITS OWN CLOCK.
@@ -27,7 +26,8 @@ import { randomUUID } from 'crypto';
 /**
  * One lane per REAL resource, which is the whole rule here.
  *
- * `codex` is its own lane rather than sharing `cli`, and that is not tidiness.
+ * `codex` and `gemini` are lanes of their own rather than sharing `cli`, and
+ * that is not tidiness.
  * Each CLI provider holds its own semaphore, and Claude's happens to be the
  * same size as the lane it ran in, so sharing was invisible until a second
  * provider arrived with a limit set by a different variable. Sharing one lane
@@ -35,15 +35,22 @@ import { randomUUID } from 'crypto';
  * at most the lane's width, so the larger pool is unreachable, and tasks for the
  * smaller one sit in lane slots BLOCKED on their own semaphore - for up to ten
  * minutes - while the other provider's work starves behind them.
- *
- * The metered HTTP providers stay on `cli`. They have no local resource of their
- * own, so the lane is only a throttle for them, and a lane each would be three
- * that do nothing.
  */
-export type QueueName = 'cli' | 'codex';
+export type QueueName = 'cli' | 'codex' | 'gemini';
 
 /** Every lane this build has, in the order the dispatcher fills them. */
-export const QUEUE_NAMES: readonly QueueName[] = ['cli', 'codex'];
+export const QUEUE_NAMES: readonly QueueName[] = ['cli', 'codex', 'gemini'];
+
+/**
+ * The seat each lane's slots run on - what a running task reports as
+ * `runningOn`. A map rather than a branch, so a lane added later cannot report
+ * the Claude seat by falling through.
+ */
+export const LANE_PROVIDER: Readonly<Record<QueueName, string>> = Object.freeze({
+  cli: 'claude-cli',
+  codex: 'codex-cli',
+  gemini: 'gemini-cli',
+});
 
 /**
  * Whether a stored lane name is one this build has.
@@ -73,7 +80,7 @@ export type Slot = {
 export type Capacity = Record<QueueName, Slot[]>;
 
 function emptyCapacity(): Capacity {
-  return { cli: [], codex: [] };
+  return { cli: [], codex: [], gemini: [] };
 }
 
 export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -260,7 +267,7 @@ export class TaskQueue {
    * One array per queue, and THE ORDER IS THE CONTRACT. A task submitted later
    * never runs before one submitted earlier that an idle slot could take.
    */
-  private readonly queues: Record<QueueName, Task[]> = { cli: [], codex: [] };
+  private readonly queues: Record<QueueName, Task[]> = { cli: [], codex: [], gemini: [] };
 
   private readonly batches = new Map<string, Batch>();
 
@@ -686,8 +693,8 @@ export class TaskQueue {
     // at least once and the snapshot can say "attempt 2 of 3" honestly.
     task.attempts = task.attempts ?? 1;
     // Each lane names the seat it runs on. Reading the lane rather than
-    // hard-coding one provider is what keeps this honest with two seats.
-    task.runningOn = slot.queue === 'codex' ? 'codex-cli' : 'claude-cli';
+    // hard-coding one provider is what keeps this honest with three seats.
+    task.runningOn = LANE_PROVIDER[slot.queue];
     this.busy.set(slot.id, task);
     this.persist((store) => store.saveTask(task));
     this.emitTask(task);

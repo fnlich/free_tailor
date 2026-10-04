@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react';
 
+import { operatorDetail } from '@/lib/api';
+import { userMessage } from '@/lib/userMessage';
+
 /**
  * The building blocks every page is made of, after the reference design the
  * shell follows (textverified's dashboard): a large page title with one line
@@ -201,6 +204,45 @@ export function Notice({
     <div className={`tl-notice ${className}`} data-tone={tone} role={role}>
       {children}
     </div>
+  );
+}
+
+/**
+ * A failure, said the way every page says one.
+ *
+ * `error` is whatever was caught - or a sentence the page wrote itself, for its
+ * own validation. A caught error goes through `userMessage`, so the reader gets
+ * the server's sentence (with its reference) or the "can't reach the server"
+ * one, never a stack of URLs or a library's text. Under it, the server's
+ * `detail` - which it sends to administrators only, so no role check is made
+ * here: for everybody else there is simply nothing to draw.
+ *
+ * Renders nothing for a null, undefined or empty `error`, so a page can mount
+ * it unconditionally next to the thing that can fail.
+ */
+export function ErrorNotice({
+  error,
+  fallback,
+  className = '',
+  children,
+}: {
+  error: unknown;
+  /** Said when the failure carries no sentence of its own, e.g. "Could not load your orders". */
+  fallback?: string;
+  className?: string;
+  /** After the sentence - a link to the page that fixes it, a retry button. */
+  children?: ReactNode;
+}) {
+  if (error === null || error === undefined || error === '' || error === false) return null;
+  const message = typeof error === 'string' ? error : userMessage(error, fallback);
+  const detail = operatorDetail(error);
+  return (
+    <Notice tone="error" role="alert" className={className}>
+      <p className="break-words">{message}</p>
+      {/* Administrators only: the server withholds `detail` from everyone else. */}
+      {detail && <p className="mt-2 whitespace-pre-wrap break-words text-xs opacity-90">{detail}</p>}
+      {children}
+    </Notice>
   );
 }
 

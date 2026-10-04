@@ -198,7 +198,8 @@ export default function AmountStep({
         )}
 
         <p className="mt-3 text-xs text-subtle">
-          {formatAmount(unitPriceCents, currency)} per credit, and one credit builds one resume.
+          {formatAmount(unitPriceCents, currency)} per credit. Each resume costs the credits set for
+          the model it is built with.
           Between {target.minCredits} and {target.maxCredits} credits at a time
           {target.custom === 'stepper' && step > 1
             ? `, in steps of ${step} - about ${formatAmount(100, currency)} - on the buttons.`

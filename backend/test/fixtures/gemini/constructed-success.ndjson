@@ -1,0 +1,5 @@
+{"type":"init","timestamp":"2026-10-04T12:54:16.315Z","session_id":"b9b4e623-5fc0-49bc-8f1e-950adada3732","model":"gemini-2.5-flash"}
+{"type":"message","timestamp":"2026-10-04T12:54:16.316Z","role":"user","content":"What is the capital of France?\n"}
+{"type":"message","timestamp":"2026-10-04T12:54:16.327Z","role":"assistant","content":"{\"capital\":","delta":true}
+{"type":"message","timestamp":"2026-10-04T12:54:16.328Z","role":"assistant","content":" \"Paris\"}","delta":true}
+{"type":"result","timestamp":"2026-10-04T12:54:16.330Z","status":"success","stats":{"total_tokens":308,"input_tokens":294,"output_tokens":14,"cached":0,"input":294,"duration_ms":15,"tool_calls":0,"models":{"gemini-2.5-flash":{"total_tokens":308,"input_tokens":294,"output_tokens":14,"cached":0,"input":294}}}}

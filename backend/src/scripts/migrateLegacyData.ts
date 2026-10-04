@@ -26,6 +26,9 @@ import { hasStoredTemplate, saveStoredTemplate } from '../database/templateRepos
 import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompts } from '../database/promptRepository';
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
 import { migrate001 } from '../database/migrations/001_openrouter_to_claude_cli';
+import { migrate005 } from '../database/migrations/005_seed_codex_model';
+import { migrate007 } from '../database/migrations/007_remove_metered_providers';
+import { migrate008 } from '../database/migrations/008_seed_gemini_and_rename_seeds';
 import { APP_SETTINGS_KEY } from '../config/aiModelConfig';
 import { getStaticPromptsDir, getStaticTemplatesDir } from '../config/staticPaths';
 import { addSkill, isHardSkillCategory } from '../database/skillsDatabase';
@@ -169,6 +172,18 @@ function importAppSettings(configDir: string): boolean {
   // leave the row we just planted un-migrated. `migrate001` is called directly
   // because it is idempotent by inspection rather than by version stamp.
   migrate001(getDb());
+  // And 007 after it, for the same reason: every legacy file carries the
+  // metered API records - 001 itself switches those providers' flags on - and
+  // may hold an API key store, which is a secret this release has no use for.
+  // The reader would tolerate them; this removes them, and logs what it did.
+  const metered = migrate007(getDb());
+  for (const note of metered.notes) console.warn(`[migrate:legacy] ${note}`);
+  // And the two seat seeds, so the planted list offers every seat this release
+  // has - a legacy file predates both - with the seed names a fresh install
+  // gets. Both are idempotent by inspection too.
+  migrate005(getDb());
+  const seeds = migrate008(getDb());
+  for (const note of seeds.notes) console.warn(`[migrate:legacy] ${note}`);
   return true;
 }
 

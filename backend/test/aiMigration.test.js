@@ -85,21 +85,28 @@ test('a settings row written before the provider change migrates and then loads'
   const loaded = await config.getAdminAppSettings();
 
   // The flag the admin actually set for the provider this one replaces carries
-  // over rather than being dropped.
+  // over rather than being dropped. The metered APIs' flags are not read at
+  // all: those providers are retired.
   assert.equal(loaded.providersEnabled['claude-cli'], true);
-  assert.equal(loaded.providersEnabled.openai, true);
+  assert.equal('openai' in loaded.providersEnabled, false);
 
   // Model rows naming OpenRouter models are removed - "openai/gpt-5.4-nano"
   // means nothing to the Claude CLI - and subscription models are seeded.
   const providers = loaded.aiModels.map((model) => model.provider);
   assert.equal(providers.includes('openrouter'), false);
   assert.ok(providers.includes('claude-cli'));
-  assert.ok(loaded.aiModels.some((model) => model.id === 'openai-gpt-5-1'), 'other providers are untouched');
+  // 001 leaves every other provider's records alone - the metered one is still
+  // in the row, for migration 007 (waiting here for an administrator) - but
+  // the reader no longer offers a retired provider's model.
+  assert.ok(
+    JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY)).aiModels.some((model) => model.id === 'openai-gpt-5-1'),
+    '001 itself leaves other providers untouched'
+  );
+  assert.equal(providers.includes('openai'), false, 'the retired metered record is dropped on read');
 
   // A default pointing at a model that no longer exists is repointed onto the
   // subscription seat's default model, rather than left for the reader to fall
-  // back to the first runnable one - which here would have been a metered
-  // OpenAI model this install never chose to default to.
+  // back to the first runnable one.
   assert.equal(loaded.defaultModelId, 'claude-cli-sonnet');
   assert.equal(
     JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY)).defaultModelId,
@@ -167,7 +174,7 @@ test('a row whose only enabled provider was OpenRouter comes back with a working
   const loaded = await config.getAdminAppSettings();
 
   assert.equal(loaded.providersEnabled['claude-cli'], true);
-  assert.equal(loaded.providersEnabled.openai, false);
+  assert.equal('openai' in loaded.providersEnabled, false, 'a retired provider has no switch to read');
 });
 
 test('a row with no models and no default still loads after migration', async () => {
@@ -272,11 +279,11 @@ test('prompt records naming the removed provider are repointed and backed up', a
   }
 });
 
-test('a row that never customised its model library keeps every provider model', async () => {
-  // A row with no `aiModels` key inherits the full default catalogue at read
-  // time. Writing an explicit list would freeze that into a CLI-only list and
-  // permanently remove every OpenAI, Anthropic and DeepSeek model from an
-  // install that had simply never touched the model library.
+test('a row that never customised its model library keeps inheriting the seed list', async () => {
+  // A row with no `aiModels` key inherits the default catalogue at read time.
+  // Writing an explicit list would freeze that into whatever this release
+  // seeds, so a seat added later would never reach an install that had simply
+  // never touched the model library.
   const { rootDir, dbDir } = useTempStorage('migration-implicit-models');
   const partial = legacySettings(rootDir);
   delete partial.aiModels;
@@ -285,12 +292,14 @@ test('a row that never customised its model library keeps every provider model',
   const config = loadFresh('../dist/config/aiModelConfig');
   const loaded = await config.getAdminAppSettings();
 
+  assert.equal('aiModels' in JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY)), false, 'no list was frozen in');
   const providers = new Set(loaded.aiModels.map((model) => model.provider));
   assert.ok(providers.has('claude-cli'));
-  assert.ok(providers.has('openai'), 'the OpenAI models must survive');
-  assert.ok(providers.has('claude'), 'the Anthropic models must survive');
-  assert.ok(providers.has('deepseek'), 'the DeepSeek models must survive');
-  assert.equal(providers.has('openrouter'), false);
+  assert.ok(providers.has('codex-cli'));
+  // Only seats are seeded now: the metered APIs are retired.
+  for (const retired of ['openai', 'claude', 'deepseek', 'openrouter']) {
+    assert.equal(providers.has(retired), false, retired);
+  }
 });
 
 test('the legacy data importer migrates the row it plants, even after boot stamped the version', async () => {
@@ -310,6 +319,7 @@ test('the legacy data importer migrates the row it plants, even after boot stamp
         id TEXT PRIMARY KEY, name TEXT, disabled INTEGER DEFAULT 0,
         data TEXT NOT NULL, created_at TEXT, updated_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, data TEXT NOT NULL);
     `);
 
     // Boot: nothing to do, but the version gets stamped.
@@ -332,6 +342,22 @@ test('the legacy data importer migrates the row it plants, even after boot stamp
     );
     assert.equal('openrouterEnabled' in after, false);
     assert.equal(after.providersEnabled['claude-cli'], true);
+
+    // And 007 after it, as the importer calls it: a legacy row always carries
+    // the metered records and flags 001 leaves behind, and here a key store.
+    const metered = loadFresh('../dist/database/migrations/007_remove_metered_providers').migrate007(db);
+    assert.equal(metered.ran, true);
+    const cleaned = JSON.parse(
+      db.prepare('SELECT value FROM app_settings WHERE key = ?').get(APP_SETTINGS_KEY).value
+    );
+    assert.equal(cleaned.aiModels.some((model) => model.provider === 'openai'), false);
+    assert.deepEqual(Object.keys(cleaned.providersEnabled).sort(), ['claude-cli']);
+    assert.equal('apiKeys' in cleaned, false);
+    // 001's snapshot of the planted row loses its key store too - the last
+    // plaintext copy of keys nothing can use.
+    const snapshot = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(BACKUP_KEY).value;
+    assert.equal(snapshot.includes('sk-or-secret'), false);
+    assert.equal(JSON.parse(snapshot).defaultModelId, 'openrouter-openai-gpt-5-4-nano', 'the rest is kept');
   } finally {
     db.close();
   }

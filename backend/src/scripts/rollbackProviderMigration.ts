@@ -32,9 +32,13 @@ function main(): void {
       `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     ).run(SETTINGS_KEY, backup.value, new Date().toISOString());
-    // Deleted once restored. The snapshot holds every provider's API keys in
-    // plaintext; keeping a second permanent copy of them after it has served
-    // its only purpose is a credential sitting somewhere nobody looks.
+    // Deleted once restored. The snapshot is the row as an older release left
+    // it, and could hold every provider's API keys in plaintext - migration 007
+    // deletes those from it, but a database it has not reached still has them;
+    // keeping a second permanent copy after it has served its only purpose is a
+    // credential sitting somewhere nobody looks. The row restored here is
+    // metered-laden, and 007 runs again on the next start to clean it, because
+    // this clears the version stamp.
     db.prepare('DELETE FROM app_settings WHERE key = ?').run(SETTINGS_BACKUP_KEY);
     console.log('Restored the pre-migration settings row and deleted the snapshot.');
   }

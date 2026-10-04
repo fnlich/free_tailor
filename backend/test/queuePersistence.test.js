@@ -506,7 +506,7 @@ test('a task queued on the removed browser lane is restored onto a live lane, an
       sites: ['chatgpt-web'],
       payload: {
         batchId: 'bat_legacy',
-        profileId: 'p-openai',
+        profileId: 'p-own',
         jobIndex: 0,
         choice: { provider: 'chatgpt-web', modelName: 'chat', modelId: 'chatgpt-web-chat', modelLabel: 'ChatGPT (free)' },
       },
@@ -528,7 +528,7 @@ test('a task queued on the removed browser lane is restored onto a live lane, an
   const { __currentChoiceForTests } = require('../dist/services/queue/resumeTask');
   const profiles = {
     'p-default': { id: 'p-default', name: 'Ada', profileSettings: {} },
-    'p-openai': { id: 'p-openai', name: 'Ada', profileSettings: { ai: { modelId: 'openai-gpt-5-1' } } },
+    'p-own': { id: 'p-own', name: 'Ada', profileSettings: { ai: { modelId: 'claude-cli-opus' } } },
   };
 
   // The real queue and the real restore, with a runner that does the one thing
@@ -562,14 +562,14 @@ test('a task queued on the removed browser lane is restored onto a live lane, an
     'p-default@codex:codex-cli/codex-cli-default',
     // The pinned task, on what its profile names today rather than on the app
     // default: the credit paid for a resume built the way a new one would be.
-    'p-openai@cli:openai/openai-gpt-5-1',
+    'p-own@cli:claude-cli/claude-cli-opus',
   ]);
 
   // Written back without the old lane or the site list, so a second restart
   // reads rows this build wrote.
   const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
   for (const task of row.tasks) {
-    assert.ok(['cli', 'codex'].includes(task.data.queue), `${task.id} is on a lane this build has`);
+    assert.ok(['cli', 'codex', 'gemini'].includes(task.data.queue), `${task.id} is on a lane this build has`);
     assert.equal('sites' in task.data, false, `${task.id} no longer carries chat sites`);
   }
 });
@@ -704,5 +704,67 @@ test('a restored task that named a browser site goes in the lane of the provider
     delete process.env.AI_LOCKED_PROVIDERS;
     delete process.env.AI_CLI_CONCURRENCY;
     delete process.env.AI_CODEX_CONCURRENCY;
+  }
+});
+
+test('Gemini work comes back on the Gemini lane: stored there, or placed there by its provider', async () => {
+  // A task's lane is the resource it waits for. Restored into the Claude
+  // seat's lane, Gemini work would hold Claude slots while queueing at the
+  // Gemini semaphore - the oversubscription the lane split exists to prevent.
+  useTempStorage('queue-persistence-gemini-lane');
+  process.env.AI_GEMINI_CONCURRENCY = '1';
+  try {
+    const choice = { provider: 'gemini-cli', modelName: 'auto', modelId: 'gemini-cli-auto', modelLabel: 'Gemini' };
+    const store = loadFresh('../dist/database/generationRepository');
+    store.saveBatchWithTasks(legacyBatchRow('bat_gemini', 2), [
+      // Mid-build on the Gemini seat when the process died.
+      legacyTaskRow('bat_gemini', 'tsk_stored', 0, 'running', {
+        queue: 'gemini',
+        payload: { batchId: 'bat_gemini', profileId: 'p1', jobIndex: 0, choice },
+      }),
+      // A lane this build lacks: placed again by the provider it runs on.
+      legacyTaskRow('bat_gemini', 'tsk_placed', 1, 'queued', {
+        queue: 'constructor',
+        payload: { batchId: 'bat_gemini', profileId: 'p1', jobIndex: 0, choice },
+      }),
+    ]);
+
+    const queueModule = loadFresh('../dist/services/queue/index');
+    queueModule.resetGenerationQueueForTests();
+    const queue = queueModule.getGenerationQueue();
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const started = [];
+    queueModule.registerTaskRunner(queueModule.RESUME_TASK_KIND, async (payload, assignment) => {
+      started.push(assignment.queue);
+      await held;
+      return {};
+    });
+
+    const report = await queueModule.restoreGenerationQueue();
+    assert.equal(report.requeued, 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const stats = queue.stats();
+    assert.equal(stats.gemini.running, 1, 'one at a time, as AI_GEMINI_CONCURRENCY says');
+    assert.equal(stats.gemini.queued, 1, 'the other waits for the Gemini seat');
+    assert.equal(stats.cli.queued + stats.cli.running, 0, 'and nothing waits in the Claude seat\'s lane');
+    assert.deepEqual(started, ['gemini']);
+    const running = queue.snapshot('bat_gemini').tasks.find((task) => task.state === 'running');
+    assert.equal(running.runningOn, 'gemini-cli');
+
+    const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
+    assert.deepEqual(
+      row.tasks.map((task) => task.data.queue),
+      ['gemini', 'gemini'],
+      'written back on the lane it waits in'
+    );
+
+    release();
+    queueModule.resetGenerationQueueForTests();
+  } finally {
+    delete process.env.AI_GEMINI_CONCURRENCY;
   }
 });

@@ -103,6 +103,24 @@ export type SubmitBatchResponse = {
   orderNumber?: string;
 };
 
+/**
+ * What a submission would cost, from `POST /generation/quote`.
+ *
+ * Counts and credits only - the server resolves each profile's model exactly as
+ * it would for the real submission, and keeps which models those are to
+ * itself. `exempt` is an administrator, who is never charged.
+ */
+export type GenerationQuote = {
+  resumes: number;
+  credits: number;
+  balance: number;
+  exempt: boolean;
+};
+
+function readCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
 /** Where the running batch's id is kept, so a reload can find it again. */
 export const ACTIVE_BATCH_KEY = 'freeTailor.activeBatchId';
 
@@ -137,6 +155,23 @@ export const generationApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  /**
+   * Prices a submission without placing it: the same body as `submit`, so the
+   * answer is resolved the way the real run would be.
+   */
+  quote: async (body: SubmitBatchRequest): Promise<GenerationQuote> => {
+    const raw = await apiFetch<Record<string, unknown>>('/generation/quote', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return {
+      resumes: readCount(raw?.resumes),
+      credits: readCount(raw?.credits),
+      balance: readCount(raw?.balance),
+      exempt: raw?.exempt === true,
+    };
+  },
 
   snapshot: (batchId: string) =>
     apiFetch<BatchSnapshot>(`/generation/batches/${encodeURIComponent(batchId)}`),

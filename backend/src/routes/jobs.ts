@@ -19,11 +19,10 @@ import {
   resolveColumn,
   resolveJobSheetTarget,
 } from '../services/sheets/jobSheetTarget';
-import { resolvePromptExecutionConfig } from '../services/ai';
 import {
   evaluateJobFilterAnalysis,
   evaluateJobContentAgainstFilter,
-  JOB_FILTER_PROVIDER,
+  resolveJobFilterModel,
 } from '../services/jobFilter';
 import { extractJobPageContent } from '../services/jobPageContent';
 import { scraperDefaultLocation, scraperMaxResults } from '../config/operational';
@@ -761,7 +760,9 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       );
     }
 
-    const executionConfig = await resolvePromptExecutionConfig('filter-google-sheet-job', JOB_FILTER_PROVIDER);
+    // Once for the run, so every row runs on the same model and the summary
+    // names the one they ran on.
+    const filterModel = await resolveJobFilterModel();
 
     if (endRow < startRow) {
       // An empty tab is not an error - a sheet created this morning that nobody
@@ -772,8 +773,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         spreadsheetId: sheetId,
         spreadsheetTitle: '',
         selectedTab: tabName,
-        provider: executionConfig.provider,
-        modelName: executionConfig.modelName ?? '',
+        modelLabel: filterModel.modelLabel,
         startRow,
         endRow,
         jobLinkCol,
@@ -849,6 +849,8 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         const analysis = await evaluateJobContentAgainstFilter({
           jobContent,
           jobLink,
+          provider: filterModel.provider,
+          modelName: filterModel.modelName,
           signal: filterSignal,
         });
         const decision = evaluateJobFilterAnalysis(analysis);
@@ -878,8 +880,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       spreadsheetId: sheetRange.spreadsheetId,
       spreadsheetTitle: sheetRange.spreadsheetTitle,
       selectedTab: tabName,
-      provider: executionConfig.provider,
-      modelName: executionConfig.modelName ?? '',
+      modelLabel: filterModel.modelLabel,
       startRow,
       endRow,
       jobLinkCol,
