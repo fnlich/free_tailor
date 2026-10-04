@@ -35,7 +35,10 @@ const PHONE = { width: 390, height: 844 };
 /** Every route a signed-in person can reach. */
 const ROUTES = [
   '/',
-  '/account',
+  '/settings',
+  '/settings/job-sheet',
+  '/settings/payment-methods',
+  '/settings/plan',
   '/orders',
   '/credits',
   '/jobs',
@@ -272,10 +275,89 @@ async function main() {
       shell = await visit(page, route, 'user');
     }
 
+    /*
+     * The rail, in the order it was asked for.
+     *
+     * Find Jobs is the account's own job sheet and is offered only once there
+     * is a URL for it - which there is not on a machine with no Google
+     * credentials, so it is allowed to be missing here and nowhere else.
+     */
+    const RAIL = [
+      'Profiles',
+      'Find Jobs',
+      'Build Resumes',
+      'Orders',
+      'Credits',
+      'Job Filter',
+      'Bid Assistant',
+      'Calendar',
+      'Templates',
+      'Settings',
+    ];
+    const railOrder = (labels) => labels.filter((label) => label !== 'Find Jobs').join(' / ');
     check(
-      'user: sidebar offers Find Jobs, not Settings or Manage Accounts',
-      !shell.navLabels.includes('Settings') && !shell.navLabels.includes('Manage Accounts'),
+      'user: the rail reads Profiles, Find Jobs, Build Resumes, Orders, Credits | Job Filter, Bid Assistant, Calendar | Templates, Settings',
+      railOrder(shell.navLabels) === railOrder(RAIL),
       `saw: ${shell.navLabels.join(', ')}`
+    );
+    const assistantHeading = await page.evaluate(() =>
+      document.querySelector('.tl-sidebar .tl-sidebar-label')?.textContent.trim()
+    );
+    check('user: the second group is headed Assistant', assistantHeading === 'Assistant', String(assistantHeading));
+    check(
+      'user: no Manage Accounts row - it is an Administration tab under Settings now',
+      !shell.navLabels.includes('Manage Accounts'),
+      `saw: ${shell.navLabels.join(', ')}`
+    );
+
+    /*
+     * Settings is everybody's now: the account's own four tabs, and none of
+     * the installation's - a row of doors that would all say "administrators
+     * only" is worse than no row.
+     */
+    const userSettings = await visit(page, '/settings/plan', 'user');
+    const userTabs = await page.evaluate(() => ({
+      tabs: Array.from(document.querySelectorAll('nav.tl-tabs[aria-label="Settings"] .tl-tab')).map((a) =>
+        a.textContent.trim()
+      ),
+      active: document.querySelector('nav.tl-tabs[aria-label="Settings"] .tl-tab[data-active="true"]')?.textContent.trim(),
+      title: document.querySelector('.tl-main h1')?.textContent.trim(),
+    }));
+    check(
+      'user /settings/plan: the four account tabs and no Administration',
+      userTabs.tabs.join(' / ') === 'Profile / Job Sheet / Payment Methods / Plan',
+      userTabs.tabs.join(', ')
+    );
+    check('user /settings/plan: Plan is the lit tab, not Profile', userTabs.active === 'Plan', String(userTabs.active));
+    check('user /settings/plan: titled Settings', userTabs.title === 'Settings', String(userTabs.title));
+    check(
+      'user /settings/plan: the Settings row is the one lit in the rail',
+      userSettings.activeLabels.join() === 'Settings',
+      `lit: ${userSettings.activeLabels.join(', ')}`
+    );
+
+    // The old account page still answers, by sending people to its new home.
+    await page.goto(`${APP}/account`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    check('user /account: redirects to /settings', new URL(page.url()).pathname === '/settings', page.url());
+
+    // An invoice is a document: no rail and no bar to print around it.
+    await page.goto(`${APP}/credits/invoice?payment=no-such-payment`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const invoiceChrome = await page.evaluate(() => ({
+      bars: document.querySelectorAll('.tl-topbar').length,
+      rails: document.querySelectorAll('.tl-sidebar').length,
+      text: document.body.innerText,
+    }));
+    check(
+      'user /credits/invoice: drawn without the shell',
+      invoiceChrome.bars === 0 && invoiceChrome.rails === 0,
+      JSON.stringify({ bars: invoiceChrome.bars, rails: invoiceChrome.rails })
+    );
+    check(
+      "user /credits/invoice: somebody else's or a made-up payment is not found",
+      /not found/i.test(invoiceChrome.text),
+      invoiceChrome.text.slice(0, 200)
     );
 
     check(
@@ -440,8 +522,8 @@ async function main() {
         })
         .join(' < ');
       check(
-        `top bar ${label}: the row reads Credits, Notifications, Theme, Account, Templates`,
-        shape === 'Credits < Notifications < Theme < Account < Templates',
+        `top bar ${label}: the row reads Credits, Notifications, Theme, Account`,
+        shape === 'Credits < Notifications < Theme < Account',
         order
       );
 
@@ -523,10 +605,8 @@ async function main() {
     }
 
     check(
-      'admin: sidebar offers Settings and Manage Accounts, not Find Jobs',
-      adminShell.navLabels.includes('Settings') &&
-        adminShell.navLabels.includes('Manage Accounts') &&
-        !adminShell.navLabels.includes('Find Jobs'),
+      'admin: the same rail as everybody, Settings and Templates at its foot',
+      railOrder(adminShell.navLabels) === railOrder(RAIL),
       `saw: ${adminShell.navLabels.join(', ')}`
     );
 
@@ -539,28 +619,37 @@ async function main() {
       `saw: ${adminShell.navLabels.join(', ')}`
     );
 
-    // The settings hub second row, and only on settings routes.
+    // The settings tabs, and only on settings routes.
     await adminPage.goto(`${APP}/admin/prompts`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 350));
     const onSettings = await adminPage.evaluate(() => ({
-      subnav: Boolean(document.querySelector('.tl-subnav')),
-      active: document.querySelector('.tl-subnav-item[data-active="true"]')?.textContent.trim(),
+      subnav: Boolean(document.querySelector('nav.tl-tabs[aria-label="Settings"]')),
+      tabs: Array.from(document.querySelectorAll('nav.tl-tabs[aria-label="Settings"] .tl-tab')).map((a) =>
+        a.textContent.trim()
+      ),
+      active: document.querySelector('nav.tl-tabs[aria-label="Settings"] .tl-tab[data-active="true"]')?.textContent.trim(),
       settingsRowLit: Boolean(
         Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item[data-active="true"]')).find(
           (a) => a.textContent.trim() === 'Settings'
         )
       ),
     }));
-    check('admin /admin/prompts: the settings sub-nav is shown', onSettings.subnav);
+    check('admin /admin/prompts: the settings tabs are shown', onSettings.subnav);
+    check(
+      "admin: the account's tabs, then the installation's",
+      onSettings.tabs.slice(0, 5).join(' / ') === 'Profile / Job Sheet / Payment Methods / Plan / General' &&
+        onSettings.tabs.includes('Accounts'),
+      onSettings.tabs.join(', ')
+    );
     check('admin /admin/prompts: Prompts is the active tab', onSettings.active === 'Prompts', String(onSettings.active));
     check('admin /admin/prompts: the Settings sidebar row stays lit', onSettings.settingsRowLit);
 
     await adminPage.goto(`${APP}/orders`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 350));
     const offSettings = await adminPage.evaluate(() =>
-      Boolean(document.querySelector('.tl-subnav'))
+      Boolean(document.querySelector('nav.tl-tabs[aria-label="Settings"]'))
     );
-    check('admin /orders: no settings sub-nav outside the hub', !offSettings);
+    check('admin /orders: no settings tabs outside the hub', !offSettings);
 
     await adminPage.screenshot({ path: `${SHOTS}/shell-5-admin-light.png` });
 

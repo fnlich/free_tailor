@@ -64,7 +64,7 @@ export default function AccountMenu() {
          * one, the account was simply missing from the row it checks.
          */
         aria-label={`Account: ${account.name || account.email}`}
-        title={account.name || account.email}
+        title={`Account: ${account.name || account.email}`}
         className="tl-icon-button"
       >
         {account.picture ? (

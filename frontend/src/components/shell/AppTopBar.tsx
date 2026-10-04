@@ -82,7 +82,7 @@ export default function AppTopBar({ credits, drawerOpen, onToggleDrawer, trigger
             data-darkreader-ignore
             suppressHydrationWarning
           />
-          <span className="tl-wordmark truncate">tailor</span>
+          <span className="tl-wordmark truncate">Tailor</span>
         </Link>
       </div>
 
