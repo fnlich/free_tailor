@@ -8,7 +8,7 @@ import CreditHistory from '@/components/credits/CreditHistory';
 import OrderHistory from '@/components/credits/OrderHistory';
 import RefundRequestHistory from '@/components/credits/RefundRequestHistory';
 import { useTabRow } from '@/components/shell/useTabRow';
-import { Notice } from '@/components/ui/kit';
+import { ErrorNotice, Notice } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
 import { formatMoney } from '@/lib/format';
@@ -39,7 +39,7 @@ function readTab(value: string | null | undefined): Tab {
  * apply to it are known before an amount is typed. This page is the account's
  * own record and nothing else.
  */
-function CreditsBody() {
+function PurchaserCredits() {
   const router = useRouter();
   const search = useSearchParams();
   const cancelled = search?.get('cancelled');
@@ -300,6 +300,77 @@ function CreditsBody() {
       )}
     </main>
   );
+}
+
+/**
+ * A reporter's Credits (owner decisions A3, A4): what they have earned and not
+ * yet been paid, and the history of it - job rewards in, payouts out.
+ *
+ * Its own component rather than switches through the purchaser's, because
+ * what it leaves out is most of that page: no Purchase Credits, no card or
+ * crypto order history, no Refund Requests and no Ask for refund. A reporter
+ * cannot buy credit, and every request those panels make answers them 403
+ * `role-not-allowed` - so they are not mounted here at all, rather than
+ * mounted and hidden.
+ */
+function EarningsCredits() {
+  const [status, setStatus] = useState<CreditStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const next = await creditsApi.status();
+        if (alive) setStatus(next);
+      } catch (caught) {
+        if (alive) setError(caught ?? new Error('Could not load your balance.'));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return (
+    <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-center gap-x-10 gap-y-5">
+        <h1 className="text-3xl font-bold tracking-tight text-ink">Credits</h1>
+
+        <div className="border-l-4 border-coin pl-4">
+          <p className="text-sm text-ink">Earned, not yet paid out</p>
+          {loading ? (
+            <div className="mt-1 h-7 w-16 animate-pulse rounded bg-surface-muted" role="status" aria-label="Loading balance" />
+          ) : (
+            <p className="text-xl font-semibold tracking-wide text-ink tabular-nums">
+              {status ? formatMoney(status.balanceMilli) : '—'}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-4 max-w-3xl text-sm text-muted">
+        Every job you add that the job lake accepts earns your rate per job, and it lands on this
+        balance. You are paid outside the app: each payout an administrator records is taken off the
+        balance and listed below, with how it was paid.
+      </p>
+
+      <ErrorNotice error={error} fallback="Your balance could not be loaded" className="mt-6" />
+
+      <div className="mt-8">
+        <CreditHistory epoch={0} variant="earnings" />
+      </div>
+    </main>
+  );
+}
+
+/** Which Credits this account gets. The role is known before any page mounts (AuthGate waits for it). */
+function CreditsBody() {
+  const { isReporter } = useAuth();
+  return isReporter ? <EarningsCredits /> : <PurchaserCredits />;
 }
 
 export default function CreditsPage() {

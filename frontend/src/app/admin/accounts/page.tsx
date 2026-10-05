@@ -6,14 +6,25 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   accountsApi,
+  type AccountChange,
   type AccountSubscription,
   type AccountSubscriptionId,
   type ManagedAccount,
+  type RoleOption,
   type UserRole,
 } from '@/lib/auth';
 import { describeLedgerReason, type LedgerEntry } from '@/lib/credits';
 import { describeDollarProblem, formatDate, formatMoney, parseDollars, toDollarInput } from '@/lib/format';
 import { describeLedgerBalance, describeLedgerChange, ledgerDirection } from '@/lib/ledger';
+import {
+  describePayoutAmount,
+  describeReportRate,
+  MAX_PAYOUT_NOTE,
+  mintPayoutRequestId,
+  parseReportRate,
+  payoutProblem,
+} from '@/lib/reporterPay';
+import { ACCOUNT_ROLES, ROLE_LABELS, configuredAdminNotes } from '@/lib/roles';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
@@ -31,6 +42,11 @@ import styles from './page.module.css';
  * deleted from here, and says so: the server refuses all three for the
  * caller's own account (another administrator may still do them), so the
  * controls are locked rather than offered and refused.
+ *
+ * A reporter's row (owner decisions A3, A4, J7) carries two more things: their
+ * own rate per job, in dollars - empty means the installation's global rate -
+ * and Record payout, for money already paid to them outside the app, which
+ * takes it off their balance with a note saying how it was paid.
  */
 
 /**
@@ -47,6 +63,114 @@ function grantProblem(text: string): string {
   return '';
 }
 
+/** Why a typed rate per job cannot be stored, or '' when it can - empty included, which is the global rate. */
+function rateProblem(text: string): string {
+  const parsed = parseReportRate(text);
+  return parsed.ok ? '' : parsed.error;
+}
+
+/**
+ * Record payout, under a reporter's row: the amount already paid, how it was
+ * paid, and - as the amount is typed - the balance it will leave.
+ *
+ * The amount is checked as it is typed, in the server's words, and so is the
+ * note, which the button's title names; nothing is clamped, because the record
+ * is of money that has already left and must say what was paid.
+ */
+function PayoutForm({
+  row,
+  busy,
+  amount,
+  note,
+  onAmount,
+  onNote,
+  onSubmit,
+}: {
+  row: ManagedAccount;
+  busy: boolean;
+  amount: string;
+  note: string;
+  onAmount: (value: string) => void;
+  onNote: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const problem = payoutProblem(amount, note, row.balanceMilli);
+  const line = describePayoutAmount(amount, row.balanceMilli);
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+      className="mb-4 space-y-3"
+      aria-labelledby={`payout-heading-${row.id}`}
+    >
+      <div>
+        <h3 id={`payout-heading-${row.id}`} className="text-sm font-semibold text-ink">
+          Record a payout to {row.email}
+        </h3>
+        <p className="mt-1 text-xs text-subtle">
+          For money already paid outside the app - by bank transfer, or however you pay reporters.
+          It is taken off their balance and shown in their history, and their bell, with your note.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="w-36">
+          <label className="tl-label" htmlFor={`payout-${row.id}`}>
+            Amount paid ($)
+          </label>
+          <input
+            id={`payout-${row.id}`}
+            type="text"
+            inputMode="decimal"
+            autoFocus
+            value={amount}
+            disabled={busy}
+            onChange={(event) => onAmount(event.target.value)}
+            placeholder="25.00"
+            aria-describedby={`payout-line-${row.id}`}
+            className="tl-input mt-2 tabular-nums"
+          />
+        </div>
+        <div className="min-w-[14rem] flex-1">
+          <label className="tl-label" htmlFor={`payout-note-${row.id}`}>
+            How it was paid
+          </label>
+          <input
+            id={`payout-note-${row.id}`}
+            value={note}
+            disabled={busy}
+            maxLength={MAX_PAYOUT_NOTE}
+            onChange={(event) => onNote(event.target.value)}
+            placeholder="Bank transfer, 2026-10-01, ref 4471"
+            className="tl-input mt-2"
+          />
+        </div>
+        <button
+          type="submit"
+          // Disabled with the reason, rather than pressed and refused.
+          disabled={busy || Boolean(problem)}
+          title={problem || undefined}
+          className="tl-button"
+        >
+          {busy ? 'Recording...' : 'Record payout'}
+        </button>
+      </div>
+      <p
+        id={`payout-line-${row.id}`}
+        className="tl-status text-subtle tabular-nums"
+        data-tone={line.tone === 'error' ? 'error' : undefined}
+        aria-live="polite"
+      >
+        {line.text}
+      </p>
+    </form>
+  );
+}
+
+/** The server's role catalog, for a backend that predates sending one. */
+const FALLBACK_ROLES: RoleOption[] = ACCOUNT_ROLES.map((id) => ({ id, label: ROLE_LABELS[id] }));
+
 /** Said on your own row, beside the controls it locks. */
 const OWN_ROW_NOTE =
   'Your own account: you cannot change its role, disable it or delete it. Another administrator can.';
@@ -56,6 +180,7 @@ function AccountsTable() {
 
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
   const [subscriptions, setSubscriptions] = useState<AccountSubscription[]>([]);
+  const [roles, setRoles] = useState<RoleOption[]>(FALLBACK_ROLES);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -80,8 +205,21 @@ function AccountsTable() {
   const [grantAmount, setGrantAmount] = useState('');
   const [grantNote, setGrantNote] = useState('');
 
+  /**
+   * The reporter whose Record payout form is open, and its id - minted when
+   * the form opens and kept across retries, so a press whose answer was lost
+   * and is pressed again records the payout once (the server answers the
+   * repeat `recorded: false`, with the first row).
+   */
+  const [payoutFor, setPayoutFor] = useState<string | null>(null);
+  const [payoutAmount, setPayoutAmount] = useState('');
+  const [payoutNote, setPayoutNote] = useState('');
+  const [payoutRequestId, setPayoutRequestId] = useState('');
+
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<UserRole>('user');
   const [inviteSubscription, setInviteSubscription] = useState<AccountSubscriptionId>('default');
+  const [inviteRate, setInviteRate] = useState('');
   const [inviting, setInviting] = useState(false);
 
   const load = useCallback(async () => {
@@ -90,6 +228,7 @@ function AccountsTable() {
       const data = await accountsApi.list();
       setAccounts(data.accounts);
       setSubscriptions(data.subscriptions);
+      if (Array.isArray(data.roles) && data.roles.length > 0) setRoles(data.roles);
       setError(null);
     } catch (caught) {
       setError(messageWithDetail(caught, 'Could not load accounts.'));
@@ -102,14 +241,19 @@ function AccountsTable() {
     void load();
   }, [load]);
 
-  const apply = async (id: string, action: () => Promise<ManagedAccount | null>) => {
+  const apply = async (id: string, action: () => Promise<AccountChange | null>) => {
     setBusyId(id);
     setError(null);
     setNotice(null);
     try {
-      const updated = await action();
-      if (updated) {
+      const change = await action();
+      if (change) {
+        const updated = change.account;
         setAccounts((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+        // The change was stored but will not last - an ADMIN_EMAILS (or
+        // SMTP_USER) address made something other than an administrator - and
+        // the server says so.
+        if (change.note) setNotice(change.note);
         // The signed-in admin may have just changed their OWN subscription or role, and
         // the top bar reads that from the provider rather than from this page.
         if (updated.id === me?.id) void refreshMe();
@@ -161,7 +305,7 @@ function AccountsTable() {
 
     await apply(row.id, async () => {
       const result = await accountsApi.grantCredits(row.id, grantAmount.trim(), grantNote.trim());
-      return result.account;
+      return { account: result.account };
     });
     setGrantFor(null);
     setGrantAmount('');
@@ -172,17 +316,88 @@ function AccountsTable() {
     if (historyFor === row.id) await reloadHistory(row.id);
   };
 
+  /** Opens one of a row's two forms, closing the other: one panel under a row at a time. */
+  const openGrant = (id: string) => {
+    setPayoutFor(null);
+    setGrantFor(grantFor === id ? null : id);
+    setGrantAmount('');
+    setGrantNote('');
+  };
+
+  const openPayout = (id: string) => {
+    setGrantFor(null);
+    setPayoutFor(payoutFor === id ? null : id);
+    setPayoutAmount('');
+    setPayoutNote('');
+    setPayoutRequestId(mintPayoutRequestId());
+  };
+
+  /**
+   * Records a payout already made. Not through `apply`: the answer is a row
+   * AND a sentence about the money, and a refusal - above the balance, most
+   * likely, if it moved since the page loaded - keeps the form open with what
+   * was typed, and its id, for the retry.
+   */
+  const recordPayout = async (row: ManagedAccount) => {
+    if (payoutProblem(payoutAmount, payoutNote, row.balanceMilli)) return;
+    setBusyId(row.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await accountsApi.recordPayout(row.id, {
+        // As typed: the server parses dollars exactly, as it does a grant.
+        amountUsd: payoutAmount.trim(),
+        note: payoutNote.trim(),
+        requestId: payoutRequestId,
+      });
+      setAccounts((current) => current.map((entry) => (entry.id === result.account.id ? result.account : entry)));
+      const paid = formatMoney(-result.entry.deltaMilli);
+      setNotice(
+        result.recorded
+          ? `Recorded a payout of ${paid} to ${row.email}. Their balance is now ${formatMoney(result.balanceMilli)}.`
+          : `That payout of ${paid} to ${row.email} was already recorded, so nothing more was taken. ` +
+              `Their balance is ${formatMoney(result.balanceMilli)}.`
+      );
+      setPayoutFor(null);
+      setPayoutAmount('');
+      setPayoutNote('');
+      if (historyFor === row.id) await reloadHistory(row.id);
+    } catch (caught) {
+      setError(messageWithDetail(caught, 'Could not record that payout.'));
+      // The balance it was measured against may have moved; show the real one.
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const inviteRateProblem = inviteRole === 'reporter' ? rateProblem(inviteRate) : '';
+
   const invite = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (inviteRateProblem) return;
     setInviting(true);
     setError(null);
     setNotice(null);
     try {
-      await accountsApi.create({ email: inviteEmail, subscription: inviteSubscription });
+      const result = await accountsApi.create({
+        email: inviteEmail,
+        role: inviteRole,
+        subscription: inviteSubscription,
+        // Only a reporter is paid per job; empty is the global rate, so nothing is sent.
+        ...(inviteRole === 'reporter' && inviteRate.trim() ? { reportRateUsd: inviteRate.trim() } : {}),
+      });
       setInviteEmail('');
+      setInviteRate('');
+      const as = roles.find((role) => role.id === inviteRole)?.label ?? ROLE_LABELS[inviteRole];
       setNotice(
-        `Account created for ${inviteEmail}. They still have to sign in with Google or an emailed ` +
-          'code - this only sets the subscription in advance.'
+        [
+          `Account created for ${inviteEmail}, as ${/^[aeiou]/i.test(as) ? 'an' : 'a'} ${as}. They still have to ` +
+            'sign in with Google or an emailed code - this only sets the account up in advance.',
+          result.note,
+        ]
+          .filter(Boolean)
+          .join(' ')
       );
       await load();
     } catch (caught) {
@@ -243,13 +458,13 @@ function AccountsTable() {
         title="Add an account"
         description={
           <>
-            Sets somebody&apos;s subscription before they arrive. It is not a way in: they still prove the
-            address through Google or an emailed code.
+            Sets somebody&apos;s role and subscription before they arrive - a reporter&apos;s rate per job
+            too. It is not a way in: they still prove the address through Google or an emailed code.
           </>
         }
       >
         <form onSubmit={invite} className="space-y-6">
-          <div className="grid gap-6 sm:grid-cols-[minmax(0,1fr)_14rem]">
+          <div className="grid gap-6 sm:grid-cols-[minmax(0,1fr)_12rem_12rem]">
             <Field label="Email address" htmlFor="invite-email">
               <input
                 id="invite-email"
@@ -262,23 +477,74 @@ function AccountsTable() {
                 className="tl-input"
               />
             </Field>
-            <Field label="Subscription" htmlFor="invite-subscription">
+            <Field label="Role" htmlFor="invite-role">
               <select
-                id="invite-subscription"
-                value={inviteSubscription}
+                id="invite-role"
+                value={inviteRole}
                 disabled={inviting}
-                onChange={(event) => setInviteSubscription(event.target.value as AccountSubscriptionId)}
+                onChange={(event) => setInviteRole(event.target.value as UserRole)}
                 className="tl-input"
               >
-                {subscriptions.map((subscription) => (
-                  <option key={subscription.id} value={subscription.id}>
-                    {subscription.label}
+                {roles.map((role) => (
+                  <option key={role.id} value={role.id}>
+                    {role.label}
                   </option>
                 ))}
               </select>
             </Field>
+            {/*
+              A reporter builds no resumes, so a subscription is nothing to
+              them; what they are set up with is what they are paid per job.
+            */}
+            {inviteRole === 'reporter' ? (
+              <Field label="Rate per job ($)" htmlFor="invite-rate">
+                <input
+                  id="invite-rate"
+                  type="text"
+                  inputMode="decimal"
+                  value={inviteRate}
+                  disabled={inviting}
+                  onChange={(event) => setInviteRate(event.target.value)}
+                  placeholder="Global rate"
+                  aria-describedby="invite-rate-hint"
+                  className="tl-input tabular-nums"
+                />
+              </Field>
+            ) : (
+              <Field label="Subscription" htmlFor="invite-subscription">
+                <select
+                  id="invite-subscription"
+                  value={inviteSubscription}
+                  disabled={inviting}
+                  onChange={(event) => setInviteSubscription(event.target.value as AccountSubscriptionId)}
+                  className="tl-input"
+                >
+                  {subscriptions.map((subscription) => (
+                    <option key={subscription.id} value={subscription.id}>
+                      {subscription.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
           </div>
-          <button type="submit" disabled={inviting || !inviteEmail} className="tl-button">
+          {inviteRole === 'reporter' && (
+            <p
+              id="invite-rate-hint"
+              className="tl-status text-subtle"
+              data-tone={inviteRateProblem ? 'error' : undefined}
+              aria-live="polite"
+            >
+              {inviteRateProblem ||
+                'Dollars per job the job lake accepts, to $0.001. Leave it empty to pay the global rate.'}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={inviting || !inviteEmail || Boolean(inviteRateProblem)}
+            title={inviteRateProblem || undefined}
+            className="tl-button"
+          >
             {inviting ? 'Adding...' : 'Add account'}
           </button>
         </form>
@@ -310,6 +576,9 @@ function AccountsTable() {
                 {accounts.map((row) => {
                   const busy = busyId === row.id;
                   const isMe = row.id === me?.id;
+                  // Said beside an address the server makes an administrator
+                  // again at every sign-in, naming the setting that does it.
+                  const configured = row.configuredAdmin ? configuredAdminNotes(row.configuredAdminSource) : null;
                   return (
                     <Fragment key={row.id}>
                     <tr className={row.disabled ? 'opacity-60' : undefined}>
@@ -322,34 +591,87 @@ function AccountsTable() {
                         </p>
                         <p className="break-words text-xs text-subtle">{row.email}</p>
                         {isMe && <p className="mt-1 max-w-[16rem] text-xs text-muted">{OWN_ROW_NOTE}</p>}
-                        {(row.role === 'admin' || row.disabled) && (
+                        {(row.role !== 'user' || row.disabled) && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {row.role === 'admin' && <Pill tone="violet">Admin</Pill>}
+                            {row.role === 'reporter' && <Pill tone="amber">Reporter</Pill>}
                             {row.disabled && <Pill tone="red">Disabled</Pill>}
                           </div>
                         )}
                       </td>
 
                       <td>
-                        <div className="w-24">
+                        <div className="w-36">
                           <select
                             value={row.role}
                             // Your own role is locked: demoting yourself is
                             // refused, and the select would only offer it.
                             disabled={busy || isMe}
-                            title={isMe ? OWN_ROW_NOTE : undefined}
+                            title={isMe ? OWN_ROW_NOTE : configured?.title}
                             aria-label={`Role for ${row.email}`}
                             onChange={(event) =>
-                              apply(row.id, async () =>
-                                (await accountsApi.update(row.id, { role: event.target.value as UserRole }))
-                                  .account
-                              )
+                              apply(row.id, () => accountsApi.update(row.id, { role: event.target.value as UserRole }))
                             }
                             className={`tl-input ${styles.compact}`}
                           >
-                            <option value="user">User</option>
-                            <option value="admin">Admin</option>
+                            {roles.map((role) => (
+                              <option key={role.id} value={role.id}>
+                                {role.label}
+                              </option>
+                            ))}
                           </select>
+                          {configured && (
+                            // Beside the select it outranks: a role set here
+                            // lasts only until the next sign-in.
+                            <p className="mt-1 text-xs text-subtle" title={configured.title}>
+                              {configured.line}
+                            </p>
+                          )}
+                          {row.role === 'reporter' && (
+                            <div className="mt-3">
+                              <label className="block text-xs text-subtle" htmlFor={`rate-${row.id}`}>
+                                Rate per job
+                              </label>
+                              <div className="mt-1 flex items-center gap-1">
+                                <span aria-hidden className="text-xs font-semibold text-muted">
+                                  $
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <input
+                                    id={`rate-${row.id}`}
+                                    // Remounted when the stored rate moves, like the
+                                    // balance box: an uncontrolled input would otherwise
+                                    // keep showing what it held before.
+                                    key={`${row.id}:${row.reportRateMilli ?? 'global'}`}
+                                    type="text"
+                                    inputMode="decimal"
+                                    defaultValue={row.reportRateMilli === null ? '' : toDollarInput(row.reportRateMilli)}
+                                    placeholder="Global"
+                                    disabled={busy}
+                                    title={`${describeReportRate(row.reportRateMilli)}. Type dollars to $0.001, or empty it for the global rate.`}
+                                    // On blur, like the balance: a write per keystroke
+                                    // would store $0.07 on the way to $0.075.
+                                    onBlur={(event) => {
+                                      const typed = event.target.value;
+                                      const parsed = parseReportRate(typed);
+                                      if (!parsed.ok) {
+                                        setError(parsed.error);
+                                        event.target.value =
+                                          row.reportRateMilli === null ? '' : toDollarInput(row.reportRateMilli);
+                                        return;
+                                      }
+                                      // Unchanged - "0.07" for $0.070, or still empty - writes nothing.
+                                      if (parsed.milli === row.reportRateMilli) return;
+                                      void apply(row.id, () =>
+                                        accountsApi.update(row.id, { reportRateUsd: typed.trim() })
+                                      );
+                                    }}
+                                    className={`tl-input ${styles.compact} tabular-nums`}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </td>
 
@@ -360,12 +682,10 @@ function AccountsTable() {
                             disabled={busy}
                             aria-label={`Subscription for ${row.email}`}
                             onChange={(event) =>
-                              apply(row.id, async () =>
-                                (
-                                  await accountsApi.update(row.id, {
-                                    subscription: event.target.value as AccountSubscriptionId,
-                                  })
-                                ).account
+                              apply(row.id, () =>
+                                accountsApi.update(row.id, {
+                                  subscription: event.target.value as AccountSubscriptionId,
+                                })
                               )
                             }
                             className={`tl-input ${styles.compact}`}
@@ -431,10 +751,7 @@ function AccountsTable() {
                                     event.target.value = toDollarInput(row.balanceMilli);
                                     return;
                                   }
-                                  void apply(
-                                    row.id,
-                                    async () => (await accountsApi.update(row.id, { balanceUsd: typed.trim() })).account
-                                  );
+                                  void apply(row.id, () => accountsApi.update(row.id, { balanceUsd: typed.trim() }));
                                 }}
                                 className={`tl-input ${styles.compact} tabular-nums`}
                               />
@@ -443,11 +760,7 @@ function AccountsTable() {
                           <button
                             type="button"
                             disabled={busy}
-                            onClick={() => {
-                              setGrantFor(grantFor === row.id ? null : row.id);
-                              setGrantAmount('');
-                              setGrantNote('');
-                            }}
+                            onClick={() => openGrant(row.id)}
                             title="Add or take away credit, rather than setting a total"
                             className="tl-button-quiet"
                             data-size="sm"
@@ -465,6 +778,16 @@ function AccountsTable() {
                             exempt
                           </p>
                         )}
+                        {row.role === 'reporter' && (
+                          // Not credit to spend: what they have earned and are
+                          // still owed, which Record payout takes down.
+                          <p
+                            className="mt-1 text-xs text-subtle"
+                            title="A reporter's balance is what they have earned and not yet been paid."
+                          >
+                            unpaid earnings
+                          </p>
+                        )}
                       </td>
 
                       <td className="whitespace-nowrap text-xs">
@@ -475,14 +798,24 @@ function AccountsTable() {
                         {/* Two by two, so four actions fit beside six columns
                             without the table outgrowing its box at 1440. */}
                         <div className="ml-auto grid w-max grid-cols-2 gap-2">
+                          {row.role === 'reporter' && (
+                            // Only here: the server refuses a payout to any
+                            // other account (409 `not-a-reporter`).
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => openPayout(row.id)}
+                              title="Record money already paid to this reporter outside the app"
+                              className="tl-button-quiet col-span-2"
+                              data-size="sm"
+                            >
+                              {payoutFor === row.id ? 'Close payout' : 'Record payout'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={busy || isMe}
-                            onClick={() =>
-                              apply(row.id, async () =>
-                                (await accountsApi.update(row.id, { disabled: !row.disabled })).account
-                              )
-                            }
+                            onClick={() => apply(row.id, () => accountsApi.update(row.id, { disabled: !row.disabled }))}
                             title={isMe ? OWN_ROW_NOTE : undefined}
                             className="tl-button-quiet"
                             data-size="sm"
@@ -534,9 +867,21 @@ function AccountsTable() {
                       than more columns. The table is already wide, and a history
                       has no business being squeezed into a cell.
                     */}
-                    {(grantFor === row.id || historyFor === row.id) && (
+                    {(grantFor === row.id || payoutFor === row.id || historyFor === row.id) && (
                       <tr>
                         <td colSpan={7} className="bg-surface-muted">
+                          {payoutFor === row.id && (
+                            <PayoutForm
+                              row={row}
+                              busy={busy}
+                              amount={payoutAmount}
+                              note={payoutNote}
+                              onAmount={setPayoutAmount}
+                              onNote={setPayoutNote}
+                              onSubmit={() => void recordPayout(row)}
+                            />
+                          )}
+
                           {grantFor === row.id && (
                             <form
                               onSubmit={(event) => {

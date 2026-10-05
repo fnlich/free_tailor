@@ -11,8 +11,8 @@ import {
   type ReactNode,
 } from 'react';
 
-import { setUnauthorizedHandler } from '@/lib/api';
-import { authApi, type Account } from '@/lib/auth';
+import { setRoleRefusedHandler, setUnauthorizedHandler } from '@/lib/api';
+import { authApi, type Account, type UserRole } from '@/lib/auth';
 import { DEFAULT_UPLOAD_MAX_MB, readUploadMaxMb } from '@/lib/upload';
 import { userMessage } from '@/lib/userMessage';
 
@@ -32,7 +32,15 @@ type AuthState = {
   loading: boolean;
   /** Set when the server could not be reached at all. */
   error: string | null;
+  /** The signed-in account's role, or null while there is none. */
+  role: UserRole | null;
   isAdmin: boolean;
+  /**
+   * A reporter (owner decisions A3, A4): Report Jobs, Credits, Settings ->
+   * Profile / Job Sheet and nothing of the builder. AuthGate keeps them to
+   * those pages; the shell and the account menu draw their own variant.
+   */
+  isReporter: boolean;
   signedIn: boolean;
   /**
    * The largest PDF the server accepts, in MB - its UPLOAD_MAX_MB, served on
@@ -127,6 +135,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null);
   }, []);
 
+  /**
+   * A 403 `role-not-allowed` re-reads the account.
+   *
+   * The server reads the role on every request, so the first refusal after
+   * an administrator makes this account a reporter is where the page learns
+   * of it - and re-reading is what redraws the shell and sends AuthGate's
+   * reporter to Report Jobs, instead of leaving a builder page whose every
+   * panel says "not available for your account". At most once in ten
+   * seconds: a page that fires five requests at once is refused five times,
+   * and one read answers all of them.
+   */
+  const lastRoleCheck = useRef(0);
+  useEffect(() => {
+    setRoleRefusedHandler(() => {
+      const now = Date.now();
+      if (!alive.current || now - lastRoleCheck.current < 10_000) return;
+      lastRoleCheck.current = now;
+      void refresh();
+    });
+    return () => setRoleRefusedHandler(null);
+  }, [refresh]);
+
   const signOut = useCallback(async () => {
     await authApi.logout();
     if (alive.current) setAccount(null);
@@ -139,7 +169,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       account,
       loading,
       error,
+      role: account?.role ?? null,
       isAdmin: account?.role === 'admin',
+      isReporter: account?.role === 'reporter',
       signedIn: account !== null,
       uploadMaxMb,
       refreshUploadMaxMb,

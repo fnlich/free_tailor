@@ -4,7 +4,7 @@ import { listSubscriptions, resolveSubscription, type AccountSubscription } from
 import { sessionTtlMs } from '../config/operational';
 import { countProfilesForOwner } from '../database/profileRepository';
 import { destroySession, updateUser } from '../database/userRepository';
-import { requireUser, SESSION_COOKIE } from '../middleware/auth';
+import { requireAccount, SESSION_COOKIE } from '../middleware/auth';
 import { PublicError, sendPublicError } from '../middleware/publicError';
 import { pdfUploadLimitMb } from '../middleware/pdfUpload';
 import {
@@ -193,7 +193,7 @@ router.get('/me', (req: Request, res: Response) => {
 });
 
 router.post('/logout', (req: Request, res: Response) => {
-  // Not behind requireUser: logging out with a token the server has already
+  // Not behind requireAccount: logging out with a token the server has already
   // forgotten must still clear the cookie, or the browser is stuck sending a
   // dead token with no way to stop.
   if (req.sessionToken) destroySession(req.sessionToken);
@@ -201,13 +201,16 @@ router.post('/logout', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-/** The signed-in account's own details, refreshed. */
-router.get('/account', requireUser, (req: Request, res: Response) => {
+/**
+ * The signed-in account's own details, refreshed. Any role: Settings > Profile
+ * is one of the pages a reporter keeps.
+ */
+router.get('/account', requireAccount, (req: Request, res: Response) => {
   res.json({ account: describeAccount(req.user!) });
 });
 
 /** The one thing a user may change about themselves. */
-router.patch('/account', requireUser, (req: Request, res: Response) => {
+router.patch('/account', requireAccount, (req: Request, res: Response) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : undefined;
   if (name === undefined) {
     res.status(400).json({ error: 'There is nothing to change.' });

@@ -134,6 +134,7 @@ const MONEY_SOURCES = [
   'database/refundRequestRepository.ts',
   'services/refunds/index.ts',
   'routes/refundRequests.ts',
+  'config/reportRate.ts',
 ];
 
 function withoutComments(source) {

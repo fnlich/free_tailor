@@ -26,7 +26,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
 | **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets each account's subscription; there is no checkout for one |
 | **Credits** | A credit is a dollar, to the thousandth (`$0.023`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
-| **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
+| **Roles** | User, Reporter and Administrator. Users build resumes. Reporters add job postings to the installation's job lake and are paid per job accepted, with no resume builder and no job scrapers. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody. See [Roles](#roles) |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Order & Download** | Two ways to build. **Generate Immediately** follows the run on the page and downloads each resume as it lands; closing the tab stops it and refunds what had not started. **Order** answers with an order number instead of making you wait: track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
@@ -234,6 +234,9 @@ trial, or let people buy their own.
 
 Two ways to pay, and **both work the same way underneath**: the server credits
 the account only when a signed webhook arrives, whatever happened in the browser.
+Users and administrators buy; a reporter cannot (their balance is earnings,
+paid out by hand - see [Roles](#roles)), and every `/api/payments` route
+answers them 403 `role-not-allowed`.
 
 **What you pay is what you get.** A credit is a dollar and nothing comes out of
 it: pay `$50` by card or by crypto and the balance rises by exactly `$50.000`.
@@ -646,64 +649,140 @@ as everybody sees it.
 ### Getting around
 
 One shell owns the navigation on every page: a top bar, and a sidebar down the
-left.
+left. What is in it depends on the account's [role](#roles).
 
-**Top bar** - the brand, then on the right: your **credit balance** (press it to
-buy more), **notifications**, the **light/dark** switch, and your **account** -
-name, email, subscription, credits and profile use, with Settings, Subscription,
-Contact admin and sign-out under it - and **Templates** last, because everything before it acts on
-the session you are in and that one navigates away.
+**Top bar** - the brand (press it to go home: Build Resumes, or Report Jobs for
+a reporter), then on the right: your **credit balance** (press it for Credits,
+where you buy more), **notifications**, the **light/dark** switch, and your
+**account** - name, email, subscription, credit and profile use, with Settings,
+Subscription, Contact admin and Log out under it (and Manage accounts for an
+administrator).
 
 **Sidebar** - your work at the top:
 
 | | |
 |---|---|
-| **Profile** | the resume profiles you build from |
-| **Groups** | batches of profiles, Premium and above |
+| **Profiles** | the resume profiles you build from |
+| **Find Jobs** | today's tab of your own job sheet, in a new tab - once the server has one for you |
 | **Build Resumes** | the builder |
 | **Orders** | what you ordered, and the files |
+| **Credits** | your balance, buying more, and the history of both |
 
-then, under a divider, the job pages: **Job Search**, **Job Filter**, **Bid
-Assistant** and **Calendar**.
+then, under an *Assistant* divider, **Job Filter**, **Bid Assistant** and
+**Calendar**; and pinned to the bottom, **Templates** and **Settings**.
+Settings is your account's own tabs - Profile, Job Sheet, Payment Methods,
+Subscription - and for an administrator one more, **Administration**, whose
+nine shared-configuration pages appear as a second row once you are in it.
+Groups (`/admin/groups`, Premium and above) and Job Search (`/jobs`) have no
+entry of their own; they are reached by their address.
 
-Pinned to the bottom: **Find Jobs**, which opens today's tab of your own job
-sheet in a new tab; and for administrators, **Settings** and **Manage
-Accounts**. Settings is one entry covering the eight shared-configuration pages,
-which appear as a second row across the top once you are in it.
+**A reporter's** shell is three rows: **Report Jobs** (their home), **Credits**
+(what they have earned and the payouts recorded against it) and **Settings**,
+with only the Profile and Job Sheet tabs. Their balance in the top bar is
+earnings, and their account menu holds a link to their own job sheet,
+Settings, Contact admin and Log out - no subscription. Any other address -
+an old bookmark, a link in a notice - takes them to Report Jobs instead of
+opening a page their account would be refused.
 
 Below 768px the sidebar becomes a drawer behind the menu button in the top bar.
+
+### Roles
+
+Every account holds exactly one role, and an administrator changes it on
+**Admin → Accounts**:
+
+| Role | Who | What they reach |
+|---|---|---|
+| **User** | every new sign-in | the resume builder and everything around it: profiles, templates, Build Resumes, Orders, groups (by subscription), the job pages, buying credits and asking for refunds |
+| **Reporter** | made by an administrator - by changing a user's role, or by adding the account as a Reporter before its first sign-in | **Report Jobs**, **Credits** (their earnings and payouts), a link to their own job sheet, **Settings → Profile** and **Job Sheet**, notifications and **Contact admin**. No resume builder, no job scrapers, no buying credits |
+| **Administrator** | the addresses in `ADMIN_EMAILS` (else `SMTP_USER`), and anybody an administrator promotes | everything, including what the whole installation shares |
+
+A reporter adds job postings to the installation's job lake from their own
+job sheet and is paid for each job the lake accepts: at their own **rate per
+job** when an administrator has set one on Admin → Accounts (dollars, in
+steps of `$0.001`; empty means the installation's global rate), otherwise at
+the global rate. Earnings land on their balance like any credit. They are
+**paid outside the app** - by bank transfer or however the operator pays
+people - and the administrator records each payment with **Record payout**:
+an amount and a note saying how it was paid, which takes it off the balance
+and shows in the reporter's history and bell. A payout is never more than the
+balance, and only a reporter has one. A reporter cannot buy credits.
+
+Changing a role keeps everything the account owns - profiles, orders,
+balance - out of reach of the routes the new role cannot use. An Order
+already queued finishes; a Generate Immediately run of a user made a reporter
+stops within about a minute, because their tab can no longer follow it, and
+the resumes it had not started are refunded. The change takes effect on the
+account's next request, and an open page catches up with it: a user made a
+reporter is taken to Report Jobs by the first thing their page asks that a
+reporter may not, and any other change shows at the next reload.
+
+**An address in `ADMIN_EMAILS` stays an administrator** - and so does
+`SMTP_USER`'s, on an install that sets no `ADMIN_EMAILS`. It can be made a
+user or reporter on the Accounts page, which says so beside it and names the
+setting, but it is promoted back at its next sign-in and at every restart -
+the configuration outranks the page, so a typo on the page cannot lock the
+operator out. Take it out of `ADMIN_EMAILS` (and restart) to make the change
+last; for `SMTP_USER`'s address, set `ADMIN_EMAILS` to the administrators you
+do mean.
+
+**Rolling back to a build without reporters hands every reporter the full
+app**: an older build reads a role it does not know as *user*. Before rolling
+back, stop the backend and disable them:
+
+```sh
+sqlite3 "$DB_DIR/free_tailor.db" "UPDATE users SET disabled = 1 WHERE role = 'reporter';"
+# or, without the sqlite3 shell, from the repository root:
+node -e "new (require('./backend/node_modules/better-sqlite3'))(process.argv[1]).exec(\"UPDATE users SET disabled = 1 WHERE role = 'reporter'\")" "$DB_DIR/free_tailor.db"
+```
+
+and re-enable them on Admin → Accounts after upgrading again.
 
 ### What each account can reach
 
 Not everything is for everybody, and the rule differs by section because the
 reasons differ. A **role** says who may change things the whole installation
-shares; a **subscription** says what an individual account includes. They are
-separate checks and one is not a substitute for the other.
+shares, and who builds resumes at all; a **subscription** says what an
+individual account includes. They are separate checks and one is not a
+substitute for the other. *Users* below means users and administrators -
+everybody but a reporter.
 
 | Section | Who | Why |
 |---|---|---|
-| Build Resumes, Calendar, Job Search, Job Filter, Bid Assistant, Profile | anybody signed in | their own work |
-| **Orders** | anybody signed in | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
-| **Buy credits** | anybody signed in | their own payments only, by the same 404 rule |
+| Build Resumes, Calendar, Job Search, Job Filter, Bid Assistant, Profile | users | their own work. A reporter is refused every one, with 403 `role-not-allowed` |
+| **Orders** | users | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
+| **Buy credits** (and saved cards, purchase history) | users | their own payments only, by the same 404 rule. Never a reporter: their balance is earnings, paid out by hand |
+| **Credits** (balance and history) | anybody signed in, reporters included | their own. A reporter's history is their earnings and payouts |
+| **Your account** (Settings → Profile, Job Sheet) | anybody signed in, reporters included | their own name and their own job sheet |
+| **Report Jobs** | reporters (administrators may open it) | adding jobs from their own sheet to the job lake |
+| **Payouts** (Record payout, the rate per job) | **administrators** | on Admin → Accounts, for a reporter's row |
 | **Payments** (the list, refunds and the refund-request queue) | **administrators** | reconciliation against the provider's dashboard, and the only buttons in the product that move money outward |
-| **Refund requests** (asking, and reading your own) | anybody signed in | about their own purchases and resumes only - somebody else's answers 404, never 403 |
+| **Refund requests** (asking) | users | about their own purchases and resumes only - somebody else's answers 404, never 403. Not a reporter: refunding a purchase gives back the unspent balance, which for them is earnings |
+| **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
 | **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
-| **Find Jobs** | ordinary users | opens today's tab of their own job sheet in a new tab. Not shown to administrators, who manage the installation rather than work a job sheet |
+| **Find Jobs** | anybody signed in | opens today's tab of their own job sheet in a new tab: from the sidebar for users and administrators, from the account menu and Report Jobs for a reporter |
 | **Groups** | **Premium and above**, and administrators | an entitlement, checked on the subscription - a group is a way to build for several profiles at once |
 | **Building for several profiles** (Multiple, All profiles, Specific group, Select Group) | **Premium and above**, and administrators | a Default subscription supports one profile. The run, its quote and the multi-profile preview answer 403 `subscription-too-low`; a single-profile run - Generate Immediately or Order - is open to everybody |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
-| **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for anybody signed in |
-| **Templates** (looking at them) | anybody signed in | the gallery and the full-page preview of each, from the top bar. Choosing a template is no use without seeing what it produces |
+| **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for any user |
+| **Templates** (looking at them) | users | the gallery and the full-page preview of each, from the sidebar. Choosing a template is no use without seeing what it produces |
 | **Templates** (adding, editing, disabling, deleting) | **administrators** | a template is shared - editing one changes how everybody's resumes look. A *disabled* template is an administrator's staging state and is not listed to anybody else |
-| **Notifications** (reading them) | anybody signed in | the bell in the top bar, with an unread dot until it is opened: every announcement, and the notices written for that account alone (its refund requests; for an administrator, new ones) - never anybody else's |
+| **Notifications** (reading them) | anybody signed in, reporters included | the bell in the top bar, with an unread dot until it is opened: every announcement, and the notices written for that account alone (its refund requests; for an administrator, new ones) - never anybody else's |
 | **Notifications** (posting them) | **administrators** | one notice goes to every account on the installation |
 | **Test** | **administrators** | runs prompts directly and shows raw model output; a tool for whoever maintains the prompts |
-| **Settings** (all of it) | **administrators** | every page under it changes something shared |
+| **Settings** (the shared configuration - General, Accounts, Models...) | **administrators** | every page under it changes something shared |
 
 An entry nobody may use is not shown in the navigation, and the page behind it
-explains itself if the URL is typed - a blank screen reads as a broken link.
-**Hiding is not the protection**: every one of these is enforced by middleware on
-the routes, so an old tab or a hand-made request is refused just the same.
+explains itself if the URL is typed - a blank screen reads as a broken link. A
+reporter is sent to Report Jobs from any page that is not theirs. **Hiding is
+not the protection**: every one of these is enforced by middleware on the
+routes, so an old tab or a hand-made request is refused just the same - a
+reporter with *That part of the app is not available for your account. Ask
+your administrator if you need it.*, code `role-not-allowed`. The rule is
+written the safe way round: the builder's check admits users and
+administrators by name, so a route added later is closed to reporters until
+somebody decides otherwise, and `backend/test/routeAccess.test.js` holds the
+decision for every router the server mounts.
 
 **Administrators are exempt from the subscription checks** - Groups, and
 building for several profiles - whatever their own subscription, as they are
@@ -1410,10 +1489,13 @@ SMTP_PASS=
 neither, the login page says only *Sign-in isn't available right now* - it is
 read by somebody who is not signed in, so it names no setting - and the backend
 says at startup what to set (`[auth] Nobody can sign in: ...`);
-`cd backend && npm run mail:doctor` checks the SMTP path. The **first account
-to sign in becomes the administrator**, because account management is
-admin-only and an install whose first user was an ordinary one would have no
-way to appoint one. Set `ADMIN_EMAILS` to decide in advance instead.
+`cd backend && npm run mail:doctor` checks the SMTP path. **`ADMIN_EMAILS`
+decides who administers the installation** (or, when it is unset, the
+`SMTP_USER` address): those addresses are administrators from their first
+sign-in, and everybody else signs in as a user. Arrival order decides nothing -
+on a server anybody can reach, "the first account" is whoever is quickest. Set
+it before anybody signs in, or the install has no administrator and says so at
+startup.
 
 Upgrading an install that has profiles already? They have no owner, so they are
 invisible to ordinary accounts and visible to administrators until the first
@@ -2193,14 +2275,14 @@ unique across the install, which settles all of it in one segment.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription before they arrive; it is not a way in, since they still prove the address through Google or a code |
+| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription and role - User, Reporter or Administrator - before they arrive; it is not a way in, since they still prove the address through Google or a code. A row whose address is in `ADMIN_EMAILS` (or is `SMTP_USER`'s, when `ADMIN_EMAILS` is empty) says so, naming the setting: it can be given another role, but becomes an administrator again at its next sign-in. A **Reporter** row has a **rate per job** (dollars, empty for the global rate) and **Record payout** - the amount paid outside the app and a note saying how, taken off the balance, never more than it (see [Roles](#roles)) |
 | **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
 | **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0.000` to `$1000.000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0.000` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
-| **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
+| **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund (see [Asking for a refund](#asking-for-a-refund)) |
@@ -2359,6 +2441,10 @@ file. Export them in the shell, for the install and the server alike:
 
 | Symptom | Cause and fix |
 |---------|---------------|
+| Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates, job scrapers or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
+| A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before this page can show you one.* (or that their job sheet could not be reached, with a `Ref:`) | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
+| An administrator made somebody a User or Reporter, and they are an administrator again | Their address is in `ADMIN_EMAILS` (or, with that unset, it is the `SMTP_USER` address). Those are promoted at every sign-in and every start, and never demoted, so a slip on the Accounts page cannot lock the operator out - the row and the change's own message say so. Take the address out of `ADMIN_EMAILS`, restart the backend, then change the role. |
+| **Record payout** answers *That is more than this reporter's balance of $X. Record what was actually paid, up to the balance.* | A payout records money already paid outside the app, and is never more than the balance: it is refused rather than cut down, because a record saying less was paid than was is wrong. If more really was paid, the balance was short first - read the reporter's **History** on Admin → Accounts, and add the missing earnings with the **+/-** button beside the balance (add or take away credit, with a note) before recording the payout. *Only a reporter is paid out* means the account is not a Reporter; use the **+/-** button for anybody else. |
 | Coin arrived on the retired on-chain path and was never credited | The watcher and the admin queue that showed these are gone, but the records are not. An unattributable transfer, or one that arrived against an order it could not be credited to, is still in the database: `SELECT * FROM chain_orphans WHERE resolved_at IS NULL;` and `SELECT * FROM chain_invoices WHERE state = 'held';` against your `DB_DIR`. Each row carries the transaction id, the amount and why it was held. Settle it by hand and adjust the balance from the accounts page - nothing in the app will surface it for you any more. |
 | The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and, signed in as an administrator, read the buy page's own reason under the greyed-out button: it names which key is missing. Anybody else is told only *Not available right now*. |
 | Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
@@ -2539,6 +2625,18 @@ channels' rules, `javascript:` and `data:` included, in `contact.test.js`.
 `frontendRefunds.test.js` also parses every page and fails on a sentence that
 asks for an administrator with no Contact admin link after it.
 
+Who may reach what is one table, in `routeAccess.test.js`: a row for every
+router `backend/src/index.ts` mounts, saying who it is for (anybody, any
+signed-in account, users and administrators, or administrators). It fails when
+a router is mounted with no row, when any route carries a different guard from
+the one its row decides - read off the router itself, so a route added without
+`requireAdmin` to a router guarded per route is caught - and, over HTTP with a
+session for each role, unless a reporter is refused every route that is not
+theirs with 403 `role-not-allowed` and reaches the ones that are. Roles, the
+reporter's rate per job and **Record payout** (never above the balance, once
+per press, the ledger still summing to the balance) are in
+`accountRoutes.test.js` and `accounts.test.js`.
+
 Money is pinned in `credits.test.js` (exact thousandths: seven `$0.023`
 resumes reserve `$0.161`, two refunds give back `$0.046`), `money.test.js` (the
 one dollar parser and formatter, and a guard that no money path floors,
@@ -2551,7 +2649,7 @@ The frontend has no test runner, so its decisions that need no browser are
 small modules the backend suite transpiles and tests
 (`frontendHelpers.test.js`, `frontendEditorHelpers.test.js`). What does need
 one is in `backend/test/e2e/`, run by hand against servers that are already up:
-`shell.js` walks every page as both roles, and `preview-vibration.js` opens the
+`shell.js` walks every page as each role, and `preview-vibration.js` opens the
 profile editor with real scrollbars (puppeteer hides them by default) and
 watches the preview's size every frame for each template, at the window sizes
 where it used to shake.

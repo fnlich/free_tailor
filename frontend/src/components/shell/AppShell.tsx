@@ -27,7 +27,7 @@ import { isBareRoute, isSettingsRoute } from './navModel';
  */
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { account, isAdmin } = useAuth();
+  const { account, role } = useAuth();
   const isCompact = useIsCompact();
 
   const [drawerRequested, setDrawerRequested] = useState(false);
@@ -64,7 +64,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
    * Fetched here rather than in the sidebar because the shell survives every
    * client-side navigation - one request per page load instead of one per
    * route. Administrators included now: every account has a sheet of its own,
-   * and Find Jobs is the second row of everybody's rail.
+   * and Find Jobs is the second row of every builder's rail. A reporter's
+   * account menu offers the same link - their reports come from that sheet.
    */
   const [sheetUrl, setSheetUrl] = useState('');
   useEffect(() => {
@@ -121,6 +122,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
     <div className="tl-shell" data-drawer={drawerOpen ? 'open' : 'closed'}>
       <AppTopBar
         balanceMilli={account?.balanceMilli ?? 0}
+        role={role}
+        sheetUrl={sheetUrl}
         drawerOpen={drawerOpen}
         onToggleDrawer={toggleDrawer}
         triggerRef={triggerRef}
@@ -128,7 +131,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       <AppSidebar
         pathname={pathname}
-        isAdmin={isAdmin}
+        role={role}
         subscription={account?.subscription}
         sheetUrl={sheetUrl}
         isCompact={isCompact}
@@ -141,7 +144,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       <div className="tl-main">
         {onSettings && (
-          <SettingsHeader pathname={pathname} isAdmin={isAdmin} />
+          <SettingsHeader pathname={pathname} role={role} />
         )}
         {children}
       </div>

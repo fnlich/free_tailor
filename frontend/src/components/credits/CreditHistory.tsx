@@ -14,6 +14,29 @@ const PAGE_SIZE = 10;
 const COLUMNS = ['Date', 'Change', 'Reason', 'Balance After', 'Note', 'Action'];
 
 /**
+ * How the list reads. `earnings` is a reporter's (owner decisions A3, A4): the
+ * same ledger, titled for what moves on it - job rewards in, payouts recorded
+ * by an administrator out - and with no Action column, because a reporter
+ * asks for no refunds (the server refuses them one, 403 `role-not-allowed`).
+ */
+export type CreditHistoryVariant = 'credits' | 'earnings';
+
+const COPY: Record<CreditHistoryVariant, { title: string; lead: string; empty: string; failed: string }> = {
+  credits: {
+    title: 'Credit History',
+    lead: 'Every amount of credit added, spent or given back.',
+    empty: 'Nothing has moved yet. Every amount of credit added, spent or given back will be listed here.',
+    failed: 'Your credit history could not be loaded.',
+  },
+  earnings: {
+    title: 'Earnings and Payouts',
+    lead: 'Every amount you have earned, and every payout an administrator recorded against it.',
+    empty: 'Nothing has moved yet. What you earn, and every payout recorded to you, will be listed here.',
+    failed: 'Your earnings and payouts could not be loaded.',
+  },
+};
+
+/**
  * Every movement on the balance, a page at a time, newest first.
  *
  * In dollars to the thousandth - except rows from before credits became
@@ -21,9 +44,19 @@ const COLUMNS = ['Date', 'Change', 'Reason', 'Balance After', 'Note', 'Action'];
  *
  * A charge for resumes offers "Ask for refund" (`refundChargeIdFor`). One
  * charge can pay for a whole run, so the dialog asks which resume - the
- * server lists the run's resumes from the charge's own id.
+ * server lists the run's resumes from the charge's own id. Not in the
+ * `earnings` variant, a reporter's, which asks for nothing.
  */
-export default function CreditHistory({ epoch }: { epoch: number }) {
+export default function CreditHistory({
+  epoch,
+  variant = 'credits',
+}: {
+  epoch: number;
+  variant?: CreditHistoryVariant;
+}) {
+  const copy = COPY[variant];
+  const asks = variant === 'credits';
+  const columns = asks ? COLUMNS : COLUMNS.filter((column) => column !== 'Action');
   const fetchPage = useCallback(async (offset: number, limit: number) => {
     const response = await creditsApi.ledger(offset, limit);
     return { rows: response.entries, total: response.total, offset: response.offset };
@@ -41,9 +74,9 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 id="ledger-heading" className="text-2xl font-bold tracking-tight text-ink">
-            Credit History
+            {copy.title}
           </h2>
-          <p className="mt-1 text-sm text-muted">Every amount of credit added, spent or given back.</p>
+          <p className="mt-1 text-sm text-muted">{copy.lead}</p>
         </div>
         <TablePager
           total={list.total}
@@ -67,7 +100,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
         <table className="tl-table">
           <thead>
             <tr>
-              {COLUMNS.map((column) => (
+              {columns.map((column) => (
                 <th key={column} scope="col">
                   {column}
                 </th>
@@ -77,7 +110,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
           <tbody>
             {list.loaded &&
               ordered.map((entry) => {
-                const chargeId = refundChargeIdFor(entry);
+                const chargeId = asks ? refundChargeIdFor(entry) : null;
                 return (
                   <tr key={entry.id}>
                     <td className="whitespace-nowrap">{formatDate(entry.createdAt, { style: 'short' })}</td>
@@ -96,18 +129,20 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
                     </td>
                     <td className="whitespace-nowrap tabular-nums">{describeLedgerBalance(entry)}</td>
                     <td className="break-words">{entry.note || '—'}</td>
-                    <td>
-                      {chargeId ? (
-                        <button
-                          type="button"
-                          onClick={() => setAsking(chargeId)}
-                          className="tl-button-quiet whitespace-nowrap"
-                          data-size="sm"
-                        >
-                          Ask for refund
-                        </button>
-                      ) : null}
-                    </td>
+                    {asks && (
+                      <td>
+                        {chargeId ? (
+                          <button
+                            type="button"
+                            onClick={() => setAsking(chargeId)}
+                            className="tl-button-quiet whitespace-nowrap"
+                            data-size="sm"
+                          >
+                            Ask for refund
+                          </button>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -119,7 +154,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
             {!list.loaded ? (
               list.failed ? (
                 <>
-                  Your credit history could not be loaded.{' '}
+                  {copy.failed}{' '}
                   <button type="button" onClick={list.retry} className="font-semibold text-accent-ink underline">
                     Try again
                   </button>
@@ -128,7 +163,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
                 'Loading…'
               )
             ) : (
-              'Nothing has moved yet. Every amount of credit added, spent or given back will be listed here.'
+              copy.empty
             )}
           </p>
         )}

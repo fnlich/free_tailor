@@ -31,6 +31,13 @@ export const CREDIT_REASONS = [
   // request credits once; refunded against the run's reservation, so no mix
   // of these and the automatic refunds can give back more than it took.
   'refund-request',
+  // A reporter's earnings paid out by an administrator OUTSIDE the app (owner
+  // decision A4: by bank, by hand - nothing here moves money outward for it),
+  // recorded as a deduction with the administrator's note saying how. Only
+  // ever on a reporter's account, never more than the balance, never
+  // clamped: a payout the balance cannot cover is refused instead
+  // (creditRepository.debitReporterPayout).
+  'reporter-payout',
   // Credits became dollars, and every balance was reset to $0. One row per
   // account that held any, in the old unit, taking it to zero - or, for one
   // whose credits were all held by a run, moving nothing and saying so

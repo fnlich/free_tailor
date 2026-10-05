@@ -1,4 +1,4 @@
-import { ApiResponseError, getPreferredApiBase, getToken } from '@/lib/api';
+import { ApiResponseError, getPreferredApiBase, getToken, noticeRefusal } from '@/lib/api';
 
 export function getBidAssistantApiUrl(path) {
   const normalizedPath = path.replace(/^\/api\/?/, '').replace(/^\//, '');
@@ -49,9 +49,18 @@ export async function readError(response, fallback) {
   return responseError(response, await response.json().catch(() => null), fallback);
 }
 
-/** `readError` for a caller that has already parsed the body. */
+/**
+ * `readError` for a caller that has already parsed the body.
+ *
+ * Every refused response on this page comes through here, so this is where it
+ * gets what lib/api.ts gives every other request (`noticeRefusal`): a 401
+ * signs the page out, and a 403 `role-not-allowed` - a user made a reporter
+ * since the page loaded - re-reads the account, so the shell redraws for the
+ * new role and AuthGate takes them to Report Jobs.
+ */
 export function responseError(response, parsed, fallback) {
   const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  noticeRefusal(response.status, body);
   const said = typeof body.error === 'string' && body.error.trim() ? body.error : fallback;
   return new ApiResponseError(said, response.status, response.url, body);
 }

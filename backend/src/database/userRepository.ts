@@ -1,8 +1,10 @@
 import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 
+import { isAccountRole } from '../config/accountRoles';
 import { DEFAULT_SUBSCRIPTION, isSubscriptionId, type AccountSubscriptionId } from '../config/accountSubscriptions';
 import { isConfiguredAdmin, resolveAdminIdentity } from '../config/adminIdentity';
+import { readStoredReportRateMilli } from '../config/reportRate';
 import { sessionTtlMs } from '../config/operational';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 import { getDb } from './sqlite';
@@ -60,17 +62,18 @@ export function normalizeEmail(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
 
-function isRole(value: unknown): value is UserRole {
-  return value === 'user' || value === 'admin';
-}
-
 function toAccount(row: UserRow): UserAccount {
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     picture: row.picture,
-    role: isRole(row.role) ? row.role : 'user',
+    // A role this build does not know - a hand-edited row, or one a newer
+    // build wrote - reads as `user`, the role every sign-in starts with. Not
+    // as `reporter`: that would take somebody's resume builder away over a
+    // typo. (An OLDER build reads `reporter` itself this way, which is why a
+    // rollback hands every reporter the full app - README, roles.)
+    role: isAccountRole(row.role) ? row.role : 'user',
     // Coerced rather than trusted: a row naming a subscription this build
     // removed must read as the smallest one, not as an entitlement nobody
     // granted.
@@ -129,6 +132,42 @@ export function claimStripeCustomer(userId: string, customerRef: string): string
     .prepare('SELECT stripe_customer_id FROM users WHERE id = ?')
     .get(userId) as { stripe_customer_id: string | null } | undefined;
   return row?.stripe_customer_id || customerRef;
+}
+
+/**
+ * A reporter's own rate per accepted job, in thousandths of a dollar, or null
+ * for "the global rate" (config/reportRate.ts).
+ *
+ * A read of its own rather than a field on `UserAccount`, for the reason
+ * `getStripeCustomerId` is: the session payload spreads the account, and this
+ * is served to administrators only (Admin -> Accounts). A reporter learns what
+ * a job pays them from the lake's own routes, which resolve the rate in effect.
+ */
+export function getReportRateMilli(userId: string): number | null {
+  const row = getDb()
+    .prepare('SELECT report_rate_milli FROM users WHERE id = ?')
+    .get(userId) as { report_rate_milli: unknown } | undefined;
+  return readStoredReportRateMilli(row?.report_rate_milli);
+}
+
+/** Every account's rate override, for the accounts list: one query, not one per row. */
+export function listReportRates(): Map<string, number | null> {
+  const rows = getDb().prepare('SELECT id, report_rate_milli FROM users').all() as Array<{
+    id: string;
+    report_rate_milli: unknown;
+  }>;
+  return new Map(rows.map((row) => [row.id, readStoredReportRateMilli(row.report_rate_milli)]));
+}
+
+/**
+ * Sets (a whole number of thousandths, already validated by
+ * `parseReportRateUsd`) or clears (null) an account's rate override. Applies
+ * to jobs accepted from now on: a reward snapshots the rate it was paid at.
+ */
+export function setReportRateMilli(userId: string, milli: number | null): void {
+  getDb()
+    .prepare('UPDATE users SET report_rate_milli = ?, updated_at = ? WHERE id = ?')
+    .run(milli, now(), userId);
 }
 
 export function getUserById(id: string): UserAccount | null {

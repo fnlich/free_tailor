@@ -652,7 +652,14 @@ const SCHEMA = `
      * paid. A customer is only needed to store a payment method for reuse, and
      * a guest checkout stores nothing.
      */
-    stripe_customer_id TEXT
+    stripe_customer_id TEXT,
+    /*
+     * A reporter's pay per job the lake accepts, in thousandths of a dollar
+     * (config/reportRate.ts). NULL means the installation's global rate, which
+     * is every account until an administrator sets one. Read by its own
+     * query, never through USER_COLUMNS: it is served to administrators only.
+     */
+    report_rate_milli INTEGER
   );
 
   /**
@@ -857,6 +864,10 @@ function addMissingColumns(db: Database.Database): void {
     // with the Order button, which is what the default says. `immediate` rows
     // (Generate Immediately) are never listed on /orders.
     { table: 'orders', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'order'" },
+    // A reporter's own rate per accepted job. NULL, every upgraded row, is
+    // "the global rate", which is what every account was paid before there
+    // was a per-account one - there was no reporter before it either.
+    { table: 'users', column: 'report_rate_milli', definition: 'INTEGER' },
   ];
 
   for (const addition of additions) {

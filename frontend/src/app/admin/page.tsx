@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { useAuth } from '@/contexts/AuthContext';
+import { REPORTER_HOME } from '@/lib/roles';
 
 /**
  * /admin is a landing path, not a page.
@@ -16,15 +17,18 @@ import { useAuth } from '@/contexts/AuthContext';
  * Now it sends each role somewhere they can actually do something. Waiting for
  * `loading` matters: redirecting before the account has arrived would send every
  * admin to the profiles page, because `isAdmin` is false while it is unknown.
+ * A reporter never gets this far - /admin is not on their allowlist, so
+ * AuthGate sends them to Report Jobs first - but if they did, that is where
+ * they would go: the profiles are a builder's.
  */
 export default function AdminPage() {
   const router = useRouter();
-  const { isAdmin, loading } = useAuth();
+  const { isAdmin, isReporter, loading } = useAuth();
 
   useEffect(() => {
     if (loading) return;
-    router.replace(isAdmin ? '/admin/settings' : '/admin/profiles');
-  }, [router, isAdmin, loading]);
+    router.replace(isAdmin ? '/admin/settings' : isReporter ? REPORTER_HOME : '/admin/profiles');
+  }, [router, isAdmin, isReporter, loading]);
 
   return (
     <div className="tl-fill flex items-center justify-center">

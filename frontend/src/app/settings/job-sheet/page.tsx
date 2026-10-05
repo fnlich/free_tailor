@@ -11,6 +11,7 @@ import {
   SettingsPage,
   StaticValue,
 } from '@/components/settings/SettingsParts';
+import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
 
 const VISIBILITY_OPTIONS: Array<{ value: SheetVisibility; label: string; summary: string }> = [
@@ -31,6 +32,8 @@ const VISIBILITY_OPTIONS: Array<{ value: SheetVisibility; label: string; summary
  * link lets in.
  */
 export default function JobSheetSettingsPage() {
+  // A reporter's sheet is where the jobs they report come from, not resumes.
+  const { isReporter } = useAuth();
   const [sheet, setSheet] = useState<AccountSheet | null>(null);
   /*
    * The failure itself rather than its text: <ErrorNotice> turns it into the
@@ -169,8 +172,9 @@ export default function JobSheetSettingsPage() {
                   : 'Only you can open this sheet. Your account keeps edit access through the address you sign in with.'}
             </p>
             <p className="text-sm text-subtle">
-              Either way this server keeps its own access, so job links, company names and
-              descriptions still load when you generate resumes.
+              {isReporter
+                ? 'Either way this server keeps its own access, so the jobs you report can still be read from it.'
+                : 'Either way this server keeps its own access, so job links, company names and descriptions still load when you generate resumes.'}
             </p>
           </div>
         </Section>

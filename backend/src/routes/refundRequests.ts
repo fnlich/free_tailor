@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { requireAdmin, requireUser } from '../middleware/auth';
+import { requireAccount, requireAdmin, requireUser } from '../middleware/auth';
 import { sendPublicError } from '../middleware/publicError';
 import {
   approveRefund,
@@ -50,7 +50,16 @@ function readStates(raw: unknown, fallback: 'all' | 'open'): readonly RefundRequ
 const BAD_STATE = `The state filter must be one of ${[...REFUND_REQUEST_STATES, 'open', 'all'].join(', ')}.`;
 
 const router = Router();
-router.use(requireUser);
+/*
+ * Reading your own requests is every role's: an account made a reporter
+ * after asking still sees how its request ended. ASKING - and the options
+ * that lead to it - is for an account that builds and buys (`requireUser`,
+ * per route below). A reporter's balance is their earnings, paid out by an
+ * administrator outside the app (owner decision A4); a refund of a purchase
+ * made before they became one gives back the UNSPENT part of the balance, so
+ * it would pay those earnings out to a card instead, past the payout record.
+ */
+router.use(requireAccount);
 
 /**
  * The caller's own requests, newest first:
@@ -75,7 +84,7 @@ router.get('/', (req: Request, res: Response) => {
  * give back: exactly one of `?paymentId=`, `?orderId=`, `?chargeId=` ->
  * `{ items: RefundOptionView[], note }`. Read-only.
  */
-router.get('/options', (req: Request, res: Response) => {
+router.get('/options', requireUser, (req: Request, res: Response) => {
   try {
     res.json(listRefundOptions(req.user!, req.query as Record<string, unknown>));
   } catch (error) {
@@ -88,7 +97,7 @@ router.get('/options', (req: Request, res: Response) => {
  * Three keys, read one at a time - an amount is never taken from the request;
  * the server measures it.
  */
-router.post('/', (req: Request, res: Response) => {
+router.post('/', requireUser, (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const request = createRefundRequest(req.user!, {

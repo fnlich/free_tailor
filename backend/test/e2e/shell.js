@@ -1,5 +1,5 @@
 /*
- * The app shell, on every page, as both roles, in both themes.
+ * The app shell, on every page, as all three roles, in both themes.
  *
  * The frontend has no test suite - `next build` proves it compiles and nothing
  * proves it renders - so this is what stands between a navigation rewrite and
@@ -10,6 +10,11 @@
  *   - no horizontal overflow at either width
  *   - the sidebar is actually on top at its own corner, not painted over
  *   - the right entries appear for the right role
+ *   - a reporter reaches Report Jobs, Credits and Settings -> Profile / Job
+ *     Sheet, and every other address sends them to Report Jobs without
+ *     mounting the page - so not one request of theirs is refused for their
+ *     role; a user made a reporter mid-session is taken there too
+ *   - an administrator sets a reporter's rate and records a payout on Accounts
  *   - hiding is not the protection: the API refuses an ordinary user directly
  *
  * The session is seeded and injected, because there is no offline sign-in -
@@ -49,6 +54,22 @@ const ROUTES = [
   '/admin/profiles',
   '/admin/templates',
   '/admin/groups',
+];
+
+/**
+ * A reporter's own pages (owner decision A3). Every other address - ROUTES,
+ * ADMIN_ROUTES and the ones below - sends them to Report Jobs.
+ */
+const REPORTER_ROUTES = ['/report', '/credits', '/settings', '/settings/job-sheet'];
+
+/** Addresses outside both lists above that a reporter must be sent away from too. */
+const REPORTER_ELSEWHERE = [
+  '/admin',
+  '/admin/profiles/new',
+  '/orders/no-such-order',
+  '/credits/invoice?payment=no-such-payment',
+  '/credits/return',
+  '/account',
 ];
 
 /** Administrator-only on top of those. */
@@ -353,6 +374,22 @@ async function main() {
 
   const userToken = users.createSession(user.id);
   const adminToken = users.createSession(admin.id);
+
+  /*
+   * A reporter, with earnings to be paid out: the administrator records part
+   * of it from the Accounts page below, and the reporter then finds the
+   * payout in their own history.
+   */
+  const reporter = users.createUser({ email: `e2e-shell-reporter-${stamp}@example.com`, name: 'Shell Reporter' });
+  users.updateUser(reporter.id, { role: 'reporter' });
+  creditLedger.applyAdjustment({
+    userId: reporter.id,
+    deltaMilli: 7_250,
+    reason: 'admin-grant',
+    idempotencyKey: `e2e-shell-reporter:${reporter.id}`,
+    note: 'e2e shell: earnings to pay out',
+  });
+  const reporterToken = users.createSession(reporter.id);
 
   /*
    * One job on the Bid Assistant board, for the Delete Job checks to have a
@@ -667,6 +704,30 @@ async function main() {
       "user /credits?tab=refunds: lands on Refund Requests - where a refund notice's link goes",
       refundsTab.active === 'Refund Requests' && refundsTab.heading === 'Refund Requests',
       JSON.stringify(refundsTab)
+    );
+
+    /*
+     * Report Jobs is a reporter's page. A user who types its address is told
+     * what it is for, on the address they typed - not bounced, and not shown a
+     * page whose requests their account would be refused.
+     */
+    const userReport = await visit(page, '/report', 'user');
+    const reportGate = await page.evaluate(() => ({
+      path: location.pathname,
+      gate: /Reporters only/.test(document.body.innerText),
+      contact: Array.from(document.querySelectorAll('.tl-notice button, .tl-notice a')).some((node) =>
+        /Contact admin/.test(node.textContent)
+      ),
+    }));
+    check(
+      'user /report: explained as reporters only, with Contact admin, on its own address',
+      reportGate.path === '/report' && reportGate.gate && reportGate.contact,
+      JSON.stringify(reportGate)
+    );
+    check(
+      'user: no Report Jobs in the rail',
+      !userReport.navLabels.includes('Report Jobs'),
+      `saw: ${userReport.navLabels.join(', ')}`
     );
 
     // The prefix collision that a vertical rail makes obvious.
@@ -1138,6 +1199,150 @@ async function main() {
       JSON.stringify(contactSection)
     );
 
+    /*
+     * Admin -> Accounts, for a reporter (owner decisions A3, A4, J7): Reporter
+     * in the role select and the invite form, a rate per job on their row,
+     * and Record payout - on their row only - saying what it will leave.
+     */
+    await adminPage.goto(`${APP}/admin/accounts`, { waitUntil: 'networkidle2' });
+    await adminPage.waitForSelector(`#rate-${reporter.id}`, { timeout: 10_000 }).catch(() => null);
+    const accountsPage = await adminPage.evaluate(
+      (reporterEmail, userEmail) => {
+        const rowOf = (email) =>
+          Array.from(document.querySelectorAll('.tl-table tbody tr')).find((row) =>
+            row.querySelector('select[aria-label^="Role for"]')?.getAttribute('aria-label') === `Role for ${email}`
+          );
+        const reporterRow = rowOf(reporterEmail);
+        const userRow = rowOf(userEmail);
+        const buttons = (row) => (row ? Array.from(row.querySelectorAll('button')).map((b) => b.textContent.trim()) : []);
+        const roleSelect = reporterRow?.querySelector('select[aria-label^="Role for"]');
+        return {
+          inviteRoles: Array.from(document.querySelectorAll('#invite-role option')).map((o) => o.textContent.trim()),
+          rowRoles: roleSelect ? Array.from(roleSelect.options).map((o) => o.textContent.trim()) : null,
+          rowRole: roleSelect?.value ?? null,
+          reporterPill: Boolean(reporterRow && /Reporter/.test(reporterRow.querySelector('.tl-pill')?.textContent ?? '')),
+          reporterButtons: buttons(reporterRow),
+          userButtons: buttons(userRow),
+          userRate: Boolean(userRow?.querySelector('input[id^="rate-"]')),
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      },
+      reporter.email,
+      user.email
+    );
+    check(
+      'admin /admin/accounts: the invite form and the row offer User, Reporter and Administrator',
+      accountsPage.inviteRoles.join(' / ') === 'User / Reporter / Administrator' &&
+        accountsPage.rowRoles?.join(' / ') === 'User / Reporter / Administrator' &&
+        accountsPage.rowRole === 'reporter' &&
+        accountsPage.reporterPill,
+      JSON.stringify(accountsPage)
+    );
+    check(
+      "admin /admin/accounts: Record payout and a rate on a reporter's row, neither on a user's",
+      accountsPage.reporterButtons.includes('Record payout') &&
+        !accountsPage.userButtons.includes('Record payout') &&
+        !accountsPage.userRate,
+      JSON.stringify(accountsPage)
+    );
+    check('admin /admin/accounts: no horizontal scrollbar', accountsPage.overflow <= 1, `overflow ${accountsPage.overflow}px`);
+
+    // Choosing Reporter in the invite form asks for a rate instead of a subscription.
+    await adminPage.select('#invite-role', 'reporter');
+    await wait(250);
+    const inviteAsReporter = await adminPage.evaluate(() => ({
+      rate: Boolean(document.getElementById('invite-rate')),
+      subscription: Boolean(document.getElementById('invite-subscription')),
+    }));
+    check(
+      'admin /admin/accounts: inviting a Reporter asks for a rate per job, not a subscription',
+      inviteAsReporter.rate && !inviteAsReporter.subscription,
+      JSON.stringify(inviteAsReporter)
+    );
+    await adminPage.select('#invite-role', 'user');
+
+    // The rate per job: typed in dollars, stored on blur, in thousandths.
+    await adminPage.click(`#rate-${reporter.id}`);
+    await adminPage.type(`#rate-${reporter.id}`, '0.075');
+    await adminPage.keyboard.press('Tab');
+    await wait(900);
+    const listed = await (await apiAs(adminToken)('/admin/accounts')).json().catch(() => null);
+    const reporterListed = listed?.accounts?.find((account) => account.id === reporter.id);
+    check(
+      "admin /admin/accounts: a reporter's rate per job is stored from the box, $0.075 as 75",
+      reporterListed?.reportRateMilli === 75,
+      JSON.stringify(reporterListed && { reportRateMilli: reporterListed.reportRateMilli })
+    );
+
+    // Record payout: more than the balance is refused before it is sent, in
+    // the server's words; what was paid is recorded and leaves the rest.
+    await adminPage.evaluate((email) => {
+      const row = Array.from(document.querySelectorAll('.tl-table tbody tr')).find(
+        (candidate) => candidate.querySelector('select[aria-label^="Role for"]')?.getAttribute('aria-label') === `Role for ${email}`
+      );
+      Array.from(row?.querySelectorAll('button') ?? [])
+        .find((button) => button.textContent.trim() === 'Record payout')
+        ?.click();
+    }, reporter.email);
+    await adminPage.waitForSelector(`#payout-${reporter.id}`, { timeout: 5_000 }).catch(() => null);
+    const payoutForm = `form[aria-labelledby="payout-heading-${reporter.id}"]`;
+    const readPayout = () =>
+      adminPage.evaluate(
+        (formSelector, id) => {
+          const form = document.querySelector(formSelector);
+          const submit = form?.querySelector('button[type="submit"]');
+          return form
+            ? {
+                line: document.getElementById(`payout-line-${id}`)?.textContent.trim() ?? '',
+                disabled: Boolean(submit?.disabled),
+                title: submit?.getAttribute('title') ?? '',
+              }
+            : null;
+        },
+        payoutForm,
+        reporter.id
+      );
+    await adminPage.type(`#payout-${reporter.id}`, '100');
+    await adminPage.type(`#payout-note-${reporter.id}`, 'E2E bank transfer, ref 4471');
+    const tooMuch = await readPayout();
+    check(
+      'admin Record payout: above the balance is refused before sending, in the server\'s words',
+      Boolean(tooMuch) &&
+        tooMuch.disabled &&
+        /more than this reporter's balance of \$7\.250/.test(tooMuch.line) &&
+        /more than this reporter's balance/.test(tooMuch.title),
+      JSON.stringify(tooMuch)
+    );
+    await adminPage.click(`#payout-${reporter.id}`, { clickCount: 3 });
+    await adminPage.type(`#payout-${reporter.id}`, '2.25');
+    const fits = await readPayout();
+    check(
+      'admin Record payout: says the balance it will leave',
+      Boolean(fits) && !fits.disabled && fits.line === 'Leaves $5.000 of their $7.250 balance.',
+      JSON.stringify(fits)
+    );
+    await adminPage.click(`${payoutForm} button[type="submit"]`);
+    await wait(1_000);
+    const afterPayout = await adminPage.evaluate(() => document.querySelector('.tl-notice[data-tone="info"]')?.textContent ?? '');
+    check(
+      'admin Record payout: recorded, with what it left',
+      /Recorded a payout of \$2\.250 to .+\. Their balance is now \$5\.000\./.test(afterPayout),
+      afterPayout
+    );
+    const reporterLedger = await (await apiAs(adminToken)(`/admin/accounts/${reporter.id}/credits`)).json().catch(() => null);
+    const payouts = (reporterLedger?.entries ?? []).filter((entry) => entry.reason === 'reporter-payout');
+    check(
+      'admin Record payout: one reporter-payout row of -$2.250 carrying the note',
+      payouts.length === 1 && payouts[0].deltaMilli === -2_250 && payouts[0].note === 'E2E bank transfer, ref 4471',
+      JSON.stringify(payouts)
+    );
+    await adminPage.screenshot({ path: `${SHOTS}/shell-9-admin-reporter-row.png` });
+
+    // An administrator may open Report Jobs too.
+    await visit(adminPage, '/report', 'admin');
+    const adminReport = await adminPage.evaluate(() => document.querySelector('.tl-main h1')?.textContent.trim());
+    check('admin /report: opens Report Jobs', adminReport === 'Report Jobs', String(adminReport));
+
     // Post a notification as the admin, and confirm the bell shows it.
     await adminPage.goto(`${APP}/admin/notifications`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1189,6 +1394,209 @@ async function main() {
     check('user: opening it clears the dot', !panel.stillUnread);
     await reader.screenshot({ path: `${SHOTS}/shell-7-user-bell.png` });
     await reader.close();
+
+    /* ----------------------------------------------------------- reporter */
+    const reporterPage = await browser.newPage();
+    await reporterPage.setViewport(WIDE);
+    /*
+     * Every API answer a reporter's session gets, refusals included. Their
+     * pages ask only routes a reporter may use, and an address that is not
+     * theirs is never mounted - so the whole walk, both widths and every
+     * bounced address, must end with no 403 at all.
+     */
+    const reporterRefusals = [];
+    reporterPage.on('response', (response) => {
+      if (response.url().startsWith(API) && response.status() === 403) {
+        reporterRefusals.push(new URL(response.url()).pathname);
+      }
+    });
+    await signIn(reporterPage, reporterToken);
+    await setTheme(reporterPage, 'light');
+
+    let reporterShell;
+    for (const route of REPORTER_ROUTES) {
+      reporterShell = await visit(reporterPage, route, 'reporter');
+      check(`reporter ${route}: stays on its own page`, new URL(reporterPage.url()).pathname === route, reporterPage.url());
+    }
+    check(
+      'reporter: the rail reads Report Jobs, Credits, Settings',
+      reporterShell.navLabels.join(' / ') === 'Report Jobs / Credits / Settings',
+      `saw: ${reporterShell.navLabels.join(', ')}`
+    );
+
+    await reporterPage.goto(`${APP}/report`, { waitUntil: 'networkidle2' });
+    await wait(500);
+    const reportPage = await reporterPage.evaluate(() => ({
+      title: document.querySelector('.tl-main h1')?.textContent.trim(),
+      card: Array.from(document.querySelectorAll('.tl-card h2')).some((h) => h.textContent.trim() === 'Your job sheet'),
+      later: /arrives in a later release/.test(document.body.innerText),
+      // The sheet button, when this machine's Google account made one: a new tab, on https.
+      links: Array.from(document.querySelectorAll('.tl-main a[target="_blank"]')).map((a) => a.getAttribute('href')),
+      lit: Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item[data-active="true"]')).map((a) => a.textContent.trim()),
+      home: document.querySelector('.tl-brand a[aria-label="Tailor home"]')?.getAttribute('href'),
+    }));
+    check(
+      'reporter /report: Report Jobs, their job sheet, and the note that adding jobs comes later',
+      reportPage.title === 'Report Jobs' && reportPage.card && reportPage.later,
+      JSON.stringify(reportPage)
+    );
+    check(
+      'reporter /report: any sheet link opens a new tab on https',
+      reportPage.links.every((href) => /^https:\/\//.test(href ?? '')),
+      JSON.stringify(reportPage.links)
+    );
+    check('reporter /report: Report Jobs is the lit row', reportPage.lit.join() === 'Report Jobs', reportPage.lit.join(', '));
+    check('reporter: the logo leads to Report Jobs', reportPage.home === '/report', String(reportPage.home));
+
+    await reporterPage.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await reporterPage
+      .waitForFunction(() => /Paid out by an administrator/.test(document.body.innerText), { timeout: 10_000 })
+      .catch(() => null);
+    const earnings = await reporterPage.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
+      return {
+        title: document.querySelector('.tl-main h1')?.textContent.trim(),
+        label: /Earned, not yet paid out/.test(document.body.innerText),
+        balance: /\$5\.000/.test(document.querySelector('.border-coin')?.textContent ?? ''),
+        buy: buttons.includes('Purchase Credits'),
+        tabs: document.querySelectorAll('[role="tablist"][aria-label="Credits"]').length,
+        heading: document.querySelector('#ledger-heading')?.textContent.trim(),
+        asks: buttons.includes('Ask for refund'),
+        columns: Array.from(document.querySelectorAll('.tl-table thead th')).map((th) => th.textContent.trim()),
+        payout: /Paid out by an administrator/.test(document.body.innerText) && /E2E bank transfer, ref 4471/.test(document.body.innerText),
+      };
+    });
+    check(
+      "reporter /credits: their earnings - the balance after the payout, titled so",
+      earnings.title === 'Credits' && earnings.label && earnings.balance,
+      JSON.stringify(earnings)
+    );
+    check(
+      'reporter /credits: no Purchase Credits, no order or refund tabs, no Ask for refund',
+      !earnings.buy && earnings.tabs === 0 && !earnings.asks && !earnings.columns.includes('Action'),
+      JSON.stringify(earnings)
+    );
+    check(
+      'reporter /credits: the history is Earnings and Payouts, with the payout and its note',
+      earnings.heading === 'Earnings and Payouts' && earnings.payout,
+      JSON.stringify(earnings)
+    );
+    await reporterPage.screenshot({ path: `${SHOTS}/shell-10-reporter-credits.png` });
+
+    await reporterPage.goto(`${APP}/settings`, { waitUntil: 'networkidle2' });
+    await wait(400);
+    const reporterTabs = await reporterPage.evaluate(() => ({
+      tabs: Array.from(document.querySelectorAll('nav.tl-tabs[aria-label="Settings"] .tl-tab')).map((a) => a.textContent.trim()),
+      role: /Reporter/.test(document.querySelector('.tl-main')?.innerText ?? ''),
+    }));
+    check(
+      'reporter /settings: Profile and Job Sheet, and nothing else',
+      reporterTabs.tabs.join(' / ') === 'Profile / Job Sheet',
+      reporterTabs.tabs.join(', ')
+    );
+    check('reporter /settings: their role reads Reporter', reporterTabs.role);
+
+    // The account menu: earnings, the sheet, Settings, Contact admin, Log out - no subscription.
+    const reporterBar = await inspectTopBar(reporterPage);
+    check(
+      'reporter top bar: the row reads Credits, Notifications, Theme, Account',
+      (reporterBar?.controls ?? [])
+        .map((name) =>
+          /^Credits/.test(name) ? 'Credits' : /^Notifications/.test(name) ? 'Notifications' : /(mode|theme)$/i.test(name) ? 'Theme' : /^Account/.test(name) ? 'Account' : name
+        )
+        .join(' < ') === 'Credits < Notifications < Theme < Account',
+      (reporterBar?.controls ?? []).join(' < ')
+    );
+    await reporterPage.evaluate(() => document.querySelector('.tl-topbar button[aria-label^="Account"]')?.click());
+    await wait(300);
+    const reporterMenu = await reporterPage.evaluate(() => {
+      const panel = document.querySelector('.app-top-nav-menu');
+      return panel
+        ? {
+            text: panel.innerText,
+            hrefs: Array.from(panel.querySelectorAll('a')).map((a) => ({ href: a.getAttribute('href'), blank: a.target === '_blank' })),
+          }
+        : null;
+    });
+    check(
+      'reporter account menu: Reporter, Earnings, Settings, Contact admin and Log out',
+      Boolean(reporterMenu) && ['Reporter', 'Earnings', 'Settings', 'Contact admin', 'Log out'].every((word) => reporterMenu.text.includes(word)),
+      JSON.stringify(reporterMenu)
+    );
+    check(
+      'reporter account menu: no subscription, no profiles, no Subscription page',
+      Boolean(reporterMenu) &&
+        !/subscription/i.test(reporterMenu.text) &&
+        !/Profiles/.test(reporterMenu.text) &&
+        !reporterMenu.hrefs.some((link) => link.href === '/settings/subscription'),
+      JSON.stringify(reporterMenu)
+    );
+    check(
+      'reporter account menu: a job sheet link, when there is one, opens a new tab on https',
+      Boolean(reporterMenu) &&
+        reporterMenu.hrefs.filter((link) => link.blank).every((link) => /^https:\/\//.test(link.href ?? '')),
+      JSON.stringify(reporterMenu?.hrefs)
+    );
+    await reporterPage.keyboard.press('Escape');
+
+    // Every other address sends them to Report Jobs.
+    for (const route of [...ROUTES, ...ADMIN_ROUTES, ...REPORTER_ELSEWHERE]) {
+      if (REPORTER_ROUTES.includes(route)) continue;
+      await reporterPage.goto(`${APP}${route}`, { waitUntil: 'networkidle2' });
+      await reporterPage.waitForFunction(() => location.pathname === '/report', { timeout: 10_000 }).catch(() => null);
+      check(`reporter ${route}: sent to Report Jobs`, new URL(reporterPage.url()).pathname === '/report', reporterPage.url());
+    }
+
+    // And on a phone: the drawer holds the same three rows.
+    await reporterPage.setViewport(PHONE);
+    for (const route of ['/report', '/credits']) {
+      const phoneShell = await visit(reporterPage, route, 'reporter phone', { expectRail: false, compact: true });
+      check(
+        `reporter phone ${route}: the drawer holds Report Jobs, Credits, Settings`,
+        phoneShell.navLabels.join(' / ') === 'Report Jobs / Credits / Settings',
+        phoneShell.navLabels.join(', ')
+      );
+    }
+    await reporterPage.screenshot({ path: `${SHOTS}/shell-11-reporter-phone.png`, fullPage: true });
+
+    check(
+      'reporter: not one request of the whole walk was refused',
+      reporterRefusals.length === 0,
+      reporterRefusals.join(', ')
+    );
+    await reporterPage.close();
+
+    /*
+     * Made a reporter while their page is open: the server reads the role on
+     * every request, so the next one the page makes is refused - and that
+     * refusal re-reads the account, so the shell redraws as a reporter's and
+     * takes them to Report Jobs, rather than leaving a page of refusals.
+     */
+    const switcher = users.createUser({ email: `e2e-shell-switch-${stamp}@example.com`, name: 'Switching User' });
+    const switchPage = await browser.newPage();
+    await switchPage.setViewport(WIDE);
+    await signIn(switchPage, users.createSession(switcher.id));
+    await switchPage.goto(`${APP}/orders`, { waitUntil: 'networkidle2' });
+    await wait(400);
+    users.updateUser(switcher.id, { role: 'reporter' });
+    // A client-side move, so nothing reloads the account but the refusal.
+    await switchPage.evaluate(() => {
+      Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item'))
+        .find((link) => link.textContent.trim() === 'Profiles')
+        ?.click();
+    });
+    await switchPage.waitForFunction(() => location.pathname === '/report', { timeout: 15_000 }).catch(() => null);
+    await wait(400);
+    const switched = await switchPage.evaluate(() => ({
+      path: location.pathname,
+      rail: Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item')).map((a) => a.textContent.trim()),
+    }));
+    check(
+      'user made a reporter mid-session: the next refusal takes them to Report Jobs, with the reporter rail',
+      switched.path === '/report' && switched.rail.join(' / ') === 'Report Jobs / Credits / Settings',
+      JSON.stringify(switched)
+    );
+    await switchPage.close();
 
     /* ------------------------------- hiding is not the protection */
     const asUser = apiAs(userToken);
@@ -1252,6 +1660,28 @@ async function main() {
         Object.keys(publicContactBody ?? {}).join() === 'channels' &&
         /no-store/.test(publicContact.headers.get('cache-control') ?? ''),
       `got ${publicContact.status} ${JSON.stringify(publicContactBody)?.slice(0, 160)}`
+    );
+
+    // A reporter typing a builder route by hand is refused by the route, not the page.
+    const asReporter = apiAs(reporterToken);
+    const reporterProfiles = await asReporter('/profiles');
+    const reporterProfilesBody = await reporterProfiles.json().catch(() => null);
+    check(
+      'api: a reporter is refused the builder, as their role',
+      reporterProfiles.status === 403 && reporterProfilesBody?.code === 'role-not-allowed',
+      `got ${reporterProfiles.status} ${JSON.stringify(reporterProfilesBody)}`
+    );
+    const reporterCheckout = await asReporter('/payments/checkout', { method: 'POST', body: JSON.stringify({ amountUsd: '50' }) });
+    check(
+      'api: ...and cannot buy credit',
+      reporterCheckout.status === 403,
+      `got ${reporterCheckout.status}`
+    );
+    const reporterMe = await (await asReporter('/auth/me')).json().catch(() => null);
+    check(
+      "api: a reporter's session says reporter, and never carries their rate",
+      reporterMe?.account?.role === 'reporter' && !('reportRateMilli' in (reporterMe?.account ?? {})),
+      JSON.stringify(reporterMe?.account && { role: reporterMe.account.role })
     );
 
     const disabled = await asUser('/templates?includeDisabled=true');

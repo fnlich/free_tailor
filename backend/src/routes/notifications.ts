@@ -10,7 +10,7 @@ import {
   markSeen,
   updateNotification,
 } from '../database/notificationRepository';
-import { requireAdmin, requireUser } from '../middleware/auth';
+import { requireAccount, requireAdmin } from '../middleware/auth';
 
 /**
  * The notice board: one router for reading it, one for writing it.
@@ -28,7 +28,11 @@ import { requireAdmin, requireUser } from '../middleware/auth';
  *
  * Note the admin router carries its own `requireAdmin` and does not rely on
  * being mounted under /api/admin. That path prefix grants nothing in this app:
- * /api/admin/ai is mounted there with only `requireUser`.
+ * every router under it states its own guard, and test/routeAccess.test.js
+ * holds the list.
+ *
+ * Reading is `requireAccount`, every role: a reporter's refund and payout
+ * notices, and the announcements, reach them like anybody.
  */
 
 const MAX_TITLE = 200;
@@ -81,7 +85,7 @@ function normalizePayload(
 
 const router = Router();
 
-router.use(requireUser);
+router.use(requireAccount);
 
 router.get('/', (req: Request, res: Response) => {
   try {

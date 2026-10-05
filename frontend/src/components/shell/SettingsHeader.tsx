@@ -5,15 +5,16 @@ import Link from 'next/link';
 import {
   activeHref,
   isAdminSettingsRoute,
-  SETTINGS_ACCOUNT_TABS,
   SETTINGS_ADMIN_TABS,
+  settingsTabsFor,
   type SettingsTab,
 } from './navModel';
 import { useTabRow } from './useTabRow';
 
 type Props = {
   pathname: string;
-  isAdmin: boolean;
+  /** The account's role: the account tabs it is offered, and Administration for an administrator. */
+  role: unknown;
 };
 
 /** Where the Administration tab goes: the first of the installation's pages. */
@@ -26,20 +27,23 @@ const ADMINISTRATION_HREF = SETTINGS_ADMIN_TABS[0].href;
  * thirteen routes, and because the administrator's pages are not all under one
  * directory a layout could own - `/test` is one of them.
  *
- * Two levels, not one long row. The account's four tabs are everybody's; an
+ * Two levels, not one long row. The account's four tabs are every builder's -
+ * a reporter gets Profile and Job Sheet, the two that are theirs; an
  * administrator gets a fifth, Administration, and only on its pages a second,
  * smaller row of the installation's nine. One row of thirteen ran off the end
  * of a 1440px window with nothing to say there was more - four of the nine
  * were simply not there to be seen.
  */
-export default function SettingsHeader({ pathname, isAdmin }: Props) {
+export default function SettingsHeader({ pathname, role }: Props) {
+  const isAdmin = role === 'admin';
+  const accountTabs = settingsTabsFor(role);
   const onAdmin = isAdmin && isAdminSettingsRoute(pathname);
   const accountRow = useTabRow<HTMLElement>(pathname);
   const adminRow = useTabRow<HTMLElement>(`${pathname}:${onAdmin}`);
 
   // Longest match, so /settings/subscription lights Subscription and not
   // Profile, whose /settings is a prefix of it.
-  const accountActive = onAdmin ? null : activeHref(pathname, SETTINGS_ACCOUNT_TABS);
+  const accountActive = onAdmin ? null : activeHref(pathname, accountTabs);
   const adminActive = onAdmin ? activeHref(pathname, SETTINGS_ADMIN_TABS) : null;
 
   const tab = (item: SettingsTab, active: boolean, className = 'tl-tab') => (
@@ -65,7 +69,7 @@ export default function SettingsHeader({ pathname, isAdmin }: Props) {
     <div className="mx-auto max-w-7xl px-4 pt-8 sm:px-6 lg:px-8">
       <h1 className="text-3xl font-bold tracking-tight text-ink">Settings</h1>
       <nav ref={accountRow} className="tl-tabs mt-6" aria-label="Settings">
-        {SETTINGS_ACCOUNT_TABS.map((item) => tab(item, accountActive === item.href))}
+        {accountTabs.map((item) => tab(item, accountActive === item.href))}
         {isAdmin && tab({ href: ADMINISTRATION_HREF, label: 'Administration' }, onAdmin)}
       </nav>
       {onAdmin && (

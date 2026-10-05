@@ -515,7 +515,7 @@ export class GoogleSheetsRequestError extends PublicError {
    * the useful thing to say about a refused call is Google's own reason, the
    * Cloud project it was refused in and the credential that asked. That is
    * exactly right in a log and exactly wrong on a page: `/api/sheet` is behind
-   * `requireUser`, not `requireAdmin`, so every account holder opening their
+   * `requireAccount`, not `requireAdmin`, so every account holder opening their
    * own Account page was being handed `Run "npm run sheets:login" in backend/`
    * about a server they do not administer, along with the layout of its
    * directories.

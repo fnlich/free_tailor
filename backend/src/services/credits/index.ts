@@ -10,10 +10,12 @@ import {
   heldForUser,
   isLedgerKeyUsed,
   countLedger,
+  debitReporterPayout,
   listLedger,
   listOpenReservations,
   refundAgainstReservation,
   settleReservation,
+  type PayoutOutcome,
 } from '../../database/creditRepository';
 import { getUserById } from '../../database/userRepository';
 import { envDollarsMilli } from '../../config/envValue';
@@ -24,6 +26,7 @@ import type { CreditStatus, LedgerEntry, ReserveResult } from './types';
 
 export { InsufficientCreditsError } from './errors';
 export type { CreditReason, CreditStatus, LedgerEntry, Reservation, ReserveResult } from './types';
+export type { PayoutOutcome } from '../../database/creditRepository';
 
 /**
  * What credit buys, and who pays.
@@ -288,6 +291,39 @@ export function grantCredits(
     actorId,
     note,
   }).balance;
+}
+
+/**
+ * Records that an administrator paid a reporter `amountMilli` outside the app
+ * (owner decision A4), as a `reporter-payout` deduction carrying their note.
+ *
+ * Nothing here moves money anywhere - the money already left, by whatever
+ * means the note says; this is the record of it, so the reporter's balance
+ * reads what they are still owed. Refused, never clamped, for an account that
+ * is not a reporter or a balance that does not cover it (see
+ * `debitReporterPayout`).
+ *
+ * `requestId` is the caller's key for this one payout: the same id twice
+ * records once. Without one, every call is a new payout.
+ */
+export function recordReporterPayout(input: {
+  userId: string;
+  amountMilli: number;
+  actorId: string;
+  note: string;
+  requestId?: string;
+}): PayoutOutcome {
+  const payoutId = input.requestId || randomUUID();
+  return debitReporterPayout({
+    userId: input.userId,
+    amountMilli: exactMilli(input.amountMilli, 'A payout'),
+    // Scoped to the account, so one page's id reused on another account is a
+    // second payout rather than a silent no-op.
+    idempotencyKey: `payout:${input.userId}:${payoutId}`,
+    refId: `payout_${payoutId}`,
+    actorId: input.actorId,
+    note: input.note,
+  });
 }
 
 /**

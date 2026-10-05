@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { resolveSession } from '../database/userRepository';
 import type { UserAccount } from '../types/account';
 
+import { canBuildResumes } from '../config/accountRoles';
 import {
   MULTI_PROFILE_SUBSCRIPTION,
   SUBSCRIPTIONS,
@@ -92,10 +93,72 @@ export function attachUser(req: Request, _res: Response, next: NextFunction): vo
   next();
 }
 
-/** Signed in, or 401. */
+/**
+ * What a reporter is told by every route that is not theirs.
+ *
+ * One sentence for all of them, about their own account and nothing about how
+ * the installation is run, ending in the words the pages turn into a "Contact
+ * admin" link: a reporter who thinks they should have the builder can ask for
+ * it. The page normally never shows it - the shell sends a reporter to Report
+ * Jobs before any other page asks for anything - so this is what an old tab or
+ * a hand-made request meets.
+ */
+export const ROLE_NOT_ALLOWED_MESSAGE =
+  'That part of the app is not available for your account. Ask your administrator if you need it.';
+
+/**
+ * A signed-in account whose ROLE does not cover this route: 403
+ * `role-not-allowed`. Today that is a reporter on anything for building
+ * resumes or buying credits (config/accountRoles.ts).
+ */
+export class RoleNotAllowedError extends PublicError {
+  constructor() {
+    super(ROLE_NOT_ALLOWED_MESSAGE, { status: 403, code: 'role-not-allowed' });
+    this.name = 'RoleNotAllowedError';
+  }
+}
+
+function refuseRole(res: Response): void {
+  const refusal = new RoleNotAllowedError();
+  res.status(refusal.status).json({ error: refusal.message, code: refusal.code });
+}
+
+/**
+ * Signed in with ANY role, or 401.
+ *
+ * For the few places every account belongs, a reporter included: their own
+ * account (/api/auth/account), balance and ledger, notifications, job sheet,
+ * their own refund requests, and the reporter routes themselves. Opt-in on
+ * purpose - see `requireUser` for why the default is the narrower check.
+ */
+export function requireAccount(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
+    return;
+  }
+  next();
+}
+
+/**
+ * Signed in as an account that builds resumes - a user or an administrator -
+ * or 401/403.
+ *
+ * It used to mean "signed in", and every router in the app uses it, which is
+ * exactly why it changed meaning instead of a new guard being added beside
+ * it: a third role, `reporter`, has no business with the builder, profiles,
+ * orders, groups, templates, scrapers or payments, and making THIS the narrow
+ * check closes every one of those routers - and every router written later -
+ * without anybody visiting it. The few places a reporter belongs ask for
+ * `requireAccount` instead. A refusal is 403 `role-not-allowed`, never 401:
+ * they are signed in, and "sign in" would send them round a loop.
+ */
 export function requireUser(req: Request, res: Response, next: NextFunction): void {
   if (!req.user) {
     res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
+    return;
+  }
+  if (!canBuildResumes(req.user.role)) {
+    refuseRole(res);
     return;
   }
   next();
@@ -162,12 +225,19 @@ export class SubscriptionTooLowError extends PublicError {
  * Signed in AND on a subscription at least this high (or an administrator),
  * or 401/403.
  *
- * Satisfied by being an administrator - see `hasSubscription`.
+ * Satisfied by being an administrator - see `hasSubscription`. A subscription
+ * is a tier of the resume builder, so a role that may not build is refused
+ * first, by the same 403 `role-not-allowed` as `requireUser`, whatever tier
+ * the account happens to hold: a reporter moved off Premium keeps the column.
  */
 export function requireSubscription(minimum: AccountSubscriptionId) {
   return function subscriptionGuard(req: Request, res: Response, next: NextFunction): void {
     if (!req.user) {
       res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
+      return;
+    }
+    if (!canBuildResumes(req.user.role)) {
+      refuseRole(res);
       return;
     }
     if (!hasSubscription(req.user, minimum)) {
@@ -215,7 +285,9 @@ export function assertProfileScopeAllowed(
  * Every existing route imports `authMiddleware`, and it used to mean "let
  * anything through". Re-exporting `requireUser` under that name means those
  * routes become protected by this change rather than staying open until each
- * one is visited - which is the direction a mistake here should fail in.
+ * one is visited - which is the direction a mistake here should fail in. The
+ * same reasoning, one role later, is why it is the builder check and not
+ * `requireAccount`.
  */
 export const authMiddleware = requireUser;
 

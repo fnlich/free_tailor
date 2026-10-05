@@ -190,6 +190,33 @@ cancelled on Orders; Generate Immediately builds the loaded rows here and
 hands each of their twelve files to the browser once. At 390px the loaded
 table scrolls inside its box rather than widening the page.
 
+## The shell, as every role
+
+`shell.js` walks every page as a user, an administrator and a reporter, in
+both themes and at 1440 and 390, with the two servers up and `DB_DIR` naming
+the backend's database (it writes the sessions, and the reporter's balance,
+straight into it):
+
+```bash
+DB_DIR=/path/to/db node test/e2e/shell.js
+```
+
+The reporter half (owner decision A3): their four pages - Report Jobs, Credits,
+Settings -> Profile and Job Sheet - each stay put, under a rail of Report Jobs,
+Credits and Settings, with only those two Settings tabs; Credits is their
+earnings and the payout the administrator just recorded, with no Purchase
+Credits, no order or refund tabs and no Ask for refund; the account menu has
+no subscription; and every other address - every route the other two roles
+walk, plus /admin, an order, an invoice and /account - lands on Report Jobs.
+Every API answer the reporter's page gets is watched, and the walk fails on a
+single 403: a page of theirs that asked a builder route, or a bounced page
+that mounted before it was sent away, would show here. A user made a reporter
+while their page is open is taken to Report Jobs by their next request. On
+Admin -> Accounts: Reporter in the role select and the invite form (which
+then asks for a rate per job rather than a subscription), a rate typed into a
+reporter's row stored as thousandths, and Record payout refusing more than the
+balance in the server's words, saying what a payout leaves, and recording it.
+
 ## Sign-in is seeded, deliberately
 
 `services/auth/mailer.ts` refuses to pretend an email was sent, so there is no

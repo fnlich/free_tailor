@@ -6,6 +6,7 @@ import { Field, Section, SettingsPage, StaticValue, Status } from '@/components/
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
+import { roleLabel } from '@/lib/roles';
 import { messageWithDetail } from '@/lib/userMessage';
 
 /**
@@ -75,7 +76,7 @@ export default function ProfileSettingsPage() {
 
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
           <Field label="Role">
-            <StaticValue>{account.role === 'admin' ? 'Administrator' : 'User'}</StaticValue>
+            <StaticValue>{roleLabel(account.role)}</StaticValue>
           </Field>
           <Field label="Member since">
             <StaticValue>{formatDate(account.createdAt, { empty: 'Never' })}</StaticValue>

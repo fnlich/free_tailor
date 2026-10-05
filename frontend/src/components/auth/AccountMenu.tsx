@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
 import ContactAdminDialog from '@/components/contact/ContactAdminDialog';
-import { IconUser } from '@/components/icons';
+import { IconExternal, IconUser } from '@/components/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage } from '@/lib/auth';
 import { formatMoney } from '@/lib/format';
+import { sheetLinkFor } from '@/lib/roles';
 import { Pill } from '@/components/ui/kit';
 import styles from './AccountMenu.module.css';
 
@@ -17,6 +18,11 @@ import styles from './AccountMenu.module.css';
  * Everything here is read from the account the provider already holds, so
  * opening the menu costs no request - which matters because it is opened far
  * more often than anything in it is used.
+ *
+ * A reporter gets their own variant (owner decision A3): their balance, which
+ * is earnings, a link to the job sheet their reports come from, Settings,
+ * Contact admin and Log out - no subscription, no profile count and no
+ * Subscription page, which are a resume builder's.
  */
 
 /** A row of the menu: full width, lit by the theme's muted surface on hover. */
@@ -25,8 +31,8 @@ const ITEM = 'block w-full px-4 py-2.5 text-left text-sm font-medium text-ink ho
 /** A hairline between the menu's groups - not the bare `border-*` the dark-mode shim recolours. */
 const RULE = 'border-[color:var(--line-subtle)]';
 
-export default function AccountMenu() {
-  const { account, isAdmin, signOut } = useAuth();
+export default function AccountMenu({ sheetUrl = '' }: { sheetUrl?: string }) {
+  const { account, isAdmin, isReporter, signOut } = useAuth();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   /*
@@ -56,6 +62,8 @@ export default function AccountMenu() {
   }, [open]);
 
   if (!account) return null;
+
+  const sheetLink = isReporter ? sheetLinkFor(sheetUrl, account.sheetUrl) : '';
 
   return (
     <div className="relative" ref={containerRef}>
@@ -114,9 +122,16 @@ export default function AccountMenu() {
             <p className="truncate text-xs text-subtle">{account.email}</p>
 
             <div className="mt-3 flex items-center justify-between">
-              {/* "Default" alone reads as a setting left untouched; it is a tier. */}
-              <Pill tone="sky">{account.subscriptionLabel} subscription</Pill>
-              {isAdmin && <Pill tone="violet">Admin</Pill>}
+              {isReporter ? (
+                // A reporter has no subscription to speak of: what they are is the role.
+                <Pill tone="amber">Reporter</Pill>
+              ) : (
+                <>
+                  {/* "Default" alone reads as a setting left untouched; it is a tier. */}
+                  <Pill tone="sky">{account.subscriptionLabel} subscription</Pill>
+                  {isAdmin && <Pill tone="violet">Admin</Pill>}
+                </>
+              )}
             </div>
 
             {/*
@@ -131,27 +146,50 @@ export default function AccountMenu() {
                 onClick={() => setOpen(false)}
                 className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
               >
-                <span>Credit</span>
+                {/* A reporter's balance is what they have earned and not yet been paid. */}
+                <span>{isReporter ? 'Earnings' : 'Credit'}</span>
                 <span className="font-semibold tabular-nums text-ink">{formatMoney(account.balanceMilli)}</span>
               </Link>
-              <Link
-                href="/settings/subscription"
-                onClick={() => setOpen(false)}
-                className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
-              >
-                <span>Profiles</span>
-                <span className="font-semibold text-ink">{describeProfileUsage(account)}</span>
-              </Link>
+              {!isReporter && (
+                <Link
+                  href="/settings/subscription"
+                  onClick={() => setOpen(false)}
+                  className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
+                >
+                  <span>Profiles</span>
+                  <span className="font-semibold text-ink">{describeProfileUsage(account)}</span>
+                </Link>
+              )}
             </div>
           </div>
 
           <div className="py-1">
+            {/*
+              The reporter's sheet, first: it is where every job they report
+              comes from. Not a Link - it leaves the app for Google's own page,
+              in a new tab, like the rail's Find Jobs. Left out until there is
+              an address for it: one that opens about:blank is worse than none.
+            */}
+            {sheetLink && (
+              <a
+                href={sheetLink}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setOpen(false)}
+                className={`${ITEM} flex items-center justify-between gap-2`}
+              >
+                <span>Your job sheet</span>
+                <IconExternal className="h-4 w-4 text-subtle" />
+              </a>
+            )}
             <Link href="/settings" onClick={() => setOpen(false)} className={ITEM}>
               Settings
             </Link>
-            <Link href="/settings/subscription" onClick={() => setOpen(false)} className={ITEM}>
-              Subscription
-            </Link>
+            {!isReporter && (
+              <Link href="/settings/subscription" onClick={() => setOpen(false)} className={ITEM}>
+                Subscription
+              </Link>
+            )}
             {isAdmin && (
               <Link href="/admin/accounts" onClick={() => setOpen(false)} className={ITEM}>
                 Manage accounts

@@ -1,8 +1,10 @@
 import { apiFetch, removeToken, setToken } from './api';
 import type { LedgerEntry } from './credits';
+import type { ConfiguredAdminSource, UserRole } from './roles';
 import type { AccountSubscriptionId } from './subscriptions';
 
 export type { AccountSubscriptionId } from './subscriptions';
+export type { UserRole } from './roles';
 
 /**
  * Signing in, and what the app knows about who is signed in.
@@ -12,8 +14,6 @@ export type { AccountSubscriptionId } from './subscriptions';
  * profiles the account has all arrive with the account, so a page never has to work out an
  * entitlement for itself and cannot work it out differently from the server.
  */
-
-export type UserRole = 'user' | 'admin';
 
 export type Account = {
   id: string;
@@ -34,6 +34,15 @@ export type Account = {
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+  /**
+   * The account's own Google spreadsheet, once one has been allocated - the
+   * link a reporter's menu offers until the shell's own read of /sheet (which
+   * opens today's tab) arrives.
+   */
+  sheetUrl?: string;
+  /** The last day's tab prepared in it, `MM/DD/YYYY`, and that tab's gid. */
+  sheetTabDate?: string;
+  sheetTabGid?: string;
 };
 
 export type AccountSubscription = {
@@ -118,7 +127,47 @@ export const authApi = {
 
 /* --------------------------------------------------- admin account management */
 
-export type ManagedAccount = Account & { subscriptionLabel: string };
+export type ManagedAccount = Account & {
+  subscriptionLabel: string;
+  /** "User", "Reporter", "Administrator" - the server's label for `role`. */
+  roleLabel: string;
+  /**
+   * A reporter's own pay per accepted job, in thousandths of a dollar; null
+   * means the installation's global rate. On every row, whatever the role: an
+   * account made a user keeps the figure, for if it is made a reporter again.
+   */
+  reportRateMilli: number | null;
+  /**
+   * The address is named by ADMIN_EMAILS (or is the SMTP_USER fallback), so
+   * the server makes it an administrator again at its next sign-in and every
+   * restart, whatever role is set here.
+   */
+  configuredAdmin: boolean;
+  /**
+   * Which of the two names it, null when neither does; the row names it
+   * (lib/roles.ts `configuredAdminNotes`). Optional: a backend from before it
+   * sends only `configuredAdmin`, which then meant ADMIN_EMAILS.
+   */
+  configuredAdminSource?: ConfiguredAdminSource | null;
+};
+
+/** A role as the accounts list offers it: `{ id: 'reporter', label: 'Reporter' }`. */
+export type RoleOption = { id: UserRole; label: string };
+
+/**
+ * A change the server made and kept, with `note` when it will not last: the
+ * address is named by ADMIN_EMAILS (or SMTP_USER), so a role other than
+ * administrator is undone at its next sign-in.
+ */
+export type AccountChange = { account: ManagedAccount; note?: string };
+
+/** What recording a payout answers. `recorded: false` is a repeat of one already recorded. */
+export type PayoutResult = {
+  account: ManagedAccount;
+  balanceMilli: number;
+  entry: LedgerEntry;
+  recorded: boolean;
+};
 
 export const accountsApi = {
   /**
@@ -143,8 +192,11 @@ export const accountsApi = {
       `/admin/accounts/${encodeURIComponent(id)}/credits`
     ),
 
+  /** `roles` is the server's catalog; optional only because a backend older than reporters sends none. */
   list: () =>
-    apiFetch<{ accounts: ManagedAccount[]; subscriptions: AccountSubscription[] }>('/admin/accounts'),
+    apiFetch<{ accounts: ManagedAccount[]; subscriptions: AccountSubscription[]; roles?: RoleOption[] }>(
+      '/admin/accounts'
+    ),
 
   create: (input: {
     email: string;
@@ -153,8 +205,10 @@ export const accountsApi = {
     subscription?: AccountSubscriptionId;
     /** An opening balance, in dollars as typed. Absent or '' opens at none. */
     balanceUsd?: string;
+    /** A reporter's own rate per job, in dollars as typed. Absent or '' is the global rate. */
+    reportRateUsd?: string;
   }) =>
-    apiFetch<{ account: ManagedAccount }>('/admin/accounts', {
+    apiFetch<AccountChange>('/admin/accounts', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
@@ -168,11 +222,30 @@ export const accountsApi = {
       balanceUsd?: string;
       disabled?: boolean;
       name?: string;
+      /**
+       * A reporter's own rate per job, in dollars as typed ("0.075"); '' clears
+       * it, back to the global rate. Refused (409 `not-a-reporter`) on an
+       * account that will not be a reporter after this change.
+       */
+      reportRateUsd?: string;
     }
   ) =>
-    apiFetch<{ account: ManagedAccount }>(`/admin/accounts/${encodeURIComponent(id)}`, {
+    apiFetch<AccountChange>(`/admin/accounts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
+    }),
+
+  /**
+   * Records money ALREADY paid to a reporter outside the app (owner decision
+   * A4): a `reporter-payout` deduction carrying `note`. Never more than the
+   * balance (409 `insufficient-balance`), and only for a reporter (409
+   * `not-a-reporter`). `requestId` is minted once per form
+   * (`mintPayoutRequestId`), so pressing twice records it once.
+   */
+  recordPayout: (id: string, input: { amountUsd: string; note: string; requestId: string }) =>
+    apiFetch<PayoutResult>(`/admin/accounts/${encodeURIComponent(id)}/payout`, {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
 
   signOutEverywhere: (id: string) =>

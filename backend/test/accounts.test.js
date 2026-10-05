@@ -247,6 +247,86 @@ test('a subscription this build does not know reads as the smallest one', () => 
   assert.equal(users.getUserById(account.id).subscription, 'default');
 });
 
+test('a reporter reads back as a reporter, and a role this build does not know as a user', () => {
+  useTempStorage('accounts-roles');
+  const users = loadFresh('../dist/database/userRepository');
+  const { getDb } = loadFresh('../dist/database/sqlite');
+
+  const reporter = users.createUser({ email: 'reporter@example.com', role: 'reporter' });
+  assert.equal(reporter.role, 'reporter');
+  assert.equal(users.getUserById(reporter.id).role, 'reporter');
+  assert.equal(users.listUsers().find((account) => account.id === reporter.id).role, 'reporter');
+
+  // A hand-edited or newer-build role lands on `user`: the role every sign-in
+  // starts with, and never one that takes somebody's builder away.
+  getDb().prepare('UPDATE users SET role = ? WHERE id = ?').run('superuser', reporter.id);
+  assert.equal(users.getUserById(reporter.id).role, 'user');
+  // And `reporter` is not an administrator for the last-admin count.
+  getDb().prepare('UPDATE users SET role = ? WHERE id = ?').run('reporter', reporter.id);
+  assert.equal(users.countAdmins(), 0);
+});
+
+test('a new sign-in is a user, and a configured address is an administrator again after being made a reporter', () => {
+  useTempStorage('accounts-reporter-promotion');
+  process.env.ADMIN_EMAILS = 'boss@example.com';
+  const users = loadFresh('../dist/database/userRepository');
+
+  assert.equal(users.findOrCreateUser({ email: 'new@example.com' }).account.role, 'user');
+
+  const boss = users.createUser({ email: 'boss@example.com' });
+  assert.equal(boss.role, 'admin');
+  users.updateUser(boss.id, { role: 'reporter' });
+  assert.equal(users.getUserById(boss.id).role, 'reporter');
+
+  // Promote-only, and on every sign-in (completeSignIn calls this) and every
+  // start: the configuration outranks the Accounts page for these addresses.
+  assert.equal(users.promoteIfConfiguredAdmin(users.getUserById(boss.id)), true);
+  assert.equal(users.getUserById(boss.id).role, 'admin');
+  users.updateUser(boss.id, { role: 'reporter' });
+  assert.equal(users.promoteConfiguredAdmins(), 1);
+  assert.equal(users.getUserById(boss.id).role, 'admin');
+});
+
+test("a reporter's rate is stored apart from the account, and a junk value reads as the global rate", () => {
+  useTempStorage('accounts-report-rate');
+  const users = loadFresh('../dist/database/userRepository');
+  const { getDb } = loadFresh('../dist/database/sqlite');
+
+  const reporter = users.createUser({ email: 'reporter@example.com', role: 'reporter' });
+  assert.equal(users.getReportRateMilli(reporter.id), null, 'no override: the global rate');
+  // Never on UserAccount: the session payload spreads it, and the rate is
+  // served to administrators only.
+  assert.equal('reportRateMilli' in users.getUserById(reporter.id), false);
+
+  users.setReportRateMilli(reporter.id, 50);
+  assert.equal(users.getReportRateMilli(reporter.id), 50);
+  assert.equal(users.listReportRates().get(reporter.id), 50);
+
+  users.setReportRateMilli(reporter.id, null);
+  assert.equal(users.getReportRateMilli(reporter.id), null);
+
+  for (const junk of [-1, 1_000_001, 2.5, 'abc']) {
+    getDb().prepare('UPDATE users SET report_rate_milli = ? WHERE id = ?').run(junk, reporter.id);
+    assert.equal(users.getReportRateMilli(reporter.id), null, `stored ${junk}`);
+  }
+});
+
+test('the rate box takes dollars to the thousandth, empty clears it, and nothing is rounded', () => {
+  const { parseReportRateUsd, MAX_REPORT_RATE_MILLI } = require('../dist/config/reportRate');
+  assert.deepEqual(parseReportRateUsd('0.050'), { ok: true, milli: 50 });
+  assert.deepEqual(parseReportRateUsd(0.05), { ok: true, milli: 50 });
+  assert.deepEqual(parseReportRateUsd('0'), { ok: true, milli: 0 });
+  assert.deepEqual(parseReportRateUsd('1000'), { ok: true, milli: MAX_REPORT_RATE_MILLI });
+  assert.deepEqual(parseReportRateUsd(''), { ok: true, milli: null });
+  assert.deepEqual(parseReportRateUsd('  '), { ok: true, milli: null });
+  assert.deepEqual(parseReportRateUsd(null), { ok: true, milli: null });
+  for (const refused of ['0.0005', '-0.010', '1000.001', 'ten', true]) {
+    const parsed = parseReportRateUsd(refused);
+    assert.equal(parsed.ok, false, String(refused));
+    assert.match(parsed.error, /^The rate per job /);
+  }
+});
+
 test('credits start at zero and block nothing', () => {
   useTempStorage('accounts-credits');
   const users = loadFresh('../dist/database/userRepository');

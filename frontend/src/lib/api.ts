@@ -114,6 +114,49 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
   onUnauthorized = handler;
 }
 
+/**
+ * Called when the server refuses a request for the account's ROLE: 403
+ * `role-not-allowed`, which every builder route answers a reporter.
+ *
+ * Not a sign-out - the session is fine, and treating it as one would sign a
+ * reporter out of the pages that are theirs. It is, though, usually news: an
+ * administrator changed this account's role since the page loaded (a user
+ * made a reporter), and the shell is still drawn for the old one. The auth
+ * provider installs a handler that re-reads the account, so the shell redraws
+ * for the role it has now and AuthGate takes a reporter to Report Jobs.
+ */
+let onRoleRefused: (() => void) | null = null;
+
+export function setRoleRefusedHandler(handler: (() => void) | null): void {
+  onRoleRefused = handler;
+}
+
+/** The refusal a builder route gives a reporter: 403 `role-not-allowed`. */
+export function isRoleNotAllowed(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.status === 403 && error.code === 'role-not-allowed';
+}
+
+/**
+ * What every request does with a refusal before throwing it: a 401 means the
+ * session is gone - expired, revoked, or the account disabled - so the stale
+ * token is cleared (the next call does not send it) and the provider shows
+ * the sign-in; a 403 `role-not-allowed` asks the provider to re-read the
+ * account's role.
+ *
+ * Exported for the one client that does not come through here: the Bid
+ * Assistant's `bidAssistantFetch` (bid-assistant/lib/apiBase.js), whose
+ * `responseError` calls it. Without that, a user made a reporter while on the
+ * Bid Assistant stayed on a page of refusals under the builder's rail.
+ */
+export function noticeRefusal(status: number, body: Record<string, unknown>): void {
+  if (status === 401) {
+    removeToken();
+    onUnauthorized?.();
+  } else if (status === 403 && body.code === 'role-not-allowed') {
+    onRoleRefused?.();
+  }
+}
+
 function getAuthHeaders(): HeadersInit {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -290,10 +333,7 @@ export async function apiStream(
     resolvedApiBase = apiBase;
     if (!response.ok || !response.body) {
       const body = await readErrorBody(response);
-      if (response.status === 401) {
-        removeToken();
-        onUnauthorized?.();
-      }
+      noticeRefusal(response.status, body);
       throw new ApiResponseError(
         typeof body.error === 'string' ? body.error : GENERIC_MESSAGE,
         response.status,
@@ -382,12 +422,7 @@ export async function apiFetch<T>(
 
     if (!response.ok) {
       const body = await readErrorBody(response);
-      if (response.status === 401) {
-        // The session is gone - expired, revoked, or the account disabled.
-        // Clearing the stale copy here means the next call does not send it.
-        removeToken();
-        onUnauthorized?.();
-      }
+      noticeRefusal(response.status, body);
       throw new ApiResponseError(
         typeof body.error === 'string' ? body.error : GENERIC_MESSAGE,
         response.status,
@@ -441,10 +476,7 @@ export async function apiFetchFile(
     resolvedApiBase = apiBase;
     if (!response.ok) {
       const body = await readErrorBody(response);
-      if (response.status === 401) {
-        removeToken();
-        onUnauthorized?.();
-      }
+      noticeRefusal(response.status, body);
       throw new ApiResponseError(
         typeof body.error === 'string' ? body.error : GENERIC_MESSAGE,
         response.status,

@@ -31,6 +31,11 @@ export type CreditReason =
   /** A resume's charge given back because a refund request for it was granted. */
   | 'refund-request'
   /**
+   * A reporter's earnings paid out by an administrator outside the app, and
+   * recorded here as a deduction. The row's `note` says how it was paid.
+   */
+  | 'reporter-payout'
+  /**
    * Credits became dollars and every balance was reset to $0.000: one row per
    * account that held any, in its balance or in a run still going (that one
    * moves 0 credits). Always carries `legacyCredits`.
@@ -117,6 +122,7 @@ const REASON_PHRASES: Record<CreditReason, string> = {
   'purchase-refund': 'Refunded to your payment method',
   'purchase-refund-failed': 'Returned - the refund to your card did not go through',
   'refund-request': 'Refunded - your refund request was granted',
+  'reporter-payout': 'Paid out by an administrator',
   reset: 'Reset to $0.000 when credits became dollars',
 };
 

@@ -43,6 +43,14 @@ import { closeRequestsForRefundedPayment } from '../services/refunds';
  */
 
 const router = Router();
+/*
+ * `requireUser` - a user or an administrator - and so never a reporter: a
+ * reporter cannot buy credits (owner decision A4). Their balance is what the
+ * lake pays them, and an administrator pays it out by hand and records it as a
+ * payout (POST /api/admin/accounts/:id/payout). The whole router rather than
+ * the checkout alone, because the rest of it - methods, quote, saved cards,
+ * purchase history - exists only to serve a checkout.
+ */
 router.use(requireUser);
 
 /**

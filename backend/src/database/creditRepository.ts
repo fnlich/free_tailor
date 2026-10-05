@@ -450,6 +450,90 @@ export function applyAdjustment(input: {
   }).immediate();
 }
 
+export type PayoutOutcome =
+  | { ok: true; applied: boolean; balance: number; entry: LedgerEntry | null }
+  | { ok: false; reason: 'no-account' | 'not-a-reporter' | 'insufficient'; balance: number };
+
+/**
+ * Records a reporter's payout: takes `amountMilli` off the balance and writes
+ * a `reporter-payout` row, or takes nothing.
+ *
+ * Unlike `applyAdjustment` it never clamps. A revoke of more than somebody
+ * holds is an administrator taking back what was given, and stopping at zero
+ * is right for it; a payout records money that left by hand, and a record
+ * that says less left than did is a wrong record. So a payout the balance
+ * cannot cover is refused outright.
+ *
+ * One conditional UPDATE decides all of it - the account is a reporter AND
+ * holds at least the amount - so neither a role change nor a second payout
+ * landing at the same moment can slip between a check and the debit. When it
+ * changes nothing, a second read says which condition failed, for the
+ * caller's sentence.
+ *
+ * Idempotent on `idempotencyKey`: a repeat answers `applied: false` with the
+ * row the first one wrote, and moves nothing - so a double-pressed "Record
+ * payout" that sends the same key twice records one payout.
+ */
+export function debitReporterPayout(input: {
+  userId: string;
+  amountMilli: number;
+  idempotencyKey: string;
+  refId: string;
+  actorId: string;
+  note: string;
+}): PayoutOutcome {
+  if (!Number.isSafeInteger(input.amountMilli) || input.amountMilli <= 0) {
+    throw new Error(`A payout must be a positive whole number of thousandths of a dollar, not ${input.amountMilli}.`);
+  }
+  const db = getDb();
+  const timestamp = now();
+  const readEntry = (): LedgerEntry | null => {
+    const row = db.prepare('SELECT * FROM credit_ledger WHERE idempotency_key = ?').get(input.idempotencyKey) as
+      | LedgerRow
+      | undefined;
+    return row ? toEntry(row) : null;
+  };
+
+  return db.transaction((): PayoutOutcome => {
+    if (keyUsed(input.idempotencyKey)) {
+      return { ok: true, applied: false, balance: readBalance(input.userId), entry: readEntry() };
+    }
+
+    const changed = db
+      .prepare(
+        `UPDATE users SET balance_milli = balance_milli - @amount, updated_at = @timestamp
+          WHERE id = @userId AND role = 'reporter' AND balance_milli >= @amount`
+      )
+      .run({ amount: input.amountMilli, userId: input.userId, timestamp }).changes;
+
+    if (changed === 0) {
+      const account = db.prepare('SELECT role, balance_milli FROM users WHERE id = ?').get(input.userId) as
+        | { role: string; balance_milli: number }
+        | undefined;
+      if (!account) return { ok: false, reason: 'no-account', balance: 0 };
+      return {
+        ok: false,
+        reason: account.role === 'reporter' ? 'insufficient' : 'not-a-reporter',
+        balance: account.balance_milli,
+      };
+    }
+
+    const balance = readBalance(input.userId);
+    insertLedger({
+      userId: input.userId,
+      deltaMilli: -input.amountMilli,
+      balanceAfterMilli: balance,
+      reason: 'reporter-payout',
+      refKind: 'payout',
+      refId: input.refId,
+      actorId: input.actorId,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return { ok: true, applied: true, balance, entry: readEntry() };
+  }).immediate();
+}
+
 /* ----------------------------------------------------------------- reading */
 
 export function getReservation(id: string): Reservation | null {

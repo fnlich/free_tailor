@@ -1,6 +1,17 @@
 import type { AccountSubscriptionId } from '../config/accountSubscriptions';
 
-export type UserRole = 'user' | 'admin';
+/**
+ * Who an account is to the installation (config/accountRoles.ts).
+ *
+ * - `user` builds resumes from their own profiles - every new sign-in;
+ * - `reporter` adds job postings to the shared job lake and is paid per job
+ *   accepted (owner decisions A3, A4). No resume builder, no scrapers: the
+ *   routes for those answer a reporter 403 `role-not-allowed`;
+ * - `admin` manages everything the installation shares.
+ *
+ * Exclusive: an account is exactly one of the three.
+ */
+export type UserRole = 'user' | 'reporter' | 'admin';
 
 /** An account as the rest of the app sees it. Never carries a session token. */
 export interface UserAccount {

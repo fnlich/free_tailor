@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~35s with the tsc step, 1367 tests)
+npm test                       # backend node:test suite (~35s with the tsc step, 1395 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -50,7 +50,7 @@ Facts worth knowing before you build:
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. 30 of the 31 App Router pages carry no `dark:` at all (only
+  ignored. 31 of the 32 App Router pages carry no `dark:` at all (only
   `/test` does); they are built from the kit and the tokens rather than the
   utilities it remaps, but it is still loaded and still wins wherever it
   matches. New chrome uses the `@theme inline` tokens instead
@@ -84,9 +84,11 @@ readiness line per AI seat at startup; a CLI that is missing or signed out is
 reported, not fatal, and so is any removed metered-provider variable
 (`OPENAI_API_KEY`, `AI_CLI_ALLOW_API_KEY`...) still set in `.env`.
 
-To sign in, `.env` needs Google OAuth (`GOOGLE_CLIENT_ID`) or SMTP. The first
-account to sign in becomes the administrator unless `ADMIN_EMAILS` decides in
-advance.
+To sign in, `.env` needs Google OAuth (`GOOGLE_CLIENT_ID`) or SMTP.
+`ADMIN_EMAILS` (else an `SMTP_USER` that is an address) names the
+administrators - promoted at every sign-in and start, never demoted
+(`config/adminIdentity.ts`) - and every other sign-in is a `user`; arrival
+order decides nothing, and with neither set there is no administrator.
 
 ## Layout
 
@@ -143,6 +145,25 @@ backend/src/
                       #   profiles and before any charge or model call. A
                       #   single-profile run, immediate or order, is open to
                       #   every subscription.
+                      #   accountRoles.ts the three ROLES - user, reporter,
+                      #   admin (exclusive; owner decisions A3/A4) - and
+                      #   `canBuildResumes` (user or admin, by name).
+                      #   middleware/auth.ts: `requireUser` IS that builder
+                      #   check (a reporter gets 403 `role-not-allowed` and
+                      #   ROLE_NOT_ALLOWED_MESSAGE), so every router on it -
+                      #   and every router written later - is closed to
+                      #   reporters; `requireAccount` is any signed-in role,
+                      #   opted into only by auth's /account, credits,
+                      #   notifications, sheet and refund-requests' GET /.
+                      #   requireSubscription refuses a reporter by role first.
+                      #   test/routeAccess.test.js is the table of EVERY mount
+                      #   in index.ts and every route's effective guard (read
+                      #   off router.stack), plus a reporter refused on every
+                      #   route that is not theirs over HTTP: a new router or
+                      #   a route whose guard differs from its router's fails
+                      #   it until a row decides. reportRate.ts a reporter's
+                      #   per-account pay per job (`users.report_rate_milli`,
+                      #   NULL = the lake's global rate; parse/bounds only).
   controllers/        # one file, the skills handlers routes/resume.ts mounts.
                       #   The library is one store for every account: reading it
                       #   and POST /skills/confirm (additive, idempotent) are
@@ -197,6 +218,17 @@ backend/src/
                       #   (409 `own-account`; another admin may), and its
                       #   last-admin guard (`wouldStrandInstall`) counts ANY
                       #   role but admin as losing one - not `user` by name.
+                      #   It also takes `role` user|reporter|admin (anything
+                      #   else 400 `bad-role`, never a quiet user), serves each
+                      #   row's `roleLabel`, `reportRateMilli` (ADMINS ONLY -
+                      #   read by its own query, never on UserAccount or the
+                      #   session) and `configuredAdmin` (an ADMIN_EMAILS -
+                      #   else SMTP_USER - address, named by
+                      #   `configuredAdminSource`; a demotion's `note` says
+                      #   sign-in undoes it), takes `reportRateUsd` (only for a resulting
+                      #   reporter; '' or null clears), and POST
+                      #   /:id/payout { amountUsd, note, requestId? } records
+                      #   a reporter's payout (see "Money" below).
                       #   refundRequests.ts (asking, and the admin queue) and
                       #   contact.ts (GET /api/contact is PUBLIC, no session)
                       #   are described under "Money" below. generation.ts is
@@ -305,7 +337,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 116 files; fixtures/cli, codex and gemini
+  test/               # node:test, 118 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -317,14 +349,48 @@ frontend/src/
                       #   the root layout's shell streams first, so it is
                       #   never an HTTP 307).
                       #   /admin/profiles, /admin/profiles/new and
-                      #   /admin/profiles/[id] are EVERY account's own profiles
-                      #   and their editor, whatever the path says.
+                      #   /admin/profiles/[id] are EVERY builder's own profiles
+                      #   and their editor, whatever the path says. /report
+                      #   (Report Jobs) is a REPORTER's home, behind
+                      #   AuthGate's `ReporterOnly` (an admin may open it, a
+                      #   user is told what it is for); until Phase 7 it is
+                      #   their own sheet and a "later release" note.
+                      #   A REPORTER opens only lib/roles.ts's allowlist -
+                      #   /report (and under it), /credits, /settings,
+                      #   /settings/job-sheet, each exactly - and AuthGate
+                      #   sends them to /report from every other path WITHOUT
+                      #   mounting it (every builder page fires requests the
+                      #   moment it mounts, all 403 `role-not-allowed`). An
+                      #   allowlist because /admin/* holds builders' pages too;
+                      #   test/frontendRoles.test.js walks every page.tsx and
+                      #   fails unless exactly those four are a reporter's, so
+                      #   a new reporter page is added there AND to that list.
+                      #   /credits draws `EarningsCredits` for them (balance +
+                      #   CreditHistory `variant="earnings"`; no purchase,
+                      #   order or refund panels, which a reporter is refused).
   components/shell/   # The app shell - top bar, rail, and the "Settings" title
                       #   and tabs above every settings route (Administration
                       #   is one tab with a second row of the /admin/* pages).
                       #   Mounted once in the root layout inside AuthGate;
                       #   pages render no navigation of their own. navModel.ts
-                      #   is the ONE list of rail entries and settings tabs.
+                      #   is the ONE list of rail entries and settings tabs,
+                      #   by ROLE: an entry's `roles` names who sees it and
+                      #   ABSENT means the builders (user, admin), so a new
+                      #   entry is kept from reporters until it names them -
+                      #   `canSee(item, role, subscription)`, `settingsTabsFor`.
+                      #   A reporter's rail is Report Jobs, Credits, Settings
+                      #   (Profile, Job Sheet); their account menu has their
+                      #   sheet link, Settings, Contact admin, Log out and no
+                      #   subscription. lib/roles.ts copies the backend's role
+                      #   catalog (drift-tested) and holds the allowlist. A 403
+                      #   `role-not-allowed` is NOT a sign-out: lib/api.ts's
+                      #   `noticeRefusal` hands it to AuthContext, which
+                      #   re-reads the account (at most once in 10 s), so a
+                      #   user made a reporter mid-session is redrawn as one.
+                      #   Every fetcher goes through it - the Bid Assistant's
+                      #   raw-fetch client too, from its `responseError` -
+                      #   and frontendRoles.test.js fails on a new raw fetch
+                      #   of the API that does not.
                       #   The look follows a reference design (textverified):
                       #   .tl-tabs, .tl-button(-quiet), .tl-table(-box),
                       #   .tl-section, .tl-input in globals.css are the shared
@@ -672,6 +738,19 @@ run in flight are never refunded (the older build sees `units = 0`, then
 closes the reservation, and a closed one takes no refund here), and the first
 settings save of any kind rewrites every model without `creditsPerResume`, so
 an older build prices them all at 1 credit.
+
+**Reporter payouts** (owner decision A4). A reporter's earnings are paid
+OUTSIDE the app; an administrator records each one with POST
+/api/admin/accounts/:id/payout, a `reporter-payout` ledger row carrying their
+note (`recordReporterPayout` -> creditRepository's `debitReporterPayout`). ONE
+conditional UPDATE takes it - `role = 'reporter' AND balance_milli >= amount` -
+and it is refused, never clamped like `applyAdjustment`'s revoke (409
+`not-a-reporter` / `insufficient-balance` with `balanceMilli`): a record that
+says less was paid than was is wrong. Keyed `payout:<account>:<requestId>`, so
+a repeated `requestId` answers `recorded: false` with the first row. The
+reporter gets a notice (link `/credits`). Reporters cannot buy: /api/payments
+is `requireUser`, and so are refund-requests' /options and POST - a purchase
+refund gives back the UNSPENT balance, which for a reporter is earnings.
 
 **Refund requests** (owner decision M3; `services/refunds`,
 `database/refundRequestRepository.ts`, `routes/refundRequests.ts`). Anybody asks

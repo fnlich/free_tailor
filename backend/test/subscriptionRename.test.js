@@ -340,11 +340,12 @@ test('Settings > Subscription is a tab, and the old Settings > Plan address redi
   assert.equal(nav.activeHref('/settings/subscription', nav.SETTINGS_ACCOUNT_TABS), '/settings/subscription');
   assert.equal(nav.isSettingsRoute('/settings/subscription'), true);
 
-  // An entry a tier includes is shown from that tier up, to anybody on it.
+  // An entry a tier includes is shown from that tier up, to any builder on it
+  // (the role half is test/frontendRoles.test.js's).
   const premiumOnly = { href: '/x', label: 'X', icon: 'build', needs: 'premium' };
-  assert.equal(nav.canSee(premiumOnly, false, 'default'), false);
-  assert.equal(nav.canSee(premiumOnly, false, 'premium-plus'), true);
-  assert.equal(nav.canSee(premiumOnly, false, 'premium-ultra'), false, 'an unknown tier ranks lowest');
+  assert.equal(nav.canSee(premiumOnly, 'user', 'default'), false);
+  assert.equal(nav.canSee(premiumOnly, 'user', 'premium-plus'), true);
+  assert.equal(nav.canSee(premiumOnly, 'user', 'premium-ultra'), false, 'an unknown tier ranks lowest');
 
   assert.ok(fs.existsSync(path.join(FRONTEND_SRC, 'app/settings/subscription/page.tsx')));
   // Nothing at the old address but the redirect: no page of its own to drift.

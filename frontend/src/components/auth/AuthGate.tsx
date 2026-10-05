@@ -1,12 +1,13 @@
 'use client';
 
-import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, type ReactNode } from 'react';
 
 import ThemeToggle from '@/components/ThemeToggle';
 import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
+import { canOpenReportJobs, redirectFor } from '@/lib/roles';
 import { hasSubscription, type AccountSubscriptionId } from '@/lib/subscriptions';
 import SignInPanel from './SignInPanel';
 
@@ -16,6 +17,17 @@ import SignInPanel from './SignInPanel';
  * A wrapper rather than a redirect. There is no separate /login route to be
  * bounced to and back from, so a deep link survives signing in: the URL never
  * changes, and the page behind it renders as soon as the account arrives.
+ *
+ * It is also where a REPORTER is kept to their own pages (owner decision A3):
+ * on any path outside lib/roles.ts's allowlist - Report Jobs, Credits,
+ * Settings -> Profile and Job Sheet - they are sent to Report Jobs, and the
+ * page they asked for is never mounted. Here rather than in each page because
+ * every builder page fires requests the moment it mounts, and every one of
+ * them answers a reporter 403 `role-not-allowed`: a reporter who followed an
+ * old link would get a wall of refusals instead of their own page. An
+ * allowlist rather than a list of what to keep them out of, because /admin/*
+ * holds everybody's pages too (/admin/profiles), and a page added later stays
+ * closed to reporters until somebody opens it.
  */
 
 /** Pages that render for a signed-out visitor. */
@@ -38,8 +50,17 @@ function Centered({ children }: { children: ReactNode }) {
 }
 
 export default function AuthGate({ children }: { children: ReactNode }) {
-  const { loading, signedIn, error } = useAuth();
+  const { loading, signedIn, error, role } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
+
+  // Only once the account has arrived: the decision is its role, and until
+  // then there is none to read - nobody is sent anywhere on a guess.
+  const sendTo = !loading && signedIn ? redirectFor(role, pathname) : null;
+  useEffect(() => {
+    // `replace`, so Back does not land on the page that bounced and bounce again.
+    if (sendTo) router.replace(sendTo);
+  }, [router, sendTo]);
 
   if (PUBLIC_PATHS.has(pathname)) return <>{children}</>;
 
@@ -86,6 +107,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         <ThemeToggle />
       </>
     );
+
+  // On its way to Report Jobs: the page asked for is not mounted at all, so
+  // none of its requests is made and refused.
+  if (sendTo) {
+    return (
+      <Centered>
+        <Spinner />
+      </Centered>
+    );
+  }
 
   return <>{children}</>;
 }
@@ -155,6 +186,32 @@ export function RequiresSubscription({
           subscription is <strong>{account?.subscriptionLabel ?? 'one that does not include it'}</strong>.
           Subscriptions are set by an administrator of this installation, so ask them to move your
           account. <ContactAdminLink />
+        </p>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
+/**
+ * The same idea for Report Jobs: a reporter's page, which an administrator may
+ * open too. An ordinary user who types the address is told what it is for
+ * rather than shown a page whose requests their account is refused.
+ */
+export function ReporterOnly({ children }: { children: ReactNode }) {
+  const { role, loading } = useAuth();
+
+  if (loading) return <p className="text-sm text-subtle">Loading...</p>;
+
+  if (!canOpenReportJobs(role)) {
+    return (
+      <div className="tl-notice m-4 p-6 sm:m-8" data-tone="warn">
+        <p className="font-semibold">Reporters only</p>
+        <p className="mt-1">
+          Report Jobs is where reporter accounts add job postings to the installation&apos;s job lake.
+          Your account builds resumes instead. Ask an administrator here if you should have a
+          reporter account. <ContactAdminLink />
         </p>
       </div>
     );

@@ -151,7 +151,29 @@ Coverage currently focuses on:
 - JSON extraction utilities
 - array utilities
 - output path safety helpers
-- current auth middleware behavior
+- current auth middleware behavior, and who may reach what
+  (`routeAccess.test.js`): one row per router `src/index.ts` mounts, deciding
+  whether it is public, for any signed-in account, for users and
+  administrators (never a reporter), or for administrators; the test fails on a
+  mount with no row and on any route whose guard - read off the router - is
+  not the one its row decides, and over HTTP with a session per role it
+  refuses a reporter every route that is not theirs (403 `role-not-allowed`)
+  and lets them reach their own account, credits, bell, sheet and refund
+  history. Roles, a reporter's rate per job (served on the list too, and
+  added to a `users` table from before reporters), which setting names a
+  configured administrator, and recorded payouts are in
+  `accountRoutes.test.js` and `accounts.test.js`
+- the reporter's side of the frontend (`frontendRoles.test.js`): its copy of
+  the role catalog is the backend's; of every App Router page, a reporter
+  opens exactly Report Jobs, Credits and Settings -> Profile / Job Sheet and is
+  sent to Report Jobs from the rest; the rail and Settings tabs offer them only
+  those (an entry naming no roles is a builder's); the rate per job box and
+  Record payout say what `parseReportRateUsd` and the real payout route say,
+  word for word; a 403 `role-not-allowed` re-reads the account rather than
+  signing anybody out - from every place the frontend calls `fetch` itself,
+  the Bid Assistant's client included, each of which is listed with why it
+  may; and a configured administrator's row names ADMIN_EMAILS or SMTP_USER as
+  the server says
 - which wins, the environment or `.env`: the environment, on both halves, with
   any name set in both reported by name only (`envFile.test.js`), and the mail
   doctor naming such a setting as overriding the file (`mailDoctor.test.js`)

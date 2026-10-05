@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { isAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAccount } from '../middleware/auth';
 import { isPublicError, sendPublicError } from '../middleware/publicError';
 import { describeAccountSheet, setAccountSheetVisibility } from '../services/sheets/accountSheet';
 
@@ -12,15 +12,18 @@ import { describeAccountSheet, setAccountSheetVisibility } from '../services/she
  * from the batch routes, which took an id, trusted it, and let any signed-in
  * user read somebody else's work. An id parameter here would be the same hole
  * with a different noun.
+ *
+ * Every role, a reporter included: their own job sheet is where the jobs they
+ * report come from (owner decision A3, Settings > Job Sheet).
  */
 
 const router = Router();
-router.use(requireUser);
+router.use(requireAccount);
 
 /**
  * What an ordinary account holder is told, and what an administrator is.
  *
- * This route is `requireUser`, so the reader is usually somebody who cannot act
+ * This route is `requireAccount`, so the reader is usually somebody who cannot act
  * on the answer. Naming `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` at them is noise at
  * best; the admin version is the one that says what to change.
  */

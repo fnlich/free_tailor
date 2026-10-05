@@ -8,9 +8,10 @@ const { useTempStorage, useAdminEmails, loadFresh } = require('./helpers');
  * The notice board, and the two things it has to get right.
  *
  * One: only an administrator may post. Everything under /api/admin in this app
- * is guarded by an explicit middleware rather than by the path - /api/admin/ai
- * is mounted there with only `requireUser` - so "it is under /api/admin" proves
- * nothing and the guard is worth a test of its own.
+ * is guarded by an explicit middleware rather than by the path - each router
+ * mounted there states its own, and test/routeAccess.test.js holds the list -
+ * so "it is under /api/admin" proves nothing and the guard is worth a test of
+ * its own.
  *
  * Two: unread has to mean something. It is one timestamp per account, so the
  * interesting case is not "does it go to zero" but "does it come back" - a

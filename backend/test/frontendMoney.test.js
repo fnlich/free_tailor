@@ -419,6 +419,8 @@ const FRONTEND_MONEY_SOURCES = [
   'lib/refunds.ts',
   'lib/refundDisplay.ts',
   'components/shell/AppTopBar.tsx',
+  'components/auth/AccountMenu.tsx',
+  'lib/reporterPay.ts',
   'app/credits/page.tsx',
   'app/credits/invoice/page.tsx',
   'app/credits/return/page.tsx',

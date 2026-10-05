@@ -71,6 +71,47 @@ test('a signed-in user is not an admin, and the two refusals differ', () => {
   assert.equal(run(requireAdmin, { headers: {}, user: { id: 'a1', role: 'admin' } }).passed, true);
 });
 
+test('a reporter is signed in but may not build: requireUser refuses them, requireAccount does not', () => {
+  useTempStorage('auth-reporter');
+  const { requireAccount, requireAdmin, requireSubscription, requireUser, ROLE_NOT_ALLOWED_MESSAGE } =
+    loadFresh('../dist/middleware/auth');
+
+  const reporter = { headers: {}, user: { id: 'r1', role: 'reporter', subscription: 'premium-max' } };
+
+  const refused = run(requireUser, reporter);
+  assert.equal(refused.passed, false);
+  // 403 with its own code, never 401: they ARE signed in, and the page must
+  // not treat it as a lapsed session and sign them out.
+  assert.equal(refused.res.statusCode, 403);
+  assert.equal(refused.res.body.code, 'role-not-allowed');
+  assert.equal(refused.res.body.error, ROLE_NOT_ALLOWED_MESSAGE);
+  // About their own account, nothing about the installation - and in the
+  // words the pages turn into a Contact admin link.
+  assert.match(refused.res.body.error, /not available for your account\. Ask your administrator/);
+  assert.equal(Object.keys(refused.res.body).sort().join(','), 'code,error');
+
+  assert.equal(run(requireAccount, reporter).passed, true, 'their own account, credits, sheet...');
+  assert.equal(run(requireAdmin, reporter).res.body.code, 'not-an-admin');
+  // A subscription is a tier of the builder: whatever the column says, a
+  // reporter is refused by role first.
+  const tiered = run(requireSubscription('premium'), reporter);
+  assert.equal(tiered.passed, false);
+  assert.equal(tiered.res.body.code, 'role-not-allowed');
+
+  for (const role of ['user', 'admin']) {
+    const req = { headers: {}, user: { id: role, role, subscription: 'premium' } };
+    assert.equal(run(requireUser, req).passed, true, `${role} builds`);
+    assert.equal(run(requireAccount, req).passed, true);
+  }
+  // Whoever MAY build is a list, so a role nobody decided about is refused.
+  assert.equal(run(requireUser, { headers: {}, user: { id: 'x', role: 'auditor' } }).res.body.code, 'role-not-allowed');
+
+  const stranger = run(requireAccount, { headers: {} });
+  assert.equal(stranger.passed, false);
+  assert.equal(stranger.res.statusCode, 401);
+  assert.equal(stranger.res.body.code, 'not-signed-in');
+});
+
 test('the old authMiddleware name now means the real check', () => {
   useTempStorage('auth-alias');
   const { authMiddleware, requireUser } = loadFresh('../dist/middleware/auth');

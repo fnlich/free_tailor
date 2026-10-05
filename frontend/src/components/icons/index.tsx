@@ -141,6 +141,18 @@ export const IconSettings = (p: IconProps) => (
   </Icon>
 );
 
+/**
+ * Report Jobs - a reporter's postings going up into the shared job lake: an
+ * arrow rising out of a tray.
+ */
+export const IconReport = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4 13.5v4a2.5 2.5 0 0 0 2.5 2.5h11a2.5 2.5 0 0 0 2.5-2.5v-4" />
+    <path d="M12 15.5V4" />
+    <path d="m7.5 8.5 4.5-4.5 4.5 4.5" />
+  </Icon>
+);
+
 /** Manage accounts - people, not profiles. */
 export const IconAccounts = (p: IconProps) => (
   <Icon {...p}>
@@ -241,6 +253,7 @@ export const ICONS = {
   groups: IconGroups,
   build: IconBuild,
   orders: IconOrders,
+  report: IconReport,
   search: IconSearch,
   filter: IconFilter,
   bid: IconBid,

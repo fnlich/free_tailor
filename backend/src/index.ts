@@ -196,7 +196,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use(attachUser);
 
 /**
- * Downloading a generated file needs an account.
+ * Downloading a generated file needs an account that builds resumes
+ * (`requireUser`: a user or an administrator, never a reporter).
  *
  * The filename is derived from the profile, the company and the date, so it is
  * guessable enough that "you would have to know the URL" is not a control.
@@ -241,6 +242,8 @@ app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
 });
 
 // Routes. Auth first: it is the only one reachable while signed out.
+// Every mount below has a row in test/routeAccess.test.js deciding who it is
+// for, and a router mounted without one fails the suite.
 app.use('/api/auth', authRoutes);
 // Public, like auth: how to reach the administrator is for people who cannot
 // sign in as much as for anybody (routes/contact.ts).

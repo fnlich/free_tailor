@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { requireUser } from '../middleware/auth';
+import { requireAccount } from '../middleware/auth';
 import { countLedger, getLedger, getStatus } from '../services/credits';
 import { readPage } from './paging';
 
@@ -18,7 +18,10 @@ import { readPage } from './paging';
  */
 
 const router = Router();
-router.use(requireUser);
+// Any role: a reporter's earnings and payouts are this same balance and
+// ledger (owner decision A4) - what they may not do is buy, which is
+// /api/payments and refused there.
+router.use(requireAccount);
 
 /**
  * `{ balanceMilli, heldMilli, exempt }`. What a run costs is its quote

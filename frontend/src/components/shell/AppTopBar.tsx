@@ -7,12 +7,17 @@ import type { RefObject } from 'react';
 import AccountMenu from '@/components/auth/AccountMenu';
 import { IconCredits, IconMenu, IconMoon, IconSun } from '@/components/icons';
 import { formatMoney } from '@/lib/format';
+import { homeFor } from '@/lib/roles';
 import { useTheme } from '@/lib/useTheme';
 import NotificationsMenu from './NotificationsMenu';
 
 type Props = {
   /** The balance, in thousandths of a dollar. */
   balanceMilli: number;
+  /** The account's role: a reporter's logo leads to Report Jobs, and their balance is earnings. */
+  role: unknown;
+  /** The account's own job sheet, as the shell read it - a reporter's menu links it. */
+  sheetUrl: string;
   drawerOpen: boolean;
   onToggleDrawer: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
@@ -26,10 +31,16 @@ type Props = {
  * work. It reads from the auth context rather than fetching, so the refresh
  * that Resume Profiles already triggers after a create keeps this current too.
  */
-function CreditsPill({ balanceMilli }: { balanceMilli: number }) {
+function CreditsPill({ balanceMilli, reporter }: { balanceMilli: number; reporter: boolean }) {
   const balance = formatMoney(balanceMilli);
   return (
-    <Link href="/credits" className="tl-credits" title="Credits - press to buy more">
+    <Link
+      href="/credits"
+      className="tl-credits"
+      // A reporter cannot buy credit: their balance is what they have earned
+      // and not yet been paid, and the page it opens says so.
+      title={reporter ? 'Credits - what you have earned and not yet been paid' : 'Credits - press to buy more'}
+    >
       <span className="tl-coin" aria-hidden>
         <IconCredits className="h-5 w-5" />
       </span>
@@ -59,7 +70,7 @@ function ThemeToggleButton() {
   );
 }
 
-export default function AppTopBar({ balanceMilli, drawerOpen, onToggleDrawer, triggerRef }: Props) {
+export default function AppTopBar({ balanceMilli, role, sheetUrl, drawerOpen, onToggleDrawer, triggerRef }: Props) {
   return (
     <header className="tl-topbar">
       <div className="tl-brand">
@@ -75,7 +86,8 @@ export default function AppTopBar({ balanceMilli, drawerOpen, onToggleDrawer, tr
           <IconMenu className="h-5 w-5" />
         </button>
 
-        <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="Tailor home">
+        {/* A reporter's home is Report Jobs: `/` is the builder, which is not theirs. */}
+        <Link href={homeFor(role)} className="flex min-w-0 items-center gap-2.5" aria-label="Tailor home">
           <Image
             src="/tailor-icon.svg"
             alt=""
@@ -96,10 +108,10 @@ export default function AppTopBar({ balanceMilli, drawerOpen, onToggleDrawer, tr
         at the foot of the rail beside Settings.
       */}
       <div className="ml-auto flex shrink-0 items-center gap-1 px-3 sm:gap-3 sm:px-5">
-        <CreditsPill balanceMilli={balanceMilli} />
+        <CreditsPill balanceMilli={balanceMilli} reporter={role === 'reporter'} />
         <NotificationsMenu />
         <ThemeToggleButton />
-        <AccountMenu />
+        <AccountMenu sheetUrl={sheetUrl} />
       </div>
     </header>
   );

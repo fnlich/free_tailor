@@ -1,4 +1,5 @@
 import type { IconName } from '@/components/icons';
+import { BUILDER_ROLES, REPORTER_HOME, type UserRole } from '@/lib/roles';
 import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscriptions';
 
 /**
@@ -14,14 +15,30 @@ import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscript
  * door that will not open.
  */
 
-/** A role, or the lowest account subscription that includes the entry. */
-export type NavNeeds = 'admin' | 'non-admin' | AccountSubscriptionId;
+/** The lowest account subscription that includes the entry. */
+export type NavNeeds = AccountSubscriptionId;
+
+/**
+ * The roles that see an entry, when they are not the builders.
+ *
+ * Absent means users and administrators - the resume builder's roles - and
+ * NOT a reporter: an entry added later is kept from reporters until somebody
+ * names them here, the same safe default as the backend's `requireUser` and
+ * the reporter allowlist in lib/roles.ts. backend/test/frontendRoles.test.js
+ * fails when a reporter is offered an entry that allowlist would send them
+ * away from.
+ */
+type Roles = readonly UserRole[];
+
+const EVERYBODY: Roles = ['user', 'reporter', 'admin'];
 
 export type NavItem = {
   href: string;
   label: string;
   icon: IconName;
-  /** Who may see it. Absent means everybody who is signed in. */
+  /** Who sees it, by role. Absent means the builders: users and administrators. */
+  roles?: Roles;
+  /** The subscription it needs, on top of the role. Absent means every subscription. */
   needs?: NavNeeds;
   /** Leaves the app; rendered as an anchor with target=_blank. */
   external?: boolean;
@@ -37,6 +54,12 @@ export type NavItem = {
  * those profiles are for, then the resumes built for them.
  */
 export const SIDEBAR_MAIN: NavItem[] = [
+  /*
+   * A reporter's home (owner decision A3), and first for them because it is
+   * the whole of their work. Reporters only: an administrator may open the
+   * page, but it is not theirs to do every day.
+   */
+  { href: REPORTER_HOME, label: 'Report Jobs', icon: 'report', roles: ['reporter'] },
   // "Profiles" here is the resume profiles - the career data a resume is built
   // from. The account you are signed in as lives under Settings instead.
   { href: '/admin/profiles', label: 'Profiles', icon: 'profile' },
@@ -49,7 +72,8 @@ export const SIDEBAR_MAIN: NavItem[] = [
   },
   { href: '/', label: 'Build Resumes', icon: 'build' },
   { href: '/orders', label: 'Orders', icon: 'orders' },
-  { href: '/credits', label: 'Credits', icon: 'credits' },
+  // A reporter's too: their earnings and the payouts recorded against them.
+  { href: '/credits', label: 'Credits', icon: 'credits', roles: EVERYBODY },
 ];
 
 /** Below the divider, under the "Assistant" heading: the tools that help work a job. */
@@ -62,21 +86,27 @@ export const SIDEBAR_ASSISTANT: NavItem[] = [
 /**
  * Pinned to the bottom of the rail.
  *
- * Templates is shared by the whole installation - everybody can look, only an
- * administrator can change one - and Settings is everybody's: an account's own
+ * Templates is shared by the whole installation - every user and administrator
+ * can look (a reporter is refused /api/templates, so it names no roles), only
+ * an administrator can change one - and Settings is everybody's: an account's own
  * tabs for everyone, the installation's on top of them for an administrator.
  */
 export const SIDEBAR_BOTTOM: NavItem[] = [
   { href: '/admin/templates', label: 'Templates', icon: 'templates' },
-  { href: '/settings', label: 'Settings', icon: 'settings' },
+  { href: '/settings', label: 'Settings', icon: 'settings', roles: EVERYBODY },
 ];
 
-export type SettingsTab = { href: string; label: string };
+/** A Settings tab. `roles` as on a rail entry: absent means users and administrators. */
+export type SettingsTab = { href: string; label: string; roles?: Roles };
 
-/** Settings for the account you are signed in as. Everybody gets these. */
+/**
+ * Settings for the account you are signed in as. A reporter gets the first
+ * two - their name, and the job sheet their reports come from; cards and a
+ * subscription are a builder's.
+ */
 export const SETTINGS_ACCOUNT_TABS: SettingsTab[] = [
-  { href: '/settings', label: 'Profile' },
-  { href: '/settings/job-sheet', label: 'Job Sheet' },
+  { href: '/settings', label: 'Profile', roles: EVERYBODY },
+  { href: '/settings/job-sheet', label: 'Job Sheet', roles: EVERYBODY },
   { href: '/settings/payment-methods', label: 'Payment Methods' },
   { href: '/settings/subscription', label: 'Subscription' },
 ];
@@ -106,13 +136,24 @@ export const SETTINGS_ADMIN_TABS: SettingsTab[] = [
 /** Every Settings tab, for deciding whether a route is part of the hub. */
 export const SETTINGS_ITEMS: SettingsTab[] = [...SETTINGS_ACCOUNT_TABS, ...SETTINGS_ADMIN_TABS];
 
-export function canSee(item: NavItem, isAdmin: boolean, subscription: unknown): boolean {
+/**
+ * Whether an account with this role and subscription is offered the entry.
+ *
+ * The role first, by name, so an unknown role - a server newer than this
+ * page - is offered nothing a builder is. Then the subscription, which an
+ * administrator is exempt from, as the backend's `requireSubscription` is
+ * (owner decision B1).
+ */
+export function canSee(item: { roles?: Roles; needs?: NavNeeds }, role: unknown, subscription: unknown): boolean {
+  const roles = item.roles ?? BUILDER_ROLES;
+  if (!roles.some((allowed) => allowed === role)) return false;
   if (!item.needs) return true;
-  if (item.needs === 'admin') return isAdmin;
-  if (item.needs === 'non-admin') return !isAdmin;
-  // An administrator is exempt from the subscription tiers, as the backend's
-  // `requireSubscription` is (owner decision B1).
-  return isAdmin || subscriptionAtLeast(subscription, item.needs);
+  return role === 'admin' || subscriptionAtLeast(subscription, item.needs);
+}
+
+/** The account tabs of Settings this role is offered, in order. */
+export function settingsTabsFor(role: unknown): SettingsTab[] {
+  return SETTINGS_ACCOUNT_TABS.filter((tab) => canSee(tab, role, undefined));
 }
 
 function matches(pathname: string, href: string): boolean {
