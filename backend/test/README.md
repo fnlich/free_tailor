@@ -66,6 +66,16 @@ Coverage currently focuses on:
   and the shared job board's deletions are an administrator's
 - the batch progress stream's bare-newline heartbeat, which keeps a proxy's
   idle timeout from cutting a long batch (`batchStream.test.js`)
+- the account tier's rename from plan to subscription
+  (`subscriptionRename.test.js`): `users.plan` renamed in place on a database
+  the older build made, values and default kept, logged once and a no-op on
+  the next start, renamed forward again after a rollback renamed it back, and
+  both columns left alone with a warning; Settings > Subscription as a tab
+  with `/settings/plan` a `redirect()` to it; and no frontend code or copy
+  still calling the tier a plan. The tier gate itself, `requireSubscription`,
+  is in `sectionPermissions.test.js`, the admin payloads in
+  `accountRoutes.test.js`, and the frontend's copy of the tier order is held
+  to the backend's in `frontendHelpers.test.js`
 - a profile's two section switches and its own soft skills
   (`resumeSections.test.js`): off unless stored `true`, kept by a save that
   omits them; the soft-skill list cleaned, bounded and kept; the preview's
@@ -85,7 +95,7 @@ Coverage currently focuses on:
   fallbacks
 - the live profile preview over HTTP (`profilePreview.test.js`), run with all
   three seats locked so a 200 also proves no model was asked: nothing written
-  or charged even at the plan limit, the draft laid over the caller's own
+  or charged even at the subscription's profile limit, the draft laid over the caller's own
   profile and somebody else's a 404, half-typed drafts rendering, nothing typed
   able to run, the layout and switches reaching the page, the template order
   and layout fallback, a disabled template a 404 for a user only, and a 503

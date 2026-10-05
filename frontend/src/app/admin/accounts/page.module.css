@@ -30,7 +30,7 @@
 
 
 /*
- * The role, plan and balance controls inside a table row: the kit's field,
+ * The role, subscription and balance controls inside a table row: the kit's field,
  * a size down so a row of them reads as a table rather than a form. Element
  * plus class, to out-rank `.tl-input` (unlayered, so a utility could not).
  */

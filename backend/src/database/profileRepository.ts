@@ -1,4 +1,4 @@
-import { describeProfileLimit, resolveAccountPlan } from '../config/accountPlans';
+import { resolveSubscription } from '../config/accountSubscriptions';
 import { Profile } from '../types/profile';
 import type { UserAccount } from '../types/account';
 import { DocumentTable } from './documentTable';
@@ -123,7 +123,7 @@ export function deleteProfile(id: string): boolean {
   })();
 }
 
-/* ------------------------------------------------------------- the plan cap */
+/* ----------------------------------------------------- the subscription cap */
 
 /**
  * How many profiles an account holds.
@@ -154,44 +154,45 @@ export const NO_MATCHING_PROFILES =
 export class ProfileLimitError extends PublicError {
   readonly limit: number;
   readonly used: number;
-  readonly planLabel: string;
+  readonly subscriptionLabel: string;
 
-  constructor(planLabel: string, limit: number, used: number) {
+  constructor(subscriptionLabel: string, limit: number, used: number) {
     super(
-      `The ${planLabel} plan allows ${limit} profile${limit === 1 ? '' : 's'} and this account has ` +
-        `${used}. Delete one, or ask an administrator to move the account to a larger plan.`,
-      // 402: the plan, not the request, is what is short - the same status a
-      // run refused for want of credits answers.
+      `The ${subscriptionLabel} subscription allows ${limit} profile${limit === 1 ? '' : 's'} and this ` +
+        `account has ${used}. Delete one, or ask an administrator to move the account to a higher subscription.`,
+      // 402: the subscription, not the request, is what is short - the same
+      // status a run refused for want of credits answers.
       { status: 402, code: 'profile-limit', extra: { limit } }
     );
     this.name = 'ProfileLimitError';
     this.limit = limit;
     this.used = used;
-    this.planLabel = planLabel;
+    this.subscriptionLabel = subscriptionLabel;
   }
 }
 
 /**
- * Refuses a new profile that would put the account over its plan.
+ * Refuses a new profile that would put the account over its subscription.
  *
- * Called before a create, never before an update: an account moved DOWN a plan
- * keeps the profiles it already has. Deleting somebody's work because an admin
+ * Called before a create, never before an update: an account moved DOWN a
+ * subscription keeps the profiles it already has. Deleting somebody's work because an admin
  * changed a dropdown would be the wrong way round - they lose the ability to
  * add, not the things they made.
  *
- * Admins are exempt. They can already change any account's plan, so a limit on
- * them is a formality that only gets in the way of fixing somebody else's.
+ * Admins are exempt. They can already change any account's subscription, so a
+ * limit on them is a formality that only gets in the way of fixing somebody
+ * else's.
  */
 export function assertCanAddProfile(account: UserAccount, adding = 1): void {
   if (account.role === 'admin') return;
 
-  const plan = resolveAccountPlan(account.plan);
-  if (plan.profileLimit === null) return;
+  const subscription = resolveSubscription(account.subscription);
+  if (subscription.profileLimit === null) return;
 
   const used = countProfilesForOwner(account.id);
-  if (used + adding <= plan.profileLimit) return;
+  if (used + adding <= subscription.profileLimit) return;
 
-  throw new ProfileLimitError(plan.label, plan.profileLimit, used);
+  throw new ProfileLimitError(subscription.label, subscription.profileLimit, used);
 }
 
 /**

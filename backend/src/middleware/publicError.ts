@@ -38,7 +38,7 @@ export type PublicErrorOptions = {
   status?: number;
   /** A machine-readable reason, so a page can branch without reading English. */
   code?: string;
-  /** Fields sent beside the message - `needed` and `balance`, a plan `limit`. */
+  /** Fields sent beside the message - `needed` and `balance`, a subscription's profile `limit`. */
   extra?: Record<string, unknown>;
   /**
    * The cause, for an administrator and the log. A public error with a detail
@@ -53,7 +53,7 @@ export type PublicErrorOptions = {
  * An error whose message is safe for anybody to read.
  *
  * Every user-actionable refusal in the app extends this - a sign-in code that
- * is wrong, a plan's profile limit, too few credits, a spreadsheet tab that is
+ * is wrong, a subscription's profile limit, too few credits, a spreadsheet tab that is
  * not there - so `publicFailure` can tell them from a failure whose message
  * was never written for a person. Anything that is not one of these is treated
  * as unsafe, which is the direction a mistake should fail in: a forgotten

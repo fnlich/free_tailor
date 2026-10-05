@@ -6,8 +6,8 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   accountsApi,
-  type AccountPlan,
-  type AccountPlanId,
+  type AccountSubscription,
+  type AccountSubscriptionId,
   type ManagedAccount,
   type UserRole,
 } from '@/lib/auth';
@@ -23,7 +23,7 @@ import styles from './page.module.css';
  * Each control writes on change rather than collecting a form and saving it.
  * The alternative - a Save button per row - hides which of eight rows have
  * unsaved edits, and the server refuses the changes that matter (the last
- * admin, an unknown plan) rather than the page, so a refusal has to be shown
+ * admin, an unknown subscription) rather than the page, so a refusal has to be shown
  * per control anyway.
  */
 
@@ -31,7 +31,7 @@ function AccountsTable() {
   const { account: me, refresh: refreshMe } = useAuth();
 
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
-  const [plans, setPlans] = useState<AccountPlan[]>([]);
+  const [subscriptions, setSubscriptions] = useState<AccountSubscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -57,7 +57,7 @@ function AccountsTable() {
   const [grantNote, setGrantNote] = useState('');
 
   const [inviteEmail, setInviteEmail] = useState('');
-  const [invitePlan, setInvitePlan] = useState<AccountPlanId>('default');
+  const [inviteSubscription, setInviteSubscription] = useState<AccountSubscriptionId>('default');
   const [inviting, setInviting] = useState(false);
 
   const load = useCallback(async () => {
@@ -65,7 +65,7 @@ function AccountsTable() {
     try {
       const data = await accountsApi.list();
       setAccounts(data.accounts);
-      setPlans(data.plans);
+      setSubscriptions(data.subscriptions);
       setError(null);
     } catch (caught) {
       setError(messageWithDetail(caught, 'Could not load accounts.'));
@@ -86,7 +86,7 @@ function AccountsTable() {
       const updated = await action();
       if (updated) {
         setAccounts((current) => current.map((row) => (row.id === updated.id ? updated : row)));
-        // The signed-in admin may have just changed their OWN plan or role, and
+        // The signed-in admin may have just changed their OWN subscription or role, and
         // the top bar reads that from the provider rather than from this page.
         if (updated.id === me?.id) void refreshMe();
       } else {
@@ -153,11 +153,11 @@ function AccountsTable() {
     setError(null);
     setNotice(null);
     try {
-      await accountsApi.create({ email: inviteEmail, plan: invitePlan });
+      await accountsApi.create({ email: inviteEmail, subscription: inviteSubscription });
       setInviteEmail('');
       setNotice(
         `Account created for ${inviteEmail}. They still have to sign in with Google or an emailed ` +
-          'code - this only sets the plan in advance.'
+          'code - this only sets the subscription in advance.'
       );
       await load();
     } catch (caught) {
@@ -195,7 +195,7 @@ function AccountsTable() {
       <header>
         <h2 className="text-2xl font-bold tracking-tight text-ink">Accounts</h2>
         <p className="mt-1 text-sm text-muted">
-          Everybody who can sign in to this installation, and what their plan allows them.
+          Everybody who can sign in to this installation, and what their subscription allows them.
         </p>
       </header>
 
@@ -218,7 +218,7 @@ function AccountsTable() {
         title="Add an account"
         description={
           <>
-            Sets somebody&apos;s plan before they arrive. It is not a way in: they still prove the
+            Sets somebody&apos;s subscription before they arrive. It is not a way in: they still prove the
             address through Google or an emailed code.
           </>
         }
@@ -237,17 +237,17 @@ function AccountsTable() {
                 className="tl-input"
               />
             </Field>
-            <Field label="Plan" htmlFor="invite-plan">
+            <Field label="Subscription" htmlFor="invite-subscription">
               <select
-                id="invite-plan"
-                value={invitePlan}
+                id="invite-subscription"
+                value={inviteSubscription}
                 disabled={inviting}
-                onChange={(event) => setInvitePlan(event.target.value as AccountPlanId)}
+                onChange={(event) => setInviteSubscription(event.target.value as AccountSubscriptionId)}
                 className="tl-input"
               >
-                {plans.map((plan) => (
-                  <option key={plan.id} value={plan.id}>
-                    {plan.label}
+                {subscriptions.map((subscription) => (
+                  <option key={subscription.id} value={subscription.id}>
+                    {subscription.label}
                   </option>
                 ))}
               </select>
@@ -272,7 +272,7 @@ function AccountsTable() {
                 <tr>
                   <th scope="col">Account</th>
                   <th scope="col">Role</th>
-                  <th scope="col">Plan</th>
+                  <th scope="col">Subscription</th>
                   <th scope="col">Profiles</th>
                   <th scope="col">Credits</th>
                   <th scope="col">Last seen</th>
@@ -327,20 +327,23 @@ function AccountsTable() {
                       <td>
                         <div className="w-32">
                           <select
-                            value={row.plan}
+                            value={row.subscription}
                             disabled={busy}
-                            aria-label={`Plan for ${row.email}`}
+                            aria-label={`Subscription for ${row.email}`}
                             onChange={(event) =>
                               apply(row.id, async () =>
-                                (await accountsApi.update(row.id, { plan: event.target.value as AccountPlanId }))
-                                  .account
+                                (
+                                  await accountsApi.update(row.id, {
+                                    subscription: event.target.value as AccountSubscriptionId,
+                                  })
+                                ).account
                               )
                             }
                             className={`tl-input ${styles.compact}`}
                           >
-                            {plans.map((plan) => (
-                              <option key={plan.id} value={plan.id}>
-                                {plan.label}
+                            {subscriptions.map((subscription) => (
+                              <option key={subscription.id} value={subscription.id}>
+                                {subscription.label}
                               </option>
                             ))}
                           </select>
@@ -353,8 +356,11 @@ function AccountsTable() {
                         </span>
                         {row.profileLimit !== null && row.profilesUsed > row.profileLimit && (
                           // Possible and legitimate: moving an account down a
-                          // plan never deletes what it already has.
-                          <span className="ml-2" title="Over the plan's limit; they keep these but cannot add more.">
+                          // subscription never deletes what it already has.
+                          <span
+                            className="ml-2"
+                            title="Over the subscription's limit; they keep these but cannot add more."
+                          >
                             <Pill tone="amber">over</Pill>
                           </span>
                         )}

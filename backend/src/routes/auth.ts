@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { listAccountPlans, resolveAccountPlan, type AccountPlan } from '../config/accountPlans';
+import { listSubscriptions, resolveSubscription, type AccountSubscription } from '../config/accountSubscriptions';
 import { sessionTtlMs } from '../config/operational';
 import { countProfilesForOwner } from '../database/profileRepository';
 import { destroySession, updateUser } from '../database/userRepository';
@@ -56,22 +56,22 @@ function clearSessionCookie(res: Response): void {
 }
 
 export type AccountView = UserAccount & {
-  plan: UserAccount['plan'];
-  planLabel: string;
-  planSummary: string;
+  subscription: UserAccount['subscription'];
+  subscriptionLabel: string;
+  subscriptionSummary: string;
   /** null means unlimited. */
   profileLimit: number | null;
   profilesUsed: number;
 };
 
-/** The account plus what the plan entitles it to, which the UI always wants together. */
+/** The account plus what its subscription entitles it to, which the UI always wants together. */
 export function describeAccount(account: UserAccount): AccountView {
-  const plan: AccountPlan = resolveAccountPlan(account.plan);
+  const subscription: AccountSubscription = resolveSubscription(account.subscription);
   return {
     ...account,
-    planLabel: plan.label,
-    planSummary: plan.summary,
-    profileLimit: plan.profileLimit,
+    subscriptionLabel: subscription.label,
+    subscriptionSummary: subscription.summary,
+    profileLimit: subscription.profileLimit,
     profilesUsed: countProfilesForOwner(account.id),
   };
 }
@@ -130,9 +130,9 @@ router.get('/options', (_req: Request, res: Response) => {
   res.json({ google: options.google, email: { available: options.email.available } });
 });
 
-/** The plan catalog, so the subscription panel is not a second copy of it. */
-router.get('/plans', (_req: Request, res: Response) => {
-  res.json({ plans: listAccountPlans() });
+/** The subscription catalog, so Settings > Subscription is not a second copy of it. */
+router.get('/subscriptions', (_req: Request, res: Response) => {
+  res.json({ subscriptions: listSubscriptions() });
 });
 
 router.post('/google', async (req: Request, res: Response) => {

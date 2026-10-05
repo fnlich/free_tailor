@@ -4,11 +4,11 @@ const test = require('node:test');
 const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
- * Accounts, plans and the profile cap.
+ * Accounts, subscriptions and the profile cap.
  *
  * The claims worth pinning are the ones a mistake would make silently wrong:
  * that the two sign-in paths land on ONE account, that a profile belongs to
- * whoever made it and is invisible to everybody else, that the plan's limit is
+ * whoever made it and is invisible to everybody else, that the subscription's limit is
  * enforced on every door into the profiles table, and that an admin cannot
  * leave the installation with nobody who can administer it.
  */
@@ -177,8 +177,8 @@ test('a row from before accounts existed is admin-only until it is adopted', () 
   assert.deepEqual(profiles.listProfilesFor(admin, { allOwners: true }).map((p) => p.id), ['p-old']);
 });
 
-test('the plan caps how many profiles an account may keep', () => {
-  useTempStorage('accounts-plan-cap');
+test('the subscription caps how many profiles an account may keep', () => {
+  useTempStorage('accounts-subscription-cap');
   useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
@@ -189,39 +189,43 @@ test('the plan caps how many profiles an account may keep', () => {
   // Default: one profile.
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
   profiles.saveProfile(profile('a1', 'One', alice.id));
-  assert.throws(() => profiles.assertCanAddProfile(alice), /Default plan allows 1 profile/);
+  assert.throws(() => profiles.assertCanAddProfile(alice), /Default subscription allows 1 profile/);
+  assert.throws(
+    () => profiles.assertCanAddProfile(alice),
+    (error) => error.subscriptionLabel === 'Default' && /higher subscription\.$/.test(error.message)
+  );
 
   // A DISABLED profile still occupies its slot. Not counting it would make the
   // limit meaningless the moment somebody worked out that disabling is free.
   profiles.saveProfile({ ...profile('a1', 'One', alice.id), disabled: true });
   assert.throws(() => profiles.assertCanAddProfile(alice), /allows 1 profile/);
 
-  alice = users.updateUser(alice.id, { plan: 'premium' });
+  alice = users.updateUser(alice.id, { subscription: 'premium' });
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
-  // An import is counted whole, so six into a plan with room for four refuses
+  // An import is counted whole, so six into a subscription with room for four refuses
   // all six rather than landing four and failing.
   assert.throws(() => profiles.assertCanAddProfile(alice, 6), /allows 5 profiles/);
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice, 4));
 
-  alice = users.updateUser(alice.id, { plan: 'premium-max' });
+  alice = users.updateUser(alice.id, { subscription: 'premium-max' });
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice, 1000), 'Premium Max is unlimited');
 
-  // Admins are exempt: they can already change any account's plan, so a limit
+  // Admins are exempt: they can already change any account's subscription, so a limit
   // on them only gets in the way of fixing somebody else's.
   assert.doesNotThrow(() => profiles.assertCanAddProfile(admin, 1000));
 });
 
-test('moving an account down a plan does not take away the profiles it has', () => {
+test('moving an account down a subscription does not take away the profiles it has', () => {
   useTempStorage('accounts-downgrade');
   const users = loadFresh('../dist/database/userRepository');
   const profiles = loadFresh('../dist/database/profileRepository');
 
   users.createUser({ email: 'admin@example.com' });
   let alice = users.createUser({ email: 'alice@example.com' });
-  alice = users.updateUser(alice.id, { plan: 'premium' });
+  alice = users.updateUser(alice.id, { subscription: 'premium' });
   for (const id of ['a1', 'a2', 'a3']) profiles.saveProfile(profile(id, id, alice.id));
 
-  alice = users.updateUser(alice.id, { plan: 'default' });
+  alice = users.updateUser(alice.id, { subscription: 'default' });
 
   // They keep what they made - losing work because an admin changed a dropdown
   // would be the wrong way round. What they lose is the ability to add.
@@ -229,18 +233,18 @@ test('moving an account down a plan does not take away the profiles it has', () 
   assert.throws(() => profiles.assertCanAddProfile(alice), /allows 1 profile/);
 });
 
-test('a plan this build does not know reads as the smallest one', () => {
-  useTempStorage('accounts-unknown-plan');
+test('a subscription this build does not know reads as the smallest one', () => {
+  useTempStorage('accounts-unknown-subscription');
   const users = loadFresh('../dist/database/userRepository');
   const { getDb } = loadFresh('../dist/database/sqlite');
 
   const account = users.createUser({ email: 'admin@example.com' });
-  getDb().prepare('UPDATE users SET plan = ? WHERE id = ?').run('premium-ultra', account.id);
+  getDb().prepare('UPDATE users SET subscription = ? WHERE id = ?').run('premium-ultra', account.id);
 
   // Landing small is the safe direction: it can refuse a profile somebody was
   // entitled to, which an admin fixes in a click, where the other direction
   // hands out entitlements nobody granted.
-  assert.equal(users.getUserById(account.id).plan, 'default');
+  assert.equal(users.getUserById(account.id).subscription, 'default');
 });
 
 test('credits start at zero and block nothing', () => {

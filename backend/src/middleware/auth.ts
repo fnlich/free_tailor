@@ -3,7 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { resolveSession } from '../database/userRepository';
 import type { UserAccount } from '../types/account';
 
-import { ACCOUNT_PLANS, planAtLeast, type AccountPlanId } from '../config/accountPlans';
+import { SUBSCRIPTIONS, subscriptionAtLeast, type AccountSubscriptionId } from '../config/accountSubscriptions';
 
 /**
  * Who is making this request.
@@ -118,27 +118,27 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
 }
 
 /**
- * Signed in AND on a plan at least this high, or 401/403.
+ * Signed in AND on a subscription at least this high, or 401/403.
  *
  * Deliberately NOT satisfied by being an administrator. An admin is a role -
- * who may change shared settings - and a plan is an entitlement; conflating
- * them would mean the answer to "may I use this" depended on two unrelated
- * things. The consequence is real and worth knowing: every account starts on
- * the default plan, so an administrator who has not been moved up is refused
- * here like anybody else.
+ * who may change shared settings - and a subscription is an entitlement;
+ * conflating them would mean the answer to "may I use this" depended on two
+ * unrelated things. The consequence is real and worth knowing: every account
+ * starts on the Default subscription, so an administrator who has not been
+ * moved up is refused here like anybody else.
  */
-export function requirePlan(minimum: AccountPlanId) {
-  return function planGuard(req: Request, res: Response, next: NextFunction): void {
+export function requireSubscription(minimum: AccountSubscriptionId) {
+  return function subscriptionGuard(req: Request, res: Response, next: NextFunction): void {
     if (!req.user) {
       res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
       return;
     }
-    if (!planAtLeast(req.user.plan, minimum)) {
-      const needed = ACCOUNT_PLANS[minimum].label;
+    if (!subscriptionAtLeast(req.user.subscription, minimum)) {
+      const needed = SUBSCRIPTIONS[minimum].label;
       res.status(403).json({
-        error: `That part of this installation needs a ${needed} plan or higher.`,
-        code: 'plan-too-low',
-        requiredPlan: minimum,
+        error: `That part of this installation needs a ${needed} subscription or higher.`,
+        code: 'subscription-too-low',
+        requiredSubscription: minimum,
       });
       return;
     }

@@ -107,7 +107,8 @@ export default function AccountMenu() {
             <p className="truncate text-xs text-subtle">{account.email}</p>
 
             <div className="mt-3 flex items-center justify-between">
-              <Pill tone="sky">{account.planLabel}</Pill>
+              {/* "Default" alone reads as a setting left untouched; it is a tier. */}
+              <Pill tone="sky">{account.subscriptionLabel} subscription</Pill>
               {isAdmin && <Pill tone="violet">Admin</Pill>}
             </div>
 
@@ -127,7 +128,7 @@ export default function AccountMenu() {
                 <span className="font-semibold tabular-nums text-ink">{account.credits}</span>
               </Link>
               <Link
-                href="/settings/plan"
+                href="/settings/subscription"
                 onClick={() => setOpen(false)}
                 className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
               >
@@ -141,8 +142,8 @@ export default function AccountMenu() {
             <Link href="/settings" onClick={() => setOpen(false)} className={ITEM}>
               Settings
             </Link>
-            <Link href="/settings/plan" onClick={() => setOpen(false)} className={ITEM}>
-              Plan
+            <Link href="/settings/subscription" onClick={() => setOpen(false)} className={ITEM}>
+              Subscription
             </Link>
             {isAdmin && (
               <Link href="/admin/accounts" onClick={() => setOpen(false)} className={ITEM}>

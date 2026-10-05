@@ -37,8 +37,8 @@ export default function SettingsHeader({ pathname, isAdmin }: Props) {
   const accountRow = useTabRow<HTMLElement>(pathname);
   const adminRow = useTabRow<HTMLElement>(`${pathname}:${onAdmin}`);
 
-  // Longest match, so /settings/plan lights Plan and not Profile, whose
-  // /settings is a prefix of it.
+  // Longest match, so /settings/subscription lights Subscription and not
+  // Profile, whose /settings is a prefix of it.
   const accountActive = onAdmin ? null : activeHref(pathname, SETTINGS_ACCOUNT_TABS);
   const adminActive = onAdmin ? activeHref(pathname, SETTINGS_ADMIN_TABS) : null;
 

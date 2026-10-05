@@ -18,7 +18,7 @@ const { captureErrorLog, useAdminEmails, useTempStorage } = require('./helpers')
  *
  *   - the draft is rendered as it would print, through the same pipeline and
  *     template choice as a generated resume, untailored;
- *   - nothing is written, no plan limit is consulted, no model is asked and no
+ *   - nothing is written, no subscription limit is consulted, no model is asked and no
  *     credit moves;
  *   - another account's profile and a disabled template are 404s;
  *   - whatever is half-typed renders rather than failing, and nothing typed
@@ -131,7 +131,7 @@ test('a draft for a new profile renders, and nothing is written, charged or aske
     const creditsBefore = server.users.getUserById(server.alice.id).credits;
     const ledgerBefore = getLedger(server.alice.id).length;
 
-    // Alice is on the default plan, whose one profile she already has: a SAVE
+    // Alice is on the Default subscription, whose one profile she already has: a SAVE
     // of this draft would be refused. A preview adds nothing, so it is not.
     const response = await server.call('alice', { profile: draft() });
     assert.equal(response.status, 200, JSON.stringify(response.body));

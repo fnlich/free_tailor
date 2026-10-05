@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 
-import { DEFAULT_ACCOUNT_PLAN, isAccountPlanId, type AccountPlanId } from '../config/accountPlans';
+import { DEFAULT_SUBSCRIPTION, isSubscriptionId, type AccountSubscriptionId } from '../config/accountSubscriptions';
 import { isConfiguredAdmin, resolveAdminIdentity } from '../config/adminIdentity';
 import { sessionTtlMs } from '../config/operational';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
@@ -21,7 +21,7 @@ type UserRow = {
   name: string;
   picture: string;
   role: string;
-  plan: string;
+  subscription: string;
   credits: number;
   google_sub: string | null;
   disabled: number;
@@ -38,7 +38,7 @@ type UserRow = {
 };
 
 const USER_COLUMNS =
-  'id, email, name, picture, role, plan, credits, google_sub, disabled, created_at, updated_at, ' +
+  'id, email, name, picture, role, subscription, credits, google_sub, disabled, created_at, updated_at, ' +
   'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at, ' +
   'notifications_seen_at, stripe_customer_id';
 
@@ -69,9 +69,12 @@ function toAccount(row: UserRow): UserAccount {
     name: row.name,
     picture: row.picture,
     role: isRole(row.role) ? row.role : 'user',
-    // Coerced rather than trusted: a row naming a plan this build removed must
-    // read as the smallest plan, not as an entitlement nobody granted.
-    plan: (isAccountPlanId(row.plan) ? row.plan : DEFAULT_ACCOUNT_PLAN) as AccountPlanId,
+    // Coerced rather than trusted: a row naming a subscription this build
+    // removed must read as the smallest one, not as an entitlement nobody
+    // granted.
+    subscription: (isSubscriptionId(row.subscription)
+      ? row.subscription
+      : DEFAULT_SUBSCRIPTION) as AccountSubscriptionId,
     credits: Number.isFinite(row.credits) ? row.credits : 0,
     disabled: row.disabled === 1,
     createdAt: row.created_at,
@@ -236,7 +239,7 @@ export function createUser(input: CreateUserInput): UserAccount {
     name: (input.name ?? '').trim() || email.split('@')[0],
     picture: input.picture ?? '',
     role: roleForNewUser(email, input.role),
-    plan: DEFAULT_ACCOUNT_PLAN,
+    subscription: DEFAULT_SUBSCRIPTION,
     // Zero, and nothing in this release spends them. The balance exists so an
     // admin can grant it and so the account page has something true to show.
     credits: 0,
@@ -263,7 +266,7 @@ export function createUser(input: CreateUserInput): UserAccount {
   getDb()
     .prepare(
       `INSERT INTO users (${USER_COLUMNS})
-       VALUES (@id, @email, @name, @picture, @role, @plan, @credits, @google_sub, @disabled,
+       VALUES (@id, @email, @name, @picture, @role, @subscription, @credits, @google_sub, @disabled,
                @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
                @sheet_tab_gid, @sheet_shared_at, @notifications_seen_at,
                @stripe_customer_id)`
@@ -326,9 +329,9 @@ export function updateUser(id: string, update: AccountUpdate): UserAccount | nul
     patch.push('role = @role');
     values.role = update.role;
   }
-  if (update.plan !== undefined) {
-    patch.push('plan = @plan');
-    values.plan = update.plan;
+  if (update.subscription !== undefined) {
+    patch.push('subscription = @subscription');
+    values.subscription = update.subscription;
   }
   // NO `credits` BRANCH. It used to be here, as an absolute SET, and that is
   // exactly why it had to go: two debits arriving together composed as "last one

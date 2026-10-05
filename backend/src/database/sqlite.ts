@@ -466,7 +466,12 @@ const SCHEMA = `
     name          TEXT NOT NULL DEFAULT '',
     picture       TEXT NOT NULL DEFAULT '',
     role          TEXT NOT NULL DEFAULT 'user',
-    plan          TEXT NOT NULL DEFAULT 'default',
+    /*
+     * The account's tier: default, premium, premium-plus or premium-max
+     * (config/accountSubscriptions.ts). Earlier builds called it plan;
+     * renameColumns below renames it in place on a database they made.
+     */
+    subscription  TEXT NOT NULL DEFAULT 'default',
     credits       INTEGER NOT NULL DEFAULT 0,
     google_sub    TEXT,
     disabled      INTEGER NOT NULL DEFAULT 0,
@@ -562,6 +567,77 @@ export function getDatabaseDir(): string {
 
 export function getDatabasePath(): string {
   return path.join(getDatabaseDir(), DATABASE_FILE_NAME);
+}
+
+/**
+ * Columns renamed in place on a database an older build made.
+ *
+ * `CREATE TABLE IF NOT EXISTS` writes the new name on a fresh database and does
+ * nothing to an old one, so without this an upgraded install would keep the
+ * old column and every query naming the new one would fail. SQLite renames a
+ * column without copying a row, and carries its values, its DEFAULT and any
+ * index or trigger naming it along.
+ *
+ * Guarded by the table's own columns rather than a `schema_meta` marker, and
+ * deliberately: the column IS the state. A marker would say "done" after an
+ * operator rolled back to an older build and renamed the column back for it -
+ * the documented way down - and the next upgrade would then skip the rename
+ * and fail on every account read. Asking PRAGMA table_info costs nothing and is
+ * right every time. Not a numbered migration either: those wait in a chain
+ * behind 003, which waits for an administrator, and nobody can sign in to
+ * become one while `users` names a column this build does not read.
+ *
+ * Fatal, unlike `addMissingColumns`: a column this build failed to ADD leaves
+ * the app reading the table as the previous build did, but one it failed to
+ * RENAME leaves nothing able to read an account at all, and the reason belongs
+ * at startup rather than on every request.
+ */
+const COLUMN_RENAMES: ReadonlyArray<{ table: string; from: string; to: string; why: string }> = [
+  // The account tier is a subscription everywhere - UI, API and here.
+  { table: 'users', from: 'plan', to: 'subscription', why: 'the account tier is called a subscription' },
+];
+
+function renameColumns(db: Database.Database): void {
+  for (const rename of COLUMN_RENAMES) {
+    let renamed = false;
+    try {
+      // The check and the rename are ONE write transaction, taken before the
+      // check reads anything. Two openers of the same file are expected - a
+      // second server on the same DB_DIR, or `migrate:legacy` started beside
+      // the backend - and read outside a transaction both see the old column,
+      // the first renames it, and the second's ALTER dies with "no such
+      // column" on a rename that already happened. Holding the write lock
+      // first, the second waits out busy_timeout and then reads the new name.
+      db.transaction(() => {
+        const columns = db.prepare(`PRAGMA table_info(${rename.table})`).all() as Array<{ name: string }>;
+        const names = new Set(columns.map((column) => column.name));
+        // No table yet (a fresh database: SCHEMA is about to create it with
+        // the new name), or one already renamed.
+        if (!names.has(rename.from)) return;
+        if (names.has(rename.to)) {
+          // Both: somebody ADDED the old column back by hand to roll back,
+          // rather than renaming it. The new one is what this build reads; the
+          // old one is left for whoever added it, never merged into the new on
+          // a guess.
+          console.warn(
+            `[db] ${rename.table} has both "${rename.from}" and "${rename.to}"; reading "${rename.to}" and ` +
+              `leaving "${rename.from}" alone.`
+          );
+          return;
+        }
+        db.exec(`ALTER TABLE ${rename.table} RENAME COLUMN ${rename.from} TO ${rename.to}`);
+        renamed = true;
+      }).immediate();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Could not rename ${rename.table}.${rename.from} to ${rename.to} in ${getDatabasePath()}: ${reason}. ` +
+          'This build reads the new name; check that the database file is writable and not open in another ' +
+          'program, then start the server again.'
+      );
+    }
+    if (renamed) console.log(`[db] Renamed ${rename.table}.${rename.from} to ${rename.to}: ${rename.why}.`);
+  }
 }
 
 /**
@@ -663,6 +739,18 @@ export function getDb(): Database.Database {
   // Without a timeout the loser of a write race throws SQLITE_BUSY immediately,
   // which would surface as a flaky test rather than as the refusal being tested.
   db.pragma('busy_timeout = 5000');
+  // Renamed BEFORE the schema runs, so SCHEMA may index or otherwise name a
+  // column by its new name: on an old database the CREATE TABLE beside it is a
+  // no-op, and an index naming the new column would otherwise fail every boot
+  // of an upgraded install while passing on every fresh one.
+  try {
+    renameColumns(db);
+  } catch (error) {
+    // Not registered, so the next getDb() tries again rather than handing out
+    // a connection nothing can read an account through.
+    db.close();
+    throw error;
+  }
   db.exec(SCHEMA);
   addMissingColumns(db);
   // The connection is registered BEFORE the migrations run. That ordering is

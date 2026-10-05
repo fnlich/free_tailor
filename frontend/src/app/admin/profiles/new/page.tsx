@@ -11,7 +11,7 @@ import { isAtProfileLimit } from '@/lib/auth';
 /**
  * A new profile, with its live preview.
  *
- * The plan's limit is checked before the form is shown, against the account's
+ * The subscription's limit is checked before the form is shown, against the account's
  * live list rather than the sign-in snapshot (which goes stale the moment a
  * profile is deleted) - letting somebody fill in a whole profile and then
  * refusing the save is what the gate is for. The server checks again on save.
@@ -37,7 +37,7 @@ export default function NewProfilePage() {
   }, []);
 
   if (authLoading || profiles === null) {
-    return <Spinner label="Checking your plan..." />;
+    return <Spinner label="Checking your subscription..." />;
   }
 
   const liveAccount = account ? { ...account, profilesUsed: profiles.length } : null;
@@ -48,11 +48,11 @@ export default function NewProfilePage() {
         <Notice tone="warn">
           <p className="font-semibold">
             You are using all {liveAccount.profileLimit} profile{liveAccount.profileLimit === 1 ? '' : 's'} on the{' '}
-            {liveAccount.planLabel} plan.
+            {liveAccount.subscriptionLabel} subscription.
           </p>
           <p className="mt-1">
-            Delete one to make room, or ask an administrator of this installation to move your account to a larger
-            plan.{' '}
+            Delete one to make room, or ask an administrator of this installation to move your account to a higher
+            subscription.{' '}
             <Link href="/admin/profiles" className="font-medium underline underline-offset-2">
               Back to profiles
             </Link>

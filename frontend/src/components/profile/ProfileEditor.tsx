@@ -299,14 +299,14 @@ export default function ProfileEditor({
         await profilesApi.update(profile.id, payload);
       } else {
         await profilesApi.create(payload);
-        // The account's own count feeds the plan line on the list, which would
+        // The account's own count feeds the subscription line on the list, which would
         // otherwise read one behind until the next sign-in check.
         await refresh();
       }
       // Still "saving" while the list loads, so a second press cannot send it twice.
       router.push('/admin/profiles');
     } catch (err) {
-      // Two tabs at the plan's limit: one wins, and the other should find the
+      // Two tabs at the subscription's limit: one wins, and the other should find the
       // limit re-read rather than keep trying.
       if (isProfileLimit(err)) await refresh();
       setSaveError(err ?? 'Failed to save the profile.');

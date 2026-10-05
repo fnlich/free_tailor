@@ -17,7 +17,8 @@ import {
 type Props = {
   pathname: string;
   isAdmin: boolean;
-  plan: unknown;
+  /** The account's subscription, for entries a tier includes. */
+  subscription: unknown;
   /** The account's own job sheet. Empty until it loads, or when there is none. */
   sheetUrl: string;
   /** Below the md breakpoint, where the rail is an off-canvas drawer. */
@@ -86,7 +87,7 @@ function Row({
 export default function AppSidebar({
   pathname,
   isAdmin,
-  plan,
+  subscription,
   sheetUrl,
   isCompact,
   drawerOpen,
@@ -95,7 +96,7 @@ export default function AppSidebar({
 }: Props) {
   // A link that would open about:blank is worse than no link at all, so the
   // sheet entry stays out until there is a URL for it.
-  const offered = (item: NavItem) => canSee(item, isAdmin, plan) && (!item.external || Boolean(sheetUrl));
+  const offered = (item: NavItem) => canSee(item, isAdmin, subscription) && (!item.external || Boolean(sheetUrl));
   const main = SIDEBAR_MAIN.filter(offered);
   const assistant = SIDEBAR_ASSISTANT.filter(offered);
   const bottom = SIDEBAR_BOTTOM.filter(offered);

@@ -24,7 +24,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | Feature | Description |
 |---------|-------------|
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
-| **Plans** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets the plan |
+| **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets each account's subscription; there is no checkout for one |
 | **Credits** | Each resume costs the credits set for the model it is built with - one by default, any whole number an administrator sets, or free. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, so credits spent always pay for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
@@ -476,8 +476,8 @@ left.
 
 **Top bar** - the brand, then on the right: your **credit balance** (press it to
 buy more), **notifications**, the **light/dark** switch, and your **account** -
-name, email, plan, credits and profile use, with account info, subscription and
-sign-out under it - and **Templates** last, because everything before it acts on
+name, email, subscription, credits and profile use, with Settings, Subscription
+and sign-out under it - and **Templates** last, because everything before it acts on
 the session you are in and that one navigates away.
 
 **Sidebar** - your work at the top:
@@ -503,8 +503,8 @@ Below 768px the sidebar becomes a drawer behind the menu button in the top bar.
 
 Not everything is for everybody, and the rule differs by section because the
 reasons differ. A **role** says who may change things the whole installation
-shares; a **plan** says what an individual account includes. They are separate
-checks and one is not a substitute for the other.
+shares; a **subscription** says what an individual account includes. They are
+separate checks and one is not a substitute for the other.
 
 | Section | Who | Why |
 |---|---|---|
@@ -513,7 +513,7 @@ checks and one is not a substitute for the other.
 | **Buy credits** | anybody signed in | their own payments only, by the same 404 rule |
 | **Payments** (the list, and refunds) | **administrators** | reconciliation against the provider's dashboard, and the only button in the product that moves money outward |
 | **Find Jobs** | ordinary users | opens today's tab of their own job sheet in a new tab. Not shown to administrators, who manage the installation rather than work a job sheet |
-| **Groups** | **Premium and above** | an entitlement, checked on the plan alone |
+| **Groups** | **Premium and above** | an entitlement, checked on the subscription alone |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
 | **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for anybody signed in |
 | **Templates** (looking at them) | anybody signed in | the gallery and the full-page preview of each, from the top bar. Choosing a template is no use without seeing what it produces |
@@ -528,10 +528,10 @@ explains itself if the URL is typed - a blank screen reads as a broken link.
 **Hiding is not the protection**: every one of these is enforced by middleware on
 the routes, so an old tab or a hand-made request is refused just the same.
 
-One consequence worth knowing: because the group gate is on the plan alone, **an
-administrator on the default plan is refused Groups too**. Every account starts
-on the default plan, so the first administrator has to be moved up before they
-can use them.
+One consequence worth knowing: because the group gate is on the subscription
+alone, **an administrator on the Default subscription is refused Groups too**.
+Every account starts on Default, so the first administrator has to be moved up
+under **Admin → Accounts** before they can use them.
 
 The same rule holds below the pages. The seats' health (`/api/admin/ai/health`),
 the queue lanes (`/api/generation/queues`), the prompt tools
@@ -550,7 +550,7 @@ model name or third party's own error text. What they are told is one of two
 things:
 
 - **A specific sentence** when the failure is about something of theirs they can
-  act on: a wrong sign-in code, a plan's profile limit, too few credits for a
+  act on: a wrong sign-in code, a subscription's profile limit, too few credits for a
   run, a sheet tab that does not exist, a PDF that is too large.
 - **Otherwise a generic one with a reference**: *Failed to queue the batch.
   Please try again, or contact your administrator. (Ref: ERR-7F3A9C)*. An AI
@@ -604,8 +604,8 @@ What the preview is, exactly:
   the next PDF looks like before a job tailors it. It is **untailored** - your
   own words, no job.
 - **It costs nothing and keeps nothing.** No profile is saved, no model is
-  asked, no credit moves, and the plan's profile limit is not consulted (the
-  save checks it). Saving is still **Save**, and leaving through the page's own
+  asked, no credit moves, and the subscription's profile limit is not consulted
+  (the save checks it). Saving is still **Save**, and leaving through the page's own
   buttons, or closing the tab, with changes unsaved asks first.
 - **It cannot run anything.** The document is framed in a sandbox with scripts
   off, and carries its own policy, `default-src 'none'; style-src
@@ -1365,6 +1365,45 @@ It leaves the default and the switches alone, and logs what it did in
 saved before this release - reads as costing 1 credit per resume until an
 administrator sets one; nothing is written to make it so.
 
+### 8. Plans are now subscriptions
+
+What used to be an account's **plan** - Default, Premium, Premium+, Premium
+Max - is its **subscription** everywhere: on the pages, in the API and in the
+database. What each one allows is unchanged.
+
+- On the first start the backend renames the column `users.plan` to
+  `users.subscription` in place, keeping every account's value, and logs
+  `[db] Renamed users.plan to subscription: ...` once. It decides from the
+  table itself rather than from a marker, so a second start does nothing, and a
+  database renamed back for an older build (below) is renamed forward again.
+- **Settings → Plan** is **Settings → Subscription** (`/settings/subscription`).
+  `/settings/plan` still opens it, so a bookmark keeps working.
+- In the API, an account's `plan`, `planLabel` and `planSummary` are
+  `subscription`, `subscriptionLabel` and `subscriptionSummary`; the admin
+  account list's `plans` is `subscriptions`; `GET /api/auth/plans` is
+  `GET /api/auth/subscriptions`; `POST` and `PATCH /api/admin/accounts` take
+  `subscription`; and a section the account's tier does not include answers 403
+  `subscription-too-low` with `requiredSubscription`. There are no aliases,
+  because the frontend ships with the backend. An Accounts page left open from
+  before the upgrade has its subscription changes and invites refused rather
+  than ignored, and must be reloaded: until then a subscription change breaks
+  the page (so do a delete and any refused change, which reload a list the old
+  page no longer reads), and an invite says to reload.
+
+**Rolling back** to an older build: it reads `users.plan`, and against an
+upgraded database every account read fails with `no such column: plan`. Stop
+the backend and rename the column back before starting the older build:
+
+```sh
+sqlite3 "$DB_DIR/free_tailor.db" 'ALTER TABLE users RENAME COLUMN subscription TO plan;'
+# or, without the sqlite3 shell, from the repository root:
+node -e "new (require('./backend/node_modules/better-sqlite3'))(process.argv[1]).exec('ALTER TABLE users RENAME COLUMN subscription TO plan')" "$DB_DIR/free_tailor.db"
+```
+
+Upgrading again renames it forward. Rename it rather than adding a `plan`
+column: with both present this build reads `subscription` and leaves `plan`
+alone (see Troubleshooting).
+
 ---
 
 ## 🌐 Serving it on your own domain
@@ -1735,7 +1774,7 @@ unique across the install, which settles all of it in one segment.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, plan, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's plan before they arrive; it is not a way in, since they still prove the address through Google or a code |
+| **Accounts** | Every account on the installation, with its role, subscription, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's subscription before they arrive; it is not a way in, since they still prove the address through Google or a code |
 | **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
@@ -1920,6 +1959,10 @@ file. Export them in the shell, for the install and the server alike:
 | `Type '() => Promise<string> \| null' is not assignable to type '() => string \| null'` in `config/browser.ts` | The installed puppeteer is a major ahead of the one this project pins: `executablePath()` returns a string in puppeteer 24 and a promise in 25. The code now handles both, so this should not recur - but an install that far out of step with `package-lock.json` is worth correcting anyway with `npm ci --prefix backend`, which installs exactly the locked versions instead of re-resolving them. |
 | `Cannot find module '<name>'` or `TS2307` right after pulling | A pull brings source, never packages - a commit that adds a dependency leaves `node_modules` a version behind, and the backend then fails to compile naming a module that is correctly listed in `package.json`. Run `npm run install:all`, or `npm install --prefix backend` for the backend alone. |
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
+| Startup fails with *Could not rename users.plan to subscription in ...* | The first start after the plan-to-subscription rename could not change the database file: the file or its directory is read-only to this user, the disk is full, or another program - a `sqlite3` shell, a backup tool - holds a write lock on it past the five-second wait. The reason SQLite gave is at the end of the line. Nothing was changed; fix that and start again. This build cannot run on the old column name, which is why it stops here instead of failing on every sign-in. |
+| Startup warns *users has both "plan" and "subscription"; reading "subscription" and leaving "plan" alone* | A `plan` column was ADDED back by hand - usually to roll back to an older build - instead of renaming `subscription` back (see [Plans are now subscriptions](#8-plans-are-now-subscriptions)). This build reads `subscription`; anything an older build wrote to `plan` since is not read. To keep those values, stop the backend and run `UPDATE users SET subscription = plan; ALTER TABLE users DROP COLUMN plan;` against `free_tailor.db` in your `DB_DIR`; to keep this build's, just drop `plan`. |
+| After rolling back to an older build, every sign-in fails and its log shows `no such column: plan` | The database was upgraded: this release renamed `users.plan` to `users.subscription`, and the older build only knows the old name. Rename it back before starting the older build - the one-line command is in [Plans are now subscriptions](#8-plans-are-now-subscriptions). |
+| On **Admin → Accounts** after an upgrade, changing a row's subscription, deleting an account, or any change the server refuses (demoting the last administrator, say) turns the page into *Application error: a client-side exception has occurred*; or **Add an account** answers *This page is from an older version of the app. Reload it and try again.* | The page was loaded before the upgrade that renamed plans to subscriptions. It sends the tier as `plan`, which this build refuses rather than ignores, and it reloads the account list expecting the old `plans` field, which is now `subscriptions` - so anything in the table that reloads the list breaks the page, and only the invite form, which does not reload after a refusal, gets as far as the sentence. Reload the page. A subscription change or invite was refused, not half-made: an invite meant for Premium would otherwise have created a Default account. A delete names no tier, so it did go through; the reloaded page shows it. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource - one per subscription seat: Claude, Codex and Gemini - so no seat can hold up another. |

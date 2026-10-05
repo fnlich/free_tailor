@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requirePlan, requireUser } from '../middleware/auth';
+import { requireSubscription, requireUser } from '../middleware/auth';
 import { v4 as uuidv4 } from 'uuid';
 import { Group, CreateGroupDTO } from '../types/group';
 import { deleteGroup, getGroupFor, listGroupsFor, saveGroup } from '../database/groupRepository';
@@ -15,14 +15,15 @@ const router = Router();
 router.use(requireUser);
 
 /**
- * And a plan that includes them.
+ * And a subscription that includes them.
  *
  * At the router, so reads are gated as well as writes: an account that may not
  * use groups should not be told how many it would have had. The check is on the
- * plan alone - an administrator who has not been moved off the default plan is
- * refused here too, which is deliberate and documented on `requirePlan`.
+ * subscription alone - an administrator who has not been moved off the Default
+ * subscription is refused here too, which is deliberate and documented on
+ * `requireSubscription`.
  */
-router.use(requirePlan('premium'));
+router.use(requireSubscription('premium'));
 
 
 function normalizeProfileIds(input: unknown): string[] {

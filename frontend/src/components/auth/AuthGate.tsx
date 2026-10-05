@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import ThemeToggle from '@/components/ThemeToggle';
 import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
-import { planAtLeast, type AccountPlanId } from '@/lib/plans';
+import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscriptions';
 import SignInPanel from './SignInPanel';
 
 /**
@@ -117,24 +117,26 @@ export function AdminOnly({ children }: { children: ReactNode }) {
 }
 
 /**
- * The same idea again, for a section an account's PLAN does not include.
+ * The same idea again, for a section an account's SUBSCRIPTION does not include.
  *
  * Separate from `AdminOnly` because the remedy is different and the sentence has
  * to say so: "ask an administrator" is right for a settings page and useless for
- * a plan limit, where what is needed is a different plan on your own account.
+ * a subscription limit, where what is needed is a different subscription on
+ * your own account.
  *
  * Note it does not let administrators through. Being an administrator is a role
- * - who may change things shared by everybody - and a plan is an entitlement;
- * the backend `requirePlan` draws the same line, and a gate that disagreed with
- * it would show somebody a page whose every request then failed.
+ * - who may change things shared by everybody - and a subscription is an
+ * entitlement; the backend `requireSubscription` draws the same line, and a gate
+ * that disagreed with it would show somebody a page whose every request then
+ * failed.
  */
-export function RequiresPlan({
+export function RequiresSubscription({
   minimum,
   label,
   children,
 }: {
-  minimum: AccountPlanId;
-  /** How the plan reads to a person, e.g. "Premium". */
+  minimum: AccountSubscriptionId;
+  /** How the subscription reads to a person, e.g. "Premium". */
   label: string;
   children: ReactNode;
 }) {
@@ -142,14 +144,15 @@ export function RequiresPlan({
 
   if (loading) return <p className="text-sm text-subtle">Loading...</p>;
 
-  if (!planAtLeast(account?.plan, minimum)) {
+  if (!subscriptionAtLeast(account?.subscription, minimum)) {
     return (
       <div className="tl-notice m-4 p-6 sm:m-8" data-tone="warn">
-        <p className="font-semibold">Needs a {label} plan</p>
+        <p className="font-semibold">Needs a {label} subscription</p>
         <p className="mt-1">
-          This part of the app is included from {label} upwards. Your account is on{' '}
-          <strong>{account?.planLabel ?? 'a plan that does not include it'}</strong>. Plans are set
-          by an administrator of this installation, so ask them to move your account.
+          This part of the app is included from {label} upwards, and your account&apos;s
+          subscription is <strong>{account?.subscriptionLabel ?? 'one that does not include it'}</strong>.
+          Subscriptions are set by an administrator of this installation, so ask them to move your
+          account.
         </p>
       </div>
     );

@@ -38,7 +38,7 @@ const ROUTES = [
   '/settings',
   '/settings/job-sheet',
   '/settings/payment-methods',
-  '/settings/plan',
+  '/settings/subscription',
   '/orders',
   '/credits',
   '/jobs',
@@ -390,7 +390,7 @@ async function main() {
      * the installation's - a row of doors that would all say "administrators
      * only" is worse than no row.
      */
-    const userSettings = await visit(page, '/settings/plan', 'user');
+    const userSettings = await visit(page, '/settings/subscription', 'user');
     const userTabs = await page.evaluate(() => ({
       tabs: Array.from(document.querySelectorAll('nav.tl-tabs[aria-label="Settings"] .tl-tab')).map((a) =>
         a.textContent.trim()
@@ -399,14 +399,18 @@ async function main() {
       title: document.querySelector('.tl-main h1')?.textContent.trim(),
     }));
     check(
-      'user /settings/plan: the four account tabs and no Administration',
-      userTabs.tabs.join(' / ') === 'Profile / Job Sheet / Payment Methods / Plan',
+      'user /settings/subscription: the four account tabs and no Administration',
+      userTabs.tabs.join(' / ') === 'Profile / Job Sheet / Payment Methods / Subscription',
       userTabs.tabs.join(', ')
     );
-    check('user /settings/plan: Plan is the lit tab, not Profile', userTabs.active === 'Plan', String(userTabs.active));
-    check('user /settings/plan: titled Settings', userTabs.title === 'Settings', String(userTabs.title));
     check(
-      'user /settings/plan: the Settings row is the one lit in the rail',
+      'user /settings/subscription: Subscription is the lit tab, not Profile',
+      userTabs.active === 'Subscription',
+      String(userTabs.active)
+    );
+    check('user /settings/subscription: titled Settings', userTabs.title === 'Settings', String(userTabs.title));
+    check(
+      'user /settings/subscription: the Settings row is the one lit in the rail',
       userSettings.activeLabels.join() === 'Settings',
       `lit: ${userSettings.activeLabels.join(', ')}`
     );
@@ -415,6 +419,43 @@ async function main() {
     await page.goto(`${APP}/account`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 500));
     check('user /account: redirects to /settings', new URL(page.url()).pathname === '/settings', page.url());
+    await page.goto(`${APP}/account#subscription`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    check(
+      'user /account#subscription: redirects to /settings/subscription',
+      new URL(page.url()).pathname === '/settings/subscription',
+      page.url()
+    );
+
+    // So does the tier's page from before it was called a subscription, and
+    // it replaces the history entry: Back must not land on it and bounce.
+    await page.goto(`${APP}/settings`, { waitUntil: 'networkidle2' });
+    await page.goto(`${APP}/settings/plan`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    check(
+      'user /settings/plan: redirects to /settings/subscription',
+      new URL(page.url()).pathname === '/settings/subscription',
+      page.url()
+    );
+    const lit = await page.evaluate(
+      () => document.querySelector('nav.tl-tabs[aria-label="Settings"] .tl-tab[data-active="true"]')?.textContent.trim()
+    );
+    check('user /settings/plan: lands with Subscription lit', lit === 'Subscription', String(lit));
+    await page.goBack({ waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    check(
+      'user /settings/plan: Back goes to the page before it, not to the old address',
+      new URL(page.url()).pathname === '/settings',
+      page.url()
+    );
+    await page.goto(`${APP}/settings/subscription`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const tierCopy = await page.evaluate(() => document.querySelector('.tl-main')?.innerText ?? '');
+    check(
+      "user /settings/subscription: the page never calls the tier a plan",
+      /Current subscription/.test(tierCopy) && !/\bplans?\b/i.test(tierCopy),
+      tierCopy.slice(0, 300)
+    );
 
     // An invoice is a document: no rail and no bar to print around it.
     await page.goto(`${APP}/credits/invoice?payment=no-such-payment`, { waitUntil: 'networkidle2' });
@@ -442,7 +483,7 @@ async function main() {
     );
 
     check(
-      'user: Groups is hidden on the default plan',
+      'user: Groups is hidden on the Default subscription',
       !shell.navLabels.includes('Groups'),
       `saw: ${shell.navLabels.join(', ')}`
     );
@@ -690,6 +731,25 @@ async function main() {
           box && !box.missing && box.left >= 0 && box.right <= box.viewport,
           JSON.stringify(box)
         );
+        if (name === 'account' && opened) {
+          // The tier is a subscription here too: the pill says so, and the
+          // row goes to the page by its new address rather than the redirect.
+          const menu = await page.evaluate(() => {
+            const panel = document.querySelector('.app-top-nav-menu');
+            return panel
+              ? { text: panel.innerText, hrefs: Array.from(panel.querySelectorAll('a')).map((a) => a.getAttribute('href')) }
+              : null;
+          });
+          check(
+            `top bar ${label}: the account menu says subscription, never plan, and links to it`,
+            Boolean(menu) &&
+              /subscription/i.test(menu.text) &&
+              !/\bplans?\b/i.test(menu.text) &&
+              menu.hrefs.includes('/settings/subscription') &&
+              !menu.hrefs.includes('/settings/plan'),
+            JSON.stringify(menu)
+          );
+        }
         await page.keyboard.press('Escape');
         await page.evaluate(() => document.body.click());
         await wait(200);
@@ -770,7 +830,7 @@ async function main() {
      */
     check(
       "admin: the account's four tabs, then Administration",
-      onSettings.tabs.join(' / ') === 'Profile / Job Sheet / Payment Methods / Plan / Administration',
+      onSettings.tabs.join(' / ') === 'Profile / Job Sheet / Payment Methods / Subscription / Administration',
       onSettings.tabs.join(', ')
     );
     check('admin /admin/prompts: Administration is the lit tab', onSettings.active === 'Administration', String(onSettings.active));

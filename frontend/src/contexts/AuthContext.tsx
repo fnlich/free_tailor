@@ -48,7 +48,7 @@ type AuthState = {
    * with the number it already had when the server cannot be asked.
    */
   refreshUploadMaxMb: () => Promise<number>;
-  /** Re-reads the account, for after a change that alters plan or profile use. */
+  /** Re-reads the account, for after a change that alters its subscription or profile use. */
   refresh: () => Promise<void>;
   /** Records a sign-in that already happened, without a second round trip. */
   adopt: (account: Account) => void;

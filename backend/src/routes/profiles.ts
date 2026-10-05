@@ -90,7 +90,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
     res.status(201).json(profile);
   } catch (error) {
-    // The plan's profile limit (402 with `limit`), a model the owner may not
+    // The subscription's profile limit (402 with `limit`), a model the owner may not
     // pick, and a file or folder name template that cannot be used are the
     // caller's to fix and say so; anything else is generic.
     sendPublicError(req, res, error, 'Failed to create the profile');
@@ -142,8 +142,8 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
  * `{ html, templateId, page }`: a whole document to frame, the template it was
  * actually drawn with, and the printed page's size to scale it by.
  *
- * Costs nothing and keeps nothing: no row is written, the plan's profile limit
- * is not consulted (nothing is being added), no model is asked and no credit
+ * Costs nothing and keeps nothing: no row is written, the subscription's profile
+ * limit is not consulted (nothing is being added), no model is asked and no credit
  * is reserved. It renders untailored, through the same pipeline and template
  * choice as a generated resume (`resolveTemplateForProfile`), so what it shows
  * is what the next PDF will look like before any job tailors it.
@@ -210,7 +210,7 @@ router.post('/import', (req: Request, res: Response) => {
   try {
     const imported = buildImportedProfiles(req.body, { idExists: hasProfile, newId: uuidv4 });
     // Counted as a whole before any of it is written: importing six profiles
-    // into a plan with room for two must refuse all six, not land two and fail.
+    // into a subscription with room for two must refuse all six, not land two and fail.
     assertCanAddProfile(req.user!, imported.length);
     const profiles = saveProfiles(
       imported.map((entry) => ({ ...entry.profile, ownerId: req.user!.id }))
@@ -222,7 +222,7 @@ router.post('/import', (req: Request, res: Response) => {
       keptIds: imported.filter((entry) => entry.keptId).length,
     });
   } catch (error) {
-    // A file that is not a profile, an import past the plan's limit, and a
+    // A file that is not a profile, an import past the subscription's limit, and a
     // file-name template the profile form would also have refused are the
     // file's fault and are said so; anything else is generic.
     sendPublicError(req, res, error, 'Failed to import the profiles');

@@ -198,7 +198,7 @@ export function operatorDetail(error: unknown): string | null {
   return typeof detail === 'string' && detail.trim() ? detail : null;
 }
 
-/** The account is at its plan's profile limit. */
+/** The account is at its subscription's profile limit. */
 export function isProfileLimit(error: unknown): error is ApiResponseError {
   return error instanceof ApiResponseError && error.code === 'profile-limit';
 }

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~22s with the tsc step, 1169 tests)
+npm test                       # backend node:test suite (~22s with the tsc step, 1179 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -45,7 +45,7 @@ Facts worth knowing before you build:
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. 29 of the 30 App Router pages carry no `dark:` at all (only
+  ignored. 30 of the 31 App Router pages carry no `dark:` at all (only
   `/test` does); they are built from the kit and the tokens rather than the
   utilities it remaps, but it is still loaded and still wins wherever it
   matches. New chrome uses the `@theme inline` tokens instead
@@ -117,13 +117,33 @@ backend/src/
                       #   providerCatalog.ts is the ONE list of seats and of
                       #   retired ids; providerModels.ts each seat's model-name
                       #   list; creditsPerResume.ts the price field's rules;
-                      #   modelErrors.ts the two model refusals.
+                      #   modelErrors.ts the two model refusals;
+                      #   accountSubscriptions.ts the account TIERS (Default,
+                      #   Premium, Premium+, Premium Max) and their profile
+                      #   caps. The tier is a "subscription" in code, API, UI
+                      #   and database (it was "plan"; the word is not used for
+                      #   it anywhere now, and test/subscriptionRename.test.js
+                      #   greps frontend/src to keep it so). Not the AI
+                      #   "subscription seats", which share only the word.
+                      #   middleware/auth.ts's requireSubscription(min) gates
+                      #   on it (403 `subscription-too-low`) and is NOT
+                      #   satisfied by being an admin.
   controllers/        # one file, the skills handlers routes/resume.ts mounts.
                       #   The library is one store for every account: reading it
                       #   and POST /skills/confirm (additive, idempotent) are
                       #   everybody's; adding with metadata, editing and deleting
                       #   are requireAdmin.
-  database/           # better-sqlite3, one repository per table
+  database/           # better-sqlite3, one repository per table. getDb()
+                      #   runs, in order: renameColumns (COLUMN_RENAMES -
+                      #   users.plan became users.subscription - guarded by
+                      #   PRAGMA table_info and NOT a schema_meta marker, so a
+                      #   database renamed back for a rollback is renamed
+                      #   forward again; check and ALTER in one BEGIN
+                      #   IMMEDIATE, so a second opener of the file waits and
+                      #   finds it done; fatal on failure), then SCHEMA, then
+                      #   addMissingColumns (never fatal), then the migrations.
+                      #   An older build reads users.plan: rolling back means
+                      #   renaming it back first (README, "Plans are now subscriptions").
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that
                       #   defers (003 waits for an admin; 006 and 007 for a
                       #   settings row that names what they remove but does
@@ -189,13 +209,17 @@ backend/
                       #   are JavaScript too.)
   static/             # shipped defaults, never written at runtime - but not
                       #   all read the same way: see the note under this block
-  test/               # node:test, 96 files; fixtures/cli, codex and gemini
+  test/               # node:test, 97 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
                       #   /orders, /credits (+ /credits/invoice, drawn with no
-                      #   shell - navModel's isBareRoute). /account redirects.
+                      #   shell - navModel's isBareRoute). /account redirects,
+                      #   and so does /settings/plan, to /settings/subscription
+                      #   (a static redirect() the client follows on hydration;
+                      #   the root layout's shell streams first, so it is
+                      #   never an HTTP 307).
                       #   /admin/profiles, /admin/profiles/new and
                       #   /admin/profiles/[id] are EVERY account's own profiles
                       #   and their editor, whatever the path says.
@@ -339,7 +363,7 @@ falls back rather than failing a resume over a mismatch.
 profileId?, templateId? }`, answers `{ html, templateId, page: { widthPx,
 heightPx, contentHeightPx } }`) renders a DRAFT untailored through the same
 pipeline as generation. `buildPreviewProfile` never throws and takes only the
-four render settings from the draft; nothing is saved, no plan limit is
+four render settings from the draft; nothing is saved, no subscription limit is
 checked, no model is asked, no credit moves (test/profilePreview.test.js runs
 with every seat locked to prove it). The document carries
 `PREVIEW_CONTENT_SECURITY_POLICY` as a meta right after its doctype - before it

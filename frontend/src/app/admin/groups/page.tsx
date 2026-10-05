@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { groupsApi, profilesApi, Group, Profile } from '@/lib/api';
-import { RequiresPlan } from '@/components/auth/AuthGate';
+import { RequiresSubscription } from '@/components/auth/AuthGate';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { Card, Field, Notice, PageHeader, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
@@ -233,14 +233,14 @@ function GroupsPageBody() {
 /**
  * Included from Premium upwards.
  *
- * The gate is on the plan alone, matching `requirePlan('premium')` on the
- * routes: a page that rendered for somebody the API then refused would be a
- * worse experience than this explanation.
+ * The gate is on the subscription alone, matching `requireSubscription('premium')`
+ * on the routes: a page that rendered for somebody the API then refused would be
+ * a worse experience than this explanation.
  */
 export default function GroupsPage() {
   return (
-    <RequiresPlan minimum="premium" label="Premium">
+    <RequiresSubscription minimum="premium" label="Premium">
       <GroupsPageBody />
-    </RequiresPlan>
+    </RequiresSubscription>
   );
 }

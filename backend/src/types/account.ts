@@ -1,4 +1,4 @@
-import type { AccountPlanId } from '../config/accountPlans';
+import type { AccountSubscriptionId } from '../config/accountSubscriptions';
 
 export type UserRole = 'user' | 'admin';
 
@@ -9,7 +9,8 @@ export interface UserAccount {
   name: string;
   picture: string;
   role: UserRole;
-  plan: AccountPlanId;
+  /** The account's tier (Default, Premium...): `users.subscription`. */
+  subscription: AccountSubscriptionId;
   credits: number;
   disabled: boolean;
   createdAt: string;
@@ -42,7 +43,7 @@ export interface UserAccount {
  */
 export interface AccountUpdate {
   role?: UserRole;
-  plan?: AccountPlanId;
+  subscription?: AccountSubscriptionId;
   disabled?: boolean;
   name?: string;
 }

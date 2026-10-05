@@ -190,7 +190,7 @@ function createProfile(profile, viewer) {
     throw new PublicError('A profile with this id already exists.', { status: 409 });
   }
 
-  // The plan's cap applies here as much as on the profiles page: this is a
+  // The subscription's cap applies here as much as on the profiles page: this is a
   // second door into the same table, and a limit only one door honours is not
   // a limit.
   profileRepository.assertCanAddProfile(viewer);

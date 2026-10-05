@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation';
  * this is a client effect rather than a `redirect()` in config.
  */
 function destination(hash: string): string {
-  if (hash === '#subscription') return '/settings/plan';
+  if (hash === '#subscription') return '/settings/subscription';
   if (hash === '#credits') return '/credits';
   // The old page's section was `#sheet`; anything naming a sheet means it.
   if (hash.includes('sheet')) return '/settings/job-sheet';

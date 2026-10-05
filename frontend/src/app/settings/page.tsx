@@ -13,8 +13,9 @@ import { messageWithDetail } from '@/lib/userMessage';
  * you may change yourself.
  *
  * Read-mostly on purpose. The only thing a user may change about themselves is
- * their display name - plan, credits and role are an administrator's to set,
- * and a form that let somebody pick their own plan would be a form that lies.
+ * their display name - subscription, credits and role are an administrator's
+ * to set, and a form that let somebody pick their own subscription would be a
+ * form that lies.
  */
 export default function ProfileSettingsPage() {
   const { account, adopt, signOut } = useAuth();

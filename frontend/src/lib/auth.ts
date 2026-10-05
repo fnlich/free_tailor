@@ -1,18 +1,19 @@
 import { apiFetch, removeToken, setToken } from './api';
 import type { LedgerEntry } from './credits';
+import type { AccountSubscriptionId } from './subscriptions';
+
+export type { AccountSubscriptionId } from './subscriptions';
 
 /**
  * Signing in, and what the app knows about who is signed in.
  *
  * The types here mirror what `/api/auth` returns rather than restating the
- * plans: the plan's label, its profile limit and how many profiles the account
- * has all arrive with the account, so a page never has to work out an
+ * subscriptions: the subscription's label, its profile limit and how many
+ * profiles the account has all arrive with the account, so a page never has to work out an
  * entitlement for itself and cannot work it out differently from the server.
  */
 
 export type UserRole = 'user' | 'admin';
-
-export type AccountPlanId = 'default' | 'premium' | 'premium-plus' | 'premium-max';
 
 export type Account = {
   id: string;
@@ -20,9 +21,10 @@ export type Account = {
   name: string;
   picture: string;
   role: UserRole;
-  plan: AccountPlanId;
-  planLabel: string;
-  planSummary: string;
+  /** The account's tier. */
+  subscription: AccountSubscriptionId;
+  subscriptionLabel: string;
+  subscriptionSummary: string;
   /** null means unlimited. */
   profileLimit: number | null;
   profilesUsed: number;
@@ -33,8 +35,8 @@ export type Account = {
   lastLoginAt?: string;
 };
 
-export type AccountPlan = {
-  id: AccountPlanId;
+export type AccountSubscription = {
+  id: AccountSubscriptionId;
   label: string;
   profileLimit: number | null;
   summary: string;
@@ -66,7 +68,7 @@ function remember(result: SignInResponse): SignInResponse {
 export const authApi = {
   options: () => apiFetch<SignInOptions>('/auth/options'),
 
-  plans: () => apiFetch<{ plans: AccountPlan[] }>('/auth/plans'),
+  subscriptions: () => apiFetch<{ subscriptions: AccountSubscription[] }>('/auth/subscriptions'),
 
   /**
    * Who is signed in, and the PDF upload cap (`uploadMaxMb`, UPLOAD_MAX_MB on
@@ -115,7 +117,7 @@ export const authApi = {
 
 /* --------------------------------------------------- admin account management */
 
-export type ManagedAccount = Account & { planLabel: string };
+export type ManagedAccount = Account & { subscriptionLabel: string };
 
 export const accountsApi = {
   /**
@@ -139,9 +141,16 @@ export const accountsApi = {
       `/admin/accounts/${encodeURIComponent(id)}/credits`
     ),
 
-  list: () => apiFetch<{ accounts: ManagedAccount[]; plans: AccountPlan[] }>('/admin/accounts'),
+  list: () =>
+    apiFetch<{ accounts: ManagedAccount[]; subscriptions: AccountSubscription[] }>('/admin/accounts'),
 
-  create: (input: { email: string; name?: string; role?: UserRole; plan?: AccountPlanId; credits?: number }) =>
+  create: (input: {
+    email: string;
+    name?: string;
+    role?: UserRole;
+    subscription?: AccountSubscriptionId;
+    credits?: number;
+  }) =>
     apiFetch<{ account: ManagedAccount }>('/admin/accounts', {
       method: 'POST',
       body: JSON.stringify(input),
@@ -149,7 +158,13 @@ export const accountsApi = {
 
   update: (
     id: string,
-    patch: { role?: UserRole; plan?: AccountPlanId; credits?: number; disabled?: boolean; name?: string }
+    patch: {
+      role?: UserRole;
+      subscription?: AccountSubscriptionId;
+      credits?: number;
+      disabled?: boolean;
+      name?: string;
+    }
   ) =>
     apiFetch<{ account: ManagedAccount }>(`/admin/accounts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -171,10 +186,10 @@ export const accountsApi = {
 /**
  * "2 of 5", or "2 of unlimited".
  *
- * An ADMIN is exempt from the cap, so their plan's number is not a limit they
- * have - saying "5 of 1" to somebody who can freely make a sixth would be
- * simply false, and it is the common case, since every account starts on the
- * one-profile Default plan.
+ * An ADMIN is exempt from the cap, so their subscription's number is not a
+ * limit they have - saying "5 of 1" to somebody who can freely make a sixth
+ * would be simply false, and it is the common case, since every account starts
+ * on the one-profile Default subscription.
  */
 export function describeProfileUsage(account: Account): string {
   if (account.role === 'admin' || account.profileLimit === null) {
@@ -183,7 +198,7 @@ export function describeProfileUsage(account: Account): string {
   return `${account.profilesUsed} of ${account.profileLimit}`;
 }
 
-/** True when the account is at its plan's profile limit. */
+/** True when the account is at its subscription's profile limit. */
 export function isAtProfileLimit(account: Account): boolean {
   if (account.role === 'admin') return false;
   return account.profileLimit !== null && account.profilesUsed >= account.profileLimit;

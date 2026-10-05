@@ -203,9 +203,9 @@ export default function ProfilesPage() {
    */
   const addBlocked = atLimit || authLoading;
   const blockedReason = authLoading
-    ? 'Checking your plan...'
+    ? 'Checking your subscription...'
     : liveAccount
-      ? `The ${liveAccount.planLabel} plan allows ${liveAccount.profileLimit} profile${liveAccount.profileLimit === 1 ? '' : 's'}. Delete one, or ask an administrator for a larger plan.`
+      ? `The ${liveAccount.subscriptionLabel} subscription allows ${liveAccount.profileLimit} profile${liveAccount.profileLimit === 1 ? '' : 's'}. Delete one, or ask an administrator for a higher subscription.`
       : '';
 
   if (isLoading) {
@@ -224,7 +224,7 @@ export default function ProfilesPage() {
           liveAccount && (
             <>
               {describeProfileUsage(liveAccount)} profiles used
-              {liveAccount.role === 'admin' ? ' (administrators have no limit)' : ` on ${liveAccount.planLabel}`}
+              {liveAccount.role === 'admin' ? ' (administrators have no limit)' : ` on the ${liveAccount.subscriptionLabel} subscription`}
             </>
           )
         }
@@ -292,13 +292,14 @@ export default function ProfilesPage() {
           <Notice tone="warn">
             <p className="font-semibold">
               You are using all {liveAccount.profileLimit} profile
-              {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.planLabel} plan.
+              {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.subscriptionLabel}{' '}
+              subscription.
             </p>
             <p className="mt-1">
               Delete one below to make room, or ask an administrator of this installation to move your
-              account to a larger plan.{' '}
-              <Link href="/settings/plan" className="font-medium underline underline-offset-2">
-                See your plan
+              account to a higher subscription.{' '}
+              <Link href="/settings/subscription" className="font-medium underline underline-offset-2">
+                See your subscription
               </Link>
               .
             </p>

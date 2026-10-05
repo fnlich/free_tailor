@@ -129,7 +129,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <AppSidebar
         pathname={pathname}
         isAdmin={isAdmin}
-        plan={account?.plan}
+        subscription={account?.subscription}
         sheetUrl={sheetUrl}
         isCompact={isCompact}
         drawerOpen={drawerOpen}

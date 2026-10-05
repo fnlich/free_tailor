@@ -1,5 +1,5 @@
 import type { IconName } from '@/components/icons';
-import { planAtLeast, type AccountPlanId } from '@/lib/plans';
+import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscriptions';
 
 /**
  * The whole navigation, and what each entry requires.
@@ -14,7 +14,8 @@ import { planAtLeast, type AccountPlanId } from '@/lib/plans';
  * door that will not open.
  */
 
-export type NavNeeds = 'admin' | 'non-admin' | AccountPlanId;
+/** A role, or the lowest account subscription that includes the entry. */
+export type NavNeeds = 'admin' | 'non-admin' | AccountSubscriptionId;
 
 export type NavItem = {
   href: string;
@@ -77,7 +78,7 @@ export const SETTINGS_ACCOUNT_TABS: SettingsTab[] = [
   { href: '/settings', label: 'Profile' },
   { href: '/settings/job-sheet', label: 'Job Sheet' },
   { href: '/settings/payment-methods', label: 'Payment Methods' },
-  { href: '/settings/plan', label: 'Plan' },
+  { href: '/settings/subscription', label: 'Subscription' },
 ];
 
 /**
@@ -105,11 +106,11 @@ export const SETTINGS_ADMIN_TABS: SettingsTab[] = [
 /** Every Settings tab, for deciding whether a route is part of the hub. */
 export const SETTINGS_ITEMS: SettingsTab[] = [...SETTINGS_ACCOUNT_TABS, ...SETTINGS_ADMIN_TABS];
 
-export function canSee(item: NavItem, isAdmin: boolean, plan: unknown): boolean {
+export function canSee(item: NavItem, isAdmin: boolean, subscription: unknown): boolean {
   if (!item.needs) return true;
   if (item.needs === 'admin') return isAdmin;
   if (item.needs === 'non-admin') return !isAdmin;
-  return planAtLeast(plan, item.needs);
+  return subscriptionAtLeast(subscription, item.needs);
 }
 
 function matches(pathname: string, href: string): boolean {

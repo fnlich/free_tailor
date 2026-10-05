@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { isAccountPlanId, listAccountPlans, resolveAccountPlan } from '../config/accountPlans';
+import { isSubscriptionId, listSubscriptions, resolveSubscription } from '../config/accountSubscriptions';
 import { countProfilesForOwner } from '../database/profileRepository';
 import {
   countAdmins,
@@ -31,17 +31,17 @@ const router = Router();
 router.use(requireAdmin);
 
 type AccountRow = UserAccount & {
-  planLabel: string;
+  subscriptionLabel: string;
   profileLimit: number | null;
   profilesUsed: number;
 };
 
 function describe(account: UserAccount): AccountRow {
-  const plan = resolveAccountPlan(account.plan);
+  const subscription = resolveSubscription(account.subscription);
   return {
     ...account,
-    planLabel: plan.label,
-    profileLimit: plan.profileLimit,
+    subscriptionLabel: subscription.label,
+    profileLimit: subscription.profileLimit,
     profilesUsed: countProfilesForOwner(account.id),
   };
 }
@@ -61,8 +61,32 @@ function wouldStrandInstall(target: UserAccount, next: AccountUpdate): boolean {
   return countAdmins() <= 1;
 }
 
+/**
+ * True, after answering 400, when a body still names the tier `plan`.
+ *
+ * The field was renamed `subscription` with no alias, because the frontend
+ * ships with this file. But an Accounts page left open across the upgrade
+ * still sends the old name, and ignoring it would be silent in the worst way:
+ * an invite meant for Premium would create a Default account, and a change
+ * would answer "nothing to change". Admin-only, so the sentence may say why.
+ *
+ * The refusal is the guarantee; the sentence is reached only by that old
+ * page's Add-an-account form. Its table answers a refused change by reloading
+ * the list, which no longer carries the `plans` it reads, so it breaks with a
+ * client-side exception before the sentence is drawn. Nothing is changed
+ * either way, and README's Troubleshooting row says to reload.
+ */
+function refuseRetiredPlanField(req: Request, res: Response): boolean {
+  if (req.body?.plan === undefined) return false;
+  res.status(400).json({
+    error: 'This page is from an older version of the app. Reload it and try again.',
+    code: 'stale-page',
+  });
+  return true;
+}
+
 router.get('/', (_req: Request, res: Response) => {
-  res.json({ accounts: listUsers().map(describe), plans: listAccountPlans() });
+  res.json({ accounts: listUsers().map(describe), subscriptions: listSubscriptions() });
 });
 
 router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
@@ -79,10 +103,11 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
  *
  * Not a way to let somebody in - there is no password to set, and they still
  * have to prove the address through Google or a code. It exists so an admin can
- * set the plan and role BEFORE the person arrives, rather than having them sign
- * in on the Default plan and be upgraded afterwards.
+ * set the subscription and role BEFORE the person arrives, rather than having
+ * them sign in on the Default subscription and be upgraded afterwards.
  */
 router.post('/', (req: Request, res: Response) => {
+  if (refuseRetiredPlanField(req, res)) return;
   const email = normalizeEmail(req.body?.email);
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     res.status(400).json({ error: 'A valid email address is required.' });
@@ -101,7 +126,7 @@ router.post('/', (req: Request, res: Response) => {
   });
 
   const update: AccountUpdate = {};
-  if (isAccountPlanId(req.body?.plan)) update.plan = req.body.plan;
+  if (isSubscriptionId(req.body?.subscription)) update.subscription = req.body.subscription;
   const patched = Object.keys(update).length > 0 ? updateUser(account.id, update) : account;
 
   // Through the ledger, so even an opening balance typed on this form has a row
@@ -123,6 +148,7 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
+  if (refuseRetiredPlanField(req, res)) return;
   const target = getUserById(req.params.id);
   if (!target) {
     res.status(404).json({ error: 'No such account.' });
@@ -131,12 +157,14 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
 
   const update: AccountUpdate = {};
   if (req.body?.role === 'admin' || req.body?.role === 'user') update.role = req.body.role;
-  if (req.body?.plan !== undefined) {
-    if (!isAccountPlanId(req.body.plan)) {
-      res.status(400).json({ error: `"${req.body.plan}" is not a plan this build knows about.` });
+  if (req.body?.subscription !== undefined) {
+    if (!isSubscriptionId(req.body.subscription)) {
+      res
+        .status(400)
+        .json({ error: `"${req.body.subscription}" is not a subscription this build knows about.` });
       return;
     }
-    update.plan = req.body.plan;
+    update.subscription = req.body.subscription;
   }
   // Read from the same body but applied separately: a balance is the sum of a
   // ledger, not a column to be overwritten, so it goes through setBalance which

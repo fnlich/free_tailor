@@ -65,40 +65,51 @@ test('account management is closed to strangers and to ordinary users', async ()
   }
 });
 
-test('an admin sees every account with its plan and profile use', async () => {
+test('an admin sees every account with its subscription and profile use', async () => {
   const server = await serve();
   try {
     const body = await (await server.request(server.adminToken, '/')).json();
     const byEmail = new Map(body.accounts.map((account) => [account.email, account]));
 
     assert.equal(byEmail.get('alice@example.com').role, 'user');
-    assert.equal(byEmail.get('alice@example.com').planLabel, 'Default');
+    assert.equal(byEmail.get('alice@example.com').subscription, 'default');
+    assert.equal(byEmail.get('alice@example.com').subscriptionLabel, 'Default');
+    // Renamed with no alias: the frontend ships with the backend, and a second
+    // name for the same field is a second thing to keep in step.
+    assert.equal('plan' in byEmail.get('alice@example.com'), false);
+    assert.equal('planLabel' in byEmail.get('alice@example.com'), false);
     assert.equal(byEmail.get('alice@example.com').profileLimit, 1);
     assert.equal(byEmail.get('alice@example.com').profilesUsed, 0);
     assert.equal(byEmail.get('admin@example.com').role, 'admin');
 
-    // The plan catalog rides along, so the page's dropdown is not a second
-    // copy of the list that can drift from the server's.
+    // The subscription catalog rides along, so the page's dropdown is not a
+    // second copy of the list that can drift from the server's.
     assert.deepEqual(
-      body.plans.map((plan) => plan.id),
+      body.subscriptions.map((subscription) => subscription.id),
       ['default', 'premium', 'premium-plus', 'premium-max']
     );
-    assert.equal(body.plans.at(-1).profileLimit, null, 'Premium Max is unlimited');
+    assert.deepEqual(
+      body.subscriptions.map((subscription) => subscription.label),
+      ['Default', 'Premium', 'Premium+', 'Premium Max']
+    );
+    assert.equal(body.subscriptions.at(-1).profileLimit, null, 'Premium Max is unlimited');
+    assert.equal('plans' in body, false);
   } finally {
     server.close();
   }
 });
 
-test('an admin can change a plan, credits and role', async () => {
+test('an admin can change a subscription, credits and role', async () => {
   const server = await serve();
   try {
     const response = await server.request(server.adminToken, `/${server.alice.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ plan: 'premium-plus', credits: 40, role: 'admin' }),
+      body: JSON.stringify({ subscription: 'premium-plus', credits: 40, role: 'admin' }),
     });
     const { account } = await response.json();
 
-    assert.equal(account.plan, 'premium-plus');
+    assert.equal(account.subscription, 'premium-plus');
+    assert.equal(account.subscriptionLabel, 'Premium+');
     assert.equal(account.profileLimit, 25);
     assert.equal(account.credits, 40);
     assert.equal(account.role, 'admin');
@@ -107,16 +118,42 @@ test('an admin can change a plan, credits and role', async () => {
   }
 });
 
-test('a plan this build does not have is refused rather than stored', async () => {
+test('a subscription this build does not have is refused rather than stored', async () => {
   const server = await serve();
   try {
     const response = await server.request(server.adminToken, `/${server.alice.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ plan: 'premium-ultra' }),
+      body: JSON.stringify({ subscription: 'premium-ultra' }),
     });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /not a plan/i);
-    assert.equal(server.users.getUserById(server.alice.id).plan, 'default');
+    assert.match((await response.json()).error, /not a subscription/i);
+    assert.equal(server.users.getUserById(server.alice.id).subscription, 'default');
+  } finally {
+    server.close();
+  }
+});
+
+test('a page still sending the retired `plan` field is told to reload, not silently ignored', async () => {
+  const server = await serve();
+  try {
+    // An Accounts page left open across the upgrade. Ignoring the field would
+    // answer "nothing to change" to a change, and create a Default account
+    // from an invite meant for Premium.
+    const patch = await server.request(server.adminToken, `/${server.alice.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ plan: 'premium' }),
+    });
+    assert.equal(patch.status, 400);
+    assert.equal((await patch.json()).code, 'stale-page');
+    assert.equal(server.users.getUserById(server.alice.id).subscription, 'default');
+
+    const invite = await server.request(server.adminToken, '/', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'stale@example.com', plan: 'premium' }),
+    });
+    assert.equal(invite.status, 400);
+    assert.equal((await invite.json()).code, 'stale-page');
+    assert.equal(server.users.getUserByEmail('stale@example.com'), null);
   } finally {
     server.close();
   }
@@ -204,18 +241,18 @@ test('disabling an account ends its sessions through the route too', async () =>
   }
 });
 
-test('an admin can pre-create an account with its plan already set', async () => {
+test('an admin can pre-create an account with its subscription already set', async () => {
   const server = await serve();
   try {
     const response = await server.request(server.adminToken, '/', {
       method: 'POST',
-      body: JSON.stringify({ email: 'New.Person@Example.com', plan: 'premium', credits: 10 }),
+      body: JSON.stringify({ email: 'New.Person@Example.com', subscription: 'premium', credits: 10 }),
     });
     assert.equal(response.status, 201);
     const { account } = await response.json();
 
     assert.equal(account.email, 'new.person@example.com', 'normalized on the way in');
-    assert.equal(account.plan, 'premium');
+    assert.equal(account.subscription, 'premium');
     assert.equal(account.credits, 10);
     // Pre-creating is not a way in: they still have to prove the address.
     assert.equal(account.role, 'user');

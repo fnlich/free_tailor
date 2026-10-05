@@ -28,6 +28,27 @@ function loadFrontendModule(relative) {
   return module.exports;
 }
 
+// -- the account subscriptions --------------------------------------------- //
+
+test("the frontend ranks the subscriptions in the backend's order", () => {
+  // A copy, because the shell decides what to draw before any request. A copy
+  // that drifted would offer a door the API then refuses, or hide one it opens.
+  const frontend = loadFrontendModule('lib/subscriptions.ts');
+  const backend = require('../dist/config/accountSubscriptions');
+  assert.deepEqual([...frontend.SUBSCRIPTION_ORDER], backend.listSubscriptions().map((tier) => tier.id));
+
+  const values = [...backend.SUBSCRIPTION_IDS, 'premium-ultra', undefined, null, ''];
+  for (const value of values) {
+    for (const minimum of backend.SUBSCRIPTION_IDS) {
+      assert.equal(
+        frontend.subscriptionAtLeast(value, minimum),
+        backend.subscriptionAtLeast(value, minimum),
+        `${value} vs ${minimum}`
+      );
+    }
+  }
+});
+
 // -- the admin Settings seat cards ------------------------------------------ //
 
 test("each seat's card shows that seat's own holds, Gemini's included", () => {
