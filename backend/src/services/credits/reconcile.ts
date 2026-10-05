@@ -14,8 +14,9 @@ import {
  * 1. ORPHANED RESERVATIONS. A reservation is opened at submit and closed when
  *    its run finishes accounting for itself. A process that dies in between
  *    leaves one open forever, holding credits against work that will never
- *    finish. The queue's own restore requeues the tasks it can; anything still
- *    open and old enough that no live run could own it is released.
+ *    finish. The queue's own restore requeues the tasks it can, and says which
+ *    batches it brought back; anything else still open and old enough that no
+ *    live run could own it is released.
  *
  * 2. THE STANDING INVARIANT. The ledger is append-only and users.credits is a
  *    cache of its sum, so the two agreeing is something that should always be
@@ -39,12 +40,27 @@ export type ReconcileReport = {
   inconsistent: Array<{ userId: string; balance: number; ledgerSum: number }>;
 };
 
-export function reconcileCredits(now = Date.now()): ReconcileReport {
+export type ReconcileOptions = {
+  /**
+   * Reservations NOT to release, by id: the batches the queue's restore just
+   * put back (`RestoreReport.batchIds` - a batch reservation's id is its
+   * batch id). Age alone cannot tell an abandoned run from a long one that
+   * the restart interrupted: an order still building after six hours used to
+   * have its whole charge handed back here, and then built the rest of its
+   * resumes for free. A restored batch closes its own reservation when its
+   * last task finishes, as any run does.
+   */
+  liveBatchIds?: Iterable<string>;
+};
+
+export function reconcileCredits(now = Date.now(), options: ReconcileOptions = {}): ReconcileReport {
   const report: ReconcileReport = { released: 0, credits: 0, inconsistent: [] };
+  const live = new Set(options.liveBatchIds ?? []);
 
   try {
     const cutoff = new Date(now - ORPHAN_AFTER_MS).toISOString();
     for (const reservation of listOpenReservations(cutoff)) {
+      if (live.has(reservation.id)) continue;
       const outcome = abandonReservation({
         reservationId: reservation.id,
         reason: 'reconcile-orphan',

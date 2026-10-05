@@ -29,6 +29,7 @@ import {
   effectiveTemplateId,
   hasSkill,
   normalizeTechnicalSkillsLayout,
+  sampledNotice,
   templateForLayout,
   templateOffersLayout,
   templateOptions,
@@ -263,17 +264,29 @@ export default function ProfileEditor({
   );
 
   const previewNotes = (shown: ProfilePreviewResult, request: PreviewRequest) => {
+    // What the page filled in for the fields left empty: said, so nobody
+    // takes the sample person's phone number for their own.
+    const sample = sampledNotice(shown.sampled);
+    const sampleNote = sample ? (
+      <p className={css.sampleNote} role="status">
+        {sample} It fills what is empty, here only: it is never saved, printed or sent to tailoring.
+      </p>
+    ) : null;
+
     const wanted = request.profile.preferredTemplate || 'default';
-    if (!templatesLoaded || shown.templateId === wanted) return null;
+    if (!templatesLoaded || shown.templateId === wanted) return sampleNote;
     const wantedTemplate = templates.find((template) => template.id === wanted);
     const shownLayout = LAYOUT_LABELS[normalizeTechnicalSkillsLayout(request.profile.profileSettings?.technicalSkillsLayout)];
     const reason = wantedTemplate
       ? `${wantedTemplate.name} has no ${shownLayout} layout`
       : 'the template this profile names is not offered any more';
     return (
-      <Notice tone="info" role="status">
-        Drawn with {templateName(shown.templateId)}: {reason}. A generated resume falls back the same way.
-      </Notice>
+      <>
+        <Notice tone="info" role="status">
+          Drawn with {templateName(shown.templateId)}: {reason}. A generated resume falls back the same way.
+        </Notice>
+        {sampleNote}
+      </>
     );
   };
 

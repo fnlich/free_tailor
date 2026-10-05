@@ -135,7 +135,10 @@ test('a draft for a new profile renders, and nothing is written, charged or aske
     // of this draft would be refused. A preview adds nothing, so it is not.
     const response = await server.call('alice', { profile: draft() });
     assert.equal(response.status, 200, JSON.stringify(response.body));
-    assert.deepEqual(Object.keys(response.body).sort(), ['html', 'page', 'templateId']);
+    assert.deepEqual(Object.keys(response.body).sort(), ['html', 'page', 'sampled', 'templateId']);
+    // The draft typed everything but an education, and only that came from
+    // the sample person (test/sampleDefaults.test.js has the rest).
+    assert.deepEqual(response.body.sampled, ['education']);
     assert.equal(response.body.templateId, 'default');
     assert.deepEqual(response.body.page, { widthPx: 794, heightPx: 1123, contentHeightPx: 1065 });
     assert.ok(response.body.html.includes('Ada Lovelace'));

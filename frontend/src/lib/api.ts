@@ -1649,6 +1649,12 @@ export interface ProfilePreviewResult {
   html: string;
   templateId: string;
   page: { widthPx: number; heightPx: number; contentHeightPx?: number };
+  /**
+   * The fields the server drew from the sample resume because the draft left
+   * them empty - 'name', 'phone', 'experience'... In the preview only; a save,
+   * a PDF and tailoring never see them. Absent from an older server.
+   */
+  sampled?: string[];
 }
 
 // Template types

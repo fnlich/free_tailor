@@ -10,6 +10,8 @@ import {
   cleanSkillName,
   emptyStrength,
   hasSkill,
+  keptCount,
+  keptNote,
   softSkillRefusal,
   type DraftStrength,
   type ProfileDraft,
@@ -206,6 +208,20 @@ export function TechnicalSkillsSection({
   );
 }
 
+/**
+ * What an unticked section shows in place of its list: one line saying how
+ * many entries are kept. Nothing is deleted - they are saved with the profile
+ * as they are and come back to edit when the box is ticked again.
+ */
+function KeptLine({ note }: { note: string | null }) {
+  if (!note) return null;
+  return (
+    <p className="text-sm text-muted" role="status">
+      {note}
+    </p>
+  );
+}
+
 /** The note under a section switch when the template has nowhere to print it. */
 function capabilityNote(on: boolean, supported: boolean | null, section: string, templateName: string) {
   if (!on || supported !== false) return null;
@@ -257,40 +273,44 @@ export function SoftSkillsSection({
       >
         {on
           ? 'Your soft skills print first, and tailoring adds the ones a job asks for.'
-          : 'Off: the list below is kept with the profile but not printed, and tailoring works the soft skills a job asks for into the summary instead.'}
+          : 'Off: no Soft Skills section is printed, and tailoring works the soft skills a job asks for into the summary instead.'}
       </SectionSwitch>
       {capabilityNote(on, templateSupports, 'Soft Skills', templateName)}
-      <div className="space-y-3">
-        <AddInput
-          id="profile-soft-skill-input"
-          value={input}
-          onChange={(value) => {
-            setInput(value);
-            setRefusal(null);
-          }}
-          onAdd={add}
-          maxLength={MAX_SOFT_SKILL_LENGTH}
-          disabled={draft.softSkills.length >= MAX_SOFT_SKILLS}
-          placeholder={
-            draft.softSkills.length >= MAX_SOFT_SKILLS
-              ? `At most ${MAX_SOFT_SKILLS} soft skills`
-              : 'Add a soft skill, e.g. Stakeholder communication'
-          }
-          label="Add a soft skill"
-        />
-        {refusal && (
-          <p className="tl-status" data-tone="error" role="alert">
-            {refusal}
-          </p>
-        )}
-        <ChipList
-          items={draft.softSkills}
-          tone="green"
-          onRemove={(skill) =>
-            update((current) => ({ ...current, softSkills: current.softSkills.filter((item) => item !== skill) }))
-          }
-        />
-      </div>
+      {!on ? (
+        <KeptLine note={keptNote(keptCount(draft, 'softSkills'), 'softSkills')} />
+      ) : (
+        <div className="space-y-3">
+          <AddInput
+            id="profile-soft-skill-input"
+            value={input}
+            onChange={(value) => {
+              setInput(value);
+              setRefusal(null);
+            }}
+            onAdd={add}
+            maxLength={MAX_SOFT_SKILL_LENGTH}
+            disabled={draft.softSkills.length >= MAX_SOFT_SKILLS}
+            placeholder={
+              draft.softSkills.length >= MAX_SOFT_SKILLS
+                ? `At most ${MAX_SOFT_SKILLS} soft skills`
+                : 'Add a soft skill, e.g. Stakeholder communication'
+            }
+            label="Add a soft skill"
+          />
+          {refusal && (
+            <p className="tl-status" data-tone="error" role="alert">
+              {refusal}
+            </p>
+          )}
+          <ChipList
+            items={draft.softSkills}
+            tone="green"
+            onRemove={(skill) =>
+              update((current) => ({ ...current, softSkills: current.softSkills.filter((item) => item !== skill) }))
+            }
+          />
+        </div>
+      )}
     </Section>
   );
 }
@@ -315,11 +335,15 @@ export function StrengthsSection({
     <Section
       title="Strengths"
       actions={
-        <AddRowButton
-          onClick={() => update((current) => ({ ...current, strengths: [...current.strengths, emptyStrength()] }))}
-        >
-          + Add strength
-        </AddRowButton>
+        // Only while the section is on: an unticked one shows its switch and
+        // what it keeps, and nothing to add to or edit.
+        on ? (
+          <AddRowButton
+            onClick={() => update((current) => ({ ...current, strengths: [...current.strengths, emptyStrength()] }))}
+          >
+            + Add strength
+          </AddRowButton>
+        ) : undefined
       }
     >
       <SectionSwitch
@@ -335,10 +359,11 @@ export function StrengthsSection({
       >
         {on
           ? 'Tailoring writes two to four strengths for each job, starting from yours.'
-          : 'Off: no Strengths section is printed or written. The ones below are kept with the profile.'}
+          : 'Off: no Strengths section is printed or written, and tailoring is not given them.'}
       </SectionSwitch>
       {capabilityNote(on, templateSupports, 'Strengths', templateName)}
-      {draft.strengths.map((row, index) => (
+      {!on && <KeptLine note={keptNote(keptCount(draft, 'strengths'), 'strengths')} />}
+      {on && draft.strengths.map((row, index) => (
         <Card
           key={row.key}
           title={row.title || `Strength ${index + 1}`}

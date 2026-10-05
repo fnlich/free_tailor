@@ -15,10 +15,26 @@ import {
   type ManualTemplateConfig,
 } from '../extractors/templateExtractor';
 import { TECHNICAL_SKILLS_LAYOUTS, TemplateImportError } from '../services/templateImport';
+import { isTemplateStoreError } from '../database/templateFiles';
+import { sendPublicError } from '../middleware/publicError';
 import { generateTemplatePreviewHTML, PREVIEW_CONTENT_SECURITY_POLICY } from '../generators/pdfGenerator';
 import type { TechnicalSkillsLayout } from '../types/profile';
 
 const router = Router();
+
+/**
+ * True, after answering, when a save or delete failed at the FILE: saved
+ * templates are files in `static/templates`, and a directory this process
+ * cannot write fails every one of them. The generic sentence and a ref, with
+ * the path and errno in the log under that ref and in an administrator's
+ * `detail` - the README's Troubleshooting row says what to do with it.
+ */
+function answeredStoreFailure(req: Request, res: Response, error: unknown, fallback: string): boolean {
+  if (!isTemplateStoreError(error)) return false;
+  sendPublicError(req, res, error, fallback);
+  return true;
+}
+
 /**
  * Everything below needs a signed-in account.
  *
@@ -161,6 +177,7 @@ router.post('/create-manual', requireAdmin, async (req: Request, res: Response) 
     });
     res.status(201).json(template);
   } catch (error) {
+    if (answeredStoreFailure(req, res, error, 'Template could not be saved')) return;
     console.error('Error creating manual template:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to create template',
@@ -199,6 +216,7 @@ router.post('/upload-json', requireAdmin, uploadJson.single('template'), async (
       res.status(400).json({ error: error.message });
       return;
     }
+    if (answeredStoreFailure(req, res, error, 'Template could not be saved')) return;
     console.error('Error uploading JSON template:', error);
     res.status(400).json({
       error: error instanceof Error ? error.message : 'Failed to upload template',
@@ -225,6 +243,7 @@ router.post('/upload', requireAdmin, pdfUpload('pdf'), async (req: Request, res:
 
     res.status(201).json(template);
   } catch (error) {
+    if (answeredStoreFailure(req, res, error, 'Template could not be saved')) return;
     console.error('Error extracting template:', error);
     res.status(500).json({ 
       error: error instanceof Error ? error.message : 'Failed to extract template from PDF' 
@@ -265,6 +284,7 @@ router.put('/:id/update-manual', requireAdmin, async (req: Request<{ id: string 
     }
     res.json(template);
   } catch (error) {
+    if (answeredStoreFailure(req, res, error, 'Template could not be saved')) return;
     console.error('Error updating manual template:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to update template',
@@ -317,6 +337,7 @@ router.patch('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Res
     }
     res.json(updated);
   } catch (error) {
+    if (answeredStoreFailure(req, res, error, 'Template could not be saved')) return;
     console.error('Error updating template:', error);
     res.status(500).json({ error: 'Failed to update template' });
   }
@@ -338,6 +359,7 @@ router.delete('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Re
 
     res.json({ message: 'Template deleted successfully' });
   } catch (error) {
+    if (answeredStoreFailure(req, res, error, 'Template could not be deleted')) return;
     res.status(500).json({ error: 'Failed to delete template' });
   }
 });

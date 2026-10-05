@@ -1932,8 +1932,18 @@ function stripUnsafeResumeSentences(value: string, company?: string): string {
  * Measured on a five-role profile, together with dropping the pretty-printing:
  * the profile went from 7,428 characters to 5,363 and the whole tailoring
  * payload from 9,365 to 6,942 - 26% less, with nothing the model reads removed.
+ *
+ * And two lists follow their section switches. `strengths` goes only while
+ * the Strengths switch is on: switched off, the person has said those are not
+ * for this resume, and "off" means the model is not given them either - they
+ * stay with the profile, unsent, until the box is ticked. `softSkills` is never here -
+ * the code lists them, from the profile, after the model has answered.
+ * Neither moves the cacheable prefix: the switch words are their own prompt
+ * variables, referenced after `profileJson`, and this JSON was never the same
+ * from one profile to the next anyway.
  */
 function buildPromptProfile(profile: Profile): Record<string, unknown> {
+  const sections = getProfileResumeSections(profile);
   return {
     name: profile.name,
     title: profile.title,
@@ -1952,7 +1962,7 @@ function buildPromptProfile(profile: Profile): Record<string, unknown> {
       achievements: experience.achievements,
       skills: experience.skills,
     })),
-    strengths: profile.strengths,
+    ...(sections.strengths ? { strengths: profile.strengths } : {}),
     skills: profile.skills,
     // Sent when the profile has one: the model is asked to select skills, and
     // the author's own grouping is a fact about them it should not contradict.

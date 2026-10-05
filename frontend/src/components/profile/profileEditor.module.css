@@ -246,6 +246,22 @@
   display: none;
 }
 
+/*
+ * "Sample text shown for: ..." - which parts of the page are the sample
+ * person's rather than the profile's. Quiet, because it is there whenever a
+ * field is empty; dashed, like the page-break line, because it describes the
+ * picture rather than a problem with it.
+ */
+.sampleNote {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
 /* The well the page sits in. It scrolls on a wide screen; on a narrow one the window does. */
 .previewScroll {
   flex: 1 1 auto;
@@ -254,10 +270,32 @@
   background: var(--surface-muted);
 }
 
+/*
+ * The scrollbar's strip is kept whether or not the page overflows. The page
+ * is scaled to the well, and without the reservation a one-page resume just
+ * taller than the well shook: the scrollbar came in, the page was scaled to
+ * the narrower inside and fitted, the scrollbar went, the page grew back and
+ * overflowed - every frame, wherever scrollbars take room (Windows and Linux
+ * Chrome; it was every one-page document at 1920x937). ProfilePreview also
+ * subtracts the strip itself (lib/previewPane.ts), for a browser without
+ * scrollbar-gutter. backend/test/e2e/preview-vibration.js watches for it.
+ */
 @media (min-width: 1100px) {
   .previewScroll {
     overflow-y: auto;
+    scrollbar-gutter: stable;
   }
+}
+
+/*
+ * The same loop one level up. On a narrow screen the WINDOW scrolls the
+ * preview, and the page is scaled to the window's width - so a window just
+ * the height of the page (a portrait 1080x1460, say) shook the same way
+ * through the window's own scrollbar. Reserved while the editor is on screen
+ * only, so no other page changes width.
+ */
+:global(html):has(.workspace) {
+  scrollbar-gutter: stable;
 }
 
 /* The scaled page. Its box is set inline to the scaled size of the document. */

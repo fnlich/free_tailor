@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { moveTemplateRowsToFiles } from './templateFileMove';
 import { runDataMigrations } from './migrations';
 
 const POSIX_DEFAULT_DATABASE_DIR = '/data/db';
@@ -753,6 +754,10 @@ export function getDb(): Database.Database {
   }
   db.exec(SCHEMA);
   addMissingColumns(db);
+  // Saved templates are files now; an older build's rows are written out
+  // once, here rather than in the numbered chain, which can wait for an
+  // administrator for as long as nobody signs in. Never fatal.
+  moveTemplateRowsToFiles(db);
   // The connection is registered BEFORE the migrations run. That ordering is
   // load-bearing: a migration (or anything it logs through) that reaches for
   // getDb() would otherwise recurse into opening a second connection to the

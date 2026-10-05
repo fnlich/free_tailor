@@ -7,7 +7,13 @@ import { PublicError, sendPublicError } from '../middleware/publicError';
 import { checkProfileModelChoice } from '../config/aiModelConfig';
 import { pdfUpload } from '../middleware/pdfUpload';
 import { extractProfileFromResume } from '../services/resumeService';
-import { buildNewProfile, buildPreviewProfile, buildUpdatedProfile } from '../services/profileService';
+import {
+  buildNewProfile,
+  buildPreviewProfile,
+  buildUpdatedProfile,
+  profileForTemplate,
+} from '../services/profileService';
+import { withSampleDefaults } from '../services/sampleProfile';
 import { buildImportedProfiles } from '../services/profileImport';
 import { getTemplateById } from '../extractors/templateExtractor';
 import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
@@ -139,8 +145,15 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
  * Body `{ profile, profileId?, templateId? }` - `profile` is the editor's
  * draft, laid over the stored profile when `profileId` names one of the
  * caller's (somebody else's is a 404, as everywhere here). Answers
- * `{ html, templateId, page }`: a whole document to frame, the template it was
- * actually drawn with, and the printed page's size to scale it by.
+ * `{ html, templateId, page, sampled }`: a whole document to frame, the
+ * template it was actually drawn with, the printed page's size to scale it by,
+ * and which empty fields and sections were drawn from the sample person
+ * instead (`SAMPLE_FIELDS` names, in that order) so the editor can say so.
+ *
+ * The sample is the one thing here that is not what will print: an empty
+ * draft would otherwise preview as bare headings, which says nothing about how
+ * a template looks. It is laid on HERE and nowhere else - after the draft is
+ * read, never on the way to a save, a generation or a prompt.
  *
  * Costs nothing and keeps nothing: no row is written, the subscription's profile
  * limit is not consulted (nothing is being added), no model is asked and no credit
@@ -187,8 +200,11 @@ router.post('/preview', async (req: Request, res: Response) => {
       throw noTemplateAvailable();
     }
 
-    const preview = generateProfilePreviewHTML(draft, template);
-    res.json({ html: preview.html, templateId: template.id, page: preview.page });
+    // Through the template first, so a section the template has no room for
+    // is not filled - or reported as filled - from the sample.
+    const { profile: shown, sampled } = withSampleDefaults(profileForTemplate(draft, template));
+    const preview = generateProfilePreviewHTML(shown, template);
+    res.json({ html: preview.html, templateId: template.id, page: preview.page, sampled });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to render the preview');
   }

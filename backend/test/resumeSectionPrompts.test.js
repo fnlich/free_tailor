@@ -138,6 +138,35 @@ test('the three section values travel as words, and never inside profileJson', (
   assert.doesNotMatch(values.profileJson, /includeStrengths|includeSoftSkills|technicalSkillsLayout/);
 });
 
+test('switched-off Strengths are not given to the model at all, in tailoring or the cover letter', () => {
+  const { buildCoverLetterPromptValues } = resumeService;
+
+  // Off - the default, and what the person chose by unticking the box: the
+  // strengths stay with the profile and reach no prompt.
+  const off = buildTailorResumePromptValues(profile(), analysis());
+  assert.equal('strengths' in JSON.parse(off.profileJson), false);
+  assert.doesNotMatch(off.profileJson, /Own strength|In her own words/);
+  const offLetter = buildCoverLetterPromptValues(profile(), 'Acme', 'Engineer');
+  assert.doesNotMatch(offLetter.profileJson, /Own strength/);
+
+  // On, they are context, as they always were.
+  const on = buildTailorResumePromptValues(profile(ON), analysis());
+  assert.deepEqual(JSON.parse(on.profileJson).strengths, [{ title: 'Own strength', description: 'In her own words.' }]);
+  assert.match(buildCoverLetterPromptValues(profile(ON), 'Acme', 'Engineer').profileJson, /Own strength/);
+
+  // Soft skills are never in the profile JSON either way: the code lists
+  // them from the profile after the model has answered.
+  for (const values of [off, on]) {
+    assert.equal('softSkills' in JSON.parse(values.profileJson), false);
+    assert.doesNotMatch(values.profileJson, /Persistence/);
+  }
+
+  // Everything else the model reads is the same bytes whichever way the
+  // switch is set: only the strengths key comes and goes.
+  const { strengths: _dropped, ...rest } = JSON.parse(on.profileJson);
+  assert.deepEqual(JSON.parse(off.profileJson), rest);
+});
+
 test('the shipped tailor-resume prompt asks for the sections it is told about, and no longer for skills', () => {
   const text = JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', 'tailor-resume.json'), 'utf8')).content;
   const variables = [...text.matchAll(/\[\[\s*(\w+)\s*\]\]/g)].map((match) => match[1]);

@@ -21,6 +21,9 @@ import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterG
 import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
 import { ownerOfGeneratedFile } from '../database/orderRepository';
 import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
+// One rule for a role left empty, shared with the queue so a resume built on
+// the spot and a queued one name the same role for the same row.
+import { resolveTaskRole } from '../services/queue/resumeTask';
 import { getUserAppSettings, type ModelRequestOptions } from '../config/aiModelConfig';
 import {
   normalizeAiPreferences,
@@ -98,12 +101,6 @@ function shouldGenerateCoverLetterDocx(value: unknown): boolean {
   return typeof value === 'boolean' ? value : true;
 }
 
-function resolveGenerationRole(role: unknown, analysis?: import('../types/template').JobAnalysis): string {
-  if (typeof role === 'string' && role.trim()) {
-    return role.trim();
-  }
-  return analysis?.jobMeta?.title?.trim() || '';
-}
 
 function getProfileAnalyzeJobPromptId(profile?: Profile): string {
   return profile?.profileSettings?.analyzeJobPromptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
@@ -688,7 +685,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     if (!tailoredContent && analysis) {
       tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res));
     }
-    const resolvedRole = resolveGenerationRole(role, analysis);
+    const resolvedRole = resolveTaskRole(role, analysis);
     if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
       res.status(400).json({ error: 'Role is required' });
       return;

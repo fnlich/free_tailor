@@ -13,7 +13,9 @@ import {
   TemplateImportError,
   type ImportedTemplate,
 } from '../services/templateImport';
+import { isTemplateSource, templateFileId } from '../database/templateFiles';
 import {
+  currentTemplateId,
   deleteStoredTemplate,
   getStoredTemplate,
   getTemplateOverride,
@@ -29,8 +31,8 @@ import {
  * The PDF itself is not kept. It used to be written to `backend/uploads` under
  * a fresh uuid that nothing recorded, read, served or deleted - every template
  * upload added a file to the install tree for ever, inside a directory that was
- * fixed in the code. Only the extracted template is ever used, and that is in
- * the database.
+ * fixed in the code. Only the extracted template is ever used, and that is a
+ * saved template file in `static/templates` (`source: 'extracted'`).
  */
 export async function extractAndSaveTemplate(
   pdfBuffer: Buffer,
@@ -58,6 +60,7 @@ export async function extractAndSaveTemplate(
     sections,
     // Whatever markup the model wrote, read the way any stored template is.
     skillsLayouts: inferTemplateSkillsLayouts(html),
+    source: 'extracted',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -111,6 +114,9 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
     htmlContent,
     cssContent: typeof record.cssContent === 'string' ? record.cssContent : '',
     sections,
+    // A saved template's file says where it came from; a built-in's says
+    // nothing, and that silence is what makes it a built-in.
+    ...(isTemplateSource(record.source) ? { source: record.source } : {}),
     // A read-time default rather than a migration. Every row written before
     // layouts existed - imports, PDF extractions, manual templates, legacy
     // copies - has none, built-ins never live in the table at all, and the
@@ -126,8 +132,16 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
   };
 }
 
+/**
+ * The id a template's file is named by, or '' for one no file can have - a
+ * `..`, a slash, a reserved device name - which then finds nothing, before
+ * any path is built from it. An older build's spelling finds the file the
+ * one-time move filed that row under, else its folded form, so a profile
+ * naming an older import's `My_Template` still finds `my-template.json`
+ * (`currentTemplateId`).
+ */
 function normalizeTemplateId(id: string): string {
-  return id.replace(/\.json$/, '');
+  return currentTemplateId(id) ?? '';
 }
 
 function applyTemplateOverride(template: Template): Template {
@@ -144,12 +158,23 @@ function applyTemplateOverride(template: Template): Template {
   };
 }
 
-/** Reads one built-in template shipped as a static JSON file. */
+/**
+ * Reads one built-in template shipped as a static JSON file.
+ *
+ * A built-in is a file in `static/templates` WITHOUT a `source`. Saved
+ * templates live in the same directory and say where they came from, and
+ * this reader leaves them to `getStoredTemplate`.
+ */
 async function readStaticTemplate(id: string): Promise<Template | null> {
+  if (!id) return null;
   const templatePath = path.join(getStaticTemplatesDir(), `${id}.json`);
   try {
     const content = await fs.readFile(templatePath, 'utf-8');
-    const template = normalizeTemplateRecord(id, JSON.parse(content));
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed && typeof parsed === 'object' && isTemplateSource((parsed as Record<string, unknown>).source)) {
+      return null;
+    }
+    const template = normalizeTemplateRecord(id, parsed);
     if (!template) {
       console.warn(`Static template "${id}" is invalid and cannot be rendered`);
       return null;
@@ -158,6 +183,17 @@ async function readStaticTemplate(id: string): Promise<Template | null> {
   } catch {
     return null;
   }
+}
+
+const warnedFileNames = new Set<string>();
+
+function warnUnusableTemplateFile(entry: string): void {
+  if (warnedFileNames.has(entry)) return;
+  warnedFileNames.add(entry);
+  console.warn(
+    `[templates] ${entry} in ${getStaticTemplatesDir()} is not offered: a template file is named ` +
+      '<id>.json, with an id of lower-case letters, digits and hyphens. Rename it to use it.'
+  );
 }
 
 async function listStaticTemplates(): Promise<Template[]> {
@@ -171,7 +207,15 @@ async function listStaticTemplates(): Promise<Template[]> {
   const templates: Template[] = [];
   for (const entry of entries) {
     if (!entry.endsWith('.json')) continue;
-    const template = await readStaticTemplate(normalizeTemplateId(entry));
+    // Only a name a template id can have: `My Template.json` copied in by
+    // hand is not one, and folding it would list it under a name whose file
+    // a later read could not find. Said once, so it is not a silent loss.
+    const id = templateFileId(entry);
+    if (!id) {
+      warnUnusableTemplateFile(entry);
+      continue;
+    }
+    const template = await readStaticTemplate(id);
     if (template) templates.push(template);
   }
   return templates;
@@ -201,6 +245,7 @@ export async function getTemplateById(id: string): Promise<Template | null> {
     return staticTemplate;
   }
 
+  if (!normalizedId) return null;
   const stored = getStoredTemplate(normalizedId);
   if (!stored) return null;
 
@@ -274,8 +319,24 @@ export async function uploadJsonTemplates(
     overrideId: options?.overrideId,
   });
 
-  for (const entry of imported) {
-    saveStoredTemplate(entry.template);
+  // All or nothing on disk too: a file that cannot be written halfway down the
+  // list takes the ones already written with it, so the admin list is left
+  // exactly as it was - the promise the validation above makes.
+  const written: string[] = [];
+  try {
+    for (const entry of imported) {
+      saveStoredTemplate({ ...entry.template, source: 'uploaded' });
+      written.push(entry.template.id);
+    }
+  } catch (error) {
+    for (const id of written) {
+      try {
+        deleteStoredTemplate(id);
+      } catch {
+        // The save's own error is the one to report; this file is left over.
+      }
+    }
+    throw error;
   }
   return Promise.all(imported.map(async (entry) => ({ ...entry, template: await readBackSaved(entry.template) })));
 }
@@ -690,6 +751,7 @@ export async function createManualTemplate(config: ManualTemplateConfig): Promis
     // turns into category cells for categorized and leaves as one box per
     // skill for flat - so both are offered.
     skillsLayouts: ['categorized', 'flat'],
+    source: 'manual',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     manualConfig: fullConfig as Template['manualConfig'],

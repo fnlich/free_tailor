@@ -8,6 +8,7 @@ import {
   emptyEducation,
   emptyExperience,
   hasSkill,
+  SAMPLE_PLACEHOLDERS,
   type DraftCertification,
   type DraftEducation,
   type DraftExperience,
@@ -104,7 +105,7 @@ export function ExperienceSection({
               <input
                 type="text"
                 aria-label="Job title"
-                placeholder="Job title"
+                placeholder={`Job title, e.g. ${SAMPLE_PLACEHOLDERS.experienceTitle}`}
                 value={row.title}
                 onChange={(event) => patch(row.key, { title: event.target.value })}
                 className="tl-input"
@@ -112,7 +113,7 @@ export function ExperienceSection({
               <input
                 type="text"
                 aria-label="Company"
-                placeholder="Company"
+                placeholder={`Company, e.g. ${SAMPLE_PLACEHOLDERS.experienceCompany}`}
                 value={row.company}
                 onChange={(event) => patch(row.key, { company: event.target.value })}
                 className="tl-input"
@@ -218,7 +219,7 @@ export function EducationSection({ draft, update }: { draft: ProfileDraft; updat
             <input
               type="text"
               aria-label="Degree"
-              placeholder="Degree (e.g., Bachelor's in Computer Science)"
+              placeholder={`Degree, e.g. ${SAMPLE_PLACEHOLDERS.educationDegree}`}
               value={row.degree}
               onChange={(event) => patch(row.key, { degree: event.target.value })}
               className="tl-input"
@@ -226,7 +227,7 @@ export function EducationSection({ draft, update }: { draft: ProfileDraft; updat
             <input
               type="text"
               aria-label="Institution"
-              placeholder="Institution"
+              placeholder={`Institution, e.g. ${SAMPLE_PLACEHOLDERS.educationInstitution}`}
               value={row.institution}
               onChange={(event) => patch(row.key, { institution: event.target.value })}
               className="tl-input"

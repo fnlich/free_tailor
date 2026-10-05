@@ -23,6 +23,7 @@ import { getDatabasePath, getDb } from '../database/sqlite';
 import { hasProfile, saveProfile } from '../database/profileRepository';
 import { getGroup, saveGroup } from '../database/groupRepository';
 import { hasStoredTemplate, saveStoredTemplate } from '../database/templateRepository';
+import { canonicalTemplateId } from '../database/templateFiles';
 import { inferTemplateSkillsLayouts, normalizeSkillsLayouts } from '../services/templateImport';
 import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompts } from '../database/promptRepository';
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
@@ -104,9 +105,12 @@ function importTemplates(dir: string, staticTemplatesDir: string): Counter {
   const counter: Counter = { imported: 0, skipped: 0 };
   for (const { id, data } of readJsonFiles(dir)) {
     const template = data as Partial<Template>;
-    const templateId = template.id || id;
-    const isStatic = fs.existsSync(path.join(staticTemplatesDir, `${templateId}.json`));
-    if (isStatic || hasStoredTemplate(templateId) || typeof template.htmlContent !== 'string') {
+    // In the form a template FILE may be named, since that is where a saved
+    // template lives now; an id no file can carry is skipped like a clash.
+    const templateId = canonicalTemplateId(template.id || id);
+    // Any file of that id - a built-in, or a template already saved - wins.
+    const isStatic = templateId ? fs.existsSync(path.join(staticTemplatesDir, `${templateId}.json`)) : false;
+    if (!templateId || isStatic || hasStoredTemplate(templateId) || typeof template.htmlContent !== 'string') {
       counter.skipped += 1;
       continue;
     }

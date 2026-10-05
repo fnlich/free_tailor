@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 
-const { readDocument, useAdminEmails, useTempStorage } = require('./helpers');
+const { useAdminEmails, useTempStorage } = require('./helpers');
 
 /**
  * Templates and the two Technical Skills layouts.
@@ -291,7 +291,7 @@ test('a template without a declared layout gets one from its markup', () => {
 });
 
 test('a stored template reads with its layouts inferred or kept, and its capabilities are never stored', async () => {
-  const { dbDir } = seeded('stored');
+  const { staticDir } = seeded('stored');
   const { saveStoredTemplate } = require('../dist/database/templateRepository');
   const { getTemplateById } = require('../dist/extractors/templateExtractor');
 
@@ -305,9 +305,11 @@ test('a stored template reads with its layouts inferred or kept, and its capabil
   saveStoredTemplate({ ...legacy, id: 'kept', skillsLayouts: ['categorized', 'flat'] });
   assert.deepEqual((await getTemplateById('kept')).skillsLayouts, ['categorized', 'flat'], 'a stated list wins');
 
-  const row = readDocument(dbDir, 'templates', 'kept');
+  // A file now, beside the built-ins (test/templateFiles.test.js has the rest).
+  const row = JSON.parse(fs.readFileSync(path.join(staticDir, 'templates', 'kept.json'), 'utf8'));
   assert.equal('supportsStrengths' in row, false, 'derived from the markup, so never written');
   assert.equal('supportsSoftSkills' in row, false);
+  assert.equal(row.source, 'uploaded', 'a save without a source is recorded as brought in');
 });
 
 test('an import keeps a stated layout list and infers a missing one', () => {

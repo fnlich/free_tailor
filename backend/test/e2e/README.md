@@ -74,6 +74,33 @@ Every script exits non-zero on the first failing claim and prints every check.
 installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
+## The profile preview, held still
+
+`preview-vibration.js` is not about payments: it watches the profile editor's
+preview for the shake a scrollbar used to cause (README, Troubleshooting). It
+launches puppeteer **with real scrollbars** - the default `--hide-scrollbars`
+is why nothing else here could ever see it - opens one profile's editor, picks
+each template in turn and reads the page's width and both scrollbars on every
+animation frame. It needs the two servers up and `DB_DIR` naming the backend's
+database, like the others:
+
+```bash
+DB_DIR=/path/to/db node test/e2e/preview-vibration.js
+# E2E_VIEWPORTS=1920x937,1080xband  E2E_TEMPLATES=default  E2E_SECONDS=3
+# E2E_NO_GUTTER=1 turns scrollbar-gutter off, to prove the editor's own guard
+```
+
+`1080xband` measures the narrow layout's Preview tab and watches it 5px inside
+the band where, unfixed, the window's own scrollbar took itself away. Measured
+before the fix (Linux Chrome, 15px scrollbars, a one-page profile, 19 built-ins
+and two uploaded templates): at 1920x937 and 1903x937, 20 of 21 templates
+alternated 533.3 <-> 518.3px every frame (180 changes in 181 frames) - all but
+the uploaded one whose page ran to two pages; at 1440x900 none did; in the
+narrow layout every width tried shook inside its band (1080x1450-1465,
+1000x1360-1375, 900x1242-1257, 760x1382-1397, 600x1203-1218). After it: none of
+84 template/viewport pairs, nor 80 in the narrow band, nor 20 with
+`E2E_NO_GUTTER=1`.
+
 ## Sign-in is seeded, deliberately
 
 `services/auth/mailer.ts` refuses to pretend an email was sent, so there is no

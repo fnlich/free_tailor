@@ -286,6 +286,19 @@ function finaliseHeldContent(
  */
 export const __finaliseHeldContentForTests = finaliseHeldContent;
 
+/**
+ * The role a resume is built for: the one the job carries, trimmed, else the
+ * title the analysis read off the posting, else empty.
+ *
+ * The same rule as the resume routes' `resolveGenerationRole`, because a
+ * queued resume and one built on the spot must name the same role for the
+ * same row - in the cover letter, the file path and the task's own label.
+ */
+export function resolveTaskRole(role: unknown, analysis?: JobAnalysis): string {
+  if (typeof role === 'string' && role.trim()) return role.trim();
+  return analysis?.jobMeta?.title?.trim() || '';
+}
+
 /** Builds one resume. Throws on failure; the queue records it against the task. */
 export async function runResumeTask(
   input: ResumeTaskInput,
@@ -314,11 +327,17 @@ export async function runResumeTask(
     tailoredContent = await tailorResume(sectionProfile, analysis, choice, assignment.signal);
   }
 
+  // The role the sheet or the form gave, else the posting's own title as the
+  // analysis read it - what /resume/generate does. A row with no Job Title
+  // otherwise wrote "Dear Hiring Manager, ... for the  role" and filed the
+  // resume under an empty `{{job title}}` segment.
+  const role = resolveTaskRole(job.role, analysis);
+
   const coverLetterBody = tailoredContent?.coverLetter?.trim()
     ? tailoredContent.coverLetter.trim()
-    : await generateCoverLetter(profile, job.companyName, job.role, choice, assignment.signal);
+    : await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal);
 
-  const pathInfo = await getGeneratedOutputPath(profile, job.companyName, job.role, {
+  const pathInfo = await getGeneratedOutputPath(profile, job.companyName, role, {
     sourceRowNumber: job.sourceRowNumber,
     accountName: input.accountFolder,
     orderNumber: input.orderNumber,
@@ -333,7 +352,7 @@ export async function runResumeTask(
     profileId: profile.id,
     profileName: profile.name,
     companyName: job.companyName,
-    role: job.role,
+    role,
     coverLetterPdf,
     coverLetterDocx,
     tailored: Boolean(analysis),
@@ -347,8 +366,8 @@ export async function runResumeTask(
   try {
     if (input.format === 'both') {
       const [pdf, docx] = await Promise.all([
-        generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
-        generateResumeDOCX(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
+        generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, role),
+        generateResumeDOCX(profile, template, tailoredContent, pathInfo, job.companyName, role),
       ]);
       result.pdf = pdf;
       result.docx = docx;
@@ -359,7 +378,7 @@ export async function runResumeTask(
         tailoredContent,
         pathInfo,
         job.companyName,
-        job.role
+        role
       );
     } else {
       result.pdf = await generateResumePDF(
@@ -368,7 +387,7 @@ export async function runResumeTask(
         tailoredContent,
         pathInfo,
         job.companyName,
-        job.role
+        role
       );
     }
   } finally {

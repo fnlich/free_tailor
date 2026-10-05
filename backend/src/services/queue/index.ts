@@ -6,6 +6,7 @@ import {
   saveBatchWithTasks,
   saveTaskRow,
 } from '../../database/generationRepository';
+import { orderExistsForBatch } from '../../database/orderRepository';
 import { getProfile } from '../../database/profileRepository';
 import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
 import { geminiCliConcurrency } from '../ai/providers/geminiCli/options';
@@ -278,7 +279,28 @@ export type RestoreReport = {
   batches: number;
   requeued: number;
   pruned: number;
+  /**
+   * Every batch this restore put back, by id - which is also its credit
+   * reservation's id. The boot reconciler leaves these alone: their tasks are
+   * about to run again (or have just been settled here), and releasing the
+   * reservation as abandoned would build the rest of the run for free.
+   */
+  batchIds: string[];
 };
+
+/**
+ * What kind of run a batch is, on `shared.kind`. Only `order` is written for
+ * now; a batch without one is a run the builder started and follows.
+ *
+ * On `shared` because `shared` is persisted whole and read back whole by the
+ * restore - a field there survives a restart with no projection to update.
+ */
+export const ORDER_BATCH_KIND = 'order';
+
+/** True for a batch placed as an order: it is filed on /orders, and no builder tab follows it. */
+export function isOrderBatch(batch: { shared: Record<string, unknown> }): boolean {
+  return batch.shared.kind === ORDER_BATCH_KIND;
+}
 
 /**
  * The lane `routeFor` gives new work on `provider`: each seat's own, and `cli`
@@ -367,7 +389,7 @@ async function refreshRetiredChoice(
  * from starting - the admin pages are how an operator would find out why.
  */
 export async function restoreGenerationQueue(): Promise<RestoreReport> {
-  const report: RestoreReport = { batches: 0, requeued: 0, pruned: 0 };
+  const report: RestoreReport = { batches: 0, requeued: 0, pruned: 0, batchIds: [] };
 
   let rows: ReturnType<typeof loadBatchRows>;
   let restored: TaskQueue;
@@ -448,6 +470,12 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
         });
       }
 
+      // An order queued before batches carried their kind: the orders table
+      // still knows, and the builder must not take it for a run of its own.
+      // Written back with the batch below, so this is asked once.
+      const shared = { ...(data.shared ?? {}) };
+      if (shared.kind === undefined && orderExistsForBatch(row.id)) shared.kind = ORDER_BATCH_KIND;
+
       // Restored under its OWN id, so the payloads still point at the right
       // batch for their jobs and the rows on disk stay the rows for this batch.
       const batch = restored.restore(
@@ -455,13 +483,22 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           id: row.id,
           label: data.label ?? 'Generation',
           jobCount: data.jobCount ?? entries.length,
-          shared: data.shared ?? {},
+          shared,
           createdAt: data.createdAt ?? (Date.parse(row.createdAt) || Date.now()),
         },
         entries
       );
       report.batches += 1;
       report.requeued += requeued;
+      report.batchIds.push(row.id);
+      // Every task had finished before the process stopped, but it stopped
+      // before the last one closed the run's reservation. Closed now, exactly
+      // as the `taskFinished` hook would have: each unit that did not deliver
+      // gets its own price back (keyed on the task, so one already refunded
+      // is not refunded twice), and what delivered stays spent. Left open, it
+      // would wait for the reconciler, which releases everything outstanding -
+      // the finished resumes included.
+      if (batch.state !== 'running') settleRestoredBatch(batch as Batch);
       // Written back once, so the requeued tasks are queued on disk too - a
       // second restart must not count them as mid-flight all over again. Its
       // own catch, because the batch is back in the queue and running by now,
@@ -490,6 +527,27 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
     );
   }
   return report;
+}
+
+/** The `taskFinished` hook's accounting, for a batch the restore found already finished. */
+function settleRestoredBatch(batch: Batch): void {
+  try {
+    for (const task of batch.tasks) {
+      if (task.state === 'done') continue;
+      refundTaskUnit(
+        batch.id,
+        task.id,
+        taskCreditCost(task.payload),
+        `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
+      );
+    }
+    closeIfSettled(batch.id, { queued: 0, running: 0 });
+  } catch (error) {
+    console.warn(
+      `[queue] Restored batch ${batch.id} had finished, but its credits could not be settled. ` +
+        (error instanceof Error ? error.message : String(error))
+    );
+  }
 }
 
 /** Tests share one process; a queue left running would leak into the next. */

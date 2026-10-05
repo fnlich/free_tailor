@@ -20,6 +20,7 @@ import {
   validateOutputFileNameTemplate,
 } from '../utils/outputStorage';
 import type { Template } from '../types/template';
+import { currentTemplateId } from '../database/templateRepository';
 import { inferTemplateCapabilities } from './templateImport';
 
 export const DEFAULT_RESUME_PROMPT_ID = 'tailor-resume';
@@ -31,6 +32,18 @@ export const DEFAULT_TECHNICAL_SKILLS_LAYOUT: TechnicalSkillsLayout = 'categoriz
 
 function toSafeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value.trim() : fallback;
+}
+
+/**
+ * A profile's template, saved under the id it is filed under now. A page left
+ * open from before the upgrade, or a profile file exported then, can still
+ * send an older build's spelling (`My_Template`); the server would find the
+ * template either way, but the editor and the Profiles list compare ids as
+ * they are, and would call it a template no longer offered. Anything that is
+ * no template id at all is kept as written, to fall back as it always has.
+ */
+function toTemplateReference(value: string): string {
+  return value ? (currentTemplateId(value) ?? value) : value;
 }
 
 function toOptionalPositiveNumber(value: unknown, fallback?: number): number | undefined {
@@ -407,7 +420,7 @@ export function normalizeProfilePayload(
     name: toSafeString(data.name, existing?.name ?? 'Untitled Profile'),
     title: toSafeString(data.title, existing?.title ?? 'Professional'),
     totalYearsExperience: toOptionalPositiveNumber(data.totalYearsExperience, existing?.totalYearsExperience),
-    preferredTemplate: toSafeString(data.preferredTemplate, existing?.preferredTemplate ?? ''),
+    preferredTemplate: toTemplateReference(toSafeString(data.preferredTemplate, existing?.preferredTemplate ?? '')),
     disabled: typeof data.disabled === 'boolean' ? data.disabled : (existing?.disabled ?? false),
     profileSettings: normalizeProfileSettings(data.profileSettings, existing?.profileSettings),
     contact: normalizeContact(data.contact, existing?.contact),

@@ -307,6 +307,17 @@ export function getOrder(id: string): Order | null {
   return row ? toOrder(row) : null;
 }
 
+/**
+ * Whether a generation batch was placed as an order.
+ *
+ * A batch says so itself (`shared.kind`) since batches carried a kind; this
+ * is for one queued before that, restored from disk, which only the orders
+ * table can still answer for. One indexed lookup (`idx_orders_batch`).
+ */
+export function orderExistsForBatch(batchId: string): boolean {
+  return Boolean(getDb().prepare('SELECT 1 FROM orders WHERE batch_id = ? LIMIT 1').get(batchId));
+}
+
 export function listOrdersForUser(userId: string, limit = 50): Order[] {
   const rows = getDb()
     .prepare(

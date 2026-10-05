@@ -124,13 +124,19 @@ test('everything the model is asked to work from is still there', () => {
     'totalYearsExperience',
     'summary',
     'experience',
-    'strengths',
     'skills',
     'education',
     'certifications',
   ]) {
     assert.ok(field in sent, `${field} is what the prompt tailors`);
   }
+  // Strengths only while the profile's Strengths switch is on: off, the
+  // person has said they are not for this resume, and they are not sent.
+  assert.equal('strengths' in sent, false);
+  const withStrengths = JSON.parse(
+    buildTailorResumePromptValues(profileFixture({ profileSettings: { includeStrengths: true } }), ANALYSIS).profileJson
+  );
+  assert.ok('strengths' in withStrengths, 'strengths is what the prompt tailors, once switched on');
   assert.equal(sent.experience.length, 5);
   assert.equal(sent.experience[0].achievements.length, 3);
   assert.ok(sent.experience[0].companyContext, 'the role context still travels');

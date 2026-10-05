@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { getGeneratedFilePath } from './utils/generatedPath';
 import { getDatabasePath, getDb } from './database/sqlite';
+import { describeTemplatesDirectory } from './database/templateFiles';
 
 import profileRoutes from './routes/profiles';
 import templateRoutes from './routes/templates';
@@ -321,6 +322,10 @@ getDb();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);
+  // Beside the database, because saved templates are files there now and a
+  // directory this user cannot write fails every save with a generic error.
+  const templatesDirectory = describeTemplatesDirectory();
+  console[templatesDirectory.level](templatesDirectory.line);
   console.log(`Server listening on ${listServerUrls().join(', ')}`);
   // Every operational setting (config/operational.ts) that is not at its
   // default, effective values after validation, on one line. None is a secret.
@@ -383,8 +388,12 @@ const server = app.listen(PORT, HOST, () => {
   // again for a task queued on a provider that has since been removed, which
   // is a settings read and so asynchronous; chaining on it keeps the order.
   // Neither ever rejects.
-  void restoreGenerationQueue().then(() => {
-    reconcileCredits();
+  //
+  // And told WHICH batches came back: age alone cannot tell an abandoned
+  // reservation from an order that was six hours into its run when the
+  // process stopped, and releasing that one built the rest of it for free.
+  void restoreGenerationQueue().then((restored) => {
+    reconcileCredits(Date.now(), { liveBatchIds: restored.batchIds });
   });
   // Gives a spreadsheet to accounts created before this feature existed. Serial
   // and paced, so it is a slow trickle in the background rather than a burst of

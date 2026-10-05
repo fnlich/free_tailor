@@ -1,7 +1,9 @@
 /**
- * When the builder stops reattaching to a running batch's progress stream.
+ * When the builder stops reattaching to a running batch's progress stream, and
+ * which batch it picks back up when it opens (`reattachTarget`, below).
  * Kept apart from the page so the backend suite can test it
- * (backend/test/frontendHelpers.test.js); imports nothing at runtime.
+ * (backend/test/frontendHelpers.test.js, frontendEditorHelpers.test.js);
+ * imports nothing at runtime.
  *
  * The budget used to count EVERY attach. A proxy that closes an idle
  * connection (Cloudflare after about 100 s, nginx and AWS load balancers after
@@ -36,4 +38,43 @@ export function nextAttach(
   if (outcome.gone) return { idleInARow, stop: true };
   const idle = outcome.delivered > 0 ? 0 : idleInARow + 1;
   return { idleInARow: idle, stop: idle >= MAX_IDLE_REATTACHES };
+}
+
+/** What the builder needs of a listed batch to decide whether to pick it back up. */
+export type ListedBatch = {
+  batchId: string;
+  state: string;
+  /** 'order' for a placed order; absent from a server that does not say. */
+  kind?: string;
+};
+
+/**
+ * Which running batch the builder picks back up when it opens, if any, and
+ * whether the id this browser remembered should be forgotten.
+ *
+ * Only a batch the server LISTS as active for the caller (`GET
+ * /generation/batches?active=1`, which answers the caller's own unfinished
+ * builds and never an order) - even the remembered one. Reading the
+ * remembered id straight from the batch endpoint let an administrator's page
+ * follow whichever run that browser last remembered, another account's
+ * included, since an administrator may read any batch; and the first entry of
+ * an unfiltered list could be somebody else's run or an order, which locked
+ * the whole page until a three-hundred-resume order finished. An order is
+ * followed on the Orders page, never here, so one is skipped even from a
+ * server that still lists them.
+ *
+ * `listed` is null when the list could not be read: nothing is attached, and
+ * the remembered id is kept for the next visit rather than forgotten over a
+ * network blip.
+ */
+export function reattachTarget(
+  listed: readonly ListedBatch[] | null,
+  remembered: string | null
+): { batchId: string | null; forget: boolean } {
+  if (listed === null) return { batchId: null, forget: false };
+  const eligible = listed.filter((batch) => batch.state === 'running' && batch.kind !== 'order');
+  if (remembered && eligible.some((batch) => batch.batchId === remembered)) {
+    return { batchId: remembered, forget: false };
+  }
+  return { batchId: eligible[0]?.batchId ?? null, forget: Boolean(remembered) };
 }

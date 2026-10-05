@@ -25,7 +25,16 @@ import styles from './page.module.css';
  * unsaved edits, and the server refuses the changes that matter (the last
  * admin, an unknown subscription) rather than the page, so a refusal has to be shown
  * per control anyway.
+ *
+ * The signed-in administrator's OWN row cannot be demoted, disabled or
+ * deleted from here, and says so: the server refuses all three for the
+ * caller's own account (another administrator may still do them), so the
+ * controls are locked rather than offered and refused.
  */
+
+/** Said on your own row, beside the controls it locks. */
+const OWN_ROW_NOTE =
+  'Your own account: you cannot change its role, disable it or delete it. Another administrator can.';
 
 function AccountsTable() {
   const { account: me, refresh: refreshMe } = useAuth();
@@ -296,6 +305,7 @@ function AccountsTable() {
                           {isMe && <span className="ml-2 text-xs font-normal text-subtle">(you)</span>}
                         </p>
                         <p className="break-words text-xs text-subtle">{row.email}</p>
+                        {isMe && <p className="mt-1 max-w-[16rem] text-xs text-muted">{OWN_ROW_NOTE}</p>}
                         {(row.role === 'admin' || row.disabled) && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {row.role === 'admin' && <Pill tone="violet">Admin</Pill>}
@@ -308,7 +318,10 @@ function AccountsTable() {
                         <div className="w-24">
                           <select
                             value={row.role}
-                            disabled={busy}
+                            // Your own role is locked: demoting yourself is
+                            // refused, and the select would only offer it.
+                            disabled={busy || isMe}
+                            title={isMe ? OWN_ROW_NOTE : undefined}
                             aria-label={`Role for ${row.email}`}
                             onChange={(event) =>
                               apply(row.id, async () =>
@@ -433,12 +446,13 @@ function AccountsTable() {
                         <div className="ml-auto grid w-max grid-cols-2 gap-2">
                           <button
                             type="button"
-                            disabled={busy}
+                            disabled={busy || isMe}
                             onClick={() =>
                               apply(row.id, async () =>
                                 (await accountsApi.update(row.id, { disabled: !row.disabled })).account
                               )
                             }
+                            title={isMe ? OWN_ROW_NOTE : undefined}
                             className="tl-button-quiet"
                             data-size="sm"
                           >
@@ -473,7 +487,7 @@ function AccountsTable() {
                             type="button"
                             disabled={busy || isMe}
                             onClick={() => void remove(row)}
-                            title={isMe ? 'You cannot delete the account you are signed in with.' : undefined}
+                            title={isMe ? OWN_ROW_NOTE : undefined}
                             className="tl-button-quiet"
                             data-size="sm"
                             data-tone="danger"

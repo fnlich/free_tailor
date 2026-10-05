@@ -19,8 +19,10 @@ import { listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/
 import { genericMessage, PublicError, publicStoredError, sendPublicError } from '../middleware/publicError';
 import {
   getGenerationQueue,
+  isOrderBatch,
   laneFor,
   newBatchId,
+  ORDER_BATCH_KIND,
   persistNewBatch,
   RESUME_TASK_KIND,
   taskCreditCost,
@@ -519,7 +521,9 @@ router.post('/batches', async (req: Request, res: Response) => {
         jobCount: jobs.length,
         // The jobs live on the BATCH, once. Each task refers to its own by index,
         // so thirty tasks on one posting do not carry thirty copies of it.
-        shared: { jobs, ownerId: req.user!.id },
+        // An order says so: it is followed on /orders, and the builder's
+        // active list leaves it out (see GET /batches).
+        shared: { jobs, ownerId: req.user!.id, ...(asOrder ? { kind: ORDER_BATCH_KIND } : {}) },
       });
       // Written as one transaction rather than row by row: a batch that half
       // landed because the process died mid-loop would come back with tasks whose
@@ -633,19 +637,43 @@ function visibleBatch(req: Request, batchId: string) {
   return canSeeBatch(req.user ?? null, batch) ? batch : null;
 }
 
-/** Every batch the server still holds; `?active=1` for the unfinished ones. */
+/**
+ * True for a batch the builder may pick back up: the caller's OWN, and not an
+ * order.
+ *
+ * Own even for an administrator. `canSeeBatch` lets an administrator read any
+ * run, which is right for looking one up by id - but the builder reattaches
+ * to the first batch in the active list, so an administrator opening Build
+ * Resumes was following somebody else's run, locked out of their own page
+ * until it finished. And never an order: an order is followed on /orders, and
+ * a builder that took it for its own run locked the page for as long as the
+ * order took.
+ */
+function isBuilderRun(viewer: Viewer, batch: { shared: Record<string, unknown> }): boolean {
+  return viewer !== null && batch.shared.ownerId === viewer.id && !isOrderBatch(batch);
+}
+
+/**
+ * Every batch the server still holds that this account may see.
+ *
+ * `?active=1` is the builder's question - "is a run of mine still going?" -
+ * and answers only the caller's own unfinished, non-order batches, whoever
+ * the caller is (`isBuilderRun`). Without it, the list is everything the
+ * caller may see, an administrator's included.
+ */
 router.get('/batches', (req: Request, res: Response) => {
   const queue = getGenerationQueue();
   const activeOnly = req.query.active === '1' || req.query.active === 'true';
   const admin = isAdmin(req);
+  const viewer = req.user ?? null;
   res.json({
     batches: queue
       .listBatches(activeOnly)
       // Filtered BEFORE the snapshot is built, so another account's work is
       // never even serialized. The page that reloads takes the first batch in
-      // this list and attaches to it, so an unfiltered list would silently
-      // point somebody at a stranger's run.
-      .filter((batch) => canSeeBatch(req.user ?? null, batch))
+      // the active list and attaches to it, so an unfiltered list would
+      // silently point somebody at a stranger's run.
+      .filter((batch) => (activeOnly ? isBuilderRun(viewer, batch) : canSeeBatch(viewer, batch)))
       .map((batch) => queue.snapshot(batch.id))
       .filter((snapshot): snapshot is BatchSnapshot => Boolean(snapshot))
       .map((snapshot) => readerSnapshot(snapshot, admin)),

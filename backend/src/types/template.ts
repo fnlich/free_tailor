@@ -18,11 +18,24 @@ export interface ManualTemplateConfigStored {
   sectionStyles?: Record<string, Record<string, Record<string, unknown>>>;
 }
 
+/**
+ * How a saved template came to be: imported from a JSON file, extracted from a
+ * PDF, or built in the manual editor.
+ *
+ * Written into the template's own file in `static/templates`, and it is what
+ * tells a saved template from a built-in there: a file WITH a source is one
+ * an administrator saved (editable, deletable), a file without one shipped
+ * with the code (read-only; its edits go to `template_overrides`).
+ */
+export type TemplateSource = 'uploaded' | 'extracted' | 'manual';
+
 export interface Template {
   id: string;
   name: string;
   description: string;
   disabled?: boolean;
+  /** Present on a saved template, absent on a built-in. See `TemplateSource`. */
+  source?: TemplateSource;
   htmlContent: string;
   cssContent: string;
   sections: string[];

@@ -595,7 +595,9 @@ you work: a template, a layout or a switch shows at once, and typing about
 on screen stays up while the next one draws, so typing never blanks it; a
 failure says *Not updated* with the reason and **Try again**, and leaves the
 last page up. A *Page 2* line marks roughly where the printed page breaks, and
-**Full size** opens the page at its printed width.
+**Full size** opens the page at its printed width. The page is scaled to the
+pane as if a scrollbar were always there, so it holds still whether or not the
+pane scrolls (see Troubleshooting for the shake this replaced).
 
 What the preview is, exactly:
 
@@ -612,6 +614,17 @@ What the preview is, exactly:
   'unsafe-inline'; img-src data:; font-src data:`, so nothing in it can fetch.
   A contact link reaches the page only as an `http`/`https` address -
   `javascript:` and every other scheme are dropped, in the PDF too.
+- **Empty fields show a sample, and say so.** A field you have not filled is
+  drawn with the template gallery's sample person, so a new profile previews as
+  a whole resume rather than bare headings: per field for the name, title,
+  contact details and summary (a typed name with no phone shows your name and
+  the sample phone), and per section for experience, education and skills (one
+  role typed replaces the whole sample list). Soft Skills and Strengths are
+  sampled only while their box is ticked and the template has the section. The
+  editor lists what is sample text above the page, and the response says which
+  (`sampled`). **The sample is the preview's alone**: it is never saved, never
+  printed into a PDF or DOCX, and never sent to a model - an empty field stays
+  empty everywhere else.
 - **It shows what you entered.** A Grouped preview puts only your own skills
   under the library's headings; a generated Grouped resume still fills those
   headings out from the library for the job (see below). Plain, and Grouped
@@ -652,8 +665,10 @@ and does not any more.
 **Soft Skills and Strengths are switches**, `includeSoftSkills` and
 `includeStrengths` in the profile's settings. Both are **off unless you tick
 them** - which is exactly what every resume printed before they existed, so no
-existing profile's output changes. Turning one off keeps its list with the
-profile; it only stops it printing.
+existing profile's output changes. Turning one off **hides its list and keeps
+it**: the box then shows only the switch and what it keeps (*3 soft skills kept
+with the profile*), nothing is deleted, the entries are saved as they were, and
+ticking the box brings them back to print and edit.
 
 | | On | Off |
 |---|---|---|
@@ -750,6 +765,12 @@ these are how it is drawn - and the shipped prompt names them after it, in a
 *RESUME SECTIONS* block, so the long start of the prompt that is the same for
 every resume stays the same. Its strengths instructions apply only when the
 Strengths section is `yes`; on `no` it asks for `"strengths": []`.
+
+What the record holds does follow the switches: **with Strengths off, the
+profile's strengths are not sent to the model at all** - not in
+`[[profileJson]]` for tailoring, nor for the cover letter. They stay with the
+profile, unsent, until the box is ticked. The profile's own soft skills are
+never in it either way; the code lists them after the model has answered.
 
 **A prompt edited before the switches existed still obeys them.** The code
 appends a *FINAL SKILL OVERRIDE* to every tailoring turn, whichever prompt
@@ -923,7 +944,10 @@ what is already there, and jobs already in the tab are skipped.
 **And the builder reads back out of it.** *Import from Sheets* on the builder
 offers your own sheet first and by default, on today's tab, with `Company`,
 `Job Title` and `Job Description` already mapped - because the layout is one
-this app wrote. A saved source is somebody else's spreadsheet and keeps the
+this app wrote. Each row's role is its own `Job Title`; a row with none is
+built with the title the posting's analysis reads from its description, as a
+manual build is. (The builder's *Fallback Role* field is gone: it put one
+typed role on every untitled row, whatever each job was.) A saved source is somebody else's spreadsheet and keeps the
 older column guesses. Only an administrator is offered the saved sources at all:
 they are not a user-addressable sheet, so listing them for everyone did nothing
 but offer a 404.
@@ -957,7 +981,10 @@ import dialog answers immediately with
 and the page is then free. That is the point: three hundred rows is an hour of
 work, and holding a browser tab open for it meant a reload part way through left
 the files on the server with nothing offering them. The server now records what
-was asked for and builds it whether or not anybody is watching.
+was asked for and builds it whether or not anybody is watching. It stays free
+when you come back, too: reopening **Build Resumes** picks up only a run you
+started from the builder yourself - never an order (that is what **Orders** is
+for), and never another account's, an administrator's included.
 
 **Orders** in the navigation lists what you ordered, newest first, each with a
 `122 of 300` progress bar. Open one and every resume is there as it lands:
@@ -994,7 +1021,7 @@ manual build and is unaffected.
 
 | Data | Storage |
 |------|---------|
-| Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
+| Profiles, groups, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
 | Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir` |
@@ -1006,8 +1033,11 @@ manual build and is unaffected.
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
 | Built-in resume templates | `backend/static/templates/*.json`, read from the file on every request - so an edited file shows at once, with no import. What an administrator changes about a built-in - its name, description, disabled flag and the layouts it is offered for - is an override row in the database (`template_overrides`) laid over the file, never the file itself |
+| Templates an administrator saved - imported from JSON, extracted from a PDF, built in the manual editor | **Files**, in the same `backend/static/templates` directory: `<id>.json` in the shipped shape plus a `"source"` (`uploaded`, `extracted` or `manual`). A file with a `source` is a saved template, editable and deletable on **Admin → Templates**; a file without one is a built-in. Written to a temporary file and renamed into place, so a crash never leaves half a template. They are not gitignored: they show in `git status`, and committing one ships it to every install that pulls |
 
-Nothing under `backend/static` is written to at runtime (`TAILOR_STATIC_DIR` reads the seeds from somewhere else instead). Edits made in the admin panel always go to the database.
+Nothing under `backend/static` is written to at runtime **except `static/templates`**, which also holds the templates administrators save (`TAILOR_STATIC_DIR` moves the whole directory, seeds and saved templates together). Every other edit made in the admin panel goes to the database. The backend prints the templates directory under `Database:` at startup, and says so if this user cannot write to it.
+
+**Backing up** means two things now: the database file in `DB_DIR`, and `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), which holds the saved templates. Copy them together - a profile names its template by id, and a database restored without the template files falls back to `default` for those profiles. An install upgraded from a release that kept templates in the database moved them to files on its first start, once (`schema_meta` key `templates_moved_to_files`), and left the old `templates` rows in the database as a backup it no longer reads - see [Saved templates are files](#9-saved-templates-are-files) for what that changed and for rolling back.
 
 ---
 
@@ -1404,6 +1434,65 @@ Upgrading again renames it forward. Rename it rather than adding a `plan`
 column: with both present this build reads `subscription` and leaves `plan`
 alone (see Troubleshooting).
 
+### 9. Saved templates are files
+
+The templates an administrator imports, extracts from a PDF or builds in the
+manual editor used to be rows in the database's `templates` table. They are
+files now: `<id>.json` in `backend/static/templates` (or
+`$TAILOR_STATIC_DIR/templates`) beside the built-ins, with a `"source"` field
+(see [Where data lives](#where-data-lives)). Back that directory up with the
+database from now on.
+
+- On its first start the backend writes every `templates` row out as a file,
+  records what it did under the `schema_meta` key `templates_moved_to_files`,
+  and leaves the rows in the database as a backup it no longer reads.
+- Ids are lower-case letters, digits and hyphens now, and an older import kept
+  upper case and underscores (`My_Template`, `Navy_Rule`, `_draft`). Such a row
+  is filed under its folded id (`my-template`) when that is free, and under a
+  fresh `u-` id when it is not - when it is a built-in's (`Navy_Rule` folds to
+  the shipped `navy-rule`) or another template's, or no id at all (`_draft`).
+  A row whose id already was a valid one always keeps it. The profiles naming
+  a renamed row are changed to name the new id in the same step, and anything
+  else still naming the old one - a queued resume, a page left open, a profile
+  file exported earlier - finds the same template, so every profile is drawn
+  with the design it was drawn with before. The log says
+  `[templates] Template "<old>" is now <new>.json` for each.
+- A row is left in the database only when a file of exactly its id is
+  already there - a built-in, which hid that row from the older build too, or
+  a different saved template - or its data cannot be read (see
+  Troubleshooting).
+- A row that could not be written - the directory is not writable, or a file
+  in the way cannot be read - is tried again at each start until it is, and
+  only it: a template that was moved and then deleted or edited stays as the
+  administrator left it.
+- A template file copied into the directory by hand is offered only under a
+  name an id can have; the startup line names any that is not (see
+  Troubleshooting).
+
+**Rolling back** to an older build: it reads every file in `static/templates`
+as a built-in. Saved templates still render there, but read-only - no edit or
+delete, and an edit to a manual template goes to its database row, which the
+file hides - and a renamed one is listed twice, under its old id as well. To
+have them editable, stop the backend and move the files that carry a
+`"source"` out of `static/templates` before starting the older build, which
+then serves the database rows - except the files of renamed rows (the
+`renamed` list in the record): their profiles now name the new id, and would
+be drawn with `default` without the file. Templates created or edited since
+the upgrade exist only in the files, not in the rows.
+
+**Upgrading again** moves nothing on its own, because the move is recorded as
+done. To bring forward what was created or changed under the older build, put
+back any files you moved aside, delete the record, and start this build:
+
+```sh
+sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM schema_meta WHERE key = 'templates_moved_to_files'"
+```
+
+The move then runs over every row again. A row whose file is still there is
+recognised - a renamed one is given the same new id as the first time - and
+left as it is, unless the row was changed after the file was, in which case
+it replaces the file; a row created under the older build is written out.
+
 ---
 
 ## 🌐 Serving it on your own domain
@@ -1774,7 +1863,7 @@ unique across the install, which settles all of it in one segment.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, subscription, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's subscription before they arrive; it is not a way in, since they still prove the address through Google or a code |
+| **Accounts** | Every account on the installation, with its role, subscription, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription before they arrive; it is not a way in, since they still prove the address through Google or a code |
 | **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
@@ -1906,7 +1995,7 @@ matching it.
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `ORDER_RETENTION_SWEEP_MS` | How often that sweep runs, besides once at startup (default `21600000`, six hours; range 60000-86400000). *Startup* |
 | `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
-| `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging; nothing is written there |
+| `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging. Nothing is written there except `templates/`, where the templates administrators save are kept beside the built-ins, so it must be writable for those and backed up with the database |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
 
 See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
@@ -1960,13 +2049,17 @@ file. Export them in the shell, for the install and the server alike:
 | `Cannot find module '<name>'` or `TS2307` right after pulling | A pull brings source, never packages - a commit that adds a dependency leaves `node_modules` a version behind, and the backend then fails to compile naming a module that is correctly listed in `package.json`. Run `npm run install:all`, or `npm install --prefix backend` for the backend alone. |
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
 | Startup fails with *Could not rename users.plan to subscription in ...* | The first start after the plan-to-subscription rename could not change the database file: the file or its directory is read-only to this user, the disk is full, or another program - a `sqlite3` shell, a backup tool - holds a write lock on it past the five-second wait. The reason SQLite gave is at the end of the line. Nothing was changed; fix that and start again. This build cannot run on the old column name, which is why it stops here instead of failing on every sign-in. |
+| On **Admin → Templates**, importing, extracting, building or editing a template answers *Template could not be saved. Please try again, or contact your administrator.* with a `Ref:` (or deleting one, *Template could not be deleted.*) | Saved templates are files in `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), and the server could not write there: the directory is read-only to the user the backend runs as - a checkout owned by somebody else, a read-only container layer - or the disk is full. The startup line under `Database:` says so as `Templates: <dir> is NOT writable (<reason>)`; the backend log line carrying the same `Ref` names the file and the error, and an administrator sees it under the message. Give that user write access to the directory (or point `TAILOR_STATIC_DIR` at a writable copy of `backend/static`) and try again. A failed save leaves the template as it was and no temporary file behind. Renaming, disabling or reclassifying a **built-in** still works meanwhile, because those go to the database. |
+| After upgrading, a template that was there before is missing from **Admin → Templates**, and the backend log says `[templates] Template "<id>" was left in the database and is not offered: ...` or `... could not be written to a file and is not offered until it is` | This release keeps saved templates as files, and the first start moved every template out of the database (see [Saved templates are files](#9-saved-templates-are-files)). *Could not be written* means the templates directory was not writable at that start, or a file in the way could not be read: fix it as in the row above and restart - that template, and only it, is tried again. *Left in the database* is for good, and happens only when a file of exactly that id was already there - a built-in, which hid the row before the upgrade too, or a different saved template, which a profile naming that id is drawn with - or when the row's data cannot be read. The row is still in the database: `sqlite3 "$DB_DIR/free_tailor.db" "SELECT data FROM templates WHERE id = '<id>'" > template.json`, then import `template.json` under **Admin → Templates**, which gives it a new id if its own is taken, and pick it again on the profiles that should use it. A log line *Template "Navy_Rule" is now u-1a2b3c4d.json* (or *... is now my-template.json*) is not a problem: ids are lower case with hyphens now, so a row whose id was not one got a new id - its folded one when that was free, else a fresh `u-` one, never a built-in's or another template's - and the profiles naming it were changed to name it. |
+| A template file copied into `backend/static/templates` by hand is not offered any more, a profile that used it is drawn with `default`, and the startup line under `Database:` ends *Not offered, because a template file is named <id>.json with an id of lower-case letters, digits and hyphens: Company_Brand.json* | A template's id is its file name, and ids are lower-case letters, digits and hyphens now; an older release offered a file under any name. Rename the file to its id - `Company_Brand.json` to `company-brand.json` - and it is offered at the next request, with no restart; a profile naming `Company_Brand` finds it again, because a lookup folds case and `_`. What an administrator had changed about it as a built-in on **Admin → Templates** - its name, description, disabled flag and layouts - was recorded under the old id, so set those again there. |
+| After rolling back to an older build, the saved templates show as built-ins that cannot be edited or deleted, or one is listed twice; or, after upgrading again, a template created or changed under the older build is missing | The older build reads every file in `static/templates` as a built-in, and this build moves the database's templates to files only once. [Saved templates are files](#9-saved-templates-are-files) says which files to move aside before rolling back, and how to have the move run again - put the files back and delete the `templates_moved_to_files` record from `schema_meta` - before upgrading again. |
 | Startup warns *users has both "plan" and "subscription"; reading "subscription" and leaving "plan" alone* | A `plan` column was ADDED back by hand - usually to roll back to an older build - instead of renaming `subscription` back (see [Plans are now subscriptions](#8-plans-are-now-subscriptions)). This build reads `subscription`; anything an older build wrote to `plan` since is not read. To keep those values, stop the backend and run `UPDATE users SET subscription = plan; ALTER TABLE users DROP COLUMN plan;` against `free_tailor.db` in your `DB_DIR`; to keep this build's, just drop `plan`. |
 | After rolling back to an older build, every sign-in fails and its log shows `no such column: plan` | The database was upgraded: this release renamed `users.plan` to `users.subscription`, and the older build only knows the old name. Rename it back before starting the older build - the one-line command is in [Plans are now subscriptions](#8-plans-are-now-subscriptions). |
 | On **Admin → Accounts** after an upgrade, changing a row's subscription, deleting an account, or any change the server refuses (demoting the last administrator, say) turns the page into *Application error: a client-side exception has occurred*; or **Add an account** answers *This page is from an older version of the app. Reload it and try again.* | The page was loaded before the upgrade that renamed plans to subscriptions. It sends the tier as `plan`, which this build refuses rather than ignores, and it reloads the account list expecting the old `plans` field, which is now `subscriptions` - so anything in the table that reloads the list breaks the page, and only the invite form, which does not reload after a refusal, gets as far as the sentence. Reload the page. A subscription change or invite was refused, not half-made: an invite meant for Premium would otherwise have created a Default account. A delete names no tier, so it did go through; the reloaded page shows it. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource - one per subscription seat: Claude, Codex and Gemini - so no seat can hold up another. |
-| A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. |
+| A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released N credit(s) from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones running are aborted. |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page gives up only after twenty attaches in a row that brought nothing, or at once when the server says the batch is gone (restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen seat can actually take: its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`). The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
@@ -1979,6 +2072,9 @@ file. Export them in the shell, for the install and the server alike:
 | The profile preview says *Drawn with ...: ... has no Plain layout* (or *Grouped*), or *the template this profile names is not offered any more* | The profile's template cannot print its layout - an administrator reclassified it - or was disabled or deleted. Resumes for it fall back exactly as the preview did: the profile's own template, then `default`, then any enabled template that prints the layout. Pick a template in the editor to choose for yourself. The backend logs the fallback once, as `[templates] Profile <id> uses the flat skills layout, which template "<id>" does not offer; drawing it with "<id>" instead.` |
 | The profile preview, or a resume, says *No resume template is available right now. Please contact your administrator.* | No enabled template could be found to draw with: every template is disabled, `default` included - or the profile's own template and `default` are, and every template left enabled prints only the other layout. Under **Admin → Templates**, enable `default`, which prints both layouts and so serves every profile. The `Ref:` in the message finds the line in the backend log. |
 | The profile preview says *Not updated* | Its last request failed; the sentence under it says why, and **Try again** sends it again. The page shown is the last one that rendered, not the current draft. Nothing is lost - the form is unsaved until **Save**, whatever the preview does. |
+| The page in the profile preview shakes - shrinks and grows by a few percent, many times a second - with nothing being typed (it looked like every template but one) | An older build: a loop through a scrollbar. The page was scaled to the room beside it, and where scrollbars take space (Windows and Linux Chrome, macOS set to always show them) a one-page resume just taller than that room brought a scrollbar in, was scaled down to fit beside it, let the scrollbar go, grew back, and so on every frame. At 1920x937 that was every one-page document; a template whose page ran to a second page kept its scrollbar and stood still, which is why one looked fine. The same happened in the narrow layout's **Preview** tab through the window's scrollbar, in a window just the page's height. The pane and the window now keep the scrollbar's strip whether or not it is showing, and the scale is taken as if it always were. Still shaking: reload, since the page may be from before the upgrade; a browser without `scrollbar-gutter` (Chrome before 94, Firefox before 97, Safari before 18.2) settles after one step instead of none. `backend/test/e2e/preview-vibration.js` measures it. |
+| An unticked **Soft skills** or **Strengths** box shows only *N ... kept with the profile* | That is the switch working: off hides the list and keeps it. Nothing was deleted - tick the box to see, print and edit the entries again. |
+| The **Admin → Accounts** row marked *(you)* has its role, **Disable** and **Delete** greyed out | An administrator cannot demote, disable or delete the account they are signed in with; the server refuses all three, so the page does not offer them. Another administrator can - and the last enabled administrator cannot be removed by anybody. |
 | A skill on the profile does not show in the preview | The preview draws only skills the shared skill library knows - in Plain, and in Grouped unless you assigned headings by hand - and this one came in with an uploaded or imported profile the library has never heard of. A skill added in the editor goes into the library as it is added, so remove it and add it again, or ask an administrator to add it under **Admin → Skills**. A tailored Plain resume still lists it when the posting names it. |
 | Soft Skills or Strengths do not appear on a resume, although the profile has them (or the prompt asks for them) | In order: the switch is **off** - both are off until ticked under **Soft skills** and **Strengths** in the profile's editor, and an off switch empties the section whatever the prompt or the model says; the **template has no such section** - Burgundy Rule, Navy Rule and Charcoal Sidebar have neither, Ink Ledger has no Soft Skills, and the editor says so under the switch; the DOCX of that generation leaves it out too, since the template it was generated with decides both files; or **the list is empty** - a section with nothing in it prints no heading. With Strengths on, a resume whose model wrote none uses the profile's own, so a missing Strengths section with the switch on means the profile has none either. |
 | The summary ends with *Working style: ...* | The profile's **Soft Skills** switch is off - or on, with a template that has no Soft Skills section (Burgundy Rule, Navy Rule, Charcoal Sidebar, Ink Ledger), which counts as off - so the posting's soft skills that the resume does not already mention are worked into the summary instead of a section of their own. Tick the switch and the next resume lists them in its Soft Skills section instead, without the sentence. Content tailored before this release said *Strengths include ... across changing engineering contexts.*; finalising it now rewrites that the same way. |
@@ -2062,6 +2158,15 @@ against the markup. The live preview's access rules and its lack of side
 effects are in `profilePreview.test.js`, run with every seat locked so a 200
 also proves no model was asked; the prompt variables and their drift check in
 `promptVariables.test.js`.
+
+The frontend has no test runner, so its decisions that need no browser are
+small modules the backend suite transpiles and tests
+(`frontendHelpers.test.js`, `frontendEditorHelpers.test.js`). What does need
+one is in `backend/test/e2e/`, run by hand against servers that are already up:
+`shell.js` walks every page as both roles, and `preview-vibration.js` opens the
+profile editor with real scrollbars (puppeteer hides them by default) and
+watches the preview's size every frame for each template, at the window sizes
+where it used to shake.
 
 The documentation is checked too. `backend/test/envExample.test.js` reads
 `.env.example` and this README against the table in

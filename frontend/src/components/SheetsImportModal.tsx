@@ -88,7 +88,6 @@ function layoutFor(source: ImportSheetSource | null | undefined): SheetLayout {
 type Props = {
   isOpen: boolean;
   isSubmitting: boolean;
-  showJobTitleMapping: boolean;
   sources: ImportSheetSource[];
   selectedSourceId: string;
   selectedProfileName?: string;
@@ -114,7 +113,6 @@ function getColumnOffset(startColumn: number, columnLabel: string, totalColumns:
 export default function SheetsImportModal({
   isOpen,
   isSubmitting,
-  showJobTitleMapping,
   sources,
   selectedSourceId,
   selectedProfileName,
@@ -216,11 +214,6 @@ export default function SheetsImportModal({
     // should be reset.
   }, [isOpen, layout, selectedSource?.id, selectedSource?.sheetId, selectedSource?.preferredTab]);
 
-  useEffect(() => {
-    if (showJobTitleMapping) return;
-    setMapping((current) => (current.jobTitle === '' ? current : { ...current, jobTitle: '' }));
-  }, [showJobTitleMapping]);
-
   const columnOptions = useMemo(() => {
     if (!values.length) return [];
 
@@ -254,8 +247,7 @@ export default function SheetsImportModal({
     }
 
     const companyIndex = Number(activeMapping.companyName);
-    const jobTitleIndex =
-      showJobTitleMapping && activeMapping.jobTitle !== '' ? Number(activeMapping.jobTitle) : null;
+    const jobTitleIndex = activeMapping.jobTitle !== '' ? Number(activeMapping.jobTitle) : null;
     const jobDescriptionIndex = Number(activeMapping.jobDescription);
     const jobs: ImportedSheetJob[] = [];
     let skippedRows = 0;
@@ -314,12 +306,12 @@ export default function SheetsImportModal({
     const totalColumns = importedValues.reduce((max, row) => Math.max(max, row.length), 0);
     const nextMapping = {
       companyName: getColumnOffset(responseStartCol, layout.companyColumn, totalColumns),
-      // The own sheet HAS a job title column, so map it when the form wants
-      // one. A saved source has no layout to promise that, and leaves it unset.
-      jobTitle:
-        showJobTitleMapping && layout.jobTitleColumn
-          ? getColumnOffset(responseStartCol, layout.jobTitleColumn, totalColumns)
-          : '',
+      // The own sheet HAS a job title column, so it is always mapped: each
+      // row's role is the one the sheet gives it. A saved source has no
+      // layout to promise that, and leaves it unset unless mapped by hand.
+      jobTitle: layout.jobTitleColumn
+        ? getColumnOffset(responseStartCol, layout.jobTitleColumn, totalColumns)
+        : '',
       jobDescription: getColumnOffset(responseStartCol, layout.jobDescriptionColumn, totalColumns),
     };
 
@@ -579,11 +571,11 @@ export default function SheetsImportModal({
                         Edit imported column mapping
                       </span>
                       <span className="text-xs text-subtle">
-                        company {columnOptions.find((option) => option.value === mapping.companyName)?.label || '-'}, description {columnOptions.find((option) => option.value === mapping.jobDescription)?.label || '-'}
+                        company {columnOptions.find((option) => option.value === mapping.companyName)?.label || '-'}, title {columnOptions.find((option) => option.value === mapping.jobTitle)?.label || '-'}, description {columnOptions.find((option) => option.value === mapping.jobDescription)?.label || '-'}
                       </span>
                     </button>
                     {isAdvancedOpen && (
-                      <div className={`grid gap-4 bg-surface-muted p-4 ${showJobTitleMapping ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+                      <div className="grid gap-4 bg-surface-muted p-4 md:grid-cols-3">
                         <div>
                           <label className="tl-label">
                             company_name <span className={styles.required}>*</span>
@@ -602,24 +594,22 @@ export default function SheetsImportModal({
                             ))}
                           </select>
                         </div>
-                        {showJobTitleMapping && (
-                          <div>
-                            <label className="tl-label">job_title</label>
-                            <select
-                              value={mapping.jobTitle}
-                              onChange={(e) => setMapping((current) => ({ ...current, jobTitle: e.target.value }))}
-                              disabled={isSubmitting}
-                              className="tl-input mt-2"
-                            >
-                              <option value="">Skip</option>
-                              {columnOptions.map((option) => (
-                                <option key={`title-${option.value}`} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
+                        <div>
+                          <label className="tl-label">job_title</label>
+                          <select
+                            value={mapping.jobTitle}
+                            onChange={(e) => setMapping((current) => ({ ...current, jobTitle: e.target.value }))}
+                            disabled={isSubmitting}
+                            className="tl-input mt-2"
+                          >
+                            <option value="">Skip</option>
+                            {columnOptions.map((option) => (
+                              <option key={`title-${option.value}`} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <div>
                           <label className="tl-label">
                             job_description <span className={styles.required}>*</span>

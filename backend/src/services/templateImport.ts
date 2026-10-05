@@ -1,3 +1,4 @@
+import { templateFileId } from '../database/templateFiles';
 import type { ManualTemplateConfigStored, Template } from '../types/template';
 import type { TechnicalSkillsLayout } from '../types/profile';
 
@@ -318,9 +319,25 @@ function readTimestamp(value: unknown): string | null {
   return isNonEmptyString(value) && !Number.isNaN(Date.parse(value)) ? value : null;
 }
 
-/** Ids are used in URLs and as storage keys, so only this alphabet survives. */
+/**
+ * Ids are used in URLs and as file names in `static/templates`, so they are
+ * folded into the alphabet a template file may carry (`templateFileId`):
+ * lower case, digits and hyphens. Lower case because Windows and macOS file
+ * systems ignore it, and `Resume` and `resume` would be one file there. An id
+ * that folds to nothing usable - empty, or a reserved device name like `con` -
+ * comes back as '', and the import mints a fresh one.
+ */
 export function normalizeImportedTemplateId(value: unknown): string {
-  return isNonEmptyString(value) ? value.trim().replace(/[^a-zA-Z0-9\-_]/g, '-') : '';
+  if (!isNonEmptyString(value)) return '';
+  const folded = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100)
+    .replace(/-+$/, '');
+  return templateFileId(folded) ?? '';
 }
 
 /**

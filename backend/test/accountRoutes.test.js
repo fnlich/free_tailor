@@ -159,50 +159,130 @@ test('a page still sending the retired `plan` field is told to reload, not silen
   }
 });
 
-test('the last admin cannot be demoted, disabled or deleted', async () => {
+test('an admin cannot disable, demote or delete their own account, even with another admin', async () => {
   const server = await serve();
   try {
-    for (const body of [{ role: 'user' }, { disabled: true }]) {
-      const response = await server.request(server.adminToken, `/${server.admin.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(body),
-      });
-      assert.equal(response.status, 409, `refused: ${JSON.stringify(body)}`);
-      assert.equal((await response.json()).code, 'last-admin');
-    }
-
-    const deleted = await server.request(server.adminToken, `/${server.admin.id}`, { method: 'DELETE' });
-    assert.equal(deleted.status, 409);
-
-    assert.equal(server.users.getUserById(server.admin.id).role, 'admin');
-    assert.equal(server.users.getUserById(server.admin.id).disabled, false);
-  } finally {
-    server.close();
-  }
-});
-
-test('once there are two admins, either may step down', async () => {
-  const server = await serve();
-  try {
+    // Two admins, so the last-admin guard has nothing to say: this is the
+    // separate "do not saw off the branch you are on" rule.
     await server.request(server.adminToken, `/${server.alice.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ role: 'admin' }),
     });
 
-    const response = await server.request(server.adminToken, `/${server.admin.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ role: 'user' }),
-    });
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).account.role, 'user');
+    for (const [body, verb] of [
+      [{ role: 'user' }, /remove the administrator role from/],
+      [{ disabled: true }, /disable/],
+      // Any role that is not admin, including one this build does not grant:
+      // the guard reads "not admin", never `user` by name.
+      [{ disabled: true, role: 'user' }, /disable/],
+    ]) {
+      const response = await server.request(server.adminToken, `/${server.admin.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 409, `refused: ${JSON.stringify(body)}`);
+      const answer = await response.json();
+      assert.equal(answer.code, 'own-account');
+      assert.match(answer.error, verb);
+      assert.match(answer.error, /the account you are signed in with\. Another administrator can/);
+    }
+
+    const deleted = await server.request(server.adminToken, `/${server.admin.id}`, { method: 'DELETE' });
+    assert.equal(deleted.status, 409);
+    const answer = await deleted.json();
+    assert.equal(answer.code, 'own-account');
+    assert.match(answer.error, /^You cannot delete the account you are signed in with\./);
+
+    const still = server.users.getUserById(server.admin.id);
+    assert.equal(still.role, 'admin');
+    assert.equal(still.disabled, false);
+    assert.equal(server.users.resolveSession(server.adminToken)?.id, server.admin.id, 'still signed in');
   } finally {
     server.close();
   }
 });
 
-test('a DISABLED admin does not count as one who could fix things', async () => {
+test('an admin may still change their own name, subscription and credits', async () => {
   const server = await serve();
   try {
+    const response = await server.request(server.adminToken, `/${server.admin.id}`, {
+      method: 'PATCH',
+      // `role: 'admin'` and `disabled: false` change nothing that matters, so
+      // they are not refused either.
+      body: JSON.stringify({ name: 'Renamed', subscription: 'premium', credits: 5, role: 'admin', disabled: false }),
+    });
+    assert.equal(response.status, 200);
+    const { account } = await response.json();
+    assert.equal(account.name, 'Renamed');
+    assert.equal(account.subscription, 'premium');
+    assert.equal(account.role, 'admin');
+  } finally {
+    server.close();
+  }
+});
+
+test('another admin may disable, demote and delete an admin', async () => {
+  const server = await serve();
+  try {
+    const bob = server.users.createUser({ email: 'bob@example.com', name: 'Bob' });
+    for (const id of [server.alice.id, bob.id]) {
+      await server.request(server.adminToken, `/${id}`, { method: 'PATCH', body: JSON.stringify({ role: 'admin' }) });
+    }
+
+    const demoted = await server.request(server.adminToken, `/${server.alice.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role: 'user' }),
+    });
+    assert.equal(demoted.status, 200);
+    assert.equal((await demoted.json()).account.role, 'user');
+
+    const disabled = await server.request(server.adminToken, `/${bob.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ disabled: true }),
+    });
+    assert.equal(disabled.status, 200);
+    assert.equal((await disabled.json()).account.disabled, true);
+
+    const deleted = await server.request(server.adminToken, `/${bob.id}`, { method: 'DELETE' });
+    assert.equal(deleted.status, 200);
+    assert.equal(server.users.getUserById(bob.id), null);
+
+    // And the other way round: the admin the harness signed in as can be
+    // demoted by Alice once she is an administrator again.
+    await server.request(server.adminToken, `/${server.alice.id}`, { method: 'PATCH', body: JSON.stringify({ role: 'admin' }) });
+    const byAlice = await server.request(server.aliceToken, `/${server.admin.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role: 'user' }),
+    });
+    assert.equal(byAlice.status, 200);
+    assert.equal((await byAlice.json()).account.role, 'user');
+  } finally {
+    server.close();
+  }
+});
+
+/**
+ * The last-admin guard, asked directly.
+ *
+ * Over HTTP it is now reached only through somebody else's change, and the
+ * one asking is an enabled administrator too - so the case it exists for
+ * cannot be staged through the route any more. It is still the guard that
+ * holds if that ever stops being true, so it is pinned on its own.
+ */
+test('the last enabled admin cannot be taken away, by any role that is not admin', async () => {
+  const server = await serve();
+  try {
+    const { wouldStrandInstall } = require('../dist/routes/accounts');
+    const admin = server.users.getUserById(server.admin.id);
+
+    assert.equal(wouldStrandInstall(admin, { role: 'user' }), true);
+    assert.equal(wouldStrandInstall(admin, { disabled: true }), true);
+    // A third role must not walk past it: the check is "not admin", not "user".
+    assert.equal(wouldStrandInstall(admin, { role: 'reporter' }), true);
+    assert.equal(wouldStrandInstall(admin, { role: 'admin' }), false);
+    assert.equal(wouldStrandInstall(admin, { name: 'x', disabled: false }), false);
+    assert.equal(wouldStrandInstall(server.users.getUserById(server.alice.id), { role: 'user' }), false, 'not an admin');
+
     // Promote Alice, then disable her. The install is back to one usable
     // admin, and the guard has to see that - counting rows rather than
     // ENABLED rows would let the last working admin lock everybody out.
@@ -210,16 +290,12 @@ test('a DISABLED admin does not count as one who could fix things', async () => 
       method: 'PATCH',
       body: JSON.stringify({ role: 'admin' }),
     });
+    assert.equal(wouldStrandInstall(admin, { role: 'user' }), false, 'two enabled admins');
     await server.request(server.adminToken, `/${server.alice.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ disabled: true }),
     });
-
-    const response = await server.request(server.adminToken, `/${server.admin.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ role: 'user' }),
-    });
-    assert.equal(response.status, 409);
+    assert.equal(wouldStrandInstall(admin, { role: 'user' }), true, 'a DISABLED admin does not count');
   } finally {
     server.close();
   }
@@ -298,24 +374,6 @@ test('deleting an account leaves its profiles behind, and says so', async () => 
     assert.equal(body.orphanedProfiles, 1);
     assert.match(body.note, /still exist/i);
     assert.ok(loadFresh('../dist/database/profileRepository').getProfile('p-alice'));
-  } finally {
-    server.close();
-  }
-});
-
-test('an admin cannot delete the account they are signed in with', async () => {
-  const server = await serve();
-  try {
-    await server.request(server.adminToken, `/${server.alice.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ role: 'admin' }),
-    });
-
-    // Not the last-admin guard - there are two now. This is the separate
-    // "do not saw off the branch you are on" rule.
-    const response = await server.request(server.adminToken, `/${server.admin.id}`, { method: 'DELETE' });
-    assert.equal(response.status, 409);
-    assert.match((await response.json()).error, /signed in with/i);
   } finally {
     server.close();
   }

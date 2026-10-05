@@ -422,6 +422,105 @@ export function softSkillRefusal(list: readonly string[], value: string): string
   return null;
 }
 
+// ------------------------------------------------- sections switched off
+
+/** The two sections a profile can switch off, by the draft field that holds each. */
+export type SwitchedSection = 'softSkills' | 'strengths';
+
+/**
+ * How many entries a section holds while its box is unticked: every soft
+ * skill, and every strength with anything typed in it (an empty card is not
+ * something kept).
+ */
+export function keptCount(draft: Pick<ProfileDraft, SwitchedSection>, section: SwitchedSection): number {
+  if (section === 'softSkills') return draft.softSkills.length;
+  return draft.strengths.filter((row) => row.title.trim() || row.description.trim()).length;
+}
+
+/**
+ * The line an unticked Soft Skills or Strengths box shows in place of its
+ * list, or null when it keeps nothing.
+ *
+ * Unticking hides the list and keeps it: nothing is deleted, the entries are
+ * still saved with the profile, and ticking the box brings them back to print
+ * and edit. The line is what says they are still there.
+ */
+export function keptNote(count: number, section: SwitchedSection): string | null {
+  if (count <= 0) return null;
+  const noun =
+    section === 'softSkills' ? (count === 1 ? 'soft skill' : 'soft skills') : count === 1 ? 'strength' : 'strengths';
+  return `${count} ${noun} kept with the profile. Tick the box to print and edit ${count === 1 ? 'it' : 'them'}.`;
+}
+
+// ------------------------------------------------- the preview's sample text
+
+/**
+ * What the preview's sample resume says in each field the server may fill.
+ *
+ * The live preview draws an empty field with the sample person's text (the
+ * gallery's sample, `withSampleDefaults` on the server), in the preview only,
+ * so a half-filled profile still shows the template's whole shape. The form
+ * shows the same text as each input's placeholder, so a blank input and the
+ * sample in the page beside it are visibly the same thing. A copy, because a
+ * placeholder is drawn before any request; backend/test/frontendEditorHelpers
+ * .test.js fails when it drifts from the server's sample.
+ */
+export const SAMPLE_PLACEHOLDERS = {
+  name: 'Jordan Avery Chen',
+  title: 'Senior Software Engineer',
+  email: 'jordan.chen@example.com',
+  phone: '+1 (555) 123-4567',
+  location: 'San Francisco, CA',
+  linkedin: 'linkedin.com/in/jordanchen',
+  summary:
+    'Senior engineer with nine years building and operating payment and data platforms at scale. ' +
+    'Leads backend architecture for services handling 40M requests a day...',
+  experienceTitle: 'Senior Software Engineer',
+  experienceCompany: 'Northwind Payments',
+  educationDegree: 'M.S. Computer Science',
+  educationInstitution: 'University of Washington',
+} as const;
+
+/**
+ * The server's keys for what it filled from the sample (`sampled` in the
+ * preview's answer), in the order the form asks for them, with the words the
+ * notice uses.
+ */
+export const SAMPLED_FIELD_WORDS: ReadonlyArray<readonly [string, string]> = [
+  ['name', 'name'],
+  ['title', 'title'],
+  ['email', 'email'],
+  ['phone', 'phone'],
+  ['location', 'location'],
+  ['linkedin', 'LinkedIn'],
+  ['summary', 'summary'],
+  ['experience', 'experience'],
+  ['education', 'education'],
+  ['skills', 'skills'],
+  ['softSkills', 'soft skills'],
+  ['strengths', 'strengths'],
+];
+
+/**
+ * "Sample text shown for: name, phone, experience." - or null when the page
+ * is all the profile's own.
+ *
+ * A key this build has no word for is still named (camelCase spelled out)
+ * rather than dropped: the notice exists so nobody mistakes sample text for
+ * their own, and a newer server filling one more field must not make it
+ * quietly incomplete.
+ */
+export function sampledNotice(sampled: readonly string[] | null | undefined): string | null {
+  if (!Array.isArray(sampled)) return null;
+  const keys = sampled.filter((key): key is string => typeof key === 'string' && key.trim() !== '');
+  if (keys.length === 0) return null;
+  const known = SAMPLED_FIELD_WORDS.filter(([key]) => keys.includes(key)).map(([, words]) => words);
+  const unknown = keys
+    .filter((key, index) => !SAMPLED_FIELD_WORDS.some(([known]) => known === key) && keys.indexOf(key) === index)
+    .map((key) => key.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase());
+  return `Sample text shown for: ${[...known, ...unknown].join(', ')}.`;
+}
+
 // ------------------------------------------------------------- templates
 
 /**

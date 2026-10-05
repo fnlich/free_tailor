@@ -1,8 +1,15 @@
 'use client';
 
 import { Field, Section } from '@/components/ui/kit';
-import type { DraftContact, ProfileDraft } from '@/lib/profileDraft';
+import { SAMPLE_PLACEHOLDERS, type DraftContact, type ProfileDraft } from '@/lib/profileDraft';
 import type { UpdateDraft } from './parts';
+
+/*
+ * Each placeholder is the sample resume's own text for that field: the
+ * preview draws an empty field with exactly that, so the grey words in a
+ * blank input and the ones on the page beside it are visibly the same thing
+ * (lib/profileDraft.ts, SAMPLE_PLACEHOLDERS).
+ */
 
 /** Name, title and years: the header of the resume. */
 export function BasicsSection({ draft, update }: { draft: ProfileDraft; update: UpdateDraft }) {
@@ -16,6 +23,7 @@ export function BasicsSection({ draft, update }: { draft: ProfileDraft; update: 
             value={draft.name}
             onChange={(event) => update((current) => ({ ...current, name: event.target.value }))}
             className="tl-input"
+            placeholder={SAMPLE_PLACEHOLDERS.name}
             autoComplete="off"
           />
         </Field>
@@ -26,7 +34,7 @@ export function BasicsSection({ draft, update }: { draft: ProfileDraft; update: 
             value={draft.title}
             onChange={(event) => update((current) => ({ ...current, title: event.target.value }))}
             className="tl-input"
-            placeholder="e.g., Senior Backend Engineer | Django | FastAPI"
+            placeholder={SAMPLE_PLACEHOLDERS.title}
           />
         </Field>
         <Field
@@ -61,9 +69,9 @@ const CONTACT_FIELDS: Array<{
   placeholder?: string;
   autoComplete: string;
 }> = [
-  { key: 'email', label: 'Email', type: 'email', autoComplete: 'email' },
-  { key: 'phone', label: 'Phone', type: 'tel', autoComplete: 'tel' },
-  { key: 'location', label: 'Location', type: 'text', placeholder: 'e.g., San Francisco, CA', autoComplete: 'off' },
+  { key: 'email', label: 'Email', type: 'email', placeholder: SAMPLE_PLACEHOLDERS.email, autoComplete: 'email' },
+  { key: 'phone', label: 'Phone', type: 'tel', placeholder: SAMPLE_PLACEHOLDERS.phone, autoComplete: 'tel' },
+  { key: 'location', label: 'Location', type: 'text', placeholder: SAMPLE_PLACEHOLDERS.location, autoComplete: 'off' },
   {
     key: 'linkedin',
     label: 'LinkedIn URL',
@@ -74,7 +82,7 @@ const CONTACT_FIELDS: Array<{
     // normalizeExternalUrl). inputMode still brings up the URL keyboard.
     type: 'text',
     inputMode: 'url',
-    placeholder: 'https://www.linkedin.com/in/...',
+    placeholder: SAMPLE_PLACEHOLDERS.linkedin,
     autoComplete: 'url',
   },
 ];
@@ -117,7 +125,7 @@ export function SummarySection({ draft, update }: { draft: ProfileDraft; update:
         onChange={(event) => update((current) => ({ ...current, summary: event.target.value }))}
         className="tl-input"
         aria-label="Professional summary"
-        placeholder="Write a compelling professional summary..."
+        placeholder={SAMPLE_PLACEHOLDERS.summary}
       />
     </Section>
   );

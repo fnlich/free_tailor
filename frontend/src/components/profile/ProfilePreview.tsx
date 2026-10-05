@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { profilesApi, type CreateProfileDTO, type ProfilePreviewResult } from '@/lib/api';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { ErrorNotice } from '@/components/ui/kit';
+import { NO_GUTTERS, stablePaneWidth, type Gutters } from '@/lib/previewPane';
 import css from './profileEditor.module.css';
 
 /**
@@ -181,14 +182,38 @@ export default function ProfilePreview({
     // `retryCount` re-runs it for the same draft after a failure.
   }, [active, requestKey, state.renderedKey, debounceMs, firstRender, retryCount]);
 
-  // The page is scaled to the well, so the well's width is state.
+  // The page is scaled to the well, so the well's width is state - but never
+  // its width as it stands, which narrows when a scrollbar comes in and shook
+  // the page (lib/previewPane.ts). Read on every resize of the well's inside,
+  // so a scrollbar seen for the first time is allowed for at once; the answer
+  // does not move with it after that, and an unchanged number re-renders
+  // nothing.
+  const guttersRef = useRef<Gutters>(NO_GUTTERS);
   useEffect(() => {
     const well = wellRef.current;
     if (!well || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver((entries) => {
-      const box = entries[0]?.contentRect;
-      if (box) setPaneWidth(box.width);
-    });
+    const read = () => {
+      const style = window.getComputedStyle(well);
+      const px = (value: string) => parseFloat(value) || 0;
+      const { width, gutters } = stablePaneWidth(
+        {
+          outerWidth: well.getBoundingClientRect().width,
+          clientWidth: well.clientWidth,
+          borderX: px(style.borderLeftWidth) + px(style.borderRightWidth),
+          paddingX: px(style.paddingLeft) + px(style.paddingRight),
+          scrolls: style.overflowY === 'auto' || style.overflowY === 'scroll',
+          // The root's box, not its clientWidth: with the window's strip
+          // reserved (scrollbar-gutter on html) and no scrollbar showing,
+          // Chrome's documentElement.clientWidth still reads the whole window,
+          // while the root box is already the strip narrower.
+          windowBar: window.innerWidth - document.documentElement.getBoundingClientRect().width,
+        },
+        guttersRef.current
+      );
+      guttersRef.current = gutters;
+      setPaneWidth(width);
+    };
+    const observer = new ResizeObserver(read);
     observer.observe(well);
     return () => observer.disconnect();
   }, []);

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~22s with the tsc step, 1179 tests)
+npm test                       # backend node:test suite (~30s with the tsc step, 1220 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -141,9 +141,19 @@ backend/src/
                       #   forward again; check and ALTER in one BEGIN
                       #   IMMEDIATE, so a second opener of the file waits and
                       #   finds it done; fatal on failure), then SCHEMA, then
-                      #   addMissingColumns (never fatal), then the migrations.
+                      #   addMissingColumns (never fatal), then the one-time
+                      #   move of `templates` rows to files
+                      #   (templateFileMove.ts, schema_meta
+                      #   `templates_moved_to_files`, never fatal; recorded
+                      #   row by row, so only a row it could not WRITE is
+                      #   tried at the next start), then the migrations.
                       #   An older build reads users.plan: rolling back means
                       #   renaming it back first (README, "Plans are now subscriptions").
+                      #   Saved templates are NOT a table any more:
+                      #   templateFiles.ts is their store, `<id>.json` in
+                      #   static/templates (see the note under this block);
+                      #   templateRepository.ts keeps the four signatures it
+                      #   had, plus the template_overrides table.
   database/migrations # numbered, run on first DB use, and a CHAIN: a step that
                       #   defers (003 waits for an admin; 006 and 007 for a
                       #   settings row that names what they remove but does
@@ -164,7 +174,11 @@ backend/src/
   routes/             # one file per /api/* area. profiles.ts also holds
                       #   POST /profiles/preview, the profile editor's live
                       #   preview (see "Profiles, templates and the section
-                      #   switches" below).
+                      #   switches" below). accounts.ts refuses an admin
+                      #   disabling, demoting or deleting their OWN account
+                      #   (409 `own-account`; another admin may), and its
+                      #   last-admin guard (`wouldStrandInstall`) counts ANY
+                      #   role but admin as losing one - not `user` by name.
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor, migrate:legacy,
                       #   ai:rollback. The doctors share one shape -
@@ -181,7 +195,23 @@ backend/src/
                       #   not the Task serialized, so a new field must be named
                       #   there AND in the restore mapper or it silently does
                       #   not persist. The payload persists whole, which is why
-                      #   a task's price lives on it (`payload.creditCost`).
+                      #   a task's price lives on it (`payload.creditCost`) -
+                      #   and so does `batch.shared`, which is why an order
+                      #   batch is marked there (`shared.kind = 'order'`,
+                      #   `isOrderBatch`; one restored from before the mark is
+                      #   recognised by its `orders` row). The builder's
+                      #   `GET /generation/batches?active=1` lists only the
+                      #   caller's OWN non-order runs, admins included.
+                      #   `restoreGenerationQueue` reports the `batchIds` it
+                      #   put back, and index.ts hands them to
+                      #   `reconcileCredits`, which never releases those
+                      #   reservations however old (a restored batch that had
+                      #   already finished is settled by the restore itself).
+                      #   A job with no role is built for the analysis's
+                      #   `jobMeta.title` (`resolveTaskRole`, which
+                      #   routes/resume.ts uses too) - cover letter, path,
+                      #   files and result alike; the builder has no
+                      #   Fallback Role any more.
   services/templateChoice.ts # THE answer to "which template is this resume
                       #   drawn with" - resolveTemplateForProfile, for the live
                       #   preview, /resume/preview, /preview-all,
@@ -207,9 +237,10 @@ backend/
                       #   services/scraperProviders.ts and routes/jobs.ts.
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
-  static/             # shipped defaults, never written at runtime - but not
-                      #   all read the same way: see the note under this block
-  test/               # node:test, 97 files; fixtures/cli, codex and gemini
+  static/             # shipped defaults, never written at runtime EXCEPT
+                      #   templates/, which also holds saved templates - and
+                      #   not all read the same way: see the note under this block
+  test/               # node:test, 103 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -241,11 +272,21 @@ frontend/src/
                       #   swapping <iframe sandbox="allow-same-origin"> (no
                       #   allow-scripts - same-origin only so the page can
                       #   measure it), debounced, aborting stale requests and
-                      #   keeping the last good page up. The decisions with no
-                      #   React in them - draft <-> payload, what the preview is
-                      #   sent, which templates the picker offers - are
-                      #   lib/profileDraft.ts, which imports types only so
-                      #   test/frontendHelpers.test.js can load it.
+                      #   keeping the last good page up. It scales the page to
+                      #   the width it WOULD have with a scrollbar
+                      #   (lib/previewPane.ts, plus scrollbar-gutter on the well
+                      #   and, while the editor is open, on html): scaled to the
+                      #   width as it stood, a one-page resume shook every frame
+                      #   wherever scrollbars take room - puppeteer hides them,
+                      #   so only test/e2e/preview-vibration.js sees it. The
+                      #   decisions with no React in them - draft <-> payload,
+                      #   what the preview is sent, which templates the picker
+                      #   offers, the sample-text notice and placeholders, what
+                      #   an unticked section keeps - are lib/profileDraft.ts,
+                      #   which imports types only so test/frontendHelpers and
+                      #   frontendEditorHelpers.test.js can load it. An
+                      #   unticked Soft Skills / Strengths box shows only its
+                      #   switch and "N kept"; nothing is deleted.
   components/icons/   # Hand-rolled inline SVG set (there is no icon library).
                       #   index.tsx is UI icons - one grid, one stroke, one
                       #   colour, and the ROW decides it. marks.tsx is brand
@@ -306,16 +347,50 @@ read and still refund with the right advice, and `chain_invoices`,
 the `CREATE TABLE` statements are gone from `database/sqlite.ts`, the tables
 are not dropped.
 
-All dynamic data lives in SQLite. `backend/static` is never written, but its
-three kinds of default are read three different ways. The skill library is
+All dynamic data lives in SQLite, except saved templates. `backend/static` is
+never written, except `static/templates`, which also holds saved templates -
+and its three kinds of default are read three different ways. The skill library is
 copied into the database once, on first use, and read from there. A built-in
 prompt is read from its file until an administrator edits it; from then on its
 database row wins. **Built-in templates are read from `backend/static/templates`
 on every request** and never copied: the database holds only an override row
 per built-in (`template_overrides` - name, description, disabled,
 `skillsLayouts`) laid over the file, so editing a shipped template's JSON
-changes every install at its next request, and uploaded, extracted and manual
-templates live in the `templates` table.
+changes every install at its next request.
+
+**Uploaded, extracted and manual templates are files in the same directory**
+(`database/templateFiles.ts`, through `getStaticTemplatesDir()`, so
+`TAILOR_STATIC_DIR` and the tests' temp dirs still work): `<id>.json` in the
+shipped shape plus `"source": "uploaded" | "extracted" | "manual"`. **A file
+without `source` is a built-in** - read-only, its edits in
+`template_overrides`, so a `git pull` never conflicts with an edit; a file with
+one is editable and deletable, rewritten or removed by the admin Templates
+page. A write goes to a unique `<id>.json.<pid>-<hex>.tmp`, is fsynced and
+renamed over the file (a crash leaves the old file or the new, never half);
+ids are `[a-z0-9-]`, at most 100, never a Windows device name, checked before
+any path is built (`templateFileId`); a built-in's id, or an unreadable file's,
+is never overwritten; `supportsSoftSkills` / `supportsStrengths` / `isBuiltIn`
+are never written. Every reference goes through `currentTemplateId`
+(templateRepository.ts): a file id is itself; an older build's spelling is
+first looked up EXACTLY in the move's renames, then folded (case and `_`,
+`canonicalTemplateId`) - in that order, because `Navy_Rule` folded is the
+shipped `navy-rule`, not the row the older build drew it with. A profile's
+`preferredTemplate` is stored (`normalizeProfilePayload`) and read
+(`profileRepository`) under that id, because the editor, the Profiles list and
+the one-template-per-profile rule compare ids as they are. A write that fails
+throws `TemplateStoreError`, which the template routes answer with "Template
+could not be saved." and a ref. `getDb()` wrote an older database's
+`templates` rows out once (templateFileMove.ts) and left them as an unread
+backup: rows whose id is already a file id go first and keep it; any other is
+filed under its folded id if free, else a `u-` id derived from the old one
+(so a re-run finds it), never a built-in's or another row's, and the profiles
+naming it are repointed in the same transaction; the renames stay as aliases.
+It is recorded row by row - a row that failed to write is retried alone, a
+moved one is never looked at again - and the README's "Saved templates are
+files" says how to roll back and run it again. Saved files are not
+gitignored, so they show in `git status` and can be committed to ship them.
+Startup prints whether the directory is writable, and names any `.json` there
+no id can have (not offered), under `Database:`.
 
 ## Profiles, templates and the section switches
 
@@ -361,8 +436,17 @@ falls back rather than failing a resume over a mismatch.
 
 `POST /api/profiles/preview` (any signed-in account, body `{ profile,
 profileId?, templateId? }`, answers `{ html, templateId, page: { widthPx,
-heightPx, contentHeightPx } }`) renders a DRAFT untailored through the same
-pipeline as generation. `buildPreviewProfile` never throws and takes only the
+heightPx, contentHeightPx }, sampled }`) renders a DRAFT untailored through the same
+pipeline as generation - with one difference: whatever the draft leaves empty
+is drawn from the gallery's sample person (`withSampleDefaults`,
+`services/sampleProfile.ts`, which also holds `SAMPLE_PROFILE`), per field for
+single values and per section for lists, Strengths and Soft Skills only while
+their switch is on for the template (it runs after `profileForTemplate`).
+`sampled` names what was filled, from `SAMPLE_FIELDS` and in that order:
+`name, title, email, phone, location, linkedin, summary, experience,
+education, skills, strengths, softSkills`. It is applied in that route and
+nowhere else - never a save, a generation, a PDF/DOCX or a prompt -
+and test/sampleDefaults.test.js fails if anything else calls it. `buildPreviewProfile` never throws and takes only the
 four render settings from the draft; nothing is saved, no subscription limit is
 checked, no model is asked, no credit moves (test/profilePreview.test.js runs
 with every seat locked to prove it). The document carries
@@ -447,7 +531,10 @@ tailor-resume prompt gets the profile's section choices as three words -
 `[[includeStrengths]]` / `[[includeSoftSkills]]` yes|no and
 `[[technicalSkillsLayout]]` grouped|plain (`buildResumeSectionPromptValues`) -
 never inside `profileJson`, and referenced AFTER it in the shipped prompt so the
-cacheable stable part is byte-identical. Because an admin-edited row may never
+cacheable stable part is byte-identical. The switches do decide what
+`profileJson` HOLDS: `buildPromptProfile` sends `strengths` only while
+Strengths is on (off means not given to the model, tailoring and cover letter
+alike), and never sends `softSkills`, which the code lists after the answer. Because an admin-edited row may never
 mention them, `buildFinalSkillOverride(profile)` - a function of the profile,
 not a constant - is appended to the user body of EVERY tailor-resume turn and
 states all three; `parseTailoredResumeContent` then enforces them against the

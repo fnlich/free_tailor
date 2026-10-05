@@ -40,7 +40,7 @@ import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
 import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
-import { nextAttach } from '@/lib/batchFollow';
+import { nextAttach, reattachTarget } from '@/lib/batchFollow';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
@@ -549,31 +549,26 @@ export default function Home() {
    *
    * The work belongs to the server's queue, so closing this page never stopped
    * it - but until this, reopening the page showed nothing and the resumes
-   * appeared on disk with no explanation. Tried in two ways because each covers
-   * what the other cannot: the remembered id survives a reload of THIS browser,
-   * and asking the server covers a different browser, cleared storage, or a
-   * second tab.
+   * appeared on disk with no explanation. The remembered id says which run
+   * THIS browser started; the server's list of the caller's own active builds
+   * covers a different browser, cleared storage, or a second tab - and is the
+   * only authority on which runs are this account's and not orders
+   * (`reattachTarget`). Following anything else locked the page: an
+   * administrator's tab used to follow other people's runs, and anybody's
+   * followed an order they had just placed until its last resume.
    */
   useEffect(() => {
     let cancelled = false;
 
     const reattach = async () => {
-      const remembered = rememberedBatch();
-      let batchId: string | null = null;
-
-      if (remembered) {
-        const snapshot = await generationApi.snapshot(remembered).catch(() => null);
-        // Gone means the server restarted or the batch aged out. Forget it
-        // rather than asking again for ever.
-        if (!snapshot) forgetBatch();
-        else if (snapshot.state === 'running') batchId = remembered;
-        else forgetBatch();
-      }
-
-      if (!batchId) {
-        const active = await generationApi.listActive().catch(() => ({ batches: [] }));
-        batchId = active.batches[0]?.batchId ?? null;
-      }
+      const listed = await generationApi
+        .listActive()
+        .then((answer) => (Array.isArray(answer?.batches) ? answer.batches : []))
+        .catch(() => null);
+      const { batchId, forget } = reattachTarget(listed, rememberedBatch());
+      // Finished, gone after a restart, an order, or not this account's:
+      // forgotten rather than asked about again on every visit.
+      if (forget) forgetBatch();
 
       if (!batchId || cancelled) return;
       setIsGenerating(true);
@@ -918,11 +913,6 @@ export default function Home() {
     meta: { skippedRows: number }
   ) => {
     const selectedProfiles = getSelectedProfilesForSheetsBuilder();
-    const fallbackRole = shouldShowRoleInput ? role.trim() : '';
-    const normalizedJobs = importedJobs.map((job) => ({
-      ...job,
-      jobTitle: job.jobTitle.trim() || fallbackRole,
-    }));
 
     setIsGenerating(true);
     setError('');
@@ -947,10 +937,14 @@ export default function Home() {
       const submitted = await generationApi.submit({
         ...aiRequestOverrides,
         asOrder: true,
-        label: `Sheets import (${normalizedJobs.length} job${normalizedJobs.length === 1 ? '' : 's'})`,
+        label: `Sheets import (${importedJobs.length} job${importedJobs.length === 1 ? '' : 's'})`,
         profileIds: selectedProfiles.map((profile) => profile.id),
-        jobs: normalizedJobs.map((job) => ({
+        jobs: importedJobs.map((job) => ({
           companyName: job.companyName.trim(),
+          // Each row's own Job Title, as the sheet has it. A row without one
+          // goes without one: the server fills the role from the posting's
+          // analysis, as it does for a manual build, rather than from a
+          // guess typed on this page.
           role: job.jobTitle.trim(),
           jobDescription: job.jobDescription.trim(),
           sourceRowNumber: job.sourceRowNumber,
@@ -2311,24 +2305,6 @@ export default function Home() {
                     </div>
                   )}
 
-                  {shouldShowRoleInput && (
-                    <div>
-                      <label className="tl-label">
-                        Fallback Role
-                      </label>
-                      <input
-                        type="text"
-                        value={role}
-                        onChange={(e) => setRole(e.target.value)}
-                        disabled={isGenerating}
-                        placeholder="Optional fallback if a sheet row has no mapped job title"
-                        className="tl-input mt-2"
-                      />
-                      <p className="mt-2 text-sm text-subtle">
-                        Leave this blank if your imported rows already include a mapped job title column.
-                      </p>
-                    </div>
-                  )}
                 </div>
               </Card>
             </div>
@@ -2501,7 +2477,6 @@ export default function Home() {
       <SheetsImportModal
         isOpen={isSheetsImportOpen}
         isSubmitting={isGenerating}
-        showJobTitleMapping={shouldShowRoleInput}
         sources={sheetImportSources}
         selectedSourceId={selectedSheetsSourceId}
         selectedProfileName={selectedSheetsProfileName}

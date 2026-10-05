@@ -25,6 +25,8 @@ import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
  * installation. Every guard below is a variation on that - the last admin
  * cannot be demoted, disabled or deleted, because there would then be nobody
  * who could undo it and no way in through the UI to appoint a replacement.
+ * And no administrator may do any of the three to their OWN account: another
+ * administrator can, which is the check that it was meant.
  */
 
 const router = Router();
@@ -47,18 +49,68 @@ function describe(account: UserAccount): AccountRow {
 }
 
 /**
+ * True when this change takes an administrator away: any role that is not
+ * `admin`, or disabling the account.
+ *
+ * Any role, not `user` by name. It used to read `next.role === 'user'`, which
+ * was the same thing while there were two roles - and would let the last
+ * administrator be demoted to a third one straight past every guard below.
+ */
+function losesAdmin(next: AccountUpdate): boolean {
+  return (next.role !== undefined && next.role !== 'admin') || next.disabled === true;
+}
+
+/**
  * True when changing this account would leave the installation with no admin.
  *
  * Counts only ENABLED admins, because a disabled one cannot sign in and so is
  * not an answer to "who can fix this".
+ *
+ * Behind `refuseOwnAccountChange` now, which reaches the commonest way here -
+ * the last administrator stepping down - first. Kept as its own guard because
+ * it is the one that protects the installation rather than the person: it
+ * asks the database, not who is asking.
  */
-function wouldStrandInstall(target: UserAccount, next: AccountUpdate): boolean {
+export function wouldStrandInstall(target: UserAccount, next: AccountUpdate): boolean {
   if (target.role !== 'admin' || target.disabled) return false;
-
-  const losingAdmin = next.role === 'user' || next.disabled === true;
-  if (!losingAdmin) return false;
-
+  if (!losesAdmin(next)) return false;
   return countAdmins() <= 1;
+}
+
+/**
+ * Refuses, after answering 409, an administrator disabling, demoting or
+ * deleting the account they are signed in with.
+ *
+ * Another administrator may do any of those to them - the last-admin guard
+ * still decides whether the installation can spare one - but not they
+ * themselves. Disabling yourself ends your own sessions on the spot, and a
+ * demotion takes this page away mid-click; either way the person who made the
+ * mistake is the one person who can no longer undo it. Asking somebody else
+ * is the check that it was meant.
+ *
+ * `code: 'own-account'` so the page can say it without reading the English.
+ */
+function refuseOwnAccountChange(
+  req: Request,
+  res: Response,
+  target: UserAccount,
+  next: AccountUpdate | 'delete'
+): boolean {
+  if (target.id !== req.user?.id) return false;
+  if (next !== 'delete' && !losesAdmin(next)) return false;
+  const action =
+    next === 'delete'
+      ? 'delete'
+      : next.disabled === true
+        ? 'disable'
+        : 'remove the administrator role from';
+  res.status(409).json({
+    error:
+      `You cannot ${action} the account you are signed in with. ` +
+      'Another administrator can, if it is really meant.',
+    code: 'own-account',
+  });
+  return true;
 }
 
 /**
@@ -186,6 +238,7 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
+  if (refuseOwnAccountChange(req, res, target, update)) return;
   if (wouldStrandInstall(target, update)) {
     res.status(409).json({
       error:
@@ -237,10 +290,7 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
-  if (target.id === req.user!.id) {
-    res.status(409).json({ error: 'You cannot delete the account you are signed in with.' });
-    return;
-  }
+  if (refuseOwnAccountChange(req, res, target, 'delete')) return;
   if (wouldStrandInstall(target, { disabled: true })) {
     res.status(409).json({
       error: 'This is the only administrator left, so deleting it would lock everybody out.',
