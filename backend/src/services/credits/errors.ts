@@ -1,17 +1,18 @@
 import { PublicError } from '../../middleware/publicError';
+import { formatMoney } from '../../utils/money';
 
 /**
- * Not enough credits to start what was asked for.
+ * Not enough credit to start what was asked for.
  *
  * Carries the numbers rather than only a sentence so the route can send them as
- * fields and the page can show "12 of 30" without parsing English back out of
- * an error message.
+ * fields and the page can show "$0.023 of $0.161" without parsing English back
+ * out of an error message. Both are thousandths of a dollar.
  */
 export class InsufficientCreditsError extends PublicError {
-  readonly needed: number;
-  readonly balance: number;
+  readonly neededMilli: number;
+  readonly balanceMilli: number;
 
-  constructor(needed: number, balance: number) {
+  constructor(neededMilli: number, balanceMilli: number) {
     /*
      * Deliberately vague about HOW to get more.
      *
@@ -21,17 +22,17 @@ export class InsufficientCreditsError extends PublicError {
      * catching this error knows which install it is on and links accordingly.
      */
     super(
-      balance === 0
-        ? `This needs ${needed} credit${needed === 1 ? '' : 's'} and the account has none. ` +
-          'Add credits to carry on; previews are free.'
-        : `This needs ${needed} credit${needed === 1 ? '' : 's'} and the account has ${balance}. ` +
-          'Generate fewer at once, or add more credits.',
+      balanceMilli === 0
+        ? `This needs ${formatMoney(neededMilli)} of credit and the account has none. ` +
+          'Add credit to carry on; previews are free.'
+        : `This needs ${formatMoney(neededMilli)} of credit and the account has ${formatMoney(balanceMilli)}. ` +
+          'Generate fewer at once, or add more credit.',
       // The caller's own balance, so it is theirs to read in full - and the
       // numbers ride along as fields, which is what the builder shows.
-      { status: 402, code: 'insufficient-credits', extra: { needed, balance } }
+      { status: 402, code: 'insufficient-credits', extra: { neededMilli, balanceMilli } }
     );
     this.name = 'InsufficientCreditsError';
-    this.needed = needed;
-    this.balance = balance;
+    this.neededMilli = neededMilli;
+    this.balanceMilli = balanceMilli;
   }
 }

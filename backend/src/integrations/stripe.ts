@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { formatMoney } from '../utils/money';
 
 /**
  * Stripe, over four calls and one signature.
@@ -286,7 +287,8 @@ export type StripeSession = {
 export type CheckoutRequest = {
   paymentId: string;
   reference: string;
-  credits: number;
+  /** What the purchase credits, in thousandths of a dollar - the charge, exactly. Names the product. */
+  creditMilli: number;
   amountCents: number;
   currency: string;
   customerEmail: string;
@@ -372,7 +374,9 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
           price_data: {
             currency: input.currency,
             unit_amount: input.amountCents,
-            product_data: { name: `${input.credits} credits`, description: input.reference },
+            // "$50.000 Tailor credit": what the buyer is buying, said the way
+            // their balance will show it, on Stripe's page and their receipt.
+            product_data: { name: `${formatMoney(input.creditMilli)} Tailor credit`, description: input.reference },
           },
         },
       ],

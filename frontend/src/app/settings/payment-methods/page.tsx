@@ -111,9 +111,9 @@ export default function PaymentMethodsSettingsPage() {
 
         {state.status === 'ready' && state.cards.length === 0 && (
           <Notice>
-            No saved cards. A card is kept when you choose to save it while buying credits.{' '}
+            No saved cards. A card is kept when you choose to save it while buying credit.{' '}
             <Link href="/credits" className="font-medium text-accent-ink underline">
-              Buy credits
+              Buy credit
             </Link>
           </Notice>
         )}

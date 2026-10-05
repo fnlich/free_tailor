@@ -11,8 +11,9 @@ import {
   type ManagedAccount,
   type UserRole,
 } from '@/lib/auth';
-import { describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credits';
-import { formatDate } from '@/lib/format';
+import { describeLedgerReason, type LedgerEntry } from '@/lib/credits';
+import { describeDollarProblem, formatDate, formatMoney, parseDollars, toDollarInput } from '@/lib/format';
+import { describeLedgerBalance, describeLedgerChange, ledgerDirection } from '@/lib/ledger';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
@@ -31,6 +32,20 @@ import styles from './page.module.css';
  * caller's own account (another administrator may still do them), so the
  * controls are locked rather than offered and refused.
  */
+
+/**
+ * Why a typed grant cannot be applied, or '' when it can: an amount in
+ * dollars to the thousandth, positive to add and negative to take away, and
+ * not zero - a grant of nothing is a row in somebody's history that says
+ * nothing happened. The server's own parser and words (lib/format.ts), so the
+ * button says what the server would.
+ */
+function grantProblem(text: string): string {
+  const parsed = parseDollars(text, { allowNegative: true });
+  if (!parsed.ok) return describeDollarProblem(parsed.problem, 'The amount');
+  if (parsed.milli === 0) return 'Enter an amount to add, like 5 or 0.25, or a negative one to take away.';
+  return '';
+}
 
 /** Said on your own row, beside the controls it locks. */
 const OWN_ROW_NOTE =
@@ -140,11 +155,12 @@ function AccountsTable() {
   };
 
   const grant = async (row: ManagedAccount) => {
-    const amount = Number(grantAmount);
-    if (!Number.isFinite(amount) || Math.floor(amount) === 0) return;
+    // Sent as TYPED, never as a number this page worked out: the server parses
+    // dollars exactly, and "0.1" read as a float and sent back is not 0.1.
+    if (grantProblem(grantAmount)) return;
 
     await apply(row.id, async () => {
-      const result = await accountsApi.grantCredits(row.id, Math.floor(amount), grantNote.trim());
+      const result = await accountsApi.grantCredits(row.id, grantAmount.trim(), grantNote.trim());
       return result.account;
     });
     setGrantFor(null);
@@ -283,7 +299,7 @@ function AccountsTable() {
                   <th scope="col">Role</th>
                   <th scope="col">Subscription</th>
                   <th scope="col">Profiles</th>
-                  <th scope="col">Credits</th>
+                  <th scope="col">Balance</th>
                   <th scope="col">Last seen</th>
                   <th scope="col">
                     <span className="sr-only">Actions</span>
@@ -381,33 +397,48 @@ function AccountsTable() {
 
                       <td>
                         <div className="flex items-center gap-2">
-                          <div className="w-24">
-                            <input
-                              // Remounted when the balance moves from elsewhere. The
-                              // input is uncontrolled, so after a delta grant it
-                              // would otherwise still show the pre-grant number and
-                              // the next blur would write that stale absolute value
-                              // back over the grant.
-                              key={`${row.id}:${row.credits}`}
-                              type="number"
-                              min={0}
-                              step={1}
-                              defaultValue={row.credits}
-                              disabled={busy}
-                              title="Set the balance to this number"
-                              aria-label={`Credits for ${row.email}`}
-                              // On blur, not on every keystroke: a write per digit
-                              // would store 4 on the way to typing 40.
-                              onBlur={(event) => {
-                                const credits = Number(event.target.value);
-                                if (!Number.isFinite(credits) || credits === row.credits) return;
-                                void apply(
-                                  row.id,
-                                  async () => (await accountsApi.update(row.id, { credits })).account
-                                );
-                              }}
-                              className={`tl-input ${styles.compact}`}
-                            />
+                          {/* A `$` before the box, and boxes around it: `.tl-input` is always
+                              full width, and would not shrink in a flex row on its own. */}
+                          <div className="flex w-28 items-center gap-1">
+                            <span aria-hidden className="text-xs font-semibold text-muted">
+                              $
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <input
+                                // Remounted when the balance moves from elsewhere. The
+                                // input is uncontrolled, so after a delta grant it
+                                // would otherwise still show the pre-grant amount and
+                                // the next blur would write that stale absolute value
+                                // back over the grant.
+                                key={`${row.id}:${row.balanceMilli}`}
+                                type="text"
+                                inputMode="decimal"
+                                defaultValue={toDollarInput(row.balanceMilli)}
+                                disabled={busy}
+                                title={`${formatMoney(row.balanceMilli)}. Type an amount in dollars to set the balance to it.`}
+                                aria-label={`Balance in dollars for ${row.email}`}
+                                // On blur, not on every keystroke: a write per digit
+                                // would store $4 on the way to typing $40.
+                                onBlur={(event) => {
+                                  const typed = event.target.value;
+                                  const parsed = parseDollars(typed);
+                                  // Unchanged - including "3.5" for $3.500 - writes nothing.
+                                  if (parsed.ok && parsed.milli === row.balanceMilli) return;
+                                  if (!parsed.ok) {
+                                    // Refused here in the server's words, and put back,
+                                    // rather than sent to be refused there.
+                                    setError(describeDollarProblem(parsed.problem, 'The balance'));
+                                    event.target.value = toDollarInput(row.balanceMilli);
+                                    return;
+                                  }
+                                  void apply(
+                                    row.id,
+                                    async () => (await accountsApi.update(row.id, { balanceUsd: typed.trim() })).account
+                                  );
+                                }}
+                                className={`tl-input ${styles.compact} tabular-nums`}
+                              />
+                            </div>
                           </div>
                           <button
                             type="button"
@@ -417,7 +448,7 @@ function AccountsTable() {
                               setGrantAmount('');
                               setGrantNote('');
                             }}
-                            title="Add or take away credits, rather than setting a total"
+                            title="Add or take away credit, rather than setting a total"
                             className="tl-button-quiet"
                             data-size="sm"
                           >
@@ -429,7 +460,7 @@ function AccountsTable() {
                           // budget: administrators spend nothing.
                           <p
                             className="mt-1 text-xs text-subtle"
-                            title="Administrators are exempt from credits and spend nothing."
+                            title="Administrators are not charged for resumes and spend nothing."
                           >
                             exempt
                           </p>
@@ -514,19 +545,19 @@ function AccountsTable() {
                               }}
                               className="mb-4 flex flex-wrap items-end gap-3"
                             >
-                              <div className="w-28">
+                              <div className="w-32">
                                 <label className="tl-label" htmlFor={`grant-${row.id}`}>
-                                  Add credits
+                                  Add credit ($)
                                 </label>
                                 <input
                                   id={`grant-${row.id}`}
-                                  type="number"
-                                  step={1}
+                                  type="text"
+                                  inputMode="decimal"
                                   autoFocus
                                   value={grantAmount}
                                   onChange={(event) => setGrantAmount(event.target.value)}
-                                  placeholder="10"
-                                  className="tl-input mt-2"
+                                  placeholder="5.00"
+                                  className="tl-input mt-2 tabular-nums"
                                 />
                               </div>
                               <div className="min-w-[14rem] flex-1">
@@ -537,7 +568,7 @@ function AccountsTable() {
                                   id={`grant-note-${row.id}`}
                                   value={grantNote}
                                   onChange={(event) => setGrantNote(event.target.value)}
-                                  placeholder="Why these credits were added"
+                                  placeholder="Why this credit was added"
                                   className="tl-input mt-2"
                                 />
                               </div>
@@ -546,19 +577,15 @@ function AccountsTable() {
                                 // Disabled rather than silently rejecting: a
                                 // button that does nothing is indistinguishable
                                 // from a broken one.
-                                disabled={!Number.isFinite(Number(grantAmount)) || Math.floor(Number(grantAmount)) === 0}
-                                title={
-                                  Math.floor(Number(grantAmount)) === 0
-                                    ? 'Enter a number of credits to add, or a negative one to take away.'
-                                    : undefined
-                                }
+                                disabled={Boolean(grantProblem(grantAmount))}
+                                title={grantProblem(grantAmount) || undefined}
                                 className="tl-button"
                               >
                                 Apply
                               </button>
                               <p className="w-full text-xs text-subtle">
-                                A positive number adds, a negative one takes away. The field in the
-                                table above sets a total instead.
+                                Dollars, to $0.001: a positive amount adds, a negative one takes away
+                                and stops at $0.000. The field in the table above sets a total instead.
                               </p>
                             </form>
                           )}
@@ -599,11 +626,15 @@ function AccountsTable() {
                                           </p>
                                         </div>
                                         <div className="shrink-0 text-right">
-                                          <p className={entry.delta > 0 ? styles.gain : styles.loss}>
-                                            {formatDelta(entry.delta)}
+                                          <p
+                                            className={`tabular-nums ${
+                                              ledgerDirection(entry) > 0 ? styles.gain : styles.loss
+                                            }`}
+                                          >
+                                            {describeLedgerChange(entry)}
                                           </p>
-                                          <p className="text-xs text-subtle">
-                                            {entry.balanceAfter} after
+                                          <p className="text-xs tabular-nums text-subtle">
+                                            {describeLedgerBalance(entry)} after
                                           </p>
                                         </div>
                                       </li>

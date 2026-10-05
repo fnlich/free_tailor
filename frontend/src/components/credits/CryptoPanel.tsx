@@ -3,7 +3,8 @@
 import { Spinner } from '@/components/ui/kit';
 import { PANEL, PRIMARY, QUIET } from './chrome';
 import type { Order } from './order';
-import { formatAmount, type PaymentTarget } from '@/lib/payments';
+import { formatMoney } from '@/lib/format';
+import type { PaymentTarget } from '@/lib/payments';
 
 /**
  * Step 3, crypto column: the hand-off to the provider's own page.
@@ -75,9 +76,10 @@ export default function CryptoPanel({
           The next page is the payment provider&apos;s, not ours. You choose the coin and the
           network there, and send{' '}
           <span className="font-semibold text-ink">
-            {formatAmount(started.amountCents, started.currency)}
+            {formatMoney(started.amountMilli)}
           </span>{' '}
-          worth of it to the address they show you.
+          worth of it to the address they show you. That whole amount is added to your balance
+          once the provider confirms it.
         </p>
         <div className="mt-4 flex flex-wrap gap-3">
           <button

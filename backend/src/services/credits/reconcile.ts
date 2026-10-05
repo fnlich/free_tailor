@@ -5,6 +5,7 @@ import {
   findInconsistentBalances,
   listOpenReservations,
 } from '../../database/creditRepository';
+import { formatMoney } from '../../utils/money';
 
 /**
  * Putting the credit books straight after a restart.
@@ -18,9 +19,9 @@ import {
  *    batches it brought back; anything else still open and old enough that no
  *    live run could own it is released.
  *
- * 2. THE STANDING INVARIANT. The ledger is append-only and users.credits is a
- *    cache of its sum, so the two agreeing is something that should always be
- *    true. It is REPORTED rather than silently repaired: a disagreement means
+ * 2. THE STANDING INVARIANT. The ledger is append-only and users.balance_milli
+ *    is a cache of the sum of its delta_milli, so the two agreeing is something
+ *    that should always be true. It is REPORTED rather than silently repaired: a disagreement means
  *    something wrote the column outside creditRepository, and quietly correcting
  *    it would hide the bug that caused it.
  */
@@ -36,8 +37,9 @@ const ORPHAN_AFTER_MS = 6 * 60 * 60_000;
 
 export type ReconcileReport = {
   released: number;
-  credits: number;
-  inconsistent: Array<{ userId: string; balance: number; ledgerSum: number }>;
+  /** What the released runs gave back, in thousandths of a dollar. */
+  releasedMilli: number;
+  inconsistent: Array<{ userId: string; balanceMilli: number; ledgerSumMilli: number }>;
 };
 
 export type ReconcileOptions = {
@@ -54,7 +56,7 @@ export type ReconcileOptions = {
 };
 
 export function reconcileCredits(now = Date.now(), options: ReconcileOptions = {}): ReconcileReport {
-  const report: ReconcileReport = { released: 0, credits: 0, inconsistent: [] };
+  const report: ReconcileReport = { released: 0, releasedMilli: 0, inconsistent: [] };
   const live = new Set(options.liveBatchIds ?? []);
 
   try {
@@ -64,11 +66,11 @@ export function reconcileCredits(now = Date.now(), options: ReconcileOptions = {
       const outcome = abandonReservation({
         reservationId: reservation.id,
         reason: 'reconcile-orphan',
-        note: 'The run holding these credits did not finish; released on restart.',
+        note: 'The run holding this credit did not finish; released on restart.',
       });
       if (outcome.closed) {
         report.released += 1;
-        report.credits += outcome.refunded;
+        report.releasedMilli += outcome.refunded;
       }
     }
 
@@ -80,13 +82,13 @@ export function reconcileCredits(now = Date.now(), options: ReconcileOptions = {
 
   if (report.released > 0) {
     console.log(
-      `[credits] Released ${report.credits} credit(s) from ${report.released} run(s) that never finished.`
+      `[credits] Released ${formatMoney(report.releasedMilli)} from ${report.released} run(s) that never finished.`
     );
   }
   for (const row of report.inconsistent) {
     console.warn(
-      `[credits] Account ${row.userId} holds ${row.balance} credits but its ledger sums to ` +
-        `${row.ledgerSum}. Something wrote the balance outside the credit service.`
+      `[credits] Account ${row.userId} holds ${formatMoney(row.balanceMilli)} but its ledger sums to ` +
+        `${formatMoney(row.ledgerSumMilli)}. Something wrote the balance outside the credit service.`
     );
   }
 

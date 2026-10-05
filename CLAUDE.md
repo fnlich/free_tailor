@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~30s with the tsc step, 1220 tests)
+npm test                       # backend node:test suite (~30s with the tsc step, 1254 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -116,7 +116,8 @@ backend/src/
                       #   test/envExample.test.js fails until all three agree.
                       #   providerCatalog.ts is the ONE list of seats and of
                       #   retired ids; providerModels.ts each seat's model-name
-                      #   list; creditsPerResume.ts the price field's rules;
+                      #   list; pricePerResume.ts the price field's rules
+                      #   (thousandths of a dollar, see "Money" below);
                       #   modelErrors.ts the two model refusals;
                       #   accountSubscriptions.ts the account TIERS (Default,
                       #   Premium, Premium+, Premium Max) and their profile
@@ -146,7 +147,10 @@ backend/src/
                       #   (templateFileMove.ts, schema_meta
                       #   `templates_moved_to_files`, never fatal; recorded
                       #   row by row, so only a row it could not WRITE is
-                      #   tried at the next start), then the migrations.
+                      #   tried at the next start), then the one-time switch
+                      #   of credits to dollars (dollarSwitch.ts, schema_meta
+                      #   `credit_unit`, never fatal - see "Money" below),
+                      #   then the migrations.
                       #   An older build reads users.plan: rolling back means
                       #   renaming it back first (README, "Plans are now subscriptions").
                       #   Saved templates are NOT a table any more:
@@ -195,7 +199,7 @@ backend/src/
                       #   not the Task serialized, so a new field must be named
                       #   there AND in the restore mapper or it silently does
                       #   not persist. The payload persists whole, which is why
-                      #   a task's price lives on it (`payload.creditCost`) -
+                      #   a task's price lives on it (`payload.costMilli`) -
                       #   and so does `batch.shared`, which is why an order
                       #   batch is marked there (`shared.kind = 'order'`,
                       #   `isOrderBatch`; one restored from before the mark is
@@ -240,7 +244,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 103 files; fixtures/cli, codex and gemini
+  test/               # node:test, 106 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -294,7 +298,10 @@ frontend/src/
                       #   and never recoloured by a parent. Anything needing a
                       #   fill belongs in marks.tsx.
   components/credits/ # The three-step purchase dialog. order.ts holds the
-                      #   wizard reducer with no JSX in it; chrome.ts holds the
+                      #   wizard reducer with no JSX in it, and the purchase
+                      #   AMOUNT rule: dollars as typed, fitted into the
+                      #   method's bounds, a fraction of a cent refused in the
+                      #   server's own words; chrome.ts holds the
                       #   shared class strings and the note on why none of them
                       #   carries a `dark:` variant. Also the /credits history
                       #   tables: usePagedList.ts (paging with the race guards),
@@ -322,7 +329,10 @@ frontend/src/
                       #   are not tabs, and do open with a PageHeader.
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
-                      #   every page), lib/sheet.ts (the spreadsheet range
+                      #   every page, and formatMoney / parseDollars /
+                      #   toDollarInput for every amount - see "Money"),
+                      #   lib/ledger.ts and lib/paymentDisplay.ts (how a ledger
+                      #   row and a payment read), lib/sheet.ts (the spreadsheet range
                       #   parsers), components/pageChrome.ts (the CARD and LABEL
                       #   class strings, with the note on why they keep `dark:`),
                       #   lib/userMessage.ts (userMessage / messageWithDetail -
@@ -456,6 +466,74 @@ Grouped preview is NOT padded from the library (`padSkillCategories: false`),
 while generation still is. The gallery's `GET /api/templates/:id/preview` sends
 the same policy as a header and takes `?layout=&softSkills=&strengths=`.
 
+## Money
+
+**A credit is a dollar, counted in thousandths.** Every amount - a balance, a
+price, a charge, a refund, a purchase, `CREDIT_SIGNUP_GRANT` - is an integer
+count of milli-dollars (`23` is $0.023) and nothing on a money path rounds,
+floors or parses a float: test/money.test.js fails on a `Math.floor`,
+`Math.trunc`, `parseFloat`, `parseInt` or `Number.isInteger` in the money
+modules it lists. `utils/money.ts` is the ONE text-to-money parser
+(`parseDollars`: at most three decimals, refused rather than rounded, a JSON
+number read through its shortest spelling) and the ONE formatter (`formatMoney`:
+always three decimals, `$0.023`), plus `parseProviderCents` for an amount a
+provider reports (exact; `12.505` is not a match for 1250 cents). The frontend's
+`lib/format.ts` mirrors both, and test/frontendMoney.test.js runs each pair over
+the same inputs (and the Admin -> Models price box against
+`parsePricePerResume`) and fails on any difference - and on a `Math.floor`,
+`parseInt`, `parseFloat`, `Number.isInteger` or `toFixed` in the frontend money
+files it lists. A page shows every amount with `formatMoney`, never `Intl`
+currency formatting, and SENDS an amount as the text that was typed
+(`amountUsd`, `balanceUsd`, `pricePerResumeUsd`), never a number it parsed.
+History from before dollars is shown in its own unit and never converted: a
+ledger row with `legacyCredits` reads `-12 credits` (lib/ledger.ts), and a
+payment that bought credits keeps its "195 Credits at $0.50 each" invoice line
+(lib/paymentDisplay.ts `isLegacyPurchase` - not just "has `legacyCredits`": a
+checkout opened before the switch and paid after was credited in dollars).
+
+**The API contract.** Every amount in every response is an integer in a field
+ending `Milli` (`balanceMilli`, `heldMilli`, `deltaMilli`, `balanceAfterMilli`,
+`costMilli`, `pricePerResumeMilli`, `neededMilli`, `amountMilli`,
+`creditMilli`...). Every amount in a request is dollars, as text or a JSON
+number, in a field ending `Usd` (`pricePerResumeUsd`, `balanceUsd`, `amountUsd`,
+`minUsd`...). A request still carrying an amount in the old unit (`credits`,
+`amount`, `creditsPerResume`, `minCents`) is refused as a stale page, never read
+as dollars. The old integer-credit fields are gone from responses, not aliased.
+
+**Storage is NEW columns, never the old ones reinterpreted** - that is a 1000x
+rollback hazard: `users.balance_milli`, `credit_ledger.delta_milli` /
+`balance_after_milli`, `credit_reservations.units_milli` / `refunded_milli`,
+`payments.credit_milli` / `credited_milli` / `refunded_milli`. Every row written
+now puts 0 in the whole-credit columns beside them (`credits`, `delta`,
+`units`, `payments.credits`, `unit_price_cents`), so a ledger row is in exactly
+one unit: `delta != 0` - or reason `reset`, which can move 0 - means a row from
+before dollars, served as `legacyCredits: { delta, balanceAfter }` and never
+converted (creditRepository's `toEntry`); a payment with
+`credits > 0` is served with `legacyCredits` (its receipt keeps "N credits at
+$0.50"). A purchase credits exactly what it charges (no fee, no price per
+credit; `creditPaid` grants `creditMilli`, or `amountCents * 10` for a
+checkout opened before dollars), and refunding a payment from before dollars
+reverses nothing (`creditedMilli` is 0: those credits were reset).
+
+**The switch** (`database/dollarSwitch.ts`) ran once in `getDb()` with marker
+`schema_meta.credit_unit = 'usd-milli'` and snapshot
+`app_settings["migration-log.credits-to-dollars"]`. The owner chose a RESET
+(M1): a `reset` ledger row per account with old credits (reason `reset`, in the
+old unit; an account whose credits were all held by a run gets one at delta 0
+saying its run stops refunding), `users.credits` zeroed, open reservations
+closed, every task given
+`payload.costMilli: 0` (it finishes on the credits it was paid with and refunds
+nothing), pending payments stamped `credit_milli = amount_cents * 10`. Model
+prices go to $0.000 BY RULE (an absent `pricePerResumeMilli` reads as 0) - the
+settings row is deliberately NOT rewritten, because that would change what
+migration 001 snapshots for `ai:rollback`. It is safe to have not run: every
+dollar column starts at 0, so old data already reads as reset. A ROLLBACK
+across it is not lossless (README, "Credits are dollars"): dollars held by a
+run in flight are never refunded (the older build sees `units = 0`, then
+closes the reservation, and a closed one takes no refund here), and the first
+settings save of any kind rewrites every model without `creditsPerResume`, so
+an older build prices them all at 1 credit.
+
 ## The AI layer
 
 Every model call goes through `backend/src/services/ai`. A provider is one
@@ -482,7 +560,7 @@ resume: analysis, tailoring and cover letter pass `runChoiceWins`, so they run
 on the model the run was charged at, whatever the prompt record says.
 
 Models are admin-curated records: a display name, a seat, a model name and
-`creditsPerResume`. The model name is chosen from `config/providerModels.ts`'s
+`pricePerResumeMilli`. The model name is chosen from `config/providerModels.ts`'s
 `listProviderModelOptions(provider)`, each seat's list overridable in `.env`
 (`AI_CLI_MODEL_OPTIONS`, `AI_CODEX_MODEL_OPTIONS`, `AI_GEMINI_MODEL_OPTIONS`,
 read per call, all-or-nothing). It is checked when a model is created or its
@@ -496,20 +574,27 @@ model could cost another price, while a STORED profile preference that went
 stale falls back to the default with a warning once. The bare-provider and
 `provider:modelName` request forms are admin-only.
 
-**Price per resume.** `creditsPerResume` is whole credits, 0..1000, 0 = free
-(`config/creditsPerResume.ts`; `DEFAULT_CREDITS_PER_RESUME = 1`, which
-`services/credits`' `CREDITS_PER_RESUME` aliases). It is not called "price" in
-code: `creditPriceCents` already means money per credit. A stored record
-without it reads as 1 in memory - no write-back, no migration - and an
-out-of-range one clamps on read; admin mutations refuse a bad value by name,
-and a partial edit keeps it. A resume is priced at submit by the same
-resolution its task runs (`resolvePricedAiChoice`: request, then profile, then
-default) and the price is snapshotted on the task as `payload.creditCost` -
-OUTSIDE `payload.choice`, so a restore that re-resolves a retired choice never
-re-prices it; the queue hook refunds `taskCreditCost(payload)`, 1 when absent.
-`reserveCredits` and `refundTaskUnit` take AMOUNTS, a batch reserves the sum,
-and `POST /api/generation/quote` prices a batch body through the same
-`resolveProfileChoices` without reserving anything. Administrators stay exempt.
+**Price per resume.** `pricePerResumeMilli` is thousandths of a dollar,
+0..1,000,000 ($0.000-$1000.000), 0 = free (`config/pricePerResume.ts`). There is
+NO default: an admin create without `pricePerResumeUsd` is refused, and a stored
+record without the field - a seed a migration adds, or one priced in credits
+before dollars (its `creditsPerResume` is never read as a price) - reads as 0
+in memory, no write-back, and the admin payload's `freeEnabledModelIds` lists
+every enabled model at 0 for Admin -> Models to show in red. Junk or a fraction
+of a thousandth reads as 0 and warns once; out of range clamps; admin mutations
+refuse a bad value by name (`creditsPerResume` in a mutation is a stale page,
+refused), and a partial edit keeps it. A resume is priced at submit by the same
+resolution its task runs (`resolvePricedAiChoice` -> `{ choice, costMilli }`:
+request, then profile, then default) and the price is snapshotted on the task
+as `payload.costMilli` - OUTSIDE `payload.choice`, so a restore that re-resolves
+a retired choice never re-prices it; `chargeFor` sums `taskCostMilli(payload)`
+and the queue hook refunds it, 0 when absent (a task from before dollars, whose
+`creditCost` is never read as money). `reserveCredits` and `refundTaskUnit`
+take AMOUNTS in thousandths, a batch reserves the sum, and
+`POST /api/generation/quote` prices a batch body through the same
+`resolveProfileChoices` without reserving anything (`costMilli`, and
+`pricePerResumeMilli` when every resume costs the same, else null).
+Administrators stay exempt.
 Tailored content a preview already wrote is priced at the model that WROTE it,
 not the one the finalising request names: `/resume/preview` and `/preview-all`
 hand back a signed `previewToken` (`services/credits/previewToken.ts`, HMAC with

@@ -1,5 +1,11 @@
 # Buying credits, end to end
 
+A credit is a dollar. Every script here buys an amount of money (`amountUsd`),
+expects exactly that much credit back, and reads every amount the API answers
+with as thousandths of a dollar in a field ending `Milli` - `$20.000` on the
+page, `20000` in the body. A request in the old unit (a count of `credits`) is
+expected to be refused as a stale page.
+
 The unit tests in `backend/test/*.test.js` prove each piece. These files
 prove the pieces are joined up: a real server on a real port, the real routers,
 the real database, the real webhook mount, and a browser clicking the real
@@ -74,6 +80,13 @@ Every script exits non-zero on the first failing claim and prints every check.
 installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
+Off the default ports - beside another server, say - every script reads
+`E2E_API`, `E2E_APP` and `E2E_FAKE` (the backend's `/api`, the frontend, the
+fake provider), and `fake-providers.js` listens on `FAKE_PROVIDER_PORT` and
+posts its webhooks to the server's own `PORT`. The frontend has to be BUILT
+with `NEXT_PUBLIC_API_URL` naming that backend, and the backend started with
+`FRONTEND_URL` naming the frontend, or its CORS gate refuses the page.
+
 ## The profile preview, held still
 
 `preview-vibration.js` is not about payments: it watches the profile editor's
@@ -111,18 +124,20 @@ scripts are testing.
 
 ## What they check
 
-`walkthrough.js` — 42 claims over HTTP: both methods offered with the price
-from settings; a request carrying its own price priced by the server anyway;
+`walkthrough.js` — 44 claims over HTTP: both methods offered with their bounds
+in thousandths and no price per credit; a request carrying its own price priced
+by the server anyway, an amount in fractions of a cent refused, and a count of
+credits from a stale page refused;
 a checkout that credits nothing until the webhook lands; the return URL
 visited before paying crediting nothing; a card crediting on a signed event
-and crypto crediting on a signed Cryptomus callback, offered as one button
-rather than a row per coin; a retried delivery crediting nothing further; a cancelled checkout closing without crediting;
+and crypto crediting on a signed Cryptomus callback for its whole amount, with
+no fee, offered as one button rather than a row per coin; a retried delivery crediting nothing further; a cancelled checkout closing without crediting;
 another account's payment answering 404; forged and unsigned webhooks refused;
 the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 103 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 107 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
 leave behind. Over HTTP: each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
@@ -132,8 +147,10 @@ a saved card that is the owner's alone to charge or delete, and answering 404
 to anybody else; and an off-session charge settling through
 `payment_intent.succeeded` against a `pi_` reference and crediting exactly
 once. Then with a mouse: only what the installation can serve offered; a
-preset agreeing with the server's own figure; a count above the ceiling priced
-AT the ceiling and saying so; Back preserving the amount; the summary pricing
+preset agreeing with the server's own figure; an amount above the ceiling
+priced AT the ceiling and saying so, and a fraction of a cent refused with
+Continue switched off; Back preserving the amount; a summary with the same
+figure charged and credited and no fee on it; the summary pricing
 itself without opening a checkout, so looking at it costs the buyer nothing;
 the order appearing when the new-card form is asked for; the form mounting or
 saying plainly that it could not; Escape closing; and nothing hanging off the
@@ -146,12 +163,14 @@ are, Older and Newer moving between real pages, and a page whose request FAILS
 keeping its rows while the count sentence still describes them - a failed press
 used to leave rows 1-5 under "6-10 of 12". On the invoice page: an unpaid
 order says *No invoice yet* and offers no Print button, and the same order once
-paid is an invoice with exactly one. It screenshots each step.
+paid is an invoice with exactly one, one line of credit at its charge and
+`$0.000` of fees. The top-bar pill follows a payment that lands while the
+return page is open, in dollars. It screenshots each step.
 
 `buy-credits.js` also drives a whole crypto payment through the fake Cryptomus:
 one button rather than a row per coin, the hand-off panel naming whose page
-comes next, a callback signed the way Cryptomus signs one, and a retried
-callback crediting nothing further.
+comes next, a callback signed the way Cryptomus signs one crediting the whole
+amount, and a retried callback crediting nothing further.
 
 `browser.js` — needs playwright, so it does NOT run on a checkout without it,
 and that is how its `Your payments` selector survived three commits past the

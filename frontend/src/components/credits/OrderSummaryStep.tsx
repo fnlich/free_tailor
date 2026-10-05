@@ -6,11 +6,8 @@ import CryptoPanel from './CryptoPanel';
 import PolicyPanels from './PolicyPanels';
 import { LABEL, PANEL } from './chrome';
 import type { Order, Priced } from './order';
-import {
-  formatAmount,
-  type PaymentTarget,
-  type SavedCard,
-} from '@/lib/payments';
+import { formatMoney } from '@/lib/format';
+import type { PaymentTarget, SavedCard } from '@/lib/payments';
 
 /**
  * Step 3: exactly what is being bought, beside how to pay for it.
@@ -19,12 +16,13 @@ import {
  * body - and they stack on a phone with the summary first, because the summary
  * is what somebody checks before they reach for a card.
  *
- * **Every number in the left column comes from the order the server recorded.**
- * Not one of them is worked out here. That is not fastidiousness: the fee and
- * the granted credit count are derived from settings that an administrator can
- * change while this dialog is open, and a browser recomputing them would show
- * a figure that disagrees with the charge. Until the order is back, the table
- * says so rather than filling itself in with a guess.
+ * **Every number in the left column comes from the server**: the order it
+ * recorded, or until there is one its quote. Not one of them is worked out
+ * here. A credit is a dollar and nothing is taken out, so the charge and the
+ * credit are the same figure - and the summary still prints both from the
+ * server's answer, because an amount the server refuses (a bound moved while
+ * this dialog was open) must not be shown as bought. Until that answer is
+ * back, the table says so rather than filling itself in with a guess.
  */
 
 function Row({
@@ -66,9 +64,7 @@ function Mark({ target }: { target: PaymentTarget }) {
 
 export default function OrderSummaryStep({
   target,
-  credits,
-  unitPriceCents,
-  currency,
+  amountMilli,
   priced,
   order,
   cards,
@@ -87,10 +83,8 @@ export default function OrderSummaryStep({
   onRetry,
 }: {
   target: PaymentTarget;
-  /** What was ASKED for. The quote says what is actually granted. */
-  credits: number;
-  unitPriceCents: number;
-  currency: string;
+  /** What was ASKED for, in thousandths of a dollar. The quote says what is charged and credited. */
+  amountMilli: number;
   priced: Priced;
   order: Order;
   cards: SavedCard[];
@@ -114,24 +108,11 @@ export default function OrderSummaryStep({
   /*
    * The ORDER'S figures when there is one, the quote's otherwise.
    *
-   * They are the same arithmetic on the same settings, so they agree - but
-   * once a payment row exists its recorded figures are what will actually be
+   * They are the same pricing on the same settings, so they agree - but once
+   * a payment row exists its recorded figures are what will actually be
    * charged, and those are the ones to print. Neither is computed here.
    */
   const money = started ?? (priced.status === 'ready' ? priced.quote : null);
-
-  /*
-   * The fee is INSIDE the amount charged, not added to it.
-   *
-   * `applyFee` takes the fee out of what the buyer pays and grants the credits
-   * the remainder buys, so the total is unchanged and the count goes down.
-   * Presenting it the other way round - a total plus a fee - would state a
-   * figure nobody is charged. Hence a fee row that is informational and a
-   * separate line for what the account actually receives.
-   */
-  const fee = money?.feeCents ?? 0;
-  const granted = money?.credits ?? null;
-  const shortfall = granted !== null && granted < credits ? credits - granted : 0;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -156,32 +137,21 @@ export default function OrderSummaryStep({
             />
             <div className="border-t-[1px] border-[color:var(--line-subtle)]" />
             <Row
-              label={`${credits} ${credits === 1 ? 'credit' : 'credits'}`}
-              hint={`${formatAmount(unitPriceCents, currency)} each`}
-              value={money ? formatAmount(money.amountCents, money.currency) : pending}
+              label={`${formatMoney(amountMilli)} of credit`}
+              hint="A credit is a dollar"
+              value={money ? formatMoney(money.amountMilli) : pending}
             />
-            {fee > 0 && (
-              <Row
-                label="Processing fee"
-                hint="Taken out of the amount above, not added to it"
-                value={formatAmount(fee, money?.currency ?? currency)}
-              />
-            )}
             <div className="border-t-[1px] border-[color:var(--line-subtle)]" />
             <Row
               label="Total to pay"
               strong
-              value={money ? formatAmount(money.amountCents, money.currency) : pending}
+              value={money ? formatMoney(money.amountMilli) : pending}
             />
             <Row
-              label="Credits added"
+              label="Credit added"
               strong
-              hint={
-                shortfall > 0
-                  ? `${shortfall} fewer than asked for, because of the fee above`
-                  : undefined
-              }
-              value={granted === null ? pending : String(granted)}
+              hint="All of it: nothing is taken out"
+              value={money ? formatMoney(money.creditMilli) : pending}
             />
           </div>
         </div>

@@ -9,6 +9,12 @@
  *
  * The session is seeded and injected, because there is no offline sign-in.
  * Everything after that is clicks.
+ *
+ * Money is dollars to the thousandth on every page ($20.000): a credit is a
+ * dollar, and a purchase credits exactly what it charges. The locators below
+ * still describe the buy page from before the three-step dialog - see the
+ * README; buy-credits.js is the one that walks the dialog - so read the page
+ * before trusting one.
  */
 
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -17,7 +23,9 @@ const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
 
-const APP = 'http://127.0.0.1:3000';
+const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
+const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
+const FAKE = process.env.E2E_FAKE || 'http://127.0.0.1:4242';
 const SHOTS = process.env.E2E_SHOTS || __dirname;
 
 let failures = 0;
@@ -61,19 +69,19 @@ async function main() {
   check('the buy page loads', heading.includes('Credits'), heading);
 
   const balanceShown = await page.locator('text=Current Balance').locator('..').innerText();
-  check('it shows a balance of zero to start', /\b0\b/.test(balanceShown), balanceShown.replace(/\n/g, ' | '));
+  check('it shows a balance of $0.000 to start', /\$0\.000/.test(balanceShown), balanceShown.replace(/\n/g, ' | '));
 
   const cardButton = page.getByRole('button', { name: /pay by credit or debit card/i });
   const cryptoButton = page.getByRole('button', { name: /pay by crypto/i });
   check('both configured methods have a button', (await cardButton.count()) === 1 && (await cryptoButton.count()) === 1);
 
-  await page.fill('#credits', '40');
+  await page.fill('#credits', '20');
   await page.waitForTimeout(150);
   const totalText = await page.locator('text=Total').locator('..').innerText();
-  check('the total is priced from the server price', /\$20\.00/.test(totalText), totalText.replace(/\n/g, ' | '));
+  check('the total is the amount chosen, in dollars', /\$20\.000/.test(totalText), totalText.replace(/\n/g, ' | '));
 
-  const priceLine = await page.locator('text=/per credit/').innerText();
-  check('the price and bounds are stated', /\$0\.50 per credit/.test(priceLine) && /10 and 5000/.test(priceLine), priceLine);
+  const boundsLine = await page.locator('text=/at a time/').innerText();
+  check('the bounds are stated in dollars', /\$2\.500 and \$100\.000/.test(boundsLine), boundsLine);
 
   await page.screenshot({ path: `${SHOTS}/1-buy-page.png` });
 
@@ -117,7 +125,7 @@ async function main() {
   check('and no checkout page opened anywhere', !page.url().includes('4242'), page.url());
 
   const panel = await page.locator('main').innerText();
-  check('the panel restates what is being bought', /40 credits/.test(panel) && /\$20\.00/.test(panel), panel.replace(/\n/g, ' | ').slice(0, 200));
+  check('the panel restates what is being bought', /\$20\.000/.test(panel), panel.replace(/\n/g, ' | ').slice(0, 200));
   check(
     'and offers a way back out',
     (await page.getByRole('button', { name: /^Cancel$/ }).count()) +
@@ -129,24 +137,24 @@ async function main() {
   console.log('\n=== Paying, and the return page ===');
   // Driven from the provider's side, which is what a real card confirmation
   // ends up doing: a signed webhook, server to server.
-  const mine = await (await fetch('http://127.0.0.1:3001/api/payments', {
+  const mine = await (await fetch(`${API}/payments`, {
     headers: { authorization: `Bearer ${token}` },
   })).json();
   const started = mine.payments.find((p) => p.state === 'pending');
   check('the checkout recorded a pending payment', Boolean(started), started?.reference);
-  await fetch(`http://127.0.0.1:4242/pay/${started.providerRef}`, { method: 'POST', redirect: 'manual' });
+  await fetch(`${FAKE}/pay/${started.providerRef}`, { method: 'POST', redirect: 'manual' });
 
   await page.goto(`${APP}/credits/return?payment=${started.id}`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('text=Paid. Your credits are on your balance.', { timeout: 20000 });
+  await page.waitForSelector('text=Paid. Your credit is on your balance.', { timeout: 20000 });
   check('the return page reports the payment once the webhook has landed', true);
   const returnCopy = await page.locator('main').innerText();
-  check('and shows the reference and what was bought', /FT-PAY-/.test(returnCopy) && /40 credits for \$20\.00/.test(returnCopy), returnCopy.replace(/\n/g, ' | ').slice(0, 200));
+  check('and shows the reference and what was bought', /FT-PAY-/.test(returnCopy) && /\$20\.000 of credit\./.test(returnCopy), returnCopy.replace(/\n/g, ' | ').slice(0, 200));
   await page.screenshot({ path: `${SHOTS}/3-return-paid.png` });
 
   console.log('\n=== Back on the buy page ===');
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
   const balanceAfter = await page.locator('text=Current Balance').locator('..').innerText();
-  check('the balance has the credits on it', /\b40\b/.test(balanceAfter), balanceAfter.replace(/\n/g, ' | '));
+  check('the balance has the $20.000 on it', /\$20\.000/.test(balanceAfter), balanceAfter.replace(/\n/g, ' | '));
   // 'Payment history' since the credits page was reworked; this said 'Your
   // payments' for three commits after the heading changed, and the script needs
   // playwright so nothing here ever ran to find out.
@@ -157,7 +165,7 @@ async function main() {
   await page.screenshot({ path: `${SHOTS}/4-after-paying.png` });
 
   console.log('\n=== Backing out of a payment ===');
-  await page.fill('#credits', '10');
+  await page.fill('#credits', '5');
   await page.getByRole('button', { name: /pay by credit or debit card/i }).click();
   await page.getByRole('button', { name: /^Cancel$|^Start again$/ }).first().waitFor({ timeout: 25000 });
   await page.getByRole('button', { name: /^Cancel$|^Start again$/ }).first().click();
@@ -172,12 +180,12 @@ async function main() {
     'cancelling puts the amount field back and closes the dialog',
     (await page.locator('#credits').count()) === 1 &&
       (await page.getByRole('dialog').count()) === 0 &&
-      /per credit/.test(backOnTheForm),
+      /at a time/.test(backOnTheForm),
     page.url()
   );
   check(
     'and the amount that was typed is still there',
-    (await page.locator('#credits').inputValue()) === '10'
+    (await page.locator('#credits').inputValue()) === '5'
   );
   await page.screenshot({ path: `${SHOTS}/5-cancelled.png` });
 
@@ -189,20 +197,20 @@ async function main() {
   await adminPage.waitForSelector('h1:has-text("Payments")', { timeout: 15000 });
   const adminCopy = await adminPage.locator('body').innerText();
   check('the admin page lists the buyer\'s payment', adminCopy.includes(buyer.email), buyer.email);
-  check('with the pricing controls beside it', /Price per credit/.test(adminCopy));
+  check('with the purchase limits beside it, and no price per credit', /Limits per payment method/.test(adminCopy) && !/Price per credit/.test(adminCopy));
   await adminPage.screenshot({ path: `${SHOTS}/6-admin-payments.png`, fullPage: true });
 
   const refundButton = adminPage.getByRole('button', { name: /^Refund$/ }).first();
   await refundButton.click();
   await adminPage.fill('input[placeholder="Why this is being refunded"]', 'end-to-end test');
   await adminPage.getByRole('button', { name: /refund it/i }).click();
-  await adminPage.waitForSelector('text=/refunded, and all 40 credits reversed/', { timeout: 20000 });
+  await adminPage.waitForSelector('text=/refunded, and all \$20\.000 of credit reversed/', { timeout: 20000 });
   check('a refund from the UI reports what it reversed', true);
   await adminPage.screenshot({ path: `${SHOTS}/7-refunded.png`, fullPage: true });
 
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
   const finalBalance = await page.locator('text=Current Balance').locator('..').innerText();
-  check('and the buyer\'s balance comes back down', /\b0\b/.test(finalBalance), finalBalance.replace(/\n/g, ' | '));
+  check('and the buyer\'s balance comes back down', /\$0\.000/.test(finalBalance), finalBalance.replace(/\n/g, ' | '));
 
   // js.stripe.com is unreachable from this sandbox, and the page reporting that
   // is the correct behaviour rather than a defect - so those are not counted.

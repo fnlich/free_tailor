@@ -1,4 +1,5 @@
 import { readScraperCatalog, readScraperSettings } from './scraperForm';
+import { formatMoney } from './format';
 
 const DEFAULT_LOCAL_API_BASE = 'http://localhost:3001/api';
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || DEFAULT_LOCAL_API_BASE;
@@ -141,9 +142,10 @@ export class ApiResponseError extends Error {
      * The whole error body, not just its message.
      *
      * A refusal carries fields that say what KIND of refusal it is - `code`,
-     * and numbers like `needed`, `balance` or `limit`. Throwing them away left a
-     * component with nothing but English to classify by, and a component that
-     * matched on the wording would break the moment somebody improved it.
+     * and numbers like `neededMilli`, `balanceMilli` or `limit`. Throwing them
+     * away left a component with nothing but English to classify by, and a
+     * component that matched on the wording would break the moment somebody
+     * improved it.
      *
      * Last and defaulted, so the three-argument form still compiles.
      */
@@ -204,8 +206,9 @@ export function isProfileLimit(error: unknown): error is ApiResponseError {
 }
 
 /**
- * A run was refused for want of credits: 402 `insufficient-credits`, with the
- * credits the run needs and the balance it found as `needed` and `balance`.
+ * A run was refused for want of credit: 402 `insufficient-credits`, with what
+ * the run needs and the balance it found as `neededMilli` and `balanceMilli`,
+ * in thousandths of a dollar.
  */
 export function isInsufficientCredits(error: unknown): error is ApiResponseError {
   return error instanceof ApiResponseError && error.code === 'insufficient-credits';
@@ -475,12 +478,12 @@ export interface GoogleSheetSource {
 }
 
 /**
- * What a resume costs on a model that does not say, and the most it may be set
- * to. Mirrors the backend's DEFAULT_CREDITS_PER_RESUME and its mutation bounds;
- * the server is the one that enforces them.
+ * The most a resume may be priced at: $1000.000, in thousandths of a dollar.
+ * Mirrors the backend's MAX_PRICE_PER_RESUME_MILLI; the server is the one that
+ * enforces it. There is no default price - a new model is priced by whoever
+ * adds it - and the least is $0.000, which makes a model free.
  */
-export const DEFAULT_CREDITS_PER_RESUME = 1;
-export const MAX_CREDITS_PER_RESUME = 1000;
+export const MAX_PRICE_PER_RESUME_MILLI = 1_000_000;
 
 /**
  * One model an administrator added. Administrator-facing: the provider, the
@@ -494,10 +497,12 @@ export interface AIModelRecord {
   description: string;
   enabled: boolean;
   /**
-   * Whole credits one resume on this model costs; 0 is free. Named for what it
-   * counts, not "price": `creditPriceCents` already means money per credit.
+   * What one resume on this model costs, in thousandths of a dollar: 23 is
+   * $0.023, 0 is free. A record priced before credits were dollars reads as 0
+   * until an administrator prices it, and is listed in red until then
+   * (`AdminAppSettings.freeEnabledModelIds`).
    */
-  creditsPerResume: number;
+  pricePerResumeMilli: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -549,10 +554,10 @@ export function describeProviderModel(
   return findProviderModelOption(options, provider, modelName)?.label ?? modelName;
 }
 
-/** "Free", or "3 credits / resume". */
-export function formatCreditsPerResume(credits: number): string {
-  if (credits <= 0) return 'Free';
-  return `${credits} credit${credits === 1 ? '' : 's'} / resume`;
+/** "Free ($0.000)", or "$0.023 / resume". */
+export function formatPricePerResume(milli: number): string {
+  if (milli <= 0) return `Free (${formatMoney(0)})`;
+  return `${formatMoney(milli)} / resume`;
 }
 
 export type ScraperSource = 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
@@ -772,23 +777,17 @@ export interface AdminAppSettings extends BuilderDefaults {
   outputPathTemplate: string;
   outputPathPreview: string;
   /**
-   * What a credit sells for, and the bounds on one purchase.
-   *
-   * Administrator-only, not public: the buy page reads the price from
-   * `/payments/methods`, which is also the thing that knows whether a payment
-   * method is configured at all. One answer to "what does this cost".
+   * The ids of every ENABLED model priced $0.000 - free to everybody who
+   * picks it. Admin -> Models lists them in red: after credits became dollars
+   * every model was, until an administrator priced it, and a model a
+   * migration seeds arrives unpriced too. Free on purpose is allowed; free
+   * without anybody noticing is what the notice is for.
    */
-  creditPriceCents: number;
-  creditMinCredits: number;
-  creditMaxCredits: number;
+  freeEnabledModelIds: string[];
   /**
-   * The bounds, the fee and the buttons, per thing a buyer can choose.
-   *
-   * Beside the credit bounds above rather than replacing them, because the two
-   * ask different questions: those are in CREDITS and cap what one purchase
-   * may be whatever it is paid with, these are in CENTS and belong to one
-   * method or one coin. The server takes the tighter of the pair, so a row
-   * here can narrow a method but never widen it past the credit bounds.
+   * The bounds and the buttons of one purchase, per method a buyer can choose,
+   * in thousandths of a dollar. These are the only bounds: a credit is a
+   * dollar, so there is no price per credit and no count of credits to bound.
    */
   paymentLimits: PaymentTargetLimits[];
   /**
@@ -803,21 +802,38 @@ export interface AdminAppSettings extends BuilderDefaults {
 }
 
 /**
- * One row of per-target payment limits.
+ * One method's purchase limits, as the admin API sends them.
  *
- * `target` is `card`, `crypto`, or an asset id such as `ethereum:USDT`. A fee
- * is basis points plus a fixed number of cents, and the presets are the dollar
- * buttons step 2 of the purchase offers - stored in cents, converted to a
- * credit count by the server at the price in force, and dropped if they fall
- * outside the bounds on the same row.
+ * `target` is `card` or `crypto` (a stored row naming a coin still reads, and
+ * applies to nothing). Every amount is thousandths of a dollar and a whole
+ * number of cents, since that is all a card or an invoice can charge; the
+ * presets are the buttons step 2 of the purchase offers, dropped by the server
+ * when they fall outside the bounds on the same row. There is no fee: a
+ * purchase credits exactly what it charges.
  */
 export interface PaymentTargetLimits {
   target: string;
-  minCents: number;
-  maxCents: number;
-  feeBps: number;
-  feeFixedCents: number;
-  presetsCents: number[];
+  minMilli: number;
+  maxMilli: number;
+  presetsMilli: number[];
+}
+
+/**
+ * One method's limits as a save SENDS them: dollars, as the administrator
+ * typed them ("2.50"), each a whole number of cents. Never the thousandths the
+ * page was given - a request carries money as dollars, and the server parses
+ * them exactly.
+ */
+export interface PaymentTargetLimitsInput {
+  target: string;
+  minUsd: string;
+  maxUsd: string;
+  presetsUsd: string[];
+}
+
+/** An amount the server sent: a whole number of thousandths, or 0 for anything that is not one. */
+function readMilli(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function normalizePaymentLimits(value: unknown): PaymentTargetLimits[] {
@@ -827,12 +843,10 @@ function normalizePaymentLimits(value: unknown): PaymentTargetLimits[] {
     .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
     .map((entry) => ({
       target: typeof entry.target === 'string' ? entry.target : '',
-      minCents: typeof entry.minCents === 'number' ? entry.minCents : 0,
-      maxCents: typeof entry.maxCents === 'number' ? entry.maxCents : 0,
-      feeBps: typeof entry.feeBps === 'number' ? entry.feeBps : 0,
-      feeFixedCents: typeof entry.feeFixedCents === 'number' ? entry.feeFixedCents : 0,
-      presetsCents: Array.isArray(entry.presetsCents)
-        ? entry.presetsCents.filter((cents): cents is number => typeof cents === 'number')
+      minMilli: readMilli(entry.minMilli),
+      maxMilli: readMilli(entry.maxMilli),
+      presetsMilli: Array.isArray(entry.presetsMilli)
+        ? entry.presetsMilli.filter((milli): milli is number => typeof milli === 'number' && Number.isSafeInteger(milli))
         : [],
     }))
     .filter((entry) => entry.target !== '');
@@ -914,13 +928,15 @@ export const DEFAULT_USER_APP_SETTINGS: UserAppSettings = {
 };
 
 /**
- * A credit count as the server meant it: a whole number from 0 up. A record
- * from a server that predates the field costs the default, which is what that
- * server charged.
+ * A model's price as the server sent it: a whole number of thousandths from 0
+ * to the cap. Anything else reads as 0 - free - which is how the server itself
+ * reads a record it cannot price, and which Admin -> Models then shows in red.
+ * Never floored or rounded: a price is money, and a figure nobody set is a
+ * figure everybody would be charged.
  */
-function readCreditsPerResume(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return DEFAULT_CREDITS_PER_RESUME;
-  return Math.min(Math.floor(value), MAX_CREDITS_PER_RESUME);
+function readPricePerResumeMilli(value: unknown): number {
+  const milli = readMilli(value);
+  return milli > MAX_PRICE_PER_RESUME_MILLI ? MAX_PRICE_PER_RESUME_MILLI : milli;
 }
 
 function normalizeModelRecords(value: unknown): AIModelRecord[] {
@@ -942,7 +958,7 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
           modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
           description: typeof entry.description === 'string' ? entry.description : '',
           enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
-          creditsPerResume: readCreditsPerResume(entry.creditsPerResume),
+          pricePerResumeMilli: readPricePerResumeMilli(entry.pricePerResumeMilli),
           createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
           updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
         } satisfies AIModelRecord,
@@ -1118,9 +1134,9 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
-    creditPriceCents: typeof source.creditPriceCents === 'number' ? source.creditPriceCents : 50,
-    creditMinCredits: typeof source.creditMinCredits === 'number' ? source.creditMinCredits : 10,
-    creditMaxCredits: typeof source.creditMaxCredits === 'number' ? source.creditMaxCredits : 5000,
+    freeEnabledModelIds: Array.isArray(source.freeEnabledModelIds)
+      ? source.freeEnabledModelIds.filter((id): id is string => typeof id === 'string')
+      : [],
     paymentLimits: normalizePaymentLimits(source.paymentLimits),
     requireThreeDSecure: source.requireThreeDSecure === true,
   };
@@ -1131,10 +1147,8 @@ export interface AdminAppSettingsUpdate extends Partial<BuilderDefaults> {
   googleSheetsSources?: GoogleSheetSource[];
   outputBaseDir?: string;
   outputPathTemplate?: string;
-  creditPriceCents?: number;
-  creditMinCredits?: number;
-  creditMaxCredits?: number;
-  paymentLimits?: PaymentTargetLimits[];
+  /** In dollars. `[]` restores the shipped defaults. */
+  paymentLimits?: PaymentTargetLimitsInput[];
   requireThreeDSecure?: boolean;
 }
 
@@ -1343,7 +1357,8 @@ export const adminApi = {
     modelName: string;
     description?: string;
     enabled?: boolean;
-    creditsPerResume?: number;
+    /** Required: dollars as typed, "0.023". A new model is priced by whoever adds it. */
+    pricePerResumeUsd: string;
   }) =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/models', {
       method: 'POST',
@@ -1358,7 +1373,8 @@ export const adminApi = {
       modelName?: string;
       description?: string;
       enabled?: boolean;
-      creditsPerResume?: number;
+      /** Dollars as typed. Left out, the stored price is kept - which is what the enable switch relies on. */
+      pricePerResumeUsd?: string;
     }
   ) =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>(`/admin/models/${id}`, {

@@ -4,13 +4,19 @@ import { useCallback } from 'react';
 import TablePager from './TablePager';
 import { usePagedList } from './usePagedList';
 import styles from './history.module.css';
-import { creditsApi, describeLedgerReason, formatDelta, type LedgerEntry } from '@/lib/credits';
+import { creditsApi, describeLedgerReason, type LedgerEntry } from '@/lib/credits';
 import { formatDate } from '@/lib/format';
+import { describeLedgerBalance, describeLedgerChange, ledgerDirection } from '@/lib/ledger';
 
 const PAGE_SIZE = 10;
 const COLUMNS = ['Date', 'Change', 'Reason', 'Balance After', 'Note'];
 
-/** Every movement on the balance, a page at a time, newest first. */
+/**
+ * Every movement on the balance, a page at a time, newest first.
+ *
+ * In dollars to the thousandth - except rows from before credits became
+ * dollars, which say what they moved then, in credits (lib/ledger.ts).
+ */
 export default function CreditHistory({ epoch }: { epoch: number }) {
   const fetchPage = useCallback(async (offset: number, limit: number) => {
     const response = await creditsApi.ledger(offset, limit);
@@ -29,7 +35,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
           <h2 id="ledger-heading" className="text-2xl font-bold tracking-tight text-ink">
             Credit History
           </h2>
-          <p className="mt-1 text-sm text-muted">Every credit added, spent or given back.</p>
+          <p className="mt-1 text-sm text-muted">Every amount of credit added, spent or given back.</p>
         </div>
         <TablePager
           total={list.total}
@@ -66,15 +72,19 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
                 <tr key={entry.id}>
                   <td className="whitespace-nowrap">{formatDate(entry.createdAt, { style: 'short' })}</td>
                   {/* Colours on spans: `.tl-table td` is unlayered and would beat a utility on the cell. */}
-                  <td>
-                    <span className={entry.delta > 0 ? styles.gain : entry.delta < 0 ? styles.loss : undefined}>
-                      {formatDelta(entry.delta)}
+                  <td className="whitespace-nowrap tabular-nums">
+                    <span
+                      className={
+                        ledgerDirection(entry) > 0 ? styles.gain : ledgerDirection(entry) < 0 ? styles.loss : undefined
+                      }
+                    >
+                      {describeLedgerChange(entry)}
                     </span>
                   </td>
                   <td>
                     <span className="text-ink">{describeLedgerReason(entry)}</span>
                   </td>
-                  <td className="tabular-nums">{entry.balanceAfter}</td>
+                  <td className="whitespace-nowrap tabular-nums">{describeLedgerBalance(entry)}</td>
                   <td className="break-words">{entry.note || '—'}</td>
                 </tr>
               ))}
@@ -95,7 +105,7 @@ export default function CreditHistory({ epoch }: { epoch: number }) {
                 'Loading…'
               )
             ) : (
-              'Nothing has moved yet. Every credit added, spent or given back will be listed here.'
+              'Nothing has moved yet. Every amount of credit added, spent or given back will be listed here.'
             )}
           </p>
         )}

@@ -4,7 +4,8 @@ import { MarkCardTrio, MarkCoinTrio } from '@/components/icons/marks';
 import { IconChevronRight } from '@/components/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { CHOICE, LABEL } from './chrome';
-import { formatAmount, type PaymentTarget } from '@/lib/payments';
+import { formatMoney } from '@/lib/format';
+import type { PaymentTarget } from '@/lib/payments';
 
 /**
  * Step 1: what to pay with.
@@ -33,7 +34,7 @@ function Mark({ target }: { target: PaymentTarget }) {
   return target.mark === 'card' ? <MarkCardTrio /> : <MarkCoinTrio />;
 }
 
-function Range({ targets, currency }: { targets: PaymentTarget[]; currency: string }) {
+function Range({ targets }: { targets: PaymentTarget[] }) {
   /*
    * The widest range the section can actually serve.
    *
@@ -44,11 +45,11 @@ function Range({ targets, currency }: { targets: PaymentTarget[]; currency: stri
    */
   const live = targets.filter((target) => target.available);
   if (live.length === 0) return null;
-  const min = Math.min(...live.map((target) => target.minAmountCents));
-  const max = Math.max(...live.map((target) => target.maxAmountCents));
+  const min = Math.min(...live.map((target) => target.minAmountMilli));
+  const max = Math.max(...live.map((target) => target.maxAmountMilli));
   return (
-    <span className="text-xs font-normal normal-case tracking-normal text-muted">
-      {formatAmount(min, currency)} &ndash; {formatAmount(max, currency)}
+    <span className="text-xs font-normal normal-case tracking-normal tabular-nums text-muted">
+      {formatMoney(min)} &ndash; {formatMoney(max)}
     </span>
   );
 }
@@ -115,11 +116,9 @@ function Choice({
 
 export default function PaymentOptionsStep({
   targets,
-  currency,
   onChoose,
 }: {
   targets: PaymentTarget[];
-  currency: string;
   onChoose: (target: PaymentTarget) => void;
 }) {
   const cards = targets.filter((target) => target.method === 'card');
@@ -131,7 +130,7 @@ export default function PaymentOptionsStep({
         <section>
           <h3 className={`${LABEL} flex items-baseline justify-between gap-3`}>
             <span>Card</span>
-            <Range targets={cards} currency={currency} />
+            <Range targets={cards} />
           </h3>
           <div className="mt-2 grid gap-2">
             {cards.map((target) => (
@@ -149,7 +148,7 @@ export default function PaymentOptionsStep({
         <section>
           <h3 className={`${LABEL} flex items-baseline justify-between gap-3`}>
             <span>Cryptocurrencies</span>
-            <Range targets={coins} currency={currency} />
+            <Range targets={coins} />
           </h3>
           {/*
             One column, at every width, and it stays that way.

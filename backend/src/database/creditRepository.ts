@@ -4,13 +4,21 @@ import type { CreditReason, LedgerEntry, Reservation } from '../services/credits
 import { getDb } from './sqlite';
 
 /**
- * The only module that writes to users.credits.
+ * The only module that writes to users.balance_milli.
  *
  * That exclusivity is the point, not a convention. The previous way to change a
  * balance was updateUser's `credits` branch, which did an absolute SET - so two
  * debits arriving together composed as "last one wins" and the first spend
  * vanished. Every write here is a conditional UPDATE inside one transaction, so
  * a balance can only move by an amount somebody actually had.
+ *
+ * EVERY AMOUNT IS AN INTEGER COUNT OF THOUSANDTHS OF A DOLLAR (utils/money.ts),
+ * and nothing here rounds: a $0.023 charge takes 23, seven of them 161, and a
+ * refund of two gives back 46. The whole-credit columns beside these (credits,
+ * delta, units...) belong to the history from before credits became dollars;
+ * every row written here puts 0 in them, so an older build rolled back to
+ * reads nothing moving rather than a thousand times what did
+ * (database/dollarSwitch.ts).
  */
 
 type LedgerRow = {
@@ -19,6 +27,8 @@ type LedgerRow = {
   user_id: string;
   delta: number;
   balance_after: number;
+  delta_milli: number;
+  balance_after_milli: number;
   reason: string;
   ref_kind: string;
   ref_id: string;
@@ -31,8 +41,8 @@ type ReservationRow = {
   id: string;
   user_id: string;
   kind: string;
-  units: number;
-  refunded: number;
+  units_milli: number;
+  refunded_milli: number;
   state: string;
   label: string;
   created_at: string;
@@ -43,13 +53,29 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/**
+ * One row as the API reads it.
+ *
+ * A row from before credits became dollars carries its amount in whole credits
+ * (`delta`) and nothing in dollars; it is shown as what it was, under
+ * `legacyCredits`, never converted - a figure in credits multiplied into
+ * dollars at some rate would be a history that never happened. Its dollar
+ * fields read 0, which is true: no dollar moved.
+ *
+ * A `reset` row is in credits even when it moves none: the one written for an
+ * account whose credits were all held by a run (database/dollarSwitch.ts) has
+ * delta 0, and read by its delta alone it would show as a "+$0.000" movement
+ * in dollars rather than as the end of the history in credits.
+ */
 function toEntry(row: LedgerRow): LedgerEntry {
+  const legacy = row.delta !== 0 || row.reason === 'reset';
   return {
     seq: row.seq,
     id: row.id,
     userId: row.user_id,
-    delta: row.delta,
-    balanceAfter: row.balance_after,
+    deltaMilli: row.delta_milli ?? 0,
+    balanceAfterMilli: row.balance_after_milli ?? 0,
+    legacyCredits: legacy ? { delta: row.delta, balanceAfter: row.balance_after } : null,
     reason: row.reason as CreditReason,
     refKind: row.ref_kind,
     refId: row.ref_id,
@@ -64,8 +90,8 @@ function toReservation(row: ReservationRow): Reservation {
     id: row.id,
     userId: row.user_id,
     kind: row.kind,
-    units: row.units,
-    refunded: row.refunded,
+    unitsMilli: row.units_milli,
+    refundedMilli: row.refunded_milli,
     state: row.state === 'closed' ? 'closed' : 'open',
     label: row.label,
     createdAt: row.created_at,
@@ -75,8 +101,8 @@ function toReservation(row: ReservationRow): Reservation {
 
 export type LedgerWrite = {
   userId: string;
-  delta: number;
-  balanceAfter: number;
+  deltaMilli: number;
+  balanceAfterMilli: number;
   reason: CreditReason;
   refKind?: string;
   refId?: string;
@@ -93,16 +119,16 @@ function insertLedger(write: LedgerWrite): void {
   getDb()
     .prepare(
       `INSERT INTO credit_ledger
-         (id, user_id, delta, balance_after, reason, ref_kind, ref_id, actor_id, note,
-          idempotency_key, created_at)
-       VALUES (@id, @userId, @delta, @balanceAfter, @reason, @refKind, @refId, @actorId, @note,
-               @idempotencyKey, @createdAt)`
+         (id, user_id, delta, balance_after, delta_milli, balance_after_milli, reason, ref_kind, ref_id,
+          actor_id, note, idempotency_key, created_at)
+       VALUES (@id, @userId, 0, 0, @deltaMilli, @balanceAfterMilli, @reason, @refKind, @refId, @actorId,
+               @note, @idempotencyKey, @createdAt)`
     )
     .run({
       id: `led_${randomUUID()}`,
       userId: write.userId,
-      delta: write.delta,
-      balanceAfter: write.balanceAfter,
+      deltaMilli: write.deltaMilli,
+      balanceAfterMilli: write.balanceAfterMilli,
       reason: write.reason,
       refKind: write.refKind ?? '',
       refId: write.refId ?? '',
@@ -114,10 +140,10 @@ function insertLedger(write: LedgerWrite): void {
 }
 
 function readBalance(userId: string): number {
-  const row = getDb().prepare('SELECT credits FROM users WHERE id = ?').get(userId) as
-    | { credits: number }
+  const row = getDb().prepare('SELECT balance_milli FROM users WHERE id = ?').get(userId) as
+    | { balance_milli: number }
     | undefined;
-  return row?.credits ?? 0;
+  return row?.balance_milli ?? 0;
 }
 
 function keyUsed(idempotencyKey: string): boolean {
@@ -129,11 +155,13 @@ function keyUsed(idempotencyKey: string): boolean {
 export type DebitOutcome = { ok: true; balance: number } | { ok: false; balance: number };
 
 /**
- * Takes `units` credits and opens a reservation, or takes nothing.
+ * Takes `amountMilli` and opens a reservation for it, or takes nothing.
  *
  * The conditional UPDATE is the entire concurrency argument: two submissions
- * racing for the last ten credits both run it, SQLite serializes them, and the
- * loser sees `changes === 0`. There is no read-then-write window to lose.
+ * racing for the last ten cents both run it, SQLite serializes them, and the
+ * loser sees `changes === 0`. There is no read-then-write window to lose - and
+ * because both sides are integers, `balance_milli >= amount` is exact: a
+ * balance of exactly $0.161 buys a $0.161 run.
  *
  * `.immediate()` rather than a deferred transaction because the test harness
  * routinely holds a genuine second connection to the same file, and a deferred
@@ -143,41 +171,44 @@ export type DebitOutcome = { ok: true; balance: number } | { ok: false; balance:
 export function debitAndReserve(input: {
   reservationId: string;
   userId: string;
-  units: number;
+  amountMilli: number;
   kind: string;
   label: string;
 }): DebitOutcome {
+  if (!Number.isSafeInteger(input.amountMilli) || input.amountMilli <= 0) {
+    throw new Error(`A charge must be a positive whole number of thousandths of a dollar, not ${input.amountMilli}.`);
+  }
   const db = getDb();
   const timestamp = now();
 
   return db.transaction((): DebitOutcome => {
     const changed = db
       .prepare(
-        `UPDATE users SET credits = credits - @units, updated_at = @timestamp
-          WHERE id = @userId AND credits >= @units`
+        `UPDATE users SET balance_milli = balance_milli - @amount, updated_at = @timestamp
+          WHERE id = @userId AND balance_milli >= @amount`
       )
-      .run({ units: input.units, userId: input.userId, timestamp }).changes;
+      .run({ amount: input.amountMilli, userId: input.userId, timestamp }).changes;
 
     if (changed === 0) return { ok: false, balance: readBalance(input.userId) };
 
     const balance = readBalance(input.userId);
     db.prepare(
       `INSERT INTO credit_reservations
-         (id, user_id, kind, units, refunded, state, label, created_at, updated_at)
-       VALUES (@id, @userId, @kind, @units, 0, 'open', @label, @timestamp, @timestamp)`
+         (id, user_id, kind, units, refunded, units_milli, refunded_milli, state, label, created_at, updated_at)
+       VALUES (@id, @userId, @kind, 0, 0, @amount, 0, 'open', @label, @timestamp, @timestamp)`
     ).run({
       id: input.reservationId,
       userId: input.userId,
       kind: input.kind,
-      units: input.units,
+      amount: input.amountMilli,
       label: input.label,
       timestamp,
     });
 
     insertLedger({
       userId: input.userId,
-      delta: -input.units,
-      balanceAfter: balance,
+      deltaMilli: -input.amountMilli,
+      balanceAfterMilli: balance,
       reason: 'generation-reserve',
       refKind: input.kind,
       refId: input.reservationId,
@@ -190,15 +221,16 @@ export function debitAndReserve(input: {
 }
 
 /**
- * Gives `units` back against an open reservation, once.
+ * Gives `amountMilli` back against an open reservation, once.
  *
  * Four gates, in order, inside one transaction:
  *   1. the reservation must exist and be open - an admin-exempt run, a batch
- *      from before credits existed, or an already-closed run all no-op here;
+ *      from before credits existed, a run the dollar switch settled, or an
+ *      already-closed run all no-op here;
  *   2. the idempotency key must be unused - this is what makes a hook that
  *      fires twice harmless;
- *   3. refunded + units must not exceed units - a per-run ceiling in SQL that
- *      holds even for a caller that invented a fresh key;
+ *   3. refunded + amount must not exceed what the run holds - a per-run
+ *      ceiling in SQL that holds even for a caller that invented a fresh key;
  *   4. only then does the balance move, and the ledger row records the balance
  *      read back afterwards.
  *
@@ -207,13 +239,16 @@ export function debitAndReserve(input: {
  */
 export function refundAgainstReservation(input: {
   reservationId: string;
-  units: number;
+  amountMilli: number;
   reason: CreditReason;
   idempotencyKey: string;
   note?: string;
   actorId?: string;
 }): { refunded: number } {
-  if (input.units <= 0) return { refunded: 0 };
+  if (!Number.isSafeInteger(input.amountMilli)) {
+    throw new Error(`A refund must be a whole number of thousandths of a dollar, not ${input.amountMilli}.`);
+  }
+  if (input.amountMilli <= 0) return { refunded: 0 };
   const db = getDb();
   const timestamp = now();
 
@@ -227,22 +262,24 @@ export function refundAgainstReservation(input: {
 
     const capped = db
       .prepare(
-        `UPDATE credit_reservations SET refunded = refunded + @units, updated_at = @timestamp
-          WHERE id = @id AND refunded + @units <= units`
+        `UPDATE credit_reservations SET refunded_milli = refunded_milli + @amount, updated_at = @timestamp
+          WHERE id = @id AND refunded_milli + @amount <= units_milli`
       )
-      .run({ id: input.reservationId, units: input.units, timestamp }).changes;
+      .run({ id: input.reservationId, amount: input.amountMilli, timestamp }).changes;
     if (capped === 0) return { refunded: 0 };
 
-    db.prepare('UPDATE users SET credits = credits + @units, updated_at = @timestamp WHERE id = @userId').run({
-      units: input.units,
+    db.prepare(
+      'UPDATE users SET balance_milli = balance_milli + @amount, updated_at = @timestamp WHERE id = @userId'
+    ).run({
+      amount: input.amountMilli,
       userId: reservation.user_id,
       timestamp,
     });
 
     insertLedger({
       userId: reservation.user_id,
-      delta: input.units,
-      balanceAfter: readBalance(reservation.user_id),
+      deltaMilli: input.amountMilli,
+      balanceAfterMilli: readBalance(reservation.user_id),
       reason: input.reason,
       refKind: reservation.kind,
       refId: input.reservationId,
@@ -251,7 +288,7 @@ export function refundAgainstReservation(input: {
       idempotencyKey: input.idempotencyKey,
     });
 
-    return { refunded: input.units };
+    return { refunded: input.amountMilli };
   }).immediate();
 }
 
@@ -304,20 +341,20 @@ export function abandonReservation(input: {
       .get(input.reservationId) as ReservationRow | undefined;
     if (!reservation) return { refunded: 0, closed: false };
 
-    const outstanding = reservation.units - reservation.refunded;
+    const outstanding = reservation.units_milli - reservation.refunded_milli;
     const key = `release:${input.reservationId}`;
 
     if (outstanding > 0 && !keyUsed(key)) {
       db.prepare(
-        'UPDATE credit_reservations SET refunded = units, updated_at = @timestamp WHERE id = @id'
+        'UPDATE credit_reservations SET refunded_milli = units_milli, updated_at = @timestamp WHERE id = @id'
       ).run({ id: input.reservationId, timestamp });
       db.prepare(
-        'UPDATE users SET credits = credits + @units, updated_at = @timestamp WHERE id = @userId'
-      ).run({ units: outstanding, userId: reservation.user_id, timestamp });
+        'UPDATE users SET balance_milli = balance_milli + @amount, updated_at = @timestamp WHERE id = @userId'
+      ).run({ amount: outstanding, userId: reservation.user_id, timestamp });
       insertLedger({
         userId: reservation.user_id,
-        delta: outstanding,
-        balanceAfter: readBalance(reservation.user_id),
+        deltaMilli: outstanding,
+        balanceAfterMilli: readBalance(reservation.user_id),
         reason: input.reason,
         refKind: reservation.kind,
         refId: input.reservationId,
@@ -343,7 +380,7 @@ export function abandonReservation(input: {
  */
 export function applyAdjustment(input: {
   userId: string;
-  delta: number;
+  deltaMilli: number;
   reason: CreditReason;
   idempotencyKey: string;
   actorId?: string;
@@ -353,7 +390,12 @@ export function applyAdjustment(input: {
   const timestamp = now();
 
   return db.transaction((): { balance: number; applied: boolean } => {
-    if (input.delta === 0) return { balance: readBalance(input.userId), applied: false };
+    // Refused rather than rounded: every caller hands over an exact count of
+    // thousandths, and anything else is a bug that must not reach a balance.
+    if (!Number.isSafeInteger(input.deltaMilli)) {
+      throw new Error(`A credit adjustment must be a whole number of thousandths of a dollar, not ${input.deltaMilli}.`);
+    }
+    if (input.deltaMilli === 0) return { balance: readBalance(input.userId), applied: false };
     if (keyUsed(input.idempotencyKey)) return { balance: readBalance(input.userId), applied: false };
 
     // Clamped at zero rather than allowed negative: a negative balance would
@@ -361,18 +403,18 @@ export function applyAdjustment(input: {
     // somebody holds takes them to zero and the ledger records what actually
     // moved, not what was asked for.
     const before = readBalance(input.userId);
-    const delta = input.delta < 0 ? -Math.min(before, -input.delta) : input.delta;
+    const delta = input.deltaMilli < 0 ? -Math.min(before, -input.deltaMilli) : input.deltaMilli;
     if (delta === 0) return { balance: before, applied: false };
 
     db.prepare(
-      'UPDATE users SET credits = credits + @delta, updated_at = @timestamp WHERE id = @userId'
+      'UPDATE users SET balance_milli = balance_milli + @delta, updated_at = @timestamp WHERE id = @userId'
     ).run({ delta, userId: input.userId, timestamp });
 
     const balance = readBalance(input.userId);
     insertLedger({
       userId: input.userId,
-      delta,
-      balanceAfter: balance,
+      deltaMilli: delta,
+      balanceAfterMilli: balance,
       reason: input.reason,
       refKind: 'user',
       refId: input.userId,
@@ -394,11 +436,11 @@ export function getReservation(id: string): Reservation | null {
   return row ? toReservation(row) : null;
 }
 
-/** Sum of what is still held against in-flight runs for one account. */
+/** Sum of what is still held against in-flight runs for one account, in thousandths of a dollar. */
 export function heldForUser(userId: string): number {
   const row = getDb()
     .prepare(
-      `SELECT COALESCE(SUM(units - refunded), 0) AS held
+      `SELECT COALESCE(SUM(units_milli - refunded_milli), 0) AS held
          FROM credit_reservations WHERE user_id = ? AND state = 'open'`
     )
     .get(userId) as { held: number };
@@ -449,22 +491,28 @@ export function listOpenReservations(olderThan?: string): Reservation[] {
 }
 
 /**
- * Accounts whose cached balance disagrees with their ledger.
+ * Accounts whose cached balance disagrees with their ledger, in thousandths of
+ * a dollar.
  *
  * The ledger is append-only and the column is a cache of its sum, so the two
  * agreeing is a standing invariant. Reported rather than silently repaired:
  * a disagreement means something wrote the column outside this module, and
  * quietly correcting it would hide that.
+ *
+ * In dollars only. Rows from before credits became dollars carry 0 in
+ * delta_milli, and the dollar balance started from 0 at the switch, so the
+ * history in credits takes no part in the sum - it adds up on its own, to the
+ * zero the reset row leaves.
  */
-export function findInconsistentBalances(): Array<{ userId: string; balance: number; ledgerSum: number }> {
+export function findInconsistentBalances(): Array<{ userId: string; balanceMilli: number; ledgerSumMilli: number }> {
   const rows = getDb()
     .prepare(
-      `SELECT u.id AS userId, u.credits AS balance, COALESCE(SUM(l.delta), 0) AS ledgerSum
+      `SELECT u.id AS userId, u.balance_milli AS balanceMilli, COALESCE(SUM(l.delta_milli), 0) AS ledgerSumMilli
          FROM users u
          LEFT JOIN credit_ledger l ON l.user_id = u.id
         GROUP BY u.id
-        HAVING u.credits != COALESCE(SUM(l.delta), 0)`
+        HAVING u.balance_milli != COALESCE(SUM(l.delta_milli), 0)`
     )
-    .all() as Array<{ userId: string; balance: number; ledgerSum: number }>;
+    .all() as Array<{ userId: string; balanceMilli: number; ledgerSumMilli: number }>;
   return rows;
 }

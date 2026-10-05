@@ -39,6 +39,7 @@ import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
+import { describeRunCost, formatMoney } from '@/lib/format';
 import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
 import { nextAttach, reattachTarget } from '@/lib/batchFollow';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
@@ -149,11 +150,14 @@ function CostLine({
   }
   if (!quote) return null;
   if (quote.exempt) return <span className="text-sm text-muted">Administrators are not charged</span>;
-  const short = quote.credits > quote.balance;
+  const short = quote.costMilli > quote.balanceMilli;
   return (
-    <span className={short ? 'tl-status' : 'text-sm text-muted'} data-tone={short ? 'error' : undefined}>
-      {label}: {plural(quote.resumes, 'resume')} ·{' '}
-      {plural(quote.credits, 'credit')} · balance {quote.balance}
+    <span
+      className={short ? 'tl-status tabular-nums' : 'text-sm tabular-nums text-muted'}
+      data-tone={short ? 'error' : undefined}
+    >
+      {/* "7 resumes × $0.023 = $0.161": the price, so the total can be checked by eye. */}
+      {label}: {describeRunCost(quote)} · balance {formatMoney(quote.balanceMilli)}
       {short && (
         <>
           {' '}
@@ -506,12 +510,12 @@ export default function Home() {
    */
   const reportRunFailure = (err: unknown, fallback: string) => {
     if (isInsufficientCredits(err)) {
-      const needed = err.number('needed');
-      const balance = err.number('balance');
+      const needed = err.number('neededMilli');
+      const balance = err.number('balanceMilli');
       setShortfall({
         message:
           needed !== undefined && balance !== undefined
-            ? `This run needs ${plural(needed, 'credit')}, and your balance is ${balance}.`
+            ? `This run needs ${formatMoney(needed)}, and your balance is ${formatMoney(balance)}.`
             : userMessage(err),
       });
       return;

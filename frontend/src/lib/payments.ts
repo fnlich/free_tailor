@@ -1,12 +1,20 @@
 import { apiFetch } from './api';
 
 /**
- * Buying credits.
+ * Buying credit.
  *
- * The one thing to know reading this: **a checkout request carries a COUNT of
- * credits and never a price.** The server quotes from its own settings, so the
- * page below cannot show an amount the server would not charge - it displays
- * the same number, from the same place, rather than working one out.
+ * A credit is a dollar. A buyer chooses an amount of money, is charged exactly
+ * that and credited exactly that - $50 by card or by crypto is $50.000 of
+ * credit, with nothing taken out - so "what does it cost" and "what do I get"
+ * are one number.
+ *
+ * The one thing to know reading this: **a checkout request carries the amount
+ * the buyer TYPED, in dollars (`amountUsd`), and the server decides whether it
+ * may be bought.** It quotes from its own bounds, so the page below cannot show
+ * an amount the server would not charge - it displays the server's figures,
+ * from the same place, rather than working one out. Every amount coming back
+ * is an integer count of thousandths of a dollar in a field ending `Milli`,
+ * shown with lib/format.ts's `formatMoney`.
  */
 
 export type PaymentMethod = 'card' | 'crypto';
@@ -28,11 +36,9 @@ export type MethodAvailability = {
 /**
  * One thing a buyer can choose, with its own limits and buttons.
  *
- * The presets are COUNTS with the price the server would charge for each. A
- * button that carried its own price would be a price the browser had decided,
- * which is the one thing this whole module exists to prevent - so what is
- * rendered on a $50 button is `formatAmount(preset.amountCents)`, a figure the
- * server worked out.
+ * The presets are the server's amounts, already inside this method's bounds,
+ * so a $50 button is `formatMoney(preset.amountMilli)` - a figure the server
+ * worked out and will charge.
  */
 export type PaymentTarget = {
   id: string;
@@ -43,20 +49,15 @@ export type PaymentTarget = {
   available: boolean;
   /** As `MethodAvailability.reason`: the operator's, shown to administrators only. */
   reason?: string;
-  minCredits: number;
-  maxCredits: number;
-  minAmountCents: number;
-  maxAmountCents: number;
-  presets: Array<{ credits: number; amountCents: number }>;
+  /** The smallest purchase, in thousandths of a dollar. Always whole cents. */
+  minAmountMilli: number;
+  /** The largest purchase, in thousandths of a dollar. Always whole cents. */
+  maxAmountMilli: number;
+  presets: Array<{ amountMilli: number }>;
   custom: 'slider' | 'stepper';
-  feeBps: number;
-  feeFixedCents: number;
 };
 
 export type PaymentOptions = {
-  unitPriceCents: number;
-  minCredits: number;
-  maxCredits: number;
   currency: string;
   methods: MethodAvailability[];
   /** One per method. What the picker is built from. */
@@ -90,6 +91,24 @@ export function describeCard(card: SavedCard): string {
   return `${brand} ending in ${card.last4 || '****'}`;
 }
 
+/**
+ * What a payment made before credits became dollars bought, as it was written:
+ * a count of credits at a price per credit, possibly less a fee. Its receipt
+ * keeps saying "200 Credits at $0.50 each", because a receipt has to say what
+ * was sold - and its credits are never converted into dollars: they were
+ * reset to $0.000 with every balance.
+ */
+export type LegacyPaymentCredits = {
+  /** Credits quoted. */
+  credits: number;
+  /** Credits the ledger received; 0 on a very old row, which means read `credits`. */
+  creditsGranted: number;
+  /** Credits a refund reversed. */
+  refundedCredits: number;
+  /** What one credit cost then, in thousandths of a dollar (500 = $0.50). */
+  unitPriceMilli: number;
+};
+
 export type Payment = {
   id: string;
   reference: string;
@@ -97,21 +116,29 @@ export type Payment = {
   method: PaymentMethod;
   provider: PaymentProvider;
   providerRef?: string;
-  credits: number;
-  amountCents: number;
   currency: string;
-  unitPriceCents: number;
-  /** The fee taken, at the rate in force when the payment was made. */
-  feeCents: number;
-  /** What the ledger received, as against `credits`, which was quoted. */
-  creditsGranted: number;
   state: PaymentState;
   failure: string;
   creditedAt?: string;
   refundedAt?: string;
-  refundedCredits: number;
   createdAt: string;
   updatedAt: string;
+  /** What was charged, in thousandths of a dollar. */
+  amountMilli: number;
+  /** A fee taken by a crypto payment from before purchases stopped taking one. 0 since. */
+  feeMilli: number;
+  /**
+   * What this payment credits: exactly its charge. 0 on a payment made before
+   * credits were dollars - unless it was still waiting to be paid when they
+   * became so, in which case it credits its charge like any since.
+   */
+  creditMilli: number;
+  /** What the ledger actually received for it. 0 until it is paid, and on a payment from before dollars. */
+  creditedMilli: number;
+  /** What a refund took back off the balance. */
+  refundedMilli: number;
+  /** Non-null on a payment made before credits became dollars. */
+  legacyCredits: LegacyPaymentCredits | null;
 };
 
 export type AdminPayment = Payment & { userEmail: string };
@@ -131,9 +158,10 @@ export type AdminPayment = Payment & { userEmail: string };
 export type StartedCheckout = {
   paymentId: string;
   reference: string;
-  credits: number;
-  amountCents: number;
-  feeCents?: number;
+  /** What will be charged, in thousandths of a dollar. */
+  amountMilli: number;
+  /** What the balance receives once it is paid: the same amount. */
+  creditMilli: number;
   currency: string;
   /*
    * Exactly one of the three. A secret asks the browser to confirm, a redirect
@@ -152,25 +180,27 @@ export type StartedCheckout = {
  * anything. They come from `GET /payments/quote`, which runs the same pricing
  * the checkout runs but records no payment and calls no provider - so a buyer
  * reading the summary and then paying with a card they already saved does not
- * leave an abandoned order behind for having looked.
+ * leave an abandoned order behind for having looked. It is also where an
+ * amount outside the method's bounds, or in fractions of a cent, is refused
+ * by name.
  */
-export type CreditQuote = {
-  /** What the account receives: the gross, less the fee, floored. */
-  credits: number;
-  /** What was asked for, before the fee. */
-  grossCredits: number;
-  unitPriceCents: number;
-  /** What is charged. A fee never inflates this. */
-  amountCents: number;
-  feeCents: number;
+export type PurchaseQuote = {
+  /** What is charged, in thousandths of a dollar. */
+  amountMilli: number;
+  /** What the account receives: always the same amount - nothing is taken out. */
+  creditMilli: number;
   currency: string;
 };
 
+/** What an administrator's refund did, in thousandths of a dollar. */
 export type RefundOutcome = {
   payment: Payment;
-  creditsSold: number;
-  creditsReversed: number;
-  shortfall: number;
+  /** What the payment had put on the balance. 0 for one from before credits were dollars. */
+  creditedMilli: number;
+  /** What could be taken back off the balance. */
+  reversedMilli: number;
+  /** What could not, because it had already been spent. */
+  shortfallMilli: number;
 };
 
 export const STATE_LABELS: Record<PaymentState, string> = {
@@ -197,23 +227,13 @@ export const STATE_TONES: Record<PaymentState, 'green' | 'amber' | 'red' | 'grey
   refunded: 'grey',
 };
 
-/**
- * Money, formatted by the platform rather than by hand.
- *
- * Cents divided by a hundred and nothing else: the value arrives as an integer
- * precisely so that no arithmetic here can introduce a rounding error into a
- * number somebody is about to be charged.
+/*
+ * There was a `formatAmount(cents, currency)` here, through Intl. Money is
+ * `formatMoney` from lib/format.ts now, everywhere: thousandths, always three
+ * decimals, the same digits the server writes into its own sentences. Two
+ * formatters were two ways for the order table and the summary above it to
+ * disagree about the same purchase.
  */
-export function formatAmount(amountCents: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency.toUpperCase(),
-    }).format(amountCents / 100);
-  } catch {
-    return `${(amountCents / 100).toFixed(2)} ${currency.toUpperCase()}`;
-  }
-}
 
 /** True while a payment might still be decided, and so is worth polling for. */
 export function isPaymentPending(payment: Payment): boolean {
@@ -221,18 +241,22 @@ export function isPaymentPending(payment: Payment): boolean {
 }
 
 /**
- * True once money moved and credits landed - including a payment since
+ * True once money moved and credit landed - including a payment since
  * refunded, which was still paid for. What an invoice can be issued for, and
- * when a "credits received" figure means anything.
+ * when a "credit received" figure means anything.
  */
 export function isPaymentSettled(payment: Payment): boolean {
   return payment.state === 'paid' || payment.state === 'refunding' || payment.state === 'refunded';
 }
 
-/** What may be asked for. A count, never an amount. */
+/**
+ * What may be asked for: an amount in dollars, as the buyer chose it, and never
+ * a price - the server decides whether that amount may be bought.
+ */
 export type CheckoutRequest = {
   method: PaymentMethod;
-  credits: number;
+  /** Dollars and cents, as text: "25", "12.50". Parsed exactly by the server. */
+  amountUsd: string;
   /*
    * There was an `asset` here, naming a coin. It went when the coins did: the
    * server removed it from both request surfaces on the grounds that a
@@ -248,12 +272,12 @@ export type CheckoutRequest = {
 
 export const paymentsApi = {
   options: () => apiFetch<PaymentOptions>('/payments/methods'),
-  quote: (request: { method: PaymentMethod; credits: number }) => {
+  quote: (request: { method: PaymentMethod; amountUsd: string }) => {
     const query = new URLSearchParams({
       method: request.method,
-      credits: String(request.credits),
+      amountUsd: request.amountUsd,
     });
-    return apiFetch<CreditQuote>(`/payments/quote?${query.toString()}`);
+    return apiFetch<PurchaseQuote>(`/payments/quote?${query.toString()}`);
   },
   /**
    * A page of this account's own payments.

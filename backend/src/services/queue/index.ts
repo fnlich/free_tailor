@@ -10,7 +10,7 @@ import { orderExistsForBatch } from '../../database/orderRepository';
 import { getProfile } from '../../database/profileRepository';
 import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
 import { geminiCliConcurrency } from '../ai/providers/geminiCli/options';
-import { closeIfSettled, CREDITS_PER_RESUME, refundTaskUnit } from '../credits';
+import { closeIfSettled, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
 import {
   isQueueName,
@@ -144,17 +144,32 @@ const store: QueueStore = {
 let queue: TaskQueue | null = null;
 
 /**
- * What a task was charged, read back from its payload for the refund.
+ * What a task was charged, in thousandths of a dollar, read back from its
+ * payload - for the charge at submit (`chargeFor` sums these) and for the
+ * refund when it does not deliver, so the two can never be worked out two
+ * different ways.
  *
- * The snapshot when it carries a sane one; otherwise the default, which is
- * exactly what every task without one was charged - a resume queued before
- * prices were per model, restored from disk after the upgrade, and the stub
- * payloads the queue's own tests run. Never re-priced from the model: see
- * ResumeTaskPayload.creditCost.
+ * The snapshot when it carries a sane one. A payload WITHOUT one is $0, and
+ * that is a decision, not a gap:
+ *
+ *   - a task queued before credits became dollars was paid for in credits,
+ *     and the reset cleared every credit. It finishes on that payment - not
+ *     charged again in dollars - and if it fails, what it would give back was
+ *     reset with the balance, so it gives back nothing. The switch writes
+ *     `costMilli: 0` on such a task explicitly; this is the same answer for
+ *     one it could not reach. Its `creditCost` (whole credits) is never read
+ *     as money: one credit read as one thousandth would be a refund nobody
+ *     was charged, and the reservation it would refund into was closed by the
+ *     switch anyway.
+ *   - every task the queue makes now carries `costMilli` (`buildTasks`), so
+ *     nothing new reaches this branch; the stub payloads the queue's own tests
+ *     run are not resumes and are not charged.
+ *
+ * Never re-priced from the model: see ResumeTaskPayload.costMilli.
  */
-export function taskCreditCost(payload: unknown): number {
-  const cost = (payload as { creditCost?: unknown } | null | undefined)?.creditCost;
-  return typeof cost === 'number' && Number.isInteger(cost) && cost >= 0 ? cost : CREDITS_PER_RESUME;
+export function taskCostMilli(payload: unknown): number {
+  const cost = (payload as { costMilli?: unknown } | null | undefined)?.costMilli;
+  return typeof cost === 'number' && Number.isSafeInteger(cost) && cost >= 0 ? cost : 0;
 }
 
 /**
@@ -195,7 +210,7 @@ export function getGenerationQueue(): TaskQueue {
        * the task payload and no owner column on generation_tasks - the one thing
        * a refund needs, it already has in `task.batchId`.
        *
-       * What it gives back is the unit's own snapshotted price (`taskCreditCost`),
+       * What it gives back is the unit's own snapshotted price (`taskCostMilli`),
        * not its model's price now - a batch can mix models at different prices,
        * and an administrator can reprice one while the batch runs.
        *
@@ -216,7 +231,7 @@ export function getGenerationQueue(): TaskQueue {
           refundTaskUnit(
             task.batchId,
             task.id,
-            taskCreditCost(task.payload),
+            taskCostMilli(task.payload),
             `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
           );
         }
@@ -537,7 +552,7 @@ function settleRestoredBatch(batch: Batch): void {
       refundTaskUnit(
         batch.id,
         task.id,
-        taskCreditCost(task.payload),
+        taskCostMilli(task.payload),
         `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
       );
     }

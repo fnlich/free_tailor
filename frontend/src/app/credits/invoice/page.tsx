@@ -5,9 +5,9 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiResponseError } from '@/lib/api';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatMoney } from '@/lib/format';
+import { describeInvoice } from '@/lib/paymentDisplay';
 import {
-  formatAmount,
   isPaymentSettled,
   paymentsApi,
   type Payment,
@@ -128,16 +128,13 @@ function InvoiceBody() {
     );
   }
 
-  const net = payment.creditsGranted || payment.credits;
   /*
-   * The line is what the credits cost at the price they were sold at, so it
-   * reads as count x price. What a purchase loses to rounding is under one
-   * credit's price and is shown as its own row, so the rows still add up to
-   * the total rather than leaving a few cents unexplained.
+   * The lines, the net and the refund sentence, in the payment's own unit
+   * (lib/paymentDisplay.ts): a purchase since credits became dollars is one
+   * line, the credit at its charge; one from before keeps its original
+   * "200 Credits at $0.50 each", because a receipt has to say what was sold.
    */
-  const lineCents = payment.credits * payment.unitPriceCents;
-  const roundingCents = payment.amountCents - payment.feeCents - lineCents;
-  const spent = net - payment.refundedCredits;
+  const invoice = describeInvoice(payment);
 
   return (
     <Frame printable>
@@ -178,58 +175,51 @@ function InvoiceBody() {
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>
-                {payment.credits} Credits at {formatAmount(payment.unitPriceCents, payment.currency)} each
-              </td>
-              <td className={styles.amount}>{formatAmount(lineCents, payment.currency)}</td>
-            </tr>
-            {roundingCents > 0 && (
-              <tr>
-                <td>Rounding (less than one credit)</td>
-                <td className={styles.amount}>{formatAmount(roundingCents, payment.currency)}</td>
+            {invoice.lines.map((line) => (
+              <tr key={line.description}>
+                <td>{line.description}</td>
+                <td className={styles.amount}>{formatMoney(line.amountMilli)}</td>
               </tr>
-            )}
+            ))}
           </tbody>
         </table>
 
         <dl className={`${styles.totals} mt-6`}>
           <div>
             <dt className="text-muted">Transaction Fees</dt>
-            <dd className="text-ink">{formatAmount(payment.feeCents, payment.currency)}</dd>
+            <dd className="text-ink">{formatMoney(invoice.feeMilli)}</dd>
           </div>
           <div className={styles.strong}>
             <dt className="text-ink">Total</dt>
-            <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
+            <dd className="text-ink">{formatMoney(payment.amountMilli)}</dd>
           </div>
           <div>
             <dt className="text-muted">Amount Paid</dt>
-            <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
+            <dd className="text-ink">{formatMoney(payment.amountMilli)}</dd>
           </div>
           {payment.state === 'refunded' && (
             <div>
               {/* A refund returns the whole charge - the fee included. */}
               <dt className="text-muted">Amount Refunded</dt>
-              <dd className="text-ink">{formatAmount(payment.amountCents, payment.currency)}</dd>
+              <dd className="text-ink">{formatMoney(payment.amountMilli)}</dd>
             </div>
           )}
           <div className={styles.strong}>
-            <dt className="text-ink">Net Credits</dt>
-            <dd className="text-ink">{net}</dd>
+            <dt className="text-ink">Net Credit</dt>
+            <dd className="text-ink">{invoice.net}</dd>
           </div>
         </dl>
 
         {/*
-          The money and the credits are two figures, and only the money is always
-          whole: a credit already spent on a resume cannot be taken back, so the
+          The money and the credit are two figures, and only the money is always
+          whole: credit already spent on a resume cannot be taken back, so the
           reversal can be short of what was granted. It said "Refunded: 40
           credits" before, which read as the refund itself being 40 credits.
         */}
         {payment.state === 'refunded' && (
           <p className="mt-8 text-sm text-ink">
-            Refunded{payment.refundedAt ? ` on ${formatDate(payment.refundedAt, { style: 'date' })}` : ''}. Credits
-            reversed: {payment.refundedCredits} of {net}
-            {spent > 0 ? ` - the other ${spent} had already been spent.` : '.'}
+            Refunded{payment.refundedAt ? ` on ${formatDate(payment.refundedAt, { style: 'date' })}` : ''}.{' '}
+            {invoice.reversal}
           </p>
         )}
       </article>

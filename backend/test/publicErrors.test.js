@@ -173,12 +173,13 @@ test('the user-actionable refusals the app already had are public, with their fi
   const { ProfileLimitError } = require('../dist/database/profileRepository');
   const { ModelUnavailableError, AiUnavailableError } = require('../dist/config/modelErrors');
 
-  const credits = publicError.publicFailure(new InsufficientCreditsError(6, 2), { admin: false });
+  const credits = publicError.publicFailure(new InsufficientCreditsError(161, 23), { admin: false });
   assert.equal(credits.status, 402);
   assert.deepEqual(
-    { code: credits.body.code, needed: credits.body.needed, balance: credits.body.balance },
-    { code: 'insufficient-credits', needed: 6, balance: 2 }
+    { code: credits.body.code, needed: credits.body.neededMilli, balance: credits.body.balanceMilli },
+    { code: 'insufficient-credits', needed: 161, balance: 23 }
   );
+  assert.match(credits.body.error, /needs \$0\.161 of credit and the account has \$0\.023/);
   assert.equal(credits.body.ref, undefined, 'the caller\'s own balance: nothing to look up');
 
   const limit = publicError.publicFailure(new ProfileLimitError('Free', 1, 1), { admin: false });

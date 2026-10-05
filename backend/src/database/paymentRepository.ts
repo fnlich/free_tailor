@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDb } from './sqlite';
 import { formatSequenceDate, nextDailyReference } from './dailySequence';
+import { centsToMilli } from '../utils/money';
 
 /**
  * Payments, and the webhooks that decide them.
@@ -50,6 +51,24 @@ export type PaymentProvider = 'stripe' | 'coinbase' | 'chain' | 'cryptomus';
  */
 export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refunding' | 'refunded';
 
+/**
+ * What a payment made before credits became dollars bought, as it was written:
+ * a count of credits at a price per credit, possibly less a fee. Kept so its
+ * receipt still says "200 credits at $0.50" - a receipt has to say what was
+ * sold - and never converted into dollars: those credits were reset to $0
+ * with every balance (database/dollarSwitch.ts).
+ */
+export type LegacyPaymentCredits = {
+  /** Credits quoted. */
+  credits: number;
+  /** Credits the ledger actually received (0 on a row from before the column existed: read `credits`). */
+  creditsGranted: number;
+  /** Credits a refund actually reversed. */
+  refundedCredits: number;
+  /** What one credit cost, in cents. */
+  unitPriceCents: number;
+};
+
 export type Payment = {
   id: string;
   reference: string;
@@ -57,26 +76,58 @@ export type Payment = {
   method: PaymentMethod;
   provider: PaymentProvider;
   providerRef?: string;
-  credits: number;
+  /** What was charged, in cents: what the provider was asked for and must report back. */
   amountCents: number;
   currency: string;
-  unitPriceCents: number;
   state: PaymentState;
   failure: string;
   creditedAt?: string;
   refundedAt?: string;
-  /** How many credits a refund actually reversed. See the note on refunds. */
-  refundedCredits: number;
-  /** The fee taken, at the rate in force when the payment was made. */
+  /** The fee taken, on a payment from before purchases stopped taking one. 0 since. */
   feeCents: number;
   /**
-   * What the ledger actually received, as against `credits`, which is what was
-   * quoted. Zero until the payment is credited.
+   * What this payment credits, in thousandths of a dollar: exactly its charge.
+   * 0 on a payment made before credits became dollars (see `legacyCredits`),
+   * except one still pending at the switch, which was stamped with its charge.
    */
-  creditsGranted: number;
+  creditMilli: number;
+  /** What the ledger actually received for it, in thousandths. 0 until it is credited. */
+  creditedMilli: number;
+  /** What a refund actually took back from the balance, in thousandths. See the note on refunds. */
+  refundedMilli: number;
+  /** Non-null on a payment from before credits became dollars. */
+  legacyCredits: LegacyPaymentCredits | null;
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * A payment as the API sends it: every amount in thousandths of a dollar, in a
+ * field ending `Milli`, like every other amount in every response. The cents
+ * the provider works in stay inside.
+ */
+export type PaymentView = Omit<Payment, 'amountCents' | 'feeCents' | 'legacyCredits'> & {
+  amountMilli: number;
+  feeMilli: number;
+  legacyCredits: (Omit<LegacyPaymentCredits, 'unitPriceCents'> & { unitPriceMilli: number }) | null;
+};
+
+export function toPaymentView(payment: Payment): PaymentView {
+  const { amountCents, feeCents, legacyCredits, ...rest } = payment;
+  return {
+    ...rest,
+    amountMilli: centsToMilli(amountCents),
+    feeMilli: centsToMilli(feeCents),
+    legacyCredits: legacyCredits
+      ? {
+          credits: legacyCredits.credits,
+          creditsGranted: legacyCredits.creditsGranted,
+          refundedCredits: legacyCredits.refundedCredits,
+          unitPriceMilli: centsToMilli(legacyCredits.unitPriceCents),
+        }
+      : null,
+  };
+}
 
 type PaymentRow = {
   id: string;
@@ -96,13 +147,17 @@ type PaymentRow = {
   refunded_credits: number;
   fee_cents: number;
   credits_granted: number;
+  credit_milli: number;
+  credited_milli: number;
+  refunded_milli: number;
   created_at: string;
   updated_at: string;
 };
 
 const PAYMENT_COLUMNS = `id, reference, user_id, method, provider, provider_ref, credits,
   amount_cents, currency, unit_price_cents, state, failure, credited_at, refunded_at,
-  refunded_credits, fee_cents, credits_granted, created_at, updated_at`;
+  refunded_credits, fee_cents, credits_granted, credit_milli, credited_milli, refunded_milli,
+  created_at, updated_at`;
 
 function now(): string {
   return new Date().toISOString();
@@ -116,17 +171,27 @@ function toPayment(row: PaymentRow): Payment {
     method: row.method as PaymentMethod,
     provider: row.provider as PaymentProvider,
     ...(row.provider_ref ? { providerRef: row.provider_ref } : {}),
-    credits: row.credits,
     amountCents: row.amount_cents,
     currency: row.currency,
-    unitPriceCents: row.unit_price_cents,
     state: row.state as PaymentState,
     failure: row.failure ?? '',
     ...(row.credited_at ? { creditedAt: row.credited_at } : {}),
     ...(row.refunded_at ? { refundedAt: row.refunded_at } : {}),
-    refundedCredits: row.refunded_credits ?? 0,
     feeCents: row.fee_cents ?? 0,
-    creditsGranted: row.credits_granted ?? 0,
+    creditMilli: row.credit_milli ?? 0,
+    creditedMilli: row.credited_milli ?? 0,
+    refundedMilli: row.refunded_milli ?? 0,
+    // A payment made since the switch writes 0 credits; one from before it
+    // always quoted at least one.
+    legacyCredits:
+      row.credits > 0
+        ? {
+            credits: row.credits,
+            creditsGranted: row.credits_granted ?? 0,
+            refundedCredits: row.refunded_credits ?? 0,
+            unitPriceCents: row.unit_price_cents,
+          }
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -136,11 +201,10 @@ export type NewPayment = {
   userId: string;
   method: PaymentMethod;
   provider: PaymentProvider;
-  credits: number;
   amountCents: number;
+  /** What it will credit, in thousandths of a dollar: the charge, exactly. */
+  creditMilli: number;
   currency: string;
-  unitPriceCents: number;
-  feeCents?: number;
 };
 
 /**
@@ -158,21 +222,22 @@ export function createPayment(input: NewPayment, at: Date = new Date()): Payment
   const insert = db.transaction((reference: string): PaymentRow => {
     const id = `pay_${crypto.randomUUID()}`;
     db.prepare(
+      // The whole-credit columns get 0: they describe payments from before
+      // credits were dollars, and an older build rolled back to reads a 0 as
+      // "credits nothing" rather than as a count to grant.
       `INSERT INTO payments (id, reference, user_id, method, provider, credits, amount_cents,
-                             currency, unit_price_cents, fee_cents, state, created_at, updated_at)
-       VALUES (@id, @reference, @userId, @method, @provider, @credits, @amountCents,
-               @currency, @unitPriceCents, @feeCents, 'pending', @createdAt, @createdAt)`
+                             currency, unit_price_cents, fee_cents, credit_milli, state, created_at, updated_at)
+       VALUES (@id, @reference, @userId, @method, @provider, 0, @amountCents,
+               @currency, 0, 0, @creditMilli, 'pending', @createdAt, @createdAt)`
     ).run({
       id,
       reference,
       userId: input.userId,
       method: input.method,
       provider: input.provider,
-      credits: input.credits,
       amountCents: input.amountCents,
       currency: input.currency,
-      feeCents: input.feeCents ?? 0,
-      unitPriceCents: input.unitPriceCents,
+      creditMilli: input.creditMilli,
       createdAt: timestamp,
     });
     return db.prepare(`SELECT ${PAYMENT_COLUMNS} FROM payments WHERE id = ?`).get(id) as PaymentRow;
@@ -330,22 +395,23 @@ export function countAllPayments(): number {
  * catches it one step earlier and without relying on that.
  */
 /**
- * Marks a payment paid, and records what was credited for it.
+ * Marks a payment paid, and records what was credited for it, in thousandths
+ * of a dollar.
  *
- * `grantedCredits` is written in the SAME conditional UPDATE, not a second
+ * `creditedMilli` is written in the SAME conditional UPDATE, not a second
  * statement: the guard is `state = 'pending'`, so only the first caller moves
- * the row, and a granted count written separately could land against a row
+ * the row, and a credited amount written separately could land against a row
  * somebody else had already settled.
  */
-export function markPaid(paymentId: string, grantedCredits: number): boolean {
+export function markPaid(paymentId: string, creditedMilli: number): boolean {
   const timestamp = now();
   const result = getDb()
     .prepare(
       `UPDATE payments SET state = 'paid', credited_at = @at, updated_at = @at, failure = '',
-              credits_granted = @granted
+              credited_milli = @credited
        WHERE id = @id AND state = 'pending'`
     )
-    .run({ id: paymentId, at: timestamp, granted: grantedCredits });
+    .run({ id: paymentId, at: timestamp, credited: creditedMilli });
   return result.changes > 0;
 }
 
@@ -368,23 +434,28 @@ export function markUnpaid(paymentId: string, state: 'failed' | 'expired', failu
 }
 
 /**
- * Records a refund, and how much of it the balance could actually give back.
+ * Records a refund, and how much of it the balance could actually give back,
+ * in thousandths of a dollar.
  *
- * `reversedCredits` is not always `credits`. A balance may not go negative, so
- * refunding somebody who has already spent what they bought returns their money
- * and reverses only what is left. Storing the difference is the point: the
- * admin page has to be able to say "refunded 200 credits' worth, reversed 40",
- * because the alternative is a number that quietly does not add up.
+ * `reversedMilli` is not always what was credited. A balance may not go
+ * negative, so refunding somebody who has already spent what they bought
+ * returns their money and reverses only what is left. Storing the difference
+ * is the point: the admin page has to be able to say "refunded $50.000,
+ * reversed $12.400", because the alternative is a number that quietly does not
+ * add up.
  */
-export function markRefunded(paymentId: string, reversedCredits: number): boolean {
+export function markRefunded(paymentId: string, reversedMilli: number): boolean {
+  if (!Number.isSafeInteger(reversedMilli) || reversedMilli < 0) {
+    throw new Error(`A reversed amount must be a whole, non-negative number of thousandths, not ${reversedMilli}.`);
+  }
   const timestamp = now();
   const result = getDb()
     .prepare(
-      `UPDATE payments SET state = 'refunded', refunded_at = @at, refunded_credits = @reversed,
+      `UPDATE payments SET state = 'refunded', refunded_at = @at, refunded_milli = @reversed,
                            updated_at = @at
        WHERE id = @id AND state = 'refunding'`
     )
-    .run({ id: paymentId, reversed: Math.max(0, Math.trunc(reversedCredits)), at: timestamp });
+    .run({ id: paymentId, reversed: reversedMilli, at: timestamp });
   return result.changes > 0;
 }
 

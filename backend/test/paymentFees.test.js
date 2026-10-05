@@ -1,142 +1,169 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { useTempStorage, loadFresh, writeSettingRaw } = require('./helpers');
+const { useTempStorage, loadFresh, readSettingRaw, writeSettingRaw } = require('./helpers');
 
 /*
- * The fee comes off the credits, not out of the charge - and the rounding is a
- * decision, not an accident.
+ * There is no fee, and there is no price of a credit: a purchase credits
+ * exactly what it charges.
  *
- * A percentage of an integer is a fraction, and credits here are whole things:
- * one credit is one rendered resume with a real cost behind it. So the rule is
- * written down and tested rather than left to fall out of the arithmetic: THE
- * FEE ROUNDS UP AND THE CREDITS ROUND DOWN, which leaves a residue of at most
- * one credit's price less a cent with the house.
- *
- * The direction matters because the other one hands out a credit whose cash
- * never arrived. What stops that being a quiet skim is that the summary shows
- * `credits * unitPrice` rather than the net cents - so the buyer sees the
- * rounded-down figure, not a number they will not get.
- *
- * The other claim here is a boundary: a fee that would leave nothing must
- * refuse the sale rather than charge for zero credits.
+ * Before credits were dollars a credit cost 50c, the crypto row kept 2.2% of
+ * the gross, and the fee rounded up while the credits rounded down - so $50 in
+ * crypto bought 97 credits, not 100. The owner's decisions M1 and M2 removed
+ * all of it: a credit is a dollar, and pay $50, get $50.000, by card or by
+ * coin. What is pinned here is that nothing of the old arithmetic survives -
+ * not a stored fee, not a rounding - and that the amount itself is read
+ * exactly, in whole cents, because that is what a provider can be asked for.
  */
 
 async function pricing({ settings = {} } = {}) {
   const { dbDir } = useTempStorage(`payment-fees-${Math.random().toString(36).slice(2)}`);
-  writeSettingRaw(
-    dbDir,
-    'app-settings',
-    JSON.stringify({
-      creditPriceCents: 50,
-      creditMinCredits: 1,
-      creditMaxCredits: 100_000,
-      ...settings,
-    })
-  );
+  writeSettingRaw(dbDir, 'app-settings', JSON.stringify(settings));
 
   loadFresh('../dist/database/sqlite');
-  loadFresh('../dist/config/aiModelConfig');
-  return loadFresh('../dist/services/payments/pricing');
+  const config = loadFresh('../dist/config/aiModelConfig');
+  return { dbDir, config, ...loadFresh('../dist/services/payments/pricing') };
 }
 
-const limits = (target, feeBps, feeFixedCents = 0) => ({
+/** The limits rows as a build from before dollars stored them: a price per credit, bounds in credits, a crypto fee. */
+const PRE_DOLLAR_SETTINGS = {
+  creditPriceCents: 50,
+  creditMinCredits: 10,
+  creditMaxCredits: 5000,
   paymentLimits: [
-    { target, minCents: 1, maxCents: 100_000_000, feeBps, feeFixedCents, presetsCents: [] },
+    { target: 'card', minCents: 250, maxCents: 10_000, feeBps: 0, feeFixedCents: 0, presetsCents: [250, 500] },
+    { target: 'crypto', minCents: 5_000, maxCents: 200_000, feeBps: 220, feeFixedCents: 25, presetsCents: [5_000] },
   ],
+};
+
+test('a purchase credits exactly what it charges, by card and by crypto', async () => {
+  const { quotePurchase } = await pricing();
+
+  const card = await quotePurchase('5', { method: 'card' });
+  assert.deepEqual(card, { amountCents: 500, amountMilli: 5_000, creditMilli: 5_000, currency: 'usd', target: 'card' });
+
+  // The case the fee used to bite: $50 of crypto was 97 credits. It is $50.000 now.
+  const crypto = await quotePurchase('50', { method: 'crypto' });
+  assert.equal(crypto.amountCents, 5_000);
+  assert.equal(crypto.creditMilli, 50_000);
+  assert.equal(crypto.creditMilli, crypto.amountMilli, 'credit = charge');
+  assert.equal('feeCents' in crypto, false, 'no fee on a quote at all');
 });
 
-test('a zero fee leaves the relation the card path has always had', async () => {
-  const { quoteCredits } = await pricing({ settings: limits('card', 0) });
+test('a fee stored by a build from before dollars is not read, and the next save drops it', async () => {
+  const { quotePurchase, config, dbDir } = await pricing({ settings: PRE_DOLLAR_SETTINGS });
 
-  const quote = await quoteCredits(40, { method: 'card' });
-  assert.equal(quote.feeCents, 0);
-  assert.equal(quote.credits, 40, 'what was asked for');
-  assert.equal(quote.grossCredits, 40);
+  const crypto = await quotePurchase('50.00', { method: 'crypto' });
+  assert.equal(crypto.creditMilli, 50_000, '220bps and a fixed 25c are ignored');
+
+  // Nor is the old 10-credit floor: at 50c that made the real card minimum $5,
+  // whatever the card row said. The row's own $2.50 is the floor now.
+  const smallest = await quotePurchase('2.50', { method: 'card' });
+  assert.equal(smallest.creditMilli, 2_500);
+
+  // The admin payload carries the limits in thousandths and no fee or price.
+  const admin = await config.getAdminAppSettings();
+  assert.deepEqual(admin.paymentLimits, [
+    { target: 'card', minMilli: 2_500, maxMilli: 100_000, presetsMilli: [2_500, 5_000] },
+    { target: 'crypto', minMilli: 50_000, maxMilli: 2_000_000, presetsMilli: [50_000] },
+  ]);
+  for (const retired of ['creditPriceCents', 'creditMinCredits', 'creditMaxCredits']) {
+    assert.equal(retired in admin, false, `${retired} is gone from the payload`);
+  }
+
+  await config.updateAppSettings({ defaultTheme: 'dark' });
+  const stored = JSON.parse(readSettingRaw(dbDir, 'app-settings'));
+  assert.equal('creditPriceCents' in stored, false);
+  assert.equal(stored.paymentLimits.some((row) => 'feeBps' in row || 'feeFixedCents' in row), false);
+  assert.deepEqual(stored.paymentLimits[1], { target: 'crypto', minCents: 5_000, maxCents: 200_000, presetsCents: [5_000] });
+});
+
+test('the amount is read exactly, in whole cents, and anything else is refused rather than rounded', async () => {
+  const { quotePurchase, PriceError } = await pricing();
+
+  for (const [asked, cents] of [
+    ['12.5', 1_250],
+    ['12.50', 1_250],
+    ['$12.50', 1_250],
+    [12.5, 1_250],
+    ['20', 2_000],
+  ]) {
+    assert.equal((await quotePurchase(asked, { method: 'card' })).amountCents, cents, JSON.stringify(asked));
+  }
+
+  // Half a cent cannot be charged: refused, never charged as $12.50 or $12.51.
+  // "25abc" and "1e3" are what parseFloat would have read as 25 and 1000.
+  for (const bad of ['12.505', '12.5001', '25abc', '1e3', '1,000', '-5', '', null, undefined, true, 0.1 + 0.2, '0']) {
+    await assert.rejects(
+      () => quotePurchase(bad, { method: 'card' }),
+      (error) => error instanceof PriceError && /Choose an amount in dollars and cents/.test(error.message),
+      JSON.stringify(bad)
+    );
+  }
+});
+
+test('the bounds are each method\'s own, in dollars, and say so in dollars', async () => {
+  const { quotePurchase, resolveLimits, presetsFor } = await pricing();
+
+  await assert.rejects(() => quotePurchase('2.49', { method: 'card' }), /The smallest card purchase is \$2\.500\./);
+  await assert.rejects(() => quotePurchase('100.01', { method: 'card' }), /The largest card purchase is \$100\.000\./);
+  await assert.rejects(() => quotePurchase('49.99', { method: 'crypto' }), /The smallest crypto purchase is \$50\.000\./);
+  assert.equal((await quotePurchase('2000', { method: 'crypto' })).creditMilli, 2_000_000);
+
+  assert.deepEqual(await resolveLimits({ method: 'crypto' }), {
+    target: 'crypto',
+    currency: 'usd',
+    minAmountCents: 5_000,
+    maxAmountCents: 200_000,
+  });
+  // Each button charges, and credits, exactly what it says.
+  assert.deepEqual(
+    (await presetsFor({ method: 'card' })).map((preset) => preset.amountMilli),
+    [2_500, 5_000, 10_000, 25_000, 50_000, 100_000]
+  );
+});
+
+test('an asset names an asset row only, never the card row', async () => {
+  const { quotePurchase } = await pricing();
+  // `asset: 'card'` once priced crypto off the card row - a twentieth of the minimum.
+  await assert.rejects(() => quotePurchase('5', { method: 'crypto', asset: 'card' }), /smallest crypto purchase/);
+});
+
+test('an administrator sets the limits in dollars, in whole cents, and a page still in cents is refused', async () => {
+  const { config, dbDir } = await pricing();
+
+  const saved = await config.updateAppSettings({
+    paymentLimits: [
+      { target: 'card', minUsd: '3', maxUsd: 150.5, presetsUsd: ['5', '10.50'] },
+      { target: 'crypto', minUsd: '40.00', maxUsd: '2000', presetsUsd: [] },
+    ],
+  });
+  assert.deepEqual(saved.paymentLimits, [
+    { target: 'card', minMilli: 3_000, maxMilli: 150_500, presetsMilli: [5_000, 10_500] },
+    { target: 'crypto', minMilli: 40_000, maxMilli: 2_000_000, presetsMilli: [] },
+  ]);
+  // Stored as the cents a provider charges in.
+  assert.deepEqual(JSON.parse(readSettingRaw(dbDir, 'app-settings')).paymentLimits[0], {
+    target: 'card',
+    minCents: 300,
+    maxCents: 15_050,
+    presetsCents: [500, 1_050],
+  });
+
+  for (const [rows, why] of [
+    [[{ target: 'card', minUsd: '2.505', maxUsd: '100' }], /card: the smallest purchase must be a whole number of cents/],
+    [[{ target: 'card', minUsd: '2.5', maxUsd: '1.00' }], /card: the smallest amount cannot be larger than the largest/],
+    [[{ target: 'card', minUsd: '', maxUsd: '100' }], /card: the smallest purchase is required/],
+    [[{ target: 'card', minUsd: '0', maxUsd: '100' }], /between \$0\.01/],
+    [[{ target: 'card', minUsd: '1', maxUsd: '100', presetsUsd: ['five'] }], /card: preset 1 must be an amount in dollars/],
+    // The shape a Payments page loaded before dollars sends: cents.
+    [[{ target: 'card', minCents: 250, maxCents: 10_000, presetsCents: [] }], /older version of the app/],
+  ]) {
+    await assert.rejects(() => config.updateAppSettings({ paymentLimits: rows }), why, JSON.stringify(rows));
+  }
   assert.equal(
-    quote.credits * quote.unitPriceCents,
-    quote.amountCents,
-    'credits times price equals the charge, which every existing test relies on'
+    (await config.getAdminAppSettings()).paymentLimits[0].minMilli,
+    3_000,
+    'nothing a refused save carried was kept'
   );
-});
-
-test('a 2.2% fee charges the whole amount and credits the rest', async () => {
-  const { quoteCredits } = await pricing({ settings: limits('crypto', 220) });
-
-  // 100 credits at 50c is $50. 220bps of 5000 is 110 exactly.
-  const quote = await quoteCredits(100, { method: 'crypto' });
-  assert.equal(quote.amountCents, 5000, 'the buyer is charged the gross');
-  assert.equal(quote.grossCredits, 100);
-  assert.equal(quote.feeCents, 110);
-  assert.equal(quote.credits, 97, '(5000 - 110) / 50, floored');
-});
-
-test('the fee rounds up, the credits round down, and the residue stays with the house', async () => {
-  const { quoteCredits } = await pricing({ settings: limits('crypto', 333) });
-
-  // 20 credits at 50c is $10. 333bps of 1000 is 33.3, which rounds UP to 34.
-  const quote = await quoteCredits(20, { method: 'crypto' });
-  assert.equal(quote.amountCents, 1000);
-  assert.equal(quote.feeCents, 34, 'the fee rounds up, against the buyer');
-
-  // 966 / 50 is 19.32, which floors to 19 - also against the buyer.
-  assert.equal(quote.credits, 19);
-
-  // The residue is the difference between the net cash and the credits given,
-  // and it is small and bounded rather than a percentage of anything.
-  const residue = quote.amountCents - quote.feeCents - quote.credits * quote.unitPriceCents;
-  assert.equal(residue, 16);
-  assert.ok(
-    residue < quote.unitPriceCents,
-    'the residue can never reach the price of a whole credit'
-  );
-});
-
-test('a fixed fee is added to the percentage, not chosen between', async () => {
-  const { quoteCredits } = await pricing({ settings: limits('crypto', 100, 25) });
-
-  // 100 credits at 50c is $50. 1% is 50, plus the fixed 25, so 75.
-  const quote = await quoteCredits(100, { method: 'crypto' });
-  assert.equal(quote.feeCents, 75);
-  assert.equal(quote.credits, 98, '(5000 - 75) / 50, floored');
-});
-
-test('a fee that would leave no credits refuses the sale rather than charging for nothing', async () => {
-  // A fixed fee larger than the smallest purchase is worth.
-  const { quoteCredits, PriceError } = await pricing({ settings: limits('crypto', 0, 500) });
-
-  // 20 credits is $10, and the fee is $5: fine, 10 credits left.
-  const fine = await quoteCredits(20, { method: 'crypto' });
-  assert.equal(fine.credits, 10);
-
-  // 10 credits is $5, and the fee is $5: nothing would be credited.
-  await assert.rejects(
-    () => quoteCredits(10, { method: 'crypto' }),
-    (error) => {
-      assert.ok(error instanceof PriceError);
-      assert.match(error.message, /too small once the transaction fee is taken/i);
-      return true;
-    },
-    'taking money and crediting nothing is worse than refusing the sale'
-  );
-});
-
-test('a fee can never exceed the amount, so a credit count is never negative', async () => {
-  // An absurd fee, of the kind a mistyped setting produces.
-  const { applyFee } = await pricing();
-
-  const { credits, feeCents } = applyFee(10, 50, 0, 100_000);
-  assert.equal(feeCents, 500, 'clamped to the amount rather than exceeding it');
-  assert.equal(credits, 0, 'zero, never below it');
-});
-
-test('the fee a payment records is the one in force when it was made', async () => {
-  const { quoteCredits } = await pricing({ settings: limits('crypto', 220) });
-  const quote = await quoteCredits(100, { method: 'crypto' });
-
-  // The quote carries the fee, which is what createPayment snapshots onto the
-  // row - so an administrator changing the fee tomorrow cannot rewrite what
-  // this buyer was charged today. The same reason unit_price_cents is stored.
-  assert.equal(quote.feeCents, 110);
-  assert.equal(quote.target, 'crypto', 'and which row decided it');
 });

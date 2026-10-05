@@ -5,24 +5,16 @@ const express = require('express');
 const { useTempStorage, useAdminEmails, loadFresh, writeSettingRaw } = require('./helpers');
 
 /*
- * Each payment method is judged by its own limits, and the price still comes
- * from the server.
+ * Each payment method is judged by its own limits, in dollars, and the server
+ * decides what the provider is asked for.
  *
- * Two claims, and the second is the one worth guarding. Per-method bounds mean
- * the buy page now shows a slider and a row of preset buttons, and a preset is
- * exactly the shape of thing that grows a price in it: somebody writes
- * `$2.50` on a button, posts 250, and the server charges what the button said.
- * So a preset here is a COUNT OF CREDITS and what it costs is worked out from
- * settings - which means that at 40c a credit the operator's $2.50 button comes
- * back reading $2.80, because 2.50 does not divide into 40c and the button is
- * rounded UP to the nearest whole credit. The page has no way to say otherwise.
- *
- * The first claim is ordinary bookkeeping: a card floor of $2.50 and a crypto
- * floor of $50 have to be applied to the right method, and a coin may override
- * its own method.
+ * A credit is a dollar: the buyer chooses an amount of money (`amountUsd`), is
+ * charged exactly that and credited exactly that. So a preset is an amount,
+ * and nothing about it can be "rounded to a whole number of credits" any more
+ * - what is guarded is that the bounds belong to the right method, that a coin
+ * may override its own method, that the amount is the one asked for in whole
+ * cents, and that nothing else in a request body can steer what is charged.
  */
-
-const PRICE_CENTS = 50;
 
 async function serve({ settings = {} } = {}) {
   const { dbDir } = useTempStorage(`payment-limits-${Math.random().toString(36).slice(2)}`);
@@ -36,16 +28,7 @@ async function serve({ settings = {} } = {}) {
   process.env.PAYMENTS_RETURN_URL = 'https://app.example.com';
 
   // Before anything reads settings: the settings module caches what it sees.
-  writeSettingRaw(
-    dbDir,
-    'app-settings',
-    JSON.stringify({
-      creditPriceCents: PRICE_CENTS,
-      creditMinCredits: 1,
-      creditMaxCredits: 100_000,
-      ...settings,
-    })
-  );
+  writeSettingRaw(dbDir, 'app-settings', JSON.stringify(settings));
 
   loadFresh('../dist/database/sqlite');
   const users = loadFresh('../dist/database/userRepository');
@@ -119,20 +102,19 @@ async function serve({ settings = {} } = {}) {
 test('each method is judged by its own floor, not the other one\'s', async () => {
   const server = await serve();
   try {
-    // Card: $2.50 floor at 50c a credit is 5 credits.
-    const tooSmallForCard = await server.checkout({ method: 'card', credits: 4 });
+    const tooSmallForCard = await server.checkout({ method: 'card', amountUsd: '2.49' });
     assert.equal(tooSmallForCard.status, 400);
-    assert.match((await tooSmallForCard.json()).error, /smallest purchase is 5 credits/i);
+    assert.match((await tooSmallForCard.json()).error, /smallest card purchase is \$2\.500/i);
 
-    assert.equal((await server.checkout({ method: 'card', credits: 5 })).status, 201);
+    assert.equal((await server.checkout({ method: 'card', amountUsd: '2.50' })).status, 201);
 
-    // Crypto: $50 floor is 100 credits, so the amount a card accepts is
-    // refused here - which is the whole point of per-method limits.
-    const tooSmallForCrypto = await server.checkout({ method: 'crypto', credits: 5 });
+    // Crypto's floor is $50, so the amount a card accepts is refused here -
+    // which is the whole point of per-method limits.
+    const tooSmallForCrypto = await server.checkout({ method: 'crypto', amountUsd: '2.50' });
     assert.equal(tooSmallForCrypto.status, 400);
-    assert.match((await tooSmallForCrypto.json()).error, /smallest purchase is 100 credits/i);
+    assert.match((await tooSmallForCrypto.json()).error, /smallest crypto purchase is \$50\.000/i);
 
-    assert.equal((await server.checkout({ method: 'crypto', credits: 100 })).status, 201);
+    assert.equal((await server.checkout({ method: 'crypto', amountUsd: '50' })).status, 201);
   } finally {
     server.close();
   }
@@ -141,64 +123,40 @@ test('each method is judged by its own floor, not the other one\'s', async () =>
 test('each method is judged by its own ceiling', async () => {
   const server = await serve();
   try {
-    // Card: $100 ceiling is 200 credits.
-    const overCard = await server.checkout({ method: 'card', credits: 201 });
+    const overCard = await server.checkout({ method: 'card', amountUsd: '100.01' });
     assert.equal(overCard.status, 400);
-    assert.match((await overCard.json()).error, /largest purchase is 200 credits/i);
+    assert.match((await overCard.json()).error, /largest card purchase is \$100\.000/i);
 
     // Crypto's ceiling is $2000, so the same amount is fine there.
-    assert.equal((await server.checkout({ method: 'crypto', credits: 201 })).status, 201);
+    assert.equal((await server.checkout({ method: 'crypto', amountUsd: '100.01' })).status, 201);
   } finally {
     server.close();
   }
 });
 
-test('presets are counts of credits, and the price decides what they cost', async () => {
-  // 40c a credit, so the operator's round-dollar buttons are not round in
-  // credits - which is exactly the case a preset carrying its own price gets
-  // wrong.
-  const server = await serve({
-    settings: {
-      creditPriceCents: 40,
-      paymentLimits: [
-        {
-          target: 'card',
-          minCents: 250,
-          maxCents: 10_000,
-          feeBps: 0,
-          feeFixedCents: 0,
-          presetsCents: [250, 500, 1_000],
-        },
-      ],
-    },
-  });
+test('a checkout charges, records and credits exactly the amount asked for', async () => {
+  const server = await serve();
   try {
-    const presets = await server.pricing.presetsFor({ method: 'card' });
-
-    assert.deepEqual(
-      presets,
-      [
-        // $2.50 is 6.25 credits. Rounded UP, because the floor is $2.50 too
-        // and rounding down would put the operator's own button below their
-        // own minimum, where it would then be dropped for being out of range.
-        { credits: 7, amountCents: 280 },
-        { credits: 13, amountCents: 520 },
-        { credits: 25, amountCents: 1000 },
-      ],
-      'a preset names a count and a price the server would really charge'
-    );
-
-    // And the button actually works: posting the count is accepted and charged
-    // at the price the preset reported.
-    const response = await server.checkout({ method: 'card', credits: 7 });
+    const response = await server.checkout({ method: 'card', amountUsd: '12.34' });
     assert.equal(response.status, 201);
-    assert.equal((await response.json()).amountCents, 280);
+    const body = await response.json();
+    assert.equal(body.amountMilli, 12_340);
+    assert.equal(body.creditMilli, 12_340, 'credit = charge');
+    for (const retired of ['credits', 'amountCents', 'feeCents']) assert.equal(retired in body, false, retired);
+
+    assert.equal(server.created[0].amountCents, 1_234, 'the provider is asked for the same amount, in cents');
+    assert.equal(server.created[0].creditMilli, 12_340, 'and the product names the same credit');
+
+    const payment = server.payments.getPayment(body.paymentId);
+    assert.equal(payment.amountCents, 1_234);
+    assert.equal(payment.creditMilli, 12_340);
+    assert.equal(payment.legacyCredits, null, 'nothing in the old unit');
   } finally {
     server.close();
   }
 });
 
-test('a preset outside the bounds is not offered', async () => {
+test('presets are amounts, and the server offers only those inside the bounds', async () => {
   const server = await serve({
     settings: {
       paymentLimits: [
@@ -206,10 +164,8 @@ test('a preset outside the bounds is not offered', async () => {
           target: 'card',
           minCents: 500,
           maxCents: 2_000,
-          feeBps: 0,
-          feeFixedCents: 0,
           // The first is below the floor and the last is above the ceiling.
-          presetsCents: [250, 1_000, 10_000],
+          presetsCents: [250, 1_000, 1_250, 10_000],
         },
       ],
     },
@@ -218,75 +174,50 @@ test('a preset outside the bounds is not offered', async () => {
     const presets = await server.pricing.presetsFor({ method: 'card' });
     assert.deepEqual(
       presets,
-      [{ credits: 20, amountCents: 1000 }],
-      'dropped rather than clamped: two buttons reading the same price is worse than one'
+      [{ amountMilli: 10_000 }, { amountMilli: 12_500 }],
+      'dropped rather than clamped: two buttons reading the same amount is worse than one'
     );
+
+    // And a button works: posting its amount charges exactly that.
+    const response = await server.checkout({ method: 'card', amountUsd: '12.50' });
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).amountMilli, 12_500);
   } finally {
     server.close();
   }
 });
 
-test('a price that leaves no whole credit inside the amounts withholds the method', async () => {
-  // $150 a credit against a $100 ceiling: there is no number of credits that
-  // can be bought. That is a misconfiguration, and an operator has to see it.
-  const server = await serve({ settings: { creditPriceCents: 15_000 } });
-  try {
-    const response = await server.checkout({ method: 'card', credits: 1 });
-    assert.equal(response.status, 503, 'a misconfiguration, not the buyer\'s mistake');
-    const body = await response.json();
-    // The buyer is told whom to ask; what is wrong, and where to fix it, is the
-    // administrator's - in the log under the ref.
-    assert.equal(body.error, 'Purchases are not available right now. Please contact your administrator.');
-    assert.match(body.ref, /^ERR-[0-9A-F]{6}$/);
-    assert.equal(body.detail, undefined);
-
-    const methods = await server.methods();
-    const card = methods.targets.find((target) => target.id === 'card');
-    assert.equal(card.available, false, 'withheld rather than dropped');
-    assert.equal(card.reason, 'Not available right now.');
-
-    const operatorCard = (await server.adminMethods()).targets.find((target) => target.id === 'card');
-    assert.match(operatorCard.reason, /no whole number of credits/i, 'the operator sees why');
-    assert.match(operatorCard.reason, /card/, 'names the target');
-    assert.match(operatorCard.reason, /Admin/, 'and where to fix it');
-  } finally {
-    server.close();
-  }
-});
-
-test('the methods endpoint still reports what it always did, alongside the targets', async () => {
+test('the methods endpoint reports each method\'s bounds and presets in thousandths of a dollar', async () => {
   const server = await serve();
   try {
     const body = await server.methods();
-
-    // The old shape, unchanged: a browser tab that has not been reloaded
-    // across a deploy must not find its buy page blank.
-    assert.equal(body.unitPriceCents, PRICE_CENTS);
     assert.equal(body.currency, 'usd');
     assert.ok(Array.isArray(body.methods) && body.methods.length === 2);
+    // The price of a credit is gone: a credit is a dollar.
+    for (const retired of ['unitPriceCents', 'minCredits', 'maxCredits']) {
+      assert.equal(retired in body, false, `${retired} is not sent`);
+    }
 
     const card = body.targets.find((target) => target.id === 'card');
-    assert.equal(card.minCredits, 5, '$2.50 at 50c a credit');
-    assert.equal(card.maxCredits, 200, '$100 at 50c a credit');
+    assert.equal(card.minAmountMilli, 2_500);
+    assert.equal(card.maxAmountMilli, 100_000);
     assert.equal(card.custom, 'slider');
-    assert.equal(card.feeBps, 0, 'no fee on a card');
+    for (const retired of ['minCredits', 'maxCredits', 'minAmountCents', 'maxAmountCents', 'feeBps', 'feeFixedCents']) {
+      assert.equal(retired in card, false, `${retired} is not sent`);
+    }
 
     const crypto = body.targets.find((target) => target.id === 'crypto');
-    assert.equal(crypto.minCredits, 100);
+    assert.equal(crypto.minAmountMilli, 50_000);
+    assert.equal(crypto.maxAmountMilli, 2_000_000);
     assert.equal(crypto.custom, 'stepper', 'whole dollars for a coin');
-    assert.equal(crypto.feeBps, 220);
 
-    // Every preset the page is given has to be inside the bounds it is given.
+    // Every preset the page is given is inside the bounds it is given.
     for (const target of body.targets) {
       for (const preset of target.presets) {
+        assert.deepEqual(Object.keys(preset), ['amountMilli']);
         assert.ok(
-          preset.credits >= target.minCredits && preset.credits <= target.maxCredits,
-          `preset ${preset.credits} is outside ${target.id}'s own bounds`
-        );
-        assert.equal(
-          preset.amountCents,
-          preset.credits * body.unitPriceCents,
-          'a preset price is the count times the server\'s price, never a stored figure'
+          preset.amountMilli >= target.minAmountMilli && preset.amountMilli <= target.maxAmountMilli,
+          `preset ${preset.amountMilli} is outside ${target.id}'s own bounds`
         );
       }
     }
@@ -295,15 +226,17 @@ test('the methods endpoint still reports what it always did, alongside the targe
   }
 });
 
-test('an amount in the request body is still ignored, whatever it is called', async () => {
+test('nothing in the request body but the amount asked for decides what is charged', async () => {
   const server = await serve();
   try {
     const response = await server.checkout({
       method: 'card',
-      credits: 20,
-      // Every spelling the new fields might have invited.
+      amountUsd: '20',
+      // Every spelling a request might try.
       amount: 1,
       amountCents: 1,
+      amountMilli: 1,
+      creditMilli: 999_999,
       cents: 1,
       feeCents: 1,
       presetCents: 1,
@@ -313,13 +246,27 @@ test('an amount in the request body is still ignored, whatever it is called', as
     assert.equal(response.status, 201);
 
     const body = await response.json();
-    assert.equal(body.amountCents, 20 * PRICE_CENTS, 'priced by the server, from settings');
-    assert.equal(body.feeCents, 0, 'and the fee is the server\'s too');
-    assert.equal(
-      server.created[0].amountCents,
-      20 * PRICE_CENTS,
-      'the provider is asked for the server\'s number'
-    );
+    assert.equal(body.amountMilli, 20_000, 'the amount asked for, judged by the server');
+    assert.equal(body.creditMilli, 20_000, 'and credited exactly, whatever the body claimed');
+    assert.equal(server.created[0].amountCents, 2_000, 'the provider is asked for the server\'s number');
+  } finally {
+    server.close();
+  }
+});
+
+test('a buy page from before dollars, sending a count of credits, is told to reload', async () => {
+  const server = await serve();
+  try {
+    // At 50c a credit, 10 credits was $5. Read as dollars it would be $10; read
+    // as nothing it would be "choose an amount". Neither is what was meant.
+    const response = await server.checkout({ method: 'card', credits: 10 });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /older version of the app\. Reload it/);
+    assert.equal(server.created.length, 0, 'no checkout was opened');
+
+    const quote = await server.call(server.aliceToken, '/api/payments/quote?method=card&credits=10');
+    assert.equal(quote.status, 400);
+    assert.match((await quote.json()).error, /older version of the app/);
   } finally {
     server.close();
   }
@@ -330,25 +277,24 @@ test('an amount in the request body is still ignored, whatever it is called', as
  * coin on the provider's own page - but `paymentLimits` can still hold a row
  * keyed on one, and an installation may have had such a row saved before the
  * coins went away. So the pricing authority still resolves them, and these are
- * what stop that turning into a way to be priced off the wrong row.
+ * what stop that turning into a way to be judged by the wrong row.
  */
 
-test('an asset can never be priced off a method’s row', async () => {
+test('an asset can never be judged by a method’s row', async () => {
   /*
    * The pricing authority on its own.
    *
    * No request carries an asset any more, so `rowFor`'s own guard is the only
    * lock left rather than the second of two - and `rowFor` is what decides
-   * what a purchase costs, so anything reaching it by any later route has to
+   * what a purchase may be, so anything reaching it by any later route has to
    * get the same answer. Without the guard, `{ method: 'crypto', asset:
-   * 'card' }` resolves the CARD row: a $2.50 floor where the operator set
-   * $50, and no fee where they set one.
+   * 'card' }` resolves the CARD row: a $2.50 floor where the operator set $50.
    */
   const server = await serve({
     settings: {
       paymentLimits: [
-        { target: 'card', minCents: 250, maxCents: 10_000, feeBps: 0, feeFixedCents: 0, presetsCents: [] },
-        { target: 'crypto', minCents: 5_000, maxCents: 200_000, feeBps: 220, feeFixedCents: 0, presetsCents: [] },
+        { target: 'card', minCents: 250, maxCents: 10_000, presetsCents: [] },
+        { target: 'crypto', minCents: 5_000, maxCents: 200_000, presetsCents: [] },
       ],
     },
   });
@@ -356,9 +302,7 @@ test('an asset can never be priced off a method’s row', async () => {
     const honest = await server.pricing.resolveLimits({ method: 'crypto' });
     const spoofed = await server.pricing.resolveLimits({ method: 'crypto', asset: 'card' });
 
-    assert.equal(spoofed.minAmountCents, honest.minAmountCents);
-    assert.equal(spoofed.maxAmountCents, honest.maxAmountCents);
-    assert.equal(spoofed.feeBps, honest.feeBps);
+    assert.deepEqual(spoofed, honest);
     assert.equal(spoofed.target, 'crypto');
   } finally {
     server.close();
@@ -373,8 +317,8 @@ test('a row an operator wrote for one coin still overrides its method', async ()
   const server = await serve({
     settings: {
       paymentLimits: [
-        { target: 'crypto', minCents: 5_000, maxCents: 200_000, feeBps: 220, feeFixedCents: 0, presetsCents: [] },
-        { target: 'tron:USDT', minCents: 1_000, maxCents: 50_000, feeBps: 0, feeFixedCents: 0, presetsCents: [] },
+        { target: 'crypto', minCents: 5_000, maxCents: 200_000, presetsCents: [] },
+        { target: 'tron:USDT', minCents: 1_000, maxCents: 50_000, presetsCents: [] },
       ],
     },
   });
@@ -382,26 +326,40 @@ test('a row an operator wrote for one coin still overrides its method', async ()
     const coin = await server.pricing.resolveLimits({ method: 'crypto', asset: 'tron:USDT' });
     assert.equal(coin.target, 'tron:USDT');
     assert.equal(coin.minAmountCents, 1_000);
-    assert.equal(coin.feeBps, 0);
 
     // And a coin with no row of its own falls back to the method's.
     const plain = await server.pricing.resolveLimits({ method: 'crypto', asset: 'bitcoin:BTC' });
     assert.equal(plain.target, 'crypto');
-    assert.equal(plain.feeBps, 220);
+    assert.equal(plain.minAmountCents, 5_000);
+  } finally {
+    server.close();
+  }
+});
+
+test('a method whose row was removed falls back to the shipped bounds, not to none', async () => {
+  const server = await serve({
+    settings: { paymentLimits: [{ target: 'card', minCents: 300, maxCents: 3_000, presetsCents: [] }] },
+  });
+  try {
+    const crypto = await server.pricing.resolveLimits({ method: 'crypto' });
+    assert.equal(crypto.minAmountCents, 5_000);
+    assert.equal(crypto.maxAmountCents, 200_000);
+    const tooMuch = await server.checkout({ method: 'crypto', amountUsd: '1000000' });
+    assert.equal(tooMuch.status, 400);
   } finally {
     server.close();
   }
 });
 
 /*
- * `GET /payments/quote` prices a purchase and records nothing.
+ * `GET /payments/quote` says what a purchase would be and records nothing.
  *
- * The order summary prints the charge, the fee and the credits the account
- * will receive before anybody has agreed to anything. Pricing that by opening
- * a checkout meant a payment row and a call to a provider for a purchase that
- * might never happen - so the summary left an abandoned `pending` row in the
- * buyer's own history for having been looked at, and spent two of the twenty
- * checkouts an account may open in an hour on one purchase.
+ * The order summary prints the charge and the credit before anybody has agreed
+ * to anything. Pricing that by opening a checkout meant a payment row and a
+ * call to a provider for a purchase that might never happen - so the summary
+ * left an abandoned `pending` row in the buyer's own history for having been
+ * looked at, and spent two of the twenty checkouts an account may open in an
+ * hour on one purchase.
  */
 
 test('a quote prices a purchase without recording one', async () => {
@@ -409,15 +367,9 @@ test('a quote prices a purchase without recording one', async () => {
   try {
     const before = server.payments.listPaymentsForUser(server.alice.id).length;
 
-    const response = await server.call(server.aliceToken, '/api/payments/quote?method=card&credits=20');
+    const response = await server.call(server.aliceToken, '/api/payments/quote?method=card&amountUsd=12.50');
     assert.equal(response.status, 200);
-    const quote = await response.json();
-
-    assert.equal(quote.credits, 20);
-    assert.equal(quote.grossCredits, 20);
-    assert.equal(quote.amountCents, 20 * PRICE_CENTS);
-    assert.equal(quote.unitPriceCents, PRICE_CENTS);
-    assert.equal(quote.feeCents, 0);
+    assert.deepEqual(await response.json(), { amountMilli: 12_500, creditMilli: 12_500, currency: 'usd' });
 
     assert.equal(
       server.payments.listPaymentsForUser(server.alice.id).length,
@@ -433,54 +385,27 @@ test('a quote prices a purchase without recording one', async () => {
 test('a quote is judged by the same limits a checkout is', async () => {
   const server = await serve();
   try {
-    // 5 credits is $2.50: fine for a card, under the crypto floor of $50.
-    assert.equal(
-      (await server.call(server.aliceToken, '/api/payments/quote?method=card&credits=5')).status,
-      200
-    );
+    // $2.50: fine for a card, under the crypto floor of $50.
+    assert.equal((await server.call(server.aliceToken, '/api/payments/quote?method=card&amountUsd=2.50')).status, 200);
 
-    const refused = await server.call(
-      server.aliceToken,
-      '/api/payments/quote?method=crypto&credits=5'
-    );
+    const refused = await server.call(server.aliceToken, '/api/payments/quote?method=crypto&amountUsd=2.50');
     assert.equal(refused.status, 400);
-    assert.match((await refused.json()).error, /smallest purchase is 100 credits/i);
+    assert.match((await refused.json()).error, /smallest crypto purchase is \$50\.000/i);
 
     /*
      * An `asset` in the query is not read at all now, so it cannot steer the
-     * price. Sent here anyway, naming the CARD row, because that was the
+     * bounds. Sent here anyway, naming the CARD row, because that was the
      * spoof the old validation existed to stop: if it were still read, this
-     * would be priced off a $2.50 floor and answer 200.
+     * would be judged by a $2.50 floor and answer 200.
      */
-    const ignored = await server.call(
-      server.aliceToken,
-      '/api/payments/quote?method=crypto&credits=5&asset=card'
-    );
+    const ignored = await server.call(server.aliceToken, '/api/payments/quote?method=crypto&amountUsd=2.50&asset=card');
     assert.equal(ignored.status, 400);
-    assert.match((await ignored.json()).error, /smallest purchase is 100 credits/i);
-  } finally {
-    server.close();
-  }
-});
+    assert.match((await ignored.json()).error, /smallest crypto purchase is \$50\.000/i);
 
-test('a quote shows the fee taken out of the amount, never added to it', async () => {
-  const server = await serve({
-    settings: {
-      paymentLimits: [
-        { target: 'card', minCents: 250, maxCents: 100_000, feeBps: 500, feeFixedCents: 0, presetsCents: [] },
-      ],
-    },
-  });
-  try {
-    const quote = await (
-      await server.call(server.aliceToken, '/api/payments/quote?method=card&credits=100')
-    ).json();
-
-    // 100 credits at 50c is $50.00. A 5% fee is $2.50, which buys 5 credits.
-    assert.equal(quote.amountCents, 5_000, 'the charge is the gross, unchanged by the fee');
-    assert.equal(quote.feeCents, 250);
-    assert.equal(quote.grossCredits, 100);
-    assert.equal(quote.credits, 95, 'the fee comes out of the credits, not out of the charge');
+    // Half a cent is not an amount anything can charge.
+    const halfCent = await server.call(server.aliceToken, '/api/payments/quote?method=card&amountUsd=12.505');
+    assert.equal(halfCent.status, 400);
+    assert.match((await halfCent.json()).error, /dollars and cents/);
   } finally {
     server.close();
   }

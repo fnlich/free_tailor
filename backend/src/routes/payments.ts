@@ -16,28 +16,29 @@ import {
   countPaymentsForUser,
   listAllPayments,
   listPaymentsForUser,
+  toPaymentView,
   type PaymentMethod,
 } from '../database/paymentRepository';
 import { readPage } from './paging';
 import { detachCard, getCardForUser, listCardsForUser } from '../database/savedCardRepository';
 import * as stripe from '../integrations/stripe';
-import {
-  getPricingLimits,
-  quoteCredits,
-  requireThreeDSecure,
-} from '../services/payments/pricing';
+import { quotePurchase, requireThreeDSecure } from '../services/payments/pricing';
+import { CREDIT_CURRENCY } from '../config/aiModelConfig';
 import { getUserById } from '../database/userRepository';
 
 /**
- * Buying credits, and an administrator's view of what was bought.
+ * Buying credit, and an administrator's view of what was bought.
  *
  * Nothing here credits an account - that is the webhook router's job, and only
  * a signed request reaches it. These routes start a checkout, report what
  * happened, and let an administrator reconcile and refund.
  *
- * `POST /checkout` takes a COUNT of credits and no price. A request that
- * carried its own amount would be a request that set its own price; the server
- * quotes from settings every time.
+ * A credit is a dollar. `POST /checkout` takes the dollars wanted
+ * (`amountUsd`), which are also the charge - nothing is taken out - and the
+ * server decides whether that amount may be bought. Every amount in every
+ * response here is an integer count of thousandths of a dollar, in a field
+ * ending `Milli`; a payment from before credits were dollars carries what it
+ * bought then under `legacyCredits`.
  */
 
 const router = Router();
@@ -67,20 +68,19 @@ function withPublicReason<T extends { reason?: string }>(entry: T, admin: boolea
 }
 
 /**
- * What can be bought, and for how much.
+ * What can be bought, and in what amounts.
  *
- * The price lives here rather than in the public app settings so that there is
- * one answer to "what does this cost" - the same function the checkout prices
- * with. A method whose keys are missing is reported unavailable WITH the reason,
+ * The bounds live here rather than in the public app settings so that there is
+ * one answer to "what may I buy" - the same function the checkout judges with.
+ * A method whose keys are missing is reported unavailable WITH the reason,
  * because the person who needs to read it is the operator, and "no button"
  * tells them nothing.
  */
 router.get('/methods', async (req: Request, res: Response) => {
   try {
     const admin = isAdmin(req);
-    const limits = await getPricingLimits();
     res.json({
-      ...limits,
+      currency: CREDIT_CURRENCY,
       methods: describeMethods().map((entry) => withPublicReason(entry, admin)),
       /*
        * The same information, per thing a buyer can actually choose.
@@ -94,7 +94,7 @@ router.get('/methods', async (req: Request, res: Response) => {
        * So the card step can warn before the challenge appears.
        *
        * Served here rather than in public settings, for the same reason the
-       * price is: this is the one response the buy page already asks for, and
+       * bounds are: this is the one response the buy page already asks for, and
        * a second place to read payment facts from is a second place to get
        * them out of step.
        */
@@ -116,12 +116,14 @@ router.get('/methods', async (req: Request, res: Response) => {
 });
 
 /**
- * What a purchase would cost, WITHOUT starting one.
+ * Whether a purchase may be made, and what it is, WITHOUT starting one:
+ * `?method=card|crypto&amountUsd=12.50` -> `{ amountMilli, creditMilli,
+ * currency }`, the two amounts always equal.
  *
- * The order summary has to print the charge, the fee and the credits the
- * account will actually receive before anybody commits to anything - and every
- * one of those figures has to be the server's, or the summary and the charge
- * disagree the first time a rate or a setting moves mid-session.
+ * The order summary has to print the charge and the credit the account will
+ * actually receive before anybody commits to anything - and both figures have
+ * to be the server's, or the summary and the charge disagree the first time a
+ * limit moves mid-session.
  *
  * Read-only, and that is the whole point of it existing beside `/checkout`.
  * Pricing the summary by opening a checkout meant a payment row and a call to
@@ -139,15 +141,17 @@ router.get('/quote', async (req: Request, res: Response) => {
     if (method !== 'card' && method !== 'crypto') {
       throw new PaymentError('Choose a payment method.');
     }
+    // A count of credits from a buy page loaded before credits were dollars.
+    // Read as dollars it would quote a different purchase than the page shows.
+    if (req.query.credits !== undefined && req.query.amountUsd === undefined) {
+      throw new PaymentError('This page is from an older version of the app. Reload it and try again.');
+    }
     // No coin is named here. The buyer chooses it on the provider's own page,
-    // so an `asset` in the query could not change the price and is not read.
-    const quote = await quoteCredits(req.query.credits, { method });
+    // so an `asset` in the query could not change the amount and is not read.
+    const quote = await quotePurchase(req.query.amountUsd, { method });
     res.json({
-      credits: quote.credits,
-      grossCredits: quote.grossCredits,
-      unitPriceCents: quote.unitPriceCents,
-      amountCents: quote.amountCents,
-      feeCents: quote.feeCents,
+      amountMilli: quote.amountMilli,
+      creditMilli: quote.creditMilli,
       currency: quote.currency,
     });
   } catch (error) {
@@ -158,19 +162,25 @@ router.get('/quote', async (req: Request, res: Response) => {
 router.post('/checkout', async (req: Request, res: Response) => {
   try {
     /*
-     * Four keys, read one at a time, and never an amount.
+     * Four keys, read one at a time.
      *
      * Spreading `req.body` into the service would let a future field arrive
      * without anybody deciding it should, which is how a request ends up able
-     * to set its own price. Each one is named here or it does not exist -
+     * to set its own terms. Each one is named here or it does not exist -
      * which is why a stale tab still sending `asset` is simply not read.
      */
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // A count of credits from a buy page loaded before credits were dollars:
+    // at the old price, 10 credits was $5, and nothing here can say which the
+    // buyer meant. Refused, before a checkout is opened.
+    if (body.credits !== undefined && body.amountUsd === undefined) {
+      throw new PaymentError('This page is from an older version of the app. Reload it and try again.');
+    }
     const started = await startCheckout(
       req.user!,
       {
         method: body.method,
-        credits: body.credits,
+        amountUsd: body.amountUsd,
         cardId: body.cardId,
         saveCard: body.saveCard,
       },
@@ -178,13 +188,13 @@ router.post('/checkout', async (req: Request, res: Response) => {
       // any route runs, so this is a checked value rather than a raw header.
       { requestOrigin: req.headers.origin }
     );
+    const view = toPaymentView(started.payment);
     res.status(201).json({
-      paymentId: started.payment.id,
-      reference: started.payment.reference,
-      credits: started.payment.credits,
-      amountCents: started.payment.amountCents,
-      feeCents: started.payment.feeCents,
-      currency: started.payment.currency,
+      paymentId: view.id,
+      reference: view.reference,
+      amountMilli: view.amountMilli,
+      creditMilli: view.creditMilli,
+      currency: view.currency,
       // One of three: a secret to mount our own form with, somewhere to send
       // the browser, or nothing to do but wait for a charge already made.
       // Never a price - the page displays what it was quoted.
@@ -279,7 +289,7 @@ router.get('/', (req: Request, res: Response) => {
   }
   const method: PaymentMethod | undefined = asked;
   res.json({
-    payments: listPaymentsForUser(req.user!.id, limit, offset, method),
+    payments: listPaymentsForUser(req.user!.id, limit, offset, method).map(toPaymentView),
     total: countPaymentsForUser(req.user!.id, method),
     offset,
   });
@@ -298,7 +308,7 @@ router.get('/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'That payment was not found.' });
     return;
   }
-  res.json({ payment });
+  res.json({ payment: toPaymentView(payment) });
 });
 
 export default router;
@@ -332,7 +342,7 @@ adminPaymentsRouter.get('/', (req: Request, res: Response) => {
   // what an operator has in front of them when somebody writes in.
   res.json({
     payments: payments.map((payment) => ({
-      ...payment,
+      ...toPaymentView(payment),
       userEmail: getUserById(payment.userId)?.email ?? '',
     })),
     /*
@@ -355,9 +365,9 @@ adminPaymentsRouter.post('/:id/refund', async (req: Request, res: Response) => {
       req.user!.id,
       typeof body.note === 'string' ? body.note : ''
     );
-    // All three numbers, always. A refund that reversed forty of two hundred
-    // credits is not a success worth reporting as a bare "done".
-    res.json(outcome);
+    // All three numbers, always. A refund that reversed $12.400 of $50.000 is
+    // not a success worth reporting as a bare "done".
+    res.json({ ...outcome, payment: toPaymentView(outcome.payment) });
   } catch (error) {
     fail(req, res, error);
   }

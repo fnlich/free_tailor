@@ -17,13 +17,16 @@
  * copy will grow a line each only when a setting is actually set.
  *
  * Every claim below is checkable in the code:
- *   - credits are per account: `credit_ledger` rows carry a user id and there
+ *   - credit is per account: `credit_ledger` rows carry a user id and there
  *     is no transfer path anywhere in the app;
- *   - a resume costs its model's credits, and a preview nothing: the price is
- *     the model's `creditsPerResume`, reserved when a build is submitted, and
- *     the builder's cost line is the server's own quote of that same sum;
+ *   - a credit is a dollar and a purchase credits exactly what it charges:
+ *     `quotePurchase` sets `creditMilli` to the amount, and there is no fee
+ *     and no price per credit left to apply;
+ *   - a resume costs its model's price, and a preview nothing: the price is
+ *     the model's `pricePerResumeMilli`, reserved when a build is submitted,
+ *     and the builder's cost line is the server's own quote of that same sum;
  *   - only a signed webhook credits: `routes/paymentWebhooks.ts`;
- *   - a refund reverses what is left and reports the shortfall:
+ *   - a refund reverses what credit is left and reports the shortfall:
  *     `refundPayment` measures the balance either side and clamps at zero;
  *   - crypto is not refundable automatically: the same function says so and
  *     answers 409.
@@ -70,9 +73,10 @@ export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) 
         tone="info"
         title="Before you pay"
         points={[
-          'Credits are added to this account. There is no way to move them to another account, so check you are signed in as the person who should have them.',
-          'Each resume costs the credits set for the model it is built with, and the builder shows what a run will cost before you start it. Previews are free and unlimited, so you can see the result before you spend anything.',
-          'Credits arrive when the payment is confirmed by the provider, not when this page says so. That is usually within a minute.',
+          'Credit is added to this account. There is no way to move it to another account, so check you are signed in as the person who should have it.',
+          'A credit is a dollar. You are charged exactly the amount you choose, and all of it is added to your balance.',
+          'Each resume costs the price set for the model it is built with, to a tenth of a cent, and the builder shows what a run will cost before you start it. Previews are free and unlimited, so you can see the result before you spend anything.',
+          'Credit arrives when the payment is confirmed by the provider, not when this page says so. That is usually within a minute.',
         ]}
       />
       <Panel
@@ -81,13 +85,13 @@ export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) 
         points={
           method === 'card'
             ? [
-                'An administrator can refund a card payment. Refunding reverses the credits that are still unspent; credits already spent cannot be taken back, and the difference is reported rather than quietly ignored.',
+                'An administrator can refund a card payment. Refunding reverses the credit that is still unspent; credit already spent cannot be taken back, and the difference is reported rather than quietly ignored.',
                 'This server never sees your card number. The card form is served by the payment provider and your details go straight to them.',
               ]
             : [
                 'A crypto payment cannot be refunded automatically - coin can only be sent back by hand, by an administrator.',
-                'You pay on the payment provider\u2019s own page, not this one. The coin, the network and the amount to send are all chosen and shown there, at their rates.',
-                'Credits are added when the provider confirms the payment, which for crypto can take several minutes. This order stays open until they do, and you can close this window without losing it.',
+                'You pay on the payment provider\u2019s own page, not this one. The coin, the network and the amount of it to send are all chosen and shown there, at their rates; the dollar amount you chose here is what is added to your balance.',
+                'Credit is added when the provider confirms the payment, which for crypto can take several minutes. This order stays open until they do, and you can close this window without losing it.',
               ]
         }
       />

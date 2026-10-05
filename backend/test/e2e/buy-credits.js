@@ -1,5 +1,9 @@
 /*
- * Buying credits through the three-step dialog, in a real browser.
+ * Buying credit through the three-step dialog, in a real browser.
+ *
+ * A credit is a dollar: the dialog asks for an amount of money, the checkout
+ * carries it as `amountUsd`, and every amount coming back is thousandths of a
+ * dollar in a field ending `Milli` - shown on the page as $0.000.
  *
  * `walkthrough.js` proves the API; `browser.js` proves the OLD buy page. This
  * is the flow that replaced it: choose a payment method, then an amount, then
@@ -33,6 +37,15 @@ const puppeteer = require('puppeteer');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
+const { formatMoney, parseDollars } = require(path.join(DIST, 'utils', 'money'));
+
+/** Thousandths as the dollars a request carries: 2500 -> "2.500". */
+const usd = (milli) => formatMoney(milli).replace(/[$,]/g, '');
+/** A dollar box's text as thousandths, or null when it is not an amount. */
+const milliOf = (text) => {
+  const parsed = parseDollars(text ?? '');
+  return parsed.ok ? parsed.milli : null;
+};
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -115,10 +128,10 @@ async function readDialog(page) {
       background: style.backgroundColor,
       text: dialog.innerText,
       buttons: Array.from(dialog.querySelectorAll('button')).map((b) => b.textContent.trim()),
-      // The count box, when a step has one.
-      credits: (() => {
-        const field = dialog.querySelector('input[type="number"]');
-        return field ? Number.parseInt(field.value, 10) : null;
+      // The amount box, as typed, when a step has one.
+      amount: (() => {
+        const field = dialog.querySelector('input[inputmode="decimal"]');
+        return field ? field.value : null;
       })(),
       /*
        * The PANEL against the window, not the document against itself.
@@ -185,27 +198,28 @@ async function main() {
   const targets = options.body?.targets ?? [];
   const cardTarget = targets.find((t) => t.method === 'card');
   const cryptoTarget = targets.find((t) => t.method === 'crypto');
-  const unit = options.body?.unitPriceCents ?? 0;
   check('a card target is offered', Boolean(cardTarget?.available), JSON.stringify(cardTarget));
   check('a crypto target is offered', Boolean(cryptoTarget?.available), JSON.stringify(cryptoTarget));
   check(
     'each target carries its own bounds',
-    cardTarget && cryptoTarget && cardTarget.minAmountCents !== cryptoTarget.minAmountCents,
-    `card ${cardTarget?.minAmountCents} vs crypto ${cryptoTarget?.minAmountCents}`
+    cardTarget && cryptoTarget && cardTarget.minAmountMilli !== cryptoTarget.minAmountMilli,
+    `card ${cardTarget?.minAmountMilli} vs crypto ${cryptoTarget?.minAmountMilli}`
   );
   check(
-    'every preset is inside its own target bounds',
+    'every preset is inside its own target bounds, and whole cents',
     targets
       .filter((t) => t.available)
       .every((t) =>
         t.presets.every(
-          (p) =>
-            p.credits >= t.minCredits &&
-            p.credits <= t.maxCredits &&
-            p.amountCents === p.credits * unit
+          (p) => p.amountMilli >= t.minAmountMilli && p.amountMilli <= t.maxAmountMilli && p.amountMilli % 10 === 0
         )
       ),
     JSON.stringify(targets.map((t) => ({ id: t.id, presets: t.presets })))
+  );
+  check(
+    'and nothing on them is a price per credit or a fee',
+    options.body?.unitPriceCents === undefined && targets.every((t) => t.feeBps === undefined && t.minCredits === undefined),
+    JSON.stringify(options.body)
   );
 
   console.log('\n=== A coin named by a stale tab ===');
@@ -225,7 +239,7 @@ async function main() {
   for (const stale of ['ethereum:USDT', 'card', 'ethereum:DOGE', '../card']) {
     const ignored = await call(token, '/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method: 'crypto', credits: 200, asset: stale }),
+      body: JSON.stringify({ method: 'crypto', amountUsd: '100', asset: stale }),
     });
     check(
       `asset "${stale}" is ignored, not refused`,
@@ -234,16 +248,17 @@ async function main() {
     );
     check(
       `and "${stale}" did not change the price`,
-      ignored.body?.amountCents === 200 * unit,
-      `${ignored.body?.amountCents} for 200 at ${unit}c`
+      ignored.body?.amountMilli === 100000 && ignored.body?.creditMilli === 100000,
+      `${ignored.body?.amountMilli} for $100`
     );
   }
 
   console.log('\n=== Buying once, keeping the card ===');
-  const credits = cardTarget?.presets?.[0]?.credits ?? cardTarget?.minCredits ?? 10;
+  const amountMilli = cardTarget?.presets?.[0]?.amountMilli ?? cardTarget?.minAmountMilli ?? 5000;
+  const amountUsd = usd(amountMilli);
   const started = await call(token, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'card', credits, saveCard: true }),
+    body: JSON.stringify({ method: 'card', amountUsd, saveCard: true }),
   });
   check('a checkout opens', started.status === 201, `status=${started.status}`);
   check(
@@ -252,9 +267,9 @@ async function main() {
     started.body?.reference
   );
   check(
-    'the amount is the server’s, from the count it was sent',
-    started.body?.amountCents === credits * unit,
-    `${started.body?.amountCents} vs ${credits * unit}`
+    'the amount is the server’s, from the dollars it was sent, and credits the same',
+    started.body?.amountMilli === amountMilli && started.body?.creditMilli === amountMilli,
+    `${started.body?.amountMilli} / ${started.body?.creditMilli} vs ${amountMilli}`
   );
 
   // Drive the fake provider's page to paid, which posts a signed webhook.
@@ -266,9 +281,9 @@ async function main() {
   const afterPay = await call(token, `/payments/${started.body.paymentId}`);
   check('the payment is paid', afterPay.body?.payment?.state === 'paid', JSON.stringify(afterPay.body));
   check(
-    'the credits granted are recorded',
-    afterPay.body?.payment?.creditsGranted === credits,
-    `granted=${afterPay.body?.payment?.creditsGranted} quoted=${credits}`
+    'the credit granted is recorded',
+    afterPay.body?.payment?.creditedMilli === amountMilli,
+    `granted=${afterPay.body?.payment?.creditedMilli} quoted=${amountMilli}`
   );
 
   console.log('\n=== The card that was kept ===');
@@ -286,7 +301,7 @@ async function main() {
     const before = (cards.body?.cards ?? []).length;
     const declined = await call(token, '/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method: 'card', credits }),
+      body: JSON.stringify({ method: 'card', amountUsd }),
     });
     const state = await (await fetch(`${FAKE}/state`)).json();
     const latest = state.sessions[state.sessions.length - 1];
@@ -314,7 +329,7 @@ async function main() {
   if (saved) {
     const stolen = await call(otherToken, '/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method: 'card', credits, cardId: saved.id }),
+      body: JSON.stringify({ method: 'card', amountUsd, cardId: saved.id }),
     });
     check(
       'somebody else cannot charge it, and is not told it exists',
@@ -327,10 +342,10 @@ async function main() {
 
   console.log('\n=== Charging the card that was kept ===');
   if (saved) {
-    const before = (await call(token, '/credits')).body?.balance ?? 0;
+    const before = (await call(token, '/credits')).body?.balanceMilli ?? 0;
     const offSession = await call(token, '/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method: 'card', credits, cardId: saved.id }),
+      body: JSON.stringify({ method: 'card', amountUsd, cardId: saved.id }),
     });
     check('an off-session charge is accepted', offSession.status === 201, `status=${offSession.status}`);
     check(
@@ -352,8 +367,8 @@ async function main() {
       (settled.body?.payment?.providerRef ?? '').startsWith('pi_'),
       settled.body?.payment?.providerRef
     );
-    const after = (await call(token, '/credits')).body?.balance ?? 0;
-    check('the account was credited exactly once', after === before + credits, `${before} -> ${after}`);
+    const after = (await call(token, '/credits')).body?.balanceMilli ?? 0;
+    check('the account was credited exactly once', after === before + amountMilli, `${before} -> ${after}`);
   }
 
   /* ================================================= 1b. a crypto payment */
@@ -368,11 +383,11 @@ async function main() {
     JSON.stringify(targets.map((target) => target.id))
   );
 
-  const want = cryptoTarget?.presets?.[0]?.credits ?? cryptoTarget?.minCredits ?? 100;
-  const before = (await call(token, '/credits')).body?.balance ?? 0;
+  const want = cryptoTarget?.presets?.[0]?.amountMilli ?? cryptoTarget?.minAmountMilli ?? 50000;
+  const before = (await call(token, '/credits')).body?.balanceMilli ?? 0;
   const opened = await call(token, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'crypto', credits: want }),
+    body: JSON.stringify({ method: 'crypto', amountUsd: usd(want) }),
   });
   check('a crypto checkout opens', opened.status === 201, `status=${opened.status} ${JSON.stringify(opened.body)}`);
   check(
@@ -395,15 +410,15 @@ async function main() {
     const paid = await call(token, `/payments/${opened.body.paymentId}`);
     check('a signed callback credits it', paid.body?.payment?.state === 'paid',
       JSON.stringify(paid.body?.payment));
-    const granted = paid.body?.payment?.creditsGranted ?? 0;
+    const granted = paid.body?.payment?.creditedMilli ?? 0;
     check(
-      'the fee comes out of the credits, not out of the amount sent',
-      granted > 0 && granted < want,
-      `granted ${granted} against ${want} requested`
+      'the whole amount is credited - no fee comes out of it',
+      granted === want && paid.body?.payment?.feeMilli === 0,
+      `granted ${granted} against ${want} paid`
     );
     check(
       'the account was credited exactly what it bought',
-      ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
+      ((await call(token, '/credits')).body?.balanceMilli ?? 0) === before + granted,
       `${before} + ${granted}`
     );
 
@@ -412,7 +427,7 @@ async function main() {
     await wait(300);
     check(
       'and a retried callback credits nothing further',
-      ((await call(token, '/credits')).body?.balance ?? 0) === before + granted,
+      ((await call(token, '/credits')).body?.balanceMilli ?? 0) === before + granted,
       `${before} + ${granted}`
     );
   } else {
@@ -445,58 +460,79 @@ async function main() {
     await clickText(page, '[role="dialog"] button', 'Credit or debit card');
     await wait(250);
     dialog = await readDialog(page);
-    check('step 2 is the amount', dialog?.title === 'Credits amount', dialog?.title);
-    const firstCredits = dialog?.credits ?? 0;
+    check('step 2 is the amount', dialog?.title === 'Credit amount', dialog?.title);
+    const smallest = Math.min(
+      ...cardTarget.presets
+        .map((entry) => entry.amountMilli)
+        .filter((milli) => milli >= cardTarget.minAmountMilli && milli <= cardTarget.maxAmountMilli)
+    );
     check(
       'it opens on the target’s smallest preset',
-      firstCredits === (cardTarget?.presets?.[0]?.credits ?? cardTarget?.minCredits),
-      `${firstCredits} vs ${cardTarget?.presets?.[0]?.credits}`
+      milliOf(dialog?.amount) === smallest,
+      `${dialog?.amount} vs ${smallest}`
     );
 
     // A preset, then the total it produced, checked against the server's own.
     const preset = cardTarget.presets[Math.min(2, cardTarget.presets.length - 1)];
-    // The formatted figure, not the bare number: "10" also matches "$100.00".
-    await clickText(page, '[role="dialog"] button', (preset.amountCents / 100).toFixed(2));
+    await clickText(page, '[role="dialog"] button', formatMoney(preset.amountMilli));
     await wait(200);
     dialog = await readDialog(page);
     check(
-      'a preset sets the count the server quoted for it',
-      dialog?.credits === preset.credits,
-      `${dialog?.credits} vs ${preset.credits}`
+      'a preset sets the amount the server offered',
+      milliOf(dialog?.amount) === preset.amountMilli,
+      `${dialog?.amount} vs ${preset.amountMilli}`
     );
 
+    const typeAmount = (text) =>
+      page.evaluate((value) => {
+        const field = document.querySelector('[role="dialog"] input[inputmode="decimal"]');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(field, value);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      }, text);
+
     /*
-     * A number above the ceiling is allowed to sit in the box - clamping each
-     * keystroke makes a two-digit maximum impossible to type past - but the
-     * total and the Continue button must quote the number that will actually
-     * be bought, not the one being typed.
+     * An amount above the ceiling is allowed to sit in the box - fitting each
+     * keystroke makes some amounts impossible to type past - but the total and
+     * the Continue button must quote the amount that will actually be bought,
+     * not the one being typed.
      */
-    await page.evaluate((over) => {
-      const field = document.querySelector('[role="dialog"] input[type="number"]');
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      ).set;
-      setter.call(field, String(over));
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-    }, cardTarget.maxCredits + 500);
+    await typeAmount(usd(cardTarget.maxAmountMilli + 500000));
     await wait(250);
     dialog = await readDialog(page);
-    const ceiling = (cardTarget.maxCredits * unit) / 100;
+    const ceiling = formatMoney(cardTarget.maxAmountMilli);
     check(
-      'a count above the ceiling is priced at the ceiling, and says so',
-      (dialog?.text ?? '').includes(ceiling.toFixed(2)) &&
-        /largest purchase is/i.test(dialog?.text ?? ''),
+      'an amount above the ceiling is priced at the ceiling, and says so',
+      (dialog?.text ?? '').includes(ceiling) && /largest card purchase is/i.test(dialog?.text ?? ''),
       dialog?.text?.slice(0, 500)
     );
     check(
       'and the Continue button quotes that same figure',
-      (dialog?.buttons ?? []).some((label) => label.includes(ceiling.toFixed(2))),
+      (dialog?.buttons ?? []).some((label) => label.includes(ceiling)),
       (dialog?.buttons ?? []).join(' | ')
     );
 
+    /*
+     * A fraction of a cent is not an amount a card can be charged: refused in
+     * the server's own words, and Continue goes nowhere - never rounded into a
+     * purchase nobody typed.
+     */
+    await typeAmount('12.345');
+    await wait(250);
+    dialog = await readDialog(page);
+    const continueDisabled = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[role="dialog"] button')).some(
+        (button) => /^Continue/.test(button.textContent.trim()) && button.disabled
+      )
+    );
+    check(
+      'a fraction of a cent is refused, and Continue is off',
+      /Choose an amount in dollars and cents/.test(dialog?.text ?? '') && continueDisabled,
+      `${dialog?.text?.slice(0, 400)} | continue disabled: ${continueDisabled}`
+    );
+
     // Back to the preset for the rest of the walk.
-    await clickText(page, '[role="dialog"] button', (preset.amountCents / 100).toFixed(2));
+    await clickText(page, '[role="dialog"] button', formatMoney(preset.amountMilli));
     await wait(200);
     await page.screenshot({ path: path.join(SHOTS, 'buy-2-amount.png') });
 
@@ -508,8 +544,8 @@ async function main() {
     dialog = await readDialog(page);
     check(
       'stepping back and forward keeps the amount',
-      dialog?.credits === preset.credits,
-      `${dialog?.credits} vs ${preset.credits}`
+      milliOf(dialog?.amount) === preset.amountMilli,
+      `${dialog?.amount} vs ${preset.amountMilli}`
     );
 
     console.log('\n=== Step 3: the order summary ===');
@@ -519,9 +555,14 @@ async function main() {
     check('step 3 is the order summary', dialog?.title === 'Order summary', dialog?.title);
     check('the summary is the wide dialog', dialog?.width === 'wide', dialog?.width);
     check(
-      'it shows the amount the server quoted',
-      (dialog?.text ?? '').includes((preset.amountCents / 100).toFixed(2)),
+      'it shows the amount the server quoted, and the same amount of credit added',
+      (dialog?.text ?? '').includes(formatMoney(preset.amountMilli)) && /Credit added/i.test(dialog?.text ?? ''),
       dialog?.text?.slice(0, 400)
+    );
+    check(
+      'and no fee anywhere on it',
+      !/\bfees?\b/i.test(dialog?.text ?? ''),
+      dialog?.text?.slice(0, 1200)
     );
     check(
       'the card kept earlier is listed',
@@ -594,10 +635,10 @@ async function main() {
      * arrived while the pill above it still showed the old figure.
      */
     console.log('\n=== The return page moves the top-bar balance ===');
-    const beforeReturn = (await call(token, '/credits')).body?.balance ?? 0;
+    const beforeReturn = (await call(token, '/credits')).body?.balanceMilli ?? 0;
     const pending = await call(token, '/payments/checkout', {
       method: 'POST',
-      body: JSON.stringify({ method: 'crypto', credits: cryptoTarget?.minCredits ?? 100 }),
+      body: JSON.stringify({ method: 'crypto', amountUsd: usd(cryptoTarget?.minAmountMilli ?? 50000) }),
     });
     const pendingInvoice = String(pending.body?.redirectUrl ?? '').split('/').pop();
 
@@ -632,13 +673,13 @@ async function main() {
     await fetch(`${FAKE}/pay/${pendingInvoice}`, { method: 'POST', redirect: 'manual' });
     await wait(4000);
 
-    const afterReturn = (await call(token, '/credits')).body?.balance ?? 0;
+    const afterReturn = (await call(token, '/credits')).body?.balanceMilli ?? 0;
     const pillAfter = await page.evaluate(
       () => document.querySelector('.tl-credits')?.textContent.trim() ?? ''
     );
     check(
-      'the top-bar pill follows a payment that credits while the page is open',
-      afterReturn > beforeReturn && pillAfter.includes(String(afterReturn)),
+      'the top-bar pill follows a payment that credits while the page is open, in dollars',
+      afterReturn > beforeReturn && pillAfter.includes(formatMoney(afterReturn)),
       `pill "${pillBefore}" -> "${pillAfter}", balance ${beforeReturn} -> ${afterReturn}`
     );
 
@@ -650,6 +691,13 @@ async function main() {
       'a paid order is an invoice with a Print button',
       paidInvoice.print === 1 && /Invoice Number/i.test(paidInvoice.text),
       `print buttons: ${paidInvoice.print}; ${paidInvoice.text.slice(0, 200)}`
+    );
+    const cryptoCredit = formatMoney(cryptoTarget?.minAmountMilli ?? 50000);
+    check(
+      'and it is one line of credit at its charge, with no fee',
+      paidInvoice.text.includes(`${cryptoCredit} of Tailor credit`) &&
+        /Transaction Fees\s+\$0\.000/.test(paidInvoice.text),
+      paidInvoice.text.slice(0, 600)
     );
 
     console.log('\n=== Crypto: the hand-off ===');
@@ -949,7 +997,7 @@ async function main() {
     for (let index = 0; index < 12; index += 1) {
       await call(token, '/payments/checkout', {
         method: 'POST',
-        body: JSON.stringify({ method: 'card', credits: cardTarget?.minCredits ?? 10 }),
+        body: JSON.stringify({ method: 'card', amountUsd: usd(cardTarget?.minAmountMilli ?? 2500) }),
       });
     }
 

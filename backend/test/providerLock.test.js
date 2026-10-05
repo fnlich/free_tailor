@@ -276,7 +276,7 @@ test('a call that names no provider runs on the app default MODEL, not on a seat
   // database of its own, because the facade reads settings through its own
   // module instance, whose short cache is keyed on the database path.
   useTempStorage('lock-raw-default-own-model');
-  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna' });
+  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna', pricePerResumeUsd: '0.010' });
   const luna = created.aiModels.find((model) => model.modelName === 'gpt-6-luna');
   await config.updateAppSettings({ defaultModelId: luna.id });
   calls.length = 0;

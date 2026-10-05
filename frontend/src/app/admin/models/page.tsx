@@ -8,26 +8,30 @@ import {
   AIModelRecord,
   AIProvider,
   coerceProvider,
-  DEFAULT_CREDITS_PER_RESUME,
   describeProviderModel,
   findProviderModelOption,
-  formatCreditsPerResume,
+  formatPricePerResume,
   getAIProviderLabel,
   isProviderLocked,
   isProviderOffered,
   LOCK_ICON,
-  MAX_CREDITS_PER_RESUME,
 } from '@/lib/api';
+import { formatMoney, toDollarInput } from '@/lib/format';
 import { ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { blankDraftChoice, displayNameOwner, firstModelName, isTaken, optionsFor } from './modelDraft';
+import { freeEnabledModels, readPriceDraft } from './modelPrice';
 
 type ModelDraft = {
   name: string;
   provider: AIProvider;
   modelName: string;
-  /** Kept as typed, so the field can be cleared and retyped; parsed on save. */
-  creditsPerResume: string;
+  /**
+   * Dollars per resume, kept as typed ("0.023") so the field can be cleared
+   * and retyped; checked as it is typed and sent as typed - the server parses
+   * it exactly, in thousandths.
+   */
+  price: string;
   description: string;
   enabled: boolean;
 };
@@ -41,7 +45,7 @@ function toDraft(model: AIModelRecord): ModelDraft {
     name: model.name,
     provider: model.provider,
     modelName: model.modelName,
-    creditsPerResume: String(model.creditsPerResume),
+    price: toDollarInput(model.pricePerResumeMilli),
     description: model.description,
     enabled: model.enabled,
   };
@@ -54,22 +58,13 @@ function emptyDraft(settings: AdminAppSettings | null): ModelDraft {
     name: '',
     provider,
     modelName,
-    creditsPerResume: String(DEFAULT_CREDITS_PER_RESUME),
+    // EMPTY, not a default: a new model is priced by whoever adds it, and the
+    // server refuses a create without a price. A pre-filled figure is a price
+    // somebody would save without having chosen it.
+    price: '',
     description: '',
     enabled: true,
   };
-}
-
-/**
- * The price as the server will take it: a whole number of credits from 0 to
- * the cap, or null. Checked here so the message names the field, the same way
- * the server's refusal does.
- */
-function parseCreditsPerResume(value: string): number | null {
-  const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const credits = Number(trimmed);
-  return Number.isSafeInteger(credits) && credits <= MAX_CREDITS_PER_RESUME ? credits : null;
 }
 
 function ModelsPageBody() {
@@ -126,7 +121,7 @@ function ModelsPageBody() {
   const handleSubmit = async () => {
     const name = draft.name.trim();
     const modelName = draft.modelName.trim();
-    const creditsPerResume = parseCreditsPerResume(draft.creditsPerResume);
+    const price = readPriceDraft(draft.price);
 
     if (!name) {
       setError('Display name is required.');
@@ -147,8 +142,8 @@ function ModelsPageBody() {
       return;
     }
 
-    if (creditsPerResume === null) {
-      setError(`Price per resume must be a whole number of credits from 0 to ${MAX_CREDITS_PER_RESUME}.`);
+    if (!price.ok) {
+      setError(price.message);
       return;
     }
 
@@ -160,7 +155,9 @@ function ModelsPageBody() {
         name,
         provider: draft.provider,
         modelName,
-        creditsPerResume,
+        // As typed: the server reads "0.023" exactly. Sending the parsed
+        // number back as a float would be the one way to lose that precision.
+        pricePerResumeUsd: draft.price.trim(),
         description: draft.description.trim(),
         enabled: draft.enabled,
       };
@@ -266,8 +263,9 @@ function ModelsPageBody() {
    * description can still be changed. Choosing a listed name replaces it.
    */
   const draftListedOption = findProviderModelOption(settings.providerModelOptions, draft.provider, draft.modelName);
-  const draftCredits = parseCreditsPerResume(draft.creditsPerResume);
+  const draftPrice = readPriceDraft(draft.price);
   const nameOwner = displayNameOwner(settings, draft.name, editingId);
+  const freeModels = freeEnabledModels(settings);
 
   return (
     <div>
@@ -278,6 +276,32 @@ function ModelsPageBody() {
           you give each one, and what one resume on it costs.
         </p>
       </header>
+
+      {freeModels.length > 0 && (
+        /*
+         * Red, and above everything, while any model people can pick costs
+         * nothing. After credits became dollars every price was reset to
+         * $0.000 (the owner's decision), and a model a migration seeds - or
+         * every seed of a fresh install - arrives unpriced too: free on
+         * purpose is allowed - 0 is a price - but never without somebody
+         * having seen it. The server names the models (`freeEnabledModelIds`),
+         * so this lists exactly what it would charge nothing for. The last
+         * sentence names no single cause: on a fresh install nothing was
+         * reset, and one priced at $0.000 on purpose was not either.
+         */
+        <Notice tone="error" role="alert" className="mt-6">
+          <p className="font-semibold">
+            {freeModels.length === 1
+              ? 'One enabled model is free: every resume on it costs $0.000.'
+              : `${freeModels.length} enabled models are free: every resume on them costs $0.000.`}
+          </p>
+          <p className="mt-1">
+            {freeModels.map((model) => model.name || model.id).join(', ')}. Set a price per resume with
+            Edit - in dollars, to $0.001, like 0.023 - or disable the model. A model is free until it is
+            given a price - including any priced before credits became dollars, and any an upgrade adds.
+          </p>
+        </Notice>
+      )}
 
       {(error || status) && (
         <div className="mt-6 space-y-3">
@@ -389,26 +413,36 @@ function ModelsPageBody() {
           </Field>
 
           <Field
-            label="Price per resume (credits)"
-            htmlFor="model-credits-per-resume"
+            label="Price per resume ($)"
+            htmlFor="model-price-per-resume"
             hint={
-              draftCredits === null
-                ? `A whole number from 0 to ${MAX_CREDITS_PER_RESUME}.`
-                : draftCredits === 0
-                  ? 'Free - a resume on this model costs nothing.'
-                  : `${formatCreditsPerResume(draftCredits)}. 0 makes it free.`
+              !draftPrice.ok
+                ? draft.price.trim() === ''
+                  ? 'Required. Dollars to $0.001, like 0.023; 0 makes the model free.'
+                  : draftPrice.message
+                : draftPrice.milli === 0
+                  ? 'Free - a resume on this model costs $0.000.'
+                  : `${formatMoney(draftPrice.milli)} a resume. 0 makes it free.`
             }
           >
             <input
-              id="model-credits-per-resume"
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={MAX_CREDITS_PER_RESUME}
-              step={1}
-              value={draft.creditsPerResume}
-              onChange={(e) => setDraft((current) => ({ ...current, creditsPerResume: e.target.value }))}
+              id="model-price-per-resume"
+              // Text, like every other dollar box: a number box hands over
+              // what the BROWSER made of the keystrokes, not what was typed.
+              // In an en-US Chrome "0,023" becomes "0023" before onChange sees
+              // it - $23.000 a resume, a thousand times the price meant -
+              // where the text reaches readPriceDraft and the server as typed
+              // and is refused by name. The range and the $0.001 step are
+              // theirs to check, not the box's.
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              required={!editingId}
+              placeholder="0.023"
+              value={draft.price}
+              onChange={(e) => setDraft((current) => ({ ...current, price: e.target.value }))}
               disabled={isSaving}
+              aria-invalid={draft.price.trim() !== '' && !draftPrice.ok}
               className="tl-input"
             />
           </Field>
@@ -508,8 +542,19 @@ function ModelsPageBody() {
                     <td className="whitespace-nowrap">
                       <Pill tone="grey">{getAIProviderLabel(model.provider)}</Pill>
                     </td>
-                    <td className="whitespace-nowrap">
-                      <span className="text-ink">{formatCreditsPerResume(model.creditsPerResume)}</span>
+                    <td className="whitespace-nowrap tabular-nums">
+                      {/*
+                        Red while it is enabled and free - the notice above names it
+                        too. The kit's status colour, on a span: `.tl-table td` is
+                        unlayered and would beat a utility on the cell.
+                      */}
+                      {model.enabled && model.pricePerResumeMilli === 0 ? (
+                        <span className="tl-status font-semibold" data-tone="error">
+                          {formatPricePerResume(model.pricePerResumeMilli)}
+                        </span>
+                      ) : (
+                        <span className="text-ink">{formatPricePerResume(model.pricePerResumeMilli)}</span>
+                      )}
                     </td>
                     <td>
                       <div className="flex flex-wrap gap-1.5">

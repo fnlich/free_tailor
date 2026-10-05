@@ -255,23 +255,27 @@ test('credits start at zero and block nothing', () => {
   users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
 
-  assert.equal(alice.credits, 0);
+  assert.equal(alice.balanceMilli, 0);
   // Nothing in this release spends them, so a brand-new account can still work.
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
 
   // Balances move through the credit service now, never through updateUser -
   // its absolute SET lost concurrent debits, so the branch was removed.
   const credits = loadFresh('../dist/services/credits');
-  credits.setBalance(alice.id, 25, 'admin-1', 'test');
-  assert.equal(users.getUserById(alice.id).credits, 25);
+  credits.setBalance(alice.id, 25_000, 'admin-1', 'test');
+  assert.equal(users.getUserById(alice.id).balanceMilli, 25_000);
 
   // A negative balance would read as a debt this app has no way to collect,
   // so a revoke of more than somebody holds takes them to zero.
-  credits.grantCredits(alice.id, -100, 'admin-1', 'test');
-  assert.equal(users.getUserById(alice.id).credits, 0);
+  credits.grantCredits(alice.id, -100_000, 'admin-1', 'test');
+  assert.equal(users.getUserById(alice.id).balanceMilli, 0);
 
-  credits.setBalance(alice.id, 7.9, 'admin-1', 'test');
-  assert.equal(users.getUserById(alice.id).credits, 7);
+  // Thousandths of a dollar, exactly - and a fraction of one is refused, never
+  // floored into a balance nobody set.
+  credits.setBalance(alice.id, 7_900, 'admin-1', 'test');
+  assert.equal(users.getUserById(alice.id).balanceMilli, 7_900);
+  assert.throws(() => credits.setBalance(alice.id, 7.9, 'admin-1', 'test'));
+  assert.equal(users.getUserById(alice.id).balanceMilli, 7_900);
 });
 
 test('disabling an account ends its sessions at once', () => {

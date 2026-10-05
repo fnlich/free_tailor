@@ -32,8 +32,6 @@ const {
  * accepts and half ignores.
  */
 
-const PRICE_CENTS = 50;
-
 /* ------------------------------------------------- what goes over the wire */
 
 /** Calls `stripe.ts` for real, with only the socket replaced. */
@@ -64,7 +62,7 @@ async function captureBody(run) {
 const SESSION_INPUT = {
   paymentId: 'pay_1',
   reference: 'FT-PAY-1',
-  credits: 100,
+  creditMilli: 50_000,
   amountCents: 5_000,
   currency: 'usd',
   customerEmail: 'buyer@example.com',
@@ -145,12 +143,7 @@ async function serve({ requireThreeDSecure = false } = {}) {
     dbDir,
     'app-settings',
     JSON.stringify({
-      creditPriceCents: PRICE_CENTS,
-      creditMinCredits: 1,
-      creditMaxCredits: 100_000,
-      paymentLimits: [
-        { target: 'card', minCents: 1, maxCents: 1_000_000, feeBps: 0, feeFixedCents: 0, presetsCents: [] },
-      ],
+      paymentLimits: [{ target: 'card', minCents: 1, maxCents: 1_000_000, presetsCents: [] }],
       requireThreeDSecure,
     })
   );
@@ -214,7 +207,7 @@ async function serve({ requireThreeDSecure = false } = {}) {
 test('the setting reaches a new-card checkout', async () => {
   const server = await serve({ requireThreeDSecure: true });
   try {
-    assert.equal((await server.checkout({ method: 'card', credits: 10 })).status, 201);
+    assert.equal((await server.checkout({ method: 'card', amountUsd: '10' })).status, 201);
     assert.equal(server.calls.sessions[0].requireThreeDSecure, true);
   } finally {
     server.close();
@@ -224,7 +217,7 @@ test('the setting reaches a new-card checkout', async () => {
 test('and is absent from it when the operator has not asked', async () => {
   const server = await serve();
   try {
-    assert.equal((await server.checkout({ method: 'card', credits: 10 })).status, 201);
+    assert.equal((await server.checkout({ method: 'card', amountUsd: '10' })).status, 201);
     assert.equal(server.calls.sessions[0].requireThreeDSecure, undefined);
   } finally {
     server.close();
@@ -243,7 +236,7 @@ test('the setting reaches a kept card too, so the two paths agree', async () => 
       expMonth: 12,
       expYear: 2030,
     });
-    const response = await server.checkout({ method: 'card', credits: 10, cardId: card.id });
+    const response = await server.checkout({ method: 'card', amountUsd: '10', cardId: card.id });
     assert.equal(response.status, 201, JSON.stringify(await response.json()));
     assert.equal(server.calls.charges[0].requireThreeDSecure, true);
   } finally {

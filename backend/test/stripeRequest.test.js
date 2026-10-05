@@ -56,7 +56,7 @@ test('a checkout session is asked for in elements mode, at a pinned API version'
     const session = await stripe.createCheckoutSession({
       paymentId: 'pay_wire',
       reference: 'FT-PAY-20260921-0001',
-      credits: 40,
+      creditMilli: 20_000,
       amountCents: 2000,
       currency: 'usd',
       customerEmail: 'buyer@example.com',
@@ -89,6 +89,9 @@ test('a checkout session is asked for in elements mode, at a pinned API version'
     // payments require of every line item.
     assert.equal(body['line_items[0][price_data][currency]'], 'usd');
     assert.equal(body['line_items[0][price_data][unit_amount]'], '2000');
+    // What the buyer is buying, as their balance will show it: a credit is a dollar.
+    assert.equal(body['line_items[0][price_data][product_data][name]'], '$20.000 Tailor credit');
+    assert.equal(body['line_items[0][price_data][product_data][description]'], 'FT-PAY-20260921-0001');
     assert.equal(body['metadata[paymentId]'], 'pay_wire');
   } finally {
     stub.restore();
@@ -151,7 +154,7 @@ test('a dropped connection is reported as unknown, not as a refusal', async () =
         stripe.createCheckoutSession({
           paymentId: 'pay_x',
           reference: 'FT-PAY-1',
-          credits: 10,
+          creditMilli: 5_000,
           amountCents: 500,
           currency: 'usd',
           customerEmail: 'a@b.c',

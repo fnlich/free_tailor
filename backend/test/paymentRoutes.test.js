@@ -6,10 +6,12 @@ const { loadFresh, useTempStorage, useAdminEmails, writeSettingRaw } = require('
 /**
  * Starting a checkout, and reading a payment back.
  *
- * The claim that matters most here is about PRICE: the browser sends a count of
- * credits and never an amount, so no request can set what it will be charged.
- * The tests below send an amount anyway, in every spelling somebody might try,
- * and assert it changed nothing.
+ * The claim that matters most here is about the AMOUNT: a credit is a dollar,
+ * the browser sends the dollars it wants (`amountUsd`) and the server decides
+ * whether that may be bought and what the provider is asked for - so no other
+ * field in a request can change what it will be charged or credited. The
+ * tests below send other amounts anyway, in every spelling somebody might try,
+ * and assert they changed nothing.
  *
  * The second claim is the usual one about ids in paths - somebody else's
  * payment answers 404, not 403, because the difference between those two
@@ -18,8 +20,6 @@ const { loadFresh, useTempStorage, useAdminEmails, writeSettingRaw } = require('
  * The provider is faked at the integration boundary rather than over the
  * network: these are tests about this server's rules, not about Stripe's.
  */
-
-const PRICE_CENTS = 50;
 
 async function serve({ withKeys = true, settings = {}, returnUrl = 'https://app.example.com', appUrl = null } = {}) {
   const { dbDir } = useTempStorage(`payment-routes-${Math.random().toString(36).slice(2)}`);
@@ -48,16 +48,7 @@ async function serve({ withKeys = true, settings = {}, returnUrl = 'https://app.
   delete process.env.FRONTEND_URL;
 
   // Before anything reads settings: the settings module caches what it sees.
-  writeSettingRaw(
-    dbDir,
-    'app-settings',
-    JSON.stringify({
-      creditPriceCents: PRICE_CENTS,
-      creditMinCredits: 10,
-      creditMaxCredits: 1000,
-      ...settings,
-    })
-  );
+  writeSettingRaw(dbDir, 'app-settings', JSON.stringify(settings));
 
   const express = require('express');
 
@@ -133,54 +124,57 @@ async function serve({ withKeys = true, settings = {}, returnUrl = 'https://app.
   };
 }
 
-test('the price comes from settings, and an amount in the request is ignored', async () => {
+test('the amount asked for is what is charged and credited, and every other figure in the request is ignored', async () => {
   const server = await serve();
   try {
-    // Every spelling of "let me set my own price". None of them may land.
+    // Every spelling of "let me set my own terms". None of them may land.
     const response = await server.checkout(server.aliceToken, {
       method: 'card',
-      credits: 20,
+      amountUsd: '10',
       amount: 1,
       amountCents: 1,
+      amountMilli: 1,
+      creditMilli: 1_000_000,
       unitPriceCents: 1,
       price: 0,
     });
 
     assert.equal(response.status, 201);
     const body = await response.json();
-    assert.equal(body.credits, 20);
-    assert.equal(body.amountCents, 20 * PRICE_CENTS, 'priced by the server, from settings');
+    assert.equal(body.amountMilli, 10_000, '$10, as asked');
+    assert.equal(body.creditMilli, 10_000, 'credited exactly the charge');
 
-    // And the provider was asked for that amount, not the one in the request.
-    assert.equal(server.created[0].amountCents, 20 * PRICE_CENTS);
+    // And the provider was asked for that amount, not any other in the request.
+    assert.equal(server.created[0].amountCents, 1_000);
 
     const stored = server.payments.getPayment(body.paymentId);
-    assert.equal(stored.amountCents, 20 * PRICE_CENTS);
-    assert.equal(stored.unitPriceCents, PRICE_CENTS);
+    assert.equal(stored.amountCents, 1_000);
+    assert.equal(stored.creditMilli, 10_000);
+    assert.equal(stored.legacyCredits, null);
     assert.equal(stored.state, 'pending', 'nothing is paid until a webhook says so');
   } finally {
     server.close();
   }
 });
 
-test('a credit count that is not a whole number inside the bounds is refused', async () => {
+test('an amount that is not dollars and cents inside the bounds is refused', async () => {
   const server = await serve();
   try {
     const cases = [
-      [0, /smallest purchase/i],
-      [-5, /smallest purchase/i],
-      [9, /smallest purchase/i],
-      [1001, /largest purchase/i],
-      [2.5, /whole number/i],
-      ['lots', /whole number/i],
-      [null, /whole number/i],
-      [1e21, /whole number|largest/i],
+      [0, /dollars and cents/i],
+      [-5, /dollars and cents/i],
+      ['2.49', /smallest card purchase is \$2\.500/i],
+      ['100.01', /largest card purchase is \$100\.000/i],
+      ['2.505', /dollars and cents/i],
+      ['lots', /dollars and cents/i],
+      [null, /dollars and cents/i],
+      [1e21, /dollars and cents/i],
     ];
 
-    for (const [credits, expected] of cases) {
-      const response = await server.checkout(server.aliceToken, { method: 'card', credits });
-      assert.equal(response.status, 400, `credits=${credits}`);
-      assert.match((await response.json()).error, expected, `credits=${credits}`);
+    for (const [amountUsd, expected] of cases) {
+      const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd });
+      assert.equal(response.status, 400, `amountUsd=${amountUsd}`);
+      assert.match((await response.json()).error, expected, `amountUsd=${amountUsd}`);
     }
 
     assert.equal(server.payments.listPaymentsForUser(server.alice.id).length, 0, 'nothing was recorded');
@@ -189,23 +183,20 @@ test('a credit count that is not a whole number inside the bounds is refused', a
   }
 });
 
-test('the stored unit price is the price at purchase, not the price today', async () => {
+test('a payment read back carries every amount in thousandths of a dollar, and nothing in credits', async () => {
   const server = await serve();
   try {
-    const first = await (await server.checkout(server.aliceToken, { method: 'card', credits: 10 })).json();
-
-    const config = require('../dist/config/aiModelConfig');
-    await config.updateAppSettings({ creditPriceCents: 200 });
-
-    const second = await (await server.checkout(server.aliceToken, { method: 'card', credits: 10 })).json();
-
-    assert.equal(server.payments.getPayment(first.paymentId).unitPriceCents, PRICE_CENTS);
-    assert.equal(server.payments.getPayment(second.paymentId).unitPriceCents, 200);
-    assert.equal(
-      server.payments.getPayment(first.paymentId).amountCents,
-      10 * PRICE_CENTS,
-      'a receipt says what was actually paid'
-    );
+    const created = await (await server.checkout(server.aliceToken, { method: 'card', amountUsd: '12.34' })).json();
+    const { payment } = await (await server.call(server.aliceToken, `/api/payments/${created.paymentId}`)).json();
+    assert.equal(payment.amountMilli, 12_340);
+    assert.equal(payment.creditMilli, 12_340);
+    assert.equal(payment.creditedMilli, 0, 'nothing credited until the webhook');
+    assert.equal(payment.refundedMilli, 0);
+    assert.equal(payment.feeMilli, 0);
+    assert.equal(payment.legacyCredits, null);
+    for (const retired of ['credits', 'creditsGranted', 'refundedCredits', 'unitPriceCents', 'amountCents', 'feeCents']) {
+      assert.equal(retired in payment, false, `${retired} is not sent`);
+    }
   } finally {
     server.close();
   }
@@ -227,7 +218,7 @@ test('a method with no keys is not offered and cannot be checked out', async () 
     // the administrator, and the reason - which names the server's variables -
     // goes to the administrator and the log, under the ref.
     for (const method of ['card', 'crypto']) {
-      const response = await server.checkout(server.aliceToken, { method, credits: 20 });
+      const response = await server.checkout(server.aliceToken, { method, amountUsd: '10' });
       assert.equal(response.status, 503, method);
       const body = await response.json();
       assert.match(body.error, /payments are not available right now\. Please contact your administrator\./, method);
@@ -235,9 +226,9 @@ test('a method with no keys is not offered and cannot be checked out', async () 
       assert.equal(body.detail, undefined, method);
       assert.doesNotMatch(JSON.stringify(body), /STRIPE_|CRYPTOMUS_/, method);
     }
-    const asAdminCheckout = await (await server.checkout(server.adminToken, { method: 'card', credits: 20 })).json();
+    const asAdminCheckout = await (await server.checkout(server.adminToken, { method: 'card', amountUsd: '10' })).json();
     assert.match(asAdminCheckout.detail, /STRIPE_SECRET_KEY/);
-    const asAdminCrypto = await (await server.checkout(server.adminToken, { method: 'crypto', credits: 20 })).json();
+    const asAdminCrypto = await (await server.checkout(server.adminToken, { method: 'crypto', amountUsd: '10' })).json();
     assert.match(asAdminCrypto.detail, /CRYPTOMUS_/);
   } finally {
     server.close();
@@ -248,7 +239,7 @@ test('an unknown method is refused before anything is recorded', async () => {
   const server = await serve();
   try {
     for (const method of ['bank', '', null, 'CARD']) {
-      const response = await server.checkout(server.aliceToken, { method, credits: 20 });
+      const response = await server.checkout(server.aliceToken, { method, amountUsd: '10' });
       assert.equal(response.status, 400, `method=${method}`);
     }
     assert.equal(server.payments.listPaymentsForUser(server.alice.id).length, 0);
@@ -260,7 +251,7 @@ test('an unknown method is refused before anything is recorded', async () => {
 test('a payment belongs to one account, and nobody else can read it', async () => {
   const server = await serve();
   try {
-    const created = await (await server.checkout(server.aliceToken, { method: 'card', credits: 20 })).json();
+    const created = await (await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' })).json();
     const path = `/api/payments/${created.paymentId}`;
 
     assert.equal((await server.call(null, path)).status, 401);
@@ -278,19 +269,18 @@ test('a payment belongs to one account, and nobody else can read it', async () =
   }
 });
 
-test('the methods endpoint reports the price a checkout would charge', async () => {
+test('the methods endpoint reports the bounds a checkout is judged by', async () => {
   const server = await serve();
   try {
     const body = await (await server.call(server.aliceToken, '/api/payments/methods')).json();
-    assert.equal(body.unitPriceCents, PRICE_CENTS);
-    assert.equal(body.minCredits, 10);
-    assert.equal(body.maxCredits, 1000);
     assert.equal(body.currency, 'usd');
+    const card = body.targets.find((target) => target.id === 'card');
 
-    // The page cannot show a price the server would not charge, because it is
+    // The page cannot show a bound the server would not apply, because it is
     // the same number from the same place.
-    const created = await (await server.checkout(server.aliceToken, { method: 'card', credits: 30 })).json();
-    assert.equal(created.amountCents, 30 * body.unitPriceCents);
+    const smallest = await server.checkout(server.aliceToken, { method: 'card', amountUsd: card.minAmountMilli / 1000 });
+    assert.equal(smallest.status, 201);
+    assert.equal((await smallest.json()).amountMilli, card.minAmountMilli);
   } finally {
     server.close();
   }
@@ -299,8 +289,8 @@ test('the methods endpoint reports the price a checkout would charge', async () 
 test('only an administrator sees every payment', async () => {
   const server = await serve();
   try {
-    await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
-    await server.checkout(server.bobToken, { method: 'card', credits: 30 });
+    await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' });
+    await server.checkout(server.bobToken, { method: 'card', amountUsd: '15' });
 
     assert.equal((await server.call(server.aliceToken, '/api/admin/payments')).status, 403);
     assert.equal((await server.call(null, '/api/admin/payments')).status, 401);
@@ -327,7 +317,7 @@ test('a checkout the provider refuses leaves no payment anybody could complete',
       throw new stripe.StripeError('Invalid API Key provided: sk_live_****************abcd');
     };
 
-    const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+    const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' });
     assert.equal(response.status, 502);
     assert.doesNotMatch((await response.json()).error, /sk_live/, 'not told to the buyer either');
 
@@ -349,22 +339,22 @@ test('a checkout the provider refuses leaves no payment anybody could complete',
   }
 });
 
-test('a credit count with anything else in it is refused', async () => {
+test('an amount with anything else in it is refused', async () => {
   const server = await serve();
   try {
     // `parseFloat` reads every one of these as a number, which would mean a
-    // purchase nobody asked for at a price nobody was shown.
-    for (const credits of ['20abc', '2e1', '', ' ', '0x14', 'twenty', null, {}, [20]]) {
-      const response = await server.checkout(server.aliceToken, { method: 'card', credits });
-      assert.equal(response.status, 400, `${JSON.stringify(credits)} was accepted`);
+    // purchase nobody asked for at an amount nobody was shown.
+    for (const amountUsd of ['20abc', '2e1', '', ' ', '0x14', 'twenty', null, {}, [20], '1,000']) {
+      const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd });
+      assert.equal(response.status, 400, `${JSON.stringify(amountUsd)} was accepted`);
     }
 
-    // The two spellings that ARE a count still work.
-    assert.equal((await server.checkout(server.aliceToken, { method: 'card', credits: 20 })).status, 201);
-    assert.equal(
-      (await server.checkout(server.aliceToken, { method: 'card', credits: ' 20 ' })).status,
-      201
-    );
+    // The spellings that ARE an amount still work.
+    for (const amountUsd of [20, '20', ' 20 ', '20.00', '$20']) {
+      const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd });
+      assert.equal(response.status, 201, JSON.stringify(amountUsd));
+      assert.equal((await response.json()).amountMilli, 20_000);
+    }
   } finally {
     server.close();
   }
@@ -380,7 +370,7 @@ test('an account cannot open unlimited checkouts', async () => {
      */
     let refused = null;
     for (let attempt = 0; attempt < 25 && refused === null; attempt += 1) {
-      const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+      const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' });
       if (response.status !== 201) refused = response;
     }
 
@@ -389,7 +379,7 @@ test('an account cannot open unlimited checkouts', async () => {
     assert.match((await refused.json()).error, /too many checkouts/i);
 
     // And it is per account, not global: the limit must not lock everybody out.
-    assert.equal((await server.checkout(server.bobToken, { method: 'card', credits: 20 })).status, 201);
+    assert.equal((await server.checkout(server.bobToken, { method: 'card', amountUsd: '10' })).status, 201);
   } finally {
     server.close();
   }
@@ -398,7 +388,7 @@ test('an account cannot open unlimited checkouts', async () => {
 test('the payment form is ours: a checkout returns a client secret, not a redirect', async () => {
   const server = await serve();
   try {
-    const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+    const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' });
     assert.equal(response.status, 201);
     const body = await response.json();
 
@@ -448,10 +438,9 @@ test('the admin list pages past its first two hundred', async () => {
         userId: server.alice.id,
         method: 'card',
         provider: 'stripe',
-        credits: 10,
         amountCents: 500,
+        creditMilli: 5_000,
         currency: 'usd',
-        unitPriceCents: 50,
       });
     }
 
@@ -512,7 +501,7 @@ test('without the publishable key the card method is withheld', async () => {
     assert.match(asAdmin.methods.find((entry) => entry.method === 'card').reason, /STRIPE_PUBLISHABLE_KEY/);
     assert.equal(methods.publishableKey, '', 'and no half-configured key is handed out');
 
-    const response = await server.checkout(server.aliceToken, { method: 'card', credits: 20 });
+    const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' });
     assert.equal(response.status, 503);
   } finally {
     process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_key';
@@ -539,7 +528,7 @@ test('a buyer is sent back to the origin they bought from when nothing names one
   try {
     const response = await server.checkout(
       server.aliceToken,
-      { method: 'card', credits: 20 },
+      { method: 'card', amountUsd: '10' },
       { headers: { origin: 'https://example.org' } }
     );
     assert.equal(response.status, 201);
@@ -560,7 +549,7 @@ test('APP_URL outranks the buyer\'s origin, and PAYMENTS_RETURN_URL outranks bot
   try {
     await viaAppUrl.checkout(
       viaAppUrl.aliceToken,
-      { method: 'card', credits: 20 },
+      { method: 'card', amountUsd: '10' },
       { headers: { origin: 'https://somewhere-else.example' } }
     );
     assert.ok(
@@ -578,7 +567,7 @@ test('APP_URL outranks the buyer\'s origin, and PAYMENTS_RETURN_URL outranks bot
   try {
     await viaExplicit.checkout(
       viaExplicit.aliceToken,
-      { method: 'card', credits: 20 },
+      { method: 'card', amountUsd: '10' },
       { headers: { origin: 'https://somewhere-else.example' } }
     );
     // The existing contract: the variable that names this exact thing wins.
@@ -596,7 +585,7 @@ test('an Origin that is not an absolute http(s) origin is ignored, not pasted in
   try {
     await server.checkout(
       server.aliceToken,
-      { method: 'card', credits: 20 },
+      { method: 'card', amountUsd: '10' },
       // What a non-browser client, or `Origin: null` from a sandboxed frame,
       // will send. Pasting it in would build a return URL nobody can follow.
       { headers: { origin: 'null' } }

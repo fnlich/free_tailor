@@ -23,6 +23,7 @@ type UserRow = {
   role: string;
   subscription: string;
   credits: number;
+  balance_milli: number;
   google_sub: string | null;
   disabled: number;
   created_at: string;
@@ -38,7 +39,8 @@ type UserRow = {
 };
 
 const USER_COLUMNS =
-  'id, email, name, picture, role, subscription, credits, google_sub, disabled, created_at, updated_at, ' +
+  'id, email, name, picture, role, subscription, credits, balance_milli, google_sub, disabled, created_at, ' +
+  'updated_at, ' +
   'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at, ' +
   'notifications_seen_at, stripe_customer_id';
 
@@ -75,7 +77,7 @@ function toAccount(row: UserRow): UserAccount {
     subscription: (isSubscriptionId(row.subscription)
       ? row.subscription
       : DEFAULT_SUBSCRIPTION) as AccountSubscriptionId,
-    credits: Number.isFinite(row.credits) ? row.credits : 0,
+    balanceMilli: Number.isSafeInteger(row.balance_milli) ? row.balance_milli : 0,
     disabled: row.disabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -240,9 +242,11 @@ export function createUser(input: CreateUserInput): UserAccount {
     picture: input.picture ?? '',
     role: roleForNewUser(email, input.role),
     subscription: DEFAULT_SUBSCRIPTION,
-    // Zero, and nothing in this release spends them. The balance exists so an
-    // admin can grant it and so the account page has something true to show.
+    // Zero in both units: `credits` is the whole-credit column from before
+    // credits became dollars, which nothing writes any more, and the balance
+    // starts at $0 until a grant, a signup grant or a purchase moves it.
     credits: 0,
+    balance_milli: 0,
     google_sub: input.googleSub ?? null,
     disabled: 0,
     created_at: timestamp,
@@ -266,7 +270,7 @@ export function createUser(input: CreateUserInput): UserAccount {
   getDb()
     .prepare(
       `INSERT INTO users (${USER_COLUMNS})
-       VALUES (@id, @email, @name, @picture, @role, @subscription, @credits, @google_sub, @disabled,
+       VALUES (@id, @email, @name, @picture, @role, @subscription, @credits, @balance_milli, @google_sub, @disabled,
                @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
                @sheet_tab_gid, @sheet_shared_at, @notifications_seen_at,
                @stripe_customer_id)`

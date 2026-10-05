@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 
 import { requireUser } from '../middleware/auth';
-import { countLedger, getLedger, getStatus, CREDITS_PER_RESUME } from '../services/credits';
+import { countLedger, getLedger, getStatus } from '../services/credits';
 import { readPage } from './paging';
 
 /**
@@ -11,18 +11,22 @@ import { readPage } from './paging';
  * list that grows without bound and /auth/me is fetched on every page load by
  * every page. The balance itself does ride along on the account; this is for
  * the panel that explains it.
+ *
+ * Every amount is an integer count of thousandths of a dollar, in a field
+ * ending `Milli` - a credit is a dollar. A ledger row from before credits
+ * became dollars carries its whole-credit figures under `legacyCredits`.
  */
 
 const router = Router();
 router.use(requireUser);
 
+/**
+ * `{ balanceMilli, heldMilli, exempt }`. What a run costs is its quote
+ * (POST /api/generation/quote); there is no one price per resume to send,
+ * because each model has its own.
+ */
 router.get('/', (req: Request, res: Response) => {
-  res.json({
-    ...getStatus(req.user!),
-    // The DEFAULT price, kept for a page loaded before prices were per model.
-    // What a run costs now is its quote: POST /api/generation/quote.
-    perResume: CREDITS_PER_RESUME,
-  });
+  res.json(getStatus(req.user!));
 });
 
 /**
@@ -42,7 +46,7 @@ router.get('/ledger', (req: Request, res: Response) => {
    */
   const { limit, offset } = readPage(req, 100, 100);
   res.json({
-    balance: req.user!.credits,
+    balanceMilli: req.user!.balanceMilli,
     entries: getLedger(req.user!.id, limit, offset),
     total: countLedger(req.user!.id),
     offset,

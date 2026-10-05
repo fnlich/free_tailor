@@ -25,6 +25,7 @@ const puppeteer = require('puppeteer');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
+const creditLedger = require(path.join(DIST, 'database', 'creditRepository'));
 
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
 const SHOTS = process.env.E2E_SHOTS || __dirname;
@@ -755,6 +756,57 @@ async function main() {
         await wait(200);
       }
     }
+
+    /*
+     * And the balance on a phone, whole.
+     *
+     * The balance is dollars to the thousandth, and the last digit is the one
+     * a $0.023 charge moves - the one an ellipsis eats first. The narrow-phone
+     * compaction once stopped at 375, so 375-384 (iPhone SE, 8 and mini)
+     * showed "$16.4..." where 360 showed it whole, and every balance from
+     * $100 lost its tail up to 392, 390 included. Neither check above could
+     * see it: the bar did not overflow, the figure inside it was clipped. Two
+     * accounts of their own, so nobody else's page shows a balance it did not
+     * have: one in two figures, one in three - purchases start at $50 with
+     * presets to $1000, so both are ordinary.
+     */
+    for (const milli of [16_477, 150_000]) {
+      const holder = users.createUser({ email: `e2e-shell-pill-${milli}-${stamp}@example.com`, name: 'Pill' });
+      creditLedger.applyAdjustment({
+        userId: holder.id,
+        deltaMilli: milli,
+        reason: 'admin-grant',
+        idempotencyKey: `e2e-shell-pill:${holder.id}`,
+        note: 'e2e shell: a balance for the top bar to show',
+      });
+      const pillPage = await browser.newPage();
+      await signIn(pillPage, users.createSession(holder.id));
+      await setTheme(pillPage, 'light');
+      for (const width of [360, 375, 390]) {
+        await pillPage.setViewport({ width, height: 844 });
+        await pillPage.goto(`${APP}/orders`, { waitUntil: 'networkidle0' });
+        await pillPage
+          .waitForFunction(() => /\$/.test(document.querySelector('.tl-credits span:last-child')?.textContent ?? ''), {
+            timeout: 15_000,
+          })
+          .catch(() => {});
+        const pill = await pillPage.evaluate(() => {
+          const figure = document.querySelector('.tl-credits span:last-child');
+          return figure
+            ? { text: figure.textContent.trim(), need: figure.scrollWidth, room: figure.clientWidth }
+            : null;
+        });
+        const bar = await inspectTopBar(pillPage);
+        const expected = `$${(milli / 1000).toFixed(3)}`;
+        check(
+          `top bar ${width}px: a balance of ${expected} is shown whole, last digit included`,
+          pill?.text === expected && pill.need <= pill.room && bar?.past <= 0 && bar?.brand?.whole,
+          `${JSON.stringify(pill)}, bar ${bar?.past}px past, brand ${JSON.stringify(bar?.brand)}`
+        );
+      }
+      await pillPage.close();
+    }
+
     await page.setViewport(PHONE);
 
     const opened = await page.evaluate(() => {

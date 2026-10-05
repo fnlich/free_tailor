@@ -3,15 +3,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { Card, EmptyState, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
-import { adminApi, type PaymentTargetLimits } from '@/lib/api';
+import { adminApi, type PaymentTargetLimits, type PaymentTargetLimitsInput } from '@/lib/api';
 import {
   type AdminPayment,
   adminPaymentsApi,
-  formatAmount,
   STATE_LABELS,
   STATE_TONES,
 } from '@/lib/payments';
-import { formatDate } from '@/lib/format';
+import {
+  describePurchaseCredit,
+  describeRefundedNote,
+  describeRefundOutcome,
+  isLegacyPurchase,
+} from '@/lib/paymentDisplay';
+import { formatDate, formatMoney, parseDollars, toDollarInput } from '@/lib/format';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
 
@@ -22,58 +27,47 @@ import styles from './page.module.css';
  */
 
 /**
- * One target's limits, while they are being edited.
+ * One method's limits, while they are being edited.
  *
  * Strings, not numbers, and that is the point: an operator clearing a box to
  * retype it produces "" for a moment, and a number-typed state turns that into
  * NaN or - worse - silently into 0, which is a live setting that offers a
- * purchase of nothing. Parsing happens once, on save, where a bad value can be
- * reported instead of applied.
+ * purchase of nothing. They are DOLLARS as typed ("2.50"), sent to the server
+ * as typed, and the server parses them exactly and refuses anything that is
+ * not a whole number of cents by name - so a bad value is reported on save
+ * instead of applied.
  */
 type LimitDraft = {
   target: string;
-  minCents: string;
-  maxCents: string;
-  feeBps: string;
-  feeFixedCents: string;
-  presetsCents: string;
+  min: string;
+  max: string;
+  presets: string;
 };
 
 function toDraft(row: PaymentTargetLimits): LimitDraft {
   return {
     target: row.target,
-    minCents: String(row.minCents),
-    maxCents: String(row.maxCents),
-    feeBps: String(row.feeBps),
-    feeFixedCents: String(row.feeFixedCents),
-    presetsCents: row.presetsCents.join(', '),
+    min: toDollarInput(row.minMilli),
+    max: toDollarInput(row.maxMilli),
+    presets: row.presetsMilli.map(toDollarInput).join(', '),
   };
 }
 
-/** Whole numbers only, and a blank or a word becomes 0 for the server to refuse. */
-function wholeNumber(value: string): number {
-  const parsed = Number.parseInt(value.trim(), 10);
-  return Number.isInteger(parsed) ? parsed : 0;
-}
-
-function toRow(draft: LimitDraft): PaymentTargetLimits {
+function toRow(draft: LimitDraft): PaymentTargetLimitsInput {
   return {
     target: draft.target.trim(),
-    minCents: wholeNumber(draft.minCents),
-    maxCents: wholeNumber(draft.maxCents),
-    feeBps: wholeNumber(draft.feeBps),
-    feeFixedCents: wholeNumber(draft.feeFixedCents),
+    minUsd: draft.min.trim(),
+    maxUsd: draft.max.trim(),
     /*
      * Commas, spaces or both - an operator pasting a list should not have to
-     * guess the separator. Anything that is not a whole number is dropped
-     * here rather than sent as a zero, because a $0.00 button is a button
-     * that sells nothing and the server would only refuse the whole save.
+     * guess the separator. Each is sent as typed: one that is not an amount is
+     * refused by the server naming the preset, rather than dropped here where
+     * nobody would notice it went.
      */
-    presetsCents: draft.presetsCents
+    presetsUsd: draft.presets
       .split(/[\s,]+/)
-      .filter(Boolean)
-      .map((part) => Number.parseInt(part, 10))
-      .filter((cents) => Number.isInteger(cents)),
+      .map((part) => part.replace(/^\$/, ''))
+      .filter(Boolean),
   };
 }
 
@@ -83,9 +77,10 @@ function targetLabel(target: string): string {
   return target;
 }
 
-/** Cents as dollars, for the hint under a pair of bounds. */
-function dollars(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+/** A typed bound as money for the card's description, or a dash while it is not one yet. */
+function typedMoney(value: string): string {
+  const parsed = parseDollars(value);
+  return parsed.ok ? formatMoney(parsed.milli) : '—';
 }
 
 const LIMIT_FIELD = 'tl-input mt-2';
@@ -99,18 +94,13 @@ function LimitFields({
   onChange: (next: LimitDraft) => void;
   onRemove: () => void;
 }) {
-  const min = wholeNumber(draft.minCents);
-  const max = wholeNumber(draft.maxCents);
-  const feeBps = wholeNumber(draft.feeBps);
-
   return (
     <Card
       title={targetLabel(draft.target)}
       description={
         <>
-          <span className="font-mono">{draft.target}</span> &middot; {dollars(min)} to{' '}
-          {dollars(max)}
-          {feeBps > 0 && ` · fee ${(feeBps / 100).toFixed(2)}%`}
+          <span className="font-mono">{draft.target}</span> &middot; {typedMoney(draft.min)} to{' '}
+          {typedMoney(draft.max)}
         </>
       }
       actions={
@@ -125,58 +115,40 @@ function LimitFields({
         </button>
       }
     >
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2">
         <label className="block">
-          <span className="tl-label">Smallest (cents)</span>
+          <span className="tl-label">Smallest purchase ($)</span>
           <input
-            type="number"
-            min={1}
-            value={draft.minCents}
-            onChange={(event) => onChange({ ...draft, minCents: event.target.value })}
+            type="text"
+            inputMode="decimal"
+            value={draft.min}
+            onChange={(event) => onChange({ ...draft, min: event.target.value })}
             className={LIMIT_FIELD}
+            placeholder="2.50"
           />
         </label>
         <label className="block">
-          <span className="tl-label">Largest (cents)</span>
+          <span className="tl-label">Largest purchase ($)</span>
           <input
-            type="number"
-            min={1}
-            value={draft.maxCents}
-            onChange={(event) => onChange({ ...draft, maxCents: event.target.value })}
+            type="text"
+            inputMode="decimal"
+            value={draft.max}
+            onChange={(event) => onChange({ ...draft, max: event.target.value })}
             className={LIMIT_FIELD}
-          />
-        </label>
-        <label className="block">
-          <span className="tl-label">Fee (basis points)</span>
-          <input
-            type="number"
-            min={0}
-            value={draft.feeBps}
-            onChange={(event) => onChange({ ...draft, feeBps: event.target.value })}
-            className={LIMIT_FIELD}
-          />
-        </label>
-        <label className="block">
-          <span className="tl-label">Fee (fixed cents)</span>
-          <input
-            type="number"
-            min={0}
-            value={draft.feeFixedCents}
-            onChange={(event) => onChange({ ...draft, feeFixedCents: event.target.value })}
-            className={LIMIT_FIELD}
+            placeholder="100.00"
           />
         </label>
       </div>
 
       <label className="mt-4 block">
-        <span className="tl-label">Preset buttons (cents)</span>
+        <span className="tl-label">Preset buttons ($)</span>
         <input
           type="text"
-          inputMode="numeric"
-          value={draft.presetsCents}
-          onChange={(event) => onChange({ ...draft, presetsCents: event.target.value })}
+          inputMode="decimal"
+          value={draft.presets}
+          onChange={(event) => onChange({ ...draft, presets: event.target.value })}
           className={LIMIT_FIELD}
-          placeholder="500, 1000, 2500"
+          placeholder="5, 10, 25"
         />
       </label>
     </Card>
@@ -184,21 +156,20 @@ function LimitFields({
 }
 
 /**
- * The price, set where the payments it governs are read.
+ * What may be bought, set where the payments it governs are read.
  *
  * Not on the general settings page, and that is a judgement rather than
  * laziness: an operator who has come to reconcile payments is the operator who
- * wants to change the price, and a number that decides what customers are
- * charged is worth having beside the record of what they were charged.
+ * wants to change what can be bought, and a bound that decides what customers
+ * may be charged is worth having beside the record of what they were charged.
  *
- * It saves through the ordinary settings endpoint, so the server's own
- * validation - whole numbers, in range, minimum not above maximum - is the
- * same validation any other settings change gets.
+ * There is no price to set. A credit is a dollar and a purchase credits
+ * exactly what it charges, so the only settings are each method's bounds and
+ * buttons, in dollars. It saves through the ordinary settings endpoint, so the
+ * server's own validation - whole cents, in range, minimum not above maximum -
+ * is the same validation any other settings change gets.
  */
 function PricingCard({ onSaved }: { onSaved: () => void }) {
-  const [price, setPrice] = useState('');
-  const [minCredits, setMinCredits] = useState('');
-  const [maxCredits, setMaxCredits] = useState('');
   const [limits, setLimits] = useState<LimitDraft[]>([]);
   const [require3ds, setRequire3ds] = useState(false);
   const [newTarget, setNewTarget] = useState('');
@@ -211,13 +182,10 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
     void (async () => {
       try {
         const settings = await adminApi.getSettings();
-        setPrice(String(settings.creditPriceCents));
-        setMinCredits(String(settings.creditMinCredits));
-        setMaxCredits(String(settings.creditMaxCredits));
         setLimits(settings.paymentLimits.map(toDraft));
         setRequire3ds(settings.requireThreeDSecure);
       } catch {
-        setProblem('Could not load the current pricing.');
+        setProblem('Could not load the current purchase limits.');
       } finally {
         setLoaded(true);
       }
@@ -230,16 +198,13 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
     setProblem('');
     try {
       await adminApi.updateSettings({
-        creditPriceCents: Number.parseInt(price, 10),
-        creditMinCredits: Number.parseInt(minCredits, 10),
-        creditMaxCredits: Number.parseInt(maxCredits, 10),
         paymentLimits: limits.map(toRow),
         requireThreeDSecure: require3ds,
       });
-      setNote('Pricing saved. It applies to new purchases only.');
+      setNote('Saved. It applies to new purchases only.');
       onSaved();
     } catch (err) {
-      setProblem(messageWithDetail(err, 'Could not save the pricing.'));
+      setProblem(messageWithDetail(err, 'Could not save the purchase limits.'));
     } finally {
       setSaving(false);
     }
@@ -250,42 +215,9 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   return (
     <>
       <Section
-        title="Pricing"
-        description="Each payment records the price at the time it was made, so changing this never rewrites what somebody has already paid."
-      >
-        <div className="grid gap-4 sm:grid-cols-3">
-          <label className="block">
-            <span className="tl-label">Price per credit (cents)</span>
-            <input
-              type="number"
-              min={1}
-              value={price}
-              onChange={(event) => setPrice(event.target.value)}
-              className="tl-input mt-2"
-            />
-          </label>
-          <label className="block">
-            <span className="tl-label">Smallest purchase</span>
-            <input
-              type="number"
-              min={1}
-              value={minCredits}
-              onChange={(event) => setMinCredits(event.target.value)}
-              className="tl-input mt-2"
-            />
-          </label>
-          <label className="block">
-            <span className="tl-label">Largest purchase</span>
-            <input
-              type="number"
-              min={1}
-              value={maxCredits}
-              onChange={(event) => setMaxCredits(event.target.value)}
-              className="tl-input mt-2"
-            />
-          </label>
-        </div>
-      </Section>
+        title="Credit"
+        description="A credit is a dollar: a purchase credits exactly what it charges, by card or by crypto, with nothing taken out. Each payment records what it charged, so changing a limit below never rewrites what somebody has already paid. Payments from before credits were dollars keep the credits and the price they were bought at."
+      />
 
       <Section title="Card security">
         <label className="tl-choice" data-on={require3ds}>
@@ -316,15 +248,14 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         title="Limits per payment method"
         description={
           <>
-            In cents, and the tighter of the two wins: a row here can narrow a method but never
-            take it past the credit bounds above. A method with no row falls back to those bounds
-            with no fee and no preset buttons, so removing a row is a way of switching its limits
-            off rather than a way of switching the method off.
+            In dollars and whole cents: the smallest and largest single purchase, and the amounts
+            offered as buttons (a button outside the bounds is not offered). A method with no row
+            falls back to its built-in limits - card $2.50 to $100, crypto $50 to $2,000 - so
+            removing a row is a way of switching its limits back, not a way of switching the method
+            off.
             {/* A block span rather than a second <p>: the kit puts the
                 description inside one paragraph already. */}
             <span className="mt-2 block">
-              A fee is taken <span className="font-medium">out of</span> the amount charged, not added
-              to it - the buyer pays what they chose and receives the credits the remainder buys.
               There are two methods to name here, <span className="font-mono">card</span> and{' '}
               <span className="font-mono">crypto</span>; a row naming a coin is left over from when
               this app chose the coin itself and no longer applies to anything.
@@ -384,17 +315,12 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
                 ...current,
                 {
                   target: newTarget.trim(),
-                  // The credit bounds above, in cents, so a new row starts
-                  // where the method already was rather than at zero.
-                  minCents: String(
-                    (Number.parseInt(minCredits, 10) || 0) * (Number.parseInt(price, 10) || 0)
-                  ),
-                  maxCents: String(
-                    (Number.parseInt(maxCredits, 10) || 0) * (Number.parseInt(price, 10) || 0)
-                  ),
-                  feeBps: '0',
-                  feeFixedCents: '0',
-                  presetsCents: '',
+                  // Empty, for the operator to fill: there is no sensible
+                  // default to guess, and a save with the boxes left empty is
+                  // refused by name rather than stored as $0.
+                  min: '',
+                  max: '',
+                  presets: '',
                 },
               ]);
               setNewTarget('');
@@ -415,7 +341,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
             disabled={saving}
             className="tl-button"
           >
-            {saving ? 'Saving…' : 'Save pricing and limits'}
+            {saving ? 'Saving…' : 'Save limits'}
           </button>
           {problem && <Status tone="error">{problem}</Status>}
           {note && <Status tone="ok">{note}</Status>}
@@ -475,7 +401,7 @@ function RefundDialog({
         className="tl-dialog max-w-lg p-6"
       >
         <h2 id="refund-dialog-title" className="text-lg font-semibold text-ink">
-          Refund {formatAmount(payment.amountCents, payment.currency)} to{' '}
+          Refund {formatMoney(payment.amountMilli)} to{' '}
           {payment.userEmail || 'this account'}?
         </h2>
         <p className="mt-2 text-sm text-muted">
@@ -502,9 +428,16 @@ function RefundDialog({
             </>
           ) : (
             <>
-              The money goes back through {payment.provider}. Credits already spent
-              cannot be reversed - a balance never goes below zero - and this will say
-              how many were.
+              The money goes back through {payment.provider}. Credit already spent
+              cannot be reversed - a balance never goes below $0.000 - and this will say
+              how much was.
+              {isLegacyPurchase(payment) && (
+                <>
+                  {' '}
+                  This payment was made before credits became dollars, and its credits were
+                  reset then, so refunding it reverses nothing on the balance.
+                </>
+              )}
             </>
           )}
         </p>
@@ -609,13 +542,7 @@ function PaymentsBody() {
        * left. Reporting a bare "refunded" would leave whoever pressed this
        * button to find out from the customer.
        */
-      setMessage(
-        outcome.shortfall > 0
-          ? `${payment.reference} refunded in full. Only ${outcome.creditsReversed} of ` +
-              `${outcome.creditsSold} credits could be reversed - the other ${outcome.shortfall} ` +
-              'had already been spent.'
-          : `${payment.reference} refunded, and all ${outcome.creditsReversed} credits reversed.`
-      );
+      setMessage(describeRefundOutcome(payment.reference, outcome));
       setConfirming('');
       setNote('');
       await load();
@@ -642,7 +569,7 @@ function PaymentsBody() {
         */}
         <h1 className="text-2xl font-bold tracking-tight text-ink">Payments</h1>
         <p className="mt-1 text-sm text-muted">
-          Every credit purchase on this installation. Quote the reference when reconciling against
+          Every purchase of credit on this installation. Quote the reference when reconciling against
           your provider&apos;s dashboard.
           {total > payments.length && (
             <> Showing the newest {payments.length} of {total}.</>
@@ -666,7 +593,7 @@ function PaymentsBody() {
 
         {payments.length === 0 ? (
           <EmptyState title="No payments yet">
-            Purchases appear here as soon as somebody buys credits.
+            Purchases appear here as soon as somebody buys credit.
           </EmptyState>
         ) : (
           <>
@@ -680,7 +607,7 @@ function PaymentsBody() {
                     <th scope="col">Date</th>
                     <th scope="col">Reference</th>
                     <th scope="col">Account</th>
-                    <th scope="col">Credits</th>
+                    <th scope="col">Credit</th>
                     <th scope="col">Amount</th>
                     <th scope="col">Method</th>
                     <th scope="col">Status</th>
@@ -712,10 +639,9 @@ function PaymentsBody() {
                         )}
                       </td>
                       <td className="break-words">{payment.userEmail || payment.userId}</td>
-                      <td className="tabular-nums">{payment.credits}</td>
-                      <td className="whitespace-nowrap tabular-nums">
-                        {formatAmount(payment.amountCents, payment.currency)}
-                      </td>
+                      {/* What it was for - a count of credits on a payment from before dollars. */}
+                      <td className="whitespace-nowrap tabular-nums">{describePurchaseCredit(payment)}</td>
+                      <td className="whitespace-nowrap tabular-nums">{formatMoney(payment.amountMilli)}</td>
                       <td>
                         <span className="capitalize">{payment.method}</span>
                       </td>
@@ -723,10 +649,7 @@ function PaymentsBody() {
                         <Pill tone={STATE_TONES[payment.state] ?? 'grey'}>{STATE_LABELS[payment.state]}</Pill>
                         {payment.state === 'refunded' && (
                           <p className={styles.note} data-tone="warn">
-                            {payment.refundedCredits} of {payment.credits} credits reversed
-                            {payment.refundedCredits < payment.credits &&
-                              ` - the other ${payment.credits - payment.refundedCredits} had been spent`}
-                            .
+                            {describeRefundedNote(payment)}
                           </p>
                         )}
                         {payment.failure && (

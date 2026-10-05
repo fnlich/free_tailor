@@ -33,7 +33,8 @@ const { useTempStorage, useAdminEmails, loadFresh, writeSettingRaw } = require('
  * by `chargeSavedCard` and by nothing else, is what tells the two apart.
  */
 
-const PRICE_CENTS = 50;
+/** A credit is a dollar: $40 of credit charges 4000 cents. */
+const PRICE_CENTS = 100;
 const STRIPE_SECRET = 'whsec_test_secret';
 
 function signStripe(rawBody, secret = STRIPE_SECRET, timestamp = Math.floor(Date.now() / 1000)) {
@@ -56,12 +57,7 @@ async function serve() {
     dbDir,
     'app-settings',
     JSON.stringify({
-      creditPriceCents: PRICE_CENTS,
-      creditMinCredits: 1,
-      creditMaxCredits: 100_000,
-      paymentLimits: [
-        { target: 'card', minCents: 1, maxCents: 1_000_000, feeBps: 0, feeFixedCents: 0, presetsCents: [] },
-      ],
+      paymentLimits: [{ target: 'card', minCents: 1, maxCents: 1_000_000, presetsCents: [] }],
     })
   );
 
@@ -190,13 +186,13 @@ async function serve() {
 test('a card is kept only when the buyer asked for it', async () => {
   const server = await serve();
   try {
-    await server.checkout(server.aliceToken, { method: 'card', credits: 10 });
+    await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' });
 
     assert.equal(server.calls.customers.length, 0, 'no customer for a guest checkout');
     assert.equal(server.calls.sessions[0].customer, undefined);
     assert.equal(server.calls.sessions[0].saveCard, undefined);
 
-    await server.checkout(server.aliceToken, { method: 'card', credits: 10, saveCard: true });
+    await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10', saveCard: true });
 
     assert.equal(server.calls.customers.length, 1, 'and one when they did');
     assert.equal(server.calls.sessions[1].customer, 'cus_test_1');
@@ -209,9 +205,9 @@ test('a card is kept only when the buyer asked for it', async () => {
 test('one customer per account, however many times they pay', async () => {
   const server = await serve();
   try {
-    await server.checkout(server.aliceToken, { method: 'card', credits: 10, saveCard: true });
-    await server.checkout(server.aliceToken, { method: 'card', credits: 20, saveCard: true });
-    await server.checkout(server.aliceToken, { method: 'card', credits: 30, saveCard: true });
+    await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10', saveCard: true });
+    await server.checkout(server.aliceToken, { method: 'card', amountUsd: '20', saveCard: true });
+    await server.checkout(server.aliceToken, { method: 'card', amountUsd: '30', saveCard: true });
 
     assert.equal(server.calls.customers.length, 1, 'created once and then reused');
     /*
@@ -338,7 +334,7 @@ test('paying with a saved card charges it and asks the browser for nothing', asy
 
     const response = await server.checkout(server.aliceToken, {
       method: 'card',
-      credits: 40,
+      amountUsd: '40',
       cardId: card.id,
     });
     assert.equal(response.status, 201);
@@ -372,7 +368,7 @@ test('somebody else\'s saved card cannot be charged', async () => {
 
     const response = await server.checkout(server.bobToken, {
       method: 'card',
-      credits: 10,
+      amountUsd: '10',
       cardId: card.id,
     });
     assert.equal(response.status, 404, '404, never 403');
@@ -392,7 +388,7 @@ test('an off-session charge is credited once, by its own intent event', async ()
     });
 
     const started = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 40, cardId: card.id })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '40', cardId: card.id })
     ).json();
 
     const event = {
@@ -409,12 +405,12 @@ test('an off-session charge is credited once, by its own intent event', async ()
     };
 
     assert.equal((await server.deliver(event)).status, 200);
-    assert.equal(server.users.getUserById(server.alice.id).credits, 40);
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 40_000);
     assert.equal(server.payments.getPayment(started.paymentId).state, 'paid');
 
     // A second delivery of the same event credits nothing, as for any other.
     assert.equal((await server.deliver({ ...event, id: 'evt_intent_2' })).status, 200);
-    assert.equal(server.users.getUserById(server.alice.id).credits, 40, 'and must not pay twice');
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 40_000, 'and must not pay twice');
   } finally {
     server.close();
   }
@@ -424,7 +420,7 @@ test('a session payment\'s own intent event credits nothing, and the session eve
   const server = await serve();
   try {
     const started = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 40 })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '40' })
     ).json();
 
     /*
@@ -458,7 +454,7 @@ test('a session payment\'s own intent event credits nothing, and the session eve
       /no matching payment/i,
       'resolved by reference only, so a session\'s intent is a stranger\'s event'
     );
-    assert.equal(server.users.getUserById(server.alice.id).credits, 0, 'nothing credited');
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 0, 'nothing credited');
     assert.equal(server.payments.getPayment(started.paymentId).state, 'pending');
 
     // And the event that IS this payment's still works.
@@ -476,7 +472,7 @@ test('a session payment\'s own intent event credits nothing, and the session eve
       },
     };
     assert.equal((await server.deliver(sessionEvent)).status, 200);
-    assert.equal(server.users.getUserById(server.alice.id).credits, 40);
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 40_000);
   } finally {
     server.close();
   }
@@ -491,7 +487,7 @@ test('an intent reporting a different amount credits nothing', async () => {
       methodRef: 'pm_alice_1',
     });
     const started = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 40, cardId: card.id })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '40', cardId: card.id })
     ).json();
 
     const response = await server.deliver({
@@ -506,7 +502,7 @@ test('an intent reporting a different amount credits nothing', async () => {
     // logged and left for a person - the same answer the session path gives.
     assert.equal(response.status, 200);
     assert.match((await response.json()).note, /amount does not match/i);
-    assert.equal(server.users.getUserById(server.alice.id).credits, 0);
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 0);
     assert.equal(server.payments.getPayment(started.paymentId).state, 'pending');
   } finally {
     server.close();
@@ -522,7 +518,7 @@ test('a failed intent closes the payment without crediting', async () => {
       methodRef: 'pm_alice_1',
     });
     const started = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 40, cardId: card.id })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '40', cardId: card.id })
     ).json();
 
     assert.equal(
@@ -538,7 +534,7 @@ test('a failed intent closes the payment without crediting', async () => {
 
     const payment = server.payments.getPayment(started.paymentId);
     assert.equal(payment.state, 'failed');
-    assert.equal(server.users.getUserById(server.alice.id).credits, 0);
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 0);
     assert.doesNotMatch(payment.failure, /payment_intent/, 'the buyer is not shown an event name');
   } finally {
     server.close();
@@ -554,7 +550,7 @@ test('a refund finds the payment behind a pi_ reference without asking for a ses
       methodRef: 'pm_alice_1',
     });
     const started = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 40, cardId: card.id })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '40', cardId: card.id })
     ).json();
     server.service.creditPaid(started.paymentId);
 
@@ -573,8 +569,8 @@ test('a refund finds the payment behind a pi_ reference without asking for a ses
 
     assert.equal(sessionAsked, false, 'a pi_ is already the intent; asking for a session 404s');
     assert.deepEqual(refunded, [{ intent: 'pi_saved_1', paymentId: started.paymentId }]);
-    assert.equal(outcome.creditsReversed, 40);
-    assert.equal(outcome.shortfall, 0);
+    assert.equal(outcome.reversedMilli, 40_000);
+    assert.equal(outcome.shortfallMilli, 0);
   } finally {
     server.close();
   }
@@ -613,7 +609,7 @@ test('a card is stored when the buyer ticked the box', async () => {
   const server = await serve();
   try {
     const started = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 10, saveCard: true })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10', saveCard: true })
     ).json();
 
     const payment = server.payments.getPayment(started.paymentId);
@@ -635,7 +631,7 @@ test('a card is NOT stored when the buyer did not, even once they have a custome
     // First, a purchase that DID ask - which is what gives Alice a customer
     // and makes the weaker gate stop protecting her.
     const first = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 10, saveCard: true })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10', saveCard: true })
     ).json();
     const firstPayment = server.payments.getPayment(first.paymentId);
     await server.deliver(paidSession(firstPayment, 10, PRICE_CENTS));
@@ -645,7 +641,7 @@ test('a card is NOT stored when the buyer did not, even once they have a custome
 
     // Then one that did not ask. A different card, and it must not be kept.
     const second = await (
-      await server.checkout(server.aliceToken, { method: 'card', credits: 10 })
+      await server.checkout(server.aliceToken, { method: 'card', amountUsd: '10' })
     ).json();
     const secondPayment = server.payments.getPayment(second.paymentId);
     assert.equal((await server.deliver(paidSession(secondPayment, 10, PRICE_CENTS))).status, 200);
@@ -653,7 +649,7 @@ test('a card is NOT stored when the buyer did not, even once they have a custome
 
     const kept = server.cards.listCardsForUser(server.alice.id);
     assert.equal(kept.length, 1, 'still just the one she asked to keep');
-    assert.equal(server.users.getUserById(server.alice.id).credits, 20, 'both purchases credited');
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 20_000, 'both purchases credited');
   } finally {
     server.close();
   }
@@ -700,7 +696,7 @@ test('a saved-card charge whose answer was lost is still settled by its intent e
 
     const lost = await server.checkout(server.aliceToken, {
       method: 'card',
-      credits: 40,
+      amountUsd: '40',
       cardId: card.id,
     });
     assert.equal(lost.status, 502);
@@ -726,7 +722,7 @@ test('a saved-card charge whose answer was lost is still settled by its intent e
 
     const settled = server.payments.getPayment(row.id);
     assert.equal(settled.state, 'paid', 'the hint found it');
-    assert.equal(server.users.getUserById(server.alice.id).credits, 40);
+    assert.equal(server.users.getUserById(server.alice.id).balanceMilli, 40_000);
     assert.equal(
       settled.providerRef,
       'pi_saved_recovered',
@@ -762,7 +758,7 @@ test('a charge with nothing usable on it still records what it was', async () =>
 
     const refused = await server.checkout(server.aliceToken, {
       method: 'card',
-      credits: 40,
+      amountUsd: '40',
       cardId: card.id,
     });
     assert.equal(refused.status, 502);
@@ -805,7 +801,7 @@ test('a bank that wants the buyer is reported as that, not as a broken provider'
 
     const response = await server.checkout(server.aliceToken, {
       method: 'card',
-      credits: 40,
+      amountUsd: '40',
       cardId: card.id,
     });
     assert.equal(response.status, 402, 'nothing is broken, so this is not a 502');
@@ -844,7 +840,7 @@ test('a settings failure is reported as ours, not as the provider refusing', asy
     };
 
     try {
-      const response = await server.checkout(server.aliceToken, { method: 'card', credits: 40 });
+      const response = await server.checkout(server.aliceToken, { method: 'card', amountUsd: '40' });
       assert.equal(response.status, 500, '502 says the trouble is upstream, and it is not');
       const body = await response.json();
       assert.match(body.error, /this server could not start that payment/i, body.error);

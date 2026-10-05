@@ -13,7 +13,9 @@ const { useAdminEmails, useTempStorage } = require('./helpers');
  * What a run is charged, end to end through the routes.
  *
  * Each resume costs the price of the model it runs on, resolved at submit the
- * way the task will resolve it. A batch is charged the SUM, in one reservation
+ * way the task will resolve it - in thousandths of a dollar: Sonnet $0.010 and
+ * Opus $0.023 here, so every figure below is exact. A batch is charged the
+ * SUM, in one reservation
  * whose history line breaks it down by model; a 402 names that sum; each task
  * that fails gives back its own price; and the quote says exactly what the
  * submission will charge, without charging anything.
@@ -96,7 +98,9 @@ async function serve(name, { seeds = false } = {}) {
   });
   saveProfile({ ...buildNewProfile(profileInput('Bea'), 'p-plain'), ownerId: alice.id });
   saveProfile({ ...buildNewProfile(profileInput('Cy'), 'p-admin'), ownerId: admin.id });
-  await config.updateAIModel('claude-cli-opus', { creditsPerResume: 2 });
+  // Every seed is free until priced; these two are priced, the rest stay free.
+  await config.updateAIModel('claude-cli-opus', { pricePerResumeUsd: '0.023' });
+  await config.updateAIModel('claude-cli-sonnet', { pricePerResumeUsd: '0.010' });
 
   const { attachUser } = require('../dist/middleware/auth');
   const app = express();
@@ -120,7 +124,7 @@ async function serve(name, { seeds = false } = {}) {
     post,
     admin,
     alice,
-    balance: (account) => users.getUserById(account.id).credits,
+    balance: (account) => users.getUserById(account.id).balanceMilli,
     ledger: (account, reason) =>
       credits.getLedger(account.id, 500).filter((entry) => !reason || entry.reason === reason),
     close: () => {
@@ -145,20 +149,27 @@ async function untilFinished(batchId) {
 test('the quote is what the submission charges, says nothing about models, and charges nothing', async () => {
   const server = await serve('quote');
   try {
-    credits.setBalance(server.alice.id, 10, server.admin.id);
+    credits.setBalance(server.alice.id, 1_000, server.admin.id);
     const body = { jobs: jobsFor(2), profileIds: ['p-opus', 'p-plain'] };
 
     const quote = await server.post('alice', '/generation/quote', body);
     assert.equal(quote.status, 200);
-    // Two jobs x (Opus at 2 + Sonnet at 1).
-    assert.deepEqual(quote.body, { resumes: 4, credits: 6, balance: 10, exempt: false });
+    // Two jobs x (Opus at $0.023 + Sonnet at $0.010), and no one price per
+    // resume to name, since the two differ.
+    assert.deepEqual(quote.body, {
+      resumes: 4,
+      costMilli: 66,
+      pricePerResumeMilli: null,
+      balanceMilli: 1_000,
+      exempt: false,
+    });
     assert.deepEqual(server.ledger(server.alice, 'generation-reserve'), [], 'a quote reserves nothing');
-    assert.equal(server.balance(server.alice), 10);
+    assert.equal(server.balance(server.alice), 1_000);
 
     const submitted = await server.post('alice', '/generation/batches', body);
     assert.equal(submitted.status, 202);
     const [reserve] = server.ledger(server.alice, 'generation-reserve');
-    assert.equal(-reserve.delta, quote.body.credits, 'charged exactly what was quoted');
+    assert.equal(-reserve.deltaMilli, quote.body.costMilli, 'charged exactly what was quoted');
     await untilFinished(submitted.body.batchId);
   } finally {
     server.close();
@@ -168,26 +179,33 @@ test('the quote is what the submission charges, says nothing about models, and c
 test('the quote follows the model the request names, and an empty selection is a quote of nothing', async () => {
   const server = await serve('quote-override');
   try {
-    await config.updateAIModel('gemini-cli-auto', { creditsPerResume: 5 });
+    await config.updateAIModel('gemini-cli-auto', { pricePerResumeUsd: '0.050' });
     const override = await server.post('alice', '/generation/quote', {
       jobs: jobsFor(1),
       profileIds: ['p-opus', 'p-plain'],
       model: 'gemini-cli-auto',
     });
-    assert.deepEqual(override.body, { resumes: 2, credits: 10, balance: 0, exempt: false });
+    // One model for both, so one price per resume: "2 resumes x $0.050 = $0.100".
+    assert.deepEqual(override.body, {
+      resumes: 2,
+      costMilli: 100,
+      pricePerResumeMilli: 50,
+      balanceMilli: 0,
+      exempt: false,
+    });
 
     // While the form is still being filled in: no jobs, or no profile that matches.
     for (const body of [{ profileIds: ['p-opus'] }, { jobs: jobsFor(1), profileIds: ['not-mine'] }]) {
       const empty = await server.post('alice', '/generation/quote', body);
       assert.equal(empty.status, 200);
-      assert.deepEqual(empty.body, { resumes: 0, credits: 0, balance: 0, exempt: false });
+      assert.deepEqual(empty.body, { resumes: 0, costMilli: 0, pricePerResumeMilli: null, balanceMilli: 0, exempt: false });
     }
     // A missing company name does not change the price, so it does not stop the quote.
     const unnamed = await server.post('alice', '/generation/quote', {
       jobs: [{ companyName: '', role: '' }],
       profileIds: ['p-plain'],
     });
-    assert.deepEqual(unnamed.body, { resumes: 1, credits: 1, balance: 0, exempt: false });
+    assert.deepEqual(unnamed.body, { resumes: 1, costMilli: 10, pricePerResumeMilli: 10, balanceMilli: 0, exempt: false });
 
     await config.updateAIModel('claude-cli-haiku', { enabled: false });
     const refused = await server.post('alice', '/generation/quote', {
@@ -206,7 +224,7 @@ test('an administrator is quoted the full amount, and told they are exempt', asy
   const server = await serve('quote-admin');
   try {
     const quote = await server.post('admin', '/generation/quote', { jobs: jobsFor(3), profileIds: ['p-admin'] });
-    assert.deepEqual(quote.body, { resumes: 3, credits: 3, balance: 0, exempt: true });
+    assert.deepEqual(quote.body, { resumes: 3, costMilli: 30, pricePerResumeMilli: 10, balanceMilli: 0, exempt: true });
   } finally {
     server.close();
   }
@@ -217,7 +235,7 @@ test('an administrator is quoted the full amount, and told they are exempt', asy
 test('a mixed-price batch is charged the sum, broken down by model, and each failure refunds its own price', async () => {
   const server = await serve('mixed-batch');
   try {
-    credits.setBalance(server.alice.id, 10, server.admin.id);
+    credits.setBalance(server.alice.id, 1_000, server.admin.id);
     const submitted = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(2),
       profileIds: ['p-opus', 'p-plain'],
@@ -225,25 +243,29 @@ test('a mixed-price batch is charged the sum, broken down by model, and each fai
     assert.equal(submitted.status, 202);
 
     const [reserve] = server.ledger(server.alice, 'generation-reserve');
-    assert.equal(reserve.delta, -6);
+    assert.equal(reserve.deltaMilli, -66);
     assert.match(
       reserve.note,
-      /^4 resumes: (2 x Claude Opus @ 2, 2 x Claude Sonnet @ 1|2 x Claude Sonnet @ 1, 2 x Claude Opus @ 2) = 6 credits$/
+      /^4 resumes: (2 x Claude Opus @ \$0\.023, 2 x Claude Sonnet @ \$0\.010|2 x Claude Sonnet @ \$0\.010, 2 x Claude Opus @ \$0\.023) = \$0\.066$/
     );
 
     // Every task carries the price it was charged, outside its choice.
     const batch = queueModule.getGenerationQueue().getBatch(submitted.body.batchId);
     for (const task of batch.tasks) {
-      const expected = task.payload.profileId === 'p-opus' ? 2 : 1;
-      assert.equal(task.payload.creditCost, expected);
-      assert.equal('creditCost' in task.payload.choice, false);
+      const expected = task.payload.profileId === 'p-opus' ? 23 : 10;
+      assert.equal(task.payload.costMilli, expected);
+      assert.equal('costMilli' in task.payload.choice, false);
+      assert.equal('creditCost' in task.payload, false, 'nothing in the old unit');
     }
 
     // No template here, so every resume fails - and gives back its own price.
     await untilFinished(submitted.body.batchId);
-    const refunds = server.ledger(server.alice, 'generation-refund').map((entry) => entry.delta).sort();
-    assert.deepEqual(refunds, [1, 1, 2, 2]);
-    assert.equal(server.balance(server.alice), 10);
+    const refunds = server
+      .ledger(server.alice, 'generation-refund')
+      .map((entry) => entry.deltaMilli)
+      .sort((a, b) => a - b);
+    assert.deepEqual(refunds, [10, 10, 23, 23]);
+    assert.equal(server.balance(server.alice), 1_000);
   } finally {
     server.close();
   }
@@ -252,17 +274,18 @@ test('a mixed-price batch is charged the sum, broken down by model, and each fai
 test('a batch the balance cannot cover is a 402 naming the whole sum, and nothing is queued or taken', async () => {
   const server = await serve('batch-402');
   try {
-    credits.setBalance(server.alice.id, 5, server.admin.id);
+    // A thousandth short: exact arithmetic is what makes this a refusal.
+    credits.setBalance(server.alice.id, 65, server.admin.id);
     const refused = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(2),
       profileIds: ['p-opus', 'p-plain'],
     });
     assert.equal(refused.status, 402);
     assert.equal(refused.body.code, 'insufficient-credits');
-    assert.equal(refused.body.needed, 6);
-    assert.equal(refused.body.balance, 5);
-    assert.match(refused.body.error, /needs 6 credits and the account has 5/);
-    assert.equal(server.balance(server.alice), 5);
+    assert.equal(refused.body.neededMilli, 66);
+    assert.equal(refused.body.balanceMilli, 65);
+    assert.match(refused.body.error, /needs \$0\.066 of credit and the account has \$0\.065/);
+    assert.equal(server.balance(server.alice), 65);
     assert.deepEqual(server.ledger(server.alice, 'generation-reserve'), []);
     assert.deepEqual(queueModule.getGenerationQueue().listBatches(false), []);
   } finally {
@@ -273,7 +296,7 @@ test('a batch the balance cannot cover is a 402 naming the whole sum, and nothin
 test('a run on a free model takes nothing, writes nothing, and runs on an empty balance', async () => {
   const server = await serve('free');
   try {
-    await config.updateAIModel('gemini-cli-auto', { creditsPerResume: 0 });
+    await config.updateAIModel('gemini-cli-auto', { pricePerResumeUsd: '0' });
     const submitted = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(2),
       profileIds: ['p-plain'],
@@ -298,7 +321,7 @@ test('an administrator runs a priced batch and is charged nothing', async () => 
     const submitted = await server.post('admin', '/generation/batches', { jobs: jobsFor(3), profileIds: ['p-admin'] });
     assert.equal(submitted.status, 202);
     await untilFinished(submitted.body.batchId);
-    assert.equal(server.balance(server.admin), 1);
+    assert.equal(server.balance(server.admin), 1, '$0.001, untouched by a $0.030 run');
     assert.deepEqual(server.ledger(server.admin).filter((entry) => entry.reason.startsWith('generation')), []);
   } finally {
     server.close();
@@ -308,7 +331,7 @@ test('an administrator runs a priced batch and is charged nothing', async () => 
 test('a batch naming a model it may not use is refused before anything is charged', async () => {
   const server = await serve('batch-refused');
   try {
-    credits.setBalance(server.alice.id, 10, server.admin.id);
+    credits.setBalance(server.alice.id, 1_000, server.admin.id);
     await config.updateAIModel('claude-cli-haiku', { enabled: false });
     for (const model of ['claude-cli-haiku', 'claude-cli', 'claude-cli:sonnet']) {
       const refused = await server.post('alice', '/generation/batches', {
@@ -339,7 +362,7 @@ test('a batch naming a model it may not use is refused before anything is charge
 test('/resume/generate resolves the model first and charges its price', async () => {
   const server = await serve('single');
   try {
-    credits.setBalance(server.alice.id, 10, server.admin.id);
+    credits.setBalance(server.alice.id, 1_000, server.admin.id);
     // No template in this storage: the run fails after the charge, before any
     // model call, and the charge comes back.
     const failed = await server.post('alice', '/resume/generate', { profileId: 'p-opus', companyName: 'Acme' });
@@ -348,15 +371,15 @@ test('/resume/generate resolves the model first and charges its price', async ()
     assert.match(failed.body.error, /No resume template is available right now\. Please contact your administrator\./);
     assert.match(failed.body.ref, /^ERR-[0-9A-F]{6}$/);
     const [reserve] = server.ledger(server.alice, 'generation-reserve');
-    assert.equal(reserve.delta, -2, "Opus's price");
-    assert.equal(reserve.note, 'Ada / Acme - 1 resume: 1 x Claude Opus @ 2 = 2 credits');
-    assert.equal(server.balance(server.alice), 10, 'the run did not finish, so it was given back');
+    assert.equal(reserve.deltaMilli, -23, "Opus's price");
+    assert.equal(reserve.note, 'Ada / Acme - 1 resume: 1 x Claude Opus @ $0.023 = $0.023');
+    assert.equal(server.balance(server.alice), 1_000, 'the run did not finish, so it was given back');
 
-    credits.setBalance(server.alice.id, 1, server.admin.id);
+    credits.setBalance(server.alice.id, 22, server.admin.id);
     const short = await server.post('alice', '/resume/generate', { profileId: 'p-opus', companyName: 'Acme' });
     assert.equal(short.status, 402);
-    assert.equal(short.body.needed, 2);
-    assert.equal(short.body.balance, 1);
+    assert.equal(short.body.neededMilli, 23);
+    assert.equal(short.body.balanceMilli, 22);
 
     // Refused before the charge: a run naming a model it may not use takes nothing.
     await config.updateAIModel('claude-cli-haiku', { enabled: false });
@@ -480,8 +503,8 @@ test("finalising a preview is charged the model that wrote it, not the one the r
   const server = await serve('finalize-price');
   const { issuePreviewToken } = require('../dist/services/credits/previewToken');
   try {
-    credits.setBalance(server.alice.id, 20, server.admin.id);
-    await config.updateAIModel('claude-cli-haiku', { creditsPerResume: 0 });
+    credits.setBalance(server.alice.id, 1_000, server.admin.id);
+    await config.updateAIModel('claude-cli-haiku', { pricePerResumeUsd: '0' });
     const opusToken = issuePreviewToken({ userId: server.alice.id, profileId: 'p-plain', modelId: 'claude-cli-opus' });
     const written = { summary: 'Written by opus.', hardSkills: [], softSkills: [], experience: [] };
     const reserveNote = () => server.ledger(server.alice, 'generation-reserve').at(0)?.note ?? null;
@@ -495,7 +518,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
       tailoredContent: written,
       previewToken: opusToken,
     });
-    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ 2 = 2 credits');
+    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ $0.023 = $0.023');
 
     // A token for another profile, or a forged one, proves nothing - and
     // content of unknown origin is charged at least what the profile's own
@@ -512,7 +535,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
         tailoredContent: written,
         ...(previewToken ? { previewToken } : {}),
       });
-      assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Sonnet @ 1 = 1 credit');
+      assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Sonnet @ $0.010 = $0.010');
     }
     // ...while naming a dearer model than the profile's is charged that.
     await server.post('alice', '/resume/generate', {
@@ -521,7 +544,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
       model: 'claude-cli-opus',
       tailoredContent: written,
     });
-    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ 2 = 2 credits');
+    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ $0.023 = $0.023');
 
     // The queue the same way, and the quote with it: the tokens alone are
     // enough to price what finalising will charge.
@@ -532,13 +555,13 @@ test("finalising a preview is charged the model that wrote it, not the one the r
       previewTokenByProfileId: { 'p-plain': opusToken },
     };
     const quote = await server.post('alice', '/generation/quote', batchBody);
-    assert.equal(quote.body.credits, 2);
+    assert.equal(quote.body.costMilli, 23);
     const submitted = await server.post('alice', '/generation/batches', {
       ...batchBody,
       tailoredContentByProfileId: { 'p-plain': written },
     });
     assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
-    assert.match(reserveNote(), /1 x Claude Opus @ 2 = 2 credits$/);
+    assert.match(reserveNote(), /1 x Claude Opus @ \$0\.023 = \$0\.023$/);
     await untilFinished(submitted.body.batchId);
 
     const stripped = await server.post('alice', '/generation/batches', {
@@ -548,7 +571,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
       tailoredContentByProfileId: { 'p-plain': written },
     });
     assert.equal(stripped.status, 202);
-    assert.match(reserveNote(), /1 x Claude Sonnet @ 1 = 1 credit$/);
+    assert.match(reserveNote(), /1 x Claude Sonnet @ \$0\.010 = \$0\.010$/);
     await untilFinished(stripped.body.batchId);
   } finally {
     server.close();

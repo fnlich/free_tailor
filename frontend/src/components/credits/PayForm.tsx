@@ -7,7 +7,7 @@ import {
   PaymentElement,
   useCheckoutElements,
 } from '@stripe/react-stripe-js/checkout';
-import { formatAmount } from '@/lib/payments';
+import { formatMoney } from '@/lib/format';
 import { Spinner } from '@/components/ui/kit';
 import { PANEL, PRIMARY, QUIET } from './chrome';
 import { forgetStripe, stripeFor } from './stripeLoader';
@@ -30,12 +30,11 @@ import { forgetStripe, stripeFor } from './stripeLoader';
 
 
 function Inner({
-  amountCents,
-  currency,
+  amountMilli,
   onCancel,
 }: {
-  amountCents: number;
-  currency: string;
+  /** What the card is charged, in thousandths of a dollar - always whole cents. */
+  amountMilli: number;
   onCancel: () => void;
 }) {
   const state = useCheckoutElements();
@@ -105,7 +104,7 @@ function Inner({
        * not written for the cardholder, so it goes to the console.
        */
       console.warn('[tailor] confirming the payment threw:', error);
-      setProblem('That payment could not be completed. If you were charged, your credits will still arrive.');
+      setProblem('That payment could not be completed. If you were charged, your credit will still arrive.');
       setPaying(false);
     }
   };
@@ -129,7 +128,7 @@ function Inner({
           disabled={paying}
           className={PRIMARY}
         >
-          {paying ? 'Paying…' : `Pay ${formatAmount(amountCents, currency)}`}
+          {paying ? 'Paying…' : `Pay ${formatMoney(amountMilli)}`}
         </button>
         <button
           type="button"
@@ -143,7 +142,7 @@ function Inner({
 
       <p className="text-xs text-subtle">
         Card details are entered in a form served by Stripe and go straight to them. This server
-        never sees them, and your credits arrive once the payment is confirmed.
+        never sees them, and your credit arrives once the payment is confirmed.
       </p>
     </div>
   );
@@ -155,9 +154,7 @@ const SCRIPT_TIMEOUT_MS = 15_000;
 export default function PayForm(props: {
   publishableKey: string;
   clientSecret: string;
-  credits: number;
-  amountCents: number;
-  currency: string;
+  amountMilli: number;
   dark: boolean;
   onCancel: () => void;
 }) {

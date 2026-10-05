@@ -99,19 +99,20 @@ test('an admin sees every account with its subscription and profile use', async 
   }
 });
 
-test('an admin can change a subscription, credits and role', async () => {
+test('an admin can change a subscription, a balance in dollars and a role', async () => {
   const server = await serve();
   try {
     const response = await server.request(server.adminToken, `/${server.alice.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ subscription: 'premium-plus', credits: 40, role: 'admin' }),
+      body: JSON.stringify({ subscription: 'premium-plus', balanceUsd: '3.977', role: 'admin' }),
     });
     const { account } = await response.json();
 
     assert.equal(account.subscription, 'premium-plus');
     assert.equal(account.subscriptionLabel, 'Premium+');
     assert.equal(account.profileLimit, 25);
-    assert.equal(account.credits, 40);
+    assert.equal(account.balanceMilli, 3_977, '$3.977, exactly');
+    assert.equal('credits' in account, false, 'the whole-credit field is gone');
     assert.equal(account.role, 'admin');
   } finally {
     server.close();
@@ -209,7 +210,7 @@ test('an admin may still change their own name, subscription and credits', async
       method: 'PATCH',
       // `role: 'admin'` and `disabled: false` change nothing that matters, so
       // they are not refused either.
-      body: JSON.stringify({ name: 'Renamed', subscription: 'premium', credits: 5, role: 'admin', disabled: false }),
+      body: JSON.stringify({ name: 'Renamed', subscription: 'premium', balanceUsd: '5', role: 'admin', disabled: false }),
     });
     assert.equal(response.status, 200);
     const { account } = await response.json();
@@ -322,14 +323,14 @@ test('an admin can pre-create an account with its subscription already set', asy
   try {
     const response = await server.request(server.adminToken, '/', {
       method: 'POST',
-      body: JSON.stringify({ email: 'New.Person@Example.com', subscription: 'premium', credits: 10 }),
+      body: JSON.stringify({ email: 'New.Person@Example.com', subscription: 'premium', balanceUsd: '10.005' }),
     });
     assert.equal(response.status, 201);
     const { account } = await response.json();
 
     assert.equal(account.email, 'new.person@example.com', 'normalized on the way in');
     assert.equal(account.subscription, 'premium');
-    assert.equal(account.credits, 10);
+    assert.equal(account.balanceMilli, 10_005);
     // Pre-creating is not a way in: they still have to prove the address.
     assert.equal(account.role, 'user');
 
@@ -374,6 +375,77 @@ test('deleting an account leaves its profiles behind, and says so', async () => 
     assert.equal(body.orphanedProfiles, 1);
     assert.match(body.note, /still exist/i);
     assert.ok(loadFresh('../dist/database/profileRepository').getProfile('p-alice'));
+  } finally {
+    server.close();
+  }
+});
+
+test('a balance is set and granted in dollars to $0.001, and anything finer, or a page still in credits, is refused', async () => {
+  const server = await serve();
+  try {
+    const patch = (body) =>
+      server.request(server.adminToken, `/${server.alice.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+    const grant = (body) =>
+      server.request(server.adminToken, `/${server.alice.id}/credits`, { method: 'POST', body: JSON.stringify(body) });
+
+    assert.equal((await patch({ balanceUsd: '1' })).status, 200);
+    const granted = await grant({ amountUsd: '0.005', note: 'a half cent' });
+    assert.equal(granted.status, 200);
+    const body = await granted.json();
+    assert.equal(body.balanceMilli, 1_005);
+    assert.equal(body.account.balanceMilli, 1_005);
+
+    const taken = await (await grant({ amountUsd: '-0.105' })).json();
+    assert.equal(taken.balanceMilli, 900);
+
+    for (const [bad, why] of [
+      ['0.0005', /three decimal places/],
+      ['0', /an amount in dollars to add/],
+      ['ten', /must be an amount in dollars/],
+      [undefined, /is required/],
+    ]) {
+      const refused = await grant({ amountUsd: bad });
+      assert.equal(refused.status, 400, JSON.stringify(bad));
+      assert.match((await refused.json()).error, why);
+    }
+    for (const [bad, why] of [
+      ['3.9775', /three decimal places/],
+      ['-1', /cannot be negative/],
+      ['', /is required/],
+    ]) {
+      const refused = await patch({ balanceUsd: bad });
+      assert.equal(refused.status, 400, JSON.stringify(bad));
+      assert.match((await refused.json()).error, why);
+    }
+
+    // An Accounts page loaded before credits were dollars sends whole credits.
+    // Read as dollars, or quietly ignored, either would move somebody's money
+    // by a figure nobody meant; it is refused, and nothing moves.
+    for (const [request, body] of [
+      [patch, { credits: 40 }],
+      [grant, { amount: 5 }],
+    ]) {
+      const refused = await request(body);
+      assert.equal(refused.status, 400);
+      assert.equal((await refused.json()).code, 'stale-page');
+    }
+    const preCreate = await server.request(server.adminToken, '/', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'stale@example.com', credits: 10 }),
+    });
+    assert.equal(preCreate.status, 400);
+
+    const ledger = await (await server.request(server.adminToken, `/${server.alice.id}/credits`)).json();
+    assert.equal(ledger.balanceMilli, 900, 'untouched by every refusal');
+    assert.deepEqual(
+      ledger.entries.map((entry) => [entry.reason, entry.deltaMilli]),
+      [
+        ['admin-revoke', -105],
+        ['admin-grant', 5],
+        ['admin-set', 1_000],
+      ]
+    );
+    assert.match(ledger.entries[2].note, /Set from the accounts page/);
   } finally {
     server.close();
   }

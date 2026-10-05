@@ -1,7 +1,13 @@
 import { apiFetch } from './api';
 
 /**
- * Credits: what an account has, and where it went.
+ * Credit: what an account has, and where it went.
+ *
+ * A credit is a dollar, counted in thousandths: every amount here is an
+ * integer in a field ending `Milli`, shown with `formatMoney` ($0.023). Rows
+ * written before credits became dollars are the exception, and are shown as
+ * what they were - see `LedgerEntry.legacyCredits`, and lib/ledger.ts for how
+ * a row reads.
  *
  * The reasons are a closed union rather than free text because the ledger's
  * whole job is to be read back by a person. A reason with no phrase for it would
@@ -19,16 +25,34 @@ export type CreditReason =
   | 'generation-release'
   | 'reconcile-orphan'
   | 'purchase'
-  | 'purchase-refund';
+  | 'purchase-refund'
+  /**
+   * Credits became dollars and every balance was reset to $0.000: one row per
+   * account that held any, in its balance or in a run still going (that one
+   * moves 0 credits). Always carries `legacyCredits`.
+   */
+  | 'reset';
 
 export type LedgerEntry = {
   /** Monotonic, and authoritative for ordering: two rows can share a timestamp. */
   seq: number;
   id: string;
   userId: string;
-  /** Negative for a charge, positive for a grant or a refund. */
-  delta: number;
-  balanceAfter: number;
+  /**
+   * Thousandths of a dollar: negative for a charge, positive for a grant or a
+   * refund. 0 on a row from before credits were dollars - read `legacyCredits`.
+   */
+  deltaMilli: number;
+  /** The balance after this row, in thousandths of a dollar. 0 on a legacy row. */
+  balanceAfterMilli: number;
+  /**
+   * A row written before credits became dollars - and the `reset` row that
+   * ended them - as it was written, in whole CREDITS. Null on every row since.
+   * Never converted into dollars: what a credit was worth depended on what it
+   * was bought at, and the balances were reset rather than repriced, so the
+   * honest display is the figure the row holds, in the unit it holds it in.
+   */
+  legacyCredits: { delta: number; balanceAfter: number } | null;
   reason: CreditReason;
   refKind: string;
   refId: string;
@@ -38,16 +62,16 @@ export type LedgerEntry = {
 };
 
 export type CreditStatus = {
-  balance: number;
-  /** What runs in flight are holding. Comes back for any resume that fails. */
-  held: number;
+  /** Thousandths of a dollar. */
+  balanceMilli: number;
+  /** What runs in flight are holding, in thousandths. Comes back for any resume that fails. */
+  heldMilli: number;
   /** Administrators spend nothing. */
   exempt: boolean;
-  perResume: number;
 };
 
 export type CreditLedgerResponse = {
-  balance: number;
+  balanceMilli: number;
   entries: LedgerEntry[];
   /** How many movements there are altogether, so a page can say what it hides. */
   total: number;
@@ -77,7 +101,7 @@ export const creditsApi = {
  */
 const REASON_PHRASES: Record<CreditReason, string> = {
   'opening-balance': 'Balance carried over from before the ledger existed',
-  'signup-grant': 'Welcome credits',
+  'signup-grant': 'Welcome credit',
   'admin-grant': 'Added by an administrator',
   'admin-revoke': 'Removed by an administrator',
   'admin-set': 'Set by an administrator',
@@ -87,6 +111,7 @@ const REASON_PHRASES: Record<CreditReason, string> = {
   'reconcile-orphan': 'Returned - the run never finished',
   purchase: 'Bought',
   'purchase-refund': 'Refunded to your payment method',
+  reset: 'Reset to $0.000 when credits became dollars',
 };
 
 /**
@@ -98,9 +123,4 @@ const REASON_PHRASES: Record<CreditReason, string> = {
  */
 export function describeLedgerReason(entry: LedgerEntry): string {
   return REASON_PHRASES[entry.reason] ?? String(entry.reason);
-}
-
-/** "+3" / "-12", so the sign is visible without reading the colour. */
-export function formatDelta(delta: number): string {
-  return delta > 0 ? `+${delta}` : String(delta);
 }

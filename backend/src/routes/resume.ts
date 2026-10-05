@@ -628,7 +628,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     // named by the preview's token - and not at whatever this request names,
     // since no model writes it again here (see resolveSuppliedContentChoice).
     const suppliedContent = Boolean((req.body as GenerateResumeRequest).tailoredContent);
-    const { choice: selectedModel, creditCost } = suppliedContent
+    const { choice: selectedModel, costMilli } = suppliedContent
       ? await resolveSuppliedContentChoice(
           readAiOverrides(req.body),
           profile,
@@ -649,11 +649,11 @@ router.post('/generate', async (req: Request, res: Response) => {
     // for /batches to reuse. Charging both would bill the ordinary
     // preview-then-generate flow twice for one piece of model work.
     const singleReservation = newReservationId();
-    reserveCredits(req.user!, creditCost, {
+    reserveCredits(req.user!, costMilli, {
       kind: 'request',
       id: singleReservation,
       label: `${profile.name} / ${companyName.trim()} - ${describeCharge([
-        { modelLabel: selectedModel.modelLabel, credits: creditCost },
+        { modelLabel: selectedModel.modelLabel, costMilli },
       ])}`,
     });
     try {
@@ -790,8 +790,8 @@ router.post('/generate', async (req: Request, res: Response) => {
       releaseReservation(singleReservation, 'The run did not finish.');
     }
   } catch (error) {
-    // Too few credits is a 402 with `needed` and `balance`; a model the
-    // request may not use, a 400. Both are public. Anything else is generic.
+    // Too little credit is a 402 with `neededMilli` and `balanceMilli`; a model
+    // the request may not use, a 400. Both are public. Anything else is generic.
     sendPublicError(req, res, error, 'Failed to generate the resume');
   }
 });

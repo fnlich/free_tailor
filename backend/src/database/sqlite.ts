@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { switchCreditsToDollars } from './dollarSwitch';
 import { moveTemplateRowsToFiles } from './templateFileMove';
 import { runDataMigrations } from './migrations';
 
@@ -251,6 +252,22 @@ const SCHEMA = `
      */
     fee_cents        INTEGER NOT NULL DEFAULT 0,
     credits_granted  INTEGER NOT NULL DEFAULT 0,
+    /*
+     * The same three figures since credits became dollars, in thousandths of
+     * a dollar: what this payment credits (quoted), what the ledger actually
+     * received, and what a refund took back. A purchase credits exactly what
+     * it charges, so credit_milli is amount_cents times ten.
+     *
+     * NEW columns rather than the old ones reinterpreted. credits,
+     * credits_granted, refunded_credits and unit_price_cents still say what a
+     * payment made before the switch bought - N credits at 50c - which is what
+     * its receipt has to keep saying; a payment made since writes 0 into all
+     * four, so an older build that is rolled back to reads it as crediting
+     * nothing rather than as a thousand times what was paid.
+     */
+    credit_milli     INTEGER NOT NULL DEFAULT 0,
+    credited_milli   INTEGER NOT NULL DEFAULT 0,
+    refunded_milli   INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
   );
@@ -350,12 +367,24 @@ const SCHEMA = `
    * by a queue hook that can fire again after a restart; the key is what makes the
    * second write a no-op instead of a gift.
    */
+  /*
+   * delta and balance_after are WHOLE CREDITS, the unit before credits became
+   * dollars; delta_milli and balance_after_milli are thousandths of a dollar,
+   * the unit since. A row is in exactly one of them: one written before the
+   * switch has its amount in delta and 0 in delta_milli, one written since has
+   * it in delta_milli and 0 in delta - so a row's own columns say which it is,
+   * and the history keeps reading as what happened at the time. The switch's
+   * reset row (reason reset) is the last row in credits: it takes the old
+   * balance to zero, and the dollar figures start from nothing after it.
+   */
   CREATE TABLE IF NOT EXISTS credit_ledger (
     seq             INTEGER PRIMARY KEY AUTOINCREMENT,
     id              TEXT NOT NULL UNIQUE,
     user_id         TEXT NOT NULL,
     delta           INTEGER NOT NULL,
     balance_after   INTEGER NOT NULL,
+    delta_milli         INTEGER NOT NULL DEFAULT 0,
+    balance_after_milli INTEGER NOT NULL DEFAULT 0,
     reason          TEXT NOT NULL,
     ref_kind        TEXT NOT NULL DEFAULT '',
     ref_id          TEXT NOT NULL DEFAULT '',
@@ -452,6 +481,13 @@ const SCHEMA = `
     kind       TEXT NOT NULL,
     units      INTEGER NOT NULL,
     refunded   INTEGER NOT NULL DEFAULT 0,
+    /*
+     * What the run holds and has given back, in thousandths of a dollar. units
+     * and refunded are the same in whole credits, written 0 since the switch;
+     * the switch closed every reservation that was still open in them.
+     */
+    units_milli    INTEGER NOT NULL DEFAULT 0,
+    refunded_milli INTEGER NOT NULL DEFAULT 0,
     state      TEXT NOT NULL DEFAULT 'open',
     label      TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -473,7 +509,14 @@ const SCHEMA = `
      * renameColumns below renames it in place on a database they made.
      */
     subscription  TEXT NOT NULL DEFAULT 'default',
+    /*
+     * credits is the balance in whole credits, from before credits became
+     * dollars; the switch reset it to 0 and nothing writes it since.
+     * balance_milli is the balance now, in thousandths of a dollar - a cache of
+     * SUM(credit_ledger.delta_milli), written only by creditRepository.
+     */
     credits       INTEGER NOT NULL DEFAULT 0,
+    balance_milli INTEGER NOT NULL DEFAULT 0,
     google_sub    TEXT,
     disabled      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL,
@@ -685,6 +728,20 @@ function addMissingColumns(db: Database.Database): void {
     // which is what every upgraded row starts as and is also correct: an
     // account that has never looked has not seen anything.
     { table: 'users', column: 'notifications_seen_at', definition: 'TEXT' },
+    // Credits are dollars, counted in thousandths. New columns beside the old
+    // whole-credit ones, never the old ones reinterpreted: an older build
+    // rolled back to keeps reading its own columns, and reads a balance of 0
+    // rather than a thousand times what somebody holds. Zero on every
+    // upgraded row, which is what the switch below makes true anyway - it
+    // resets every balance to $0 (database/dollarSwitch.ts).
+    { table: 'users', column: 'balance_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'credit_ledger', column: 'delta_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'credit_ledger', column: 'balance_after_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'credit_reservations', column: 'units_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'credit_reservations', column: 'refunded_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'payments', column: 'credit_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'payments', column: 'credited_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'payments', column: 'refunded_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
   ];
 
   for (const addition of additions) {
@@ -758,6 +815,12 @@ export function getDb(): Database.Database {
   // once, here rather than in the numbered chain, which can wait for an
   // administrator for as long as nobody signs in. Never fatal.
   moveTemplateRowsToFiles(db);
+  // Credits became dollars: every balance and every model price reset to $0,
+  // once, with a row in each account's history saying so. Here and not in the
+  // numbered chain for the same reason: the chain can wait at 003 for an
+  // administrator indefinitely, while this build already reads the dollar
+  // columns. Never fatal, and safe to have not run - see the module.
+  switchCreditsToDollars(db);
   // The connection is registered BEFORE the migrations run. That ordering is
   // load-bearing: a migration (or anything it logs through) that reaches for
   // getDb() would otherwise recurse into opening a second connection to the

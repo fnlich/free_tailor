@@ -6,11 +6,13 @@ import type { RefObject } from 'react';
 
 import AccountMenu from '@/components/auth/AccountMenu';
 import { IconCredits, IconMenu, IconMoon, IconSun } from '@/components/icons';
+import { formatMoney } from '@/lib/format';
 import { useTheme } from '@/lib/useTheme';
 import NotificationsMenu from './NotificationsMenu';
 
 type Props = {
-  credits: number;
+  /** The balance, in thousandths of a dollar. */
+  balanceMilli: number;
   drawerOpen: boolean;
   onToggleDrawer: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
@@ -24,13 +26,15 @@ type Props = {
  * work. It reads from the auth context rather than fetching, so the refresh
  * that Resume Profiles already triggers after a create keeps this current too.
  */
-function CreditsPill({ credits }: { credits: number }) {
+function CreditsPill({ balanceMilli }: { balanceMilli: number }) {
+  const balance = formatMoney(balanceMilli);
   return (
     <Link href="/credits" className="tl-credits" title="Credits - press to buy more">
       <span className="tl-coin" aria-hidden>
         <IconCredits className="h-5 w-5" />
       </span>
-      <span>{credits}</span>
+      {/* Three decimals, like every amount: a $0.023 charge moves the last digit. */}
+      <span>{balance}</span>
     </Link>
   );
 }
@@ -55,7 +59,7 @@ function ThemeToggleButton() {
   );
 }
 
-export default function AppTopBar({ credits, drawerOpen, onToggleDrawer, triggerRef }: Props) {
+export default function AppTopBar({ balanceMilli, drawerOpen, onToggleDrawer, triggerRef }: Props) {
   return (
     <header className="tl-topbar">
       <div className="tl-brand">
@@ -92,7 +96,7 @@ export default function AppTopBar({ credits, drawerOpen, onToggleDrawer, trigger
         at the foot of the rail beside Settings.
       */}
       <div className="ml-auto flex shrink-0 items-center gap-1 px-3 sm:gap-3 sm:px-5">
-        <CreditsPill credits={credits} />
+        <CreditsPill balanceMilli={balanceMilli} />
         <NotificationsMenu />
         <ThemeToggleButton />
         <AccountMenu />

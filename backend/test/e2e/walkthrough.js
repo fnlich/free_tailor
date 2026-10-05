@@ -1,7 +1,11 @@
 /*
- * An end-to-end walk through buying credits, against the running server.
+ * An end-to-end walk through buying credit, against the running server.
  *
- * Nothing here is a unit test: it talks to http://127.0.0.1:3001 over the
+ * A credit is a dollar: a purchase is an amount of money (`amountUsd`), it
+ * credits exactly that, and every amount the API answers with is an integer
+ * count of thousandths of a dollar in a field ending `Milli`.
+ *
+ * Nothing here is a unit test: it talks to http://127.0.0.1:3001 (or E2E_API) over the
  * network, through the real routers, the real auth middleware, the real
  * database and the real webhook mount. The only thing that is not real is the
  * company at the other end - fake-providers.js replaces every function that
@@ -18,9 +22,13 @@ const path = require('path');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
+const { formatMoney } = require(path.join(DIST, 'utils', 'money'));
 
-const API = 'http://127.0.0.1:3001/api';
-const FAKE = 'http://127.0.0.1:4242';
+const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
+const FAKE = process.env.E2E_FAKE || 'http://127.0.0.1:4242';
+
+/** Thousandths as the dollars a request carries: 70000 -> "70.000", -46 -> "-0.046". */
+const usd = (milli) => formatMoney(milli).replace(/[$,]/g, '');
 
 let failures = 0;
 const results = [];
@@ -77,34 +85,55 @@ async function main() {
     methods.body?.publishableKey === process.env.STRIPE_PUBLISHABLE_KEY,
     `${methods.body?.publishableKey}`
   );
+  const cardTarget = methods.body?.targets?.find((t) => t.id === 'card');
+  const cryptoTarget = methods.body?.targets?.find((t) => t.id === 'crypto');
   check(
-    'the price and bounds come from settings',
-    methods.body?.unitPriceCents === 50 && methods.body?.minCredits === 10 && methods.body?.maxCredits === 5000,
-    `${methods.body?.unitPriceCents}c, ${methods.body?.minCredits}-${methods.body?.maxCredits} ${methods.body?.currency}`
+    'the bounds come from settings, in thousandths of a dollar, with no price per credit',
+    cardTarget?.minAmountMilli === 2500 &&
+      cardTarget?.maxAmountMilli === 100000 &&
+      cryptoTarget?.minAmountMilli === 50000 &&
+      methods.body?.unitPriceCents === undefined &&
+      cardTarget?.minCredits === undefined &&
+      cryptoTarget?.feeBps === undefined,
+    `card ${cardTarget?.minAmountMilli}-${cardTarget?.maxAmountMilli}, crypto ${cryptoTarget?.minAmountMilli}-${cryptoTarget?.maxAmountMilli}`
   );
 
   console.log('\n=== 2. A price cannot be sent ===');
   const tampered = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'card', credits: 20, amountCents: 1, unitPriceCents: 1, price: 0 }),
+    body: JSON.stringify({ method: 'card', amountUsd: '10', amountCents: 1, amountMilli: 1, creditMilli: 99999, price: 0 }),
   });
   check(
-    'a request carrying its own price is priced by the server anyway',
-    tampered.status === 201 && tampered.body.amountCents === 1000,
-    `status=${tampered.status} amountCents=${tampered.body?.amountCents}`
+    'a request carrying its own price is priced by the server anyway, and credits what it charges',
+    tampered.status === 201 && tampered.body.amountMilli === 10000 && tampered.body.creditMilli === 10000,
+    `status=${tampered.status} amountMilli=${tampered.body?.amountMilli} creditMilli=${tampered.body?.creditMilli}`
   );
 
   const rubbish = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'card', credits: '20abc' }),
+    body: JSON.stringify({ method: 'card', amountUsd: '20abc' }),
   });
-  check('a credit count that is not a count is refused', rubbish.status === 400, `status=${rubbish.status}: ${rubbish.body?.error}`);
-
-  console.log('\n=== 3. Card: checkout, pay, credit ===');
-  const startBalance = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-  const checkout = await call(buyerToken, '/payments/checkout', {
+  check('an amount that is not dollars is refused', rubbish.status === 400, `status=${rubbish.status}: ${rubbish.body?.error}`);
+  const fraction = await call(buyerToken, '/payments/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ method: 'card', amountUsd: '20.005' }),
+  });
+  check('and so is a fraction of a cent, rather than rounded', fraction.status === 400, `status=${fraction.status}: ${fraction.body?.error}`);
+  const stale = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
     body: JSON.stringify({ method: 'card', credits: 40 }),
+  });
+  check(
+    'a count of credits from a page loaded before dollars is refused as a stale page',
+    stale.status === 400 && /older version of the app/.test(stale.body?.error ?? ''),
+    `status=${stale.status}: ${stale.body?.error}`
+  );
+
+  console.log('\n=== 3. Card: checkout, pay, credit ===');
+  const startBalance = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
+  const checkout = await call(buyerToken, '/payments/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ method: 'card', amountUsd: '20' }),
   });
   check(
     'a checkout returns a client secret for a form on our own page',
@@ -116,8 +145,8 @@ async function main() {
 
   const before = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
   check('it starts pending, and credits nothing yet', before.body?.payment?.state === 'pending');
-  const balanceBeforePaying = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-  check('opening a checkout adds no credits', balanceBeforePaying === startBalance, `${balanceBeforePaying}`);
+  const balanceBeforePaying = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
+  check('opening a checkout adds no credit', balanceBeforePaying === startBalance, `${balanceBeforePaying}`);
 
   const sessionId = checkout.body.clientSecret.replace(/_secret$/, '');
 
@@ -136,7 +165,7 @@ async function main() {
   check(
     'visiting the return page before paying credits nothing',
     polled.body?.payment?.state === 'pending' &&
-      (await call(buyerToken, '/credits')).body.balance === startBalance,
+      (await call(buyerToken, '/credits')).body.balanceMilli === startBalance,
     `fetched ${returnUrl} -> ${visited ? visited.status : 'unreachable (frontend not running)'}`
   );
 
@@ -146,16 +175,20 @@ async function main() {
 
   const after = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
   check('the payment is now paid', after.body?.payment?.state === 'paid', `state=${after.body?.payment?.state}`);
-  const balanceAfter = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-  check('the credits are on the balance', balanceAfter === startBalance + 40, `${startBalance} -> ${balanceAfter}`);
+  const balanceAfter = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
+  check('the $20.000 is on the balance', balanceAfter === startBalance + 20000, `${startBalance} -> ${balanceAfter}`);
 
   const ledger = await call(buyerToken, '/credits/ledger?limit=5');
   const purchase = ledger.body?.entries?.find((e) => e.reason === 'purchase');
-  check('the ledger records the purchase', purchase?.delta === 40, JSON.stringify(purchase ?? null));
+  check(
+    'the ledger records the purchase in thousandths',
+    purchase?.deltaMilli === 20000 && purchase?.legacyCredits === null,
+    JSON.stringify(purchase ?? null)
+  );
 
   console.log('\n=== 4. The same webhook again ===');
   const replay = await fetch(`${FAKE}/pay/${sessionId}`, { method: 'POST', redirect: 'manual' });
-  const balanceAfterReplay = (await call(buyerToken, '/credits')).body?.balance ?? 0;
+  const balanceAfterReplay = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
   check(
     'a replayed delivery credits nothing further',
     balanceAfterReplay === balanceAfter,
@@ -197,10 +230,10 @@ async function main() {
     JSON.stringify(cryptoRows.map((row) => row.id)));
 
   const cryptoRow = (methodsBody?.targets ?? []).find((target) => target.id === 'crypto');
-  const cryptoCredits = cryptoRow?.minCredits ?? 100;
+  const cryptoMilli = cryptoRow?.minAmountMilli ?? 50000;
   const cryptoCheckout = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'crypto', credits: cryptoCredits }),
+    body: JSON.stringify({ method: 'crypto', amountUsd: usd(cryptoMilli) }),
   });
   check(
     'a crypto checkout is created',
@@ -227,21 +260,22 @@ async function main() {
     await wait(300);
 
     const cryptoPaid = await call(buyerToken, `/payments/${cryptoCheckout.body.paymentId}`);
-    balanceWithCrypto = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-    const granted = cryptoPaid.body?.payment?.creditsGranted ?? 0;
+    balanceWithCrypto = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
+    const granted = cryptoPaid.body?.payment?.creditedMilli ?? 0;
     check(
-      'a signed callback credits',
+      'a signed callback credits the whole amount - no fee comes out of it',
       cryptoPaid.body?.payment?.state === 'paid' &&
-        granted > 0 &&
+        granted === cryptoMilli &&
+        cryptoPaid.body?.payment?.feeMilli === 0 &&
         balanceWithCrypto === balanceAfter + granted,
-      `state=${cryptoPaid.body?.payment?.state} balance=${balanceWithCrypto} granted=${granted}`
+      `state=${cryptoPaid.body?.payment?.state} balance=${balanceWithCrypto} granted=${granted} of ${cryptoMilli}`
     );
 
     // Cryptomus retries until it gets a 2xx, so a second copy of the same
     // callback is ordinary traffic rather than an attack.
     await fetch(`${FAKE}/replay/${invoiceId}`, { method: 'POST' });
     await wait(200);
-    const afterReplay = (await call(buyerToken, '/credits')).body?.balance ?? 0;
+    const afterReplay = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
     check('and a retried callback credits nothing further', afterReplay === balanceWithCrypto,
       `${afterReplay} vs ${balanceWithCrypto}`);
   } else {
@@ -251,7 +285,7 @@ async function main() {
   console.log('\n=== 6. Cancelling ===');
   const abandoned = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
-    body: JSON.stringify({ method: 'card', credits: 10 }),
+    body: JSON.stringify({ method: 'card', amountUsd: '5' }),
   });
   const abandonedId = abandoned.body.clientSecret.replace(/_secret$/, '');
   await fetch(`${FAKE}/cancel/${abandonedId}`, { method: 'POST', redirect: 'manual' });
@@ -259,7 +293,7 @@ async function main() {
   check('an expired checkout closes without crediting', expired.body?.payment?.state === 'expired', `state=${expired.body?.payment?.state}`);
   check(
     'and the balance did not move',
-    (await call(buyerToken, '/credits')).body.balance === balanceWithCrypto
+    (await call(buyerToken, '/credits')).body.balanceMilli === balanceWithCrypto
   );
 
   console.log('\n=== 7. Somebody else\'s payment ===');
@@ -302,12 +336,21 @@ async function main() {
     body: JSON.stringify({ note: 'e2e refund' }),
   });
   check(
-    'the refund reverses the credits and reports three numbers',
-    refund.status === 200 && refund.body?.creditsReversed === 40 && refund.body?.shortfall === 0,
-    JSON.stringify(refund.body && { sold: refund.body.creditsSold, reversed: refund.body.creditsReversed, short: refund.body.shortfall })
+    'the refund reverses the credit and reports three amounts',
+    refund.status === 200 &&
+      refund.body?.creditedMilli === 20000 &&
+      refund.body?.reversedMilli === 20000 &&
+      refund.body?.shortfallMilli === 0,
+    JSON.stringify(
+      refund.body && {
+        credited: refund.body.creditedMilli,
+        reversed: refund.body.reversedMilli,
+        short: refund.body.shortfallMilli,
+      }
+    )
   );
-  const balanceAfterRefund = (await call(buyerToken, '/credits')).body?.balance ?? 0;
-  check('the balance comes down', balanceAfterRefund === balanceWithCrypto - 40, `${balanceWithCrypto} -> ${balanceAfterRefund}`);
+  const balanceAfterRefund = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
+  check('the balance comes down', balanceAfterRefund === balanceWithCrypto - 20000, `${balanceWithCrypto} -> ${balanceAfterRefund}`);
 
   const again = await call(adminToken, `/admin/payments/${checkout.body.paymentId}/refund`, {
     method: 'POST',
@@ -318,9 +361,13 @@ async function main() {
   console.log('\n=== 11. Refund against a spent balance ===');
   const spend = await call(adminToken, `/admin/accounts/${buyer.id}/credits`, {
     method: 'POST',
-    body: JSON.stringify({ amount: -balanceAfterRefund, note: 'spent on resumes' }),
+    body: JSON.stringify({ amountUsd: `-${usd(balanceAfterRefund)}`, note: 'spent on resumes' }),
   });
-  check('the balance is spent down to nothing', spend.status === 200, `status=${spend.status}`);
+  check(
+    'the balance is spent down to nothing',
+    spend.status === 200 && spend.body?.balanceMilli === 0,
+    `status=${spend.status} balance=${spend.body?.balanceMilli}`
+  );
   const shortRefund = cryptoPaymentId
     ? await call(adminToken, `/admin/payments/${cryptoPaymentId}/refund`, {
         method: 'POST',
@@ -358,8 +405,8 @@ async function main() {
   const askedFor = fakeState.sessions.find((s) => s.reference === checkout.body.reference);
   check(
     'the provider was asked for the amount the server quoted',
-    askedFor?.amountCents === 2000 && askedFor?.credits === 40,
-    `${askedFor?.credits} credits, ${askedFor?.amountCents}c`
+    askedFor?.amountCents === 2000 && askedFor?.creditMilli === 20000,
+    `${askedFor?.creditMilli} thousandths of credit, ${askedFor?.amountCents}c`
   );
   /*
    * This run's refund, not a count.

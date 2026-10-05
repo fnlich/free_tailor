@@ -326,7 +326,6 @@ async function captureInvoice(lifetime) {
         await cryptomus.createInvoice({
           paymentId: 'pay_1',
           reference: 'FT-1',
-          credits: 10,
           amountCents: 1000,
           currency: 'usd',
           returnUrl: 'https://app.example/r',

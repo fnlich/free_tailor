@@ -64,12 +64,20 @@ export type ResumeTaskPayload = {
   includeCoverLetterDocx: boolean;
   choice: AiChoice;
   /**
-   * What this resume was charged, in credits: the `creditsPerResume` of the
-   * model `choice` resolved to at submit. Snapshotted, and outside `choice`,
-   * because a choice can be resolved again after a restart and a refund must
-   * give back what was TAKEN, not what the model costs by then. Absent on a task
-   * queued before prices were per model, which was charged - and refunds - the
-   * default.
+   * What this resume was charged, in thousandths of a dollar: the
+   * `pricePerResumeMilli` of the model `choice` resolved to at submit.
+   * Snapshotted, and outside `choice`, because a choice can be resolved again
+   * after a restart and a refund must give back what was TAKEN, not what the
+   * model costs by then. Every task queued since credits became dollars has
+   * one (`buildTasks`); read through `taskCostMilli`, which says what one
+   * without it means.
+   */
+  costMilli?: number;
+  /**
+   * What a task queued BEFORE credits became dollars was charged, in whole
+   * credits - never written now, and never read as money. Kept on the stored
+   * payload as the record of what that resume cost then; the switch gave such
+   * a task `costMilli: 0` (database/dollarSwitch.ts).
    */
   creditCost?: number;
   /** Tailored content a preview already produced, so the model is not re-asked. */
@@ -177,7 +185,7 @@ export function namesRetiredProvider(choice: unknown): choice is AiChoice {
  * serves and then be refunded, and the person who queued it would get nothing.
  * So the choice is resolved again from the profile exactly as a new submission
  * would resolve it: the profile's own model, or the app default. The PRICE is
- * not: what the task was charged is snapshotted on its payload (`creditCost`)
+ * not: what the task was charged is snapshotted on its payload (`costMilli`)
  * and is what a failure refunds, whichever model it ends up running on.
  *
  * The restore does this first, so such a task is placed in the lane of the

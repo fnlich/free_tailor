@@ -29,6 +29,8 @@
  * mutate - and then restore - the real process environment.
  */
 
+import { formatMoney, parseDollars } from '../utils/money';
+
 export type EnvSource = NodeJS.ProcessEnv | Record<string, string | undefined>;
 
 const warnedNames = new Set<string>();
@@ -188,6 +190,49 @@ export function envInt(
     return clamped;
   }
   return parsed;
+}
+
+/* ------------------------------------------------------------------ dollars */
+
+export type EnvDollarsOptions = {
+  /** The most it may be, in thousandths of a dollar; above clamps and warns. */
+  maxMilli: number;
+};
+
+/**
+ * An amount of money, written in DOLLARS ("5", "0.25", "$12.50"), read as an
+ * exact count of thousandths of a dollar.
+ *
+ * Through utils/money's one parser, so a variable reads the way every amount
+ * typed into the app does: at most three decimals ($0.001 is the smallest
+ * step), never negative, no exponents. Junk - "five", "0.0005", "-1" - warns
+ * once and uses the default; above the ceiling clamps and warns, like envInt.
+ */
+export function envDollarsMilli(
+  name: string,
+  fallbackMilli: number,
+  opts: EnvDollarsOptions,
+  env: EnvSource = process.env
+): number {
+  const raw = envRaw(name, env);
+  if (raw === null) return fallbackMilli;
+
+  const parsed = parseDollars(raw);
+  if (!parsed.ok) {
+    const why =
+      parsed.problem === 'precision'
+        ? 'has more than three decimal places ($0.001 is the smallest step)'
+        : parsed.problem === 'negative'
+          ? 'is negative'
+          : 'is not an amount in dollars';
+    warnOnce(name, `${name}=${quote(raw)} ${why}; using ${formatMoney(fallbackMilli)}.`);
+    return fallbackMilli;
+  }
+  if (parsed.milli > opts.maxMilli) {
+    warnOnce(name, `${name}=${raw} is above ${formatMoney(opts.maxMilli)}; using ${formatMoney(opts.maxMilli)}.`);
+    return opts.maxMilli;
+  }
+  return parsed.milli;
 }
 
 /* ----------------------------------------------------------------- booleans */

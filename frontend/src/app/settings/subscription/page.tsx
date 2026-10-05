@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Field, Section, SettingsPage, StaticValue } from '@/components/settings/SettingsParts';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountSubscription } from '@/lib/auth';
+import { formatMoney } from '@/lib/format';
 
 /**
  * Settings > Subscription: the subscription this account is on, what it
@@ -106,14 +107,17 @@ export default function SubscriptionSettingsPage() {
 
       <Section
         title="Credits"
-        description="Bought and spent apart from your subscription. Each resume costs the credits set for the model it is built with, however many files it produces."
+        description="Bought and spent apart from your subscription. A credit is a dollar, counted to $0.001: each resume costs the price set for the model it is built with, however many files it produces."
       >
+        <Field label="Balance">
+          <StaticValue>{formatMoney(account.balanceMilli)}</StaticValue>
+        </Field>
         <div>
           <Link href="/credits" className="tl-button-quiet">
             Go to Credits
           </Link>
           <p className="mt-2 text-sm text-subtle">
-            Your balance, buying more and every purchase and spend are on the Credits page.
+            Buying more, and every purchase and spend, are on the Credits page.
           </p>
         </div>
       </Section>

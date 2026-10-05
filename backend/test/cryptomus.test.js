@@ -75,7 +75,6 @@ async function capture(run, { reply, status = 200 } = {}) {
 const INVOICE_INPUT = {
   paymentId: 'pay_1',
   reference: 'FT-PAY-1',
-  credits: 100,
   amountCents: 5_000,
   currency: 'usd',
   returnUrl: 'https://app.example.com/credits/return?payment=pay_1',

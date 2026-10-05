@@ -28,7 +28,8 @@ export type Account = {
   /** null means unlimited. */
   profileLimit: number | null;
   profilesUsed: number;
-  credits: number;
+  /** The credit balance, in thousandths of a dollar: 3977 is $3.977. Show it with `formatMoney`. */
+  balanceMilli: number;
   disabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -123,21 +124,22 @@ export const accountsApi = {
   /**
    * Adds to a balance, rather than setting it.
    *
-   * `amount` is a DELTA - positive adds, negative takes away. Distinct from
-   * `update({credits})`, which sets an absolute number: "give them ten more"
-   * and "make it ten" are different intentions, and making an admin do the
-   * arithmetic to express the first is how somebody takes credits away by
-   * accident.
+   * `amountUsd` is a DELTA in dollars, as the administrator typed it ("0.25",
+   * "-1.5") - positive adds, negative takes away, and the server stops at
+   * $0.000. Distinct from `update({ balanceUsd })`, which sets an absolute
+   * amount: "give them ten dollars more" and "make it ten dollars" are
+   * different intentions, and making an admin do the arithmetic to express the
+   * first is how somebody takes credit away by accident.
    */
-  grantCredits: (id: string, amount: number, note?: string) =>
-    apiFetch<{ account: ManagedAccount; balance: number }>(
+  grantCredits: (id: string, amountUsd: string, note?: string) =>
+    apiFetch<{ account: ManagedAccount; balanceMilli: number }>(
       `/admin/accounts/${encodeURIComponent(id)}/credits`,
-      { method: 'POST', body: JSON.stringify({ amount, note }) }
+      { method: 'POST', body: JSON.stringify({ amountUsd, note }) }
     ),
 
   /** Every movement on one account, so an admin can explain a balance. */
   ledger: (id: string) =>
-    apiFetch<{ balance: number; entries: LedgerEntry[] }>(
+    apiFetch<{ balanceMilli: number; entries: LedgerEntry[] }>(
       `/admin/accounts/${encodeURIComponent(id)}/credits`
     ),
 
@@ -149,7 +151,8 @@ export const accountsApi = {
     name?: string;
     role?: UserRole;
     subscription?: AccountSubscriptionId;
-    credits?: number;
+    /** An opening balance, in dollars as typed. Absent or '' opens at none. */
+    balanceUsd?: string;
   }) =>
     apiFetch<{ account: ManagedAccount }>('/admin/accounts', {
       method: 'POST',
@@ -161,7 +164,8 @@ export const accountsApi = {
     patch: {
       role?: UserRole;
       subscription?: AccountSubscriptionId;
-      credits?: number;
+      /** The balance to SET, in dollars as typed ("3.977"); never below $0.000. */
+      balanceUsd?: string;
       disabled?: boolean;
       name?: string;
     }

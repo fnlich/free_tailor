@@ -6,8 +6,8 @@ import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiResponseError } from '@/lib/api';
 import { keepPolling, pollDelay, SLOW_AFTER_MS, type PollOutcome } from '@/lib/paymentPoll';
+import { describePurchase, isLegacyPurchase } from '@/lib/paymentDisplay';
 import {
-  formatAmount,
   isPaymentPending,
   type Payment,
   paymentsApi,
@@ -175,12 +175,22 @@ function ReturnBody() {
         </div>
 
         <p className="mt-2 text-base text-muted">
-          {payment.credits} credits for {formatAmount(payment.amountCents, payment.currency)}.
+          {describePurchase(payment)}
         </p>
 
         {payment.state === 'paid' && (
           <Notice tone="success" className="mt-6">
-            <p className="font-semibold">Paid. Your credits are on your balance.</p>
+            <p className="font-semibold">
+              {/*
+                An order from before credits were dollars is reached from the
+                order table's Help link too, and its credits went with the
+                reset - "on your balance" would be a claim about money that is
+                no longer there.
+              */}
+              {isLegacyPurchase(payment)
+                ? 'Paid. This was bought before credits became dollars, and its credits were reset to $0.000 then.'
+                : 'Paid. Your credit is on your balance.'}
+            </p>
             <p className="mt-1">
               <Link href="/" className="font-semibold underline">
                 Start building
@@ -212,8 +222,8 @@ function ReturnBody() {
                     below says what to do when it stays that way.
                   */}
                   {payment.method === 'crypto'
-                    ? 'A crypto payment has to be confirmed by the network, which usually takes a few minutes. If it went through, your credits will be added even if you close this page.'
-                    : 'This usually takes a second or two. If the payment went through, your credits will be added even if you close this page.'}
+                    ? 'A crypto payment has to be confirmed by the network, which usually takes a few minutes. If it went through, your credit will be added even if you close this page.'
+                    : 'This usually takes a second or two. If the payment went through, your credit will be added even if you close this page.'}
                 </p>
                 {waitedTooLong && (
                   <p className="mt-2">

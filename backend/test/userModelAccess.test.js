@@ -120,7 +120,7 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
         { id: 's1', name: 'Shared applications', sheetId: 'SECRET-SHEET-ID', createdAt: 'x', updatedAt: 'x' },
       ],
     });
-    await config.updateAIModel('claude-cli-opus', { creditsPerResume: 7, description: 'Hardest prompts.' });
+    await config.updateAIModel('claude-cli-opus', { pricePerResumeUsd: '0.007', description: 'Hardest prompts.' });
 
     const { status, body, text } = await server.call('alice', 'GET', '/resume/models');
     assert.equal(status, 200);
@@ -147,7 +147,9 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
     for (const leak of [
       '"provider"',
       '"modelName"',
+      'pricePerResumeMilli',
       'creditsPerResume',
+      'freeEnabledModelIds',
       'Hardest prompts.',
       'providerLocks',
       'providersEnabled',
@@ -161,7 +163,7 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
 
     // The administrator's payload keeps all of it.
     const admin = await config.getAdminAppSettings();
-    assert.equal(admin.aiModels.find((model) => model.id === 'claude-cli-opus').creditsPerResume, 7);
+    assert.equal(admin.aiModels.find((model) => model.id === 'claude-cli-opus').pricePerResumeMilli, 7);
     assert.equal(admin.googleSheetsSources[0].sheetId, 'SECRET-SHEET-ID');
     assert.ok(Array.isArray(admin.providerModelOptions) && admin.providerModelOptions.length === 3);
   } finally {
@@ -259,10 +261,10 @@ test("the provider forms are an administrator's: refused for anyone else, resolv
   // default for everyone - that tolerance is about stale tabs, not about roles.
   assert.equal((await preferences.resolveAiChoice({ modelId: 'openai' }, null)).modelId, 'claude-cli-sonnet');
   // The priced form resolves the same way, with the model's own price.
-  await config.updateAIModel('codex-cli-default', { creditsPerResume: 3 });
+  await config.updateAIModel('codex-cli-default', { pricePerResumeUsd: '0.003' });
   assert.deepEqual(await preferences.resolvePricedAiChoice({ modelId: 'codex-cli-default' }, null), {
     choice: { provider: 'codex-cli', modelName: 'default', modelId: 'codex-cli-default', modelLabel: 'Codex' },
-    creditCost: 3,
+    costMilli: 3,
   });
 });
 
@@ -404,7 +406,7 @@ test('the job filter runs on the app default model, and is reported by its displ
   });
 
   // An administrator's own model as the default: that is what every row runs on.
-  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna' });
+  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna', pricePerResumeUsd: '0.010' });
   const luna = created.aiModels.find((model) => model.modelName === 'gpt-6-luna');
   await config.updateAppSettings({ defaultModelId: luna.id });
   const model = await jobFilter.resolveJobFilterModel();
@@ -440,7 +442,7 @@ test("a filter prompt's own override wins, and is named by its record - or, to a
     adminModelLabel: 'GPT-6-Sol',
   });
 
-  await config.createAIModel({ name: 'Sol', provider: 'codex-cli', modelName: 'gpt-6-sol' });
+  await config.createAIModel({ name: 'Sol', provider: 'codex-cli', modelName: 'gpt-6-sol', pricePerResumeUsd: '0.010' });
   assert.deepEqual(await jobFilter.resolveJobFilterModel(), {
     provider: 'codex-cli',
     modelName: 'gpt-6-sol',

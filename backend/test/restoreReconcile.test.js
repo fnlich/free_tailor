@@ -29,12 +29,13 @@ function setup(name) {
   const { reconcileCredits } = loadFresh('../dist/services/credits/reconcile');
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
-  credits.setBalance(alice.id, 20, admin.id);
-  const balance = () => users.getUserById(alice.id).credits;
+  // $20.000, in thousandths of a dollar; each resume here costs $2.000.
+  credits.setBalance(alice.id, 20_000, admin.id);
+  const balance = () => users.getUserById(alice.id).balanceMilli;
   return { users, credits, creditRepo, store, orders, queueModule, reconcileCredits, alice, balance };
 }
 
-function taskRow(batchId, seq, state, creditCost = 2) {
+function taskRow(batchId, seq, state, costMilli = 2_000) {
   return {
     id: `tsk_${batchId}_${seq}`,
     batchId,
@@ -44,7 +45,7 @@ function taskRow(batchId, seq, state, creditCost = 2) {
       queue: 'cli',
       label: { profileId: 'p1', profileName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
       kind: 'resume',
-      payload: { batchId, profileId: 'p1', jobIndex: 0, creditCost, choice: { provider: 'claude-cli', modelName: 'sonnet' } },
+      payload: { batchId, profileId: 'p1', jobIndex: 0, costMilli, choice: { provider: 'claude-cli', modelName: 'sonnet' } },
     },
   };
 }
@@ -72,11 +73,11 @@ async function until(check, what) {
 
 test('a run the restore brought back keeps its reservation; an abandoned one is still released', async () => {
   const h = setup('restore-reconcile-live');
-  // Three resumes at 2 credits: one built before the stop, two still to build.
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 6, { kind: 'batch', id: 'bat_long' });
+  // Three resumes at $2: one built before the stop, two still to build.
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 6_000, { kind: 'batch', id: 'bat_long' });
   // And a run whose batch rows are gone - genuinely abandoned.
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 3, { kind: 'batch', id: 'bat_gone' });
-  assert.equal(h.balance(), 11);
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 3_000, { kind: 'batch', id: 'bat_gone' });
+  assert.equal(h.balance(), 11_000);
   h.store.saveBatchWithTasks(batchRow('bat_long'), [
     taskRow('bat_long', 0, 'done'),
     taskRow('bat_long', 1, 'running'),
@@ -100,31 +101,31 @@ test('a run the restore brought back keeps its reservation; an abandoned one is 
   // Seven hours on, as a long order's restart would be.
   const report = h.reconcileCredits(Date.now() + SEVEN_HOURS, { liveBatchIds: restored.batchIds });
   assert.equal(report.released, 1, 'only the abandoned one');
-  assert.equal(report.credits, 3);
+  assert.equal(report.releasedMilli, 3_000);
   assert.equal(h.creditRepo.getReservation('bat_long').state, 'open', 'the live run keeps what it was charged');
-  assert.equal(h.balance(), 14);
+  assert.equal(h.balance(), 14_000);
 
   // The run finishes and closes its own reservation: all three delivered, so
-  // all six credits stay spent - none of it was built free.
+  // all six dollars stay spent - none of it was built free.
   release();
   await until(() => queue.snapshot('bat_long')?.state === 'done', 'the restored run to finish');
   await until(() => h.creditRepo.getReservation('bat_long').state === 'closed', 'the run to settle');
-  assert.equal(h.balance(), 14);
+  assert.equal(h.balance(), 14_000);
 });
 
 test('without being told, the reconciler would have released the live run - the bug this closes', async () => {
   const h = setup('restore-reconcile-unguarded');
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 4, { kind: 'batch', id: 'bat_long' });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 4_000, { kind: 'batch', id: 'bat_long' });
   h.store.saveBatchWithTasks(batchRow('bat_long'), [taskRow('bat_long', 0, 'queued'), taskRow('bat_long', 1, 'queued')]);
   h.queueModule.getGenerationQueue();
   h.queueModule.registerTaskRunner(h.queueModule.RESUME_TASK_KIND, () => new Promise(() => {}));
   await h.queueModule.restoreGenerationQueue();
-  assert.equal(h.reconcileCredits(Date.now() + SEVEN_HOURS).credits, 4);
+  assert.equal(h.reconcileCredits(Date.now() + SEVEN_HOURS).releasedMilli, 4_000);
 });
 
 test('a run that had finished, but not settled, when the process stopped is settled by the restore', async () => {
   const h = setup('restore-reconcile-finished');
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 6, { kind: 'batch', id: 'bat_done' });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 6_000, { kind: 'batch', id: 'bat_done' });
   h.store.saveBatchWithTasks(batchRow('bat_done'), [
     taskRow('bat_done', 0, 'done'),
     taskRow('bat_done', 1, 'done'),
@@ -136,11 +137,11 @@ test('a run that had finished, but not settled, when the process stopped is sett
   const restored = await h.queueModule.restoreGenerationQueue();
   assert.deepEqual(restored.batchIds, ['bat_done']);
   assert.equal(h.creditRepo.getReservation('bat_done').state, 'closed');
-  assert.equal(h.balance(), 16, 'the failed one came back, the two built stay spent');
+  assert.equal(h.balance(), 16_000, 'the failed one came back, the two built stay spent');
 
   // Settled, so the reconciler has nothing to hand back - with or without the list.
   assert.equal(h.reconcileCredits(Date.now() + SEVEN_HOURS).released, 0);
-  assert.equal(h.balance(), 16);
+  assert.equal(h.balance(), 16_000);
 
   // And restoring the same rows again refunds nothing twice.
   h.queueModule.resetGenerationQueueForTests();
@@ -151,7 +152,7 @@ test('a run that had finished, but not settled, when the process stopped is sett
   ]);
   h.queueModule.getGenerationQueue();
   await h.queueModule.restoreGenerationQueue();
-  assert.equal(h.balance(), 16);
+  assert.equal(h.balance(), 16_000);
 });
 
 test('an order queued before batches carried their kind is restored as an order', async () => {

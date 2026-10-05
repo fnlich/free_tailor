@@ -67,12 +67,14 @@ async function harness(name, { attempts = 1 } = {}) {
     admin,
     alice,
     kind,
-    balance: (id) => users.getUserById(id).credits,
+    balance: (id) => users.getUserById(id).balanceMilli,
+    // Each task snapshots its price, as `buildTasks` writes it: $0.023, in
+    // thousandths of a dollar, so every sum below is exact.
     task: (label) => ({
       queue: 'cli',
       label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
       kind,
-      payload: { label },
+      payload: { label, costMilli: PRICE },
     }),
     finish: (label, value = 'ok') => {
       pending.get(label)?.resolve(value);
@@ -84,6 +86,9 @@ async function harness(name, { attempts = 1 } = {}) {
     },
   };
 }
+
+/** What every stub resume costs: $0.023. */
+const PRICE = 23;
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -99,11 +104,11 @@ async function until(condition, what, budgetMs = 3000) {
 
 test('a batch where every resume lands keeps every credit', async () => {
   const h = await harness('all-succeed');
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 3, { kind: 'batch', id: batchId });
-  assert.equal(h.balance(h.alice.id), 7, 'charged up front');
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 3 * PRICE, { kind: 'batch', id: batchId });
+  assert.equal(h.balance(h.alice.id), 931, 'charged up front: $1.000 - $0.069');
 
   h.queue.submit([h.task('a'), h.task('b'), h.task('c')], { id: batchId });
   await h.queue.refreshCapacity();
@@ -118,19 +123,19 @@ test('a batch where every resume lands keeps every credit', async () => {
   const snapshot = h.queue.snapshot(batchId);
   assert.equal(snapshot.completed, 3, 'all three really ran');
 
-  // Three resumes, three credits. The reservation closes without refunding,
+  // Three resumes, three prices. The reservation closes without refunding,
   // and the balance does NOT bounce back.
-  assert.equal(h.balance(h.alice.id), 7);
+  assert.equal(h.balance(h.alice.id), 931);
   assert.equal(h.credits.getReservation(batchId).state, 'closed');
-  assert.equal(h.credits.getStatus(h.users.getUserById(h.alice.id)).held, 0);
+  assert.equal(h.credits.getStatus(h.users.getUserById(h.alice.id)).heldMilli, 0);
 });
 
 test('a resume that fails gives its credit back', async () => {
   const h = await harness('one-fails');
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 3, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 3 * PRICE, { kind: 'batch', id: batchId });
   h.queue.submit([h.task('a'), h.task('b'), h.task('c')], { id: batchId });
   await h.queue.refreshCapacity();
 
@@ -146,19 +151,20 @@ test('a resume that fails gives its credit back', async () => {
   assert.equal(snapshot.completed, 2);
   assert.equal(snapshot.failed, 1);
 
-  // Two delivered, one did not: 10 - 3 + 1.
-  assert.equal(h.balance(h.alice.id), 8);
+  // Two delivered, one did not: $1.000 - $0.069 + $0.023.
+  assert.equal(h.balance(h.alice.id), 954);
   const refunds = h.credits.getLedger(h.alice.id).filter((e) => e.reason === 'generation-refund');
   assert.equal(refunds.length, 1);
+  assert.equal(refunds[0].deltaMilli, PRICE);
   assert.match(refunds[0].note, /failed/);
 });
 
 test('cancelling a batch refunds every resume that had not started', async () => {
   const h = await harness('cancelled');
-  h.credits.setBalance(h.alice.id, 20, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 5, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 5 * PRICE, { kind: 'batch', id: batchId });
   h.queue.submit(
     ['a', 'b', 'c', 'd', 'e'].map((label) => h.task(label)),
     { id: batchId }
@@ -177,20 +183,20 @@ test('cancelling a batch refunds every resume that had not started', async () =>
   await settle();
 
   const balance = h.balance(h.alice.id);
-  assert.equal(balance, 19, 'only the delivered resume kept its credit');
+  assert.equal(balance, 1_000 - PRICE, 'only the delivered resume kept its price');
 
   const sum = h.credits
     .getLedger(h.alice.id, 500)
-    .reduce((total, entry) => total + entry.delta, 0);
+    .reduce((total, entry) => total + entry.deltaMilli, 0);
   assert.equal(balance, sum, 'and the ledger still explains the balance');
 });
 
 test('an admin runs the same batch and is charged nothing', async () => {
   const h = await harness('admin-exempt');
-  h.credits.setBalance(h.admin.id, 4, h.admin.id);
+  h.credits.setBalance(h.admin.id, 4_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  const reservation = h.credits.reserveCredits(h.users.getUserById(h.admin.id), 3, {
+  const reservation = h.credits.reserveCredits(h.users.getUserById(h.admin.id), 3 * PRICE, {
     kind: 'batch',
     id: batchId,
   });
@@ -208,16 +214,16 @@ test('an admin runs the same batch and is charged nothing', async () => {
 
   // Neither the charge nor the refunds touched anything: there is no
   // reservation row for the hook to find.
-  assert.equal(h.balance(h.admin.id), 4);
+  assert.equal(h.balance(h.admin.id), 4_000);
   assert.equal(h.credits.getLedger(h.admin.id).filter((e) => e.reason.startsWith('generation')).length, 0);
 });
 
 test('a repeated hook cannot refund the same resume twice', async () => {
   const h = await harness('double-hook');
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 2, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 2 * PRICE, { kind: 'batch', id: batchId });
   const batch = h.queue.submit([h.task('a'), h.task('b')], { id: batchId });
   await h.queue.refreshCapacity();
   await until(() => h.started() > 0, 'task a to start');
@@ -228,7 +234,7 @@ test('a repeated hook cannot refund the same resume twice', async () => {
 
   // Exactly what a restart or a re-settle would do: the same task id refunding
   // a second time. The idempotency key makes it free.
-  h.credits.refundTaskUnit(batchId, batch.tasks[0].id, 1, 'replayed');
+  h.credits.refundTaskUnit(batchId, batch.tasks[0].id, PRICE, 'replayed');
   assert.equal(h.balance(h.alice.id), afterFirst);
 });
 
@@ -242,12 +248,12 @@ test('a repeated hook cannot refund the same resume twice', async () => {
  * the balance rather than from the code's shape.
  */
 
-test('a resume that fails and then succeeds costs exactly one credit', async () => {
+test('a resume that fails and then succeeds costs exactly its price, once', async () => {
   const h = await harness('retry-succeeds', { attempts: 3 });
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 1, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), PRICE, { kind: 'batch', id: batchId });
   h.queue.submit([h.task('a')], { id: batchId });
   await h.queue.refreshCapacity();
 
@@ -264,18 +270,18 @@ test('a resume that fails and then succeeds costs exactly one credit', async () 
   assert.equal(snapshot.failed, 0);
   assert.equal(snapshot.tasks[0].attempts, 3, 'and the snapshot says how many goes it took');
 
-  // 10 - 1, and nothing given back: the resume was delivered.
-  assert.equal(h.balance(h.alice.id), 9);
+  // $1.000 - $0.023, and nothing given back: the resume was delivered.
+  assert.equal(h.balance(h.alice.id), 977);
   const refunds = h.credits.getLedger(h.alice.id).filter((e) => e.reason === 'generation-refund');
   assert.equal(refunds.length, 0, 'a retried attempt is not a failed unit');
 });
 
 test('a resume that fails every attempt is refunded once, not once per attempt', async () => {
   const h = await harness('retry-exhausted', { attempts: 3 });
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 1, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), PRICE, { kind: 'batch', id: batchId });
   h.queue.submit([h.task('a')], { id: batchId });
   await h.queue.refreshCapacity();
 
@@ -289,17 +295,17 @@ test('a resume that fails every attempt is refunded once, not once per attempt',
   assert.equal(snapshot.failed, 1, 'three goes, one failed resume');
 
   // Back to where it started: charged once, refunded once.
-  assert.equal(h.balance(h.alice.id), 10);
+  assert.equal(h.balance(h.alice.id), 1_000);
   const refunds = h.credits.getLedger(h.alice.id).filter((e) => e.reason === 'generation-refund');
   assert.equal(refunds.length, 1, 'three attempts must not mean three refunds');
 });
 
 test('retrying can be switched off, and then one failure is final', async () => {
   const h = await harness('retry-disabled', { attempts: 1 });
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = require('../dist/services/queue/taskQueue').newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 1, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), PRICE, { kind: 'batch', id: batchId });
   h.queue.submit([h.task('a')], { id: batchId });
   await h.queue.refreshCapacity();
 
@@ -308,7 +314,7 @@ test('retrying can be switched off, and then one failure is final', async () => 
   await settle();
 
   assert.equal(h.queue.snapshot(batchId).failed, 1);
-  assert.equal(h.balance(h.alice.id), 10);
+  assert.equal(h.balance(h.alice.id), 1_000);
 });
 
 test('a resume whose profile was deleted fails once, in its owner\'s terms, and is refunded', async () => {
@@ -331,13 +337,13 @@ test('a resume whose profile was deleted fails once, in its owner\'s terms, and 
       }
     )
   );
-  h.credits.setBalance(h.alice.id, 10, h.admin.id);
+  h.credits.setBalance(h.alice.id, 1_000, h.admin.id);
 
   const batchId = newBatchId();
-  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 2, { kind: 'batch', id: batchId });
+  h.credits.reserveCredits(h.users.getUserById(h.alice.id), 46, { kind: 'batch', id: batchId });
   const { lines } = await captureErrorLog(async () => {
     h.queue.submit(
-      [{ ...h.task('gone'), kind, payload: { profileId: '7c9e6679-7425-40de-944b-e07fc1f90ae7', batchId, jobIndex: 0, creditCost: 2 } }],
+      [{ ...h.task('gone'), kind, payload: { profileId: '7c9e6679-7425-40de-944b-e07fc1f90ae7', batchId, jobIndex: 0, costMilli: 46 } }],
       { id: batchId }
     );
     await h.queue.refreshCapacity();
@@ -353,5 +359,5 @@ test('a resume whose profile was deleted fails once, in its owner\'s terms, and 
   // ...and the id is in the log, under the same ref, for whoever looks it up.
   const ref = /ERR-[0-9A-F]{6}/.exec(task.error)[0];
   assert.ok(lines.some((line) => line.includes(ref) && line.includes('7c9e6679')), lines.join('\n'));
-  assert.equal(h.balance(h.alice.id), 10, 'its price came back');
+  assert.equal(h.balance(h.alice.id), 1_000, 'its price came back');
 });

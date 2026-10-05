@@ -111,19 +111,29 @@ export type SubmitBatchResponse = {
 /**
  * What a submission would cost, from `POST /generation/quote`.
  *
- * Counts and credits only - the server resolves each profile's model exactly as
+ * A count and money only - the server resolves each profile's model exactly as
  * it would for the real submission, and keeps which models those are to
- * itself. `exempt` is an administrator, who is never charged.
+ * itself. Money is thousandths of a dollar. `pricePerResumeMilli` is the one
+ * price every resume in the run costs, or null when they differ (profiles in a
+ * group can resolve to different models) - so the cost line can show
+ * `7 resumes × $0.023 = $0.161` when that is true and the total alone when it
+ * is not. `exempt` is an administrator, who is never charged.
  */
 export type GenerationQuote = {
   resumes: number;
-  credits: number;
-  balance: number;
+  costMilli: number;
+  pricePerResumeMilli: number | null;
+  balanceMilli: number;
   exempt: boolean;
 };
 
-function readCount(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+/**
+ * A count or an amount the server sent, as a whole number from 0 up - and
+ * never floored into one. Thousandths of a dollar are already whole; a value
+ * that is not is not a figure to repair by rounding, it is not a figure.
+ */
+function readWhole(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 /** Where the running batch's id is kept, so a reload can find it again. */
@@ -170,10 +180,12 @@ export const generationApi = {
       method: 'POST',
       body: JSON.stringify(body),
     });
+    const price = raw?.pricePerResumeMilli;
     return {
-      resumes: readCount(raw?.resumes),
-      credits: readCount(raw?.credits),
-      balance: readCount(raw?.balance),
+      resumes: readWhole(raw?.resumes),
+      costMilli: readWhole(raw?.costMilli),
+      pricePerResumeMilli: typeof price === 'number' && Number.isSafeInteger(price) && price >= 0 ? price : null,
+      balanceMilli: readWhole(raw?.balanceMilli),
       exempt: raw?.exempt === true,
     };
   },

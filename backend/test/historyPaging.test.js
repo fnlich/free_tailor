@@ -111,10 +111,9 @@ async function serve() {
               userId,
               method,
               provider: method === 'crypto' ? 'cryptomus' : 'stripe',
-              credits: 10,
               amountCents: 500,
+              creditMilli: 5_000,
               currency: 'usd',
-              unitPriceCents: 50,
             },
             at
           )
@@ -414,7 +413,7 @@ test('the credit ledger pages the same way, and counts the same way', async () =
     const total = first.body.total;
     assert.ok(total >= 12, `expected at least the 12 seeded, saw ${total}`);
     // The balance rides along, because the panel above the list shows it.
-    assert.equal(typeof first.body.balance, 'number');
+    assert.equal(typeof first.body.balanceMilli, 'number');
 
     const seen = [];
     for (let offset = 0; offset < total; offset += 5) {

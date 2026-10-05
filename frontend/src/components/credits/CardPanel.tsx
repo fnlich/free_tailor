@@ -6,7 +6,8 @@ import PayForm from './PayForm';
 import { Spinner } from '@/components/ui/kit';
 import { LABEL, PANEL, PRIMARY, QUIET } from './chrome';
 import type { Order } from './order';
-import { describeCard, formatAmount, type SavedCard } from '@/lib/payments';
+import { formatMoney } from '@/lib/format';
+import { describeCard, type SavedCard } from '@/lib/payments';
 
 /**
  * Step 3, card column: the form, and any card this account has kept.
@@ -210,9 +211,7 @@ export default function CardPanel({
                 <PayForm
                   publishableKey={publishableKey}
                   clientSecret={order.started.clientSecret}
-                  credits={order.started.credits}
-                  amountCents={order.started.amountCents}
-                  currency={order.started.currency}
+                  amountMilli={order.started.amountMilli}
                   dark={dark}
                   onCancel={onCancel}
                 />
@@ -229,7 +228,7 @@ export default function CardPanel({
                     <p className="mt-1 text-sm text-muted">
                       Nothing was charged. Order{' '}
                       <span className="font-mono">{order.started.reference}</span> for{' '}
-                      {formatAmount(order.started.amountCents, order.started.currency)} is left
+                      {formatMoney(order.started.amountMilli)} is left
                       unpaid and will expire on its own.
                     </p>
                     <button type="button" onClick={onRetry} className={`${PRIMARY} mt-4`}>

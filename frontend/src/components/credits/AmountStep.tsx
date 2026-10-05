@@ -3,70 +3,61 @@
 import { useId } from 'react';
 import { IconCheck, IconPlus } from '@/components/icons';
 import { CHOICE, CHOICE_ON, FIELD, LABEL, QUIET } from './chrome';
-import { formatAmount, type PaymentTarget } from '@/lib/payments';
+import { describeFitted, readPurchaseAmount } from './order';
+import { formatMoney, MILLI_PER_DOLLAR, toDollarInput } from '@/lib/format';
+import type { PaymentTarget } from '@/lib/payments';
 
 /**
  * Step 2: how much.
  *
  * Six presets and one custom control, both bounded by the chosen target's own
- * limits. Two things about this are deliberate and neither is obvious.
+ * limits. **A credit is a dollar**, so what is chosen here is an amount of
+ * money: the buyer is charged exactly it, and exactly it goes on the balance -
+ * nothing taken out, nothing to convert. The presets are the server's amounts,
+ * and the custom box takes dollars and cents as typed, read by the same parser
+ * the server uses (lib/format.ts), so a box that shows "$12.50 will be bought"
+ * is never contradicted by the summary.
  *
- * **Every figure shown is the server's.** A preset arrives as a COUNT with the
- * amount the server would charge for it, so a "$25.00" button renders a number
- * the server worked out rather than one this file multiplied. That is the
- * invariant the whole payments module exists to keep: the browser sends a
- * count and never a price, and it cannot display a price the server would not
- * charge because it never computes one. The only arithmetic here is on the
- * custom control, and it multiplies by the same `unitPriceCents` the server
- * quotes with - shown as a preview, and re-quoted server-side either way.
- *
- * **The stepper steps in credits, not in dollars**, even though the design it
- * follows says whole dollars. A credit is the atom: at 40c each, no whole
- * number of credits costs a whole number of dollars, so a dollar stepper would
- * either land on amounts that cannot be bought or quietly round somebody's
- * choice. It steps by the nearest whole count to a dollar instead, and says
- * what it is doing.
+ * The stepper steps a whole dollar at a time; the slider a cent. Both stay
+ * inside the method's bounds, and the box beside them is where an exact amount
+ * goes.
  */
 
-/** About a dollar at a time, in whole credits, and at least one. */
-function stepFor(unitPriceCents: number): number {
-  if (unitPriceCents <= 0) return 1;
-  return Math.max(1, Math.round(100 / unitPriceCents));
-}
+/** The stepper's stride: one dollar. */
+const STEP_MILLI = MILLI_PER_DOLLAR;
 
-function clamp(credits: number, target: PaymentTarget): number {
-  return Math.min(Math.max(credits, target.minCredits), target.maxCredits);
-}
+/** The slider's stride: one cent, so every amount between the bounds is on it. */
+const SLIDER_STEP_MILLI = 10;
 
 export default function AmountStep({
   target,
-  credits,
-  unitPriceCents,
-  currency,
-  onCredits,
+  amount,
+  onAmount,
 }: {
   target: PaymentTarget;
-  credits: number;
-  unitPriceCents: number;
-  currency: string;
-  onCredits: (credits: number) => void;
+  /** What is in the box, as typed. */
+  amount: string;
+  onAmount: (amount: string) => void;
 }) {
   const fieldId = useId();
-  const step = stepFor(unitPriceCents);
+  const hintId = useId();
   /*
-   * The total is the CLAMPED count, because that is the one that gets bought.
+   * The total is the FITTED amount, because that is the one that gets bought.
    *
-   * The box itself stays unclamped while it is being typed - a maximum of 200
-   * would otherwise make "2000" impossible to type, since the 2 snaps to 200
-   * before the rest arrives. But the figure beside it, and the one on the
-   * Continue button, have to be what the next step will charge: showing
-   * `2000 x 50c` and then opening a $100 order is the page quoting a price of
-   * its own, which is the one thing this flow must never do.
+   * The box itself stays unfitted while it is being typed - a minimum of $50
+   * would otherwise make "120" impossible to type. But the figure beside it,
+   * and the one on the Continue button, have to be what the next step will
+   * charge: showing $1 and then opening a $2.50 order is the page quoting a
+   * price of its own, which is the one thing this flow must never do.
    */
-  const buying = clamp(credits, target);
-  const total = buying * unitPriceCents;
-  const atPreset = target.presets.find((preset) => preset.credits === buying);
-  const outOfRange = credits !== buying;
+  const read = readPurchaseAmount(amount, target);
+  const buying = read.ok ? read.milli : null;
+  const atPreset = buying !== null && target.presets.some((preset) => preset.amountMilli === buying);
+  const step = (direction: 1 | -1) => {
+    const from = buying ?? target.minAmountMilli;
+    const next = Math.min(Math.max(from + direction * STEP_MILLI, target.minAmountMilli), target.maxAmountMilli);
+    onAmount(toDollarInput(next));
+  };
 
   return (
     <div className="space-y-6">
@@ -74,25 +65,19 @@ export default function AmountStep({
         <h3 className={LABEL}>Choose an amount</h3>
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
           {target.presets.map((preset) => {
-            const on = preset.credits === buying;
+            const on = preset.amountMilli === buying;
             return (
               <button
-                key={preset.credits}
+                key={preset.amountMilli}
                 type="button"
                 aria-pressed={on}
                 // `.tl-choice` draws the selected state from this attribute.
                 data-on={on}
-                onClick={() => onCredits(preset.credits)}
+                onClick={() => onAmount(toDollarInput(preset.amountMilli))}
                 className={`${on ? CHOICE_ON : CHOICE} relative`}
               >
-                {/* One block for the two lines: `.tl-choice` is a flex ROW with a gap. */}
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-ink">
-                    {formatAmount(preset.amountCents, currency)}
-                  </span>
-                  <span className="block text-xs text-subtle">
-                    {preset.credits} {preset.credits === 1 ? 'credit' : 'credits'}
-                  </span>
+                <span className="min-w-0 text-sm font-semibold tabular-nums text-ink">
+                  {formatMoney(preset.amountMilli)}
                 </span>
                 {on && (
                   <IconCheck className="absolute right-2 top-2 h-3.5 w-3.5 text-accent-ink" />
@@ -109,17 +94,15 @@ export default function AmountStep({
       </section>
 
       <section>
-        <h3 className={LABEL}>
-          {atPreset ? 'Or choose your own' : 'Your amount'}
-        </h3>
+        <h3 className={LABEL}>{atPreset ? 'Or choose your own' : 'Your amount'}</h3>
 
         <div className="mt-2 flex flex-wrap items-center gap-3">
           {target.custom === 'stepper' && (
             <button
               type="button"
-              aria-label={`Fewer credits, ${step} at a time`}
-              disabled={credits <= target.minCredits}
-              onClick={() => onCredits(clamp(credits - step, target))}
+              aria-label="One dollar less"
+              disabled={buying !== null && buying <= target.minAmountMilli}
+              onClick={() => step(-1)}
               className={QUIET}
             >
               {/* No minus icon in the set, and one path is not worth adding
@@ -131,37 +114,43 @@ export default function AmountStep({
           )}
 
           <label htmlFor={fieldId} className="sr-only">
-            Number of credits
+            Amount in dollars
           </label>
-          {/* The width is on a box around it: `.tl-input` is always full width. */}
-          <div className="w-24">
-            <input
-              id={fieldId}
-              type="number"
-              inputMode="numeric"
-              min={target.minCredits}
-              max={target.maxCredits}
-              value={credits}
-              onChange={(event) => {
-                const next = Number.parseInt(event.target.value, 10);
-                // An empty or half-typed box must not throw the amount away, so
-                // a value that is not a number leaves the last good one alone.
-                if (Number.isInteger(next)) onCredits(next);
-              }}
-              // Clamped on the way OUT, not on the way in: clamping each
-              // keystroke makes "12" unreachable when the minimum is 7 and the
-              // maximum 9 - the 1 snaps to 9 before the 2 is typed.
-              onBlur={() => onCredits(clamp(credits, target))}
-              className={`${FIELD} text-center`}
-            />
+          {/* The width is on boxes around it: `.tl-input` is always full width, and an
+              input in a flex row would not shrink below its own default size. */}
+          <div className="flex w-36 items-center gap-1.5">
+            <span aria-hidden className="text-sm font-semibold text-muted">
+              $
+            </span>
+            <div className="min-w-0 flex-1">
+              <input
+                id={fieldId}
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={amount}
+                aria-describedby={hintId}
+                aria-invalid={!read.ok}
+                onChange={(event) => onAmount(event.target.value)}
+                // Fitted on the way OUT, not on the way in: fitting each
+                // keystroke makes "120" unreachable when the minimum is 50 - the
+                // 1 snaps to 50 before the 2 is typed. An amount that is not one
+                // is left as typed, with the reason below it.
+                onBlur={() => {
+                  if (read.ok) onAmount(toDollarInput(read.milli));
+                }}
+                placeholder="25.00"
+                className={`${FIELD} text-center tabular-nums`}
+              />
+            </div>
           </div>
 
           {target.custom === 'stepper' && (
             <button
               type="button"
-              aria-label={`More credits, ${step} at a time`}
-              disabled={credits >= target.maxCredits}
-              onClick={() => onCredits(clamp(credits + step, target))}
+              aria-label="One dollar more"
+              disabled={buying !== null && buying >= target.maxAmountMilli}
+              onClick={() => step(1)}
               className={QUIET}
             >
               <IconPlus className="h-4 w-4" />
@@ -170,8 +159,8 @@ export default function AmountStep({
 
           <div className="ml-auto text-right">
             <div className={LABEL}>Total</div>
-            <div className="text-2xl font-semibold text-ink">
-              {formatAmount(total, currency)}
+            <div className="text-2xl font-semibold tabular-nums text-ink">
+              {buying === null ? '—' : formatMoney(buying)}
             </div>
           </div>
         </div>
@@ -179,31 +168,34 @@ export default function AmountStep({
         {target.custom === 'slider' && (
           <input
             type="range"
-            aria-label="Number of credits"
-            min={target.minCredits}
-            max={target.maxCredits}
-            step={1}
-            value={credits}
-            onChange={(event) => onCredits(Number.parseInt(event.target.value, 10))}
+            aria-label="Amount"
+            min={target.minAmountMilli}
+            max={target.maxAmountMilli}
+            step={SLIDER_STEP_MILLI}
+            value={buying ?? target.minAmountMilli}
+            onChange={(event) => {
+              const milli = Number(event.target.value);
+              if (Number.isSafeInteger(milli)) onAmount(toDollarInput(milli));
+            }}
             className="mt-4 w-full accent-accent"
           />
         )}
 
-        {outOfRange && (
-          <p className="tl-status mt-3" data-tone="error">
-            {credits < target.minCredits
-              ? `The smallest purchase is ${target.minCredits} credits. ${buying} will be bought.`
-              : `The largest purchase is ${target.maxCredits} credits. ${buying} will be bought.`}
+        {!read.ok ? (
+          <p className="tl-status mt-3" data-tone="error" role="alert">
+            {read.message}
           </p>
-        )}
+        ) : read.fitted !== null ? (
+          <p className="tl-status mt-3" data-tone="error">
+            {describeFitted(read, target)}
+          </p>
+        ) : null}
 
-        <p className="mt-3 text-xs text-subtle">
-          {formatAmount(unitPriceCents, currency)} per credit. Each resume costs the credits set for
-          the model it is built with.
-          Between {target.minCredits} and {target.maxCredits} credits at a time
-          {target.custom === 'stepper' && step > 1
-            ? `, in steps of ${step} - about ${formatAmount(100, currency)} - on the buttons.`
-            : '.'}
+        <p id={hintId} className="mt-3 text-xs text-subtle">
+          A credit is a dollar: you are charged exactly this amount, and all of it is added to your
+          balance. Each resume costs the price set for the model it is built with. Between{' '}
+          {formatMoney(target.minAmountMilli)} and {formatMoney(target.maxAmountMilli)} at a time
+          {target.custom === 'stepper' ? ', a dollar at a time on the buttons.' : '.'}
         </p>
       </section>
     </div>

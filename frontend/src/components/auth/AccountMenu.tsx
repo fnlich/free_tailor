@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { IconUser } from '@/components/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage } from '@/lib/auth';
+import { formatMoney } from '@/lib/format';
 import { Pill } from '@/components/ui/kit';
 import styles from './AccountMenu.module.css';
 
@@ -124,8 +125,8 @@ export default function AccountMenu() {
                 onClick={() => setOpen(false)}
                 className="-mx-1.5 flex justify-between rounded px-1.5 py-1 hover:bg-surface-muted"
               >
-                <span>Credits</span>
-                <span className="font-semibold tabular-nums text-ink">{account.credits}</span>
+                <span>Credit</span>
+                <span className="font-semibold tabular-nums text-ink">{formatMoney(account.balanceMilli)}</span>
               </Link>
               <Link
                 href="/settings/subscription"

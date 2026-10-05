@@ -9,7 +9,7 @@ const { loadFresh, useTempStorage } = require('./helpers');
  * A balance may not go negative. So refunding somebody who has already SPENT
  * what they bought returns all of their money and reverses only what is left -
  * and the difference has to be reported, because a refund that quietly reverses
- * forty of two hundred credits is the kind of discrepancy that surfaces weeks
+ * $40 of $200 is the kind of discrepancy that surfaces weeks
  * later as an accounting argument.
  *
  * The other claims here are the ordinary ones for anything that moves money:
@@ -41,16 +41,15 @@ async function setup() {
   const buyer = users.createUser({ email: 'buyer@example.com' });
   const admin = users.createUser({ email: 'boss@example.com' });
 
-  /** A payment that has been through the webhook and credited. */
-  const paidPayment = (creditAmount) => {
+  /** A payment of `dollars` that has been through the webhook and credited - a credit is a dollar. */
+  const paidPayment = (dollars) => {
     const payment = paymentsDb.createPayment({
       userId: buyer.id,
       method: 'card',
       provider: 'stripe',
-      credits: creditAmount,
-      amountCents: creditAmount * 50,
+      amountCents: dollars * 100,
+      creditMilli: dollars * 1000,
       currency: 'usd',
-      unitPriceCents: 50,
     });
     paymentsDb.attachProviderRef(payment.id, `cs_${payment.id}`);
     payments.creditPaid(payment.id);
@@ -67,11 +66,12 @@ async function setup() {
     buyer,
     admin,
     paidPayment,
-    balance: () => users.getUserById(buyer.id).credits,
-    spend: (units) =>
+    balance: () => users.getUserById(buyer.id).balanceMilli,
+    /** Spends `dollars` of the balance, as resumes would. */
+    spend: (dollars) =>
       creditsDb.applyAdjustment({
         userId: buyer.id,
-        delta: -units,
+        deltaMilli: -dollars * 1000,
         reason: 'admin-revoke',
         idempotencyKey: `spend:${Math.random()}`,
         note: 'spent on resumes',
@@ -82,13 +82,13 @@ async function setup() {
 test('a refund returns the money and reverses the credits', async () => {
   const context = await setup();
   const payment = context.paidPayment(200);
-  assert.equal(context.balance(), 200);
+  assert.equal(context.balance(), 200_000);
 
   const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'changed their mind');
 
   assert.deepEqual(
-    { sold: outcome.creditsSold, reversed: outcome.creditsReversed, shortfall: outcome.shortfall },
-    { sold: 200, reversed: 200, shortfall: 0 }
+    { credited: outcome.creditedMilli, reversed: outcome.reversedMilli, shortfall: outcome.shortfallMilli },
+    { credited: 200_000, reversed: 200_000, shortfall: 0 }
   );
   assert.equal(context.balance(), 0);
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'refunded');
@@ -100,7 +100,7 @@ test('a refund returns the money and reverses the credits', async () => {
     .getLedger(context.buyer.id)
     .find((row) => row.reason === 'purchase-refund');
   assert.ok(entry, 'the reversal is in the ledger, not just on the payment');
-  assert.equal(entry.delta, -200);
+  assert.equal(entry.deltaMilli, -200_000);
   assert.equal(entry.actorId, context.admin.id, 'and says who did it');
 });
 
@@ -108,18 +108,18 @@ test('against a spent balance it reverses what remains and reports the shortfall
   const context = await setup();
   const payment = context.paidPayment(200);
   context.spend(160);
-  assert.equal(context.balance(), 40);
+  assert.equal(context.balance(), 40_000);
 
   const outcome = await context.payments.refundPayment(payment.id, context.admin.id);
 
   // The money went back in full; the credits could not.
-  assert.equal(outcome.creditsSold, 200);
-  assert.equal(outcome.creditsReversed, 40, 'only what was left');
-  assert.equal(outcome.shortfall, 160, 'and the difference is reported, not hidden');
+  assert.equal(outcome.creditedMilli, 200_000);
+  assert.equal(outcome.reversedMilli, 40_000, 'only what was left');
+  assert.equal(outcome.shortfallMilli, 160_000, 'and the difference is reported, not hidden');
   assert.equal(context.balance(), 0, 'never negative');
 
   // The stored figure matches, so the admin page can say the same thing later.
-  assert.equal(context.paymentsDb.getPayment(payment.id).refundedCredits, 40);
+  assert.equal(context.paymentsDb.getPayment(payment.id).refundedMilli, 40_000);
 });
 
 test('a balance spent to nothing refunds the money and reverses nothing', async () => {
@@ -130,8 +130,8 @@ test('a balance spent to nothing refunds the money and reverses nothing', async 
 
   const outcome = await context.payments.refundPayment(payment.id, context.admin.id);
 
-  assert.equal(outcome.creditsReversed, 0);
-  assert.equal(outcome.shortfall, 100);
+  assert.equal(outcome.reversedMilli, 0);
+  assert.equal(outcome.shortfallMilli, 100_000);
   assert.equal(context.balance(), 0);
   assert.equal(context.refunds.length, 1, 'the customer still gets their money back');
 });
@@ -159,10 +159,9 @@ test('only a paid payment can be refunded', async () => {
     userId: context.buyer.id,
     method: 'card',
     provider: 'stripe',
-    credits: 10,
     amountCents: 500,
+    creditMilli: 5_000,
     currency: 'usd',
-    unitPriceCents: 50,
   });
 
   await assert.rejects(
@@ -189,7 +188,7 @@ test('a provider that refuses the refund changes nothing locally', async () => {
 
   // The provider is called FIRST for exactly this reason: the reverse order
   // would leave somebody with no credits and no money back.
-  assert.equal(context.balance(), 80, 'the credits are untouched');
+  assert.equal(context.balance(), 80_000, 'the credits are untouched');
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid', 'and it can be tried again');
 });
 
@@ -219,10 +218,9 @@ for (const [provider, providerRef, advice] of CRYPTO_REFUND_ADVICE) {
       userId: context.buyer.id,
       method: 'crypto',
       provider,
-      credits: 60,
-      amountCents: 3000,
+      amountCents: 6_000,
+      creditMilli: 60_000,
       currency: 'usd',
-      unitPriceCents: 50,
     });
     context.paymentsDb.attachProviderRef(payment.id, providerRef);
     context.payments.creditPaid(payment.id);
@@ -237,7 +235,7 @@ for (const [provider, providerRef, advice] of CRYPTO_REFUND_ADVICE) {
         return true;
       }
     );
-    assert.equal(context.balance(), 60, 'and nothing is reversed on a promise');
+    assert.equal(context.balance(), 60_000, 'and nothing is reversed on a promise');
   });
 }
 
@@ -278,8 +276,8 @@ test('two refunds of the same payment at once: one refunds, the other is refused
   assert.equal(refusal.status, 409);
   assert.match(refusal.message, /already being refunded/i);
 
-  assert.equal(outcome.creditsReversed, 200, 'the one that ran reports the truth');
-  assert.equal(outcome.shortfall, 0);
+  assert.equal(outcome.reversedMilli, 200_000, 'the one that ran reports the truth');
+  assert.equal(outcome.shortfallMilli, 0);
   assert.equal(context.balance(), 0);
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'refunded');
   assert.equal(context.refunds.length, 1, 'and the provider was asked exactly once');
@@ -299,11 +297,11 @@ test('a provider that refuses leaves the payment refundable', async () => {
   // Claimed, then given back: a refund that did not happen must not leave a
   // payment stuck in a state with no button on it.
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid');
-  assert.equal(context.balance(), 100, 'and nothing was reversed');
+  assert.equal(context.balance(), 100_000, 'and nothing was reversed');
 
   stripe.refundPaymentIntent = async () => {};
   const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'retried');
-  assert.equal(outcome.creditsReversed, 100);
+  assert.equal(outcome.reversedMilli, 100_000);
 });
 
 test('a refund whose answer was lost says so, instead of "nothing moved"', async () => {
@@ -351,11 +349,11 @@ test('a refund whose answer was lost says so, instead of "nothing moved"', async
   // Still refundable and nothing reversed, as for any other failure - the
   // release is right, it is only the sentence that was wrong.
   assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid');
-  assert.equal(context.balance(), 100);
+  assert.equal(context.balance(), 100_000);
 
   stripe.refundPaymentIntent = async () => {};
   const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'retried');
-  assert.equal(outcome.creditsReversed, 100, 'and pressing again finishes it');
+  assert.equal(outcome.reversedMilli, 100_000, 'and pressing again finishes it');
 });
 
 test('a provider this build does not know is not sent to Coinbase', async () => {
@@ -371,12 +369,11 @@ test('a provider this build does not know is not sent to Coinbase', async () => 
     userId: context.buyer.id,
     method: 'crypto',
     provider: 'stripe-crypto-of-the-future',
-    credits: 60,
-    amountCents: 3_000,
+    amountCents: 6_000,
+    creditMilli: 60_000,
     currency: 'usd',
-    unitPriceCents: 50,
   });
-  context.paymentsDb.markPaid(payment.id, 60);
+  context.paymentsDb.markPaid(payment.id, 60_000);
   context.paymentsDb.attachProviderRef(payment.id, 'unknown_ref_1');
 
   const refusal = await context.payments
@@ -388,4 +385,43 @@ test('a provider this build does not know is not sent to Coinbase', async () => 
   assert.equal(refusal.status, 409);
   assert.doesNotMatch(refusal.message, /coinbase|cryptomus|wallet you configured/i, refusal.message);
   assert.match(refusal.message, /wherever this payment was taken/i);
+});
+
+test('a payment from before credits were dollars refunds its money and reverses nothing', async () => {
+  /*
+   * It bought credits at 50c; the switch to dollars reset them to $0 with every
+   * balance. Taking its $100 back off the balance now would take dollars the
+   * buyer has paid for SINCE. The money goes back, nothing is reversed, and the
+   * payment's own legacy figures say why.
+   */
+  const context = await setup();
+  const later = context.paidPayment(30); // $30 bought after the switch
+  const { getDb } = require('../dist/database/sqlite');
+  const old = context.paymentsDb.createPayment({
+    userId: context.buyer.id,
+    method: 'card',
+    provider: 'stripe',
+    amountCents: 10_000,
+    creditMilli: 0,
+    currency: 'usd',
+  });
+  // As the older build wrote and settled it: 200 credits at 50c, all granted.
+  getDb()
+    .prepare(
+      `UPDATE payments SET credits = 200, credits_granted = 200, unit_price_cents = 50, state = 'paid',
+              provider_ref = 'cs_old', credited_at = created_at WHERE id = ?`
+    )
+    .run(old.id);
+  assert.equal(context.balance(), 30_000);
+
+  const outcome = await context.payments.refundPayment(old.id, context.admin.id);
+  assert.deepEqual(
+    { credited: outcome.creditedMilli, reversed: outcome.reversedMilli, shortfall: outcome.shortfallMilli },
+    { credited: 0, reversed: 0, shortfall: 0 }
+  );
+  assert.equal(context.refunds.length, 1, 'the money still goes back');
+  assert.equal(context.balance(), 30_000, "the later purchase's dollars are untouched");
+  assert.deepEqual(outcome.payment.legacyCredits, { credits: 200, creditsGranted: 200, refundedCredits: 0, unitPriceCents: 50 });
+  assert.equal(outcome.payment.state, 'refunded');
+  assert.ok(later);
 });

@@ -25,7 +25,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 |---------|-------------|
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
 | **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets each account's subscription; there is no checkout for one |
-| **Credits** | Each resume costs the credits set for the model it is built with - one by default, any whole number an administrator sets, or free. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, so credits spent always pay for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
+| **Credits** | A credit is a dollar, to the thousandth (`$0.023`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Order & Download** | A Google Sheet import is placed as an order and answers with an order number instead of making you wait. Track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
@@ -147,12 +147,24 @@ install that used the metered APIs](#6-upgrading-an-install-that-used-the-metere
 
 ### Credits
 
+**A credit is a dollar**, counted to the thousandth: a balance reads `$3.977`, a
+price `$0.023`, a purchase `$50.000`. Every amount is stored and moved as an
+integer count of thousandths of a dollar (`23` is `$0.023`), so nothing ever
+rounds - seven resumes at `$0.023` cost exactly `$0.161`, and two of them failing
+give back exactly `$0.046`. Every API response carries money that way, in fields
+ending `Milli` (`balanceMilli`, `costMilli`, `pricePerResumeMilli`...), and every
+request takes it as dollars in fields ending `Usd` (`"0.023"`), read digit by
+digit and refused with more than three decimals.
+
 A resume - one profile against one job - costs **the price of the model it is
 built with**, however many files that produces. Every model has a *price per
-resume* in whole credits, set under **Admin → Models**: `1` unless an
-administrator changes it, anything up to `1000`, or `0` for a free model. A run
-asking for PDF and DOCX plus a cover letter writes four files and costs one
-resume's price, because what was asked for is one tailored resume.
+resume* in dollars, set under **Admin → Models** in steps of `$0.001`, from
+`$0.000` (free) to `$1000.000`. A new model is priced by whoever adds it - there
+is no default - and a model with no price (one a migration seeds, or one priced
+before credits were dollars) reads as `$0.000`, which **Admin → Models lists in
+red** for as long as any enabled model is free. A run asking for PDF and DOCX
+plus a cover letter writes four files and costs one resume's price, because what
+was asked for is one tailored resume.
 
 The model is the one the resume actually runs on - the run's own choice, else
 the profile's, else the app default (a prompt's model override does not apply
@@ -161,28 +173,27 @@ finalised from a preview is the preview model's work, so it is charged at the
 model that WROTE the preview, whatever the model menu says by then: the preview
 hands back a signed token naming it, and finalising sends it. Content sent
 without one is charged at least what the profile's own model costs. Either
-way the price is fixed at submit: each task carries what it was charged, so a price changed
-mid-run, a server restart, or a queued task re-resolved after its model went
-away never re-prices it. A run across several models is charged the sum, and
-the reservation in Credit History says how it was made up -
-`4 resumes: 2 x Claude Opus @ 2, 2 x Claude Sonnet @ 1 = 6 credits`. The
-`perResume` that `GET /api/credits` still returns is the default price, for
-older pages.
+way the price is fixed at submit: each task carries what it was charged
+(`costMilli`), so a price changed mid-run, a server restart, or a queued task
+re-resolved after its model went away never re-prices it. A run across several
+models is charged the sum, and the reservation in Credit History says how it
+was made up - `4 resumes: 2 x Claude Opus @ $0.023, 2 x Claude Sonnet @ $0.010 = $0.066`.
 
 The charge happens **at submit, before the first model call**, and every resume
 that does not build gives back exactly what it was charged. So the invariant
-is: *credits spent pay for resumes delivered*. A run that is cancelled refunds
+is: *credit spent pays for resumes delivered*. A run that is cancelled refunds
 everything that had not started; one that fails half way refunds the half that
 failed.
 
 **The builder says what a run will cost before it starts.** Beside the generate
-button it shows *This run: 3 resumes · 5 credits · balance 12*, priced by
-`POST /api/generation/quote` - the batch request's own body and its own model
-resolution, with nothing submitted and nothing reserved - and fetched again
-when the profiles or the model change. It turns red with a **Buy credits** link
-when the balance is short, and a run refused for credits (a 402 carrying
-`needed` and `balance`) says how many it needed and what you have. The price
-is not in the model menus: they show display names only.
+button it shows the run's resumes, cost and the balance - *7 resumes × $0.023 =
+$0.161* - priced by `POST /api/generation/quote` (`costMilli`, and
+`pricePerResumeMilli` when every resume costs the same) - the batch request's own
+body and its own model resolution, with nothing submitted and nothing reserved -
+and fetched again when the profiles or the model change. It turns red with a
+**Buy credits** link when the balance is short, and a run refused for want of
+credit (a 402 carrying `neededMilli` and `balanceMilli`) says what it needed and
+what you have. The price is not in the model menus: they show display names only.
 
 Charging up front rather than on delivery is what makes a refusal mean
 something. The batch endpoint returns a job id before any work runs, and by the
@@ -194,27 +205,43 @@ being refused on the thirtieth after twenty-nine resumes already exist.
 - **Previews are free.** `/preview` and `/preview-all` write no file, and the
   tailored output they return is reused by the real run - charging both would
   bill the ordinary preview-then-generate flow twice for one piece of model work.
-  A new account on zero credits can still paste a job description and see the
+  A new account at `$0.000` can still paste a job description and see the
   result; what it cannot do is take the file away.
 - **Administrators are exempt.** They can already set any balance, so metering
   them is a formality - the cost line tells them *Administrators are not
-  charged*. The first account to sign in is an administrator, which is why a
-  fresh install works on day one with nobody holding a credit.
+  charged*. A fresh install works on day one with nobody holding any credit.
 - **Every movement is explainable.** The ledger is append-only and records the
-  reserve, each refund, each grant and who made it. `users.credits` is a cache of
-  its sum, and a disagreement is reported at startup rather than quietly fixed -
-  it would mean something wrote the balance outside the credit service.
+  reserve, each refund, each grant and who made it. `users.balance_milli` is a
+  cache of its sum, and a disagreement is reported at startup rather than
+  quietly fixed - it would mean something wrote the balance outside the credit
+  service.
 - **A balance dips while a run is in flight.** The Credits page shows that as
   *held*, rather than hiding it and having the number appear to come back from
   nowhere.
+- **History from before dollars reads as it happened.** Credits were once whole
+  units bought at a price (50c by default), and the upgrade reset every balance
+  to `$0.000` rather than pick a rate - see [Credits are
+  dollars](#10-credits-are-dollars). Rows and payments from then are shown in the
+  credits they were written in (`legacyCredits` in the API), never converted,
+  and each account that held any - in its balance, or in a run still going -
+  has a `reset` row explaining the jump.
 
-A brand-new account starts at **0**. Set `CREDIT_SIGNUP_GRANT` to give an open
-installation a self-serve trial, or let people buy their own.
+A brand-new account starts at **$0.000**. Set `CREDIT_SIGNUP_GRANT` - in
+**dollars**, e.g. `5` or `0.25` - to give an open installation a self-serve
+trial, or let people buy their own.
 
 ### Buying credits
 
 Two ways to pay, and **both work the same way underneath**: the server credits
 the account only when a signed webhook arrives, whatever happened in the browser.
+
+**What you pay is what you get.** A credit is a dollar and nothing comes out of
+it: pay `$50` by card or by crypto and the balance rises by exactly `$50.000`.
+There is no price per credit to set and no fee - the 2.2% the crypto row used to
+keep is gone, and the provider's own fees are the operator's to absorb. Each
+method has its own bounds in dollars, set under **Admin → Payments** (card
+`$2.50`-`$100` and crypto `$50`-`$2000` out of the box), and a purchase is any
+whole number of cents between them.
 
 Buying is three steps, in a dialog: **which method** (a card, or a coin), then
 **how much** (six preset amounts, or a slider or stepper bounded by that
@@ -420,11 +447,15 @@ before it the same thing was called `custom` - and Stripe resolves a request at
 the ACCOUNT's pinned version unless a header says otherwise. Without the pin the
 integration would work on a new Stripe account and fail on an older one.
 
-**The browser sends a count of credits, never a price.** The server quotes from
-its own settings every time, so no request can set what it will be charged; the
-buy page displays that same number rather than working one out. The price and
-the purchase bounds are set under **Admin → Payments**, and each payment records
-the price it was made at, so changing it never rewrites a past receipt.
+**The browser sends the amount it wants, and nothing else decides the charge.**
+`POST /api/payments/checkout` takes `amountUsd` - dollars, read exactly, whole
+cents only - and the server judges it against that method's own bounds before
+asking the provider for it; no other figure in the request is read. The
+provider is asked for that amount, the Stripe product reads `$X.XXX Tailor
+credit`, and the payment records what it charged and what it will credit
+(`amountMilli`, `creditMilli`), which are always equal. A payment made before
+credits were dollars keeps its original figures - *N credits at $0.50* - under
+`legacyCredits`, so its receipt still says what was sold.
 
 **3-D Secure is a switch, not a default.** Under Admin → Payments, *Always ask
 the cardholder's bank to authenticate* sets Stripe's `request_three_d_secure`
@@ -459,10 +490,13 @@ way the real ones do - and its README lists the five things only a live Stripe
 test-mode run can prove. See that file.
 
 **Refunds** are on the admin payments page, for card payments. They report three
-numbers rather than a tick, and the reason is arithmetic: a balance may not go
-negative, so refunding somebody who has already spent what they bought returns
-all of their money and reverses only what is left. The page says how many
-credits were actually reversed and how many had already gone. A refund claims
+numbers rather than a tick (`creditedMilli`, `reversedMilli`, `shortfallMilli`),
+and the reason is arithmetic: a balance may not go negative, so refunding
+somebody who has already spent what they bought returns all of their money and
+reverses only what is left. The page says how much was actually reversed and
+how much had already gone. A payment from before credits were dollars reverses
+nothing: the credits it bought were reset with every balance, and taking dollars
+bought since would take somebody's later purchase. A refund claims
 the payment - `paid` to `refunding` - before it calls the provider, so two tabs
 or two administrators cannot both report an outcome for one refund; the second
 is refused rather than told that nothing could be reversed. Crypto cannot be
@@ -1027,8 +1061,8 @@ manual build and is unaffected.
 | Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir` |
 | Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
-| Credit ledger and open reservations | The same database. The ledger is append-only and `users.credits` is a cache of its sum; a disagreement between the two is reported at startup rather than silently repaired |
-| AI models and their prices | The same database, in the app settings row: each model's display name, seat, model name, price per resume (`creditsPerResume`) and description. A run's price is copied onto each of its queued tasks when it is submitted |
+| Credit ledger and open reservations | The same database, in thousandths of a dollar. The ledger is append-only and `users.balance_milli` is a cache of the sum of its `delta_milli`; a disagreement between the two is reported at startup rather than silently repaired. The whole-credit columns beside them (`users.credits`, `credit_ledger.delta`, `credit_reservations.units`, `payments.credits`...) hold the history from before credits were dollars, and every row written since puts `0` in them |
+| AI models and their prices | The same database, in the app settings row: each model's display name, seat, model name, price per resume (`pricePerResumeMilli`, thousandths of a dollar) and description. A run's price is copied onto each of its queued tasks (`costMilli`) when it is submitted |
 | API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory. A settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log; migration 007 deletes them from the oldest settings snapshot too |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
@@ -1377,7 +1411,7 @@ install, and a row that never saved one, read the shipped models and need
 nothing:
 
 - It adds the shipped Gemini model, **Gemini** (`gemini-cli-auto`, the `auto`
-  model, 1 credit per resume), unless the list already has a Gemini model. The
+  model), unless the list already has a Gemini model. The
   Gemini seat has no switch in an older row and so reads as switched on; without
   this it would be on with nothing to pick. Its log line says whether users can
   pick it now: not while the seat is locked here (`AI_LOCKED_PROVIDERS`) or
@@ -1391,9 +1425,9 @@ nothing:
   identical choices; rename one of the two under **Admin → Models**.
 
 It leaves the default and the switches alone, and logs what it did in
-`migration-log.provider-schema-8`. Every model without a price - every model
-saved before this release - reads as costing 1 credit per resume until an
-administrator sets one; nothing is written to make it so.
+`migration-log.provider-schema-8`. A model it adds has no price, and reads as
+**free** (`$0.000`) until an administrator sets one - Admin → Models lists it in
+red until then (see [Credits are dollars](#10-credits-are-dollars)).
 
 ### 8. Plans are now subscriptions
 
@@ -1492,6 +1526,84 @@ The move then runs over every row again. A row whose file is still there is
 recognised - a renamed one is given the same new id as the first time - and
 left as it is, unless the row was changed after the file was, in which case
 it replaces the file; a row created under the older build is written out.
+
+### 10. Credits are dollars
+
+A credit was a whole unit bought at a price - 50c by default, so `$1` bought
+two - and a model cost a whole number of them. **A credit is a dollar now**,
+counted to the thousandth: balances, prices, charges and refunds are integer
+thousandths of a dollar in **new columns** (`users.balance_milli`,
+`credit_ledger.delta_milli`, `credit_reservations.units_milli`,
+`payments.credit_milli`...), never the old ones reinterpreted. Purchases credit
+exactly what they charge, with no price per credit and no crypto fee.
+
+What was already there is **reset, not converted** - the owner's decision, since
+credits bought at different prices have no one fair rate. On its first start
+the backend, once:
+
+- writes a `reset` row in each account's history taking its old balance to
+  zero, in credits (an account whose balance predates the ledger gets the
+  opening row migration 004 would have written first), and zeroes
+  `users.credits`. Every balance starts at `$0.000`. An account whose credits
+  were all held by a run in progress gets a `reset` row too, moving `0
+  credits` and naming what was held, because that run stops refunding (below).
+- closes every reservation still open in credits. A run in progress finishes
+  on the credits it was paid with: its tasks are priced at `$0.000`
+  (`payload.costMilli: 0`, the old `creditCost` kept beside it), so it is not
+  charged again in dollars, and a resume of it that fails gives back nothing -
+  the credits it would have given back were reset with the balance.
+- stamps every **pending** payment with what it will credit: a checkout opened
+  before the upgrade and paid after gets exactly what it charged, in dollars.
+  Paid payments are history and keep their credit figures.
+- leaves the model prices where they are in the settings row - they are in
+  credits, and nothing reads them as a price any more. Every model reads as
+  `$0.000` until it is priced under **Admin → Models**, which lists every free
+  enabled model in red. Startup says *Every model is FREE until it is priced*.
+  `creditPriceCents`, `creditMinCredits`, `creditMaxCredits` and the crypto
+  `feeBps` are no longer read either. They stay in the row only until the
+  first settings save of any kind - a price under Admin → Models, a payment
+  limit, a General setting - which rewrites the whole row without them, every
+  model's `creditsPerResume` included. The old figures are kept in the
+  snapshot below (`models`, `pricing`).
+
+It logs one line - `[credits] Credits are dollars now: ...` - and keeps
+everything it changed, as it was, in `app_settings["migration-log.credits-to-dollars"]`
+(balances and held credits per account, the reservations, the queued tasks, the
+pending payments, the old model prices and pricing settings). It runs in
+`getDb()`, not in the numbered chain, so an install waiting for its first
+administrator switches too; `schema_meta.credit_unit = 'usd-milli'` records that
+it ran, and a second start does nothing.
+
+`CREDIT_SIGNUP_GRANT` is read as **dollars** now: an old `5`, five credits
+(about `$2.50` of resumes), grants `$5.000`. Check it.
+
+Pages loaded before the upgrade are refused rather than misread wherever they
+would send money in the old unit - a price in credits, a balance or grant in
+credits, payment limits in cents, a purchase as a count of credits - with
+*This page is from an older version of the app. Reload it and try again.*
+
+**Rolling back** to an older build: it reads only the old columns, so it sees
+every balance at `0` credits and every reservation the switch closed as
+closed. A checkout opened under this build carries `0` credits, so if it is
+paid while the older build runs, that build holds it for a person instead of
+crediting a guess. Dollars bought since the upgrade are invisible to it - they
+are still in `balance_milli` when you upgrade again - and credits granted under
+it are not carried forward: the switch has run, and does not run again.
+
+Two things do not survive the round trip:
+
+- **Dollars held by a run in flight are lost.** The older build sees a run
+  started under this one as holding nothing (its whole-credit columns are 0):
+  a resume of it that fails there refunds nothing, and its settle - or that
+  build's 6-hour startup sweep - closes the reservation. Upgrading again does
+  not give those dollars back, because a closed reservation takes no refund.
+  **Let the queue drain, or cancel the runs, before stopping this build to
+  roll back.**
+- **Model prices in credits, after any settings save.** Once this build has
+  saved the settings row (above), the older build finds no `creditsPerResume`
+  on any model and prices every one at its default of 1 credit, and a credit
+  at its default price. Put the old figures back by hand from
+  `migration-log.credits-to-dollars` (`models`, `pricing`).
 
 ---
 
@@ -1863,12 +1975,12 @@ unique across the install, which settles all of it in one segment.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, subscription, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription before they arrive; it is not a way in, since they still prove the address through Google or a code |
+| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription before they arrive; it is not a way in, since they still prove the address through Google or a code |
 | **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
-| **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in credits (a whole number from 0 to 1000, `0` shown as *Free*), and a description. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
+| **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0.000` to `$1000.000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0.000` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
 | **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
@@ -1896,8 +2008,8 @@ setting in it:
   starting. Out of range is clamped to the nearest end of the range, anything
   unreadable is replaced by the default, and the backend says which, once, on an
   `[env]` line. (The older `AI_CLI_*` / `AI_CODEX_*`
-  numbers, `AI_BATCH_CONCURRENCY`, `GENERATION_MAX_ATTEMPTS` and
-  `CREDIT_SIGNUP_GRANT` read numbers more loosely and clamp without a word.)
+  numbers, `AI_BATCH_CONCURRENCY` and `GENERATION_MAX_ATTEMPTS` read numbers
+  more loosely and clamp without a word.)
 - **A variable exported in the environment beats `.env`**, on both halves - a
   shell, a systemd `Environment=`, `docker run -e`. The file fills in only what
   the environment does not set, so `DB_DIR=/tmp/ft-db PORT=3001 node
@@ -1942,7 +2054,7 @@ matching it.
 | `NEXT_PUBLIC_CALENDAR_DEFAULT_TIMEZONE` | The calendar page's starting time zone, an IANA name (default `America/Los_Angeles`). A zone outside the five the page lists is added to its menu under its city's name; an unknown one falls back with a console warning. *Rebuild* |
 | `CALENDAR_API_TIMEOUT_MS` / `CALENDAR_DETAIL_CONCURRENCY` | The calendar's own API routes, which run in the Next.js server: the timeout of each calendar.online request (default `12000`, range 1000-120000) and how many event-detail requests the link scan runs at once (default `12`, range 1-32). Server-only, not `NEXT_PUBLIC_`: restart the frontend, no rebuild |
 | `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave it empty and the `SMTP_USER` address is used instead; with neither set the install has **no administrator at all** and says so at startup. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
-| `CREDIT_SIGNUP_GRANT` | Credits a brand-new account starts with. `0` by default |
+| `CREDIT_SIGNUP_GRANT` | What a brand-new account starts with, **in dollars**, to `$0.001`: `5` is `$5.000`, `0.25` is `$0.250`. `0` by default; above `1000` clamps. It was a count of credits before credits became dollars, so an old `5` (about `$2.50` of resumes at 50c a credit) now grants `$5` - check it when upgrading. A value with more than three decimals warns once and grants nothing |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_MAX_CONNECTIONS` | The pooled SMTP connection: connect and greeting timeout (default `10000`), idle socket timeout (default `20000`) - both range 1000-300000, never 0, because an unbounded wait is a sign-in that never returns - and the pool's width (default `2`, range 1-20). *Startup* |
@@ -2055,11 +2167,12 @@ file. Export them in the shell, for the install and the server alike:
 | After rolling back to an older build, the saved templates show as built-ins that cannot be edited or deleted, or one is listed twice; or, after upgrading again, a template created or changed under the older build is missing | The older build reads every file in `static/templates` as a built-in, and this build moves the database's templates to files only once. [Saved templates are files](#9-saved-templates-are-files) says which files to move aside before rolling back, and how to have the move run again - put the files back and delete the `templates_moved_to_files` record from `schema_meta` - before upgrading again. |
 | Startup warns *users has both "plan" and "subscription"; reading "subscription" and leaving "plan" alone* | A `plan` column was ADDED back by hand - usually to roll back to an older build - instead of renaming `subscription` back (see [Plans are now subscriptions](#8-plans-are-now-subscriptions)). This build reads `subscription`; anything an older build wrote to `plan` since is not read. To keep those values, stop the backend and run `UPDATE users SET subscription = plan; ALTER TABLE users DROP COLUMN plan;` against `free_tailor.db` in your `DB_DIR`; to keep this build's, just drop `plan`. |
 | After rolling back to an older build, every sign-in fails and its log shows `no such column: plan` | The database was upgraded: this release renamed `users.plan` to `users.subscription`, and the older build only knows the old name. Rename it back before starting the older build - the one-line command is in [Plans are now subscriptions](#8-plans-are-now-subscriptions). |
+| After rolling back to an older build and upgrading again, an account is short the dollars a run had taken, and that run's failed resumes gave nothing back; or, while rolled back, every model costs 1 credit | Credits became dollars, and an older build reads only the whole-credit columns. A run started under this build holds `0` credits as far as the older build can see, so a resume of it that fails there refunds nothing, and its settle - or that build's 6-hour startup sweep - closes the reservation; this build never refunds against a closed one. And once this build has saved the settings row at all, no model carries its old `creditsPerResume`, so the older build prices every one at 1 credit. Grant back what the failed resumes cost under Admin → Accounts - the run's reserve row in the account's Credit History says what each resume was charged - and put the old prices back by hand from `app_settings["migration-log.credits-to-dollars"]` (`models`). Next time, let the queue drain before rolling back - see [Credits are dollars](#10-credits-are-dollars). |
 | On **Admin → Accounts** after an upgrade, changing a row's subscription, deleting an account, or any change the server refuses (demoting the last administrator, say) turns the page into *Application error: a client-side exception has occurred*; or **Add an account** answers *This page is from an older version of the app. Reload it and try again.* | The page was loaded before the upgrade that renamed plans to subscriptions. It sends the tier as `plan`, which this build refuses rather than ignores, and it reloads the account list expecting the old `plans` field, which is now `subscriptions` - so anything in the table that reloads the list breaks the page, and only the invite form, which does not reload after a refusal, gets as far as the sentence. Reload the page. A subscription change or invite was refused, not half-made: an invite meant for Premium would otherwise have created a Default account. A delete names no tier, so it did go through; the reloaded page shows it. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource - one per subscription seat: Claude, Codex and Gemini - so no seat can hold up another. |
-| A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released N credit(s) from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
+| A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released $X from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones running are aborted. |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page gives up only after twenty attaches in a row that brought nothing, or at once when the server says the batch is gone (restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen seat can actually take: its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`). The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
@@ -2120,7 +2233,11 @@ file. Export them in the shell, for the install and the server alike:
 | Admin → Models refuses a model: *"..." is not one of the Claude (Subscription) models: sonnet, opus, haiku, fable.* | The model name must be one the seat's list offers - the form's select only shows those, so this is an older tab or a hand-made request. To offer another name, add it to that seat's list in `.env` (`AI_CLI_MODEL_OPTIONS`, `AI_CODEX_MODEL_OPTIONS`, `AI_GEMINI_MODEL_OPTIONS`) and restart. A list with an entry the CLI would not run as written is ignored whole, with one `[env]` warning, and the default list is used. |
 | A model shows *Not in model list* | Its model name is not in its seat's list any more - the list was overridden in `.env` since it was saved. It keeps running exactly as before; the flag only says the form cannot offer that name again. Editing its name or price keeps it, while changing its model means picking one from the list. |
 | *Set Default* is refused with *"..." cannot be the default* or *is switched off* | The model cannot run, and a default nobody can run would only fail every run that names no model: switch it on under Admin → Models, switch its provider on under Admin → Settings, or unlock its seat (`AI_LOCKED_PROVIDERS`). Nothing is quietly substituted. |
-| *This needs N credits and the account has M* (the builder: *This run needs N credits, and your balance is M*) | The run costs the sum of each resume's model price, and the balance is short. Buy credits, generate fewer at once, or pick a model with a lower price per resume - the builder's cost line shows the total before the run starts. An administrator can grant credits under Accounts, and is never charged. |
+| *This needs $0.161 of credit and the account has $0.023* | The run costs the sum of each resume's model price, and the balance is short. Buy credit, generate fewer at once, or pick a model with a lower price per resume - the builder's cost line shows the total before the run starts. An administrator can grant credit under Accounts, and is never charged. |
+| Every balance is `$0.000` after upgrading, and Credit History ends with a *reset* row | Credits became dollars, and the owner's decision was to reset rather than convert: a credit was bought at a price (50c by default), so no one rate would be right for every balance. The `reset` row shows the old balance in credits; the old rows and payments are kept as they were, read-only. What every account held is in `app_settings["migration-log.credits-to-dollars"]` if you want to grant some of it back - in dollars, under Accounts. See [Credits are dollars](#10-credits-are-dollars). |
+| Admin → Models lists models in red as *free*, and runs on them cost nothing | Every enabled model priced `$0.000` is listed: after the upgrade that is all of them, since their old prices were in credits and were reset, and a model a migration adds arrives unpriced. Set a price per resume on each. `0` is a valid price - a deliberately free model stays listed, so nobody gives resumes away without seeing it. Startup says *Every model is FREE until it is priced* once, on the upgrade. |
+| Admin → Models, Accounts or Payments refuses a save with *This page is from an older version of the app. Reload it and try again.* | The page was loaded before credits became dollars and sent an amount in the old unit - a price in credits (`creditsPerResume`), a balance or grant in credits (`credits`, `amount`), payment limits in cents, or a purchase as a count of credits. Read as dollars it would have moved money by the wrong amount, so nothing was saved. Reload the page. |
+| A price, balance or grant is refused: *... can have at most three decimal places: $0.001 is the smallest step* | Amounts are exact to a thousandth of a dollar, and anything finer is refused rather than rounded either way - `0.023` is fine, `0.0235` is not. A purchase must be a whole number of cents (`12.50`, not `12.505`), because that is all a card or an invoice can charge. |
 | Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, *Import from Sheets* and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen **before** signing in again - a consent given while it is in Testing keeps the seven-day limit: Cloud console -> Google Auth Platform -> Audience -> Publish app (older consoles: APIs \& Services -> OAuth consent screen -> PUBLISH APP). With the restricted Drive scope Google then shows a "Google hasn't verified this app" screen at sign-in; for your own install that is expected - Advanced -> Go to the app. A Google Workspace project can choose user type Internal instead, which has neither the expiry nor the warning. `deleted_client`, `disabled_client` or `invalid_client` instead of `invalid_grant` means the OAuth client itself is gone, and signing in again would re-use it: a deleted one can be restored for 30 days under Google Auth Platform -> Clients; otherwise make a new Desktop app client, download it into `backend/` and run `npm run sheets:login -- --client <that file>` - naming it, because an older `client_secret*.json` left there can otherwise be picked. If `GOOGLE_CREDENTIALS_PATH` names the credential, `sheets:login` re-uses the client from that file and says so if the app will keep reading a different one from the file it just saved. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
 | A script ends with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c` (Windows) | A Node.js bug, not this app's: calling `process.exit()` just after network I/O races Node's own teardown on Windows ([nodejs/node#56645](https://github.com/nodejs/node/issues/56645)). Everything printed above it is complete and correct - read the report, not the crash; the only casualty was the exit code. The doctors and `sheets:login` now let the process end on its own, which avoids it on every Node version. Node itself fixed it in 24.20.0 and 26.7.0 ([nodejs/node#61999](https://github.com/nodejs/node/pull/61999)), and 22.x never got the fix, so a current 24 LTS is worth having anyway. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI may have found an API key. A call it starts on one is stopped at its first event - `system/init` names the credential before the model answers - and the seat is held as signed out for 30 minutes so no further calls are billed. Run `claude auth login` as the user the server runs as, and remove whatever supplies the key - an `apiKeyHelper` in the CLI's own settings, say; `ANTHROPIC_API_KEY` in the environment is stripped from the child already. Then open **Admin → Settings**: its seat check lifts the hold once `claude auth status` reports the subscription, and a key still in the way is caught at the next call's first event again. |
@@ -2158,6 +2275,14 @@ against the markup. The live preview's access rules and its lack of side
 effects are in `profilePreview.test.js`, run with every seat locked so a 200
 also proves no model was asked; the prompt variables and their drift check in
 `promptVariables.test.js`.
+
+Money is pinned in `credits.test.js` (exact thousandths: seven `$0.023`
+resumes reserve `$0.161`, two refunds give back `$0.046`), `money.test.js` (the
+one dollar parser and formatter, and a guard that no money path floors,
+truncates or float-parses an amount), `paymentFees.test.js` (a purchase credits
+exactly what it charges, by card and by crypto) and `dollarSwitch.test.js`,
+which builds a database the way the build before dollars left it - balances, a
+run in progress, a queued order, a pending checkout - and boots this one on it.
 
 The frontend has no test runner, so its decisions that need no browser are
 small modules the backend suite transpiles and tests

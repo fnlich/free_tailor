@@ -27,8 +27,6 @@ const { loadFresh, useTempStorage, useAdminEmails, writeSettingRaw } = require('
  * not have made it unreadable.
  */
 
-const PRICE_CENTS = 50;
-
 async function serve({ cryptomus = true, legacyEnv = false } = {}) {
   const { dbDir } = useTempStorage(`cryptomus-checkout-${Math.random().toString(36).slice(2)}`);
   useAdminEmails('boss@example.com');
@@ -68,11 +66,7 @@ async function serve({ cryptomus = true, legacyEnv = false } = {}) {
   writeSettingRaw(
     dbDir,
     'app-settings',
-    JSON.stringify({
-      creditPriceCents: PRICE_CENTS,
-      creditMinCredits: 1,
-      creditMaxCredits: 100_000,
-    })
+    JSON.stringify({})
   );
 
   loadFresh('../dist/database/sqlite');
@@ -142,7 +136,7 @@ async function serve({ cryptomus = true, legacyEnv = false } = {}) {
 test('a crypto checkout opens a Cryptomus invoice and sends the buyer to it', async () => {
   const server = await serve();
   try {
-    const response = await server.checkout({ method: 'crypto', credits: 100 });
+    const response = await server.checkout({ method: 'crypto', amountUsd: '50' });
     const body = await response.json();
     assert.equal(response.status, 201, JSON.stringify(body));
 
@@ -153,8 +147,10 @@ test('a crypto checkout opens a Cryptomus invoice and sends the buyer to it', as
     assert.equal(body.invoice, undefined);
 
     assert.equal(server.calls.cryptomus.length, 1);
-    // $50 for 100 credits at 50c, and the invoice is priced from settings.
+    // $50, and $50.000 of credit for it: no fee comes out of a crypto purchase.
     assert.equal(server.calls.cryptomus[0].amountCents, 5_000);
+    assert.equal((await server.payments.getPayment(server.calls.cryptomus[0].paymentId)).creditMilli, 50_000);
+    assert.equal(body.creditMilli, 50_000);
 
     const payment = server.payments.getPayment(server.calls.cryptomus[0].paymentId);
     assert.equal(payment.provider, 'cryptomus');
@@ -199,7 +195,7 @@ test('a coin named by a stale tab is ignored rather than refused', async () => {
   const server = await serve();
   try {
     for (const asset of ['ethereum:USDT', 'ethereum:DOGE', 'card', '../card']) {
-      const response = await server.checkout({ method: 'crypto', credits: 100, asset });
+      const response = await server.checkout({ method: 'crypto', amountUsd: '50', asset });
       assert.equal(response.status, 201, `${asset}: ${JSON.stringify(await response.json())}`);
     }
     assert.equal(server.calls.cryptomus.length, 4);
@@ -223,7 +219,7 @@ test('crypto is refused, not quietly handed to a provider that is gone', async (
     assert.equal(crypto.available, false);
     assert.equal(crypto.provider, 'cryptomus', 'there is no other provider to name');
 
-    const refused = await server.checkout({ method: 'crypto', credits: 100 });
+    const refused = await server.checkout({ method: 'crypto', amountUsd: '50' });
     assert.equal(refused.status, 503);
     assert.equal(server.calls.cryptomus.length, 0);
   } finally {
@@ -245,7 +241,7 @@ test('and the deleted paths cannot be brought back by their old variables', asyn
     const methods = await server.methods();
     const crypto = methods.methods.find((entry) => entry.method === 'crypto');
     assert.equal(crypto.available, false, 'an old variable revived a deleted path');
-    assert.equal((await server.checkout({ method: 'crypto', credits: 100 })).status, 503);
+    assert.equal((await server.checkout({ method: 'crypto', amountUsd: '50' })).status, 503);
 
     // And the operator is told which variables are dead rather than being left
     // to work out what broke the ones they had configured. Only the operator:
@@ -279,17 +275,28 @@ test('a payment made on-chain still reads back after the watcher was deleted', a
         userId: server.alice.id,
         method: 'crypto',
         provider,
-        credits: 60,
         amountCents: 3_000,
+        creditMilli: 0,
         currency: 'usd',
-        unitPriceCents: 50,
       });
+      // As the build that took it wrote it: 60 credits at 50c.
+      require('../dist/database/sqlite')
+        .getDb()
+        .prepare('UPDATE payments SET credits = 60, unit_price_cents = 50 WHERE id = ?')
+        .run(old.id);
 
       const response = await server.call(`/api/payments/${old.id}`);
       assert.equal(response.status, 200, provider);
       const body = await response.json();
       assert.equal(body.payment.provider, provider);
-      assert.equal(body.payment.credits, 60);
+      // Read back as what it was - credits at a price - never converted.
+      assert.deepEqual(body.payment.legacyCredits, {
+        credits: 60,
+        creditsGranted: 0,
+        refundedCredits: 0,
+        unitPriceMilli: 500,
+      });
+      assert.equal(body.payment.amountMilli, 30_000);
       // No invoice rides along any more, and its absence is not an error.
       assert.equal(body.invoice, undefined);
     }

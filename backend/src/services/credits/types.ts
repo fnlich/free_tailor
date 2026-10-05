@@ -21,6 +21,12 @@ export const CREDIT_REASONS = [
   // rises without an administrator deciding it should.
   'purchase',
   'purchase-refund',
+  // Credits became dollars, and every balance was reset to $0. One row per
+  // account that held any, in the old unit, taking it to zero - or, for one
+  // whose credits were all held by a run, moving nothing and saying so
+  // (database/dollarSwitch.ts). Always read as a row in credits. Written by
+  // nothing else.
+  'reset',
 ] as const;
 
 export type CreditReason = (typeof CREDIT_REASONS)[number];
@@ -29,10 +35,21 @@ export type LedgerEntry = {
   seq: number;
   id: string;
   userId: string;
-  /** Negative for a charge, positive for a grant or refund. Never zero. */
-  delta: number;
-  /** The balance after this row, measured rather than computed. */
-  balanceAfter: number;
+  /**
+   * Thousandths of a dollar: negative for a charge, positive for a grant or
+   * refund. Never zero on a row written since credits became dollars; 0 on a
+   * row from before, whose amount is in `legacyCredits`.
+   */
+  deltaMilli: number;
+  /** The balance after this row, in thousandths of a dollar, measured rather than computed. */
+  balanceAfterMilli: number;
+  /**
+   * A row from before credits became dollars - and the `reset` row that ended
+   * them - as it was written, in whole credits. Null on every row since. Not
+   * converted: what a credit was worth depended on what it was bought at, and
+   * the owner reset the balances rather than pick a rate.
+   */
+  legacyCredits: { delta: number; balanceAfter: number } | null;
   reason: CreditReason;
   refKind: string;
   refId: string;
@@ -45,8 +62,10 @@ export type Reservation = {
   id: string;
   userId: string;
   kind: string;
-  units: number;
-  refunded: number;
+  /** What the run took, in thousandths of a dollar. */
+  unitsMilli: number;
+  /** What it has given back so far; never more than `unitsMilli`. */
+  refundedMilli: number;
   state: 'open' | 'closed';
   label: string;
   createdAt: string;
@@ -63,15 +82,16 @@ export type Reservation = {
 export type ReserveResult = {
   id: string;
   userId: string;
-  units: number;
+  /** What was taken, in thousandths of a dollar. 0 for a free run or an administrator. */
+  costMilli: number;
   exempt: boolean;
 };
 
-/** A balance, and what is currently held against in-flight runs. */
+/** A balance, and what is currently held against in-flight runs, in thousandths of a dollar. */
 export type CreditStatus = {
-  balance: number;
+  balanceMilli: number;
   /** Sum of (units - refunded) over open reservations. */
-  held: number;
+  heldMilli: number;
   /** Administrators spend nothing; the balance is shown but never moves. */
   exempt: boolean;
 };

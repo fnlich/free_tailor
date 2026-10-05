@@ -11,7 +11,11 @@ export interface UserAccount {
   role: UserRole;
   /** The account's tier (Default, Premium...): `users.subscription`. */
   subscription: AccountSubscriptionId;
-  credits: number;
+  /**
+   * The balance, in thousandths of a dollar: `users.balance_milli`, a cache of
+   * the ledger's sum. A credit is a dollar, so 3977 is $3.977.
+   */
+  balanceMilli: number;
   disabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -36,10 +40,10 @@ export interface UserAccount {
 /**
  * What an admin may change about somebody else's account.
  *
- * `credits` is deliberately NOT here. A balance is not a field to be set: it is
- * the sum of a ledger, and moving it goes through services/credits so the move
- * leaves a row explaining itself. The accounts route reads the number from the
- * same request body and hands it to `setBalance`.
+ * The balance is deliberately NOT here. A balance is not a field to be set: it
+ * is the sum of a ledger, and moving it goes through services/credits so the
+ * move leaves a row explaining itself. The accounts route reads `balanceUsd`
+ * from the same request body and hands it to `setBalance`.
  */
 export interface AccountUpdate {
   role?: UserRole;

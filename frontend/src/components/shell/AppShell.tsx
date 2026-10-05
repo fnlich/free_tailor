@@ -120,7 +120,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="tl-shell" data-drawer={drawerOpen ? 'open' : 'closed'}>
       <AppTopBar
-        credits={account?.credits ?? 0}
+        balanceMilli={account?.balanceMilli ?? 0}
         drawerOpen={drawerOpen}
         onToggleDrawer={toggleDrawer}
         triggerRef={triggerRef}

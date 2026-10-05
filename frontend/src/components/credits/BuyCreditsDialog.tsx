@@ -7,11 +7,11 @@ import OrderSummaryStep from './OrderSummaryStep';
 import PaymentOptionsStep from './PaymentOptionsStep';
 import PayDialog from './PayDialog';
 import { PRIMARY, QUIET } from './chrome';
-import { FIRST_STEP, wizardReducer, type Order, type Priced } from './order';
+import { FIRST_STEP, readPurchaseAmount, wizardReducer, type Order, type Priced } from './order';
 import { stripeFor } from './stripeLoader';
 import { useTheme } from '@/lib/useTheme';
+import { formatMoney, toDollarInput } from '@/lib/format';
 import {
-  formatAmount,
   paymentsApi,
   type PaymentOptions,
   type SavedCard,
@@ -19,7 +19,11 @@ import {
 import { messageWithDetail } from '@/lib/userMessage';
 
 /**
- * Buying credits, in three steps: what to pay with, how much, then what for.
+ * Buying credit, in three steps: what to pay with, how much, then what for.
+ *
+ * A credit is a dollar: the amount chosen is the charge and the credit both,
+ * sent to the server as the dollars typed (`amountUsd`) and never as a figure
+ * this page worked out.
  *
  * Mounted only while it is open, which is why there is no `open` prop and no
  * reset action: closing it unmounts it, and the next purchase starts from a
@@ -96,19 +100,19 @@ export default function BuyCreditsDialog({
 
   const target = step.name === 'options' ? null : step.target;
   const summaryKey =
-    step.name === 'summary' ? `${step.target.id}|${step.credits}` : null;
+    step.name === 'summary' ? `${step.target.id}|${step.amountMilli}` : null;
 
   useEffect(() => {
     if (step.name !== 'summary' || summaryKey === null) return;
     if (priced?.key === summaryKey) return;
 
-    const { target: chosen, credits } = step;
+    const { target: chosen, amountMilli } = step;
     void (async () => {
       setPriced({ key: summaryKey, state: { status: 'loading' } });
       try {
         const quote = await paymentsApi.quote({
           method: chosen.method,
-          credits,
+          amountUsd: toDollarInput(amountMilli),
         });
         setPriced({ key: summaryKey, state: { status: 'ready', quote } });
       } catch (err) {
@@ -138,7 +142,7 @@ export default function BuyCreditsDialog({
     step.name === 'summary' && (step.target.method === 'crypto' || showNewCardForm);
   const orderKey =
     step.name === 'summary' && needsOrder
-      ? `${step.target.id}|${step.credits}|${saveCard ? 'save' : 'guest'}`
+      ? `${step.target.id}|${step.amountMilli}|${saveCard ? 'save' : 'guest'}`
       : null;
 
   /*
@@ -156,14 +160,14 @@ export default function BuyCreditsDialog({
     // Already open, or already being opened, for exactly these terms.
     if (order?.key === orderKey) return;
 
-    const { target: chosen, credits } = step;
+    const { target: chosen, amountMilli } = step;
     void (async () => {
       const token = ++startToken.current;
       setOrder({ key: orderKey, order: { status: 'starting' } });
       try {
         const started = await paymentsApi.checkout({
           method: chosen.method,
-          credits,
+          amountUsd: toDollarInput(amountMilli),
           ...(chosen.method === 'card' && saveCard ? { saveCard: true } : {}),
         });
         if (token !== startToken.current) return;
@@ -197,7 +201,7 @@ export default function BuyCreditsDialog({
     try {
       const started = await paymentsApi.checkout({
         method: 'card',
-        credits: step.credits,
+        amountUsd: toDollarInput(step.amountMilli),
         cardId,
       });
 
@@ -254,7 +258,7 @@ export default function BuyCreditsDialog({
     step.name === 'options'
       ? 'Payment options'
       : step.name === 'amount'
-        ? 'Credits amount'
+        ? 'Credit amount'
         : 'Order summary';
 
   const subtitle =
@@ -263,6 +267,15 @@ export default function BuyCreditsDialog({
       : step.name === 'amount'
         ? `Paying with ${step.target.label.toLowerCase()}.`
         : 'Check the order, then pay.';
+
+  /*
+   * The FITTED amount, which is what the next step will charge. The box on the
+   * amount step stays unfitted while it is being typed, so the two can differ
+   * for a moment - and a button quoting the typed figure would be the page
+   * inventing a price. An amount that is not one (text, a fraction of a cent)
+   * cannot continue at all.
+   */
+  const amountRead = step.name === 'amount' ? readPurchaseAmount(step.amount, step.target) : null;
 
   const footer =
     step.name === 'options' ? (
@@ -278,20 +291,10 @@ export default function BuyCreditsDialog({
           <button
             type="button"
             onClick={() => dispatch({ type: 'forward' })}
+            disabled={!amountRead?.ok}
             className={PRIMARY}
           >
-            {/*
-              The CLAMPED count, which is what the next step will charge. The
-              box on this step stays unclamped while it is being typed, so the
-              two can differ for a moment - and a button quoting the unclamped
-              figure would be the page inventing a price.
-            */}
-            Continue &mdash;{' '}
-            {formatAmount(
-              Math.min(Math.max(step.credits, step.target.minCredits), step.target.maxCredits) *
-                options.unitPriceCents,
-              options.currency
-            )}
+            {amountRead?.ok ? <>Continue &mdash; {formatMoney(amountRead.milli)}</> : 'Continue'}
           </button>
         ) : (
           <button type="button" onClick={onClose} className={QUIET}>
@@ -320,7 +323,6 @@ export default function BuyCreditsDialog({
       {step.name === 'options' && (
         <PaymentOptionsStep
           targets={options.targets}
-          currency={options.currency}
           onChoose={(chosen) => dispatch({ type: 'choose', target: chosen })}
         />
       )}
@@ -328,19 +330,15 @@ export default function BuyCreditsDialog({
       {step.name === 'amount' && (
         <AmountStep
           target={step.target}
-          credits={step.credits}
-          unitPriceCents={options.unitPriceCents}
-          currency={options.currency}
-          onCredits={(credits) => dispatch({ type: 'credits', credits })}
+          amount={step.amount}
+          onAmount={(amount) => dispatch({ type: 'amount', amount })}
         />
       )}
 
       {step.name === 'summary' && target && (
         <OrderSummaryStep
           target={target}
-          credits={step.credits}
-          unitPriceCents={options.unitPriceCents}
-          currency={options.currency}
+          amountMilli={step.amountMilli}
           /*
            * Keyed, so a stale answer is never shown against a new amount.
            *

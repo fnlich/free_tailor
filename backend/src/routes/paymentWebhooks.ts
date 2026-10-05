@@ -19,6 +19,7 @@ import {
   type PaymentProvider,
   type WebhookOutcome,
 } from '../services/payments';
+import { formatMoney, parseProviderCents } from '../utils/money';
 
 /**
  * The only thing in this application that adds credits to an account.
@@ -158,7 +159,7 @@ function apply(event: Handled, rawBody: Buffer, res: Response): void {
   if (payment && event.outcome === 'paid') {
     console.log(
       `[payments] ${payment.reference}: ${event.type} -> ` +
-        (settlement.credited ? `${payment.creditsGranted} credits added` : 'already settled')
+        (settlement.credited ? `${formatMoney(payment.creditedMilli)} credited` : 'already settled')
     );
 
     /*
@@ -382,8 +383,9 @@ router.post('/cryptomus', (req: Request, res: Response) => {
    * figure the payment row stores in minor units and the only one comparable
    * to it. `payment_amount` is denominated in whichever coin the buyer chose,
    * so comparing it to a dollar total would reject every correct payment.
-   * Rounded rather than truncated, because 12.50 is not exactly representable
-   * and truncating it rejects a payment that was exactly right.
+   * Read EXACTLY, digit by digit (utils/money's `parseProviderCents`): "12.50"
+   * and "12.50000000" are 1250 cents, and "12.505" is no whole number of cents
+   * at all - held, rather than rounded into agreement with a $12.50 invoice.
    *
    * A NUMBER is accepted as well as a string, and a missing one is held.
    *
@@ -396,13 +398,7 @@ router.post('/cryptomus', (req: Request, res: Response) => {
    * parse, and `mustMatchAmount` below turns "no usable amount" into a held
    * payment rather than a credited one.
    */
-  const rawAmount = body.amount;
-  const paidCents =
-    typeof rawAmount === 'number' && Number.isFinite(rawAmount)
-      ? Math.round(rawAmount * 100)
-      : typeof rawAmount === 'string' && rawAmount.trim() !== ''
-        ? Math.round(Number.parseFloat(rawAmount) * 100)
-        : Number.NaN;
+  const paidCents = parseProviderCents(body.amount);
 
   apply(
     {
@@ -426,7 +422,7 @@ router.post('/cryptomus', (req: Request, res: Response) => {
       // Empty for every status but `wrong_amount`, and an empty one leaves the
       // general sentence in place - see `failureFor`.
       ...(failureFor(status) ? { failure: failureFor(status) } : {}),
-      ...(Number.isFinite(paidCents) ? { paidAmountCents: paidCents } : {}),
+      ...(paidCents !== null ? { paidAmountCents: paidCents } : {}),
       ...(typeof body.currency === 'string' ? { paidCurrency: body.currency } : {}),
     },
     rawBody,

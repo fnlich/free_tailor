@@ -25,7 +25,7 @@ import {
   ORDER_BATCH_KIND,
   persistNewBatch,
   RESUME_TASK_KIND,
-  taskCreditCost,
+  taskCostMilli,
   type Batch,
   type BatchSnapshot,
   type ResumeJob,
@@ -263,7 +263,7 @@ export async function buildTasks(
   // the person who imported it expects.
   for (const [jobIndex, job] of jobs.entries()) {
     for (const profile of profiles) {
-      const { choice, creditCost } = choices.get(profile.id)!;
+      const { choice, costMilli } = choices.get(profile.id)!;
       descriptors.push({
         queue: routeFor(choice).queue,
         label: {
@@ -290,9 +290,10 @@ export async function buildTasks(
           format,
           includeCoverLetterDocx,
           choice,
-          // What this resume is charged, fixed now: the reservation is the sum
-          // of these, and a failure refunds exactly its own.
-          creditCost,
+          // What this resume is charged, in thousandths of a dollar, fixed
+          // now: the reservation is the sum of these, and a failure refunds
+          // exactly its own.
+          costMilli,
           // Carried rather than looked up when the task runs, so the second
           // half of an order cannot land somewhere else because a setting was
           // edited, or because midnight passed, while it was queued.
@@ -308,19 +309,22 @@ export async function buildTasks(
 }
 
 /**
- * What a list of tasks costs, and the line the account's credit history shows
- * for it - by each task's model display name, so a mixed batch reads as what it
- * was charged.
+ * What a list of tasks costs, in thousandths of a dollar, and the line the
+ * account's credit history shows for it - by each task's model display name,
+ * so a mixed batch reads as what it was charged.
+ *
+ * An integer sum of integer prices: seven resumes at $0.023 are exactly 161
+ * thousandths, every time - not a float sum that adds up only on lucky inputs.
  */
-export function chargeFor(descriptors: Array<TaskDescriptor<ResumeTaskResult>>): { credits: number; label: string } {
+export function chargeFor(descriptors: Array<TaskDescriptor<ResumeTaskResult>>): { costMilli: number; label: string } {
   const units = descriptors.map((descriptor) => {
     const payload = descriptor.payload as ResumeTaskPayload;
     // Read the way the refund hook reads it, so what is charged and what a
     // failure gives back can never be worked out two different ways.
-    return { modelLabel: payload.choice.modelLabel, credits: taskCreditCost(payload) };
+    return { modelLabel: payload.choice.modelLabel, costMilli: taskCostMilli(payload) };
   });
   return {
-    credits: units.reduce((sum, unit) => sum + unit.credits, 0),
+    costMilli: units.reduce((sum, unit) => sum + unit.costMilli, 0),
     label: describeCharge(units),
   };
 }
@@ -449,7 +453,7 @@ router.post('/batches', async (req: Request, res: Response) => {
      * batch whose profiles run on differently priced models is charged each at
      * its own price, and a 402 names the whole amount.
      */
-    reserveCredits(req.user!, charge.credits, {
+    reserveCredits(req.user!, charge.costMilli, {
       kind: 'batch',
       id: batchId,
       label: charge.label,
@@ -566,9 +570,9 @@ router.post('/batches', async (req: Request, res: Response) => {
       ...(order ? { orderId: order.id, orderNumber: order.number } : {}),
     });
   } catch (error) {
-    // A refused submission (400), too few credits (402 with `needed` and
-    // `balance`) and a model the request may not use (400) are all public and
-    // say so in their own words; anything else is generic, with a ref.
+    // A refused submission (400), too little credit (402 with `neededMilli`
+    // and `balanceMilli`) and a model the request may not use (400) are all
+    // public and say so in their own words; anything else is generic, with a ref.
     sendPublicError(req, res, error, 'Failed to queue the batch');
   }
 });
@@ -578,16 +582,20 @@ router.post('/batches', async (req: Request, res: Response) => {
  *
  * Takes the body `POST /batches` takes and resolves each profile's model the
  * way it does (`resolveProfileChoices`), so the figure is what that submission
- * would charge. Answers `{ resumes, credits, balance, exempt }` and nothing
- * about which models or seats: the builder shows it as one line beside the
- * generate button, and re-asks whenever the selection or the model changes.
+ * would charge. Answers `{ resumes, costMilli, pricePerResumeMilli,
+ * balanceMilli, exempt }` - thousandths of a dollar - and nothing about which
+ * models or seats: the builder shows it as one line beside the generate
+ * button ("7 resumes x $0.023 = $0.161"), and re-asks whenever the selection
+ * or the model changes. `pricePerResumeMilli` is the one price every resume
+ * in the run costs, or null when the profiles' models are priced differently
+ * (or there is nothing to price).
  *
  * Lenient where the submission is strict, on purpose. The builder asks while
  * the form is still being filled in, and a missing company name or role does
  * not change what anything costs - so jobs are counted, not validated, and no
  * profiles or no jobs is a quote of nothing rather than an error. The one
  * refusal is a request naming a model it may not use (400), because the
- * submission would be refused over it too. `credits` is the full amount even
+ * submission would be refused over it too. `costMilli` is the full amount even
  * for an administrator, who is not charged it: `exempt` says so.
  *
  * Reads only. No reservation, no task, no model call.
@@ -599,11 +607,15 @@ router.post('/quote', async (req: Request, res: Response) => {
     const profiles = jobCount > 0 ? loadProfiles(req.user ?? null, body.profileIds) : [];
     const choices = await resolveProfileChoices(body, profiles, { admin: isAdmin(req), userId: req.user?.id });
 
-    const perJob = [...choices.values()].reduce((sum, priced) => sum + priced.creditCost, 0);
+    const prices = [...choices.values()].map((priced) => priced.costMilli);
+    const perJob = prices.reduce((sum, price) => sum + price, 0);
+    const resumes = jobCount * profiles.length;
     res.json({
-      resumes: jobCount * profiles.length,
-      credits: jobCount * perJob,
-      balance: getStatus(req.user!).balance,
+      resumes,
+      costMilli: jobCount * perJob,
+      pricePerResumeMilli:
+        resumes > 0 && prices.every((price) => price === prices[0]) ? prices[0] : null,
+      balanceMilli: getStatus(req.user!).balanceMilli,
       exempt: isExempt(req.user!),
     });
   } catch (error) {

@@ -90,7 +90,7 @@ async function serve() {
     credits,
     buyer,
     close: () => server.close(),
-    balance: () => users.getUserById(buyer.id).credits,
+    balance: () => users.getUserById(buyer.id).balanceMilli,
     post: (path, rawBody, headers) =>
       fetch(`http://127.0.0.1:${port}/api/payments/webhook${path}`, {
         method: 'POST',
@@ -100,16 +100,18 @@ async function serve() {
   };
 }
 
-/** A pending payment, as `startCheckout` would have left one. */
-function pendingPayment(server, { providerRef = 'cs_test_123', provider = 'stripe', credits = 200 } = {}) {
+/**
+ * A pending payment, as `startCheckout` would have left one: charging `cents`
+ * and crediting exactly that, in thousandths of a dollar - a credit is a dollar.
+ */
+function pendingPayment(server, { providerRef = 'cs_test_123', provider = 'stripe', cents = 10_000 } = {}) {
   const payment = server.payments.createPayment({
     userId: server.buyer.id,
     method: provider === 'stripe' ? 'card' : 'crypto',
     provider,
-    credits,
-    amountCents: credits * 50,
+    amountCents: cents,
+    creditMilli: cents * 10,
     currency: 'usd',
-    unitPriceCents: 50,
   });
   server.payments.attachProviderRef(payment.id, providerRef);
   return server.payments.getPayment(payment.id);
@@ -139,15 +141,16 @@ test('a valid Stripe event credits the account exactly once', async () => {
     const response = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
 
     assert.equal(response.status, 200);
-    assert.equal(server.balance(), 200, 'the credits arrived');
+    assert.equal(server.balance(), 100_000, 'the credits arrived');
     assert.equal(server.payments.getPayment(payment.id).state, 'paid');
 
     // And through the ledger, with the key that makes a second one impossible.
     const entries = server.credits.getLedger(server.buyer.id);
     const purchase = entries.find((entry) => entry.reason === 'purchase');
     assert.ok(purchase, 'a purchase row was written');
-    assert.equal(purchase.delta, 200);
-    assert.equal(purchase.balanceAfter, 200);
+    assert.equal(purchase.deltaMilli, 100_000, 'exactly the $100 charged');
+    assert.equal(purchase.balanceAfterMilli, 100_000);
+    assert.match(purchase.note, /\$100\.000$/);
   } finally {
     server.close();
   }
@@ -161,12 +164,12 @@ test('the same event delivered again credits nothing', async () => {
     const signature = signStripe(body);
 
     await server.post('/stripe', body, { 'stripe-signature': signature });
-    assert.equal(server.balance(), 200);
+    assert.equal(server.balance(), 100_000);
 
     // Byte for byte what the provider sends on a retry.
     const second = await server.post('/stripe', body, { 'stripe-signature': signature });
     assert.equal(second.status, 200, 'a retry must be acknowledged, or it retries for days');
-    assert.equal(server.balance(), 200, 'and must not pay twice');
+    assert.equal(server.balance(), 100_000, 'and must not pay twice');
 
     const purchases = server.credits
       .getLedger(server.buyer.id)
@@ -183,7 +186,7 @@ test('a new event id for a payment already paid still credits nothing', async ()
     const payment = pendingPayment(server);
     const first = stripeEvent(payment, { id: 'evt_1' });
     await server.post('/stripe', first, { 'stripe-signature': signStripe(first) });
-    assert.equal(server.balance(), 200);
+    assert.equal(server.balance(), 100_000);
 
     // Past the event dedupe - a different id entirely - and stopped by the
     // payment's own state instead. The guards are stacked on purpose.
@@ -191,7 +194,7 @@ test('a new event id for a payment already paid still credits nothing', async ()
     const response = await server.post('/stripe', second, { 'stripe-signature': signStripe(second) });
 
     assert.equal(response.status, 200);
-    assert.equal(server.balance(), 200);
+    assert.equal(server.balance(), 100_000);
   } finally {
     server.close();
   }
@@ -318,8 +321,8 @@ test('a completed session that is not actually paid credits nothing', async () =
 /* ------------------------------------------------------------- Cryptomus */
 
 /** As `startCheckout` leaves one: the uuid is the reference, the id the hint. */
-function cryptomusPayment(server, credits = 40) {
-  return pendingPayment(server, { provider: 'cryptomus', providerRef: 'inv-uuid-1', credits });
+function cryptomusPayment(server, cents = 2_000) {
+  return pendingPayment(server, { provider: 'cryptomus', providerRef: 'inv-uuid-1', cents });
 }
 
 test('a paid Cryptomus invoice credits, and one still confirming does not', async () => {
@@ -343,7 +346,7 @@ test('a paid Cryptomus invoice credits, and one still confirming does not', asyn
 
     const response = await server.post('/cryptomus', cryptomusBody(fields('paid')));
     assert.equal(response.status, 200);
-    assert.equal(server.balance(), 40);
+    assert.equal(server.balance(), 20_000);
     assert.equal(server.payments.getPayment(payment.id).state, 'paid');
   } finally {
     server.close();
@@ -367,7 +370,7 @@ test('an overpaid Cryptomus invoice credits what was quoted, once', async () => 
     });
 
     assert.equal((await server.post('/cryptomus', body)).status, 200);
-    assert.equal(server.balance(), 40);
+    assert.equal(server.balance(), 20_000);
   } finally {
     server.close();
   }
@@ -395,7 +398,7 @@ test('Cryptomus retrying the same status credits only once', async () => {
      */
     assert.equal((await server.post('/cryptomus', body)).status, 200);
     assert.equal((await server.post('/cryptomus', body)).status, 200);
-    assert.equal(server.balance(), 40);
+    assert.equal(server.balance(), 20_000);
   } finally {
     server.close();
   }
@@ -494,7 +497,7 @@ test('a Cryptomus amount sent as a number is compared, not skipped', async () =>
       ).status,
       200
     );
-    assert.equal(second.balance(), 40, 'and a number that agrees settles');
+    assert.equal(second.balance(), 20_000, 'and a number that agrees settles');
   } finally {
     second.close();
   }
@@ -658,7 +661,7 @@ test("one provider's event cannot settle another provider's payment", async () =
      * `settleWebhookEvent` re-checks the provider on a hinted id precisely so
      * that naming somebody else's payment cannot settle it.
      */
-    const card = pendingPayment(server, { provider: 'stripe', providerRef: 'SHARED', credits: 100 });
+    const card = pendingPayment(server, { provider: 'stripe', providerRef: 'SHARED', cents: 5_000 });
     const body = cryptomusBody({
       type: 'payment',
       uuid: 'SHARED',
@@ -682,7 +685,7 @@ test('a webhook that fails while crediting records nothing, so the retry lands',
   const server = await serve();
   const db = require('../dist/database/sqlite').getDb();
   try {
-    const payment = pendingPayment(server, { credits: 200 });
+    const payment = pendingPayment(server, { cents: 10_000 });
     const body = stripeEvent(payment, { id: 'evt_retry' });
 
     /*
@@ -718,7 +721,7 @@ test('a webhook that fails while crediting records nothing, so the retry lands',
     // is concerned, which is the whole point of rolling the first one back.
     const retried = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
     assert.equal(retried.status, 200);
-    assert.equal(server.balance(), 200);
+    assert.equal(server.balance(), 100_000);
     assert.equal(server.payments.getPayment(payment.id).state, 'paid');
   } finally {
     server.close();
@@ -728,7 +731,7 @@ test('a webhook that fails while crediting records nothing, so the retry lands',
 test('an event that reports a different amount credits nothing', async () => {
   const server = await serve();
   try {
-    const payment = pendingPayment(server, { credits: 200 }); // 200 x 50c = $100
+    const payment = pendingPayment(server, { cents: 10_000 }); // $100
     const body = JSON.stringify({
       id: 'evt_short',
       type: 'checkout.session.completed',
@@ -758,7 +761,7 @@ test('an event that reports a different amount credits nothing', async () => {
 test('the matching amount and currency still credit normally', async () => {
   const server = await serve();
   try {
-    const payment = pendingPayment(server, { credits: 200 });
+    const payment = pendingPayment(server, { cents: 10_000 });
     const body = JSON.stringify({
       id: 'evt_exact',
       type: 'checkout.session.completed',
@@ -774,7 +777,7 @@ test('the matching amount and currency still credit normally', async () => {
     });
 
     await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
-    assert.equal(server.balance(), 200);
+    assert.equal(server.balance(), 100_000);
   } finally {
     server.close();
   }
@@ -784,7 +787,7 @@ test('the stored event keeps the payment and drops the person', async () => {
   const server = await serve();
   const db = require('../dist/database/sqlite').getDb();
   try {
-    const payment = pendingPayment(server, { credits: 10 });
+    const payment = pendingPayment(server, { cents: 500 });
     const body = JSON.stringify({
       id: 'evt_pii',
       type: 'checkout.session.completed',
@@ -810,7 +813,7 @@ test('the stored event keeps the payment and drops the person', async () => {
     // What it was never for does not.
     assert.doesNotMatch(stored.payload, /buyer@example\.com/);
     assert.doesNotMatch(stored.payload, /1 Test Street/);
-    assert.equal(server.balance(), 10, 'and the credit still landed');
+    assert.equal(server.balance(), 5_000, 'and the credit still landed');
   } finally {
     server.close();
   }
@@ -828,12 +831,95 @@ test('a webhook is still judged when the publishable key is missing', async () =
      */
     delete process.env.STRIPE_PUBLISHABLE_KEY;
 
-    const payment = pendingPayment(server, { credits: 25 });
+    const payment = pendingPayment(server, { cents: 1_250 });
     const body = stripeEvent(payment, { id: 'evt_no_pk' });
     const response = await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
 
     assert.equal(response.status, 200);
-    assert.equal(server.balance(), 25, 'the payment was still credited');
+    assert.equal(server.balance(), 12_500, 'the payment was still credited');
+  } finally {
+    server.close();
+  }
+});
+
+/* ------------------------------------------------- a credit is a dollar */
+
+test('a card purchase credits exactly what it charged, and a crypto one too, with no fee', async () => {
+  const server = await serve();
+  try {
+    // $5 by card.
+    const card = pendingPayment(server, { cents: 500 });
+    const body = stripeEvent(card);
+    await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+    assert.equal(server.balance(), 5_000, '$5.000 for $5');
+    assert.equal(server.payments.getPayment(card.id).creditedMilli, 5_000);
+
+    // $50 by crypto: it was 97 credits while a 2.2% fee came out of it.
+    const crypto = pendingPayment(server, { provider: 'cryptomus', providerRef: 'inv-dollars', cents: 5_000 });
+    await server.post(
+      '/cryptomus',
+      cryptomusBody({
+        type: 'payment',
+        uuid: crypto.providerRef,
+        order_id: crypto.id,
+        amount: '50.00',
+        payment_amount: '49.98',
+        currency: 'USD',
+        status: 'paid',
+      })
+    );
+    assert.equal(server.payments.getPayment(crypto.id).creditedMilli, 50_000, '$50.000 for $50');
+    assert.equal(server.balance(), 55_000);
+    const purchases = server.credits
+      .getLedger(server.buyer.id)
+      .filter((entry) => entry.reason === 'purchase')
+      .map((entry) => entry.deltaMilli)
+      .sort((a, b) => a - b);
+    assert.deepEqual(purchases, [5_000, 50_000]);
+  } finally {
+    server.close();
+  }
+});
+
+test('a Cryptomus amount is read exactly: padded zeros agree, and a half cent never rounds into a match', async () => {
+  const pay = async (amount) => {
+    const server = await serve();
+    try {
+      const payment = cryptomusPayment(server); // $20.00
+      await server.post(
+        '/cryptomus',
+        cryptomusBody({ type: 'payment', uuid: payment.providerRef, order_id: payment.id, amount, currency: 'USD', status: 'paid' })
+      );
+      return { balance: server.balance(), state: server.payments.getPayment(payment.id).state };
+    } finally {
+      server.close();
+    }
+  };
+  assert.deepEqual(await pay('20.00000000'), { balance: 20_000, state: 'paid' });
+  assert.deepEqual(await pay('20'), { balance: 20_000, state: 'paid' });
+  // Math.round(parseFloat("20.004") * 100) is 2000 - a match. It is not one.
+  assert.deepEqual(await pay('20.004'), { balance: 0, state: 'pending' });
+  assert.deepEqual(await pay('20.00abc'), { balance: 0, state: 'pending' });
+});
+
+test('a checkout opened before credits were dollars and paid after it credits what it charged', async () => {
+  const server = await serve();
+  try {
+    // As the older build left one: 100 credits at 50c quoted, $50 to pay, and
+    // nothing in the dollar column - the switch stamps one, and this is the
+    // rule for one it could not reach.
+    const payment = pendingPayment(server, { cents: 5_000, providerRef: 'cs_before' });
+    const { getDb } = require('../dist/database/sqlite');
+    getDb()
+      .prepare('UPDATE payments SET credits = 100, unit_price_cents = 50, credit_milli = 0 WHERE id = ?')
+      .run(payment.id);
+
+    const body = stripeEvent(server.payments.getPayment(payment.id), { id: 'evt_before' });
+    await server.post('/stripe', body, { 'stripe-signature': signStripe(body) });
+    assert.equal(server.balance(), 50_000, '$50.000 for the $50 paid - never 100 thousandths for 100 credits');
+    const paid = server.payments.getPayment(payment.id);
+    assert.equal(paid.creditedMilli, 50_000);
+    assert.deepEqual(paid.legacyCredits, { credits: 100, creditsGranted: 0, refundedCredits: 0, unitPriceCents: 50 });
   } finally {
     server.close();
   }

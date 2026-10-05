@@ -8,6 +8,7 @@ import OrderHistory from '@/components/credits/OrderHistory';
 import { useTabRow } from '@/components/shell/useTabRow';
 import { useAuth } from '@/contexts/AuthContext';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
+import { formatMoney } from '@/lib/format';
 import { paymentsApi, type PaymentOptions } from '@/lib/payments';
 import { messageWithDetail } from '@/lib/userMessage';
 
@@ -135,11 +136,13 @@ function CreditsBody() {
           ) : (
             <p className="text-xl font-semibold tracking-wide text-ink tabular-nums">
               {/* Unknown is not zero: a balance that failed to load says so. */}
-              {status ? status.balance : '—'}
+              {status ? formatMoney(status.balanceMilli) : '—'}
             </p>
           )}
-          {status && status.held > 0 && (
-            <p className="mt-0.5 text-xs text-muted">{status.held} held by a run in progress.</p>
+          {status && status.heldMilli > 0 && (
+            <p className="mt-0.5 text-xs text-muted">
+              {formatMoney(status.heldMilli)} held by a run in progress.
+            </p>
           )}
         </div>
 
@@ -177,7 +180,7 @@ function CreditsBody() {
 
         {status?.exempt && (
           <p className="rounded-lg bg-accent-soft px-4 py-3 text-sm text-accent-ink">
-            Administrators do not spend credits, so you do not need to buy any.
+            Administrators are not charged for resumes, so you do not need to buy credit.
           </p>
         )}
 
@@ -193,7 +196,7 @@ function CreditsBody() {
         */}
         {options && !anyMethod && (
           <div className="tl-card p-6">
-            <p className="text-lg font-semibold text-ink">Purchasing credits is not available yet</p>
+            <p className="text-lg font-semibold text-ink">Purchasing credit is not available yet</p>
             {isAdmin ? (
               <>
                 <p className="mt-2 text-sm text-muted">
@@ -212,7 +215,7 @@ function CreditsBody() {
               <p className="mt-2 text-sm text-muted">Please contact your administrator.</p>
             )}
             <p className="mt-3 text-sm text-muted">
-              Until then, an administrator can add credits to your account directly.
+              Until then, an administrator can add credit to your account directly.
             </p>
           </div>
         )}
@@ -259,7 +262,7 @@ function CreditsBody() {
 
       {/*
         Mounted only while it is open, so the wizard's state - which step,
-        which method, how many credits, which order is open at the provider -
+        which method, what amount, which order is open at the provider -
         resets by unmounting rather than by a reset action somebody has to
         remember to dispatch on the second purchase.
       */}

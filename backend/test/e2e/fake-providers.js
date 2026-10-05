@@ -21,6 +21,7 @@ const path = require('path');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 const stripe = require(path.join(DIST, 'integrations', 'stripe.js'));
 const cryptomus = require(path.join(DIST, 'integrations', 'cryptomus.js'));
+const { formatMoney } = require(path.join(DIST, 'utils', 'money.js'));
 
 const FAKE_PORT = Number(process.env.FAKE_PROVIDER_PORT || 4242);
 const BACKEND = `http://127.0.0.1:${process.env.PORT || 3001}`;
@@ -330,7 +331,7 @@ button{font:inherit;padding:10px 18px;border-radius:8px;border:0;cursor:pointer;
 code{background:#f0f0f4;padding:2px 5px;border-radius:4px}</style></head>
 <body><div class="card">
 <h1>Fake ${record.provider} checkout</h1>
-<p><strong>${record.credits} credits</strong> for ${(record.amountCents / 100).toFixed(2)} ${record.currency.toUpperCase()}</p>
+<p><strong>${formatMoney(record.creditMilli ?? record.amountCents * 10)} of credit</strong> for ${(record.amountCents / 100).toFixed(2)} ${record.currency.toUpperCase()}</p>
 <p>Reference <code id="reference">${record.reference}</code></p>
 <p style="color:#666">${note}</p>
 <form method="POST" action="/pay/${record.id}"><button class="pay" id="pay" type="submit">Pay</button></form>

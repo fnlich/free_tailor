@@ -119,8 +119,11 @@ export async function resolveAiChoice(
  */
 export type PricedAiChoice = {
   choice: AiChoice;
-  /** `creditsPerResume` of the model the choice landed on, at the moment it was resolved. */
-  creditCost: number;
+  /**
+   * `pricePerResumeMilli` of the model the choice landed on, at the moment it
+   * was resolved: what one resume on it costs, in thousandths of a dollar.
+   */
+  costMilli: number;
 };
 
 /**
@@ -134,7 +137,7 @@ export async function resolvePricedAiChoice(
   options: ModelRequestOptions = {}
 ): Promise<PricedAiChoice> {
   const model = await resolveAiModel(overrides, profile, options);
-  return { choice: toChoice(model), creditCost: model.creditsPerResume };
+  return { choice: toChoice(model), costMilli: model.pricePerResumeMilli };
 }
 
 /**
@@ -163,7 +166,7 @@ export async function resolveSuppliedContentChoice(
   const requested = await resolvePricedAiChoice(overrides, profile, options);
   if (options.admin) return requested;
   const ordinary = await resolvePricedAiChoice(undefined, profile, options);
-  return ordinary.creditCost > requested.creditCost ? ordinary : requested;
+  return ordinary.costMilli > requested.costMilli ? ordinary : requested;
 }
 
 /** One line for the generation logs, so a run says what it ran with. */

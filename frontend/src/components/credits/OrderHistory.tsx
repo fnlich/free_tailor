@@ -4,9 +4,9 @@ import { useCallback } from 'react';
 import Link from 'next/link';
 import TablePager from './TablePager';
 import { usePagedList } from './usePagedList';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatMoney } from '@/lib/format';
+import { describeCreditReceived, describePurchaseCredit } from '@/lib/paymentDisplay';
 import {
-  formatAmount,
   isPaymentSettled,
   type Payment,
   type PaymentMethod,
@@ -50,7 +50,7 @@ const COPY: Record<PaymentMethod, { heading: string; blurb: string; empty: strin
   },
 };
 
-const COLUMNS = ['Date', 'Order #', 'Method', 'Amount', 'Paid', 'Credits Received', 'Status', 'Action(s)'];
+const COLUMNS = ['Date', 'Order #', 'Method', 'Credit', 'Paid', 'Credit Received', 'Status', 'Action(s)'];
 
 /**
  * One method's orders, a page at a time.
@@ -160,9 +160,14 @@ function OrderRow({ payment }: { payment: Payment }) {
         </Link>
       </td>
       <td>{payment.method === 'crypto' ? 'Crypto' : 'Card'}</td>
-      {/* On a span: `.tl-table td` is unlayered and would beat a utility on the cell. */}
-      <td className="whitespace-nowrap">
-        <span className="text-ink">{payment.credits} Credits</span>
+      {/*
+        What the order was for: an amount of credit, which is also its price -
+        or, for an order from before credits were dollars, the count of
+        credits it bought then. On a span: `.tl-table td` is unlayered and
+        would beat a utility on the cell.
+      */}
+      <td className="whitespace-nowrap tabular-nums">
+        <span className="text-ink">{describePurchaseCredit(payment)}</span>
       </td>
       {/*
         Under "Paid", only what was paid. A pending, failed or expired order
@@ -170,16 +175,16 @@ function OrderRow({ payment }: { payment: Payment }) {
         and the invoice's Amount Paid already say nothing for the same reason.
       */}
       <td className="whitespace-nowrap tabular-nums">
-        {settled ? formatAmount(payment.amountCents, payment.currency) : '—'}
+        {settled ? formatMoney(payment.amountMilli) : '—'}
       </td>
-      <td className="tabular-nums">
+      <td className="whitespace-nowrap tabular-nums">
         {/*
-          What was GRANTED, falling back to what was quoted for every row
-          written before a fee could reduce it. Nothing until the payment
-          settles: a pending order has received nothing yet, and a number here
-          would say it had.
+          What the balance actually RECEIVED - the charge, since dollars; the
+          credits a fee left, before. Nothing until the payment settles: a
+          pending order has received nothing yet, and a figure here would say
+          it had.
         */}
-        {settled ? payment.creditsGranted || payment.credits : '—'}
+        {settled ? describeCreditReceived(payment) : '—'}
       </td>
       <td>
         <span className="tl-pill" data-tone={tone}>

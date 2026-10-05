@@ -17,6 +17,7 @@ import { requireAdmin } from '../middleware/auth';
 import { ensureAccountSheet } from '../services/sheets/accountSheet';
 import { getLedger, grantCredits, setBalance } from '../services/credits';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
+import { describeDollarProblem, parseDollars } from '../utils/money';
 
 /**
  * Managing other people's accounts.
@@ -137,6 +138,44 @@ function refuseRetiredPlanField(req: Request, res: Response): boolean {
   return true;
 }
 
+/**
+ * True, after answering 400, when a body still names a balance in CREDITS.
+ *
+ * Credits became dollars, and the fields with them: a balance is set with
+ * `balanceUsd` and moved with `amountUsd`, both dollars. An Accounts page left
+ * open across the upgrade still sends `credits` and `amount` as whole credits,
+ * and reading those as dollars - or ignoring them and answering "nothing to
+ * change" - would move somebody's money by a figure nobody meant. Refused, as
+ * the retired `plan` field is, with the same sentence and code.
+ */
+function refuseRetiredCreditFields(req: Request, res: Response, fields: string[]): boolean {
+  if (!fields.some((field) => req.body?.[field] !== undefined)) return false;
+  res.status(400).json({
+    error: 'This page is from an older version of the app. Reload it and try again.',
+    code: 'stale-page',
+  });
+  return true;
+}
+
+/**
+ * An amount an administrator typed, in dollars, as thousandths - or null after
+ * answering 400 with what was wrong with it. Admin-only, so the sentence may
+ * say exactly what to type.
+ */
+function readDollars(
+  res: Response,
+  value: unknown,
+  label: string,
+  options: { allowNegative?: boolean } = {}
+): number | null {
+  const parsed = parseDollars(value, options);
+  if (!parsed.ok) {
+    res.status(400).json({ error: describeDollarProblem(parsed.problem, label) });
+    return null;
+  }
+  return parsed.milli;
+}
+
 router.get('/', (_req: Request, res: Response) => {
   res.json({ accounts: listUsers().map(describe), subscriptions: listSubscriptions() });
 });
@@ -160,6 +199,7 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
  */
 router.post('/', (req: Request, res: Response) => {
   if (refuseRetiredPlanField(req, res)) return;
+  if (refuseRetiredCreditFields(req, res, ['credits'])) return;
   const email = normalizeEmail(req.body?.email);
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     res.status(400).json({ error: 'A valid email address is required.' });
@@ -168,6 +208,13 @@ router.post('/', (req: Request, res: Response) => {
   if (getUserByEmail(email)) {
     res.status(409).json({ error: 'An account already exists for that address.' });
     return;
+  }
+  // Read before the account exists, so a mistyped opening balance creates nothing.
+  let openingMilli = 0;
+  if (req.body?.balanceUsd !== undefined && req.body.balanceUsd !== '') {
+    const opening = readDollars(res, req.body.balanceUsd, 'The opening balance');
+    if (opening === null) return;
+    openingMilli = opening;
   }
 
   const role: UserRole = req.body?.role === 'admin' ? 'admin' : 'user';
@@ -183,9 +230,8 @@ router.post('/', (req: Request, res: Response) => {
 
   // Through the ledger, so even an opening balance typed on this form has a row
   // saying who granted it and when.
-  const opening = Number(req.body?.credits);
-  if (Number.isFinite(opening) && opening > 0) {
-    grantCredits(account.id, Math.floor(opening), req.user!.id, 'Opening balance set when the account was added.');
+  if (openingMilli > 0) {
+    grantCredits(account.id, openingMilli, req.user!.id, 'Opening balance set when the account was added.');
   }
 
   // Started, not awaited, exactly as on the sign-in path: an account made here
@@ -201,6 +247,7 @@ router.post('/', (req: Request, res: Response) => {
 
 router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
   if (refuseRetiredPlanField(req, res)) return;
+  if (refuseRetiredCreditFields(req, res, ['credits'])) return;
   const target = getUserById(req.params.id);
   if (!target) {
     res.status(404).json({ error: 'No such account.' });
@@ -220,20 +267,17 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
   }
   // Read from the same body but applied separately: a balance is the sum of a
   // ledger, not a column to be overwritten, so it goes through setBalance which
-  // writes the difference and a row explaining it.
-  let wantedCredits: number | null = null;
-  if (req.body?.credits !== undefined) {
-    const credits = Number(req.body.credits);
-    if (!Number.isFinite(credits) || credits < 0) {
-      res.status(400).json({ error: 'Credits must be a whole number of zero or more.' });
-      return;
-    }
-    wantedCredits = Math.floor(credits);
+  // writes the difference and a row explaining it. Dollars, exactly: "3.977"
+  // is 3977 thousandths, and "3.9775" is refused rather than rounded.
+  let wantedMilli: number | null = null;
+  if (req.body?.balanceUsd !== undefined) {
+    wantedMilli = readDollars(res, req.body.balanceUsd, 'The balance');
+    if (wantedMilli === null) return;
   }
   if (typeof req.body?.disabled === 'boolean') update.disabled = req.body.disabled;
   if (typeof req.body?.name === 'string') update.name = req.body.name;
 
-  if (Object.keys(update).length === 0 && wantedCredits === null) {
+  if (Object.keys(update).length === 0 && wantedMilli === null) {
     res.status(400).json({ error: 'There is nothing to change.' });
     return;
   }
@@ -249,8 +293,8 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
-  if (wantedCredits !== null) {
-    setBalance(target.id, wantedCredits, req.user!.id, 'Set from the accounts page.');
+  if (wantedMilli !== null) {
+    setBalance(target.id, wantedMilli, req.user!.id, 'Set from the accounts page.');
   }
 
   const updated =
@@ -319,29 +363,33 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
 });
 
 /**
- * Adds to a balance, rather than setting it.
+ * Adds to a balance, rather than setting it: `{ amountUsd, note? }`, dollars,
+ * negative to take away.
  *
  * Beside the absolute field on purpose: "give them ten more" and "make it ten"
  * are different intentions, and making an admin do the arithmetic to express the
- * first is how somebody ends up taking credits away by accident.
+ * first is how somebody ends up taking credit away by accident. Exact to $0.001:
+ * "0.005" grants five thousandths, "0.0005" is refused.
  */
 router.post('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
+  if (refuseRetiredCreditFields(req, res, ['amount'])) return;
   const target = getUserById(req.params.id);
   if (!target) {
     res.status(404).json({ error: 'No such account.' });
     return;
   }
 
-  const amount = Number(req.body?.amount);
-  if (!Number.isFinite(amount) || Math.floor(amount) === 0) {
-    res.status(400).json({ error: 'Give a whole number of credits to add, or a negative one to take away.' });
+  const amountMilli = readDollars(res, req.body?.amountUsd, 'The amount', { allowNegative: true });
+  if (amountMilli === null) return;
+  if (amountMilli === 0) {
+    res.status(400).json({ error: 'Give an amount in dollars to add, or a negative one to take away.' });
     return;
   }
 
   const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
-  const balance = grantCredits(target.id, Math.floor(amount), req.user!.id, note);
+  const balanceMilli = grantCredits(target.id, amountMilli, req.user!.id, note);
   const updated = getUserById(target.id);
-  res.json({ account: describe(updated ?? target), balance });
+  res.json({ account: describe(updated ?? target), balanceMilli });
 });
 
 /** Every movement on one account, newest first, so a balance can be explained. */
@@ -351,7 +399,7 @@ router.get('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
     res.status(404).json({ error: 'No such account.' });
     return;
   }
-  res.json({ balance: target.credits, entries: getLedger(target.id, 200) });
+  res.json({ balanceMilli: target.balanceMilli, entries: getLedger(target.id, 200) });
 });
 
 export default router;

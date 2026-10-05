@@ -24,12 +24,13 @@ import {
 } from '../../database/paymentRepository';
 import type { UserAccount } from '../../types/account';
 import { normalizeOrigin, publicBaseUrl } from '../../config/publicUrl';
+import { centsToMilli, formatMoney } from '../../utils/money';
 import * as stripe from '../../integrations/stripe';
 import * as cryptomus from '../../integrations/cryptomus';
 import { PublicError } from '../../middleware/publicError';
 import {
   PriceError,
-  quoteCredits,
+  quotePurchase,
   requireThreeDSecure,
   resolveLimits,
   presetsFor,
@@ -37,7 +38,8 @@ import {
 } from './pricing';
 
 /**
- * Buying credits.
+ * Buying credit - which is buying dollars: a purchase of $X credits exactly
+ * $X (services/payments/pricing.ts).
  *
  * One rule shapes everything here: **only a verified webhook credits an
  * account.** The browser coming back to a success URL credits nothing, because
@@ -201,15 +203,13 @@ export type PaymentTarget = {
   mark: string;
   available: boolean;
   reason?: string;
-  minCredits: number;
-  maxCredits: number;
-  minAmountCents: number;
-  maxAmountCents: number;
-  presets: Array<{ credits: number; amountCents: number }>;
+  /** The smallest and largest single purchase, in thousandths of a dollar (whole cents). */
+  minAmountMilli: number;
+  maxAmountMilli: number;
+  /** The amounts to offer as buttons. Each charges, and credits, exactly its amount. */
+  presets: Array<{ amountMilli: number }>;
   /** A slider for card, a whole-dollar stepper for a coin. */
   custom: 'slider' | 'stepper';
-  feeBps: number;
-  feeFixedCents: number;
 };
 
 /**
@@ -236,9 +236,11 @@ export type StartedCheckout = {
 /**
  * What the browser may ask for.
  *
- * `credits` is a COUNT and there is no amount here, which is the rule the
- * whole pricing module exists to enforce. `cardId` charges a card this account
- * has saved; `saveCard` asks to keep the one about to be entered.
+ * `amountUsd` is the amount of credit wanted, in dollars - which is also the
+ * charge, since a credit is a dollar and nothing is taken out. It is judged
+ * against the method's bounds by the pricing module, which is the only thing
+ * that decides what the provider is asked for. `cardId` charges a card this
+ * account has saved; `saveCard` asks to keep the one about to be entered.
  *
  * There was an `asset` too, naming a coin so its own limits applied. Nothing
  * can honour one now, so it is not in the type and `startCheckout` does not
@@ -246,7 +248,7 @@ export type StartedCheckout = {
  */
 export type CheckoutRequest = {
   method: unknown;
-  credits: unknown;
+  amountUsd: unknown;
   cardId?: unknown;
   saveCard?: unknown;
 };
@@ -282,7 +284,7 @@ export async function startCheckout(
   context: CheckoutContext = {}
 ): Promise<StartedCheckout> {
   const { env = process.env, requestOrigin } = context;
-  const { method, credits: requestedCredits } = request;
+  const { method, amountUsd } = request;
   if (method !== 'card' && method !== 'crypto') {
     throw new PaymentError('Choose a payment method.');
   }
@@ -353,26 +355,24 @@ export async function startCheckout(
   }
 
   /*
-   * The browser sent a COUNT. The price is worked out here, from settings, and
-   * an `amount` in the request body is never read.
+   * The browser sent the dollars it wants. Whether that may be bought, and
+   * what the provider is asked to charge for it, is worked out here.
    *
-   * The target is passed so the method's own bounds and fee apply. Omitting
-   * it would silently price every purchase against the card row, which is the
-   * one mistake this parameter exists to make impossible.
+   * The target is passed so the method's own bounds apply. Omitting it would
+   * silently judge every purchase against the card row, which is the one
+   * mistake this parameter exists to make impossible.
    */
   const target: QuoteTarget = { method };
-  const quote = await quoteCredits(requestedCredits, target);
+  const quote = await quotePurchase(amountUsd, target);
 
   const payment = createPayment({
     userId: account.id,
     method,
     provider: availability.provider,
-    // `credits` is what will be granted; the charge is the gross.
-    credits: quote.credits,
     amountCents: quote.amountCents,
+    // The charge, exactly: a credit is a dollar and nothing is taken out.
+    creditMilli: quote.creditMilli,
     currency: quote.currency,
-    unitPriceCents: quote.unitPriceCents,
-    feeCents: quote.feeCents,
   });
 
   const base = returnBaseUrl(env, requestOrigin);
@@ -463,7 +463,7 @@ export async function startCheckout(
         const session = await stripe.createCheckoutSession({
           paymentId: payment.id,
           reference: payment.reference,
-          credits: quote.credits,
+          creditMilli: quote.creditMilli,
           amountCents: quote.amountCents,
           currency: quote.currency,
           customerEmail: account.email,
@@ -487,7 +487,6 @@ export async function startCheckout(
       const invoice = await cryptomus.createInvoice({
         paymentId: payment.id,
         reference: payment.reference,
-        credits: quote.credits,
         amountCents: quote.amountCents,
         currency: quote.currency,
         returnUrl,
@@ -710,10 +709,10 @@ export async function recordSavedCardFromSession(payment: Payment): Promise<void
  * asks that on its own page, from a list this server does not hold, so a coin
  * chosen here would have been a choice nothing could honour.
  *
- * A target whose limits cannot be resolved - a price so high that no whole
- * number of credits fits inside the configured amounts - comes back
- * unavailable with the reason, rather than being dropped. An operator has to
- * be able to see a misconfiguration; a missing button is invisible.
+ * A target whose limits cannot be resolved - a settings read that fails -
+ * comes back unavailable with the reason, rather than being dropped. An
+ * operator has to be able to see a misconfiguration; a missing button is
+ * invisible.
  */
 export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Promise<PaymentTarget[]> {
   const methods = describeMethods(env);
@@ -742,14 +741,10 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
       targets.push({
         ...base,
         id: entry.method,
-        minCredits: limits.minCredits,
-        maxCredits: limits.maxCredits,
-        minAmountCents: limits.minAmountCents,
-        maxAmountCents: limits.maxAmountCents,
+        minAmountMilli: centsToMilli(limits.minAmountCents),
+        maxAmountMilli: centsToMilli(limits.maxAmountCents),
         presets,
         custom: entry.method === 'card' ? 'slider' : 'stepper',
-        feeBps: limits.feeBps,
-        feeFixedCents: limits.feeFixedCents,
       });
     } catch (error) {
       targets.push({
@@ -764,14 +759,10 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
             : error instanceof Error
               ? error.message
               : 'These limits cannot be resolved.',
-        minCredits: 0,
-        maxCredits: 0,
-        minAmountCents: 0,
-        maxAmountCents: 0,
+        minAmountMilli: 0,
+        maxAmountMilli: 0,
         presets: [],
         custom: entry.method === 'card' ? 'slider' : 'stepper',
-        feeBps: 0,
-        feeFixedCents: 0,
       });
     }
   }
@@ -782,7 +773,7 @@ export async function describeTargets(env: NodeJS.ProcessEnv = process.env): Pro
 export type CreditOutcome = { credited: boolean; payment: Payment | null };
 
 /**
- * Turns a paid payment into credits, exactly once.
+ * Turns a paid payment into credit, exactly once.
  *
  * Three guards, deliberately stacked rather than chosen between:
  *
@@ -801,12 +792,16 @@ export function creditPaid(paymentId: string): CreditOutcome {
   if (payment.state !== 'pending') return { credited: false, payment };
 
   /*
-   * What was quoted, and only that. Nothing clamps a measured figure down to it:
-   * every provider settles for the amount it was asked for or not at all, and
-   * the webhook's own amount check refuses a disagreement before this is
-   * reached.
+   * What was quoted, and only that - which is what was charged, a credit being
+   * a dollar. Nothing clamps a measured figure down to it: every provider
+   * settles for the amount it was asked for or not at all, and the webhook's
+   * own amount check refuses a disagreement before this is reached.
+   *
+   * A checkout opened before credits became dollars and paid after has no
+   * quote in dollars of its own unless the switch stamped one; it gets what
+   * it was charged, at a dollar a dollar, like every purchase since.
    */
-  const granted = payment.credits;
+  const granted = payment.creditMilli > 0 ? payment.creditMilli : centsToMilli(payment.amountCents);
   if (granted <= 0) {
     // Nothing to credit is not a settlement. The caller holds the payment for
     // somebody to look at rather than marking it paid for zero.
@@ -819,36 +814,45 @@ export function creditPaid(paymentId: string): CreditOutcome {
 
   // `applied` rather than an assumption: the ledger refuses a key it has
   // already used, and a caller that reported success anyway would put a line
-  // in the log saying credits were added when none were.
+  // in the log saying credit was added when none was.
   const { applied } = applyAdjustment({
     userId: payment.userId,
-    delta: granted,
+    deltaMilli: granted,
     reason: 'purchase',
     idempotencyKey: `purchase:${payment.id}`,
-    note: `${payment.reference} - ${granted} credits`,
+    note: `${payment.reference} - ${formatMoney(granted)}`,
   });
 
   return { credited: applied, payment: getPayment(paymentId) };
 }
 
+/** What a refund did, in thousandths of a dollar. */
 export type RefundOutcome = {
   payment: Payment;
-  creditsSold: number;
-  creditsReversed: number;
-  /** Credits that could not be taken back because they were already spent. */
-  shortfall: number;
+  /** What the payment put on the balance. 0 for one from before credits were dollars. */
+  creditedMilli: number;
+  /** What could be taken back off the balance. */
+  reversedMilli: number;
+  /** What could not be taken back because it was already spent. */
+  shortfallMilli: number;
 };
 
 /**
- * Refunds a payment at the provider and reverses what credits remain.
+ * Refunds a payment at the provider and reverses what credit remains.
  *
  * The honest part, and the reason this returns three numbers rather than a
  * boolean: a balance may not go negative, so refunding somebody who has already
  * spent what they bought returns all of their money and reverses only what is
  * left. `applyAdjustment` clamps the negative delta at zero for exactly that
  * reason. Reporting the difference is the point - a refund that silently
- * reverses forty of two hundred credits is a number that does not add up, and
- * whoever pressed the button deserves to know before the customer does.
+ * reverses $12.400 of $50.000 is a number that does not add up, and whoever
+ * pressed the button deserves to know before the customer does.
+ *
+ * A payment from before credits became dollars put credits on the balance
+ * that the switch then reset to $0, so refunding its money reverses NOTHING:
+ * there is nothing of it left on any balance, and taking dollars bought since
+ * would be taking somebody's later purchase. All three figures read 0, and
+ * `payment.legacyCredits` says why.
  *
  * The provider is called FIRST. If the refund fails there, nothing local
  * changes and the button can be pressed again; the reverse order would leave a
@@ -981,25 +985,22 @@ export async function refundPayment(
    * field to a function four other callers depend on.
    */
   /*
-   * Reverse what was GRANTED, not what was quoted.
-   *
-   * The two differ whenever a fee was taken, and the `|| credits` covers every
-   * row written before the column existed - those took no fee, so the quote
-   * IS what was granted. Reversing the quote instead would take back credits
-   * the account never received.
+   * Reverse what was CREDITED, measured when it was, in dollars - which is 0
+   * for a payment from before credits were dollars, whose credits the switch
+   * already reset.
    */
-  const granted = payment.creditsGranted || payment.credits;
+  const credited = payment.creditedMilli;
 
-  const balanceBefore = getUserById(payment.userId)?.credits ?? 0;
+  const balanceBefore = getUserById(payment.userId)?.balanceMilli ?? 0;
   applyAdjustment({
     userId: payment.userId,
-    delta: -granted,
+    deltaMilli: -credited,
     reason: 'purchase-refund',
     idempotencyKey: `purchase-refund:${payment.id}`,
     actorId,
     note: note.trim() || `${payment.reference} refunded`,
   });
-  const balanceAfter = getUserById(payment.userId)?.credits ?? 0;
+  const balanceAfter = getUserById(payment.userId)?.balanceMilli ?? 0;
 
   const reversed = Math.max(0, balanceBefore - balanceAfter);
   if (!markRefunded(payment.id, reversed)) {
@@ -1012,9 +1013,9 @@ export async function refundPayment(
 
   return {
     payment: getPayment(paymentId)!,
-    creditsSold: granted,
-    creditsReversed: reversed,
-    shortfall: granted - reversed,
+    creditedMilli: credited,
+    reversedMilli: reversed,
+    shortfallMilli: credited - reversed,
   };
 }
 

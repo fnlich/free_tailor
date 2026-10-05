@@ -37,7 +37,8 @@ import {
   listProviderModelOptions,
   type ProviderModelOptions,
 } from './providerModels';
-import { DEFAULT_CREDITS_PER_RESUME, parseCreditsPerResume, readCreditsPerResume } from './creditsPerResume';
+import { parsePricePerResume, readPricePerResumeMilli } from './pricePerResume';
+import { centsToMilli, describeDollarProblem, isWholeCents, milliToCents, parseDollars } from '../utils/money';
 import { AiUnavailableError, ModelUnavailableError } from './modelErrors';
 import {
   buildOutputPathPreview,
@@ -69,11 +70,12 @@ export type AIModelRecord = {
   description: string;
   enabled: boolean;
   /**
-   * What one resume built on this model costs, in whole credits (0 is free).
-   * See config/creditsPerResume. A record stored before the field existed reads
-   * as the default, in memory only.
+   * What one resume built on this model costs, in thousandths of a dollar (0
+   * is free): $0.023 is 23. See config/pricePerResume. A record stored without
+   * one - priced before credits were dollars, or a seed nobody has priced -
+   * reads as 0, in memory only, and Admin -> Models flags it.
    */
-  creditsPerResume: number;
+  pricePerResumeMilli: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -99,18 +101,14 @@ type AppSettings = {
   outputBaseDir: string;
   outputPathTemplate: string;
   /**
-   * What a credit costs, and how many may be bought at once.
-   *
-   * In the smallest currency unit, because money in a floating-point number is
-   * a rounding error waiting for a large enough order. The bounds are not
-   * decoration: an amount arrives from a browser, and a field with no ceiling
-   * is a field somebody will send 100000000 to.
-   */
-  creditPriceCents: number;
-  creditMinCredits: number;
-  creditMaxCredits: number;
-  /**
    * What each payment method may be bought in.
+   *
+   * There is no price of a credit beside this any more: a credit is a dollar,
+   * so a purchase of $X credits exactly $X, and these dollar bounds are the
+   * whole of what limits one. `creditPriceCents`, `creditMinCredits` and
+   * `creditMaxCredits` - a credit's price and a purchase's bounds in credits -
+   * were retired with that; a stored row that still has them is read without
+   * them, and the next save drops them.
    *
    * One flat list rather than a field per method, because the targets were not
    * a fixed set while this application chose the coin itself: every asset an
@@ -124,10 +122,10 @@ type AppSettings = {
    * quietly discard somebody's configuration. Nothing prices off it any more.
    * `pricing.ts` says the same thing from the resolving end.
    *
-   * Bounds are in CENTS here and nowhere else in this file, because cents are
-   * what an operator thinks in ("between $2.50 and $100"). They become credit
-   * counts in services/payments/pricing.ts, which is the only place allowed to
-   * know the price.
+   * Bounds are STORED in cents, because a card or an invoice charges whole
+   * cents and nothing finer can be bought. They reach the admin API in
+   * thousandths of a dollar like every other amount (`PaymentLimitsView`), and
+   * come back from it in dollars (`PaymentLimitsInput`).
    */
   paymentLimits: PaymentTargetLimits[];
   /**
@@ -243,8 +241,16 @@ type BaseAppSettingsWithDerived = BaseAppSettings & {
 };
 
 export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels'> & {
-  /** Every record, runnable or not, each with its `creditsPerResume`. */
+  /** Every record, runnable or not, each with its `pricePerResumeMilli`. */
   aiModels: AIModelRecord[];
+  /**
+   * The ids of every enabled model priced $0.000, in stored order: free to
+   * everybody who picks it. Admin -> Models lists them in red. After the
+   * switch to dollars that is every model until an administrator prices it,
+   * and a model a migration seeds arrives unpriced too - free on purpose is
+   * allowed (0 is a valid price), but never silently.
+   */
+  freeEnabledModelIds: string[];
   /**
    * The model names Admin -> Models may pick, per seat: every seat in catalog
    * order, locked ones included so a model can be prepared before the lock is
@@ -255,10 +261,8 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels'> & {
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
-  creditPriceCents: number;
-  creditMinCredits: number;
-  creditMaxCredits: number;
-  paymentLimits: PaymentTargetLimits[];
+  /** Per method, in thousandths of a dollar. */
+  paymentLimits: PaymentLimitsView[];
   requireThreeDSecure: boolean;
 };
 
@@ -274,33 +278,27 @@ export type AppSettingsUpdate = Partial<Omit<BaseAppSettings, 'aiModels'>> & {
   openrouterEnabled?: boolean;
   outputBaseDir?: string;
   outputPathTemplate?: string;
-  creditPriceCents?: number;
-  creditMinCredits?: number;
-  creditMaxCredits?: number;
-  paymentLimits?: PaymentTargetLimits[];
+  /** Per method, in dollars. See `PaymentLimitsInput`. */
+  paymentLimits?: PaymentLimitsInput[];
   requireThreeDSecure?: boolean;
 };
 
 /**
- * The price of one credit, and the bounds on a single purchase.
- *
- * Deliberately NOT in the public settings: the buy page reads them from
- * `/api/payments/methods`, which also says which providers are actually
- * configured. Keeping the price beside the thing that charges it means there is
- * one answer to "what does this cost", not a settings copy that can disagree
- * with the checkout.
+ * The currency every amount is in. A credit is one of these, and the payment
+ * limits below are the only bounds on buying them - read by the buy page from
+ * `/api/payments/methods`, which also says which providers are configured, so
+ * there is one answer to "what can I buy", not a settings copy that can
+ * disagree with the checkout.
  */
-export const DEFAULT_CREDIT_PRICE_CENTS = 50;
-export const DEFAULT_CREDIT_MIN = 10;
-export const DEFAULT_CREDIT_MAX = 5000;
 export const CREDIT_CURRENCY = 'usd';
 
 /**
- * What one payment method - or one coin - may be bought in.
+ * What one payment method - or one coin - may be bought in, as STORED: cents.
  *
- * `feeBps` is retained from the gross: the buyer is charged the amount they
- * chose and credited the rest. It is basis points rather than a percentage
- * because 2.2% is 220 and needs no decimal anywhere in the arithmetic.
+ * There is no fee. A purchase credits exactly what it charges - pay $50 by
+ * crypto, get $50.000 (the owner's decision M2) - so the `feeBps` and
+ * `feeFixedCents` a stored row may still carry are read past and dropped on
+ * the next save, and the provider's own fees are the operator's to absorb.
  */
 export type PaymentTargetLimits = {
   /**
@@ -310,48 +308,58 @@ export type PaymentTargetLimits = {
   target: string;
   minCents: number;
   maxCents: number;
-  /** Basis points of the gross retained as a fee. 0 for card. */
-  feeBps: number;
-  feeFixedCents: number;
   /**
    * The amounts to offer as buttons, in cents.
    *
    * An INTENTION, not a promise: what a buyer sees is worked out from these by
-   * `presetsFor`, which drops any that fall outside the bounds and rounds each
-   * to a whole number of credits. A preset can therefore never name a price
-   * the server would refuse to charge.
+   * `presetsFor`, which drops any that fall outside the bounds. A preset can
+   * therefore never name an amount the server would refuse to charge.
    */
   presetsCents: number[];
+};
+
+/** One method's limits as the admin API SENDS them: thousandths of a dollar, like every amount. */
+export type PaymentLimitsView = {
+  target: string;
+  minMilli: number;
+  maxMilli: number;
+  presetsMilli: number[];
+};
+
+/**
+ * One method's limits as the admin API TAKES them: dollars ("2.50", or the
+ * JSON number 2.5), each a whole number of cents, since a card cannot be
+ * charged half of one.
+ */
+export type PaymentLimitsInput = {
+  target?: unknown;
+  minUsd?: unknown;
+  maxUsd?: unknown;
+  presetsUsd?: unknown;
 };
 
 /**
  * The defaults, which are the figures in the design this was built to.
  *
- * Card takes no fee and starts at $2.50; crypto starts at $50 because sending
- * coin costs the buyer a network fee whatever we do, and a $2.50 purchase that
- * costs $4 to send is not a kindness.
+ * Card starts at $2.50; crypto starts at $50 because sending coin costs the
+ * buyer a network fee whatever we do, and a $2.50 purchase that costs $4 to
+ * send is not a kindness.
  */
 export const DEFAULT_PAYMENT_LIMITS: PaymentTargetLimits[] = [
   {
     target: 'card',
     minCents: 250,
     maxCents: 10_000,
-    feeBps: 0,
-    feeFixedCents: 0,
     presetsCents: [250, 500, 1_000, 2_500, 5_000, 10_000],
   },
   {
     target: 'crypto',
     minCents: 5_000,
     maxCents: 200_000,
-    feeBps: 220,
-    feeFixedCents: 0,
     presetsCents: [5_000, 10_000, 15_000, 25_000, 50_000, 100_000],
   },
 ];
 
-/** A fee above this would be a fault, not a policy. */
-const MAX_FEE_BPS = 5_000;
 const MAX_AMOUNT_CENTS = 100_000_000;
 
 export const APP_SETTINGS_KEY = 'app-settings';
@@ -455,10 +463,9 @@ function createDefaultModelRecords(): AIModelRecord[] {
       modelName: seed.modelName,
       description: seed.description,
       enabled: true,
-      // One credit a resume on every seed, which is what every resume cost
-      // before the price was a per-model setting. An administrator sets their
-      // own under Admin -> Models.
-      creditsPerResume: DEFAULT_CREDITS_PER_RESUME,
+      // Free until priced: there is no default price, and Admin -> Models
+      // lists every enabled model at $0.000 in red until somebody sets one.
+      pricePerResumeMilli: 0,
       createdAt: now,
       updatedAt: now,
     }));
@@ -505,9 +512,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultCoverLetterDocxEnabled: true,
   outputBaseDir: DEFAULT_GENERATED_RESUMES_DIR,
   outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
-  creditPriceCents: DEFAULT_CREDIT_PRICE_CENTS,
-  creditMinCredits: DEFAULT_CREDIT_MIN,
-  creditMaxCredits: DEFAULT_CREDIT_MAX,
   paymentLimits: DEFAULT_PAYMENT_LIMITS,
   requireThreeDSecure: false,
   aiModels: DEFAULT_MODEL_RECORDS,
@@ -570,10 +574,10 @@ function normalizeGoogleSheetSourceName(value: unknown, fallback: string): strin
 }
 
 /**
- * The per-target purchase limits, checked field by field.
+ * The per-target purchase limits, as stored, checked field by field.
  *
- * `normalizeBoundedInteger` cannot reach inside an array, so every bound here
- * is its own check - and the cross-field one matters most: a row whose minimum
+ * Every bound here is its own check - and the cross-field one matters most: a
+ * row whose minimum
  * sits above its maximum refuses every purchase of that method, with a message
  * pointing at the buyer's amount rather than at the setting that is wrong.
  *
@@ -613,10 +617,10 @@ function normalizePaymentLimits(
       }
       seenTargets.add(target);
 
-      const minCents = normalizeBoundedInteger(
+      const minCents = normalizeStoredCents(
         raw.minCents, 1, 1, MAX_AMOUNT_CENTS, `${target} minCents`, strict
       );
-      const maxCents = normalizeBoundedInteger(
+      const maxCents = normalizeStoredCents(
         raw.maxCents, MAX_AMOUNT_CENTS, 1, MAX_AMOUNT_CENTS, `${target} maxCents`, strict
       );
       if (minCents > maxCents) {
@@ -626,29 +630,27 @@ function normalizePaymentLimits(
         return null;
       }
 
-      const feeBps = normalizeBoundedInteger(
-        raw.feeBps, 0, 0, MAX_FEE_BPS, `${target} feeBps`, strict
-      );
-      const feeFixedCents = normalizeBoundedInteger(
-        raw.feeFixedCents, 0, 0, MAX_AMOUNT_CENTS, `${target} feeFixedCents`, strict
-      );
+      // A fee a stored row still carries (`feeBps`, `feeFixedCents`) is not
+      // read: purchases take no fee, and the row is written without it.
 
       /*
        * Presets are sorted and deduped here, so the buttons come out in a
        * sensible order whatever order they were saved in. They are NOT filtered
-       * against the bounds here - that happens in `presetsFor`, where the price
-       * is known, because a preset's validity depends on what a credit costs.
+       * against the bounds here - `presetsFor` does that, beside the bounds it
+       * is judged against.
        */
       const presetSource = Array.isArray(raw.presetsCents) ? raw.presetsCents : [];
       const presetsCents = [
         ...new Set(
           presetSource
-            .map((value) => (typeof value === 'number' ? value : Number.parseInt(String(value), 10)))
-            .filter((value) => Number.isInteger(value) && value > 0 && value <= MAX_AMOUNT_CENTS)
+            .map((value) =>
+              typeof value === 'number' ? value : /^\s*\d+\s*$/.test(String(value)) ? Number(value) : Number.NaN
+            )
+            .filter((value) => Number.isSafeInteger(value) && value > 0 && value <= MAX_AMOUNT_CENTS)
         ),
       ].sort((left, right) => left - right);
 
-      return { target, minCents, maxCents, feeBps, feeFixedCents, presetsCents };
+      return { target, minCents, maxCents, presetsCents };
     })
     .filter((entry): entry is PaymentTargetLimits => entry !== null);
 
@@ -964,11 +966,12 @@ function normalizeAIModelRecords(input: unknown, fallback: AIModelRecord[], stri
         description: normalizeAIModelText(raw.description),
         enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
         // Carried, or every save that goes through here would drop it and every
-        // model would cost the default again. Lenient even when strict: a
-        // record from before prices existed has none and reads as the default,
-        // and one hand-edited out of range clamps rather than failing the read
-        // every page depends on.
-        creditsPerResume: readCreditsPerResume(raw.creditsPerResume, id),
+        // model would be free again. Lenient even when strict: a record priced
+        // before credits were dollars has only `creditsPerResume` - another
+        // unit, never read as a price - and reads as $0.000, and one
+        // hand-edited out of range clamps rather than failing the read every
+        // page depends on.
+        pricePerResumeMilli: readPricePerResumeMilli(raw.pricePerResumeMilli, id),
         createdAt,
         updatedAt,
       } satisfies AIModelRecord;
@@ -1077,16 +1080,17 @@ function normalizeProvidersEnabled(
 }
 
 /**
- * A whole number inside a range, or the fallback.
+ * A stored payment bound, in whole cents, inside a range - or the fallback.
  *
- * Clamped rather than rejected outside strict mode, because these arrive from a
- * number input on the admin page and the useful behaviour for a price typed one
- * digit too long is the highest one allowed, not a settings save that fails.
- * Strict mode - which is how the stored row is read - still refuses, so a
- * hand-edited value out of range is reported instead of silently becoming
- * something else.
+ * The only reader of the limits as STORED; what an administrator types arrives
+ * in dollars and is parsed exactly by `parsePaymentLimitsInput` before it is
+ * ever stored. So anything here that is not a whole number of cents - "2.5",
+ * "25abc" - was hand-edited into the row, and is the fallback rather than
+ * rounded or truncated into a bound nobody set. Strict mode - how the stored
+ * row is read - refuses it instead, so it is reported; out of range clamps
+ * outside strict mode, since the nearest bound is closer to what was meant.
  */
-function normalizeBoundedInteger(
+function normalizeStoredCents(
   value: unknown,
   fallback: number,
   min: number,
@@ -1095,11 +1099,16 @@ function normalizeBoundedInteger(
   strict: boolean
 ): number {
   if (typeof value === 'undefined') return fallback;
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value).trim(), 10);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    if (strict) throw new Error(`${field} must be a whole number between ${min} and ${max}`);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.min(max, Math.max(min, Math.round(parsed)));
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\s*\d+\s*$/.test(value)
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    if (strict) throw new Error(`${field} must be a whole number of cents between ${min} and ${max}`);
+    if (!Number.isSafeInteger(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
   }
   return parsed;
 }
@@ -1523,15 +1532,6 @@ function normalizeSettings(
         : strict
             ? (() => { throw new Error('outputPathTemplate must be a non-empty string'); })()
             : validateOutputPathTemplate(normalizeOutputPathTemplate(fallback.outputPathTemplate)),
-    creditPriceCents: normalizeBoundedInteger(
-      source.creditPriceCents, fallback.creditPriceCents, 1, 1_000_000, 'creditPriceCents', strict
-    ),
-    creditMinCredits: normalizeBoundedInteger(
-      source.creditMinCredits, fallback.creditMinCredits, 1, 1_000_000, 'creditMinCredits', strict
-    ),
-    creditMaxCredits: normalizeBoundedInteger(
-      source.creditMaxCredits, fallback.creditMaxCredits, 1, 1_000_000, 'creditMaxCredits', strict
-    ),
     paymentLimits: normalizePaymentLimits(source.paymentLimits, fallback.paymentLimits, strict),
     requireThreeDSecure: normalizeBooleanSetting(
       source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
@@ -1663,12 +1663,69 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
     outputPathPreview: buildOutputPathPreview(settings.outputPathTemplate),
-    creditPriceCents: settings.creditPriceCents,
-    creditMinCredits: settings.creditMinCredits,
-    creditMaxCredits: settings.creditMaxCredits,
-    paymentLimits: settings.paymentLimits,
+    paymentLimits: settings.paymentLimits.map(toPaymentLimitsView),
     requireThreeDSecure: settings.requireThreeDSecure,
+    freeEnabledModelIds: settings.aiModels
+      .filter((model) => model.enabled && model.pricePerResumeMilli === 0)
+      .map((model) => model.id),
   };
+}
+
+function toPaymentLimitsView(row: PaymentTargetLimits): PaymentLimitsView {
+  return {
+    target: row.target,
+    minMilli: centsToMilli(row.minCents),
+    maxMilli: centsToMilli(row.maxCents),
+    presetsMilli: row.presetsCents.map(centsToMilli),
+  };
+}
+
+/**
+ * One dollar amount from the admin's limits form, as cents - or an error
+ * naming the row and the field. Whole cents only: a purchase is charged in
+ * cents, so a limit of $2.505 is a bound nothing could ever sit on.
+ */
+function limitCents(value: unknown, label: string): number {
+  const parsed = parseDollars(value);
+  if (!parsed.ok) throw new Error(describeDollarProblem(parsed.problem, label));
+  if (!isWholeCents(parsed.milli)) throw new Error(`${label} must be a whole number of cents, like 2.50.`);
+  const cents = milliToCents(parsed.milli);
+  if (cents < 1 || cents > MAX_AMOUNT_CENTS) {
+    throw new Error(`${label} must be between $0.01 and $${MAX_AMOUNT_CENTS / 100}.`);
+  }
+  return cents;
+}
+
+/**
+ * The admin's limit rows, in dollars, as the cents they are stored in.
+ *
+ * A row still in cents (`minCents`) is from a Payments page loaded before
+ * credits were dollars, and is refused rather than guessed at: read as dollars
+ * it would set a $250 minimum where $2.50 was meant.
+ */
+function parsePaymentLimitsInput(input: unknown): PaymentTargetLimits[] {
+  if (!Array.isArray(input)) throw new Error('Payment limits must be a list.');
+  return input.map((entry, index) => {
+    const row = (entry && typeof entry === 'object' ? entry : {}) as PaymentLimitsInput & Record<string, unknown>;
+    if (row.minCents !== undefined || row.maxCents !== undefined || row.presetsCents !== undefined) {
+      throw new Error('This page is from an older version of the app. Reload it and try again.');
+    }
+    const target = typeof row.target === 'string' ? row.target.trim() : '';
+    const name = target || `Payment limit ${index + 1}`;
+    const minCents = limitCents(row.minUsd, `${name}: the smallest purchase`);
+    const maxCents = limitCents(row.maxUsd, `${name}: the largest purchase`);
+    if (minCents > maxCents) {
+      throw new Error(`${name}: the smallest amount cannot be larger than the largest`);
+    }
+    const presets = row.presetsUsd === undefined ? [] : row.presetsUsd;
+    if (!Array.isArray(presets)) throw new Error(`${name}: the preset amounts must be a list.`);
+    return {
+      target,
+      minCents,
+      maxCents,
+      presetsCents: presets.map((preset, at) => limitCents(preset, `${name}: preset ${at + 1}`)),
+    };
+  });
 }
 
 /**
@@ -1870,11 +1927,28 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
   // normalizes leniently, so a list here would skip the model-name check and
   // clamp a mistyped price where the model routes refuse it by name. Nothing
   // the admin pages send carries one.
-  const { aiModels: _models, ...changes } = input as AppSettingsUpdate & { aiModels?: unknown };
+  /*
+   * A model list in a settings save is dropped, as above. So are the retired
+   * pricing fields (`creditPriceCents`, `creditMinCredits`,
+   * `creditMaxCredits`) a page from before credits were dollars still sends:
+   * nothing reads them, and `normalizeSettings` builds the row field by field.
+   *
+   * The payment limits arrive in DOLLARS and are parsed here, strictly, into
+   * the cents they are stored in. This path otherwise normalizes non-strict,
+   * which drops a bad row and keeps what was there before - the kind direction
+   * for most fields, and the wrong one here: it would tell an operator their
+   * save succeeded while the limit they just typed was thrown away. So a bad
+   * amount or an inverted band is reported by name.
+   */
+  const { aiModels: _models, paymentLimits: limitsInput, ...changes } = input as AppSettingsUpdate & {
+    aiModels?: unknown;
+  };
+  const paymentLimits = limitsInput === undefined ? current.paymentLimits : parsePaymentLimitsInput(limitsInput);
   const next = normalizeSettings(
     {
       ...current,
       ...changes,
+      paymentLimits,
       providersEnabled,
     },
     current
@@ -1883,34 +1957,6 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
   assertAtLeastOneProviderEnabled(next);
   assertAtLeastOneRunnableModel(next);
   assertRequestedDefaultCanRun(input, current, next);
-  // A minimum above the maximum is a form nobody can submit: the buy page would
-  // refuse every amount, and the reason would be invisible from the page.
-  if (next.creditMinCredits > next.creditMaxCredits) {
-    throw new Error('creditMinCredits cannot be greater than creditMaxCredits');
-  }
-
-  /*
-   * The same check for the per-target rows, and it has to be here rather than
-   * only inside the normalizer.
-   *
-   * This path normalizes NON-strict, which drops a bad row and falls back to
-   * what was there before. For most fields that is the kind direction to fail
-   * in; here it would tell an operator their save succeeded while the limit
-   * they just typed was thrown away. So an inverted band is reported by name.
-   */
-  if (typeof input.paymentLimits !== 'undefined') {
-    for (const row of input.paymentLimits ?? []) {
-      if (!row || typeof row !== 'object') continue;
-      const { target, minCents, maxCents } = row;
-      if (
-        typeof minCents === 'number' &&
-        typeof maxCents === 'number' &&
-        minCents > maxCents
-      ) {
-        throw new Error(`${target || 'a payment limit'}: the smallest amount cannot be larger than the largest`);
-      }
-    }
-  }
 
   const shouldValidateOutputDir =
     typeof input.outputBaseDir !== 'undefined' ||
@@ -2187,7 +2233,13 @@ type AIModelMutationInput = {
   modelName?: string;
   description?: string;
   enabled?: boolean;
-  /** Whole credits per resume, 0 to 1000; left out, a create takes the default and an edit keeps the stored one. */
+  /**
+   * The price per resume in DOLLARS ("0.023", or the JSON number 0.023), from
+   * $0.000 to $1000.000 in steps of $0.001. Required on a create; left out of
+   * an edit, the stored price stays.
+   */
+  pricePerResumeUsd?: unknown;
+  /** From a page loaded before credits were dollars; refused, see below. */
   creditsPerResume?: unknown;
 };
 
@@ -2210,6 +2262,13 @@ function normalizeAIModelMutationInput(
   input: AIModelMutationInput,
   fallback?: AIModelRecord
 ): Omit<AIModelRecord, 'id' | 'createdAt' | 'updatedAt'> {
+  // A price in credits, from an Admin -> Models page loaded before credits
+  // were dollars. Refused rather than ignored: ignored, the page's own save
+  // would "succeed" leaving the price at whatever it was, and read as dollars
+  // a price of 2 credits would be $2.000 a resume.
+  if (input.creditsPerResume !== undefined) {
+    throw new Error('This page is from an older version of the app. Reload it and try again.');
+  }
   const provider = normalizeAIModelProvider(input.provider ?? fallback?.provider);
   if (!provider) {
     throw new Error(`Model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`);
@@ -2250,10 +2309,7 @@ function normalizeAIModelMutationInput(
     modelName,
     description: normalizeAIModelText(input.description, fallback?.description || ''),
     enabled: typeof input.enabled === 'boolean' ? input.enabled : fallback?.enabled ?? true,
-    creditsPerResume: parseCreditsPerResume(
-      input.creditsPerResume,
-      fallback?.creditsPerResume ?? DEFAULT_CREDITS_PER_RESUME
-    ),
+    pricePerResumeMilli: parsePricePerResume(input.pricePerResumeUsd, fallback?.pricePerResumeMilli),
   };
 }
 
@@ -2373,20 +2429,14 @@ export async function getAIModelSettings(): Promise<AIModelSettings> {
   };
 }
 
-/** What a credit costs and the bounds on one purchase. */
-export async function getCreditPricingSettings(): Promise<{
-  creditPriceCents: number;
-  creditMinCredits: number;
-  creditMaxCredits: number;
+/** The bounds on one purchase, per method, and the card-authentication setting. */
+export async function getPurchaseSettings(): Promise<{
   paymentLimits: PaymentTargetLimits[];
   requireThreeDSecure: boolean;
   currency: string;
 }> {
   const settings = await readSettings();
   return {
-    creditPriceCents: settings.creditPriceCents,
-    creditMinCredits: settings.creditMinCredits,
-    creditMaxCredits: settings.creditMaxCredits,
     paymentLimits: settings.paymentLimits,
     requireThreeDSecure: settings.requireThreeDSecure,
     currency: CREDIT_CURRENCY,

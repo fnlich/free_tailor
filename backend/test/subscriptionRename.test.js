@@ -121,7 +121,13 @@ test('a database made before the rename keeps every account on its tier, renamed
     stored.map((row) => [row.id, row.subscription]),
     OLD_ACCOUNTS.map(([id, , tier]) => [id, tier]).sort((a, b) => a[0].localeCompare(b[0]))
   );
-  assert.ok(stored.every((row) => row.credits === 3), 'nothing else in the row moved');
+  // The balance is the one thing that did move, and not by the rename: the
+  // same start switched credits to dollars (database/dollarSwitch.ts), which
+  // resets every balance and says so in each account's history.
+  assert.ok(stored.every((row) => row.credits === 0), 'the switch to dollars reset the old balances');
+  const resets = first.db.prepare("SELECT user_id, delta FROM credit_ledger WHERE reason = 'reset'").all();
+  assert.equal(resets.length, OLD_ACCOUNTS.length);
+  assert.ok(resets.every((row) => row.delta === -3));
 
   // And read through the repository, as the app reads it.
   const users = loadFresh('../dist/database/userRepository');

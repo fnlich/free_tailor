@@ -207,7 +207,6 @@ export type CryptomusInvoice = {
 export type InvoiceRequest = {
   paymentId: string;
   reference: string;
-  credits: number;
   amountCents: number;
   currency: string;
   returnUrl: string;
