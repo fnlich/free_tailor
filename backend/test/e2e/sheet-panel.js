@@ -14,6 +14,10 @@
  *   - Order answers with an order number, and Cancel on the receipt stops it
  *   - Generate Immediately builds the loaded rows here and hands every file
  *     to the browser once
+ *   - the Analysis column says which rows already hold their analysis (the
+ *     protected Analysis cell, K:P read beside the job columns) and so skip
+ *     analysis, with the Job Field and Salary the row shows; and once a
+ *     build has analysed the others, they are written back and say so too
  *   - all of it on the Default subscription, and without a horizontal
  *     scrollbar at 390px
  *
@@ -101,6 +105,10 @@ async function readPreview(page) {
           )
         : null,
       notice: notice ? notice.innerText.replace(/\s+/g, ' ').trim() : null,
+      analysisLine:
+        Array.from(document.querySelectorAll('p')).find((node) => /analysed once, the first time any build needs it/.test(node.textContent))
+          ?.innerText.replace(/\s+/g, ' ')
+          .trim() ?? null,
       actions: Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim()).filter((t) => t === 'Order' || t === 'Generate Immediately'),
     };
   });
@@ -231,6 +239,23 @@ async function main() {
       String(loaded.notice)
     );
     check('then both ways to build are offered', loaded.actions.join(',') === 'Order,Generate Immediately', JSON.stringify(loaded.actions));
+    const analysisOf = (rowsShown, company) => (rowsShown ?? []).find((cells) => cells[1]?.text === company)?.[4]?.text ?? '';
+    check(
+      "a row whose Analysis cell is filled skips analysis, and shows the Job Field and Salary its row holds",
+      /^Skips analysis/.test(analysisOf(loaded.rows, 'Today Inc')) &&
+        analysisOf(loaded.rows, 'Today Inc').includes('Backend · USD 120,000 - 140,000 / annual'),
+      JSON.stringify(analysisOf(loaded.rows, 'Today Inc'))
+    );
+    check(
+      'a row with an empty Analysis cell is analysed when built',
+      /^When built/.test(analysisOf(loaded.rows, 'Now LLC')) && /^When built/.test(analysisOf(loaded.rows, 'Current Co')),
+      JSON.stringify(loaded.rows?.map((cells) => cells[4]?.text))
+    );
+    check(
+      'the panel counts the rows that skip analysis',
+      /^1 of 3 already analysed in the sheet, so they skip analysis\./.test(loaded.analysisLine ?? ''),
+      String(loaded.analysisLine)
+    );
     const costLine = await page.evaluate(() => document.body.innerText.match(/This run: [^\n]*/)?.[0] ?? null);
     check('the cost line prices the loaded rows', /^This run: 3 resumes/.test(costLine ?? ''), String(costLine));
     await page.screenshot({ path: `${SHOTS}/sheet-1-loaded.png`, fullPage: true });
@@ -247,6 +272,12 @@ async function main() {
       'and Load rows reads the chosen tab',
       (older.rows ?? []).map((cells) => cells[1]?.text).join(' | ') === 'Older Co | Elder Ltd',
       JSON.stringify(older.rows)
+    );
+    check(
+      'a tab with nothing in its analysis columns has no row that skips analysis',
+      (older.rows ?? []).every((cells) => /^When built/.test(cells[4]?.text ?? '')) &&
+        /^Every other posting/.test(older.analysisLine ?? ''),
+      JSON.stringify([older.rows?.map((cells) => cells[4]?.text), older.analysisLine])
     );
 
     /* --------------------------------------------- Order, and Cancel on it */
@@ -292,6 +323,25 @@ async function main() {
       fromSheet.join(', ')
     );
     await page.screenshot({ path: `${SHOTS}/sheet-3-built.png`, fullPage: true });
+
+    // The two rows that had no analysis are written back once their posting
+    // is analysed (or found stored), batched a moment after the run starts -
+    // so the next load of the same rows finds every one analysed.
+    await wait(2500);
+    check('Reload rows is pressed', await pressButton(page, 'Reload rows'));
+    await until(
+      page,
+      () => /3 of 3 already analysed/.test(document.body.innerText),
+      10_000
+    );
+    const reloaded = await readPreview(page);
+    check(
+      'after the build, every row it analysed has its analysis written back, and skips analysis next time',
+      (reloaded.rows ?? []).length === 3 &&
+        (reloaded.rows ?? []).every((cells) => /^Skips analysis/.test(cells[4]?.text ?? '')) &&
+        /^3 of 3 already analysed in the sheet/.test(reloaded.analysisLine ?? ''),
+      JSON.stringify([reloaded.rows?.map((cells) => cells[4]?.text), reloaded.analysisLine])
+    );
 
     /* ------------------------------------------------------------------ 390 */
     await page.setViewport(PHONE);

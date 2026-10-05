@@ -43,9 +43,9 @@ test('every shipped feature is filed under one of the two categories', async () 
   assert.equal(byFeature.get('analyze-job-description').category, 'extracting');
   assert.equal(byFeature.get('extract-profile-from-resume').category, 'extracting');
   assert.equal(byFeature.get('extract-template-from-pdf').category, 'extracting');
-  // A scraped page turned into structured job attributes is extraction, even
-  // though nothing was uploaded.
-  assert.equal(byFeature.get('filter-google-sheet-job').category, 'extracting');
+  // The Job Filter's own prompt is retired: the filter judges the job
+  // analysis, which reads the same facts (owner decision J8).
+  assert.equal(byFeature.has('filter-google-sheet-job'), false);
 
   assert.equal(byFeature.get('tailor-resume').category, 'building');
   assert.equal(byFeature.get('generate-cover-letter').category, 'building');
@@ -99,8 +99,8 @@ test('a custom prompt inherits the category of the feature it is attached to', a
 
   const extracted = await service.createPrompt({
     name: 'My extraction prompt',
-    featureKey: 'analyze-job-description',
-    content: 'Analyze this.\n[[jobDescription]]',
+    featureKey: 'extract-profile-from-resume',
+    content: 'Extract this.\n[[resumeText]]',
   });
   assert.equal(extracted.category, 'extracting');
 

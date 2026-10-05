@@ -172,6 +172,30 @@ test('the analysed posting is not echoed back inside the tailoring prompt', () =
   assert.doesNotMatch(values.jobAnalysisJson, /sourceJobDescription/);
 });
 
+test("what a posting pays and how the filter judges it never reach the tailoring prompt", () => {
+  // The analysis carries its job field, salary and filter facts for the
+  // sheet, the lake and the Job Filter. Tailoring a resume needs none of
+  // them, and a model told what the job pays has one more thing to echo.
+  const { parseJobAnalysisContent } = require('../dist/services/resumeService');
+  const analysis = parseJobAnalysisContent(
+    JSON.stringify({
+      ...ANALYSIS,
+      sourceJobDescription: undefined,
+      jobField: 'backend',
+      salary: { min: 150000, max: 190000, currency: 'USD', period: 'annual', raw: '$150k-$190k' },
+      filter: { jobType: 'remote', onsiteInterview: 'no', companyCategory: 'saas', clearanceRequired: 'none', region: 'us', usState: null },
+    }),
+    'The original posting text.'
+  );
+  assert.equal(analysis.jobField, 'backend', 'the parsed analysis does carry them');
+  assert.equal(analysis.salary.min, 150000);
+  assert.equal(analysis.filter.jobType, 'remote');
+
+  const values = buildTailorResumePromptValues(profileFixture(), analysis);
+  assert.doesNotMatch(values.jobAnalysisJson, /"jobField"|"salary"|"filter"/);
+  assert.doesNotMatch(values.jobAnalysisJson, /150000|150k|"remote"|clearance/);
+});
+
 test('the whole tailoring payload stays under budget', () => {
   // A ceiling rather than an exact figure, so ordinary edits do not fail this -
   // but a change that puts the whole profile record back would sail past it.

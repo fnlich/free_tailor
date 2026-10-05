@@ -7,7 +7,16 @@ import {
   parseSpreadsheetColumnInput,
   toSpreadsheetColumnLabel,
 } from '@/lib/sheet';
-import { buildSheetJobs, type SheetColumnOffsets, type SheetJob } from '@/lib/sheetRows';
+import {
+  appendColumns,
+  buildSheetJobs,
+  countSkippingAnalysis,
+  describeRowAnalysis,
+  OWN_SHEET_LAYOUT,
+  SAVED_SOURCE_LAYOUT,
+  type SheetColumnOffsets,
+  type SheetJob,
+} from '@/lib/sheetRows';
 import { Card, ErrorNotice, Notice, Pill } from '@/components/ui/kit';
 import { IconChevronRight } from '@/components/icons';
 import styles from '@/components/builder.module.css';
@@ -34,51 +43,12 @@ export type ImportSheetSource = {
 export type SheetRunKind = 'immediate' | 'order';
 
 /**
- * Where the fields sit, per kind of sheet, as the columns a person reads.
- *
- * The account's own sheet is written BY this app, so its columns are known
- * exactly - `NO(DATE)`, `Company`, `Job Title`, `Job Link`, `Job Description`,
- * and then columns a build has no use for - so B:E covers what is needed and
- * row 2 is the first after the header. A saved source is somebody else's
- * spreadsheet and keeps the D:G it always had: a guess, editable under
- * Advanced. No sheet has an analysis column yet; one mapped by hand marks the
- * rows that already have one.
+ * The sheet a run's rows came from, as the batch names it: the tab, and the
+ * spreadsheet only when it is not the account's own (the server's default).
+ * With it the server reads the rows' Analysis cells itself - never from this
+ * page - and a row that holds its analysis skips analysis.
  */
-type SheetLayout = {
-  fromRow: string;
-  toRow: string;
-  fromCol: string;
-  toCol: string;
-  company: string;
-  jobTitle: string;
-  jobLink: string;
-  jobDescription: string;
-  analysis: string;
-};
-
-const OWN_SHEET_LAYOUT: SheetLayout = {
-  fromRow: '2',
-  toRow: '11',
-  fromCol: 'B',
-  toCol: 'E',
-  company: 'B',
-  jobTitle: 'C',
-  jobLink: 'D',
-  jobDescription: 'E',
-  analysis: '',
-};
-
-const SAVED_SOURCE_LAYOUT: SheetLayout = {
-  fromRow: '1',
-  toRow: '10',
-  fromCol: 'D',
-  toCol: 'G',
-  company: 'D',
-  jobTitle: '',
-  jobLink: '',
-  jobDescription: 'G',
-  analysis: '',
-};
+export type SheetRunSource = { spreadsheetId?: string; tabName: string };
 
 /** How many loaded rows the preview table draws; the rest are counted, not drawn. */
 const PREVIEW_ROWS = 50;
@@ -94,7 +64,7 @@ type Props = {
    * is loaded - what the page prices the run by.
    */
   onRowsChange: (jobCount: number | null) => void;
-  onRun: (kind: SheetRunKind, jobs: SheetJob[], meta: { skippedRows: number }) => void;
+  onRun: (kind: SheetRunKind, jobs: SheetJob[], meta: { skippedRows: number; sheet: SheetRunSource }) => void;
   /** The cost line, beside the two actions. */
   costLine?: ReactNode;
   /** Shown instead of the sheet select when there is nothing to read from. */
@@ -175,6 +145,10 @@ type Loaded = {
   jobs: SheetJob[];
   skippedRows: number;
   total: number;
+  /** The tab they were read from - what the run names, so it is the one the server reads. */
+  tabName: string;
+  /** Whether the rows' Analysis cells were read: false on another sheet, or a tab too narrow to have them. */
+  analysisRead: boolean;
 };
 
 function SheetRows({
@@ -203,7 +177,6 @@ function SheetRows({
     jobTitle: layout.jobTitle,
     jobLink: layout.jobLink,
     jobDescription: layout.jobDescription,
-    analysis: layout.analysis,
   });
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -310,12 +283,49 @@ function SheetRows({
         jobTitle: offset('Job Title', columns.jobTitle, false),
         jobLink: offset('Job Link', columns.jobLink, false),
         jobDescription: offset('Job Description', columns.jobDescription, true),
-        analysis: offset('Analysis', columns.analysis, false),
+        jobField: null,
+        salary: null,
+        analysis: null,
       };
 
-      const { jobs, skippedRows } = buildSheetJobs(values, startRow, offsets);
+      // The account sheet's analysis columns, K:P: from the rows already
+      // loaded when the range takes them in, else in a read of their own.
+      // That second read is best-effort - a tab made before these columns
+      // existed has a grid that ends at L, and Google refuses a range past
+      // it - and without it every row simply says "When built", which is
+      // what the server will do with a row that has no Analysis cell.
+      let rows: string[][] = values;
+      if (layout.analysis) {
+        const fieldCol = parseSpreadsheetColumnInput('Job Field column', layout.jobField);
+        const analysisCol = parseSpreadsheetColumnInput('Analysis column', layout.analysis);
+        const within = (column: number) => column >= startCol && column < startCol + width;
+        if (within(fieldCol) && within(analysisCol)) {
+          offsets.jobField = fieldCol - startCol;
+          offsets.salary = parseSpreadsheetColumnInput('Salary column', layout.salary) - startCol;
+          offsets.analysis = analysisCol - startCol;
+        } else {
+          try {
+            const extra = await importApi.fetchGoogleSheetRange({
+              sheetId: source.sheetId,
+              tabName,
+              fromRow: startRow,
+              toRow: startRow + values.length - 1,
+              fromCol: fieldCol,
+              toCol: analysisCol,
+            });
+            rows = appendColumns(values, width, extra.values ?? []);
+            offsets.jobField = width;
+            offsets.salary = width + parseSpreadsheetColumnInput('Salary column', layout.salary) - fieldCol;
+            offsets.analysis = width + analysisCol - fieldCol;
+          } catch {
+            // Read as "not analysed in the sheet" - see above.
+          }
+        }
+      }
+
+      const { jobs, skippedRows } = buildSheetJobs(rows, startRow, offsets);
       if (!mounted.current) return;
-      setLoaded({ key, jobs, skippedRows, total: values.length });
+      setLoaded({ key, jobs, skippedRows, total: values.length, tabName, analysisRead: offsets.analysis !== null });
       onRowsChange(jobs.length);
     } catch (err) {
       if (!mounted.current) return;
@@ -329,6 +339,10 @@ function SheetRows({
 
   const locked = busy || loading;
   const tabsLoading = tabsState === null;
+
+  /** The sheet the run names: the tab the rows came from, and the spreadsheet unless it is the account's own. */
+  const runSource = (rowsLoaded: Loaded): SheetRunSource =>
+    source.isOwnSheet ? { tabName: rowsLoaded.tabName } : { spreadsheetId: source.sheetId, tabName: rowsLoaded.tabName };
 
   return (
     <div className="space-y-6">
@@ -449,13 +463,13 @@ function SheetRows({
               disabled={locked}
               onChange={(value) => edited(() => setColumns((current) => ({ ...current, jobLink: value })))}
             />
-            <ColumnField
-              id="sheet-col-analysis"
-              label="Analysis"
-              value={columns.analysis}
-              disabled={locked}
-              onChange={(value) => edited(() => setColumns((current) => ({ ...current, analysis: value })))}
-            />
+            {layout.analysis && (
+              <p className="text-sm text-muted sm:col-span-2 lg:col-span-4">
+                Job Field, Salary and Analysis are read from columns {layout.jobField}, {layout.salary} and{' '}
+                {layout.analysis}, which only this program can write. A row whose Analysis cell is filled is
+                built on it without being analysed again.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -475,6 +489,12 @@ function SheetRows({
               </span>
             )}
           </Notice>
+          <p className="text-sm text-muted">
+            {current.analysisRead && countSkippingAnalysis(current.jobs) > 0
+              ? `${countSkippingAnalysis(current.jobs)} of ${current.jobs.length} already analysed in the sheet, so they skip analysis. `
+              : ''}
+            Every other posting is analysed once, the first time any build needs it, and never again.
+          </p>
 
           <div className="tl-table-box">
             <table className="tl-table">
@@ -520,8 +540,8 @@ function SheetRows({
                         <span className="text-subtle">-</span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap">
-                      {job.analysed ? <Pill tone="green">Analysed</Pill> : <span className="text-muted">Analysed when built</span>}
+                    <td className="min-w-40">
+                      <RowAnalysis job={job} />
                     </td>
                   </tr>
                 ))}
@@ -538,7 +558,7 @@ function SheetRows({
             {costLine}
             <button
               type="button"
-              onClick={() => onRun('order', current.jobs, { skippedRows: current.skippedRows })}
+              onClick={() => onRun('order', current.jobs, { skippedRows: current.skippedRows, sheet: runSource(current) })}
               disabled={busy}
               className={`tl-button-quiet ${styles.pill}`}
             >
@@ -546,7 +566,7 @@ function SheetRows({
             </button>
             <button
               type="button"
-              onClick={() => onRun('immediate', current.jobs, { skippedRows: current.skippedRows })}
+              onClick={() => onRun('immediate', current.jobs, { skippedRows: current.skippedRows, sheet: runSource(current) })}
               disabled={busy}
               className="tl-button"
               data-shape="pill"
@@ -557,6 +577,23 @@ function SheetRows({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * What a row's build will do about its analysis, by its Analysis cell: skip
+ * it (with the Job Field and Salary the row already shows), or analyse the
+ * posting when built - once, unless it already was.
+ */
+function RowAnalysis({ job }: { job: SheetJob }) {
+  const note = describeRowAnalysis(job.analysis);
+  const facts = note.skipsAnalysis ? [job.jobField, job.salary].filter(Boolean) : [];
+  return (
+    <span className="flex flex-col items-start gap-1" title={note.detail}>
+      {note.tone === 'grey' ? <span className="text-muted">{note.label}</span> : <Pill tone={note.tone}>{note.label}</Pill>}
+      {facts.length > 0 && <span className="break-words text-xs text-subtle">{facts.join(' · ')}</span>}
+      <span className="sr-only">{note.detail}</span>
+    </span>
   );
 }
 

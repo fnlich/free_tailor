@@ -9,12 +9,18 @@ import {
 import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import path from 'path';
 import {
-  analyzeJobDescription,
-  analyzeJobDescriptionPromptRaw,
   generateCoverLetter,
   parseTailoredResumeContent,
   tailorResume,
 } from '../services/resumeService';
+import {
+  getOrCreateAnalysis,
+  JOB_ANALYSIS_MIN_LENGTH,
+  loadAnalysis,
+  type StoredJobAnalysis,
+} from '../services/jobAnalysis/gate';
+import { jobFieldLabel, listJobFieldsForClient } from '../config/jobFields';
+import { resolveAnalysisModel } from '../config/aiModelConfig';
 import { generateResumePDF, generatePreviewHTML, getGeneratedPDFPath } from '../generators/pdfGenerator';
 import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
@@ -39,7 +45,7 @@ import { PublicError, publicItemError, sendPublicError } from '../middleware/pub
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
 import { getProfileFor, listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
-import { DEFAULT_ANALYZE_JOB_PROMPT_ID, profileForTemplate } from '../services/profileService';
+import { profileForTemplate } from '../services/profileService';
 import { GenerateResumeRequest, JobAnalysis, TailoredContent } from '../types/template';
 
 const router = Router();
@@ -102,8 +108,48 @@ function shouldGenerateCoverLetterDocx(value: unknown): boolean {
 }
 
 
-function getProfileAnalyzeJobPromptId(profile?: Profile): string {
-  return profile?.profileSettings?.analyzeJobPromptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
+/**
+ * The analysis a request builds on, through the one gate (services/jobAnalysis/
+ * gate.ts): the stored one the page names by `analysisId`, else the posting's
+ * - stored, in flight, or analysed now, once. Null for a posting too short to
+ * analyse, which is built untailored as before.
+ *
+ * An analysis OBJECT in the body (`jobAnalysis`, which pages used to send) is
+ * never read: the server builds only on analyses it stored, so nobody can
+ * hand it a job field or a title of their own making. A named id that does
+ * not exist is the caller's to fix, and said so.
+ */
+async function analysisForRequest(
+  req: Request,
+  res: Response,
+  body: { analysisId?: unknown; jobDescription?: unknown; jobLink?: unknown }
+): Promise<StoredJobAnalysis | null> {
+  const named = typeof body.analysisId === 'string' ? body.analysisId.trim() : '';
+  if (named) {
+    const stored = loadAnalysis(named);
+    if (!stored) {
+      throw new PublicError('That job analysis was not found. Analyse the job description again.', { status: 400 });
+    }
+    return stored;
+  }
+  const jobDescription = typeof body.jobDescription === 'string' ? body.jobDescription : '';
+  const jobLink = typeof body.jobLink === 'string' ? body.jobLink : '';
+  if (!jobDescription.trim() && !jobLink.trim()) return null;
+  return getOrCreateAnalysis({
+    jd: jobDescription,
+    link: jobLink,
+    requestedBy: req.user?.id ?? null,
+    signal: requestSignal(req, res),
+  });
+}
+
+/**
+ * An analysis as a page reads it: the analysis, its stored id (what the page
+ * sends back to build on it) and its job field's label beside the id.
+ */
+function analysisResponse(stored: StoredJobAnalysis) {
+  const { sourceJobDescription: _text, ...analysis } = stored.analysis;
+  return { ...analysis, analysisId: stored.id, jobFieldLabel: jobFieldLabel(stored.jobFieldId) };
 }
 
 /**
@@ -147,76 +193,85 @@ router.put('/skills', requireAdmin, updateSkillHandler);
 // Delete skill
 router.delete('/skills', requireAdmin, deleteSkillHandler);
 
-// Analyze job description
+/**
+ * The job fields a posting is classified into, for the pages that show or
+ * filter by one: `{ areas, fields: [{ id, label, area }], unclassified }`.
+ */
+router.get('/job-fields', (_req: Request, res: Response) => {
+  res.json(listJobFieldsForClient());
+});
+
+/**
+ * Analyse a job description: the builder's first step.
+ *
+ * Through the one gate, so a posting is analysed once, ever - this request,
+ * an earlier one, a sheet run or the Job Filter, whichever came first - on the
+ * administrator's analysis model. Body `{ jobDescription, jobLink? }`; a
+ * `model` or `promptId` in it is not read (one analysis model, one analysis
+ * prompt). Answers the analysis with `analysisId`, which the page sends to
+ * preview, generate and batches to build on it.
+ */
 router.post('/analyze', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
-  console.log('[Resume timing] /resume/analyze started');
   try {
-    const { jobDescription, promptId } = req.body as {
-      jobDescription?: string;
-      promptId?: string;
-    };
-
-    if (!jobDescription || jobDescription.trim().length < 50) {
-      res.status(400).json({ error: 'Job description must be at least 50 characters' });
+    const { jobDescription, jobLink } = req.body as { jobDescription?: unknown; jobLink?: unknown };
+    if (typeof jobDescription !== 'string' || jobDescription.trim().length < JOB_ANALYSIS_MIN_LENGTH) {
+      res.status(400).json({ error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters` });
       return;
     }
 
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), null, { admin: isAdmin(req) });
-    const analysis = await analyzeJobDescription(
-      jobDescription,
-      selectedModel,
-      promptId,
-      requestSignal(req, res)
-    );
+    const stored = await analysisForRequest(req, res, { jobDescription, jobLink });
+    if (!stored) {
+      res.status(400).json({ error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters` });
+      return;
+    }
     console.log(`[Resume timing] /resume/analyze finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
-    res.json(analysis);
+    res.json(analysisResponse(stored));
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to analyze the job description');
   }
 });
 
 /**
- * The Prompt Test page's raw run. Administrators only: it is how a prompt is
- * debugged, it can name any model by provider, and its answer is the model's
- * unparsed output.
+ * The Job Keyword Prompt Test page. Administrators only, and through the same
+ * gate as everything else: a posting is analysed once, ever, and an
+ * administrator testing a prompt is no exception (owner decision J0). So it
+ * answers the posting's analysis - stored, or made now on the analysis model
+ * with the analysis prompt as it stands - and an edited prompt is tried on a
+ * posting never analysed before. `promptId` and `model` are not read.
  */
 router.post('/analyze-prompt-test', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { jobDescription, promptId } = req.body as {
-      jobDescription?: string;
-      promptId?: string;
-    };
-
-    if (!jobDescription || jobDescription.trim().length < 50) {
-      res.status(400).json({ error: 'Job description must be at least 50 characters' });
+    const { jobDescription, jobLink } = req.body as { jobDescription?: unknown; jobLink?: unknown };
+    if (typeof jobDescription !== 'string' || jobDescription.trim().length < JOB_ANALYSIS_MIN_LENGTH) {
+      res.status(400).json({ error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters` });
       return;
     }
-
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), null, { admin: isAdmin(req) });
-    const result = await analyzeJobDescriptionPromptRaw(
-      jobDescription,
-      selectedModel,
-      promptId
-    );
-    res.json(result);
+    const stored = await analysisForRequest(req, res, { jobDescription, jobLink });
+    if (!stored) {
+      res.status(400).json({ error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters` });
+      return;
+    }
+    res.json({ ...analysisResponse(stored), source: stored.source, createdAt: stored.createdAt });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to test the job description prompt');
   }
 });
 
+/**
+ * Several postings at once, each through the gate: one analysis per posting
+ * ever, never several postings in one call (owner decision P5). Body
+ * `{ jobs: [{ companyName, jobDescription, jobLink?, sourceRowNumber? }] }`.
+ */
 router.post('/analyze-multi-job', async (req: Request, res: Response) => {
   try {
-    const {
-      jobs,
-      model,
-    } = req.body as {
+    const { jobs } = req.body as {
       jobs?: Array<{
         companyName?: string;
         jobDescription?: string;
+        jobLink?: string;
         sourceRowNumber?: number;
       }>;
-      model?: string;
     };
 
     if (!Array.isArray(jobs) || jobs.length === 0) {
@@ -224,12 +279,11 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       return;
     }
 
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), null, { admin: isAdmin(req) });
-
     const validJobs: Array<{
       customId: string;
       companyName: string;
       jobDescription: string;
+      jobLink: string;
       sourceRowNumber?: number;
     }> = [];
     const failures: Array<{
@@ -251,11 +305,11 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
         continue;
       }
 
-      if (jobDescription.length < 50) {
+      if (jobDescription.length < JOB_ANALYSIS_MIN_LENGTH) {
         failures.push({
           companyName,
           sourceRowNumber: job.sourceRowNumber,
-          error: 'Job description must be at least 50 characters',
+          error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters`,
         });
         continue;
       }
@@ -264,6 +318,7 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
         customId: `job_${index + 1}`,
         companyName,
         jobDescription,
+        jobLink: typeof job.jobLink === 'string' ? job.jobLink.trim() : '',
         sourceRowNumber: job.sourceRowNumber,
       });
     }
@@ -272,36 +327,39 @@ router.post('/analyze-multi-job', async (req: Request, res: Response) => {
       companyName: string;
       sourceRowNumber?: number;
       jobDescription: string;
+      analysisId: string;
       analysis: JobAnalysis;
     }> = [];
 
-    // The analyses go out at the chosen provider's width too. They are the
-    // short calls, but there is one per job and a sheet import brings dozens.
-    const analysisCapacity = await resolveBatchCapacity(selectedModel);
+    // At the analysis model's width: one call per posting not yet analysed,
+    // and the gate's in-flight join makes two identical rows one call.
+    const analysisModel = await resolveAnalysisModel();
+    const analysisCapacity = await resolveBatchCapacity({ provider: analysisModel.provider });
     const analysisOutcomes = await mapWithConcurrency(validJobs, analysisCapacity.limit, (job) =>
-      analyzeJobDescription(
-        job.jobDescription,
-        selectedModel,
-        undefined,
-        requestSignal(req, res)
-      )
+      analysisForRequest(req, res, { jobDescription: job.jobDescription, jobLink: job.jobLink })
     );
 
     analysisOutcomes.forEach((outcome, index) => {
       const job = validJobs[index];
-      if (outcome.ok) {
+      if (outcome.ok && outcome.value) {
+        const { analysisId, ...analysis } = analysisResponse(outcome.value);
         analyses.push({
           companyName: job.companyName,
           sourceRowNumber: job.sourceRowNumber,
           jobDescription: job.jobDescription,
-          analysis: outcome.value,
+          analysisId,
+          analysis: analysis as JobAnalysis,
         });
         return;
       }
       failures.push({
         companyName: job.companyName,
         sourceRowNumber: job.sourceRowNumber,
-        error: publicItemError(outcome.error, 'Analysis failed', `analyze-multi-job ${job.customId}`),
+        error: publicItemError(
+          outcome.ok ? new Error('The posting is too short to analyse.') : outcome.error,
+          'Analysis failed',
+          `analyze-multi-job ${job.customId}`
+        ),
       });
     });
 
@@ -453,14 +511,12 @@ router.post('/preview-all', async (req: Request, res: Response) => {
   try {
     const {
       templateId,
-      jobDescription,
-      jobAnalysis,
-      model,
       profileIds,
     } = req.body as {
       templateId?: string;
       jobDescription?: string;
-      jobAnalysis?: import('../types/template').JobAnalysis;
+      jobLink?: string;
+      analysisId?: string;
       model?: string;
       profileIds?: string[];
     };
@@ -480,16 +536,10 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     assertProfileScopeAllowed(req.user, { profileIds, resolvedCount: profiles.length });
 
 
-    let analysis: JobAnalysis | undefined;
-    const trimmedJobDescription = jobDescription?.trim();
-    if (trimmedJobDescription && trimmedJobDescription.length > 50) {
-      analysis = jobAnalysis || await analyzeJobDescription(
-        trimmedJobDescription,
-        selectedModel,
-        getProfileAnalyzeJobPromptId(profiles[0]),
-        requestSignal(req, res)
-      );
-    }
+    // One analysis for every profile, through the gate: the one the page
+    // names, else the posting's own - stored, or made now, once.
+    const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
+    const analysis: JobAnalysis | undefined = storedAnalysis?.analysis;
 
     const previews: Array<{
       profileId: string;
@@ -574,6 +624,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
     res.json({
       previews,
       tailored: !!analysis,
+      ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
       unconfirmedHardSkills: bulkTailoring?.unconfirmedHardSkills ?? Array.from(unconfirmedHardMap.values()),
       unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
     });
@@ -590,8 +641,6 @@ router.post('/generate', async (req: Request, res: Response) => {
     const {
       profileId,
       templateId,
-      jobDescription,
-      jobAnalysis,
       companyName,
       role,
       sourceRowNumber,
@@ -671,15 +720,11 @@ router.post('/generate', async (req: Request, res: Response) => {
     // If job description provided, tailor the resume. Existing/manual content still
     // gets normalized so skills remain code-decided from the library.
     let tailoredContent = (req.body as GenerateResumeRequest).tailoredContent as TailoredContent | undefined;
-    let analysis = jobAnalysis;
-    if (!analysis && jobDescription && jobDescription.trim().length > 50) {
-      analysis = jobAnalysis || await analyzeJobDescription(
-        jobDescription,
-        selectedModel,
-        getProfileAnalyzeJobPromptId(profile),
-        requestSignal(req, res)
-      );
-    }
+    // The analysis the page names, else the posting's own - stored, or made
+    // now, once, on the analysis model (not the model this resume is charged
+    // at: the analysis is the posting's, shared by every resume built on it).
+    const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
+    const analysis = storedAnalysis?.analysis;
     // Tailoring reads the profile through its template, as the render does: a
     // switch the template has no section for is off for the model too.
     const sectionProfile = profileForTemplate(profile, template);
@@ -751,6 +796,7 @@ router.post('/generate', async (req: Request, res: Response) => {
             : {}),
         },
         tailored: !!tailoredContent,
+        ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
         unconfirmedHardSkills,
         unconfirmedSoftSkills,
       });
@@ -780,6 +826,7 @@ router.post('/generate', async (req: Request, res: Response) => {
         },
         tailored: !!tailoredContent,
         format: formatNorm,
+        ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
         unconfirmedHardSkills,
         unconfirmedSoftSkills,
       });
@@ -805,7 +852,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   console.log('[Resume timing] /resume/preview started');
   try {
-    const { profileId, templateId, jobDescription, jobAnalysis, tailoredContent: manualTailoredContent }: GenerateResumeRequest = req.body;
+    const { profileId, templateId, tailoredContent: manualTailoredContent }: GenerateResumeRequest = req.body;
 
     if (!profileId) {
       res.status(400).json({ error: 'Profile ID is required' });
@@ -837,15 +884,8 @@ router.post('/preview', async (req: Request, res: Response) => {
     // If job description provided, tailor the resume. Existing/manual content still
     // gets normalized so skills remain code-decided from the library.
     let tailoredContent = manualTailoredContent;
-    let analysis = jobAnalysis;
-    if (!analysis && jobDescription && jobDescription.trim().length > 50) {
-      analysis = await analyzeJobDescription(
-        jobDescription,
-        selectedModel,
-        getProfileAnalyzeJobPromptId(profile),
-        requestSignal(req, res)
-      );
-    }
+    const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
+    const analysis = storedAnalysis?.analysis;
     // Tailoring reads the profile through its template, as the render does: a
     // switch the template has no section for is off for the model too.
     const sectionProfile = profileForTemplate(profile, template);
@@ -867,7 +907,13 @@ router.post('/preview', async (req: Request, res: Response) => {
     );
 
     console.log(`[Resume timing] /resume/preview finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
-    res.json({ html, tailored: !!tailoredContent, tailoredContent, ...(previewToken ? { previewToken } : {}) });
+    res.json({
+      html,
+      tailored: !!tailoredContent,
+      tailoredContent,
+      ...(previewToken ? { previewToken } : {}),
+      ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
+    });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to generate the preview');
   }

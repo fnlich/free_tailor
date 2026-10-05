@@ -4,6 +4,7 @@ import {
   renderPromptSegmentsByExactId,
   resolvePromptByExactId,
   resolvePromptByRuntimeId,
+  STABLE_PROMPT_VARIABLES,
   type RenderedPromptSegment,
 } from '../promptService';
 
@@ -77,7 +78,10 @@ export type PromptRef = { id: string; mode: 'exact' | 'runtime' };
 
 export type AssembledPrompt = {
   record: PromptRecord | null;
-  /** The literal run before the first `[[variable]]`: instructions, not data. */
+  /**
+   * The run before the first `[[variable]]` that carries the call's data:
+   * instructions, not data (a STABLE variable's value counts as instruction).
+   */
   stableSystem: string;
   /** Everything from the first variable onward: the call's actual data. */
   userBody: string;
@@ -85,10 +89,22 @@ export type AssembledPrompt = {
   flat: string;
 };
 
+/**
+ * A segment that belongs to the stable part: literal prompt text, or a
+ * variable whose value the CODE fixes and is the same on every call - the
+ * analysis prompt's list of job fields (`STABLE_PROMPT_VARIABLES`). Such a
+ * variable is a variable so there is one copy of the list, not because it
+ * varies; keeping it in the system part is what lets a CLI's prompt cache
+ * reuse it from one posting to the next.
+ */
+function isStableSegment(segment: RenderedPromptSegment): boolean {
+  return !segment.variableName || STABLE_PROMPT_VARIABLES.has(segment.variableName);
+}
+
 function splitSegments(segments: RenderedPromptSegment[]): { stableSystem: string; userBody: string } {
   let index = 0;
   let stableSystem = '';
-  while (index < segments.length && !segments[index].variableName) {
+  while (index < segments.length && isStableSegment(segments[index])) {
     stableSystem += segments[index].text;
     index += 1;
   }

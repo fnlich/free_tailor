@@ -205,7 +205,7 @@ export default function JobFilterPage() {
     <Page>
       <PageHeader
         title="Job Filter"
-        description="Select a sheet and tab, scrape each job link, classify it with the saved prompt, then write a final Pass or Fail result back to Google Sheets."
+        description="Select a sheet and tab, and each job is judged on its posting's one job analysis - fetched from its link and analysed once, or reused when the posting was analysed before - then a final Pass or Fail result is written back to Google Sheets."
         actions={
           // What the run leaves behind, beside the title - the same place the
           // balance sits on /credits. `border-l-4` is not one of the dark-mode
@@ -382,15 +382,26 @@ export default function JobFilterPage() {
           </>
           )}
 
-          {/* Where the prompt lives is for the person who can edit it. */}
+          {/*
+            Where the analysis is decided is for the person who can change it.
+            The filter has no prompt or model of its own any more: a row is
+            judged by rules in code on the facts its posting's one analysis
+            read, and a posting analysed by a build, or by an earlier run of
+            this filter, is not analysed again.
+          */}
           {isAdmin && (
             <Notice tone="info">
-              Uses the live <span className="font-semibold">Filter Google Sheet Job</span> prompt from{' '}
-              prompt library. Edit it in{' '}
+              Each posting is judged on its one job analysis: made by the{' '}
+              <span className="font-semibold">Analyze Job Description</span> prompt on the analysis model, once, the
+              first time anything needs it. Choose the model under{' '}
+              <Link href="/admin/settings" className="font-semibold underline underline-offset-2">
+                Settings &gt; General
+              </Link>{' '}
+              and edit the prompt in{' '}
               <Link href="/admin/prompts" className="font-semibold underline underline-offset-2">
                 Admin Prompts
-              </Link>{' '}
-              and changes will apply here automatically.
+              </Link>
+              ; either change applies to postings not analysed yet.
             </Notice>
           )}
 
@@ -438,8 +449,11 @@ export default function JobFilterPage() {
                   ['Scanned', summary.scannedRows],
                   // The administrator's name for the model, never the provider
                   // or the CLI's own id for it.
-                  ['Model', summary.modelLabel || 'App default'],
+                  ['Analysis model', summary.modelLabel || 'App default'],
                   ['Scraped pages', summary.scrapedRows],
+                  // Judged on an analysis the posting already had, found by
+                  // its link: no page fetched and no model asked.
+                  ['Already analysed', summary.reusedAnalyses ?? 0],
                   ['Skipped rows', summary.skippedRows],
                   ['Rows with errors', summary.errorRows],
                   ['Job link column', toSpreadsheetColumnLabel(summary.jobLinkCol)],

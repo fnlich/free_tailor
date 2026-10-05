@@ -20,10 +20,10 @@ const { useTempStorage } = require('./helpers');
  * page draws.
  *
  * It also pins what is deliberately NOT per profile: the job analysis. It is
- * a function of the posting, the prompt and the model alone, so it is made
- * once and shared - in one request and, through the analysis cache, across
- * requests - whatever either profile's switches say. Putting the switches in
- * its key would buy a second identical answer for a seat turn each.
+ * a reading of the posting alone, so it is made once and shared - in one
+ * request and, through the stored analyses (services/jobAnalysis/gate.ts),
+ * for ever - whatever either profile's switches say. Keying it on the
+ * switches would buy a second identical answer for a seat turn each.
  */
 
 const POSTING = [
@@ -95,7 +95,7 @@ async function serve() {
 
   const ai = require('../dist/services/ai/index');
   ai.resetRegistryForTests();
-  ai.resetAnalysisCacheForTests();
+  require('../dist/services/jobAnalysis/gate').resetAnalysisGateForTests();
   const calls = [];
   ai.registerAdapter('claude-cli', () => ({
     id: 'claude-cli',

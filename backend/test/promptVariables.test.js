@@ -13,8 +13,8 @@ const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
  * What a prompt may say, checked against what the code will give it.
  *
  * A feature prompt is rendered from values its feature's code builds - the
- * tailoring call's `buildTailorResumePromptValues`, the job filter's
- * `buildJobFilterPromptValues` and so on. A variable outside that set cannot
+ * tailoring call's `buildTailorResumePromptValues`, the analysis's
+ * `buildAnalyzeJobDescriptionPromptValues` and so on. A variable outside that set cannot
  * be filled, so a record naming one fails every run that uses it. These pin:
  * the declared list and the builders never drift apart; a typo is refused when
  * a prompt is saved, not discovered when a resume fails; and a tailor-resume
@@ -80,15 +80,13 @@ test('every feature declares exactly the variables its code supplies', () => {
   seeded('drift');
   const promptService = loadFresh('../dist/services/promptService');
   const resumeService = loadFresh('../dist/services/resumeService');
-  const { buildJobFilterPromptValues } = loadFresh('../dist/services/jobFilter');
 
   const supplied = {
-    'analyze-job-description': resumeService.buildAnalyzeJobDescriptionPromptValues('A posting.'),
+    'analyze-job-description': resumeService.buildAnalyzeJobDescriptionPromptValues('A posting.', 'https://jobs.example.com/1'),
     'tailor-resume': resumeService.buildTailorResumePromptValues(profile(), ANALYSIS),
     'generate-cover-letter': resumeService.buildCoverLetterPromptValues(profile(), 'Acme', 'Engineer'),
     'extract-template-from-pdf': resumeService.buildExtractTemplatePromptValues('PDF text', 'Imported'),
     'extract-profile-from-resume': resumeService.buildExtractProfilePromptValues('Resume text'),
-    'filter-google-sheet-job': buildJobFilterPromptValues('Job page', 'https://jobs.example.com/1'),
   };
 
   for (const [feature, values] of Object.entries(supplied)) {
@@ -149,7 +147,9 @@ test('the shipped prompts validate clean against what their code supplies', asyn
   const promptService = loadFresh('../dist/services/promptService');
   const prompts = await promptService.listPrompts();
 
-  assert.equal(prompts.length, 6);
+  // Five features since the Job Filter's own prompt was retired into the
+  // analysis (owner decision J8).
+  assert.equal(prompts.length, 5);
   for (const prompt of prompts) {
     assert.deepEqual(prompt.validation.unknownVariables, [], `${prompt.id} names a variable nothing supplies`);
   }
@@ -160,6 +160,12 @@ test('the shipped prompts validate clean against what their code supplies', asyn
     assert.ok(variable.sampleValue, `${name} has a sample for previews`);
   }
   assert.equal(tailor.predatesSectionSwitches, undefined, 'the shipped text knows about the switches');
+  const analysis = prompts.find((prompt) => prompt.id === 'analyze-job-description');
+  assert.equal(analysis.predatesJobField, undefined, 'the shipped analysis asks for a job field from the list');
+  for (const name of ['jobFieldList', 'jobLink', 'jobDescription']) {
+    assert.ok(analysis.validation.usedVariables.includes(name), `the shipped analysis prompt uses [[${name}]]`);
+    assert.ok(analysis.allowedVariables.find((entry) => entry.name === name)?.description, `${name} is documented`);
+  }
 
   const preview = await promptService.previewPrompt({ id: 'tailor-resume' });
   assert.equal(preview.sampleValues.includeStrengths, 'yes');
@@ -187,6 +193,10 @@ test('a tailor-resume record written before the switches is marked, and only tha
   assert.equal(listed.get(old.id).predatesSectionSwitches, true);
   assert.equal(listed.get(aware.id).predatesSectionSwitches, undefined);
   assert.equal(listed.get('analyze-job-description').predatesSectionSwitches, undefined);
+  // The analysis record has a flag of its own: written before postings had a
+  // job field, it never asks for one from the list.
+  assert.equal(listed.get('analyze-job-description').predatesJobField, true);
+  assert.equal(listed.get('tailor-resume').predatesJobField, undefined);
 });
 
 /* -------------------------------------------- the backstop, through a seat */

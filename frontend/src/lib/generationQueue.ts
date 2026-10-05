@@ -5,7 +5,6 @@ import {
   getPreferredApiBase,
   getToken,
   type AiRequestOverrides,
-  type JobAnalysis,
 } from './api';
 import type { OrderFileKind } from './orders';
 import {
@@ -106,9 +105,26 @@ export type SubmitBatchRequest = AiRequestOverrides & {
     companyName: string;
     role?: string;
     jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
+    /** The posting's link: with the text, what identifies it to the store of analyses. */
+    jobLink?: string;
+    /**
+     * The posting's stored analysis, when the page holds it (from
+     * /resume/analyze or a preview). Never the analysis itself - the server
+     * builds only on analyses it stored. Left out, the server finds the
+     * posting's own, or its first task makes it - once, for every profile.
+     */
+    analysisId?: string;
     sourceRowNumber?: number;
   }>;
+  /**
+   * The sheet a sheet run's rows were read from - each job's `sourceRowNumber`
+   * is its row. The server reads those rows' Analysis cells itself, in one
+   * batched call, and a row that already holds its analysis skips analysis;
+   * a row without is written back once its posting is analysed. Only the
+   * account's own sheet (`spreadsheetId` left out) has those cells; an
+   * administrator's shared source is named by its id.
+   */
+  sheet?: { spreadsheetId?: string; tabName: string };
   tailoredContentByProfileId?: Record<string, unknown>;
   /**
    * Each preview's token, by profile id: the model that wrote that profile's

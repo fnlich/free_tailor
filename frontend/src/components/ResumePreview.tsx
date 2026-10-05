@@ -17,6 +17,8 @@ interface ResumePreviewProps {
   costNote?: ReactNode;
   /** The generate button's label. */
   generateLabel?: string;
+  /** Beside the title: what the posting's analysis says (components/AnalysisFacts). */
+  titleNote?: ReactNode;
 }
 
 export default function ResumePreview({
@@ -30,6 +32,7 @@ export default function ResumePreview({
   sidebar,
   costNote,
   generateLabel = 'Generate Resume',
+  titleNote,
 }: ResumePreviewProps) {
   if (!isOpen) return null;
 
@@ -44,6 +47,7 @@ export default function ResumePreview({
                 ATS OPTIMIZATION
               </Pill>
             )}
+            {titleNote}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {costNote}

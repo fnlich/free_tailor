@@ -1067,9 +1067,85 @@ export async function getAccessToken(scope: string): Promise<string> {
   return minted.token;
 }
 
+/**
+ * How a request Google answered with 429 is tried again: exponential backoff
+ * with jitter, capped, then given up on.
+ *
+ * Google's Sheets quota is per project AND per user, and every account of this
+ * install is the same "user" - the one server credential - so a reporter run,
+ * a filter and a few write-backs at once spend one shared per-minute budget.
+ * Google's own advice for a 429 is to wait with an exponentially growing,
+ * randomised delay, and a short wait almost always clears it. Its
+ * `Retry-After`, when it sends one, is honoured up to the cap.
+ *
+ * Constants rather than settings: nothing about an install changes what
+ * Google's quota windows are. Replaceable for the tests, which must not wait.
+ */
+export type SheetsRetryPolicy = {
+  /** Retries after the first attempt; 0 disables retrying. */
+  maxRetries: number;
+  /** The first wait, doubled each retry. */
+  baseDelayMs: number;
+  /** No single wait is longer than this. */
+  maxDelayMs: number;
+  sleep: (ms: number) => Promise<void>;
+  /** 0 <= random() < 1, for the jitter. */
+  random: () => number;
+};
+
+const DEFAULT_RETRY_POLICY: SheetsRetryPolicy = {
+  maxRetries: 5,
+  baseDelayMs: 1_000,
+  maxDelayMs: 32_000,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  random: () => Math.random(),
+};
+
+let retryPolicy: SheetsRetryPolicy = DEFAULT_RETRY_POLICY;
+
+/** Replaces the 429 policy; call with no argument to put the real one back. */
+export function setSheetsRetryPolicyForTests(next?: Partial<SheetsRetryPolicy>): void {
+  retryPolicy = next ? { ...DEFAULT_RETRY_POLICY, ...next } : DEFAULT_RETRY_POLICY;
+}
+
+/**
+ * The wait before retry number `attempt` (1-based): "full jitter" over an
+ * exponentially growing window, or Google's own Retry-After when it is longer,
+ * never past the cap.
+ */
+export function sheetsRetryDelayMs(attempt: number, retryAfterHeader: string | null, policy = retryPolicy): number {
+  const window = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1));
+  const jittered = Math.round(window / 2 + policy.random() * (window / 2));
+  const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
+  const asked = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 0;
+  return Math.min(policy.maxDelayMs, Math.max(jittered, asked));
+}
+
+/**
+ * One fetch, retried on 429 per the policy. Every Sheets and Drive call goes
+ * through this, so the backoff is the same wherever the quota runs out.
+ */
+async function fetchWithBackoff(url: string, init: RequestInit | undefined): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(url, init);
+    if (response.status !== 429 || attempt >= retryPolicy.maxRetries) return response;
+    const waitMs = sheetsRetryDelayMs(attempt + 1, response.headers.get('retry-after'));
+    console.warn(
+      `[sheets] Google answered 429 (quota) to ${describeOperation(
+        new URL(url).pathname.replace(/^\/(v4|drive\/v3)/, ''),
+        String(init?.method ?? 'GET')
+      )}; ` +
+        `retry ${attempt + 1} of ${retryPolicy.maxRetries} in ${waitMs}ms.`
+    );
+    // The body is not read; let it go before waiting.
+    await response.body?.cancel().catch(() => undefined);
+    await retryPolicy.sleep(waitMs);
+  }
+}
+
 async function googleSheetsFetch<T>(pathname: string, init?: RequestInit, hasRetried = false): Promise<T> {
   const accessToken = await getAccessToken(SHEETS_SCOPE);
-  const response = await fetch(`${SHEETS_API_BASE}${pathname}`, {
+  const response = await fetchWithBackoff(`${SHEETS_API_BASE}${pathname}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -1114,7 +1190,7 @@ async function readErrorBody(response: Response): Promise<GoogleApiStructuredErr
  */
 async function googleDriveFetch<T>(pathname: string, init?: RequestInit, hasRetried = false): Promise<T> {
   const accessToken = await getAccessToken(DRIVE_SCOPE);
-  const response = await fetch(`${DRIVE_API_BASE}${pathname}`, {
+  const response = await fetchWithBackoff(`${DRIVE_API_BASE}${pathname}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -1609,18 +1685,21 @@ export async function fetchGoogleSheetsColumnValues(
   };
 }
 
+/**
+ * Writes a few cells of one row, as the values they are (RAW).
+ *
+ * No metadata read first, unlike the helpers above: this runs once per row of
+ * a Job Filter run, and the read only asked whether the tab exists - which
+ * the write itself answers, with Google's own refusal. RAW rather than
+ * USER_ENTERED, so a value that happens to start with `=` is a value, never a
+ * formula.
+ */
 export async function updateGoogleSheetsRow(
   input: GoogleSheetsSingleRowUpdateRequest
 ): Promise<GoogleSheetsSingleRowUpdateResponse> {
   const sheetId = requireNonEmptyString('sheetId', input.sheetId);
-  const metadata = await getSpreadsheetMetadata(sheetId);
   const tabName = requireNonEmptyString('tabName', input.tabName);
   const row = toPositiveInteger('row', input.row);
-
-  const matchingTab = metadata.tabs.find((tab) => tab.title === tabName);
-  if (!matchingTab) {
-    throw new GoogleSheetsRequestError(400, `Tab "${tabName}" was not found in the spreadsheet.`);
-  }
 
   if (!Array.isArray(input.updates) || input.updates.length === 0) {
     throw new GoogleSheetsRequestError(400, 'updates must contain at least one cell update.');
@@ -1655,16 +1734,16 @@ export async function updateGoogleSheetsRow(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        valueInputOption: 'USER_ENTERED',
+        valueInputOption: 'RAW',
         data,
       }),
     }
   );
 
   return {
-    spreadsheetId: metadata.spreadsheetId,
-    spreadsheetTitle: metadata.spreadsheetTitle,
-    selectedTab: matchingTab.title,
+    spreadsheetId: sheetId,
+    spreadsheetTitle: '',
+    selectedTab: tabName,
     row,
     updatedRanges: updateResponse.responses?.map((entry) => entry.updatedRange ?? '').filter(Boolean) ?? data.map((entry) => entry.range),
     updatedColumns: updateResponse.totalUpdatedColumns ?? normalizedUpdates.length,
@@ -1682,6 +1761,16 @@ export async function updateGoogleSheetsRow(
  * exactly, lower-case `note` included - a header somebody later matches on by
  * string should match what they see.
  */
+/** The analysis columns, in order, after Filter Reason. Their order is part of the sheet's contract. */
+export const ANALYSIS_COLUMN_HEADERS = [
+  'Job Field',
+  'Salary',
+  'Job Hash',
+  'Analyzed At',
+  'Lake Status',
+  'Analysis',
+] as const;
+
 export const JOB_SHEET_HEADERS = [
   'NO(DATE)',
   'Company',
@@ -1697,6 +1786,13 @@ export const JOB_SHEET_HEADERS = [
   // else owns.
   'Filter Result',
   'Filter Reason',
+  // The job analysis's six (owner decision J5), written by the program alone:
+  // the protected range below covers exactly these, header included, and
+  // nobody but the server's own Google identity may edit them. Job Hash and
+  // Lake Status belong to the Job Data Lake and stay empty until it fills
+  // them. The Analysis cell is the whole analysis as JSON, which is what a
+  // later run reads back instead of asking a model again (PLAN check 1).
+  ...ANALYSIS_COLUMN_HEADERS,
 ] as const;
 
 function columnOf(header: (typeof JOB_SHEET_HEADERS)[number]): number {
@@ -1724,7 +1820,17 @@ export const JOB_SHEET_COLUMNS = {
   jobFinder: columnOf('Job Finder'),
   filterResult: columnOf('Filter Result'),
   filterReason: columnOf('Filter Reason'),
+  jobField: columnOf('Job Field'),
+  salary: columnOf('Salary'),
+  jobHash: columnOf('Job Hash'),
+  analyzedAt: columnOf('Analyzed At'),
+  lakeStatus: columnOf('Lake Status'),
+  analysis: columnOf('Analysis'),
 } as const;
+
+/** The first and last analysis column, 1-based: the protected block. */
+export const ANALYSIS_FIRST_COLUMN = JOB_SHEET_COLUMNS.jobField;
+export const ANALYSIS_LAST_COLUMN = JOB_SHEET_COLUMNS.analysis;
 
 /** Row 1 is the header, so data starts at 2. */
 export const JOB_SHEET_FIRST_DATA_ROW = 2;
@@ -1819,78 +1925,240 @@ const NEW_TAB_MIN_COLUMNS = 12;
  * carrying the widest content, so it is given a width outright.
  */
 const JOB_DESCRIPTION_WIDTH_PIXELS = 420;
+/** The Analysis cell holds a whole analysis as JSON; a width of its own keeps it from swallowing the row. */
+const ANALYSIS_WIDTH_PIXELS = 240;
+
+/**
+ * The text a protected range of ours carries, so a later check can tell it
+ * from one somebody else added. Never shown to anybody but whoever opens
+ * Data -> Protected sheets and ranges.
+ */
+export const ANALYSIS_PROTECTION_DESCRIPTION = 'Tailor analysis columns - written by the program only';
+
+/** A protected range as Google reports it, as far as this module reads it. */
+export type ProtectedRangeApi = {
+  protectedRangeId?: number;
+  description?: string;
+  warningOnly?: boolean;
+  range?: {
+    sheetId?: number;
+    startRowIndex?: number;
+    endRowIndex?: number;
+    startColumnIndex?: number;
+    endColumnIndex?: number;
+  };
+  editors?: { users?: string[]; groups?: string[]; domainUsersCanEdit?: boolean };
+};
+
+/**
+ * Whose Google identity the server is: the email a protected range must name
+ * as its only editor.
+ *
+ * A service account's is in its key file. An authorized user's (the account
+ * behind `npm run sheets:login`) is not, so Drive is asked once - `about` -
+ * and the answer kept for the life of the process, which is the life of the
+ * credential file as far as anything here is concerned.
+ */
+let cachedCredentialEmail: Promise<string> | null = null;
+
+export function getCredentialEmail(): Promise<string> {
+  if (!cachedCredentialEmail) {
+    cachedCredentialEmail = (async () => {
+      const credentials = await loadGoogleCredentials();
+      if (credentials.kind === 'service_account') return credentials.clientEmail.trim().toLowerCase();
+      const about = await driveAbout();
+      const email = about.user?.emailAddress?.trim().toLowerCase();
+      if (!email) {
+        throw new GoogleSheetsRequestError(502, "Google did not say which account this server's sign-in belongs to.");
+      }
+      return email;
+    })();
+    // A failure is not remembered: the next ask tries again.
+    cachedCredentialEmail.catch(() => {
+      cachedCredentialEmail = null;
+    });
+  }
+  return cachedCredentialEmail;
+}
+
+/** Forgets the identity, for a test that swaps the credential file. */
+export function resetCredentialEmailForTests(): void {
+  cachedCredentialEmail = null;
+}
+
+/**
+ * The protection over the analysis columns, as an add request: the six whole
+ * columns, header row included (no row bounds), refusing every editor but the
+ * server's own identity - not a warning, and not "anybody in the domain".
+ */
+export function analysisProtectionRange(gid: number, editorEmail: string): Required<Pick<ProtectedRangeApi, 'description' | 'warningOnly' | 'range' | 'editors'>> {
+  return {
+    description: ANALYSIS_PROTECTION_DESCRIPTION,
+    warningOnly: false,
+    range: { sheetId: gid, startColumnIndex: ANALYSIS_FIRST_COLUMN - 1, endColumnIndex: ANALYSIS_LAST_COLUMN },
+    editors: { users: [editorEmail], domainUsersCanEdit: false },
+  };
+}
+
+export type AnalysisProtectionState = 'intact' | 'missing' | 'altered';
+
+/**
+ * Whether the tab's analysis columns are protected as they must be, and the
+ * requests that make them so.
+ *
+ * Ours is found by its description or by covering exactly the six columns.
+ * It is INTACT only when it covers the six whole columns of this tab (no row
+ * bounds), is a real protection rather than a warning, and lists no editor
+ * but the server's identity - no other user, no group, not the domain. An
+ * altered one is put back with `updateProtectedRange`, a missing one added,
+ * and a duplicate of ours deleted, so exactly one remains.
+ */
+export function analysisProtectionRequests(
+  gid: number,
+  existing: ProtectedRangeApi[],
+  editorEmail: string
+): { state: AnalysisProtectionState; requests: Array<Record<string, unknown>> } {
+  const email = editorEmail.trim().toLowerCase();
+  const wanted = analysisProtectionRange(gid, email);
+  const coversColumns = (range: ProtectedRangeApi['range']) =>
+    Boolean(range) &&
+    range!.sheetId === gid &&
+    range!.startColumnIndex === wanted.range.startColumnIndex &&
+    range!.endColumnIndex === wanted.range.endColumnIndex;
+  const ours = existing.filter(
+    (entry) =>
+      (entry.range?.sheetId ?? gid) === gid &&
+      (entry.description === ANALYSIS_PROTECTION_DESCRIPTION || coversColumns(entry.range))
+  );
+
+  if (ours.length === 0) {
+    return { state: 'missing', requests: [{ addProtectedRange: { protectedRange: wanted } }] };
+  }
+
+  const [kept, ...extra] = ours;
+  const users = (kept.editors?.users ?? []).map((user) => user.trim().toLowerCase());
+  const intact =
+    coversColumns(kept.range) &&
+    kept.range?.startRowIndex === undefined &&
+    kept.range?.endRowIndex === undefined &&
+    kept.warningOnly !== true &&
+    kept.editors?.domainUsersCanEdit !== true &&
+    (kept.editors?.groups ?? []).length === 0 &&
+    users.length > 0 &&
+    users.every((user) => user === email);
+
+  const requests: Array<Record<string, unknown>> = extra
+    .filter((entry) => typeof entry.protectedRangeId === 'number')
+    .map((entry) => ({ deleteProtectedRange: { protectedRangeId: entry.protectedRangeId } }));
+  if (!intact) {
+    requests.unshift({
+      updateProtectedRange: {
+        protectedRange: { protectedRangeId: kept.protectedRangeId, ...wanted },
+        fields: 'range,description,warningOnly,editors',
+      },
+    });
+  }
+  return { state: intact && extra.length === 0 ? 'intact' : 'altered', requests };
+}
+
+/** The header row's own requests: the cells, the filter dropdown, the widths. */
+function headerFormatRequests(gid: number, headers: readonly string[]): Array<Record<string, unknown>> {
+  const descriptionIndex = headers.indexOf('Job Description');
+  const analysisIndex = headers.indexOf('Analysis');
+  const fixedWidth = (index: number, pixels: number) =>
+    index >= 0
+      ? [
+          {
+            updateDimensionProperties: {
+              range: { sheetId: gid, dimension: 'COLUMNS', startIndex: index, endIndex: index + 1 },
+              properties: { pixelSize: pixels },
+              fields: 'pixelSize',
+            },
+          },
+        ]
+      : [];
+  return [
+    {
+      updateCells: {
+        rows: [
+          {
+            values: headers.map((header) => ({
+              userEnteredValue: { stringValue: header },
+              userEnteredFormat: {
+                backgroundColor: HEADER_BACKGROUND,
+                textFormat: { bold: true, foregroundColor: HEADER_FOREGROUND },
+                verticalAlignment: 'MIDDLE',
+              },
+            })),
+          },
+        ],
+        fields: 'userEnteredValue,userEnteredFormat',
+        start: { sheetId: gid, rowIndex: 0, columnIndex: 0 },
+      },
+    },
+    {
+      // The dropdown on the header row. Bounded to the header's own columns
+      // so a filter does not claim the empty half of the grid.
+      setBasicFilter: {
+        filter: {
+          range: { sheetId: gid, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: headers.length },
+        },
+      },
+    },
+    {
+      autoResizeDimensions: {
+        dimensions: { sheetId: gid, dimension: 'COLUMNS', startIndex: 0, endIndex: headers.length },
+      },
+    },
+    // After the autofit, so it is not undone by it.
+    ...fixedWidth(descriptionIndex, JOB_DESCRIPTION_WIDTH_PIXELS),
+    ...fixedWidth(analysisIndex, ANALYSIS_WIDTH_PIXELS),
+  ];
+}
+
+/** Sends a spreadsheet `:batchUpdate`. Nothing is sent for no requests. */
+export async function batchUpdateSpreadsheet(
+  spreadsheetId: string,
+  requests: Array<Record<string, unknown>>
+): Promise<void> {
+  if (requests.length === 0) return;
+  await googleSheetsFetch(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests }),
+  });
+}
 
 /**
  * Lays out the header row on a tab that already exists.
  *
  * Separate from creating the tab because the two happen in different orders in
  * the two cases that matter: a brand new spreadsheet arrives with its first tab
- * already made, while a new day adds one. Both need the identical header.
+ * already made, while a new day adds one. Both need the identical header - and
+ * both are new tabs, so this is also where their analysis columns are first
+ * protected (`protect`, on by default). When the server's identity cannot be
+ * found, the tab is laid out unprotected and the next verify adds it; until
+ * then nothing in it is trusted (see `verifyJobSheetTab`).
  */
 export async function formatJobSheetTab(
   spreadsheetId: string,
   gid: number,
-  headers: readonly string[] = JOB_SHEET_HEADERS
+  headers: readonly string[] = JOB_SHEET_HEADERS,
+  options: { protect?: boolean } = {}
 ): Promise<void> {
-  const descriptionIndex = headers.indexOf('Job Description');
-
-  await googleSheetsFetch(`/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: [
-        {
-          updateCells: {
-            rows: [
-              {
-                values: headers.map((header) => ({
-                  userEnteredValue: { stringValue: header },
-                  userEnteredFormat: {
-                    backgroundColor: HEADER_BACKGROUND,
-                    textFormat: { bold: true, foregroundColor: HEADER_FOREGROUND },
-                    verticalAlignment: 'MIDDLE',
-                  },
-                })),
-              },
-            ],
-            fields: 'userEnteredValue,userEnteredFormat',
-            start: { sheetId: gid, rowIndex: 0, columnIndex: 0 },
-          },
-        },
-        {
-          // The dropdown on the header row. Bounded to the header's own columns
-          // so a filter does not claim the empty half of the grid.
-          setBasicFilter: {
-            filter: {
-              range: { sheetId: gid, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: headers.length },
-            },
-          },
-        },
-        {
-          autoResizeDimensions: {
-            dimensions: { sheetId: gid, dimension: 'COLUMNS', startIndex: 0, endIndex: headers.length },
-          },
-        },
-        // After the autofit, so it is not undone by it.
-        ...(descriptionIndex >= 0
-          ? [
-              {
-                updateDimensionProperties: {
-                  range: {
-                    sheetId: gid,
-                    dimension: 'COLUMNS',
-                    startIndex: descriptionIndex,
-                    endIndex: descriptionIndex + 1,
-                  },
-                  properties: { pixelSize: JOB_DESCRIPTION_WIDTH_PIXELS },
-                  fields: 'pixelSize',
-                },
-              },
-            ]
-          : []),
-      ],
-    }),
-  });
+  const requests = headerFormatRequests(gid, headers);
+  if (options.protect !== false && headers.length >= ANALYSIS_LAST_COLUMN) {
+    try {
+      requests.push({ addProtectedRange: { protectedRange: analysisProtectionRange(gid, await getCredentialEmail()) } });
+    } catch (error) {
+      console.warn(
+        `[sheets] Could not tell which Google account this server is, so the analysis columns of a new tab in ` +
+          `${spreadsheetId} are not protected yet; the next check of the tab adds it.`,
+        error
+      );
+    }
+  }
+  await batchUpdateSpreadsheet(spreadsheetId, requests);
 }
 
 /**
@@ -1910,29 +2178,208 @@ export function jobSheetHeaderIsCurrent(
 }
 
 /**
- * Writes the header only when the first row is not already it.
- *
- * Deliberately a read before a write: re-formatting on every sign-in would undo
- * a column somebody widened, and would spend a write call a day per account for
- * nothing.
+ * The headers every job tab this app ever laid out starts with - the eight the
+ * first build wrote, before the filter's two and the analysis's six were
+ * added after them. A tab whose row 1 starts with these is one of ours, of
+ * whichever age, and is brought up to date; a tab that does not is somebody's
+ * own, and is left exactly as it is.
  */
-async function formatJobSheetTabIfBlank(
-  spreadsheetId: string,
-  gid: number,
-  title: string,
-  headers: readonly string[]
-): Promise<void> {
-  const range = `${quoteSheetTitle(title)}!A1:${toColumnLetters(headers.length)}1`;
-  const current = await googleSheetsFetch<GoogleSheetsValuesResponse>(
-    `/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`
-  );
+const JOB_SHEET_HEADER_PREFIX = JOB_SHEET_HEADERS.slice(0, JOB_SHEET_COLUMNS.jobFinder);
 
-  if (jobSheetHeaderIsCurrent(current.values?.[0] ?? [], headers)) return;
+/** The `MM/DD/YYYY` title of a day's tab, as the account sheet allocates them. */
+const DATED_TAB_TITLE = /^\d{2}\/\d{2}\/\d{4}$/;
 
-  await formatJobSheetTab(spreadsheetId, gid, headers);
+/**
+ * Whether a tab is a job tab this app laid out - and so one it may widen,
+ * re-header and protect. Its row 1 starts with the job sheet's first eight
+ * headers (a tab of any build's), or it is a day's tab whose row 1 is still
+ * empty: an allocation that died between adding the tab and laying it out.
+ *
+ * Anything else is a tab the person made for themselves - sheet mode reads any
+ * tab, through a column mapping of its own - whose row 1 is their header and
+ * whose columns K to P are theirs.
+ */
+export function isJobSheetTab(tab: Pick<JobSheetTabInspection, 'title' | 'headerRow'>): boolean {
+  if (JOB_SHEET_HEADER_PREFIX.every((header, index) => String(tab.headerRow[index] ?? '').trim() === header)) return true;
+  return DATED_TAB_TITLE.test(tab.title) && tab.headerRow.every((cell) => String(cell ?? '').trim() === '');
 }
 
-export type EnsuredTab = { gid: number; created: boolean };
+/** What one read of a tab says about it: enough to verify it without reading it again. */
+export type JobSheetTabInspection = {
+  gid: number;
+  title: string;
+  columnCount: number;
+  /** The grid's rows, when Google said. */
+  rowCount?: number;
+  headerRow: string[];
+  protectedRanges: ProtectedRangeApi[];
+};
+
+/**
+ * One GET for everything a verify needs: the tab's id and grid size, its
+ * protected ranges, and its first row. The row is asked for as `1:1`, which
+ * never runs past the grid - `A1:P1` would, on a tab an older build made
+ * twelve columns wide, and Google refuses that read outright.
+ */
+export async function inspectJobSheetTab(spreadsheetId: string, title: string): Promise<JobSheetTabInspection> {
+  const fields =
+    'sheets(properties(sheetId,title,gridProperties(columnCount,rowCount)),' +
+    'protectedRanges(protectedRangeId,description,warningOnly,range,editors(users,groups,domainUsersCanEdit)),' +
+    'data(rowData(values(formattedValue))))';
+  const response = await googleSheetsFetch<{
+    sheets?: Array<{
+      properties?: { sheetId?: number; title?: string; gridProperties?: { columnCount?: number; rowCount?: number } };
+      protectedRanges?: ProtectedRangeApi[];
+      data?: Array<{ rowData?: Array<{ values?: Array<{ formattedValue?: string }> }> }>;
+    }>;
+  }>(
+    `/spreadsheets/${encodeURIComponent(spreadsheetId)}?includeGridData=true&ranges=${encodeURIComponent(
+      `${quoteSheetTitle(title)}!1:1`
+    )}&fields=${encodeURIComponent(fields)}`
+  );
+  const sheet = response.sheets?.find((entry) => entry.properties?.title === title) ?? response.sheets?.[0];
+  const gid = sheet?.properties?.sheetId;
+  if (!sheet || typeof gid !== 'number') {
+    throw new GoogleSheetsRequestError(400, `Tab "${title}" was not found in the spreadsheet.`);
+  }
+  return {
+    gid,
+    title: sheet.properties?.title ?? title,
+    columnCount: sheet.properties?.gridProperties?.columnCount ?? 0,
+    ...(typeof sheet.properties?.gridProperties?.rowCount === 'number'
+      ? { rowCount: sheet.properties.gridProperties.rowCount }
+      : {}),
+    headerRow: (sheet.data?.[0]?.rowData?.[0]?.values ?? []).map((cell) => cell.formattedValue ?? ''),
+    protectedRanges: sheet.protectedRanges ?? [],
+  };
+}
+
+/**
+ * What a verify found and did. `protection` is the state the protection was
+ * FOUND in - `intact`, or `missing` / `altered` and put back in this call -
+ * or `unconfirmed` when the server's identity could not be learned and
+ * nothing could be checked or repaired, or the tab is not a job tab at all.
+ *
+ * A protection that had to be put back left a window in which anybody with
+ * the link could have typed into the Analysis column, so the same call that
+ * restores it CLEARS that column's data rows (`analysisClearRequest`): an
+ * Analysis cell in a tab whose protection was later found intact was
+ * therefore written while the protection stood - by the program. Only
+ * `intact` lets the cells already in the tab be trusted in this run.
+ *
+ * `jobTab` is false for a tab the app never laid out (`isJobSheetTab`), which
+ * a verify asked to touch only job tabs leaves exactly as it was found.
+ */
+export type VerifiedJobSheetTab = {
+  gid: number;
+  protection: AnalysisProtectionState | 'unconfirmed';
+  grewColumns: boolean;
+  wroteHeader: boolean;
+  jobTab: boolean;
+};
+
+/**
+ * Empties the Analysis column below the header - the one analysis cell a build
+ * trusts. Only it: Job Field to Lake Status are never read back as an
+ * analysis, and on a tab an older build made, the first two of them were spare
+ * columns that may hold the person's own notes. Nothing is lost - every
+ * analysis is in the database, and its row is written again on its next run.
+ */
+export function analysisClearRequest(gid: number): Record<string, unknown> {
+  return {
+    updateCells: {
+      range: {
+        sheetId: gid,
+        startRowIndex: JOB_SHEET_FIRST_DATA_ROW - 1,
+        startColumnIndex: ANALYSIS_LAST_COLUMN - 1,
+        endColumnIndex: ANALYSIS_LAST_COLUMN,
+      },
+      fields: 'userEnteredValue',
+    },
+  };
+}
+
+/**
+ * Makes an existing tab what this build expects, in at most two calls: one
+ * read (`inspectJobSheetTab`), then one `:batchUpdate` that grows the grid to
+ * hold every header (`appendDimension` - never a column count set outright,
+ * which would delete columns somebody added past ours), rewrites a stale or
+ * missing header, and puts the analysis protection back - clearing the
+ * Analysis column in the same, atomic, call when it does. Every repair of the
+ * protection is logged.
+ *
+ * `onlyJobTabs` is for a tab the person chose rather than one the app
+ * allocated: a tab that is not a job tab is not touched at all.
+ */
+export async function verifyJobSheetTab(
+  spreadsheetId: string,
+  title: string,
+  headers: readonly string[] = JOB_SHEET_HEADERS,
+  known?: JobSheetTabInspection,
+  options: { onlyJobTabs?: boolean } = {}
+): Promise<VerifiedJobSheetTab> {
+  const tab = known ?? (await inspectJobSheetTab(spreadsheetId, title));
+  if (options.onlyJobTabs && !isJobSheetTab(tab)) {
+    return { gid: tab.gid, protection: 'unconfirmed', grewColumns: false, wroteHeader: false, jobTab: false };
+  }
+  const requests: Array<Record<string, unknown>> = [];
+
+  const grewColumns = tab.columnCount < headers.length;
+  if (grewColumns) {
+    requests.push({
+      appendDimension: { sheetId: tab.gid, dimension: 'COLUMNS', length: headers.length - tab.columnCount },
+    });
+  }
+  const wroteHeader = !jobSheetHeaderIsCurrent(tab.headerRow, headers);
+  if (wroteHeader) requests.push(...headerFormatRequests(tab.gid, headers));
+
+  let protection: VerifiedJobSheetTab['protection'] = 'unconfirmed';
+  if (headers.length >= ANALYSIS_LAST_COLUMN) {
+    try {
+      const email = await getCredentialEmail();
+      const check = analysisProtectionRequests(tab.gid, tab.protectedRanges, email);
+      protection = check.state;
+      if (check.state !== 'intact') {
+        // After the grid is grown (the column may not exist before), and in
+        // the same call as the protection, so no cell can be typed in between.
+        if (tab.rowCount === undefined || tab.rowCount >= JOB_SHEET_FIRST_DATA_ROW) {
+          requests.push(analysisClearRequest(tab.gid));
+        }
+        console.warn(
+          `[sheets] The analysis columns of "${title}" in ${spreadsheetId} were ${
+            check.state === 'missing' ? 'not protected' : 'protected wrongly (other editors, a warning only, or the wrong columns)'
+          }; restoring the protection so only ${email} can edit them, and clearing the Analysis cells somebody else ` +
+            'could have written meanwhile. Their rows are written again from the database on their next run.'
+        );
+      }
+      requests.push(...check.requests);
+    } catch (error) {
+      console.warn(
+        `[sheets] Could not check the protection of the analysis columns of "${title}" in ${spreadsheetId}; ` +
+          'its analysis cells are not trusted in this run.',
+        error
+      );
+    }
+  }
+
+  await batchUpdateSpreadsheet(spreadsheetId, requests);
+  return { gid: tab.gid, protection, grewColumns, wroteHeader, jobTab: true };
+}
+
+/**
+ * Whether the tab's protection could be trusted when THIS verify found it:
+ * only an intact one. Exported for the readers of analysis cells.
+ */
+export function protectionTrusted(verified: Pick<VerifiedJobSheetTab, 'protection'>): boolean {
+  return verified.protection === 'intact';
+}
+
+export type EnsuredTab = {
+  gid: number;
+  created: boolean;
+  /** What the protection of its analysis columns was found as; see VerifiedJobSheetTab. */
+  protection?: VerifiedJobSheetTab['protection'] | 'added';
+};
 
 /**
  * Adds a dated tab and lays out its header, or reports the one already there.
@@ -1951,10 +2398,11 @@ export async function addSheetTabWithHeaders(
     // Existing is not the same as finished. If a previous attempt created the
     // tab and then failed before laying out the header - a 429 between the two
     // calls is enough - nothing would ever write one, because every later
-    // attempt sees the tab and stops here. So the header is checked, and
-    // written when it is missing.
-    await formatJobSheetTabIfBlank(spreadsheetId, already.gid, title, headers);
-    return { gid: already.gid, created: false };
+    // attempt sees the tab and stops here. So the tab is verified: its header,
+    // its width, and the protection of its analysis columns, which is checked
+    // again on every verifying ensure and put back if anybody took it off.
+    const verified = await verifyJobSheetTab(spreadsheetId, title, headers);
+    return { gid: verified.gid, created: false, protection: verified.protection };
   }
 
   const added = await googleSheetsFetch<{
@@ -1986,7 +2434,63 @@ export async function addSheetTabWithHeaders(
   }
 
   await formatJobSheetTab(spreadsheetId, gid, headers);
-  return { gid, created: true };
+  return { gid, created: true, protection: 'added' };
+}
+
+/* ------------------------------------------------------ batched values -- */
+
+/**
+ * Reads several A1 ranges in ONE call (`values:batchGetByDataFilter`, a POST,
+ * so a long list of ranges never runs into a URL length limit). Answers one
+ * grid per range, in the order asked, each padded with nothing: a trailing
+ * empty row or cell Google leaves out reads as missing, and callers read
+ * missing as ''.
+ */
+export async function batchGetValues(spreadsheetId: string, ranges: string[]): Promise<string[][][]> {
+  if (ranges.length === 0) return [];
+  const response = await googleSheetsFetch<{
+    valueRanges?: Array<{ valueRange?: { values?: unknown[][] } }>;
+  }>(`/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dataFilters: ranges.map((a1Range) => ({ a1Range })),
+      majorDimension: 'ROWS',
+      valueRenderOption: 'FORMATTED_VALUE',
+    }),
+  });
+  return ranges.map((_, index) =>
+    (response.valueRanges?.[index]?.valueRange?.values ?? []).map((row) =>
+      (row ?? []).map((cell) => (cell === null || cell === undefined ? '' : String(cell)))
+    )
+  );
+}
+
+/**
+ * Writes several ranges in ONE call, every value RAW - stored as the text or
+ * number it is, never parsed as a formula, which is what analysis data must
+ * be: a company name or a posting's words starting with `=` stay words. A
+ * `null` in a row leaves that cell as it was (Google skips nulls), so a write
+ * can fill four cells of a six-cell block without touching the other two.
+ */
+export async function batchUpdateValuesRaw(
+  spreadsheetId: string,
+  data: Array<{ range: string; values: Array<Array<string | number | null>> }>
+): Promise<void> {
+  if (data.length === 0) return;
+  await googleSheetsFetch(`/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      valueInputOption: 'RAW',
+      data: data.map((entry) => ({ range: entry.range, majorDimension: 'ROWS', values: entry.values })),
+    }),
+  });
+}
+
+/** A1 notation for a block of a tab, the title quoted as Google wants it. */
+export function a1Range(tabName: string, fromRow: number, toRow: number, fromCol: number, toCol: number): string {
+  return buildA1Notation(tabName, fromRow, toRow, fromCol, toCol);
 }
 
 /* ------------------------------------------------------------- permissions -- */

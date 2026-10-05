@@ -78,7 +78,6 @@ export type TechnicalSkillsLayout = 'categorized' | 'flat';
 
 export interface ProfileSettings {
   resumePromptId?: string;
-  analyzeJobPromptId?: string;
   coverLetterPromptId?: string;
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;

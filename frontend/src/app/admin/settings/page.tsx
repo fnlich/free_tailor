@@ -40,9 +40,11 @@ type SettingsFormState = {
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
   outputPathTemplate: string;
+  /** '' = the app default model. */
+  analysisModelId: string;
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults';
+type SaveSection = 'output' | 'providers' | 'defaults' | 'analysis';
 
 function buildPathPreview(template: string): string {
   const normalized = (template || '').trim() || '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
@@ -218,6 +220,7 @@ function toFormState(settings: AdminAppSettings): SettingsFormState {
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
+    analysisModelId: settings.analysisModelId,
   };
 }
 
@@ -238,6 +241,13 @@ function mergeSavedSection(
     return {
       ...current,
       providersEnabled: { ...updated.providersEnabled },
+    };
+  }
+
+  if (section === 'analysis') {
+    return {
+      ...current,
+      analysisModelId: updated.analysisModelId,
     };
   }
 
@@ -430,6 +440,11 @@ function AdminSettingsPageBody() {
     );
   };
 
+  const handleSaveAnalysisModel = async () => {
+    if (!form) return;
+    await saveSection('analysis', { analysisModelId: form.analysisModelId }, 'Analysis model saved.');
+  };
+
   if (isLoading) {
     return <Spinner />;
   }
@@ -463,6 +478,19 @@ function AdminSettingsPageBody() {
     (model) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled)
   );
   const outputPathPreview = buildPathPreview(form.outputPathTemplate);
+  /*
+   * The analysis model as the server resolves it (`resolveAnalysisModel`): the
+   * chosen one while it can run, else the app default. A stored choice that
+   * stopped running - switched off, its provider off or locked - stays in the
+   * select, named for what it is, rather than the select silently showing
+   * another model than the one saved.
+   */
+  const defaultModelName = settings.aiModels.find((model) => model.id === settings.defaultModelId)?.name ?? '';
+  const chosenAnalysisModel = form.analysisModelId
+    ? settings.aiModels.find((model) => model.id === form.analysisModelId) ?? null
+    : null;
+  const analysisModelStale =
+    Boolean(form.analysisModelId) && !availableDefaultModels.some((model) => model.id === form.analysisModelId);
   /* One card per seat this installation could run. Keyed on the LOCK, not on
      the enabled tick: a seat an admin has unticked is exactly the one whose
      readiness they want to read while deciding whether to tick it back on,
@@ -476,7 +504,8 @@ function AdminSettingsPageBody() {
       <header>
         <h2 className="text-2xl font-bold tracking-tight text-ink">General</h2>
         <p className="mt-1 text-sm text-muted">
-          Configure builder defaults, enabled providers, output storage, and how people contact you.
+          Configure builder defaults, enabled providers, output storage, the job analysis model, and how people
+          contact you.
         </p>
       </header>
 
@@ -856,6 +885,57 @@ function AdminSettingsPageBody() {
             className="tl-button"
           >
             {savingSection === 'defaults' ? 'Saving...' : 'Save Builder Defaults'}
+          </button>
+        </div>
+      </Section>
+
+      <Section
+        title="Job Analysis"
+        description="Each job posting is analysed once, by this model, and never again: every profile, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way."
+      >
+        <Field
+          label="Analysis model"
+          htmlFor="analysis-model"
+          hint="Changing it changes how postings never analysed before are read. Stored analyses are kept as they are; nothing is analysed again."
+        >
+          <div className="max-w-xl">
+            <select
+              id="analysis-model"
+              value={form.analysisModelId}
+              onChange={(e) => setField('analysisModelId', e.target.value)}
+              disabled={savingSection === 'analysis'}
+              className="tl-input"
+            >
+              <option value="">{defaultModelName ? `App default model (${defaultModelName})` : 'App default model'}</option>
+              {analysisModelStale && (
+                <option value={form.analysisModelId}>
+                  {chosenAnalysisModel ? `${chosenAnalysisModel.name} (cannot run here)` : `Saved model (${form.analysisModelId})`}
+                </option>
+              )}
+              {availableDefaultModels.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {`${model.name} (${getAIProviderLabel(model.provider)})`}
+                </option>
+              ))}
+            </select>
+          </div>
+          {analysisModelStale && (
+            <Notice tone="warn" className="mt-3">
+              {chosenAnalysisModel ? `"${chosenAnalysisModel.name}"` : 'The saved analysis model'} cannot run here - it
+              is switched off, or its provider is switched off or locked - so postings are analysed on the app
+              default model until it can, or another is chosen.
+            </Notice>
+          )}
+        </Field>
+
+        <div>
+          <button
+            type="button"
+            onClick={handleSaveAnalysisModel}
+            disabled={savingSection !== null && savingSection !== 'analysis'}
+            className="tl-button"
+          >
+            {savingSection === 'analysis' ? 'Saving...' : 'Save Analysis Model'}
           </button>
         </div>
       </Section>

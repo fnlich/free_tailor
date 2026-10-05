@@ -98,7 +98,44 @@ export interface JobAnalysis {
     buzzwords: string[];
     mustInclude: string[];
   };
+  /**
+   * The posting's one job field: a config/jobFields.ts id, or `unclassified`
+   * when none fits (owner decision J3). Checked against the list in code, so
+   * this is never a value the model made up.
+   */
+  jobField: string;
+  /** What the posting STATES it pays; null when it states nothing. Never inferred. */
+  salary: JobSalary | null;
+  /**
+   * The facts the Job Filter judges a posting on, read by the same one
+   * analysis (owner decision J8: the filter makes no AI read of its own).
+   * Seniority is `jobMeta.seniority`. Each value is one of the words the
+   * analysis prompt offers, or `not_specified`.
+   */
+  filter: JobFilterFacts;
   sourceJobDescription?: string;
+}
+
+export type JobSalaryPeriod = 'annual' | 'monthly' | 'weekly' | 'daily' | 'hourly';
+
+export interface JobSalary {
+  /** As stated, in `currency` per `period`; null when the posting gives no such bound. */
+  min: number | null;
+  max: number | null;
+  /** ISO 4217, upper case (`USD`), or null when the posting names none. */
+  currency: string | null;
+  period: JobSalaryPeriod | null;
+  /** The posting's own words for it, cut to 200 characters. */
+  raw: string | null;
+}
+
+export interface JobFilterFacts {
+  jobType: string;
+  onsiteInterview: string;
+  companyCategory: string;
+  clearanceRequired: string;
+  region: string;
+  usState: string;
 }
 
 /**
@@ -148,7 +185,10 @@ export type RawNestedJobAnalysis = Partial<JobAnalysis> & {
     actionVerbs?: unknown,
     buzzwords?: unknown,
     mustInclude?: unknown
-  }
+  };
+  jobField?: unknown;
+  salary?: unknown;
+  filter?: unknown;
 };
 
 export interface TailoredContent {
@@ -200,7 +240,14 @@ export interface GenerateResumeRequest {
   profileId: string;
   templateId: string;
   jobDescription?: string;
-  jobAnalysis?: JobAnalysis;
+  /** The posting's link, which identifies it for the one-analysis rule beside its text. */
+  jobLink?: string;
+  /**
+   * A stored analysis the page already holds (`/resume/analyze` answered
+   * it). The server reads it from the store by id; an analysis OBJECT a
+   * client sends is never read.
+   */
+  analysisId?: string;
   tailoredContent?: TailoredContent;
   /** An AI model record id; overrides the profile's own for this run. */
   model?: string;

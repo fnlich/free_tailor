@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
+// Pure functions only: the filter's verdict is code over a job analysis.
 
 const jobFilter = require('../dist/services/jobFilter');
 const {
@@ -145,24 +145,85 @@ test('evaluateJobFilterAnalysis fails later conditions when earlier ones pass', 
   );
 });
 
-test('buildJobFilterPrompt renders the managed prompt with jobContent and legacy jobDescription support', async () => {
-  const { staticDir } = useTempStorage('job-filter-prompt');
-  writeStaticJson(staticDir, 'prompts/filter-google-sheet-job.json', {
-    id: 'filter-google-sheet-job',
-    content: 'Analyze [[jobContent]] from [[jobLink]] and legacy [[jobDescription]].',
-    createdAt: '2026-05-02T00:00:00.000Z',
-    updatedAt: '2026-05-02T00:00:00.000Z',
-    allowedVariables: [
-      { name: 'jobContent' },
-      { name: 'jobLink' },
-      { name: 'jobDescription' },
-    ],
+test('the filter judges the facts the job analysis read, with no prompt of its own', () => {
+  // Owner decision J8: the filter's own AI read is gone. The one analysis of
+  // a posting asks for the same facts, and the verdict is code over them.
+  const analysis = {
+    jobMeta: { title: 'Senior Engineer', seniority: 'senior', industry: '', department: '' },
+    salary: { min: 180000, max: 220000, currency: 'USD', period: 'annual', raw: null },
+    filter: {
+      jobType: 'remote',
+      onsiteInterview: 'no',
+      companyCategory: 'saas',
+      clearanceRequired: 'none',
+      region: 'us',
+      usState: '',
+    },
+  };
+  const facts = jobFilter.jobFilterAnalysisOf(analysis);
+  assert.deepEqual(facts, {
+    jobType: 'remote',
+    onsiteInterview: 'no',
+    companyCategory: 'saas',
+    seniority: 'senior',
+    clearanceRequired: 'none',
+    salary: 'USD 180,000 - 220,000 / annual',
+    region: 'us',
+    usState: '',
   });
+  assert.deepEqual(jobFilter.evaluateJobFilterAnalysis(facts), { result: 'Pass', reason: null });
 
-  loadFresh('../dist/services/promptService');
-  const { buildJobFilterPrompt } = loadFresh('../dist/services/jobFilter');
-  assert.equal(
-    await buildJobFilterPrompt('Remote role in the US.', 'https://jobs.example.com/1'),
-    'Analyze Remote role in the US. from https://jobs.example.com/1 and legacy Remote role in the US..'
-  );
+  // Seniority is the analysis's jobMeta.seniority, which the filter's rules read.
+  const lead = jobFilter.jobFilterAnalysisOf({ ...analysis, jobMeta: { ...analysis.jobMeta, seniority: 'lead' } });
+  assert.deepEqual(jobFilter.evaluateJobFilterAnalysis(lead), { result: 'Fail', reason: 'lead' });
+
+  // An older analysis with no filter facts is judged on none, like a page
+  // with nothing on it: not passed by default.
+  const bare = jobFilter.jobFilterAnalysisOf({ jobMeta: { title: '', seniority: '' } });
+  assert.equal(jobFilter.evaluateJobFilterAnalysis(bare).result, 'Fail');
+
+  assert.equal(jobFilter.buildJobFilterPrompt, undefined, 'the filter prompt is retired');
+  assert.equal(jobFilter.evaluateJobContentAgainstFilter, undefined, 'and so is its own model call');
+});
+
+test('a model answer judged through the job analysis keeps the old verdicts: an unknown clearance fails, as it did', () => {
+  const { normalizeJobAnalysisResponse } = require('../dist/services/resumeService');
+  // answer -> the analysis's normaliser -> the facts the filter reads -> the verdict.
+  const verdict = (filter, seniority = 'senior') =>
+    evaluateJobFilterAnalysis(
+      jobFilter.jobFilterAnalysisOf(
+        normalizeJobAnalysisResponse(
+          {
+            jobMeta: { title: 'Engineer', seniority, industry: '', department: '' },
+            jobField: 'backend',
+            filter: { jobType: 'remote', onsiteInterview: 'no', companyCategory: 'saas', region: 'us', ...filter },
+          },
+          'A posting.'
+        )
+      )
+    );
+
+  for (const clearance of ['TS/SCI', 'Top Secret/SCI', 'TS-SCI', 'top secret', 'secret', 'required', 'yes', 'DoD Secret', 'Secret clearance', true, 42]) {
+    assert.deepEqual(verdict({ clearanceRequired: clearance }), { result: 'Fail', reason: 'clearance_required' }, String(clearance));
+  }
+  for (const clearance of ['none', 'not_specified', 'Not specified', '', null, false]) {
+    assert.deepEqual(verdict({ clearanceRequired: clearance }), { result: 'Pass', reason: null }, String(clearance));
+  }
+  // Left out, as the prompt defines it: "no mention at all" is none.
+  assert.deepEqual(verdict({}), { result: 'Pass', reason: null });
+  // "TS/SCI" is the list's own word once its slash is folded.
+  const { normalizeFilterFacts } = require('../dist/services/jobAnalysis/facts');
+  assert.equal(normalizeFilterFacts({ clearanceRequired: 'TS/SCI' }).clearanceRequired, 'ts_sci');
+  assert.equal(normalizeFilterFacts({ clearanceRequired: 'Top Secret/SCI' }).clearanceRequired, 'ts_sci');
+
+  // Job types spelled another way: on site fails as on_site, fully remote is remote.
+  assert.deepEqual(verdict({ jobType: 'onsite', clearanceRequired: 'none' }), { result: 'Fail', reason: 'on_site' });
+  assert.deepEqual(verdict({ jobType: 'Fully Remote', clearanceRequired: 'none' }), { result: 'Pass', reason: null });
+  assert.deepEqual(verdict({ jobType: 'Remote (US)', clearanceRequired: 'none' }), { result: 'Fail', reason: 'job_type_not_specified' });
+
+  // The two answers the old filter's tests read, through the new path: still Fail.
+  assert.equal(verdict({ jobType: 'full-time', companyCategory: 'healthcare', clearanceRequired: 'no' }).result, 'Fail');
+  assert.equal(verdict({ jobType: 'contract', onsiteInterview: false, companyCategory: 'defense', clearanceRequired: true }, 'staff').result, 'Fail');
+  // And a VP is judged on the analysis's seniority.
+  assert.deepEqual(verdict({ clearanceRequired: 'none' }, 'vp'), { result: 'Fail', reason: 'vp' });
 });

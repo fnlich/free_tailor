@@ -81,7 +81,6 @@ export function readCodexCliConfig(): CodexCliConfig {
     defaultTimeoutMs,
     timeoutMsByCallSite: {
       'tailor-resume': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_TAILOR'),
-      'filter-google-sheet-job': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_FILTER'),
     },
     workdir: flag('AI_CODEX_WORKDIR') || defaultWorkdir(),
     maxOutputBytes: intFlag('AI_CODEX_MAX_OUTPUT_BYTES', 8_000_000, 100_000, 64_000_000),

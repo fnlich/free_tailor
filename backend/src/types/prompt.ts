@@ -7,8 +7,7 @@ export type PromptFeatureKey =
   | 'tailor-resume'
   | 'generate-cover-letter'
   | 'extract-template-from-pdf'
-  | 'extract-profile-from-resume'
-  | 'filter-google-sheet-job';
+  | 'extract-profile-from-resume';
 
 export interface PromptVariableDefinition {
   name: string;
@@ -52,6 +51,13 @@ export interface PromptSummary {
    * switches for it anyway.
    */
   predatesSectionSwitches?: boolean;
+  /**
+   * Present (true) only on the analysis record whose text never mentions
+   * `[[jobFieldList]]`: written before a posting had a job field. Admin ->
+   * Prompts says so; the analysis appends the job field, salary and filter
+   * instructions to every turn it runs for such a record.
+   */
+  predatesJobField?: boolean;
   isBuiltIn: boolean;
   isActiveForFeature?: boolean;
   usage?: string;

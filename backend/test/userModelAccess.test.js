@@ -274,16 +274,19 @@ test('over HTTP, a refused model is a 400 with the generic sentence; only an adm
     await config.updateAIModel('claude-cli-haiku', { enabled: false });
     const jobDescription = 'A job description long enough to be analysed by the model. '.repeat(2);
 
-    const user = await server.call('alice', 'POST', '/resume/analyze', { jobDescription, model: 'claude-cli-haiku' });
+    // On a route that runs the request's model. /resume/analyze is not one any
+    // more: every posting is analysed on the administrator's analysis model,
+    // and a `model` sent to it is not read.
+    const user = await server.call('alice', 'POST', '/resume/preview-all', { jobDescription, model: 'claude-cli-haiku' });
     assert.equal(user.status, 400);
     assertModelUnavailable(user.body);
 
-    const form = await server.call('alice', 'POST', '/resume/analyze', { jobDescription, model: 'claude-cli' });
+    const form = await server.call('alice', 'POST', '/resume/preview-all', { jobDescription, model: 'claude-cli' });
     assert.equal(form.status, 400);
     assert.equal(form.body.code, 'model-unavailable');
     assert.equal('detail' in form.body, false);
 
-    const admin = await server.call('admin', 'POST', '/resume/analyze', { jobDescription, model: 'claude-cli-haiku' });
+    const admin = await server.call('admin', 'POST', '/resume/preview-all', { jobDescription, model: 'claude-cli-haiku' });
     assert.equal(admin.status, 400);
     assert.equal(admin.body.error, GENERIC);
     assert.match(admin.body.detail, /"Claude Haiku" is disabled/);
@@ -382,72 +385,23 @@ const stubAdapter = (id, calls, text = '{"ok":true}') => () => ({
   },
 });
 
-function filterPrompt(staticDir, override = {}) {
-  writeStaticJson(staticDir, 'prompts/filter-google-sheet-job.json', {
-    id: 'filter-google-sheet-job',
-    content: 'Judge [[jobContent]] from [[jobLink]].',
-    createdAt: '2026-05-02T00:00:00.000Z',
-    updatedAt: '2026-05-02T00:00:00.000Z',
-    allowedVariables: [{ name: 'jobContent' }, { name: 'jobLink' }, { name: 'jobDescription' }],
-    ...override,
-  });
-}
-
-test('the job filter runs on the app default model, and is reported by its display name', async () => {
-  const { staticDir } = useTempStorage('user-model-access-filter');
+test('the job filter names the analysis model, by its display name, and makes no model call of its own', async () => {
+  // The filter judges each posting's ONE analysis (owner decision J8), which
+  // the analysis model makes: the app default until Admin -> Settings names
+  // another, and always a record with a display name.
+  useTempStorage('user-model-access-filter');
   config.invalidateSettingsCache();
-  filterPrompt(staticDir);
   const jobFilter = require('../dist/services/jobFilter');
 
-  assert.deepEqual(await jobFilter.resolveJobFilterModel(), {
-    provider: 'claude-cli',
-    modelName: 'sonnet',
-    modelLabel: 'Claude Sonnet',
-  });
+  assert.deepEqual(await jobFilter.describeJobFilterModel(), { modelLabel: 'Claude Sonnet' });
 
-  // An administrator's own model as the default: that is what every row runs on.
   const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna', pricePerResumeUsd: '0.010' });
   const luna = created.aiModels.find((model) => model.modelName === 'gpt-6-luna');
-  await config.updateAppSettings({ defaultModelId: luna.id });
-  const model = await jobFilter.resolveJobFilterModel();
-  assert.deepEqual(model, { provider: 'codex-cli', modelName: 'gpt-6-luna', modelLabel: 'Luna' });
+  await config.updateAppSettings({ analysisModelId: luna.id });
+  assert.deepEqual(await jobFilter.describeJobFilterModel(), { modelLabel: 'Luna' });
 
-  const ai = require('../dist/services/ai/index');
-  ai.resetRegistryForTests();
-  const calls = [];
-  ai.registerAdapter('codex-cli', stubAdapter('codex-cli', calls, '{"job_type":"remote"}'));
-  const analysis = await jobFilter.evaluateJobContentAgainstFilter({
-    jobContent: 'A remote engineering role based in the United States, paying well. '.repeat(2),
-    jobLink: 'https://jobs.example.com/1',
-    provider: model.provider,
-    modelName: model.modelName,
-  });
-  assert.equal(analysis.jobType, 'remote');
-  assert.deepEqual(calls, [{ provider: 'codex-cli', modelName: 'gpt-6-luna' }]);
-  ai.resetRegistryForTests();
-});
-
-test("a filter prompt's own override wins, and is named by its record - or, to anybody but an admin, by no model name at all", async () => {
-  const { staticDir } = useTempStorage('user-model-access-filter-override');
-  config.invalidateSettingsCache();
-  filterPrompt(staticDir, { modelProvider: 'codex-cli', modelName: 'gpt-6-sol' });
-  const jobFilter = require('../dist/services/jobFilter');
-
-  // No record names codex-cli/gpt-6-sol, so there is no display name. The CLI
-  // option's label is a model name, and goes to administrators only.
-  assert.deepEqual(await jobFilter.resolveJobFilterModel(), {
-    provider: 'codex-cli',
-    modelName: 'gpt-6-sol',
-    modelLabel: 'Chosen by your administrator',
-    adminModelLabel: 'GPT-6-Sol',
-  });
-
-  await config.createAIModel({ name: 'Sol', provider: 'codex-cli', modelName: 'gpt-6-sol', pricePerResumeUsd: '0.010' });
-  assert.deepEqual(await jobFilter.resolveJobFilterModel(), {
-    provider: 'codex-cli',
-    modelName: 'gpt-6-sol',
-    modelLabel: 'Sol',
-  });
+  assert.equal(jobFilter.resolveJobFilterModel, undefined);
+  assert.equal(jobFilter.evaluateJobContentAgainstFilter, undefined);
 });
 
 test('the Bid Assistant answers on the app default model, not on a seat default', async () => {

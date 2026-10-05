@@ -214,8 +214,60 @@ function refAndLog(text, lines) {
   return { ref, logged: lines.filter((line) => line.includes(`[error ${ref}]`)).join('\n') };
 }
 
+/**
+ * Stores a job analysis the way the gate would have, for tests that build on
+ * one without asking a model: a request names it by the id this returns
+ * (`analysisId`), since an analysis OBJECT a client sends is never read.
+ *
+ * Through the repository of the dist the test already required, so it lands
+ * in the database `useTempStorage` pointed DB_DIR at. A posting text unique to
+ * the call unless one is given, because the text is a posting's identity.
+ */
+function storeJobAnalysis(analysis = {}, posting = {}) {
+  const repository = require('../dist/database/jobAnalysisRepository');
+  const identity = require('../dist/services/jobAnalysis/identity');
+  const jobDescription =
+    posting.jobDescription ?? `A stored posting for a test, unique to it: ${Math.random().toString(36).slice(2)}.`;
+  const { row } = repository.insertJobAnalysisIfAbsent({
+    contentHash: identity.contentHash(jobDescription),
+    linkKey: identity.linkKey(posting.jobLink),
+    jobLink: posting.jobLink ?? '',
+    analysis: {
+      jobMeta: { title: '', seniority: '', industry: '', department: '' },
+      skills: { technical: [], required: [], preferred: [], tools: [], soft: [], technologies: [] },
+      technologies: [],
+      protocols: [],
+      methodologies: [],
+      architecturePatterns: [],
+      responsibilities: [],
+      domainKnowledge: [],
+      softSkills: [],
+      keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
+      jobField: 'unclassified',
+      salary: null,
+      filter: {
+        jobType: 'not_specified',
+        onsiteInterview: 'not_specified',
+        companyCategory: 'other',
+        clearanceRequired: 'not_specified',
+        region: 'not_specified',
+        usState: '',
+      },
+      ...analysis,
+      sourceJobDescription: jobDescription,
+    },
+    modelId: '',
+    promptHash: '',
+    source: 'ai',
+    createdBy: posting.createdBy ?? null,
+  });
+  return row.id;
+}
+
 module.exports = {
   captureErrorLog,
+  openTestDb,
+  storeJobAnalysis,
   loadFresh,
   refAndLog,
   useAdminEmails,

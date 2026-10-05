@@ -58,8 +58,33 @@ Coverage currently focuses on:
 - what an ordinary account may know of models: the slim `GET
   /api/resume/models`, a stored choice falling back while a requested one is
   refused with one generic sentence, the provider request forms kept for
-  administrators, the profile-save check, and the job filter and Bid Assistant
-  on the app default model (`userModelAccess.test.js`)
+  administrators, the profile-save check, the job filter naming the analysis
+  model and the Bid Assistant on the app default model (`userModelAccess.test.js`)
+- job analysis runs once (PLAN check 1): the ten cases that used to re-run it,
+  each through the real routes and queue against a COUNTING stub seat that
+  must see exactly one analysis call, and a damaged stored row analysed once
+  more and repaired in place (`analysisOnce.test.js`); the store with
+  no window, cap or overwrite, the prompt edit, the analysis model and the
+  closed job-field list (`analysisCacheEndToEnd.test.js`); the in-flight join,
+  a caller's abort, a failed call storing nothing (`analysisInFlight.test.js`);
+  the gate as the only caller of the analysis prompt and its byte-identical
+  cached prefix (`analysisGate.test.js`); the table, its UNIQUE indexes, the
+  link and text identities, EXPLAIN QUERY PLAN on every lookup and the repair
+  of an unreadable row (`jobAnalysisStore.test.js`); and the app sheet's six
+  analysis columns - sheet-first builds with one batched read, write-back once
+  and RAW, the trust rule, row identity, a cell used only for the posting it
+  was written for (a replaced posting, a sort under the protected columns), a
+  person's own tab left alone, a moved row not settled, the protection's
+  request shape and repair with the Analysis column cleared (a cell forged
+  while unprotected never trusted), the grid grown past twelve columns and the
+  429 backoff (`analysisSheets.test.js`). The Job Filter's verdict through the
+  analysis path, an unknown clearance failing closed (`jobFilter.test.js`).
+  `analysisHarness.js` is their shared install, stub seats and output stubs.
+  The pages' half (`frontendAnalysis.test.js`): the builder holding one
+  analysis per posting (re-spaced text the same posting, edited text or
+  another link not, a 400 letting it go), the salary line, the posting
+  normalisation, the Analysis cell's states and the sheet panel's column
+  letters, each run against the server's own code
 - what anybody but an administrator is told when something fails
   (`publicErrors.test.js`): public refusals in their own words, everything
   else as a generic sentence and a ref with the cause logged under it, and the

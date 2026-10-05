@@ -92,29 +92,32 @@ test('prompt service creates, previews, updates, and deletes custom prompts in t
 
 test('prompt service supports multiple prompt variants per feature and active selection', async () => {
   const { dbDir, staticDir } = useTempStorage('prompts-feature-variants');
-  writeDefaultPrompt(staticDir, 'filter-google-sheet-job', 'Default filter [[jobContent]]');
+  writeDefaultPrompt(staticDir, 'extract-profile-from-resume', 'Default extract [[resumeText]]');
 
   const promptService = loadFresh('../dist/services/promptService');
 
   const variantA = await promptService.createPrompt({
-    name: 'Filter Variant A',
-    featureKey: 'filter-google-sheet-job',
-    content: 'Variant A [[jobContent]]',
+    name: 'Extract Variant A',
+    featureKey: 'extract-profile-from-resume',
+    content: 'Variant A [[resumeText]]',
     modelProvider: 'claude-cli',
     modelName: 'sonnet',
   });
   const variantB = await promptService.createPrompt({
-    name: 'Filter Variant B',
-    featureKey: 'filter-google-sheet-job',
-    content: 'Variant B [[jobContent]]',
+    name: 'Extract Variant B',
+    featureKey: 'extract-profile-from-resume',
+    content: 'Variant B [[resumeText]]',
     modelProvider: 'codex-cli',
     modelName: 'default',
   });
 
   const prompts = await promptService.listPrompts();
-  const featurePrompts = prompts.filter((prompt) => prompt.featureKey === 'filter-google-sheet-job');
+  const featurePrompts = prompts.filter((prompt) => prompt.featureKey === 'extract-profile-from-resume');
   assert.equal(featurePrompts.length, 3);
-  assert.equal(featurePrompts.some((prompt) => prompt.id === 'filter-google-sheet-job' && prompt.isActiveForFeature), true);
+  assert.equal(
+    featurePrompts.some((prompt) => prompt.id === 'extract-profile-from-resume' && prompt.isActiveForFeature),
+    true
+  );
 
   await promptService.activatePrompt(variantB.id);
 
@@ -123,25 +126,77 @@ test('prompt service supports multiple prompt variants per feature and active se
   assert.equal(activePrompt?.isActiveForFeature, true);
 
   assert.equal(
-    await promptService.renderPrompt('filter-google-sheet-job', { jobContent: 'Backend role' }),
-    'Variant B Backend role'
+    await promptService.renderPrompt('extract-profile-from-resume', { resumeText: 'A resume' }),
+    'Variant B A resume'
   );
 
-  const runtimePrompt = await promptService.getRuntimePromptByFeature('filter-google-sheet-job');
+  const runtimePrompt = await promptService.getRuntimePromptByFeature('extract-profile-from-resume');
   assert.equal(runtimePrompt?.id, variantB.id);
   assert.equal(runtimePrompt?.modelProvider, 'codex-cli');
   assert.equal(runtimePrompt?.modelName, 'default');
 
   const activePrompts = JSON.parse(readSettingRaw(dbDir, 'active-prompts'));
-  assert.equal(activePrompts['filter-google-sheet-job'], variantB.id);
+  assert.equal(activePrompts['extract-profile-from-resume'], variantB.id);
 
   await promptService.deletePrompt(variantB.id);
   assert.equal(
-    await promptService.renderPrompt('filter-google-sheet-job', { jobContent: 'Backend role' }),
-    'Default filter Backend role'
+    await promptService.renderPrompt('extract-profile-from-resume', { resumeText: 'A resume' }),
+    'Default extract A resume'
   );
 
   assert.equal(await promptService.getPromptById(variantA.id) !== null, true);
+});
+
+test('the job analysis has one prompt: no new variant, no activation, an old variant listed but never active', async () => {
+  // One analysis per posting for every profile (owner decision J0) needs one
+  // prompt to produce it - the built-in record, which an administrator edits.
+  const { staticDir } = useTempStorage('prompts-analysis-single');
+  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyse [[jobFieldList]] [[jobLink]] [[jobDescription]]');
+  const promptService = loadFresh('../dist/services/promptService');
+
+  await assert.rejects(
+    promptService.createPrompt({
+      name: 'My analysis',
+      featureKey: 'analyze-job-description',
+      content: 'Mine [[jobDescription]]',
+    }),
+    /Job analysis has one prompt/
+  );
+
+  // A variant an older build created is the administrator's text: kept and
+  // listed, but it cannot be activated, and the built-in stays the active one
+  // even when the stored activation still names the variant.
+  const { saveStoredPrompt, writeActivePrompts } = require('../dist/database/promptRepository');
+  const now = new Date().toISOString();
+  saveStoredPrompt({
+    id: 'custom-old-analysis',
+    name: 'Old analysis variant',
+    featureKey: 'analyze-job-description',
+    content: 'Old [[jobDescription]]',
+    isBuiltIn: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+  writeActivePrompts({ 'analyze-job-description': 'custom-old-analysis' });
+  const listed = await promptService.listPrompts();
+  const analysisPrompts = listed.filter((prompt) => prompt.featureKey === 'analyze-job-description');
+  assert.deepEqual(analysisPrompts.map((prompt) => prompt.id).sort(), ['analyze-job-description', 'custom-old-analysis']);
+  assert.equal(listed.find((prompt) => prompt.id === 'analyze-job-description').isActiveForFeature, true);
+  assert.equal(listed.find((prompt) => prompt.id === 'custom-old-analysis').isActiveForFeature, false);
+  await assert.rejects(promptService.activatePrompt('custom-old-analysis'), /always runs the built-in Analyze Job Description/);
+
+  // The retired Job Filter prompt, edited by an administrator once, is not a
+  // stray "unattached" prompt now: nothing could run it.
+  saveStoredPrompt({
+    id: 'filter-google-sheet-job',
+    name: 'Filter Google Sheet Job',
+    featureKey: 'filter-google-sheet-job',
+    content: 'Judge [[jobContent]]',
+    isBuiltIn: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+  assert.equal((await promptService.listPrompts()).some((prompt) => prompt.id === 'filter-google-sheet-job'), false);
 });
 
 test('prompt validation rejects unknown variables', async () => {

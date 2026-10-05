@@ -294,7 +294,6 @@ test('every AI_GEMINI_* setting is in the operational table, and a changed one i
     'AI_GEMINI_QUEUE_WAIT_MS',
     'AI_GEMINI_STATE_DIR',
     'AI_GEMINI_TIMEOUT_MS',
-    'AI_GEMINI_TIMEOUT_MS_FILTER',
     'AI_GEMINI_TIMEOUT_MS_TAILOR',
     'AI_GEMINI_WORKDIR',
   ]);
@@ -315,8 +314,8 @@ test('the Gemini budgets are read through cliTimeoutMs, exactly as the adapter r
     );
   }
   assert.equal(op.cliTimeoutDefaultMs('AI_GEMINI_TIMEOUT_MS'), 180000);
-  assert.equal(op.cliTimeoutDefaultMs('AI_GEMINI_TIMEOUT_MS_FILTER'), 60000);
-  assert.equal(op.cliTimeoutDefaultMs('AI_CLI_TIMEOUT_MS_TAILOR'), 300000, 'and the older six as before');
+  assert.equal(op.cliTimeoutDefaultMs('AI_GEMINI_TIMEOUT_MS_TAILOR'), 300000);
+  assert.equal(op.cliTimeoutDefaultMs('AI_CLI_TIMEOUT_MS_TAILOR'), 300000, 'and the older ones as before');
 });
 
 test('a Gemini budget set above the request deadline is reported, like the other seats\'', () => {

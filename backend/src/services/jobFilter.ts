@@ -1,11 +1,12 @@
-import { listAdminAIModels, resolveRequestedAIModel } from '../config/aiModelConfig';
-import { findProviderModelOption } from '../config/providerModels';
-import type { AIProvider } from '../types/template';
-import { extractJSON } from '../utils/json';
-import { createPromptCompletion, resolvePromptExecutionConfig } from './ai';
-import { renderPrompt } from './promptService';
+import { resolveAnalysisModel } from '../config/aiModelConfig';
+import type { JobAnalysis } from '../types/template';
+import { formatSalary } from './jobAnalysis/facts';
 
-export const JOB_FILTER_PROMPT_ID = 'filter-google-sheet-job';
+/**
+ * The Job Filter's verdict on a posting: Pass, or Fail with the first rule it
+ * broke - decided in CODE from the facts its one job analysis read.
+ */
+
 export const JOB_FILTER_MIN_CONTENT_LENGTH = 50;
 
 export type JobFilterAnalysis = {
@@ -197,103 +198,36 @@ export function evaluateJobFilterAnalysis(analysis: JobFilterAnalysis): JobFilte
   return { result: 'Pass', reason: null };
 }
 
-export async function buildJobFilterPrompt(jobContent: string, jobLink = ''): Promise<string> {
-  const normalizedContent = jobContent.trim();
-  if (!normalizedContent) {
-    throw new Error('Job content is required.');
-  }
-
-  const normalizedLink = jobLink.trim();
-  return renderPrompt(JOB_FILTER_PROMPT_ID, {
-    jobContent: normalizedContent,
-    jobDescription: normalizedContent,
-    jobLink: normalizedLink,
-  });
-}
-
-export function buildJobFilterPromptValues(jobContent: string, jobLink = ''): Record<string, string> {
+/**
+ * The facts the filter judges, read off the posting's ONE job analysis.
+ *
+ * The filter used to make an AI read of its own for these (a prompt of its
+ * own, `filter-google-sheet-job`), on top of the analysis a build of the same
+ * posting made. Now the analysis asks for them too (owner decision J8), so a
+ * posting is read once whichever comes first - the filter, or a build - and
+ * the verdict is code (`evaluateJobFilterAnalysis`) over what is stored.
+ */
+export function jobFilterAnalysisOf(analysis: JobAnalysis): JobFilterAnalysis {
+  const facts = analysis.filter;
   return {
-    jobContent,
-    jobDescription: jobContent,
-    jobLink: jobLink.trim(),
+    jobType: facts?.jobType ?? '',
+    onsiteInterview: facts?.onsiteInterview ?? '',
+    companyCategory: facts?.companyCategory ?? '',
+    seniority: analysis.jobMeta?.seniority ?? '',
+    clearanceRequired: facts?.clearanceRequired ?? '',
+    salary: formatSalary(analysis.salary),
+    region: facts?.region ?? '',
+    usState: facts?.usState ?? '',
   };
 }
 
 /**
- * The model a sheet filter runs on, and the name it is reported by.
- *
- * The app default model - a record an administrator added under Admin ->
- * Models, and the one the settings page shows as the default - rather than a
- * seat on whatever its CLI defaults to, so the filter runs on a model somebody
- * chose and can be named by the name they gave it. The filter prompt's own
- * override (Admin -> Prompts) still wins, as it does for every prompt, read the
- * way the call itself will read it.
- *
- * `modelLabel` is the display name, which is the only name for a model an
- * ordinary account is shown: never a seat or a CLI model name. An override
- * names a provider and a model name rather than a record, so it is reported by
- * the record an administrator made for that pair. With no such record there
- * is no display name to give, and the CLI option's label IS a model name - so
- * anybody else is told only that an administrator chose it, and the option's
- * label goes in `adminModelLabel` for the routes to give administrators.
+ * The model a filter run's summary names: the analysis model, by the display
+ * name an administrator gave it - the only name for a model an ordinary
+ * account is shown. Rows judged on a posting analysed earlier name the model
+ * that is analysing new postings now; the summary is about the run.
  */
-export type JobFilterModel = {
-  provider: AIProvider;
-  modelName: string;
-  modelLabel: string;
-  /** Set only when no record names the override's model: its CLI option label. */
-  adminModelLabel?: string;
-};
-
-/** What an ordinary account reads for a filter model no record names. */
-export const JOB_FILTER_UNNAMED_MODEL = 'Chosen by your administrator';
-
-export async function resolveJobFilterModel(): Promise<JobFilterModel> {
-  const model = await resolveRequestedAIModel();
-  const config = await resolvePromptExecutionConfig(JOB_FILTER_PROMPT_ID, model.provider, model.modelName);
-  const modelName = config.modelName ?? model.modelName;
-  if (config.provider === model.provider && modelName === model.modelName) {
-    return { provider: model.provider, modelName, modelLabel: model.name };
-  }
-
-  const record = (await listAdminAIModels()).find(
-    (entry) => entry.provider === config.provider && entry.modelName.toLowerCase() === modelName.toLowerCase()
-  );
-  if (record) return { provider: config.provider, modelName, modelLabel: record.name };
-  return {
-    provider: config.provider,
-    modelName,
-    modelLabel: JOB_FILTER_UNNAMED_MODEL,
-    adminModelLabel: findProviderModelOption(config.provider, modelName)?.label ?? modelName,
-  };
-}
-
-export async function evaluateJobContentAgainstFilter(input: {
-  jobContent: string;
-  jobLink?: string;
-  /** What `resolveJobFilterModel` resolved, once per run rather than once per row. */
-  provider: AIProvider;
-  modelName: string;
-  signal?: AbortSignal;
-}): Promise<JobFilterAnalysis> {
-  const jobContent = normalizeText(input.jobContent);
-  if (jobContent.length < JOB_FILTER_MIN_CONTENT_LENGTH) {
-    return getEmptyJobFilterAnalysis();
-  }
-
-  // Passing values rather than pre-rendered text is what lets the transport
-  // put the prompt's instruction preamble in the system channel. This call
-  // used to pass neither, which meant it also got no JSON-only instruction.
-  const responseText = await createPromptCompletion({
-    promptId: JOB_FILTER_PROMPT_ID,
-    promptValues: buildJobFilterPromptValues(jobContent, input.jobLink),
-    fallbackProvider: input.provider,
-    fallbackModelName: input.modelName,
-    maxTokens: 500,
-    temperature: 0,
-    responseFormat: 'json',
-    signal: input.signal,
-  });
-  const responseJson = JSON.parse(extractJSON(responseText)) as unknown;
-  return normalizeJobFilterAnalysis(responseJson);
+export async function describeJobFilterModel(): Promise<{ modelLabel: string }> {
+  const model = await resolveAnalysisModel();
+  return { modelLabel: model.name };
 }

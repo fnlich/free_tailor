@@ -420,8 +420,10 @@ test('the header row is the one from the tracking sheet, spelling included', () 
   const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
   // Reproduced exactly, lower-case `note` and all: anybody matching a column by
   // its heading is matching the string a person reads on screen. The first
-  // eight are the tracking sheet's own; the last two belong to the job filter,
-  // which needed somewhere to write that was not a field somebody fills in.
+  // eight are the tracking sheet's own; the next two belong to the job filter,
+  // which needed somewhere to write that was not a field somebody fills in;
+  // the last six are the job analysis's, protected so only the program writes
+  // them (owner decision J5), in this order.
   assert.deepEqual(
     [...JOB_SHEET_HEADERS],
     [
@@ -435,6 +437,12 @@ test('the header row is the one from the tracking sheet, spelling included', () 
       'Job Finder',
       'Filter Result',
       'Filter Reason',
+      'Job Field',
+      'Salary',
+      'Job Hash',
+      'Analyzed At',
+      'Lake Status',
+      'Analysis',
     ]
   );
 });

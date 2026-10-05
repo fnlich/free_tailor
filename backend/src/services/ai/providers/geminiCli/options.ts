@@ -76,7 +76,6 @@ export const GEMINI_CLI_INT_SETTINGS = {
   // Per-call budgets, capped by AI_REQUEST_TIMEOUT_MS like the other seats'.
   AI_GEMINI_TIMEOUT_MS: { fallback: 180_000, min: 5_000, max: 3_600_000, unit: 'ms' },
   AI_GEMINI_TIMEOUT_MS_TAILOR: { fallback: 300_000, min: 5_000, max: 3_600_000, unit: 'ms' },
-  AI_GEMINI_TIMEOUT_MS_FILTER: { fallback: 60_000, min: 5_000, max: 3_600_000, unit: 'ms' },
   AI_GEMINI_HEALTH_TIMEOUT_MS: { fallback: 15_000, min: 1_000, max: 120_000, unit: 'ms' },
   /*
    * Written into the workspace settings as `general.maxAttempts`, which bounds
@@ -130,13 +129,12 @@ export function geminiCliConcurrency(env: EnvSource = process.env): number {
 export const GEMINI_CLI_TIMEOUT_VARIABLES = [
   'AI_GEMINI_TIMEOUT_MS',
   'AI_GEMINI_TIMEOUT_MS_TAILOR',
-  'AI_GEMINI_TIMEOUT_MS_FILTER',
 ] as const;
 
 export type GeminiCliTimeoutVariable = (typeof GEMINI_CLI_TIMEOUT_VARIABLES)[number];
 
 /**
- * One per-call budget, in ms. The ONE reader of these three, so a warning about
+ * One per-call budget, in ms. The ONE reader of these two, so a warning about
  * a budget the request deadline caps can read them exactly as the adapter does.
  */
 export function geminiCliTimeoutMs(name: GeminiCliTimeoutVariable, env: EnvSource = process.env): number {
@@ -226,7 +224,6 @@ export function readGeminiCliConfig(env: EnvSource = process.env): GeminiCliConf
     defaultTimeoutMs: geminiCliTimeoutMs('AI_GEMINI_TIMEOUT_MS', env),
     timeoutMsByCallSite: {
       'tailor-resume': geminiCliTimeoutMs('AI_GEMINI_TIMEOUT_MS_TAILOR', env),
-      'filter-google-sheet-job': geminiCliTimeoutMs('AI_GEMINI_TIMEOUT_MS_FILTER', env),
     },
     maxAttempts: readInt('AI_GEMINI_MAX_ATTEMPTS', env),
     maxOutputBytes: readInt('AI_GEMINI_MAX_OUTPUT_BYTES', env),
@@ -297,7 +294,6 @@ export const GEMINI_CLI_SETTINGS: readonly OperationalVariable[] = [
   intSetting('AI_GEMINI_FIRST_EVENT_MS', 'startup', READ_IN),
   intSetting('AI_GEMINI_TIMEOUT_MS', 'startup', READ_IN),
   intSetting('AI_GEMINI_TIMEOUT_MS_TAILOR', 'startup', READ_IN),
-  intSetting('AI_GEMINI_TIMEOUT_MS_FILTER', 'startup', READ_IN),
   intSetting('AI_GEMINI_HEALTH_TIMEOUT_MS', 'per-call', 'services/ai/providers/geminiCli/health.ts'),
   intSetting(
     'AI_GEMINI_MAX_ATTEMPTS',

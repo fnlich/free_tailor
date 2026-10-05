@@ -85,12 +85,14 @@ of them can fall back to billing per token.
 
 Each seat has its own queue lane and its own process limit (`AI_CLI_CONCURRENCY`,
 `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`), so one seat's backlog never
-holds up another. The job filter and the Bid Assistant run on the app's default
-model, as a run that names no model does - the filter on its prompt's own model
-override when an administrator has set one. A resume never does: its analysis,
-tailoring and cover letter run on the model the run chose, because that is the
-model it is charged at, so a prompt override cannot change what a resume costs
-or runs on.
+holds up another. The Bid Assistant runs on the app's default model, as a run
+that names no model does, or on its prompt's own model override when an
+administrator has set one. A resume never does: its tailoring and cover letter
+run on the model the run chose, because that is the model it is charged at, so
+a prompt override cannot change what a resume costs or runs on. A **job
+analysis** runs on the administrator's **analysis model**, once per posting for
+everybody (see [Job analysis: once per posting](#job-analysis-once-per-posting)),
+and the job filter makes no model call of its own - it judges that analysis.
 
 **Models are the administrator's to define.** Under **Admin → Models** each
 model is a display name, a seat, a model name picked from that seat's own list,
@@ -1052,6 +1054,85 @@ database, say) fails every resume that uses it, and the server log names it
 under the reference: *Prompt "..." contains unknown variables: ...* - see
 Troubleshooting.
 
+### Job analysis: once per posting
+
+Every resume starts by reading the job posting - its keywords, its title, and
+now its **job field**, the **salary** it states and the facts the job filter
+judges. That reading is made **once per posting, ever**, and stored: not once
+per profile, per model, per run, per retry or per restart, and the job filter
+does not make a reading of its own. Whoever needs a posting's analysis first -
+Generate, an Order, Generate Immediately, the job filter - causes the one call;
+everybody after gets the stored one.
+
+- **What makes two postings the same.** Its job link (host case, `#fragment`,
+  `utm_*`/`gclid`/`fbclid`/`ref`-style tracking and a trailing slash do not
+  count) **or** its text (spacing does not count). So the same job pasted from
+  two sheets with slightly different text is still one posting when the link
+  is the same.
+- **One model reads every posting**, so job fields stay consistent: the
+  **analysis model** under **Admin → Settings → General**. Left empty it is
+  the app's default model. A model chosen there that stops running (switched
+  off, its seat locked) is replaced by the default with a warning in the log.
+- **Changing it, or editing the Analyze Job Description prompt, reaches only
+  postings never analysed before.** There is no "re-analyse": an analysis is
+  never replaced. The prompt has one version - a profile no longer chooses its
+  own analysis prompt, and a variant cannot be added or activated - and the
+  Prompt Test page shows the posting's stored analysis, or makes it.
+- **The builder holds the analysis it was given.** Under the job description
+  it says what the posting was analysed as - its title, job field and salary -
+  and so do the previews. Changing the company, the role, the profile or the
+  model builds on that same analysis, sent by its id, without asking for it
+  again; editing the description itself is another posting.
+- **The job field** is one of the owner's list of software development fields
+  at bullet level (Backend, DevOps, ML engineering...), by a fixed id; the
+  computer-science foundations are not offered. A posting that fits none - or
+  an answer that names a field not in the list - is **Unclassified**.
+  `GET /api/resume/job-fields` lists them.
+- **The salary** is only what the posting states - its numbers, currency,
+  period and words - never an estimate.
+- **A call that fails stores nothing**, so the next request is the first real
+  analysis. That is the only way a posting is ever sent to a model twice.
+
+**In your own job sheet**, the analysis is written into the row once - Job
+Field, Salary, Analyzed At and the whole analysis as JSON in **Analysis** (cut
+with a marker at Google's 50,000-character cell limit). Values are written as
+plain values, never formulas. Job Hash and Lake Status are left for the Job
+Data Lake. A row that already has its analysis is **not analysed again**: a
+build from the sheet - Order or Generate Immediately - reads the rows' analysis
+cells itself, in one call per run, and uses what is there. That is only safe
+because nobody else can write those cells:
+
+- The six columns are a **protected range**, header included, editable only by
+  the server's Google identity. Anybody else - including the account the sheet
+  belongs to - gets Google's protected-cell refusal on edit, paste, clear or
+  fill; the rest of the row stays theirs.
+- The protection is checked every time the app checks the tab, and put back if
+  it was missing or changed - **with the Analysis column below the header
+  cleared in the same step**, because anybody with the link could have typed
+  into it meanwhile. In that run the tab's analysis cells are not trusted;
+  those rows are read from the database, or analysed, and each row's cells are
+  written again from the database on its next run. So an Analysis cell is only
+  ever trusted once the program has written it under the protection.
+- A cell is used only for the posting it was written for: it records its
+  posting's link and text hash. Paste another posting into a row, or sort the
+  job columns (the protected ones cannot move with them), and the cell left
+  behind is not used for the new posting - which is found in the database, or
+  analysed once - and the app writes the right analysis over it.
+- Before writing, the app re-reads the row's company and link, so a sheet
+  sorted or trimmed since the run started is not written into the wrong row.
+- **With `npm run sheets:login`** the server's Google identity is the
+  operator's own account, and that one account can still edit the columns by
+  hand in the browser. A **service account** key leaves no person able to;
+  prefer one if that matters to you.
+
+Only the app's own job sheets get the columns, and in them only **job tabs** -
+a tab whose first row is the job sheet's header (of any age), or a day's
+`MM/DD/YYYY` tab whose first row is still empty. A tab you made yourself keeps
+its own header and its own columns K to P: a build from it reads no analysis
+cells and writes none, and its postings are found in the database or analysed.
+A shared sheet an administrator configured keeps its analyses in the database
+only.
+
 ### The job sheet
 
 Every account gets **one Google spreadsheet of its own**, and inside it **one tab
@@ -1059,8 +1140,14 @@ per day**, named `MM/DD/YYYY`. The tab is created on the first sign-in of that
 date and skipped on every sign-in after, so a day's rows stay together and a
 quiet day costs nothing. A new tab opens with the job columns - `NO(DATE)`,
 `Company`, `Job Title`, `Job Link`, `Job Description`, `Rate`, `note`,
-`Job Finder`, `Filter Result`, `Filter Reason` - frozen, filtered and formatted.
-The first eight are yours to fill in; the last two belong to the job filter.
+`Job Finder`, `Filter Result`, `Filter Reason`, then `Job Field`, `Salary`,
+`Job Hash`, `Analyzed At`, `Lake Status`, `Analysis` - frozen, filtered and
+formatted. The first eight are yours to fill in; the next two belong to the job
+filter; the last six are the job analysis's, and **protected**: only the
+server's own Google identity can edit them (see [Job analysis: once per
+posting](#job-analysis-once-per-posting)). A tab made by an older build is
+widened and given the new header and the protection the next time the app
+checks it.
 
 Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
 being able to log in is not, so a Google outage must not become an outage of
@@ -1249,7 +1336,16 @@ for all of them) is refused with 403 `subscription-too-low`.
 
 **Sheet mode reads any tab.** Pick the sheet, the **Tab** (every tab of it is
 listed, today's selected), and the rows; *Load rows* shows the jobs found
-before anything is built, then **Generate Immediately** or **Order**.
+before anything is built, then **Generate Immediately** or **Order**. On your
+own job sheet the table's **Analysis** column says what each row's build will
+do about its analysis, read from the row's protected **Analysis** cell (column
+P, beside Job Field and Salary in K and L): *Skips analysis*, with the job
+field and salary the row holds, for a row analysed before; *When built* for a
+row whose posting is analysed the first time a build needs it (or found
+already stored); *Cell unreadable* for a cell the program cannot use. The
+server reads those cells again itself when the run starts - the page's table
+is a preview, never something the server is sent. A tab you laid out yourself
+is read through your column mapping and never given the analysis columns.
 
 **Generate Immediately is tied to its tab.** The first click asks *"If you
 close the tab or the network drops, the run can be stopped. Would you like to
@@ -1903,6 +1999,37 @@ Two things do not survive the round trip:
   at its default price. Put the old figures back by hand from
   `migration-log.credits-to-dollars` (`models`, `pricing`).
 
+### 11. Job analysis runs once
+
+Nothing to do on upgrade; what changes on the first start:
+
+- A new table, `job_analyses`, holds every posting's analysis from now on.
+  The in-memory cache it replaces is gone. Postings analysed before the upgrade
+  are analysed once more, the first time they are needed - then never again.
+- **The job filter's own prompt is retired** (`filter-google-sheet-job`): the
+  filter judges the posting's job analysis, whose prompt asks for the same
+  facts. An edited copy of it stays in the database, unlisted and unused. The
+  `AI_CLI_TIMEOUT_MS_FILTER`, `AI_CODEX_TIMEOUT_MS_FILTER` and
+  `AI_GEMINI_TIMEOUT_MS_FILTER` budgets went with it; a value still set in
+  `.env` is ignored.
+- **A profile's own analysis prompt is no longer read** (its Extracting prompt
+  setting), and is dropped the next time the profile is saved. An analysis
+  prompt variant you added stays listed but never runs.
+- **An analysis prompt you edited** is flagged under Admin → Prompts as
+  predating job fields. It keeps working; adding `[[jobFieldList]]` (before the
+  posting) and the new keys - or pasting the shipped text from
+  `backend/static/prompts/analyze-job-description.json` over it - puts the
+  field list back in the cached part of the prompt.
+- **Job sheets** gain six columns. A tab made earlier is widened, given the new
+  header and protected the next time the app checks it - on the next job run
+  against it.
+
+**Rolling back**: an older build does not read `job_analyses` (it analyses
+again, as it always did) and does not touch the six columns; the protection
+stays on them, so nobody but the server can clear them by hand. Its job filter
+reads its own prompt file, `backend/static/prompts/filter-google-sheet-job.json`,
+which the older checkout brings back with it.
+
 ---
 
 ## 🌐 Serving it on your own domain
@@ -2201,6 +2328,7 @@ free_tailor/
 │   │   │   │   ├── providers/claudeCli/  # The `claude` CLI seat
 │   │   │   │   ├── providers/codexCli/   # The `codex` CLI seat
 │   │   │   │   └── providers/geminiCli/  # The `gemini` CLI seat
+│   │   │   ├── jobAnalysis/              # The one gate to a job analysis, and the posting identity
 │   │   │   ├── resumeService.ts          # Resume/cover-letter domain logic
 │   │   │   └── templateChoice.ts         # The one rule for which template a resume is drawn with
 │   │   ├── generators/     # PDF, DOCX, cover letter generation
@@ -2283,11 +2411,11 @@ unique across the install, which settles all of it in one segment.
 | **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0.000` to `$1000.000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0.000` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
 | **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
-| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants - and one flagged *predates job fields* was written before postings had a job field: it still works, with the field list sent beside it on every call, but outside the cached part of the prompt. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund (see [Asking for a refund](#asking-for-a-refund)) |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test runs a prompt on a model you pick by name. Every page here shows the cause of a failure under its message |
+| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
 
 ---
 
@@ -2380,7 +2508,7 @@ matching it.
 | `AI_GEMINI_BIN` / `AI_GEMINI_MODEL` | Path to the `gemini` binary (default `gemini`, found on PATH) and the model a call uses when nothing names one (default `auto`, which lets the CLI pick Pro or Flash per request). *Startup* |
 | `AI_GEMINI_CONCURRENCY` | Simultaneous `gemini` processes, and the size of the Gemini queue lane (default `2`, range 1-32). Lower than the other seats': a Google-account seat has per-minute limits on top of its daily quota. *Startup* |
 | `AI_GEMINI_QUEUE_WAIT_MS` / `AI_GEMINI_FIRST_EVENT_MS` | The longest a call waits for a free slot (default `600000`, range 1000-3600000), and the longest a turn may print nothing before it counts as wedged (default `60000`, range 1000-300000 - the first event follows the CLI's token refresh and setup calls). *Startup* |
-| `AI_GEMINI_TIMEOUT_MS` / `AI_GEMINI_TIMEOUT_MS_TAILOR` / `AI_GEMINI_TIMEOUT_MS_FILTER` | Per-call wall-clock budgets (defaults `180000`, `300000` and `60000`, range 5000-3600000), each capped by `AI_REQUEST_TIMEOUT_MS`; startup warns when one is set above it. *Startup* |
+| `AI_GEMINI_TIMEOUT_MS` / `AI_GEMINI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets (defaults `180000` and `300000`, range 5000-3600000), each capped by `AI_REQUEST_TIMEOUT_MS`; startup warns when one is set above it. *Startup* |
 | `AI_GEMINI_HEALTH_TIMEOUT_MS` | Timeout of `gemini --version`, the Gemini seat's health check, run at startup and by the admin Settings card (default `15000`, range 1000-120000). The check sends no prompt; it reads the sign-in files instead |
 | `AI_GEMINI_MAX_ATTEMPTS` / `AI_GEMINI_MAX_OUTPUT_BYTES` | Attempts the CLI itself makes on a 429 or a 5xx, counting the first (default `3`, range 1-10), and the most output one turn may produce before it is cut off (default `25000000`, range 1000000-500000000 - the CLI echoes the whole prompt before the answer). *Startup* |
 | `AI_GEMINI_WORKDIR` / `AI_GEMINI_STATE_DIR` / `AI_GEMINI_HOME` | The fixed, empty working directory every turn runs in (default `gemini-cli-work` inside `DB_DIR`, else `.gemini-cli-work` where the backend started); where each turn's system prompt, the deny-all policy and temp files go, outside that directory on purpose (default `gemini-cli-state` beside it); and an optional dedicated sign-in home, passed to the CLI as `GEMINI_CLI_HOME` - the one way to keep an operator's personal `~/.gemini/GEMINI.md` out of every prompt. Sign in with `GEMINI_CLI_HOME` set to the same directory. *Startup* |
@@ -2441,6 +2569,17 @@ file. Export them in the shell, for the install and the server alike:
 
 | Symptom | Cause and fix |
 |---------|---------------|
+| Somebody editing their job sheet gets Google's *You are trying to edit a protected cell or object* on the **Job Field** to **Analysis** columns | Working as intended: those six columns are written by the program alone, so a build can trust what they say and skip analysing the row again (see [Job analysis: once per posting](#job-analysis-once-per-posting)). Everything else in the row stays editable. To get a row analysed afresh there is nothing to clear - a posting is analysed once, ever; a different posting needs a different link or text. |
+| The backend log says `[sheets] The analysis columns of "<tab>" in <spreadsheet> were not protected` (or *protected wrongly*) *... restoring the protection ... and clearing the Analysis cells somebody else could have written meanwhile* | The protection over the six analysis columns was missing - a tab an older build made, which is normal once after the upgrade, or a job tab somebody added by hand - or somebody with the owner's account removed or changed it. It is put back on the spot, and the **Analysis** column (only it - your notes in K and L on an old tab stay) is emptied in the same step, since anybody with the link could have typed into it meanwhile. Nothing is lost: every analysis is in the database, so those rows are read from it, or analysed once, and their cells are written again on each row's next run. If it repeats on every run for the same tab, somebody is removing it: with `npm run sheets:login` that can only be the operator's own Google account. |
+| The log says `[sheets] Could not check the protection of the analysis columns ...` or `Google did not say which account this server's sign-in belongs to` | The server could not learn its own Google identity, which a protection must name as its only editor. With a `sheets:login` credential that is asked of Drive, so the **Drive API** must be enabled for the credential's project - `npm run sheets:doctor` in `backend/` checks it. Until it works, sheet runs still build, but they ignore the analysis cells and analyse from the database. |
+| The log says `[analysis] Sheet row N's Analysis cell is cut short` (or *unreadable*) *; falling back to the store* | The cell holds more than Google's 50,000 characters, or is not the program's JSON - an old cell, or a paste from before the column was protected. The row's posting is read from the database instead (the cell still names its stored analysis when only its end was cut), and analysed once if the database has never seen it. Nothing is lost; a cell the program wrote for the row's own posting is not rewritten. |
+| The log says `[sheets] Google answered 429 (quota) to ...; retry n of 5 in ...ms`, or a page says *Google Sheets is busy right now* | Google's per-minute Sheets quota is per project and per user, and every account of this install is the same user - the server's one credential - so a big filter run, a few sheet orders and their write-backs share one budget. A 429 is waited out with growing, randomised delays (and Google's own `Retry-After`), up to five times and 32 s a wait; only then is it reported. If it keeps reaching people, raise the Sheets quota in the credential's Cloud project, or run fewer sheet jobs at once. |
+| The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
+| Every new posting comes back **Unclassified**, or Admin → Prompts flags the analysis prompt as predating job fields | The Analyze Job Description prompt was edited before postings had a job field, so its text never asks for one. The field list is sent beside it on every call anyway, so postings should still be classified - when they are not, the edited text is fighting it (an instruction to return exactly some other JSON shape, say). Paste the shipped text (`backend/static/prompts/analyze-job-description.json` - there is no reset button) over it, or add `[[jobFieldList]]` before the posting and the `jobField`, `salary` and `filter` keys to its output. Only postings analysed from then on are affected: a stored analysis is never redone. |
+| The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A row moved or sorted since loading (`no longer matches`) is neither read nor written. On an administrator's shared sheet the column always says *When built*: only an account's own sheet has the protected columns. |
+| The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
+| The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab; its own columns are left as they are` | Sheet mode was pointed at a tab you made yourself (its first row is not the job sheet's header). That is allowed - its rows are read through the column mapping - but such a tab gets no analysis columns: nothing in it is re-headered, protected or written, and its postings are found in the database or analysed once. To have a tab's analyses written back, build from one of the app's dated tabs. |
+| A build fails with *That job analysis was not found. Analyse the job description again.* | The page sent the id of an analysis this server has not stored - a page left open across a database restore, or a request made by hand. Analyse the description again (the builder does it when you press Generate), which finds the posting if it is stored or analyses it once. |
 | Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates, job scrapers or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
 | A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before this page can show you one.* (or that their job sheet could not be reached, with a `Ref:`) | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
 | An administrator made somebody a User or Reporter, and they are an administrator again | Their address is in `ADMIN_EMAILS` (or, with that unset, it is the `SMTP_USER` address). Those are promoted at every sign-in and every start, and never demoted, so a slip on the Accounts page cannot lock the operator out - the row and the change's own message say so. Take the address out of `ADMIN_EMAILS`, restart the backend, then change the role. |
@@ -2496,7 +2635,7 @@ file. Export them in the shell, for the install and the server alike:
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut used to cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page keeps following until the server says the run is over: after twenty attaches in a row that brought nothing it slows from one attach a second to one every 10 s, and it stops at once only when the server answers that the batch is gone (404: restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen seat can actually take: its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`). The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. The three choices the prompt does need - the layout and the two section switches - travel as three words of their own, and the profile's own soft skills are not sent at all, because the code lists them. |
-| The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. A profile's layout and section switches are not in the key, on purpose: the analysis reads the posting, not the profile, so one analysis serves every profile in a batch. |
+| The same job posting is analysed over and over | It is not any more: a posting is analysed **once, ever**, and the analysis is stored in the database (`job_analyses`) - not for six hours, not per model, per prompt, per profile, per run or per restart. A posting is recognised by its link or its text, so a preview followed by a generate, a sheet re-run, an order of the same rows, a retry and the job filter all reuse the one analysis. Editing the analysis prompt or changing the analysis model reaches only postings never seen before - see [Job analysis: once per posting](#job-analysis-once-per-posting). The only repeat is after a call that failed, which stored nothing. |
 | Technical Skills shows headings you do not want | Choose **Plain** under **Technical skills → Layout** in the profile's editor. The headings you assigned are kept, not deleted, so switching back to **Grouped** restores them. If the profile's template prints Grouped only (Burgundy Rule, Navy Rule), the editor moves the profile to one that prints Plain and says which. |
 | A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. With the profile on **Grouped**, pick that skill's heading from the menu beside it under **Technical skills** instead of *Work it out*; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
 | A template is missing from a profile's template picker | The picker lists only templates that print the profile's Technical Skills layout, and the hint under it says how many it left out. **Burgundy Rule and Navy Rule print Grouped only**, so a Plain profile is not offered them; an uploaded template that reads only `{{#each skillCategories}}` is Grouped only the same way. A template an administrator disabled is not listed to anybody. An administrator who knows a template prints both can say so with `PATCH /api/templates/:id` and `{ "skillsLayouts": ["categorized", "flat"] }`. |
@@ -2595,6 +2734,17 @@ still to download, the release request, how a run ended, the sheet rows - are
 run by `immediateRunHelpers.test.js`, and the whole of it in a browser by
 `test/e2e/immediate-run.js` and `test/e2e/sheet-panel.js`, against a seat and a
 Google Sheet stubbed by preloads (`backend/test/e2e/README.md`).
+
+Job analysis running once is pinned case by case in `analysisOnce.test.js`:
+each of the ten ways a posting used to be analysed again - the cache's window,
+three profiles on three models, a restart mid-order, a 150-row order, a prompt
+edit, a profile's own analysis prompt, Generate pressed twice, two requests at
+once, a retry, the job filter then a build - runs through the real routes and
+queue against a stub seat that must see exactly one analysis call. The store,
+its indexes and query plans are in `jobAnalysisStore.test.js`, the gate as the
+only caller of the analysis prompt in `analysisGate.test.js`, and the job
+sheet's six columns - sheet-first builds, write-back, the protection, the
+backoff - in `analysisSheets.test.js`.
 
 The three seats are covered by `backend/test/claudeCli.test.js`,
 `codexCli.test.js` and `geminiCli.test.js`, which replay event streams from the

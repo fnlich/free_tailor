@@ -96,7 +96,6 @@ export const FALLBACK_TEMPLATE_ID = 'default';
 
 export const DEFAULT_PROFILE_SETTINGS: DraftSettings = {
   resumePromptId: 'tailor-resume',
-  analyzeJobPromptId: 'analyze-job-description',
   coverLetterPromptId: 'generate-cover-letter',
   resumeFileNameTemplate: '{{profile name}}',
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
@@ -156,7 +155,6 @@ export function draftSettingsFrom(profile?: Pick<Profile, 'profileSettings'> | n
   const stored = profile?.profileSettings ?? {};
   return {
     resumePromptId: stored.resumePromptId || DEFAULT_PROFILE_SETTINGS.resumePromptId,
-    analyzeJobPromptId: stored.analyzeJobPromptId || DEFAULT_PROFILE_SETTINGS.analyzeJobPromptId,
     coverLetterPromptId: stored.coverLetterPromptId || DEFAULT_PROFILE_SETTINGS.coverLetterPromptId,
     resumeFileNameTemplate: stored.resumeFileNameTemplate || DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate,
     coverLetterFileNameTemplate:
@@ -354,7 +352,6 @@ export function draftToPayload(
     ...draftContent(draft, knownOrder),
     profileSettings: {
       resumePromptId: settings.resumePromptId || DEFAULT_PROFILE_SETTINGS.resumePromptId,
-      analyzeJobPromptId: settings.analyzeJobPromptId || DEFAULT_PROFILE_SETTINGS.analyzeJobPromptId,
       coverLetterPromptId: settings.coverLetterPromptId || DEFAULT_PROFILE_SETTINGS.coverLetterPromptId,
       resumeFileNameTemplate:
         settings.resumeFileNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate,

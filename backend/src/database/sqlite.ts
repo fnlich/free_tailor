@@ -702,6 +702,53 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes (email, created_at);
 
+  /**
+   * Every job posting this install has analysed, once each, for ever
+   * (owner decision J0). The ONLY source of truth for an analysis: no TTL, no
+   * cap, no eviction and no overwrite - a posting is analysed again by
+   * nothing, whichever user, profile, model, prompt edit, retry or restart
+   * asks. Written by services/jobAnalysis/gate.ts alone.
+   *
+   * A posting is ONE row however it is reached: its whitespace-normalised
+   * text (content_hash, SHA-256 hex) and its normalised job link (link_key,
+   * NULL when it had none) are each unique, through the indexes below -
+   * which is also what makes two simultaneous inserts of one posting keep
+   * one row (INSERT ... ON CONFLICT DO NOTHING, then read the winner back).
+   *
+   * analysis_json is the normalised JobAnalysis without the posting's text,
+   * which is job_description beside it. job_field_id is a config/jobFields.ts
+   * id or 'unclassified'; the salary columns are only what the posting
+   * stated (NULL otherwise). model_id and prompt_hash record which model and
+   * which prompt text produced it - an audit, never part of its identity.
+   * source is 'ai' (one model call) or 'sheet' (read from a protected Analysis
+   * cell of an app sheet, registered with no call). merged_at is the Job Data
+   * Lake's (Phase 7): NULL until an administrator merges the row.
+   *
+   * The indexes are created after addMissingColumns (INDEXES_AFTER_COLUMNS),
+   * like every index over a table a later build may add a column to.
+   */
+  CREATE TABLE IF NOT EXISTS job_analyses (
+    id               TEXT PRIMARY KEY,
+    content_hash     TEXT NOT NULL,
+    link_key         TEXT,
+    job_link         TEXT NOT NULL DEFAULT '',
+    job_description  TEXT NOT NULL DEFAULT '',
+    analysis_json    TEXT NOT NULL,
+    job_field_id     TEXT NOT NULL DEFAULT 'unclassified',
+    job_title        TEXT NOT NULL DEFAULT '',
+    salary_min       REAL,
+    salary_max       REAL,
+    salary_currency  TEXT,
+    salary_period    TEXT,
+    salary_raw       TEXT,
+    model_id         TEXT NOT NULL DEFAULT '',
+    prompt_hash      TEXT NOT NULL DEFAULT '',
+    source           TEXT NOT NULL DEFAULT 'ai',
+    created_by       TEXT,
+    created_at       TEXT NOT NULL,
+    merged_at        TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS schema_meta (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -915,6 +962,39 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     sql:
       'CREATE INDEX IF NOT EXISTS idx_orders_immediate_unpurged ON orders (finished_at) ' +
       "WHERE kind = 'immediate' AND purged_at IS NULL",
+  },
+  // The analysis gate's two lookups, each one index seek whatever the size of
+  // the table (test/jobAnalysisStore.test.js pins the plans). UNIQUE, because
+  // they are also what keeps a posting to one row when two callers race to
+  // store it.
+  {
+    name: 'idx_job_analyses_content_hash',
+    table: 'job_analyses',
+    columns: ['content_hash'],
+    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_job_analyses_content_hash ON job_analyses (content_hash)',
+  },
+  // Partial: many postings have no link, and NULL is not a key.
+  {
+    name: 'idx_job_analyses_link_key',
+    table: 'job_analyses',
+    columns: ['link_key'],
+    sql:
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_job_analyses_link_key ON job_analyses (link_key) ' +
+      'WHERE link_key IS NOT NULL',
+  },
+  // The Job Data Lake's merge tab: analysed, not merged yet, oldest first.
+  {
+    name: 'idx_job_analyses_merge',
+    table: 'job_analyses',
+    columns: ['merged_at', 'created_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_analyses_merge ON job_analyses (merged_at, created_at)',
+  },
+  // The lake page's field filter.
+  {
+    name: 'idx_job_analyses_job_field',
+    table: 'job_analyses',
+    columns: ['job_field_id'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_analyses_job_field ON job_analyses (job_field_id)',
   },
 ];
 

@@ -1,5 +1,6 @@
 import { readScraperCatalog, readScraperSettings } from './scraperForm';
 import { formatMoney } from './format';
+import type { JobFilterFacts, JobSalary } from './jobAnalysis';
 
 const DEFAULT_LOCAL_API_BASE = 'http://localhost:3001/api';
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || DEFAULT_LOCAL_API_BASE;
@@ -738,9 +739,10 @@ export interface GoogleSheetJobFilterResponse {
   spreadsheetTitle: string;
   selectedTab: string;
   /**
-   * The display name of the model the filter ran on - an administrator's own
-   * name for it, never a provider or a CLI model id. Optional because a server
-   * from before it sent neither.
+   * The display name of the analysis model - the one that analyses a posting
+   * the filter finds no analysis for (the filter asks no model of its own) -
+   * an administrator's own name for it, never a provider or a CLI model id.
+   * Optional because a server from before it sent neither.
    */
   modelLabel?: string;
   startRow: number;
@@ -752,6 +754,12 @@ export interface GoogleSheetJobFilterResponse {
   processedRows: number;
   skippedRows: number;
   scrapedRows: number;
+  /**
+   * Rows judged on an analysis their posting already had, found by the job
+   * link - so neither the page was fetched nor a model asked. Absent from a
+   * server before analyses were stored.
+   */
+  reusedAnalyses?: number;
   errorRows: number;
   updatedRanges: string[];
   rowErrors: Array<{
@@ -869,6 +877,14 @@ export interface AdminAppSettings extends BuilderDefaults {
    * without anybody noticing is what the notice is for.
    */
   freeEnabledModelIds: string[];
+  /**
+   * The model every job analysis runs on - one for the whole installation, so
+   * that every posting is read, and classified into a job field, the same way.
+   * '' is the app default model. Each posting is analysed once, ever: changing
+   * this changes the postings analysed from then on, never the stored ones.
+   * Administrators only; the builder's payload does not carry it.
+   */
+  analysisModelId: string;
   /**
    * The bounds and the buttons of one purchase, per method a buyer can choose,
    * in thousandths of a dollar. These are the only bounds: a credit is a
@@ -1222,6 +1238,7 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     freeEnabledModelIds: Array.isArray(source.freeEnabledModelIds)
       ? source.freeEnabledModelIds.filter((id): id is string => typeof id === 'string')
       : [],
+    analysisModelId: typeof source.analysisModelId === 'string' ? source.analysisModelId : '',
     paymentLimits: normalizePaymentLimits(source.paymentLimits),
     requireThreeDSecure: source.requireThreeDSecure === true,
   };
@@ -1229,6 +1246,8 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
 
 export interface AdminAppSettingsUpdate extends Partial<BuilderDefaults> {
   providersEnabled?: Record<AIProvider, boolean>;
+  /** '' clears it (the app default model). A changed id must name a model that can run. */
+  analysisModelId?: string;
   googleSheetsSources?: GoogleSheetSource[];
   outputBaseDir?: string;
   outputPathTemplate?: string;
@@ -1667,7 +1686,6 @@ export const HARD_SKILL_CATEGORIES: HardSkillCategory[] = [
 
 export interface ProfileSettings {
   resumePromptId?: string;
-  analyzeJobPromptId?: string;
   coverLetterPromptId?: string;
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
@@ -1823,8 +1841,7 @@ export type PromptFeatureKey =
   | 'tailor-resume'
   | 'generate-cover-letter'
   | 'extract-template-from-pdf'
-  | 'extract-profile-from-resume'
-  | 'filter-google-sheet-job';
+  | 'extract-profile-from-resume';
 
 export interface PromptVariableDefinition {
   name: string;
@@ -1856,6 +1873,18 @@ export interface PromptSummary {
   usage?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * A tailor-resume record whose text never mentions `[[includeStrengths]]`:
+   * written before the profile's section switches. The app still enforces them.
+   */
+  predatesSectionSwitches?: boolean;
+  /**
+   * The analysis record, when its text never mentions `[[jobFieldList]]`:
+   * written before a posting had a job field. Its postings are still
+   * classified - the server appends the instructions to every turn - but
+   * outside the cached part of the prompt, so the shipped text is cheaper.
+   */
+  predatesJobField?: boolean;
 }
 
 export interface PromptRecord extends PromptSummary {
@@ -1869,6 +1898,8 @@ export interface PromptPreviewResult {
 }
 
 // Job Analysis types
+export type { JobFilterFacts, JobSalary };
+
 export interface JobAnalysis {
   jobMeta: {
     title: string;
@@ -1896,8 +1927,36 @@ export interface JobAnalysis {
     buzzwords: string[];
     mustInclude: string[];
   };
+  /**
+   * The posting's one job field: an id from the server's list
+   * (config/jobFields.ts), or `unclassified`. Shown by its label, which the
+   * server sends beside it (`AnalyzedJob.jobFieldLabel`).
+   */
+  jobField?: string;
+  /** What the posting states it pays; null when it states nothing. Never inferred. */
+  salary?: JobSalary | null;
+  /** The facts the Job Filter judges a posting on, from the same one analysis. */
+  filter?: JobFilterFacts;
   sourceJobDescription?: string;
 }
+
+/**
+ * A posting's analysis as `/resume/analyze` answers it: the analysis, the id
+ * it is stored under - what the page sends back to preview, generate and
+ * batches instead of the analysis itself, which the server would ignore - and
+ * its job field's label.
+ */
+export type AnalyzedJob = JobAnalysis & {
+  analysisId: string;
+  jobFieldLabel: string;
+};
+
+/** What the administrators' Prompt Test answers: the analysis, and whether it was made now or read from the store. */
+export type PromptTestAnalysis = AnalyzedJob & {
+  /** `ai` when a model wrote it, `sheet` when it was registered from an app sheet's Analysis cell. */
+  source?: 'ai' | 'sheet';
+  createdAt?: string;
+};
 
 export interface TailoredExperience {
   title: string;
@@ -2251,23 +2310,33 @@ export const promptsApi = {
 export const resumeApi = {
   getModels: async () => normalizeUserAppSettings(await apiFetch<unknown>('/resume/models')),
 
-  analyze: (jobDescription: string, overrides: AiRequestOverrides = {}, promptId?: string) =>
-    apiFetch<JobAnalysis>('/resume/analyze', {
+  /**
+   * The posting's one analysis: stored, or made now - once, ever - on the
+   * administrator's analysis model. No model or prompt is sent: there is one
+   * of each for every analysis, so that every profile, model and order builds
+   * on the same reading of the posting. Keep the `analysisId` it answers and
+   * send that onwards (lib/jobAnalysis.ts), not the analysis.
+   */
+  analyze: (jobDescription: string, jobLink?: string) =>
+    apiFetch<AnalyzedJob>('/resume/analyze', {
       method: 'POST',
-      body: JSON.stringify({ jobDescription, ...overrides, promptId }),
+      body: JSON.stringify({ jobDescription, ...(jobLink ? { jobLink } : {}) }),
     }),
 
-  analyzePromptTest: (jobDescription: string, overrides: AiRequestOverrides = {}, promptId?: string) =>
-    apiFetch<unknown>('/resume/analyze-prompt-test', {
+  /** Administrators' Prompt Test: the same one analysis, with where it came from. */
+  analyzePromptTest: (jobDescription: string) =>
+    apiFetch<PromptTestAnalysis>('/resume/analyze-prompt-test', {
       method: 'POST',
-      body: JSON.stringify({ jobDescription, ...overrides, promptId }),
+      body: JSON.stringify({ jobDescription }),
     }),
 
   generate: (data: {
     profileId: string;
     templateId: string;
     jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
+    jobLink?: string;
+    /** The stored analysis to build on (`AnalyzedJob.analysisId`); without one the server finds or makes the posting's. */
+    analysisId?: string;
     tailoredContent?: TailoredContent;
     /**
      * The preview's token, sent with its `tailoredContent`: it names the model
@@ -2287,6 +2356,7 @@ export const resumeApi = {
           downloadUrl: string;
           tailored: boolean;
           format?: 'pdf' | 'docx';
+          analysisId?: string;
           unconfirmedHardSkills?: string[];
           unconfirmedSoftSkills?: string[];
         }
@@ -2298,6 +2368,7 @@ export const resumeApi = {
             docx?: { filename: string; downloadUrl: string };
           };
           tailored: boolean;
+          analysisId?: string;
           unconfirmedHardSkills?: string[];
           unconfirmedSoftSkills?: string[];
         }
@@ -2345,13 +2416,17 @@ export const resumeApi = {
     profileId: string;
     templateId: string;
     jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
+    jobLink?: string;
+    /** The stored analysis to build on; see `generate`. */
+    analysisId?: string;
     tailoredContent?: TailoredContent;
     model?: string;
   }) =>
     apiFetch<{
       html: string;
       tailored: boolean;
+      /** The analysis the preview was built on, when it was built on one. */
+      analysisId?: string;
       tailoredContent?: TailoredContent;
       /** Only when THIS request wrote `tailoredContent`; a re-render of supplied content gets none. */
       previewToken?: string;
@@ -2363,7 +2438,9 @@ export const resumeApi = {
   previewAll: (data: {
     templateId?: string;
     jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
+    jobLink?: string;
+    /** The stored analysis every profile is built on; see `generate`. */
+    analysisId?: string;
     model?: string;
     profileIds?: string[];
   }) =>
@@ -2376,6 +2453,7 @@ export const resumeApi = {
         previewToken?: string;
       }>;
       tailored: boolean;
+      analysisId?: string;
       unconfirmedHardSkills?: string[];
       unconfirmedSoftSkills?: string[];
     }>('/resume/preview-all', {

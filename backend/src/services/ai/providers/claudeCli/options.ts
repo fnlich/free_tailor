@@ -139,7 +139,6 @@ export function readClaudeCliConfig(): ClaudeCliConfig {
     defaultTimeoutMs,
     timeoutMsByCallSite: {
       'tailor-resume': cliTimeoutMs('AI_CLI_TIMEOUT_MS_TAILOR'),
-      'filter-google-sheet-job': cliTimeoutMs('AI_CLI_TIMEOUT_MS_FILTER'),
     },
     workdir: flag('AI_CLI_WORKDIR', '') || defaultWorkdir(),
     allowOverage: boolFlag('AI_CLI_ALLOW_OVERAGE', false),

@@ -48,12 +48,13 @@ test('every AI call in the resume route can be cancelled by the caller going awa
   // behind an answer that can never be delivered.
   //
   // This was wrong in exactly the way that is easy to miss. Every short
-  // `analyzeJobDescription` call was cancellable while five of the six long
+  // `analyzeJobDescription` call (the analysis, now `getOrCreateAnalysis` through
+  // the gate) was cancellable while five of the six long
   // `tailorResume` calls - minutes each, and the ones actually holding a slot -
   // were not.
   const source = fs.readFileSync(ROUTE, 'utf8');
 
-  for (const name of ['tailorResume', 'generateCoverLetter', 'analyzeJobDescription']) {
+  for (const name of ['tailorResume', 'generateCoverLetter', 'getOrCreateAnalysis']) {
     const calls = callsTo(source, name).filter((call) => call.args.trim().length > 0);
     assert.ok(calls.length > 0, `${name} should be called by this route`);
     for (const call of calls) {

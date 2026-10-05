@@ -61,16 +61,38 @@ const FEATURE_ORDER: PromptFeatureKey[] = [
   'generate-cover-letter',
   'extract-template-from-pdf',
   'extract-profile-from-resume',
-  'filter-google-sheet-job',
 ];
 
 const PROFILE_SCOPED_FEATURES = new Set<PromptFeatureKey>([
-  'analyze-job-description',
   'tailor-resume',
 ]);
 
 function isProfileScopedFeature(featureKey?: PromptFeatureKey | null): boolean {
   return Boolean(featureKey && PROFILE_SCOPED_FEATURES.has(featureKey));
+}
+
+/**
+ * Job analysis has ONE prompt, the built-in Analyze Job Description, edited
+ * in place: a posting is analysed once, ever, for every profile and model, so
+ * there is nothing for a second prompt to do but disagree with the first. The
+ * server refuses a new variant and refuses to make an older one live, so the
+ * page offers neither; an older variant is still listed, and editable, since
+ * its text is the administrator's own.
+ */
+const SINGLE_PROMPT_FEATURE: PromptFeatureKey = 'analyze-job-description';
+
+function isSinglePromptFeature(featureKey?: PromptFeatureKey | null): boolean {
+  return featureKey === SINGLE_PROMPT_FEATURE;
+}
+
+/**
+ * An analysis prompt that never names `[[jobFieldList]]` was written before a
+ * posting had a job field. The server flags a saved one (`predatesJobField`);
+ * the editor checks the text as it is typed, as it does for the section
+ * switches below.
+ */
+function lacksJobFieldList(featureKey: PromptFeatureKey | undefined, content: string): boolean {
+  return isSinglePromptFeature(featureKey) && !/\[\[\s*jobFieldList\s*\]\]/.test(content);
 }
 
 function emptyValidation(): PromptValidation {
@@ -677,12 +699,16 @@ function PromptsPageBody() {
               </h3>
               {selectedFeatureGroup && (
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={handleNewVariant} className="tl-button-quiet" data-size="sm">
-                    New Variant
-                  </button>
-                  <button onClick={handleDuplicate} disabled={!draft} className="tl-button-quiet" data-size="sm">
-                    Duplicate
-                  </button>
+                  {!isSinglePromptFeature(selectedFeatureGroup.key) && (
+                    <>
+                      <button onClick={handleNewVariant} className="tl-button-quiet" data-size="sm">
+                        New Variant
+                      </button>
+                      <button onClick={handleDuplicate} disabled={!draft} className="tl-button-quiet" data-size="sm">
+                        Duplicate
+                      </button>
+                    </>
+                  )}
                   <button
                     onClick={() => void refreshPrompts(selectedFeatureGroup.key, selectedId)}
                     className="tl-button-quiet"
@@ -690,7 +716,7 @@ function PromptsPageBody() {
                   >
                     Reload
                   </button>
-                  {!isProfileScopedFeature(selectedFeatureGroup.key) && (
+                  {!isProfileScopedFeature(selectedFeatureGroup.key) && !isSinglePromptFeature(selectedFeatureGroup.key) && (
                     <button
                       type="button"
                       onClick={() => void handleSaveSelectedPrompt()}
@@ -709,6 +735,13 @@ function PromptsPageBody() {
               <div className="p-5 text-sm text-muted">No feature selected.</div>
             ) : (
               <div className="space-y-3 p-5">
+                {isSinglePromptFeature(selectedFeatureGroup.key) && (
+                  <p className="text-sm text-muted">
+                    Job analysis has one prompt, the built-in one: each posting is analysed once with it, on the
+                    analysis model chosen under Settings &gt; General, and never again. Editing it changes how
+                    postings never analysed before are read; stored analyses are kept as they are.
+                  </p>
+                )}
                 {selectedFeatureGroup.prompts.map((prompt) => (
                   <label
                     key={prompt.id}
@@ -730,6 +763,8 @@ function PromptsPageBody() {
                         {prompt.isActiveForFeature && !isProfileScopedFeature(prompt.featureKey) && (
                           <Pill tone="green">Live</Pill>
                         )}
+                        {prompt.predatesJobField && <Pill tone="amber">Predates job fields</Pill>}
+                        {prompt.predatesSectionSwitches && <Pill tone="amber">Predates section switches</Pill>}
                       </div>
                       {prompt.description && (
                         <div className="mt-1 text-sm text-muted">{prompt.description}</div>
@@ -844,16 +879,43 @@ function PromptsPageBody() {
                   )}
 
                   {/*
-                    Said here because nothing else would: a resume is charged at
-                    the model its run chose, so its analysis, tailoring and cover
-                    letter always run on that one, override or not.
+                    The analysis prompt written before postings had a job field.
+                    Nothing breaks - the server appends the seniority, job field,
+                    salary and filter instructions to every analysis it runs - but they
+                    then sit outside the cached part of the prompt, so every
+                    analysis pays for them again.
                   */}
-                  <p className="text-sm text-muted">
-                    An override decides the model for the job filter, the Bid Assistant and the
-                    extractors. A resume&apos;s analysis, tailoring and cover letter always run on the
-                    model chosen for the run - the one it is charged at - so an override never
-                    changes what a resume costs or runs on.
-                  </p>
+                  {lacksJobFieldList(draft.featureKey, draft.content) && (
+                    <Notice tone="warn">
+                      This prompt predates job fields: it never names <code>[[jobFieldList]]</code>. Postings are
+                      still classified - the app adds the seniority, job field, salary and filter instructions to every
+                      analysis - but outside the part of the prompt the model can cache. Put{' '}
+                      <code>[[jobFieldList]]</code> before <code>[[jobDescription]]</code>, as the shipped prompt
+                      does.
+                    </Notice>
+                  )}
+
+                  {/*
+                    Said here because nothing else would: a resume is charged at
+                    the model its run chose, so its tailoring and cover letter
+                    always run on that one, override or not - and the analysis
+                    is the posting's, made once on the analysis model.
+                  */}
+                  {isSinglePromptFeature(draft.featureKey) ? (
+                    <p className="text-sm text-muted">
+                      Job analysis always runs on the analysis model chosen under Settings &gt; General, so
+                      that every posting is read the same way. An override here is not used.
+                    </p>
+                  ) : (
+                    <p className="text-sm text-muted">
+                      An override decides the model for the Bid Assistant and the extractors. A resume&apos;s
+                      tailoring and cover letter always run on the model chosen for the run - the one it is
+                      charged at - so an override never changes what a resume costs or runs on. A
+                      posting&apos;s analysis runs once, on the analysis model.
+                    </p>
+                  )}
+                  {/* No override for the analysis: it would never be used, so it is not offered. */}
+                  {!isSinglePromptFeature(draft.featureKey) && (
                   <div className="grid gap-6 md:grid-cols-2">
                     <Field
                       label="Model override: provider"
@@ -921,6 +983,7 @@ function PromptsPageBody() {
                       </select>
                     </Field>
                   </div>
+                  )}
 
                   <Field label="Description" htmlFor="prompt-description">
                     <input

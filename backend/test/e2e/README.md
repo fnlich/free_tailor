@@ -136,10 +136,16 @@ and charged behind the check. Set
 `E2E_OUTPUT_DIR` too: it writes the admin *Output folder* setting at boot, so
 the runs' PDFs land there and not in the repository's `generated/`.
 `stub-sheets.js` adds Google Sheets for `sheet-panel.js` - every account's job
-sheet exists, with an older day's tab, today's and a Notes tab, and canned rows
-- through the same two seams the unit tests use (the account sheet's client,
-and the range reader `POST /api/import` calls). Everything else is the
-shipping code: routes, the queue, the tab lease, order rows, files.
+sheet exists, with an older day's tab, today's and a Notes tab, and rows held
+in memory, today's first row already carrying its six analysis cells (K:P) -
+through the same three seams the unit tests use (the account sheet's client,
+the range reader `POST /api/import` calls, and the analysis columns' client:
+the tab verify, reported intact, the one batched read of a sheet run's rows,
+and the write-back). All three share the rows, so what a run writes back is
+what the next *Load rows* shows. `stub-seat.js`'s canned analysis carries a job
+field, a salary and the filter facts. Everything else is the shipping code:
+routes, the analysis gate and its trust rule, the queue, the tab lease, order
+rows, files.
 
 ```bash
 cd backend && npm run build
@@ -177,18 +183,25 @@ real person sees (README, Troubleshooting) and why the page lists the run's
 files to download again. The handed-over count is the page's promise; the saved
 count only has to be more than nothing.
 
-`sheet-panel.js` — 24 claims. The sheet card has no *Import from Google Sheet*
+`sheet-panel.js` — 30 claims. The sheet card has no *Import from Google Sheet*
 button; the Tab select lists every tab in the spreadsheet's order and starts
 on today's, marked *(today)*; nothing can be built before rows are loaded.
 *Load rows* shows a job per row with a company and a description (rows 2, 3
 and 5 of today's tab), a link only where the cell is a web address (not the
 `javascript:` one), *From the posting* where there is no title, and the count
-of rows skipped; then Order and Generate Immediately, with the run priced.
+of rows skipped; then Order and Generate Immediately, with the run priced. The
+table's Analysis column says *Skips analysis* - with the row's Job Field and
+Salary - for the row whose Analysis cell is filled, and *When built* for the
+others, and the line above it counts them (*1 of 3 already analysed*); a tab
+with nothing in its analysis columns has no row that skips.
 Another tab drops what was loaded and loads its own rows. Order answers with an
 order number and Cancel on the receipt asks, cancels, and the order reads
 cancelled on Orders; Generate Immediately builds the loaded rows here and
-hands each of their twelve files to the browser once. At 390px the loaded
-table scrolls inside its box rather than widening the page.
+hands each of their twelve files to the browser once - and, reloaded after it,
+every row says *Skips analysis*: the two it analysed (or found stored) were
+written back. At 390px the loaded table scrolls inside its box rather than
+widening the page. The server's log shows the run's analysis calls (`[e2e
+stub] call N: analyze-job-description`): today's run makes none.
 
 ## The shell, as every role
 
@@ -216,6 +229,13 @@ Admin -> Accounts: Reporter in the role select and the invite form (which
 then asks for a rate per job rather than a subscription), a rate typed into a
 reporter's row stored as thousandths, and Record payout refusing more than the
 balance in the server's words, saying what a payout leaves, and recording it.
+
+The job analysis, as an administrator sees it (owner decisions J0, J1): Admin
+-> Prompts lists no Filter Google Sheet Job prompt, and Analyze Job
+Description is one prompt - no New Variant, Duplicate, Save Active or model
+override, and a sentence saying why; Admin -> Settings -> General has a Job
+Analysis section whose Analysis model select starts on the app default, with
+its own Save.
 
 ## Sign-in is seeded, deliberately
 

@@ -3,12 +3,8 @@ import { describeAiChoice } from '../config/aiPreferences';
 import { Profile } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, TailoredContent } from '../types/template';
 import { createPromptCompletion, DEFAULT_PROVIDER } from './ai';
-import {
-  analysisCacheKey,
-  readAnalysisCache,
-  writeAnalysisCache,
-} from './ai/analysisCache';
-import { resolvePromptByExactId } from './promptService';
+import { normalizeJobFieldId, renderJobFieldListForPrompt } from '../config/jobFields';
+import { normalizeFilterFacts, normalizeSalary, normalizeSeniority } from './jobAnalysis/facts';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory as LibraryHardSkillCategory,
@@ -21,7 +17,6 @@ import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { supplimentSoftSkills } from './utils/config';
 import {
-  DEFAULT_ANALYZE_JOB_PROMPT_ID,
   DEFAULT_COVER_LETTER_PROMPT_ID,
   DEFAULT_RESUME_PROMPT_ID,
   getProfileHardSkillOrdering,
@@ -43,8 +38,6 @@ const technicalSkills = readSkills('hard');
 const softSkills = readSkills('soft');
 let hardSkillPriorityMap = readHardSkillPriorityMap();
 let hardSkillRecords = readHardSkillRecords();
-const resumeBuildTiming = new WeakMap<JobAnalysis, { firstCallEndedAt: bigint }>();
-
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
 }
@@ -714,7 +707,14 @@ function toStringList(value: unknown): string[] {
   return [];
 }
 
-function normalizeJobAnalysisResponse(
+/**
+ * A model's analysis answer - or an Analysis cell read back from an app sheet
+ * - as a JobAnalysis whose every value was checked here: keyword lists
+ * cleaned, the job field one of the closed list or `unclassified`, the salary
+ * only numbers and words it may be, the filter facts only words the prompt
+ * offers.
+ */
+export function normalizeJobAnalysisResponse(
   parsed: RawNestedJobAnalysis,
   jobDescription: string
 ): JobAnalysis {
@@ -752,8 +752,8 @@ function normalizeJobAnalysisResponse(
 
   return {
     jobMeta: {
-      title: asString(parsed.jobMeta?.title) || asString(parsed.jobMeta?.title),
-      seniority: asString(parsed.jobMeta?.seniority),
+      title: asString(parsed.jobMeta?.title),
+      seniority: normalizeSeniority(parsed.jobMeta?.seniority),
       industry: asString(parsed.jobMeta?.industry),
       department: asString(parsed.jobMeta?.department),
     },
@@ -779,6 +779,11 @@ function normalizeJobAnalysisResponse(
         ...toStringList(keywordGroups.mustInclude),
       ]),
     },
+    // Checked against the closed list in code: a field the model invents, or
+    // one from the area that is not offered, is `unclassified`.
+    jobField: normalizeJobFieldId(parsed.jobField),
+    salary: normalizeSalary(parsed.salary),
+    filter: normalizeFilterFacts(parsed.filter),
     sourceJobDescription: jobDescription.trim(),
   };
 }
@@ -2204,102 +2209,22 @@ function decideSectionSoftSkills(
   };
 }
 
-export async function analyzeJobDescription(
+/**
+ * The analysis prompt's values: the posting and its link, and the closed list
+ * of job fields it is classified into.
+ *
+ * `jobFieldList` is the same text for every posting (config/jobFields.ts), and
+ * the shipped prompt carries it BEFORE the posting - promptAssembly keeps it
+ * in the stable system part, so a CLI's prompt cache reuses it from one
+ * posting to the next. Only services/jobAnalysis/gate.ts runs this prompt.
+ */
+export function buildAnalyzeJobDescriptionPromptValues(
   jobDescription: string,
-  choice: AiChoice,
-  promptId?: string,
-  signal?: AbortSignal
-): Promise<JobAnalysis> {
-  const { provider, modelName } = choice;
-  const resolvedPromptId = promptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
-  const promptValues = buildAnalyzeJobDescriptionPromptValues(jobDescription);
-  const firstCallStartedAt = process.hrtime.bigint();
-
-  /**
-   * The cheapest token is the one never sent.
-   *
-   * This app re-analyses the same posting constantly: a sheet import re-run
-   * after fixing one row, a batch regenerated against a different template, a
-   * preview followed by the generate that writes the file. The call is
-   * deterministic - fixed prompt, `temperature: 0` - so the same three inputs
-   * give the same answer, and all three are in the key.
-   *
-   * The prompt's own TEXT is in it, not just its id: an admin who edits a
-   * prompt and sees nothing change would have no way to tell the difference
-   * between a cache and a prompt that does not work.
-   */
-  const promptRecord = await resolvePromptByExactId(resolvedPromptId).catch(() => null);
-  const cacheKey = analysisCacheKey({
-    jobDescription,
-    promptText: promptRecord?.content ?? resolvedPromptId,
-    model: `${provider}/${modelName}`,
-  });
-  const cached = readAnalysisCache<JobAnalysis>(cacheKey);
-  if (cached) {
-    console.log(
-      '[Resume timing] First LLM call skipped: this job description was already analysed ' +
-        `(${describeAiChoice(choice)})`
-    );
-    // The cache hands out its own copy; see `detach`. This only has to record
-    // that the call took no time.
-    resumeBuildTiming.set(cached, { firstCallEndedAt: process.hrtime.bigint() });
-    return cached;
-  }
-
-  console.log(`[Resume timing] First LLM call started: analyze job description (${describeAiChoice(choice)})`);
-  const content = await createPromptCompletion({
-    promptId: resolvedPromptId,
-    promptValues,
-    fallbackProvider: provider,
-    fallbackModelName: modelName,
-    maxTokens: 7000,
-    temperature: 0,
-    responseFormat: 'json',
-    // Rendered by exact id, so resolved by exact id too. These used to
-    // disagree: the text came from this literal record while the model
-    // override came from whichever record was activated for the feature.
-    useExactPromptId: true,
-    // A resume's work runs on the model it is charged at (see runChoiceWins).
-    runChoiceWins: true,
-    signal,
-  });
-  const firstCallEndedAt = process.hrtime.bigint();
-  console.log(`[Resume timing] First LLM call finished in ${formatDuration(firstCallStartedAt, firstCallEndedAt)}`);
-
-  const analysis = parseJobAnalysisContent(content, jobDescription);
-  writeAnalysisCache(cacheKey, analysis);
-  resumeBuildTiming.set(analysis, { firstCallEndedAt });
-  return analysis;
-}
-
-export async function analyzeJobDescriptionPromptRaw(
-  jobDescription: string,
-  choice: AiChoice,
-  promptId?: string
-): Promise<unknown> {
-  const resolvedPromptId = promptId?.trim() || DEFAULT_ANALYZE_JOB_PROMPT_ID;
-  const promptValues = buildAnalyzeJobDescriptionPromptValues(jobDescription);
-  const content = await createPromptCompletion({
-    promptId: resolvedPromptId,
-    promptValues,
-    fallbackProvider: choice.provider,
-    fallbackModelName: choice.modelName,
-    maxTokens: 7000,
-    temperature: 0,
-    responseFormat: 'json',
-    useExactPromptId: true,
-  });
-
-  try {
-    return JSON.parse(extractJSON(content));
-  } catch (error) {
-    console.error('Failed to parse raw prompt test response:', error, content);
-    throw new Error('Failed to parse prompt test response');
-  }
-}
-
-export function buildAnalyzeJobDescriptionPromptValues(jobDescription: string): Record<string, string> {
+  jobLink = ''
+): Record<string, string> {
   return {
+    jobFieldList: renderJobFieldListForPrompt(),
+    jobLink: jobLink.trim(),
     jobDescription,
   };
 }
@@ -2319,7 +2244,18 @@ export function buildTailorResumePromptValues(
   profile: Profile,
   jobAnalysis: JobAnalysis
 ): Record<string, string> {
-  const { sourceJobDescription: _sourceJobDescription, ...jobAnalysisForPrompt } = jobAnalysis;
+  // The posting's text is in the analysis prompt, not this one. Its job field,
+  // salary and filter facts are left out too: they are for the sheet, the Job
+  // Filter and the lake, and a resume has no business mentioning what a job
+  // pays or whether it is remote - so the tailoring input is what it was
+  // before the analysis carried them.
+  const {
+    sourceJobDescription: _sourceJobDescription,
+    jobField: _jobField,
+    salary: _salary,
+    filter: _filter,
+    ...jobAnalysisForPrompt
+  } = jobAnalysis;
   const profileForPrompt = buildPromptProfile(profile);
   const augmentedPromptLists = buildLibraryAugmentedPromptLists(jobAnalysis);
   const promptSkills = augmentedPromptLists.promptSkills;
@@ -2400,10 +2336,6 @@ export async function tailorResume(
   const promptId = getProfileResumePromptId(profile);
   const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
   const secondCallStartedAt = process.hrtime.bigint();
-  const timing = resumeBuildTiming.get(jobAnalysis);
-  if (timing) {
-    console.log(`[Resume timing] Time between first LLM finish and second LLM start: ${formatDuration(timing.firstCallEndedAt, secondCallStartedAt)}`);
-  }
   console.log(`[Resume timing] Second LLM call started: tailor resume (${describeAiChoice(choice)})`);
   const content = await createPromptCompletion({
     promptId,

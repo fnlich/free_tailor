@@ -188,29 +188,32 @@ export function aiCodexHealthTimeoutMs(env: EnvSource = process.env): number {
 }
 
 /**
- * The CLI per-call budgets, in ms: the six variables claudeCli/options.ts and
+ * The CLI per-call budgets, in ms: the four variables claudeCli/options.ts and
  * codexCli/options.ts read for a call's own time limit, with the defaults they
  * use. Not in OPERATIONAL_VARIABLES - they predate it and keep their own,
  * looser reading (below) - but kept here so the providers and the startup
  * warning about them read one list and one set of numbers.
  *
- * The Gemini seat's three (`AI_GEMINI_TIMEOUT_MS*`) are not in this object:
+ * There were six: each seat had a `_FILTER` budget for the Job Filter's own
+ * short reading of a posting. That reading is gone - the filter judges the
+ * posting's one job analysis (owner decision J8), which runs on the seat's
+ * ordinary budget - so nothing read them any more, and they went with it.
+ *
+ * The Gemini seat's two (`AI_GEMINI_TIMEOUT_MS*`) are not in this object:
  * they are newer than envValue.ts and read through it, with the rest of that
  * seat's settings, in OPERATIONAL_VARIABLES. `cliTimeoutMs` still answers for
- * them, through the seat's own reader, so the warning below covers all nine.
+ * them, through the seat's own reader, so the warning below covers all six.
  */
 export const CLI_TIMEOUT_DEFAULTS_MS = {
   AI_CLI_TIMEOUT_MS: 180_000,
   AI_CLI_TIMEOUT_MS_TAILOR: 300_000,
-  AI_CLI_TIMEOUT_MS_FILTER: 60_000,
   AI_CODEX_TIMEOUT_MS: 180_000,
   AI_CODEX_TIMEOUT_MS_TAILOR: 300_000,
-  AI_CODEX_TIMEOUT_MS_FILTER: 60_000,
 } as const;
 
 export type CliTimeoutVariable = keyof typeof CLI_TIMEOUT_DEFAULTS_MS;
 
-/** Every seat's per-call budget variable: the six above and the Gemini seat's three. */
+/** Every seat's per-call budget variable: the four above and the Gemini seat's two. */
 export type AnyCliTimeoutVariable = CliTimeoutVariable | GeminiCliTimeoutVariable;
 
 function isGeminiTimeout(name: AnyCliTimeoutVariable): name is GeminiCliTimeoutVariable {
@@ -225,12 +228,12 @@ export function cliTimeoutDefaultMs(name: AnyCliTimeoutVariable): number {
 /**
  * One CLI budget, read the way its provider reads it.
  *
- * For the six older ones: `parseInt`, so `600000ms` is 600000 and `600000.5` is
+ * For the four older ones: `parseInt`, so `600000ms` is 600000 and `600000.5` is
  * 600000; clamped to 5000..3600000; the default for anything with no leading
  * number - all without a word, which is older than envValue.ts and left as it
- * was so no install's budgets move. The Gemini seat's three go through that
+ * was so no install's budgets move. The Gemini seat's two go through that
  * seat's own reader (envValue.ts, the same bounds, junk warned about once).
- * The ONE reader of all nine: the providers call it or the reader it defers
+ * The ONE reader of all six: the providers call it or the reader it defers
  * to, and so does the warning below, which therefore cannot disagree with them
  * about a value.
  */

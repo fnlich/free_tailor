@@ -28,6 +28,7 @@ const generatedPath = require('../dist/utils/generatedPath');
 const coverLetters = require('../dist/generators/coverLetterGenerator');
 const pdfGenerator = require('../dist/generators/pdfGenerator');
 const docxGenerator = require('../dist/generators/docxGenerator');
+const gate = require('../dist/services/jobAnalysis/gate');
 const { runResumeTask, resolveTaskRole, resetResumeTaskStateForTests } = require('../dist/services/queue/resumeTask');
 
 const ANALYSIS = {
@@ -65,9 +66,12 @@ function stubOutputs() {
     originals.push([module, name, module[name]]);
     module[name] = fake;
   };
-  swap(resumeService, 'analyzeJobDescription', async () => {
+  // The job's analysis comes through the gate: by the stored id a task
+  // carries, else the gate's own lookup-or-analyse, counted here.
+  swap(gate, 'loadAnalysis', (id) => (id === 'stored-analysis' ? { id, analysis: ANALYSIS } : null));
+  swap(gate, 'getOrCreateAnalysis', async () => {
     seen.analysed += 1;
-    return ANALYSIS;
+    return { id: 'fresh-analysis', analysis: ANALYSIS };
   });
   swap(resumeService, 'tailorResume', async () => ({ summary: 's', experience: [], coverLetter: '' }));
   swap(resumeService, 'generateCoverLetter', async (_profile, _company, role) => {
@@ -96,7 +100,7 @@ function stubOutputs() {
   };
 }
 
-function run(job, format = 'both') {
+function run(job, format = 'both', analysisId) {
   resetResumeTaskStateForTests();
   return runResumeTask(
     {
@@ -105,6 +109,7 @@ function run(job, format = 'both') {
       format,
       includeCoverLetterDocx: true,
       choice: { provider: 'claude-cli', modelName: 'sonnet' },
+      ...(analysisId ? { analysisId } : {}),
     },
     { signal: new AbortController().signal }
   );
@@ -119,22 +124,22 @@ test('the rule: a typed role wins, trimmed; an empty one is the analysed title; 
   assert.equal(resolveTaskRole('', { ...ANALYSIS, jobMeta: { ...ANALYSIS.jobMeta, title: ' ' } }), '');
 });
 
-test('an empty role is filled from the analysis the job carries, everywhere it is used', async () => {
+test('an empty role is filled from the analysis the task carries, everywhere it is used', async () => {
   const stubs = stubOutputs();
   try {
-    const result = await run({ companyName: 'Acme', role: '', jobDescription: 'x', jobAnalysis: ANALYSIS });
+    const result = await run({ companyName: 'Acme', role: '', jobDescription: 'x' }, 'both', 'stored-analysis');
     assert.equal(result.role, 'Staff Platform Engineer');
     assert.deepEqual(stubs.seen.coverLetter, ['Staff Platform Engineer']);
     assert.deepEqual(stubs.seen.path, ['Staff Platform Engineer']);
     assert.deepEqual(stubs.seen.pdf, ['Staff Platform Engineer']);
     assert.deepEqual(stubs.seen.docx, ['Staff Platform Engineer']);
-    assert.equal(stubs.seen.analysed, 0, 'the analysis the job carried was used, not asked for again');
+    assert.equal(stubs.seen.analysed, 0, 'the stored analysis the task named was used, not asked for again');
   } finally {
     stubs.restore();
   }
 });
 
-test('and from the analysis the task runs itself, when the job carried none', async () => {
+test('and from the analysis the task obtains through the gate, when it carried none', async () => {
   const stubs = stubOutputs();
   try {
     const result = await run(
@@ -153,7 +158,7 @@ test('and from the analysis the task runs itself, when the job carried none', as
 test('a role the sheet or the form gave is kept as given', async () => {
   const stubs = stubOutputs();
   try {
-    const result = await run({ companyName: 'Acme', role: 'Data Engineer', jobDescription: 'x', jobAnalysis: ANALYSIS }, 'pdf');
+    const result = await run({ companyName: 'Acme', role: 'Data Engineer', jobDescription: 'x' }, 'pdf', 'stored-analysis');
     assert.equal(result.role, 'Data Engineer');
     assert.deepEqual(stubs.seen.coverLetter, ['Data Engineer']);
     assert.deepEqual(stubs.seen.pdf, ['Data Engineer']);

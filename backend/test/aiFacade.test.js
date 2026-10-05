@@ -307,7 +307,7 @@ test('a prompt record model override beats the caller, and a stale provider id s
 });
 
 test("a prompt's override does not move a resume off the model it is charged at", async () => {
-  // A resume's analysis, tailoring and cover letter are priced at the run's
+  // A resume's tailoring and cover letter are priced at the run's
   // model. Honouring the override there ran the work on one model while the
   // account paid for another, and made the person's choice do nothing.
   const { staticDir } = useTempStorage('facade-override-priced');
@@ -342,11 +342,11 @@ test("a prompt's override does not move a resume off the model it is charged at"
 
   await resumeService.tailorResume(profile, analysis, choice);
   await resumeService.generateCoverLetter(profile, 'Acme', 'Engineer', choice);
-  await resumeService
-    .analyzeJobDescription('A job description long enough to be analysed. '.repeat(3), choice)
-    .catch(() => undefined);
+  // The analysis is not the resume's work any more: it runs once per posting
+  // on the administrator's analysis model, whatever the prompt record names
+  // (test/analysisGate.test.js).
 
-  assert.deepEqual(claude.requests.map((request) => request.modelName), ['opus', 'opus', 'opus']);
+  assert.deepEqual(claude.requests.map((request) => request.modelName), ['opus', 'opus']);
   assert.equal(gemini.requests.length, 0, 'the override ran nothing');
 
   // The same override still decides a call nobody is charged for.

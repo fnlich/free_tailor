@@ -121,6 +121,10 @@ function taskRow(task: Task) {
       queue: task.queue,
       label: task.label,
       kind: task.kind,
+      // WHOLE, which is what carries a resume's price (`payload.costMilli`)
+      // and its job's stored analysis (`payload.analysisId`) across a
+      // restart: a restored task that names its analysis never reaches the
+      // analysis step again (PLAN check 1, row 3).
       payload: task.payload,
       ...(task.value !== undefined ? { value: task.value } : {}),
       ...(task.error ? { error: task.error } : {}),
@@ -282,11 +286,40 @@ export function getGenerationQueue(): TaskQueue {
       RESUME_TASK_KIND,
       makeResumeRunner(
         (batchId) => (queue?.getBatch(batchId)?.shared.jobs as ResumeJob[] | undefined) ?? undefined,
-        (profileId) => getProfile(profileId)
+        (profileId) => getProfile(profileId),
+        {
+          ownerOf: (batchId) => {
+            const owner = queue?.getBatch(batchId)?.shared.ownerId;
+            return typeof owner === 'string' ? owner : null;
+          },
+          recorded: (batchId, jobIndex, analysisId) => recordJobAnalysis(batchId, jobIndex, analysisId),
+        }
       )
     );
   }
   return queue;
+}
+
+/**
+ * The first task of a job to obtain its analysis gives it to every task of
+ * that job: `analysisId` on each payload, written to disk at once, so a
+ * sibling profile's task, a retry and a task restored after a restart all
+ * skip the analysis step. Never fatal - a task without it finds the analysis
+ * in the store by its posting, still without a model call.
+ */
+function recordJobAnalysis(batchId: string, jobIndex: number, analysisId: string): void {
+  const batch = queue?.getBatch(batchId);
+  if (!batch) return;
+  for (const task of batch.tasks) {
+    const payload = task.payload as { jobIndex?: unknown; analysisId?: unknown } | null;
+    if (!payload || payload.jobIndex !== jobIndex || payload.analysisId === analysisId) continue;
+    payload.analysisId = analysisId;
+    try {
+      saveTaskRow(taskRow(task));
+    } catch (error) {
+      console.warn(`[queue] Could not record analysis ${analysisId} on task ${task.id}; it is found in the store instead.`, error);
+    }
+  }
 }
 
 /**
@@ -525,6 +558,9 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
             role: '',
           },
           kind: taskData.kind ?? RESUME_TASK_KIND,
+          // Whole, as `taskRow` wrote it: `costMilli` (what was charged) and
+          // `analysisId` (the job's stored analysis, so this task does not
+          // reach the analysis step again) come back with it.
           payload: refreshed ? refreshed.payload : taskData.payload,
           ...(taskData.value !== undefined ? { value: taskData.value } : {}),
           ...(taskData.error ? { error: taskData.error } : {}),

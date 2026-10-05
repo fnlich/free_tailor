@@ -38,10 +38,6 @@ export {
 export type { ProviderHealthReport } from './registry';
 
 export { resolveBatchCapacity, cliConcurrency } from './batchCapacity';
-export {
-  analysisCacheStats,
-  resetAnalysisCacheForTests,
-} from './analysisCache';
 export type { BatchCapacity } from './batchCapacity';
 
 export {

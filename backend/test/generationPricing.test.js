@@ -7,7 +7,7 @@ process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
 /** One go per resume, so a failed task refunds at once rather than after retries. */
 process.env.GENERATION_MAX_ATTEMPTS = '1';
 
-const { useAdminEmails, useTempStorage } = require('./helpers');
+const { storeJobAnalysis, useAdminEmails, useTempStorage } = require('./helpers');
 
 /**
  * What a run is charged, end to end through the routes.
@@ -466,11 +466,13 @@ test('a preview hands back a token naming the model that wrote it, and a re-rend
   const calls = [];
   const restore = claudeSeatNamingItsModel(calls);
   const { readPreviewToken } = require('../dist/services/credits/previewToken');
+  // The page names the posting's stored analysis; an analysis object is not read.
+  const analysisId = storeJobAnalysis(ANALYSIS);
   try {
     const single = await server.post('alice', '/resume/preview', {
       profileId: 'p-plain',
       model: 'claude-cli-opus',
-      jobAnalysis: ANALYSIS,
+      analysisId,
     });
     assert.equal(single.status, 200, JSON.stringify(single.body));
     assert.deepEqual(calls, ['opus']);
@@ -488,7 +490,7 @@ test('a preview hands back a token naming the model that wrote it, and a re-rend
     const rerender = await server.post('alice', '/resume/preview', {
       profileId: 'p-plain',
       model: 'claude-cli-haiku',
-      jobAnalysis: ANALYSIS,
+      analysisId,
       tailoredContent: single.body.tailoredContent,
     });
     assert.equal(rerender.status, 200);
@@ -503,13 +505,13 @@ test('a preview hands back a token naming the model that wrote it, and a re-rend
       profileIds: ['p-opus', 'p-plain'],
       model: 'claude-cli-haiku',
       jobDescription,
-      jobAnalysis: ANALYSIS,
+      analysisId,
     });
     assert.equal(named.status, 200, JSON.stringify(named.body));
     const unnamed = await server.post('alice', '/resume/preview-all', {
       profileIds: ['p-opus', 'p-plain'],
       jobDescription,
-      jobAnalysis: ANALYSIS,
+      analysisId,
     });
     const tokenModel = (body, profileId) =>
       readPreviewToken(body.previews.find((preview) => preview.profileId === profileId).previewToken, {

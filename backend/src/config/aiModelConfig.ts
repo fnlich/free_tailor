@@ -96,6 +96,15 @@ type AppSettings = {
   defaultGroupId: string;
   defaultProfileId: string;
   defaultModelId: string;
+  /**
+   * The ONE model every job analysis runs on (owner decision J1), so every
+   * posting's job field is read by the same model. A model record id; '' -
+   * the default - is "the app default model". Not a builder default and not
+   * in any ordinary account's payload: which model reads postings is the
+   * administrator's business. Changing it reaches only postings never
+   * analysed before (services/jobAnalysis/gate.ts never analyses one twice).
+   */
+  analysisModelId: string;
   defaultResumeDocxEnabled: boolean;
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
@@ -194,7 +203,7 @@ type BuilderDefaults = Pick<
  * read on the way to `AdminAppSettings`.
  */
 type BaseAppSettings = AIModelSettings & LegacyProviderFlags & BuilderDefaults &
-  Pick<AppSettings, 'aiModels' | 'googleSheetsSources'>;
+  Pick<AppSettings, 'aiModels' | 'googleSheetsSources' | 'analysisModelId'>;
 
 /** One model as an ordinary account sees it: the id a request names it by, and the name an administrator gave it. */
 export type UserModelOption = { id: string; name: string };
@@ -508,6 +517,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultGroupId: '',
   defaultProfileId: '',
   defaultModelId: defaultSeedModelId(),
+  analysisModelId: '',
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
   outputBaseDir: DEFAULT_GENERATED_RESUMES_DIR,
@@ -1506,6 +1516,18 @@ function normalizeSettings(
         ? (() => { throw new Error('defaultProfileId must be a string'); })()
       : fallback.defaultProfileId,
     defaultModelId,
+    // Kept as stored, even when it no longer names a model that runs: a
+    // switched-off model comes back on, and the gate falls back to the app
+    // default meanwhile (resolveAnalysisModel). A retired id is residue and
+    // reads as unset.
+    analysisModelId:
+      typeof source.analysisModelId === 'string'
+        ? isRetiredModelReference(source.analysisModelId.trim())
+          ? ''
+          : source.analysisModelId.trim()
+        : strict && hasOwnProperty(source, 'analysisModelId')
+          ? (() => { throw new Error('analysisModelId must be a string'); })()
+          : fallback.analysisModelId,
     defaultResumeDocxEnabled: typeof source.defaultResumeDocxEnabled === 'boolean'
       ? source.defaultResumeDocxEnabled
       : strict && hasOwnProperty(source, 'defaultResumeDocxEnabled')
@@ -1611,6 +1633,7 @@ function toBaseSettings(settings: AppSettings): BaseAppSettings {
     ...toBuilderDefaults(settings),
     aiModels: runnable.map((model) => ({ ...model })),
     googleSheetsSources: settings.googleSheetsSources,
+    analysisModelId: settings.analysisModelId,
   };
 }
 
@@ -1888,6 +1911,52 @@ function assertRequestedDefaultCanRun(input: AppSettingsUpdate, current: AppSett
   }
 }
 
+/**
+ * The analysis model is refused by name when a save CHANGES it to a model
+ * that cannot run - as Set Default is - rather than accepted and silently
+ * replaced by the app default on every analysis. Empty clears it.
+ */
+function assertRequestedAnalysisModelCanRun(input: AppSettingsUpdate, current: AppSettings, next: AppSettings): void {
+  if (!hasOwnProperty(input, 'analysisModelId')) return;
+  const requested = typeof input.analysisModelId === 'string' ? input.analysisModelId.trim() : '';
+  if (!requested || requested === current.analysisModelId) return;
+  const model = next.aiModels.find((entry) => entry.id === requested);
+  if (!model) {
+    throw new Error(`AI model "${requested}" was not found, so it cannot analyse job postings.`);
+  }
+  if (!getRunnableModels(next).some((entry) => entry.id === requested)) {
+    throw new Error(
+      `"${model.name}" cannot analyse job postings: it is switched off, or its provider is switched off or ` +
+        'locked here. Enable it under Admin -> Models first.'
+    );
+  }
+}
+
+/**
+ * The model a job analysis runs on: the administrator's analysis model when
+ * it can run, otherwise the app default model (what an unset one means).
+ *
+ * A chosen model that stopped running - switched off, its seat locked - falls
+ * back rather than failing every analysis, and says so once, naming the cause
+ * for the administrator who can fix it: the analysis is not a request, and the
+ * person whose build needs it did not choose the model.
+ */
+export async function resolveAnalysisModel(): Promise<AIModelRecord> {
+  const settings = await readSettings();
+  const chosen = settings.analysisModelId;
+  if (chosen) {
+    const runnable = getRunnableModels(settings).find((model) => model.id === chosen);
+    if (runnable) return runnable;
+    warnOncePerPreference(
+      `analysis-model:${chosen}`,
+      `[ai] The analysis model "${chosen}" cannot run (switched off, deleted, or its provider is switched ` +
+        'off or locked); job postings are analysed on the app default model until Admin -> Settings names ' +
+        'one that can.'
+    );
+  }
+  return resolveRequestedAIModel();
+}
+
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
   const current = await readSettings();
 
@@ -1957,6 +2026,7 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
   assertAtLeastOneProviderEnabled(next);
   assertAtLeastOneRunnableModel(next);
   assertRequestedDefaultCanRun(input, current, next);
+  assertRequestedAnalysisModelCanRun(input, current, next);
 
   const shouldValidateOutputDir =
     typeof input.outputBaseDir !== 'undefined' ||
@@ -2416,6 +2486,9 @@ export async function deleteAIModel(id: string): Promise<AdminAppSettings> {
     ...settings,
     aiModels: nextModels,
     defaultModelId: settings.defaultModelId === id ? '' : settings.defaultModelId,
+    // A deleted analysis model is no choice at all: postings go back to the
+    // app default, the same as an unset one, rather than warning for ever.
+    analysisModelId: settings.analysisModelId === id ? '' : settings.analysisModelId,
   };
 
   const saved = await writeSettings(next);

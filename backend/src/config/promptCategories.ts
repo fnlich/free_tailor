@@ -56,7 +56,6 @@ const BY_FEATURE: Readonly<Record<PromptFeatureKey, PromptCategoryId>> = Object.
   'analyze-job-description': 'extracting',
   'extract-template-from-pdf': 'extracting',
   'extract-profile-from-resume': 'extracting',
-  'filter-google-sheet-job': 'extracting',
   'tailor-resume': 'building',
   'generate-cover-letter': 'building',
 });

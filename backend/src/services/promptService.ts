@@ -26,14 +26,43 @@ import {
   PromptVariableDefinition,
 } from '../types/prompt';
 import { normalizePromptModelOverride, normalizePromptModelSelection } from './aiModelCatalog';
+import { renderJobFieldListForPrompt } from '../config/jobFields';
 import type { AIProvider } from '../types/template';
 
 const CUSTOM_PROMPT_PREFIX = 'custom-';
 const VARIABLE_PATTERN = /\[\[\s*([a-zA-Z0-9_.-]+)\s*\]\]/g;
 const PROFILE_SCOPED_PROMPT_FEATURES = new Set<PromptFeatureKey>([
-  'analyze-job-description',
   'tailor-resume',
 ]);
+
+/**
+ * The job analysis has ONE prompt, the built-in Analyze Job Description an
+ * administrator may edit, and it is never chosen per profile or activated
+ * from a variant: one analysis per posting for every profile (owner decision
+ * J0) needs one prompt to produce it. A variant written before this is kept
+ * and listed - it is the administrator's text - but nothing runs it.
+ */
+const ANALYSIS_PROMPT_FEATURE: PromptFeatureKey = 'analyze-job-description';
+
+/**
+ * Variables whose value the CODE fixes and is the same on every call, so
+ * promptAssembly keeps them in the cacheable stable part of the prompt rather
+ * than starting the call's data at them. The analysis prompt's list of job
+ * fields is the one: a variable so there is one copy of the list
+ * (config/jobFields.ts), not because it varies.
+ */
+export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set(['jobFieldList']);
+
+/**
+ * Built-in prompt ids whose feature was retired. An administrator's edited
+ * copy of one may still be stored; it is not listed as a stray custom prompt,
+ * because nothing could run it or attach it to anything.
+ *
+ * `filter-google-sheet-job` was the Job Filter's own reading of a posting.
+ * The filter now judges the job analysis (owner decision J8), whose prompt
+ * asks for the same facts, so a posting is read once whichever comes first.
+ */
+const RETIRED_BUILT_IN_PROMPT_IDS: ReadonlySet<string> = new Set(['filter-google-sheet-job']);
 
 type PromptFeatureDefinition = {
   key: PromptFeatureKey;
@@ -85,10 +114,29 @@ const PROMPT_FEATURES: PromptFeatureDefinition[] = [
     label: 'Analyze Job Description',
     id: 'analyze-job-description',
     name: 'Analyze Job Description',
-    description: 'Extracts structured ATS keywords, role metadata, and soft-skill signals from a raw job description.',
-    usage: 'Live prompt used by the resume analysis flow.',
+    description:
+      'Reads a job posting once: ATS keywords, role metadata, soft-skill signals, its one job field, ' +
+      'the salary it states, and the facts the Job Filter judges it on.',
+    usage:
+      'The one job analysis. Every posting is analysed once, ever, on the analysis model chosen under ' +
+      'Admin -> Settings; an edit here reaches only postings never analysed before.',
     responseFormat: 'json',
     allowedVariables: [
+      {
+        name: 'jobFieldList',
+        description:
+          'The closed list of job fields, one "id: Label" line each under its area, ending with "unclassified". ' +
+          'The same text for every posting, so keep it BEFORE the posting: that part of the prompt is cached.',
+        sampleValue: `Building software (by platform or target):
+- frontend: Frontend / web UI (HTML, CSS, JavaScript/TypeScript, frameworks like React, Vue, Angular and Svelte)
+- backend: Backend (APIs, business logic, databases, authentication, queues)
+- unclassified: none of the above fits`,
+      },
+      {
+        name: 'jobLink',
+        description: 'The posting\'s own link, or empty when it has none.',
+        sampleValue: 'https://jobs.example.com/openings/senior-software-engineer',
+      },
       {
         name: 'jobDescription',
         description: 'Raw job description text pasted by the user.',
@@ -293,54 +341,6 @@ Node.js, TypeScript, PostgreSQL, AWS`,
       },
     ],
   },
-  {
-    key: 'filter-google-sheet-job',
-    label: 'Filter Google Sheet Job',
-    id: 'filter-google-sheet-job',
-    name: 'Filter Google Sheet Job',
-    description: 'Analyzes scraped job-page content and returns structured job attributes for Google Sheets.',
-    usage: 'Live prompt used by the Google Sheets job filter flow.',
-    responseFormat: 'json',
-    allowedVariables: [
-      {
-        name: 'jobContent',
-        description: 'Scraped text content from the full job page.',
-        sampleValue: `Senior Software Engineer
-
-Remote - United States
-
-We are hiring a remote backend engineer based in the US. This role is fully remote, does not require a security clearance, and is not in the healthcare industry.
-
-Compensation: $180,000 - $220,000 base salary plus equity.
-
-Requirements:
-- 5+ years of backend engineering experience
-- Node.js, TypeScript, PostgreSQL
-- Strong written communication`,
-      },
-      {
-        name: 'jobDescription',
-        description: 'Legacy alias for jobContent so older prompts continue to render.',
-        sampleValue: `Senior Software Engineer
-
-Remote - United States
-
-We are hiring a remote backend engineer based in the US. This role is fully remote, does not require a security clearance, and is not in the healthcare industry.
-
-Compensation: $180,000 - $220,000 base salary plus equity.
-
-Requirements:
-- 5+ years of backend engineering experience
-- Node.js, TypeScript, PostgreSQL
-- Strong written communication`,
-      },
-      {
-        name: 'jobLink',
-        description: 'Original job URL for the scraped page.',
-        sampleValue: 'https://jobs.example.com/openings/senior-software-engineer',
-      },
-    ],
-  },
 ];
 
 const FEATURE_KEYS = new Set<PromptFeatureKey>(PROMPT_FEATURES.map((feature) => feature.key));
@@ -457,8 +457,8 @@ export function validatePromptContent(
  * unknown on a record that already holds one (which could never have run).
  *
  * Each feature's list is the key set of the function that builds its values
- * (`buildTailorResumePromptValues` and its siblings in resumeService, and
- * `buildJobFilterPromptValues`); test/promptVariables.test.js fails when the
+ * (`buildTailorResumePromptValues` and its siblings in resumeService, the job
+ * analysis's among them); test/promptVariables.test.js fails when the
  * two drift. Listing all of them, rather than the ones a record happens to
  * use, is also what shows an administrator what a prompt CAN use.
  */
@@ -483,6 +483,28 @@ export function listPromptFeatureVariableNames(featureKey: PromptFeatureKey): st
  */
 function predatesSectionSwitches(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
   return featureKey === 'tailor-resume' && !validation.usedVariables.includes('includeStrengths');
+}
+
+/**
+ * True for an analysis record written before a posting had a job field: one
+ * whose text never mentions `[[jobFieldList]]`, so it cannot ask for one from
+ * the list.
+ *
+ * Shown on Admin -> Prompts as a note. The record keeps working: the gate
+ * appends the job field, salary and filter instructions to every turn it runs
+ * (`buildAnalysisFactsOverride`), so its postings are still classified - but
+ * outside the cached part of the prompt, which the shipped text keeps them in.
+ */
+function predatesJobField(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
+  return featureKey === ANALYSIS_PROMPT_FEATURE && !validation.usedVariables.includes('jobFieldList');
+}
+
+/** The prompt flags Admin -> Prompts shows, spread onto a record. */
+function promptFlags(featureKey: PromptFeatureKey | undefined, validation: PromptValidation) {
+  return {
+    ...(predatesSectionSwitches(featureKey, validation) ? { predatesSectionSwitches: true } : {}),
+    ...(predatesJobField(featureKey, validation) ? { predatesJobField: true } : {}),
+  };
 }
 
 function buildSampleValue(variableName: string): string {
@@ -536,6 +558,10 @@ Looking for a backend-leaning engineer with Node.js, TypeScript, PostgreSQL, Doc
       return 'no';
     case 'technicalSkillsLayout':
       return 'grouped';
+    case 'jobFieldList':
+      return renderJobFieldListForPrompt();
+    case 'jobLink':
+      return 'https://jobs.example.com/openings/senior-software-engineer';
     default:
       return `<sample:${variableName}>`;
   }
@@ -767,6 +793,7 @@ function toPromptSummary(record: PromptRecord): PromptSummary {
     allowedVariables: record.allowedVariables,
     validation: record.validation,
     ...(record.predatesSectionSwitches ? { predatesSectionSwitches: true } : {}),
+    ...(record.predatesJobField ? { predatesJobField: true } : {}),
     isBuiltIn: record.isBuiltIn,
     isActiveForFeature: record.isActiveForFeature,
     usage: record.usage,
@@ -802,7 +829,7 @@ async function readBuiltInPromptRecord(definition: PromptFeatureDefinition): Pro
     modelName: modelSelection?.modelName,
     allowedVariables,
     validation,
-    ...(predatesSectionSwitches(definition.key, validation) ? { predatesSectionSwitches: true } : {}),
+    ...promptFlags(definition.key, validation),
     isBuiltIn: true,
     isActiveForFeature: false,
     usage: definition.usage,
@@ -865,7 +892,7 @@ function readCustomPromptRecord(id: string): PromptRecord | null {
     modelName: prompt.modelName,
     allowedVariables: prompt.allowedVariables,
     validation,
-    ...(predatesSectionSwitches(prompt.featureKey, validation) ? { predatesSectionSwitches: true } : {}),
+    ...promptFlags(prompt.featureKey, validation),
     isBuiltIn: false,
     isActiveForFeature: false,
     usage: prompt.featureKey ? getPromptFeatureDefinition(prompt.featureKey).usage : undefined,
@@ -896,7 +923,7 @@ async function listAllPromptRecords(): Promise<PromptRecord[]> {
     .filter((record): record is PromptRecord => record !== null);
 
   const customRecords = listCustomPrompts()
-    .filter((prompt) => !getPromptFeatureDefinitionById(prompt.id))
+    .filter((prompt) => !getPromptFeatureDefinitionById(prompt.id) && !RETIRED_BUILT_IN_PROMPT_IDS.has(prompt.id))
     .map((prompt) => readCustomPromptRecord(prompt.id))
     .filter((record): record is PromptRecord => record !== null);
 
@@ -909,7 +936,9 @@ async function listAllPromptRecords(): Promise<PromptRecord[]> {
     }
 
     const variants = [...builtInRecords, ...customRecords].filter((record) => record.featureKey === feature.key);
-    const configuredId = config.activePrompts[feature.key];
+    // The analysis runs its built-in record and nothing else, whatever an
+    // older build recorded as activated.
+    const configuredId = feature.key === ANALYSIS_PROMPT_FEATURE ? undefined : config.activePrompts[feature.key];
     const activeId = configuredId && variants.some((record) => record.id === configuredId)
       ? configuredId
       : variants.some((record) => record.id === feature.id)
@@ -1010,6 +1039,15 @@ function resolveCreateDraftContext(input: PromptCreateInput): {
   };
 }
 
+/** A new prompt for the analysis feature would never run: there is one analysis prompt. */
+function assertNotAnalysisVariant(featureKey: PromptFeatureKey | undefined): void {
+  if (featureKey === ANALYSIS_PROMPT_FEATURE) {
+    throw new Error(
+      'Job analysis has one prompt, the built-in Analyze Job Description. Edit that prompt instead of adding another.'
+    );
+  }
+}
+
 export async function createPrompt(input: PromptCreateInput): Promise<PromptRecord> {
   const name = normalizePromptName(input.name);
   const description = normalizePromptDescription(input.description);
@@ -1023,6 +1061,7 @@ export async function createPrompt(input: PromptCreateInput): Promise<PromptReco
   if (!content) {
     throw new Error('Prompt content is required');
   }
+  assertNotAnalysisVariant(draftContext.featureKey);
 
   // For a feature prompt, the variables its code supplies (see
   // `featureAllowedVariables`); otherwise the ones the author declared.
@@ -1117,6 +1156,9 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
   const name = normalizePromptName(input.name ?? current.name);
   const description = normalizePromptDescription(input.description ?? current.description);
   const draftContext = resolveUpdateDraftContext(input, current);
+  // A variant written before keeps its feature; moving another prompt INTO
+  // the analysis feature would make one more that never runs.
+  if (draftContext.featureKey !== current.featureKey) assertNotAnalysisVariant(draftContext.featureKey);
   const modelSelection = normalizePromptModelOverride(
     input.modelProvider ?? current.modelProvider,
     input.modelName ?? current.modelName,
@@ -1159,6 +1201,11 @@ export async function activatePrompt(id: string): Promise<PromptActivationResult
   }
   if (isProfileScopedPromptFeature(prompt.featureKey)) {
     throw new Error('Resume and cover letter prompts are selected per profile');
+  }
+  if (prompt.featureKey === ANALYSIS_PROMPT_FEATURE && prompt.id !== ANALYSIS_PROMPT_FEATURE) {
+    throw new Error(
+      'Job analysis always runs the built-in Analyze Job Description prompt. Edit that prompt instead.'
+    );
   }
 
   const config = readPromptLibraryConfig();

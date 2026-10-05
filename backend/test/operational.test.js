@@ -164,7 +164,8 @@ test('a CLI budget set above the request deadline is reported, because it can ne
   const warnings = op.describeAiTimeoutsAboveRequestDeadline({
     AI_CLI_TIMEOUT_MS_TAILOR: '600000',
     AI_CODEX_TIMEOUT_MS: '400000',
-    AI_CLI_TIMEOUT_MS_FILTER: '60000',
+    // Retired with the Job Filter's own model call: not a budget any more.
+    AI_CLI_TIMEOUT_MS_FILTER: '600000',
   });
   assert.equal(warnings.length, 2);
   assert.match(warnings[0], /AI_CLI_TIMEOUT_MS_TAILOR=600000 is longer than AI_REQUEST_TIMEOUT_MS=300000/);
@@ -210,7 +211,7 @@ test('a CLI budget the provider reads loosely is reported the same - 600000ms is
 });
 
 test('a CLI budget left at its own default is not reported under a lowered deadline', () => {
-  // Older copies of .env.example wrote all six budgets out at their defaults,
+  // Older copies of .env.example wrote the budgets out at their defaults,
   // so a .env made from one has them. Lowering AI_REQUEST_TIMEOUT_MS there is
   // the same legitimate cap as on an install that never wrote them, and a
   // warning would tell the operator to undo it.
@@ -234,14 +235,15 @@ test('a CLI budget left at its own default is not reported under a lowered deadl
   assert.equal(op.describeAiTimeoutsAboveRequestDeadline({ AI_CLI_TIMEOUT_MS_TAILOR: '600000' }).length, 1);
 });
 
-test('only the six budgets a provider reads are reported - not every name that looks like one', () => {
+test('only the budgets a provider reads are reported - not every name that looks like one', () => {
   assert.deepEqual(op.describeAiTimeoutsAboveRequestDeadline({ AI_CLI_TIMEOUT_MS_COVER: '600000' }), []);
+  // The `_FILTER` budgets went with the Job Filter's own model call: the filter
+  // judges the posting's one job analysis, on the seat's ordinary budget.
+  assert.deepEqual(op.describeAiTimeoutsAboveRequestDeadline({ AI_CODEX_TIMEOUT_MS_FILTER: '600000' }), []);
   assert.deepEqual(Object.keys(op.CLI_TIMEOUT_DEFAULTS_MS).sort(), [
     'AI_CLI_TIMEOUT_MS',
-    'AI_CLI_TIMEOUT_MS_FILTER',
     'AI_CLI_TIMEOUT_MS_TAILOR',
     'AI_CODEX_TIMEOUT_MS',
-    'AI_CODEX_TIMEOUT_MS_FILTER',
     'AI_CODEX_TIMEOUT_MS_TAILOR',
   ]);
 });

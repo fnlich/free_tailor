@@ -16,7 +16,13 @@ import {
 } from '../config/aiPreferences';
 import { readPreviewToken } from '../services/credits/previewToken';
 import { listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
-import { genericMessage, PublicError, publicStoredError, sendPublicError } from '../middleware/publicError';
+import {
+  genericMessage,
+  isPublicError,
+  PublicError,
+  publicStoredError,
+  sendPublicError,
+} from '../middleware/publicError';
 import {
   batchKind,
   getGenerationQueue,
@@ -55,8 +61,12 @@ import { orderRetentionDays } from '../services/orders/retention';
 import { ORDER_OUTPUT_PATH_TEMPLATE, sanitizeFileNameStem } from '../utils/outputStorage';
 import { accountFolderName, getGeneratedFilePath } from '../utils/generatedPath';
 import type { Profile } from '../types/profile';
-import type { JobAnalysis } from '../types/template';
+import type { UserAccount } from '../types/account';
 import { openBatchStream } from './batchStream';
+import { loadAnalysis } from '../services/jobAnalysis/gate';
+import { resolveAnalysesAtSubmit, type SheetSource } from '../services/jobAnalysis/submit';
+import { resolveAddressableSheet } from '../services/sheets/accountSheet';
+import { adminAllowedSheetIds } from '../services/sheets/jobSheetTarget';
 
 /**
  * Submitting work to the generation queue.
@@ -102,9 +112,25 @@ type SubmitBody = {
     companyName?: string;
     role?: string;
     jobDescription?: string;
-    jobAnalysis?: JobAnalysis;
+    /** The posting's link: with its text, what identifies it for the one-analysis rule. */
+    jobLink?: string;
+    /**
+     * A stored analysis the page holds for this posting (`/resume/analyze`
+     * answered it). Must exist. An analysis OBJECT sent as `jobAnalysis` is
+     * not read: the server only uses analyses it stored itself.
+     */
+    analysisId?: string;
     sourceRowNumber?: number;
   }>;
+  /**
+   * The app sheet the jobs were read from, for a sheet run: the account's own
+   * spreadsheet when `spreadsheetId` is left out (an administrator may also
+   * name a shared source), and the tab. Each job's `sourceRowNumber` is its
+   * row. The server reads the rows' analysis cells itself - one batched read
+   * at submission - and a row already analysed skips analysis (sheet first);
+   * a row analysed now has its cells written back, once.
+   */
+  sheet?: { spreadsheetId?: unknown; tabName?: unknown };
   /** Tailored content a preview already produced, keyed by profile id. */
   tailoredContentByProfileId?: Record<string, unknown>;
   /**
@@ -205,16 +231,50 @@ export function normalizeJobs(
       );
     }
 
+    const jobLink = typeof job.jobLink === 'string' ? job.jobLink.trim() : '';
+    const analysisId = typeof job.analysisId === 'string' ? job.analysisId.trim() : '';
+    if (analysisId && !loadAnalysis(analysisId)) {
+      throw new SubmitError(`Job ${index + 1} (${companyName}) names a job analysis that was not found.`);
+    }
+
+    // `jobAnalysis`, an analysis object a page used to send, is not read:
+    // the server uses only analyses it stored, by id.
     return {
       companyName,
       role,
       jobDescription,
-      ...(job.jobAnalysis ? { jobAnalysis: job.jobAnalysis } : {}),
+      ...(jobLink ? { jobLink } : {}),
+      ...(analysisId ? { analysisId } : {}),
       ...(typeof job.sourceRowNumber === 'number'
         ? { sourceRowNumber: job.sourceRowNumber }
         : {}),
     };
   });
+}
+
+/**
+ * The sheet a run's jobs came from, when the submission names one: checked
+ * like every route that takes a sheet - the account's own, or for an
+ * administrator a shared source they configured, and anything else is 404 -
+ * because analysis cells are about to be read from it and written into it.
+ *
+ * A sheet that is not set up on the server, or cannot be resolved for any
+ * reason but "not yours", leaves the run without sheet-first: the jobs are
+ * analysed from the store or by the gate exactly as manual ones are, and
+ * nothing is written back. The rows themselves came from the page.
+ */
+async function resolveRunSheet(account: UserAccount | undefined, sheet: SubmitBody['sheet']): Promise<SheetSource | null> {
+  if (!account || !sheet || typeof sheet !== 'object') return null;
+  const tabName = typeof sheet.tabName === 'string' ? sheet.tabName.trim() : '';
+  if (!tabName) throw new SubmitError('sheet.tabName is required for a sheet run.');
+  try {
+    const spreadsheetId = await resolveAddressableSheet(account, sheet.spreadsheetId, await adminAllowedSheetIds(account));
+    return { spreadsheetId, tabName };
+  } catch (error) {
+    if (isPublicError(error) && (error as PublicError).status === 404) throw error;
+    console.warn('[queue] The run names a sheet that could not be resolved; its rows are analysed without it.', error);
+    return null;
+  }
 }
 
 function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
@@ -362,6 +422,9 @@ export async function buildTasks(
           ...(tailoredByProfile[profile.id]
             ? { tailoredContent: tailoredByProfile[profile.id] }
             : {}),
+          // The job's ONE analysis, the same on every profile's task, when
+          // its posting already had one at submission (resolveAnalysesAtSubmit).
+          ...(job.analysisId ? { analysisId: job.analysisId } : {}),
         } satisfies ResumeTaskPayload,
       });
     }
@@ -521,6 +584,20 @@ router.post('/batches', async (req: Request, res: Response) => {
     // includes it (403 `subscription-too-low`), for an order and an
     // immediate run alike. Before anything is priced or charged.
     assertProfileScopeAllowed(req.user, { profileIds: body.profileIds, resolvedCount: profiles.length });
+
+    // ONE analysis per job, resolved before the jobs fan out into a task per
+    // profile, so every profile's task carries the same `analysisId`: the
+    // sheet row's own (one batched read of the rows), the one the page named,
+    // or the posting's stored one. No model is asked here - a job with none
+    // is analysed by its first task, through the same gate.
+    const sheet = await resolveRunSheet(req.user, body.sheet);
+    const analyses = await resolveAnalysesAtSubmit(jobs, { sheet, requestedBy: req.user?.id ?? null });
+    if (sheet) {
+      console.log(
+        `[queue] Sheet run on "${sheet.tabName}": ${analyses.fromSheet} job(s) analysed in the sheet, ` +
+          `${analyses.resolved - analyses.fromSheet} from the store, ${jobs.length - analyses.resolved} to analyse.`
+      );
+    }
 
     // Minted here rather than inside `submit`, because the credits have to be
     // reserved against this batch BEFORE any task can start - and `submit`

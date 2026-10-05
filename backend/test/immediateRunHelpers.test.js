@@ -328,11 +328,11 @@ test("the sheet panel builds a job per row with a company and a description, and
     ['Gamma', 'Analyst', 'ftp://x', ''],
     [],
   ];
-  const columns = { companyName: 0, jobTitle: 1, jobLink: 2, jobDescription: 3, analysis: null };
+  const columns = { companyName: 0, jobTitle: 1, jobLink: 2, jobDescription: 3, analysis: null, jobField: null, salary: null };
   const { jobs, skippedRows } = buildSheetJobs(values, 2, columns);
   assert.equal(skippedRows, 3);
   assert.deepEqual(
-    jobs.map((job) => [job.sourceRowNumber, job.companyName, job.jobTitle, job.jobLink, job.analysed]),
+    jobs.map((job) => [job.sourceRowNumber, job.companyName, job.jobTitle, job.jobLink, job.analysis]),
     [
       [2, 'Acme', 'Engineer', 'https://acme.example/jobs/1', null],
       // No title is sent as none: the server names the role from the analysis.
@@ -341,12 +341,23 @@ test("the sheet panel builds a job per row with a company and a description, and
     ]
   );
 
-  // With an analysis column mapped, each row says whether it has one.
-  const analysed = buildSheetJobs([['Acme', 'x', '', 'JD', '{"jobField":"backend"}'], ['Beta', '', '', 'JD', '']], 7, {
-    ...columns,
-    analysis: 4,
-  });
-  assert.deepEqual(analysed.jobs.map((job) => [job.sourceRowNumber, job.analysed]), [[7, true], [8, false]]);
+  // With the analysis column read, each row says what its cell holds - the
+  // server's reading of it, checked against the server in frontendAnalysis.test.js.
+  const analysed = buildSheetJobs(
+    [
+      ['Acme', 'x', '', 'JD', '{"v":1,"id":"a","analysis":{"jobField":"backend"}}'],
+      ['Beta', '', '', 'JD', ''],
+      ['Gamma', '', '', 'JD', '{"jobField":"backend"}'],
+    ],
+    7,
+    { ...columns, analysis: 4 }
+  );
+  assert.deepEqual(analysed.jobs.map((job) => [job.sourceRowNumber, job.analysis]), [
+    [7, 'ok'],
+    [8, 'empty'],
+    // Filled, but not this program's cell: nothing to build on.
+    [9, 'unparseable'],
+  ]);
 
   assert.throws(() => buildSheetJobs(values, 2, { ...columns, companyName: null }), /company name/);
   assert.throws(() => buildSheetJobs(values, 2, { ...columns, jobDescription: null }), /job description/);

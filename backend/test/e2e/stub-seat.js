@@ -25,12 +25,25 @@ const ai = require(path.join(DIST, 'services', 'ai', 'index'));
 
 const DELAY = Number(process.env.E2E_STUB_DELAY_MS || 2500);
 
+// With the job field, salary and filter facts the analysis prompt asks for,
+// so a page that shows them (the builder's "Analysed as", the previews) has
+// something to show.
 const ANALYSIS = JSON.stringify({
   jobMeta: { title: 'Senior Engineer', seniority: 'senior', industry: 'SaaS', department: 'Platform' },
   skills: { technical: ['TypeScript', 'Docker'], tools: [], soft: ['Adaptable'] },
   responsibilities: ['container build pipeline delivery'],
   domainKnowledge: [],
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
+  jobField: 'backend',
+  salary: { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null },
+  filter: {
+    jobType: 'remote',
+    onsiteInterview: 'not_specified',
+    companyCategory: 'saas',
+    clearanceRequired: 'none',
+    region: 'us',
+    usState: null,
+  },
 });
 
 const TAILORED = JSON.stringify({

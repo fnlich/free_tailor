@@ -19,10 +19,13 @@ import {
   resolveJobSheetTarget,
 } from '../services/sheets/jobSheetTarget';
 import {
+  describeJobFilterModel,
   evaluateJobFilterAnalysis,
-  evaluateJobContentAgainstFilter,
-  resolveJobFilterModel,
+  getEmptyJobFilterAnalysis,
+  jobFilterAnalysisOf,
 } from '../services/jobFilter';
+import { findStoredAnalysis, getOrCreateAnalysis } from '../services/jobAnalysis/gate';
+import { isAppOwnedSheet, queueAnalysisWriteBack } from '../services/sheets/analysisColumns';
 import { extractJobPageContent } from '../services/jobPageContent';
 import { scraperDefaultLocation, scraperMaxResults } from '../config/operational';
 import {
@@ -748,7 +751,7 @@ function catalogForReader(entry: ReturnType<typeof listScraperProviderCatalog>[n
 /** What one row's error line says, by the step it failed at. */
 const ROW_STEP_FAILED = {
   open: 'Could not open the job page',
-  judge: 'The AI could not judge this row',
+  judge: 'The AI could not analyse this job',
   write: 'Could not write to the sheet',
 } as const;
 
@@ -792,12 +795,14 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       );
     }
 
-    // Once for the run, so every row runs on the same model and the summary
-    // names the one they ran on.
-    const filterModel = await resolveJobFilterModel();
-    // A model no record names has no display name; only an administrator is
-    // given the CLI option's label for it.
-    const modelLabel = (isAdmin(req) && filterModel.adminModelLabel) || filterModel.modelLabel;
+    // The filter makes no model call of its own (owner decision J8): each
+    // row is judged on its posting's ONE job analysis, which the analysis
+    // model makes when the posting has none yet. The summary names that model.
+    const { modelLabel } = await describeJobFilterModel();
+    // The app's own sheets also get each row's analysis written into their
+    // protected analysis columns, once; a shared source keeps it in the
+    // database only.
+    const writesAnalysis = isAppOwnedSheet(sheetId);
 
     if (endRow < startRow) {
       // An empty tab is not an error - a sheet created this morning that nobody
@@ -818,6 +823,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         processedRows: 0,
         skippedRows: 0,
         scrapedRows: 0,
+        reusedAnalyses: 0,
         errorRows: 0,
         updatedRanges: [],
         rowErrors: [],
@@ -837,7 +843,9 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       }
     });
 
-    const fromCol = Math.min(...distinctColumns);
+    // The Company column too on an app sheet: a row's analysis is written back
+    // only when the row still names the company it was read with.
+    const fromCol = Math.min(...distinctColumns, ...(writesAnalysis ? [JOB_SHEET_COLUMNS.company] : []));
     const toCol = Math.max(...distinctColumns);
     const sheetRange = await fetchGoogleSheetsRange({
       sheetId,
@@ -852,9 +860,12 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
     const resultIndex = resultCol - fromCol;
     const reasonIndex = reasonCol - fromCol;
 
+    const companyIndex = JOB_SHEET_COLUMNS.company - fromCol;
+
     let processedRows = 0;
     let skippedRows = 0;
     let scrapedRows = 0;
+    let reusedAnalyses = 0;
     let errorRows = 0;
     const rowErrors: Array<{ row: number; message: string }> = [];
 
@@ -882,18 +893,28 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       // under the ref the line carries.
       let step: keyof typeof ROW_STEP_FAILED = 'open';
       try {
-        const jobContent = await extractJobPageContent(jobLink);
-        scrapedRows += 1;
+        // A posting already analysed - by a build, a sheet run, an earlier
+        // filter - is judged on that analysis, with no page fetch and no model.
+        let stored = findStoredAnalysis({ link: jobLink });
+        if (stored) {
+          reusedAnalyses += 1;
+        } else {
+          const jobContent = await extractJobPageContent(jobLink);
+          scrapedRows += 1;
 
-        step = 'judge';
-        const analysis = await evaluateJobContentAgainstFilter({
-          jobContent,
-          jobLink,
-          provider: filterModel.provider,
-          modelName: filterModel.modelName,
-          signal: filterSignal,
-        });
-        const decision = evaluateJobFilterAnalysis(analysis);
+          step = 'judge';
+          stored = await getOrCreateAnalysis({
+            jd: jobContent,
+            link: jobLink,
+            requestedBy: req.user?.id ?? null,
+            signal: filterSignal,
+          });
+        }
+        // A page with too little on it to analyse is judged on no facts at
+        // all, as it always was.
+        const decision = evaluateJobFilterAnalysis(
+          stored ? jobFilterAnalysisOf(stored.analysis) : getEmptyJobFilterAnalysis()
+        );
 
         step = 'write';
         await updateGoogleSheetsRow({
@@ -905,6 +926,11 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
             { col: reasonCol, value: decision.reason ?? '' },
           ],
         });
+
+        const company = typeof row[companyIndex] === 'string' ? row[companyIndex].trim() : '';
+        if (stored && writesAnalysis && company) {
+          queueAnalysisWriteBack({ spreadsheetId: sheetId, tabName, row: rowNumber, companyName: company, jobLink, stored });
+        }
 
         processedRows += 1;
       } catch (error) {
@@ -930,6 +956,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       processedRows,
       skippedRows,
       scrapedRows,
+      reusedAnalyses,
       errorRows,
       updatedRanges: [
         buildColumnRange(tabName, startRow, endRow, resultCol),

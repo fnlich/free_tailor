@@ -11,14 +11,14 @@ import { profileForTemplate } from '../profileService';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../../generators/coverLetterGenerator';
 import { generateResumePDF } from '../../generators/pdfGenerator';
-import { analysisCacheKey } from '../ai/analysisCache';
 import { getProviderSemaphore, warnOnce } from '../ai';
 import {
-  analyzeJobDescription,
   generateCoverLetter,
   parseTailoredResumeContent,
   tailorResume,
 } from '../resumeService';
+import { getOrCreateAnalysis, loadAnalysis, type StoredJobAnalysis } from '../jobAnalysis/gate';
+import { writeBackFor, type SheetRowRef } from '../jobAnalysis/submit';
 import type { Profile } from '../../types/profile';
 import type { JobAnalysis, TailoredContent } from '../../types/template';
 import { getGeneratedOutputPath } from '../../utils/generatedPath';
@@ -42,8 +42,17 @@ export type ResumeJob = {
   companyName: string;
   role: string;
   jobDescription: string;
-  jobAnalysis?: JobAnalysis;
+  /** The posting's link: with its text, what identifies it for the one-analysis rule. */
+  jobLink?: string;
+  /**
+   * The posting's stored analysis, when it had one at submission - its sheet
+   * row's own, the one the page named, or the store's (see
+   * services/jobAnalysis/submit.ts). Copied onto every task's payload.
+   */
+  analysisId?: string;
   sourceRowNumber?: number;
+  /** The app-sheet row the job came from, when it did: where its analysis is written back, once. */
+  sheetRow?: SheetRowRef;
 };
 
 /**
@@ -83,6 +92,15 @@ export type ResumeTaskPayload = {
   /** Tailored content a preview already produced, so the model is not re-asked. */
   tailoredContent?: import('../../types/template').TailoredContent;
   /**
+   * The job's stored analysis (`job_analyses.id`). Set at submission when the
+   * posting already had one, and otherwise written onto every task of the job
+   * the moment the first of them obtains it (`AnalysisHooks.recorded`) - so a
+   * retry, a restored task and a sibling profile's task all skip the
+   * analysis step. Persisted with the payload, which `taskRow` writes whole
+   * and the restore reads back whole.
+   */
+  analysisId?: string;
+  /**
    * Where an ORDERED build files itself, carried rather than looked up.
    *
    * Both are plain strings for the same reason the profile is an id: the
@@ -103,6 +121,12 @@ export type ResumeTaskInput = {
   includeCoverLetterDocx: boolean;
   choice: AiChoice;
   tailoredContent?: import('../../types/template').TailoredContent;
+  /** The task's own `analysisId`, when it carries one: the analysis step is skipped. */
+  analysisId?: string;
+  /** Who queued it, recorded on an analysis this task is the first to obtain. */
+  requestedBy?: string | null;
+  /** Called once when THIS task obtained the job's analysis through the gate. */
+  onAnalysis?: (stored: StoredJobAnalysis) => void;
   accountFolder?: string;
   orderNumber?: string;
   pathTemplate?: string;
@@ -148,22 +172,10 @@ export function resumeRenderConcurrency(): number {
   return RENDER_CONCURRENCY;
 }
 
-/**
- * Analyses currently in flight, keyed exactly as the analysis cache keys them.
- *
- * `analysisCache` already stops the SECOND call for a posting - but only after
- * the first has returned. Ten tasks on one job description all start together,
- * all miss, and all call. That is nine wasted turns on a seat, and it is the
- * commonest shape in this app: one posting, several profiles.
- *
- * Keyed on the model as well as the text, which the cache also does and a
- * per-batch memo did not: two profiles set to different models must not share
- * one analysis produced by whichever got there first.
- */
-const inFlightAnalyses = new Map<string, Promise<JobAnalysis>>();
-
+/** Kept for the tests that reset per-task state; the analysis gate keeps its own (resetAnalysisGateForTests). */
 export function resetResumeTaskStateForTests(): void {
-  inFlightAnalyses.clear();
+  // Nothing of its own any more: the in-flight analyses moved to the gate,
+  // where every caller - not only the queue - shares them.
 }
 
 /**
@@ -215,44 +227,59 @@ export async function currentChoice(choice: AiChoice, profile: Profile): Promise
  */
 export const __currentChoiceForTests = currentChoice;
 
-async function analyseOnce(
-  job: ResumeJob,
-  choice: AiChoice,
-  signal: AbortSignal
-): Promise<JobAnalysis | undefined> {
-  if (job.jobAnalysis) return job.jobAnalysis;
-  if (!job.jobDescription || job.jobDescription.trim().length <= 50) return undefined;
-
-  const key = analysisCacheKey({
-    jobDescription: job.jobDescription,
-    // The prompt's own text is what the cache keys on; here the id is enough,
-    // because a cache hit inside `analyzeJobDescription` does the precise check
-    // and this map only has to coalesce calls that are in flight together.
-    promptText: 'analyze-job-description',
-    model: `${choice.provider}/${choice.modelName}`,
+/**
+ * The job's analysis, as this task needs it.
+ *
+ * A task that carries an `analysisId` reads it from the store and never
+ * reaches the gate: a retry repeats only the step that failed (tailoring, the
+ * PDF...), and a task restored after a restart is the same task. Only a task
+ * with none goes through the gate - the first of a job's tasks to get there
+ * makes the job's one call, and every other profile's task waits for it
+ * there - and a FAILED analysis stored nothing, so its retry is the first
+ * analysis, not a second. A job whose posting is too short to analyse has
+ * none, and its resume is built untailored, as before.
+ */
+async function analysisFor(input: ResumeTaskInput, signal: AbortSignal): Promise<StoredJobAnalysis | null> {
+  if (input.analysisId) {
+    const stored = loadAnalysis(input.analysisId);
+    if (stored) return stored;
+    warnOnce(
+      `missingTaskAnalysis:${input.analysisId}`,
+      `A queued resume names stored analysis ${input.analysisId}, which is not in the store; its posting is ` +
+        'looked up again.'
+    );
+  }
+  const stored = await getOrCreateAnalysis({
+    jd: input.job.jobDescription,
+    link: input.job.jobLink,
+    requestedBy: input.requestedBy ?? null,
+    signal,
   });
-
-  const existing = inFlightAnalyses.get(key);
-  if (existing) return existing;
-
-  const started = analyzeJobDescription(job.jobDescription, choice, undefined, signal).finally(
-    () => {
-      inFlightAnalyses.delete(key);
+  if (stored) {
+    // Once per job, by whichever task got here first: the job, every sibling
+    // task's payload, and the sheet row it came from.
+    if (input.job.analysisId !== stored.id) {
+      input.job.analysisId = stored.id;
+      try {
+        input.onAnalysis?.(stored);
+      } catch (error) {
+        console.warn('[queue] Could not record a job analysis on its tasks; they find it in the store instead.', error);
+      }
+      try {
+        writeBackFor(input.job, stored);
+      } catch (error) {
+        console.warn('[queue] Could not queue the write-back of a job analysis to its sheet row.', error);
+      }
     }
-  );
-  inFlightAnalyses.set(key, started);
-  return started;
+  }
+  return stored;
 }
 
 /**
- * The analysis step on its own, for the coalescing tests.
- *
- * Exported under a marked name rather than made public: what it does is an
- * implementation detail of `runResumeTask`, but "ten tasks on one posting call
- * once" cannot be checked through a whole task without also dragging in
- * templates, profiles and a PDF render.
+ * The analysis step on its own, for the tests: a whole task would also drag
+ * in a template, a profile on disk and a PDF render.
  */
-export const __analyseOnceForTests = analyseOnce;
+export const __analysisForTests = analysisFor;
 
 /**
  * Content a page held from an earlier preview, finished against the profile
@@ -321,7 +348,7 @@ export async function runResumeTask(
   const template = await resolveTemplateForProfile(profile, input.templateId);
   if (!template) throw new Error('Default template not available');
 
-  const analysis = await analyseOnce(job, choice, assignment.signal);
+  const analysis = (await analysisFor(input, assignment.signal))?.analysis;
 
   // Tailored for the template it is drawn with: a section switch that
   // template has no section for is off for the model too, as it is in the
@@ -433,9 +460,21 @@ export class ProfileGoneError extends PublicError {
  * deleted while its task was queued fails that task by name instead of throwing
  * something about `undefined`.
  */
+export type AnalysisHooks = {
+  /** Who queued a batch: recorded on an analysis one of its tasks obtains. */
+  ownerOf?: (batchId: string) => string | null;
+  /**
+   * A task obtained its job's analysis through the gate: write the id onto
+   * every task of that job in the batch, so none of them - retried, restored
+   * or not started yet - reaches the analysis step again.
+   */
+  recorded?: (batchId: string, jobIndex: number, analysisId: string) => void;
+};
+
 export function makeResumeRunner(
   readJobs: (batchId: string) => ResumeJob[] | undefined,
-  readProfile: (profileId: string) => Profile | null
+  readProfile: (profileId: string) => Profile | null,
+  hooks: AnalysisHooks = {}
 ) {
   return async (payload: unknown, assignment: Assignment): Promise<ResumeTaskResult> => {
     const input = payload as ResumeTaskPayload;
@@ -463,6 +502,11 @@ export function makeResumeRunner(
         orderNumber: input.orderNumber,
         pathTemplate: input.pathTemplate,
         ...(input.tailoredContent ? { tailoredContent: input.tailoredContent } : {}),
+        // The payload's own id first; a job stamped by a sibling task since
+        // this one was queued has it too.
+        ...(input.analysisId || job.analysisId ? { analysisId: input.analysisId || job.analysisId } : {}),
+        requestedBy: hooks.ownerOf?.(input.batchId) ?? null,
+        onAnalysis: (stored) => hooks.recorded?.(input.batchId, input.jobIndex, stored.id),
       },
       assignment
     );

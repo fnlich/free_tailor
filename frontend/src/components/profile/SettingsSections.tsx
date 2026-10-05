@@ -105,8 +105,10 @@ export function GenerationSettingsSection({
   const set = <K extends keyof DraftSettings>(field: K, value: DraftSettings[K], immediate = false) =>
     update((current) => ({ ...current, settings: { ...current.settings, [field]: value } }), { immediate });
 
+  // No analysis prompt here any more: a posting is analysed once, for every
+  // profile, by the one Analyze Job Description prompt - a profile choosing
+  // its own would need a second analysis of the same posting.
   const resumePrompts = prompts.filter((prompt) => prompt.featureKey === 'tailor-resume');
-  const analyzeJobPrompts = prompts.filter((prompt) => prompt.featureKey === 'analyze-job-description');
 
   return (
     <Section title="Prompts and files" description="How this profile is tailored, and what its files are called.">
@@ -119,16 +121,6 @@ export function GenerationSettingsSection({
             builtInId={DEFAULT_PROFILE_SETTINGS.resumePromptId}
             builtInLabel="Built-in Resume Prompt"
             onChange={(value) => set('resumePromptId', value)}
-          />
-        </Field>
-        <Field label="Extracting prompt" htmlFor="profile-analyze-prompt">
-          <PromptSelect
-            id="profile-analyze-prompt"
-            value={settings.analyzeJobPromptId}
-            prompts={analyzeJobPrompts}
-            builtInId={DEFAULT_PROFILE_SETTINGS.analyzeJobPromptId}
-            builtInLabel="Built-in Extracting Prompt"
-            onChange={(value) => set('analyzeJobPromptId', value)}
           />
         </Field>
         <Field

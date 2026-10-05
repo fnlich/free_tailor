@@ -1140,6 +1140,49 @@ async function main() {
     check('admin wide: every Administration page is on screen without scrolling the row', allVisible);
     check('admin /admin/prompts: the Settings sidebar row stays lit', onSettings.settingsRowLit);
 
+    /*
+     * Job analysis has one prompt, edited in place (owner decision J0): no
+     * New Variant or Duplicate for it, a sentence saying why, and no model
+     * override - it runs on the analysis model. The Job Filter's own prompt
+     * is gone from the list.
+     */
+    const promptFeatures = await adminPage.evaluate(() =>
+      Array.from(document.querySelectorAll('aside button')).map((b) => b.textContent.replace(/\d+$/, '').trim())
+    );
+    check(
+      'admin /admin/prompts: no Filter Google Sheet Job prompt any more, Analyze Job Description listed',
+      !promptFeatures.some((label) => /Filter Google Sheet Job/.test(label)) &&
+        promptFeatures.some((label) => label.startsWith('Analyze Job Description')),
+      promptFeatures.join(', ')
+    );
+    await adminPage.evaluate(() => {
+      Array.from(document.querySelectorAll('aside button'))
+        .find((b) => b.textContent.trim().startsWith('Analyze Job Description'))
+        ?.click();
+    });
+    await adminPage
+      .waitForFunction(() => /Job analysis has one prompt/.test(document.body.innerText), { timeout: 10_000 })
+      .catch(() => null);
+    const analysisPrompt = await adminPage.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
+      return {
+        onePrompt: /Job analysis has one prompt/.test(document.body.innerText),
+        newVariant: buttons.includes('New Variant'),
+        duplicate: buttons.includes('Duplicate'),
+        saveActive: buttons.includes('Save Active'),
+        override: Boolean(document.getElementById('prompt-model-provider')),
+      };
+    });
+    check(
+      'admin /admin/prompts: the analysis prompt is one prompt - no New Variant, Duplicate, Save Active or override',
+      analysisPrompt.onePrompt &&
+        !analysisPrompt.newVariant &&
+        !analysisPrompt.duplicate &&
+        !analysisPrompt.saveActive &&
+        !analysisPrompt.override,
+      JSON.stringify(analysisPrompt)
+    );
+
     await adminPage.goto(`${APP}/orders`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 350));
     const offSettings = await adminPage.evaluate(() =>
@@ -1197,6 +1240,27 @@ async function main() {
       'admin /admin/settings: General has a Contact section with its own Save',
       contactSection.headings.includes('Contact') && contactSection.save && contactSection.add,
       JSON.stringify(contactSection)
+    );
+    // The one analysis model (owner decision J1): the app default first, then
+    // every model that can run, with its own Save.
+    const analysisModel = await adminPage.evaluate(() => {
+      const select = document.getElementById('analysis-model');
+      return {
+        heading: Array.from(document.querySelectorAll('.tl-section h2')).some((h) => h.textContent.trim() === 'Job Analysis'),
+        options: select ? Array.from(select.options).map((o) => o.textContent.trim()) : null,
+        value: select?.value ?? null,
+        save: Array.from(document.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Save Analysis Model'),
+        once: /analysed once, by this model, and never again/.test(document.body.innerText),
+      };
+    });
+    check(
+      'admin /admin/settings: Job Analysis names the analysis model - the app default unless chosen - and says each posting is analysed once',
+      analysisModel.heading &&
+        /^App default model/.test(analysisModel.options?.[0] ?? '') &&
+        analysisModel.value === '' &&
+        analysisModel.save &&
+        analysisModel.once,
+      JSON.stringify(analysisModel)
     );
 
     /*

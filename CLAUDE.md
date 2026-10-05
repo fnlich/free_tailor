@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~35s with the tsc step, 1395 tests)
+npm test                       # backend node:test suite (~55s with the tsc step, 1440 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -122,7 +122,8 @@ backend/src/
                       #   Configuration table. The drift test
                       #   test/envExample.test.js fails until all three agree.
                       #   providerCatalog.ts is the ONE list of seats and of
-                      #   retired ids; providerModels.ts each seat's model-name
+                      #   retired ids; jobFields.ts the job fields a posting
+                      #   is classified into (stable ids, never reused); providerModels.ts each seat's model-name
                       #   list; pricePerResume.ts the price field's rules
                       #   (thousandths of a dollar, see "Money" below);
                       #   modelErrors.ts the two model refusals;
@@ -207,7 +208,11 @@ backend/src/
                       #   reuse a retired number.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
-  integrations/       # Stripe, Cryptomus, Google Sheets - one file per service
+  integrations/       # Stripe, Cryptomus, Google Sheets - one file per service.
+                      #   Every Sheets/Drive call goes through `fetchWithBackoff`
+                      #   (429: jittered exponential backoff, Retry-After
+                      #   honoured, 5 retries, 32s cap); analysis data and the
+                      #   filter's verdicts are written RAW, never USER_ENTERED
   middleware/         # auth, uploads, and publicError.ts - what a failure may
                       #   tell whom (see "The AI layer" below)
   routes/             # one file per /api/* area. profiles.ts also holds
@@ -249,6 +254,13 @@ backend/src/
                       #   name the remedy - because each diagnoses a failure whose
                       #   single error message covers several causes.
   services/ai/        # provider-agnostic transport; one directory per provider
+  services/jobAnalysis/ # THE way to a job analysis: gate.ts's
+                      #   `getOrCreateAnalysis` (the only caller of the analysis
+                      #   prompt - test/analysisGate.test.js greps for any
+                      #   other), identity.ts (link key, content hash),
+                      #   facts.ts (salary, filter facts), submit.ts (a batch's
+                      #   analyses at submission, sheet first). See "Job
+                      #   analysis runs once" below.
   services/queue/     # on-disk generation queue (survives a restart). One LANE
                       #   per real resource - one per seat, `cli`, `codex` and
                       #   `gemini` (`laneFor`) - each sized from its seat's own
@@ -258,7 +270,10 @@ backend/src/
                       #   not the Task serialized, so a new field must be named
                       #   there AND in the restore mapper or it silently does
                       #   not persist. The payload persists whole, which is why
-                      #   a task's price lives on it (`payload.costMilli`) -
+                      #   a task's price lives on it (`payload.costMilli`), and
+                      #   its job's stored analysis (`payload.analysisId`, set
+                      #   at submit or stamped on every task of the job by the
+                      #   first to obtain it - `recordJobAnalysis`) -
                       #   and so does `batch.shared`, which is why a batch's
                       #   KIND is there: `shared.kind = 'order' | 'immediate'`
                       #   (`isOrderBatch`, `isImmediateBatch`; submit body
@@ -337,7 +352,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 118 files; fixtures/cli, codex and gemini
+  test/               # node:test, 122 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -509,7 +524,10 @@ frontend/src/
                       #   show again" (localStorage), how a run ended - are
                       #   lib/immediateRun.ts, and the sheet panel's rows
                       #   (components/SheetsSourcePanel) lib/sheetRows.ts, both
-                      #   run by test/immediateRunHelpers.test.js. The
+                      #   run by test/immediateRunHelpers.test.js; sheetRows.ts
+                      #   also holds the two sheet LAYOUTS and the Analysis
+                      #   cell's states, which test/frontendAnalysis.test.js
+                      #   holds to JOB_SHEET_COLUMNS and parseAnalysisCell. The
                       #   multi-profile choices lock on lib/subscriptions.ts
                       #   `canBuildForManyProfiles` (the backend's
                       #   hasSubscription, admins exempt; frontendHelpers.test.js
@@ -852,11 +870,14 @@ in with a key (stored in CODEX_HOME, out of the environment strip's reach). `AI_
 cannot run; nothing is locked out of the box, a fresh install defaults to the
 first seat not locked, and with all three locked a settings READ still succeeds
 with no runnable models (saves keep their asserts) while a run fails with
-`AiUnavailableError`. The job filter and the Bid Assistant run on the app
-default MODEL - a record's provider and model name - like any run that names
-none, and a prompt's model override still decides them. It does NOT decide a
-resume: analysis, tailoring and cover letter pass `runChoiceWins`, so they run
-on the model the run was charged at, whatever the prompt record says.
+`AiUnavailableError`. The Bid Assistant runs on the app default MODEL - a
+record's provider and model name - like any run that names none, and a
+prompt's model override still decides it. It does NOT decide a resume:
+tailoring and cover letter pass `runChoiceWins`, so they run on the model the
+run was charged at, whatever the prompt record says. A JOB ANALYSIS runs on the
+administrator's analysis model (`analysisModelId`, see "Job analysis runs once"
+below), also with `runChoiceWins`, and the Job Filter makes no model call of its
+own at all - it judges that analysis.
 
 Models are admin-curated records: a display name, a seat, a model name and
 `pricePerResumeMilli`. The model name is chosen from `config/providerModels.ts`'s
@@ -905,9 +926,13 @@ profile's own model costs (`resolveSuppliedContentChoice`).
 **Prompt variables are the code's, strictly.** A feature-linked prompt may use
 exactly the variables `PROMPT_FEATURES` declares for it (`promptService.ts`), and
 that list must equal the keys of the feature's value builder -
-`buildTailorResumePromptValues` and its siblings in `resumeService.ts`,
-`buildJobFilterPromptValues` in `jobFilter.ts`; test/promptVariables.test.js
-fails when they drift, so a new variable goes in both. Create, update,
+`buildTailorResumePromptValues`, `buildAnalyzeJobDescriptionPromptValues` and
+their siblings in `resumeService.ts`; test/promptVariables.test.js fails when
+they drift, so a new variable goes in both. A variable whose value the CODE
+fixes and is the same on every call is listed in `STABLE_PROMPT_VARIABLES`
+(promptService.ts) - today only the analysis prompt's `[[jobFieldList]]` -
+and promptAssembly keeps it in the cacheable stable part instead of starting
+the call's data at it. Create, update,
 `/prompts/validate` and `/preview` refuse or report any other name (`Unknown
 prompt variables: x`; an unsaved draft names its `featureKey`), and a stored
 record holding one fails at render with `contains unknown variables`. The
@@ -929,9 +954,9 @@ is off). `runResumeTask` runs client-held preview content through the same
 parse (`finaliseHeldContent`), as `/resume/generate` does, so a switch flipped
 between preview and batch is honoured. No migration touches an admin's prompt
 text; a tailor-resume record that never mentions `[[includeStrengths]]` is
-flagged `predatesSectionSwitches` for admins. The analysis cache key leaves the
-switches out on purpose: the analysis reads the posting, not the profile, and
-one analysis serves every profile in a batch.
+flagged `predatesSectionSwitches` for admins. Nothing about a profile is in a
+posting's analysis, on purpose: the analysis reads the posting, not the
+profile, and one analysis serves every profile, for ever (below).
 
 **What a failure may tell whom** (`middleware/publicError.ts`). Most people
 using an install do not run its server, so a response never names a seat, CLI,
@@ -1040,6 +1065,157 @@ and `test/fixtures/gemini` through an injected runner, and storage tests point `
 `TAILOR_STATIC_DIR` at temp dirs. No real Google account has answered through
 the Gemini seat: its successful fixtures are the real 0.62.0 CLI's envelopes
 around fake answers, and the file names say so.
+
+## Job analysis runs once
+
+**A posting is analysed exactly once, ever** (owner decisions J0, J1, J3, J5,
+J8, P5, P7; PLAN check 1). `services/jobAnalysis/gate.ts`'s
+`getOrCreateAnalysis({ jd, link, sheetRow?, requestedBy?, storedOnly?, signal? })`
+is the only function that runs the analysis prompt - test/analysisGate.test.js
+reads every source file and fails on any other that names
+`analyze-job-description`, builds or parses its completion, or keeps an
+analysis path of its own. It answers, in order: (0) a Google Sheet row's own
+analysis, read BY THE SERVER from the row's protected Analysis cell, and only
+when the cell was written for the posting in the row NOW (`SheetRowAnalysis.
+posting` / `analysisMatchesPosting`: a replaced posting, or rows sorted under
+the protected columns, leave another posting's cell behind) - the stored row
+it names, else its content registered with `source = 'sheet'` and no model
+call, which needs the posting keys the cell records; (1) the stored row of the posting, by its normalised link and
+then by its whitespace-normalised text - `identity.ts`'s `linkKey` (host
+lower-cased, http/https and a default port folded, fragment, `utm_*`/`gclid`/
+`fbclid`/`ref`/... dropped, remaining parameters sorted, one trailing slash
+folded) and `contentHash` (SHA-256 hex); (2) the analysis of the same posting
+already in flight in this process (a map keyed under both keys; one caller's
+abort releases that caller only, the call is aborted when the last waiter
+leaves); (3) ONE model call on the analysis model, stored with
+`INSERT ... ON CONFLICT DO NOTHING` and read back. A call that fails stores
+nothing - the only way a posting reaches a model twice, bar a stored row
+whose `analysis_json` cannot be read as an object (damaged outside the
+program): it reads as absent, so its posting is analysed once more and the
+answer written into THAT row (`repairUnreadableRow`, under an IMMEDIATE
+transaction), never once per request. Nothing about a
+model, a prompt, a profile or an account is part of a posting's identity, so
+a prompt edit or a new analysis model reaches only postings never analysed
+before, and there is no re-analyse anywhere (the admin Prompt Test page's
+`/resume/analyze-prompt-test` goes through the gate too, and ignores the
+`promptId` and `model` it is sent).
+
+**The store** is `job_analyses` (database/sqlite.ts; `jobAnalysisRepository.ts`,
+read and written only through the gate): `content_hash` UNIQUE, `link_key`
+partial UNIQUE `WHERE link_key IS NOT NULL`, `(merged_at, created_at)` for the
+lake's merge tab, `job_field_id` for its filter - all four in
+`INDEXES_AFTER_COLUMNS`. test/jobAnalysisStore.test.js pins the gate's two
+lookups to single index seeks with EXPLAIN QUERY PLAN. No TTL, no cap, no
+overwrite of a readable row; a row found by its text that had no link is given the link it was
+found with (`attachLinkKey`, NULL only). `merged_at` is the Job Data Lake's.
+
+**Callers pass `analysisId`**, never an analysis: `/resume/analyze` answers the
+analysis plus `analysisId` and `jobFieldLabel`; `/resume/preview`,
+`/preview-all`, `/generate` and every job of `/generation/batches` take
+`analysisId` (must exist: 400 otherwise) or `jobDescription` + `jobLink` and
+answer `analysisId`. A `jobAnalysis` object in any body is NOT read - it was a
+way to forge a job field. `/generation/batches` resolves ONE analysis per job
+at submission, before fanning out per profile (`submit.ts`'s
+`resolveAnalysesAtSubmit`, no model call, `storedOnly`), and puts it on every
+task as `payload.analysisId`; a job with none is analysed by its first task
+through the gate (the others wait for that call), which then stamps every task
+of the job (`AnalysisHooks.recorded` -> queue/index.ts `recordJobAnalysis`), so
+a retry, a restored task and a sibling skip the analysis step. Per-profile
+analysis prompts are gone (`profileSettings.analyzeJobPromptId` is dropped on
+save, a variant cannot be created or activated, an old one is listed but never
+active).
+
+**The analysis** (`JobAnalysis`, types/template.ts) gained `jobField` (one id
+from `config/jobFields.ts` - the owner's list at bullet level, areas 1-8, 10
+and 11; area 9 is not offered - else `unclassified`, checked in code by
+`normalizeJobFieldId`), `salary` `{ min, max, currency, period, raw }` (only
+what the posting states; `facts.ts`), and `filter` (the Job Filter's facts;
+seniority is `jobMeta.seniority`). An off-list filter word becomes
+`not_specified` - except a clearance, which fails CLOSED (`normalizeClearance`:
+an unknown word is kept, and fails the filter; only an absent or empty one is
+`none`), and words are folded across spaces, `-` and `/` (`TS/SCI` is
+`ts_sci`). The tailoring prompt is given none of the three (pinned by
+test/tokenBudget.test.js). The analysis prompt's variables are `jobFieldList` (stable, before the
+posting, so the cached system part is byte-identical across postings - test
+pins it), `jobLink` and `jobDescription`; an administrator's record that never
+mentions `[[jobFieldList]]` is flagged `predatesJobField` and gets
+`buildAnalysisFactsOverride()` appended to every turn - the seniority words
+(`SENIORITY_VALUES`, which the filter judges) as well as the three keys. The analysis model is
+`analysisModelId` in the admin settings ('' = the app default model; a stale
+one falls back with a warning; a save CHANGING it to a model that cannot run
+is refused by name) - never in an ordinary account's payload.
+
+**The Job Filter** (routes/jobs.ts) makes no model call of its own (J8): a row
+whose link is stored is judged on that analysis with no page fetch; otherwise
+the page is fetched and handed to the gate. The verdict is
+`evaluateJobFilterAnalysis(jobFilterAnalysisOf(analysis))`. The
+`filter-google-sheet-job` prompt is retired (an edited copy of it is not
+listed), and so are the `AI_*_TIMEOUT_MS_FILTER` budgets.
+
+**The app sheet's six columns** (J5): `JOB_SHEET_HEADERS` ends Job Field,
+Salary, Job Hash, Analyzed At, Lake Status, Analysis (K-P; Job Hash and Lake
+Status are the lake's, written `null` = left alone). Only the app's OWN sheets
+(`isAppOwnedSheet`: allocated to an account) get them; a shared source keeps
+analyses in the database only. They are a protected range over the six whole
+columns, header included, `warningOnly: false`, editors = only the server's
+identity (`getCredentialEmail`: the service account's `client_email`, or Drive
+`about` for a `sheets:login` credential), `domainUsersCanEdit: false` - added
+by `formatJobSheetTab` on a new tab, and checked on every `verifyJobSheetTab`
+(every verifying ensure, every sheet run, every write-back: ONE read of grid
+size, protections and header row, then at most one `:batchUpdate` that
+`appendDimension`s the grid past an older build's twelve columns, rewrites a
+stale header and puts the protection back, logging the repair - and, in that
+same atomic call, CLEARS the Analysis column below the header
+(`analysisClearRequest`; P only, K and L may be an old tab's notes), since it
+was writable meanwhile). A sheet's Analysis cell is trusted only when the
+protection was found INTACT in that run, so every cell ever trusted was
+written by the program under the protection. A sheet run or write-back
+verifies with `onlyJobTabs`: a tab whose row 1 is not the job header (its
+first eight, any build's) and is not an empty `MM/DD/YYYY` tab is the
+person's own (`isJobSheetTab`) - not re-headered, protected, read or written
+(`jobTab: false`). At a sheet
+submission (`sheet: { spreadsheetId?, tabName }` + each job's
+`sourceRowNumber`) the rows' Company and Job Link and their six analysis cells
+are read in ONE batched call (`values:batchGetByDataFilter`, B:D and K:P per run
+of consecutive rows); a row that no longer names the job's company (or link) is
+neither read nor written; a cut (`...[cut at 50,000 characters]`) or
+unreadable cell falls back to the stored row it names, then the store, then
+the gate, logged with its row. The cell records its posting's keys
+(`{ v, id, posting: { hash, link }, jobField, analysis }`); `cellIsForPosting`
+decides whether it is the row's. A row whose cell was empty, or held the
+program's cell for ANOTHER posting, is written back once per row and analysis
+(`analysisColumns.ts`'s `queueAnalysisWriteBack`, batched per spreadsheet for
+1.5 s, RAW, after re-reading the rows: skipped, and NOT settled, when moved;
+skipped when the cell already holds this posting's analysis, when it is not
+the program's JSON, or when it is empty but K:O hold something - a spare
+column an older build's tab left that somebody typed into; a stale program
+cell is replaced whole, Job Hash and Lake Status emptied; `settled` is keyed
+on row + analysis id, and a tab whose protection had to be put back is
+forgotten from it; best-effort, never fails a resume).
+A deleted analysis model clears the setting.
+
+**The pages** hold an analysis, never send one. The builder keeps the one
+`/resume/analyze` answered with the description it was made for
+(lib/jobAnalysis.ts `holdAnalysis` / `heldAnalysisFor`: the server's own
+whitespace normalisation, so re-spacing the text is the same posting) and
+sends its `analysisId` to preview, preview-all and every batch; a change of
+company, role, profile or model never asks again (the held analysis is NOT
+reset with the other outputs), an edited description is another posting, and
+a 400 from a request that named it lets it go (`dropsHeldAnalysis`).
+components/AnalysisFacts shows its title, job field label and salary
+(`formatSalary`, a copy of the server's) under the description, in both
+preview dialogs and on Prompt Test, which has no prompt or model select any
+more. The sheet panel sends `sheet: { tabName, spreadsheetId? }` (no id for
+the account's own sheet) and each row's `jobLink`, never a cell; on the own
+sheet it reads K:P in a SECOND, best-effort range read (a tab an older build
+made has a grid that ends at L, and Google refuses a range past it - the rows
+then say *When built*) to show which rows skip analysis. Admin -> Settings ->
+General has the Analysis model select (its own Save; a stored model that
+stopped running stays listed as "cannot run here"); Admin -> Prompts offers no
+New Variant, Duplicate, Save Active or model override for the analysis
+feature, and pills `predatesJobField` / `predatesSectionSwitches`. The profile
+editor's Extracting prompt select is gone with `analyzeJobPromptId`.
+test/frontendAnalysis.test.js runs every copy here against the server's code.
 
 ## Conventions from the history
 

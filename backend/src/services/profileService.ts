@@ -24,7 +24,6 @@ import { currentTemplateId } from '../database/templateRepository';
 import { inferTemplateCapabilities } from './templateImport';
 
 export const DEFAULT_RESUME_PROMPT_ID = 'tailor-resume';
-export const DEFAULT_ANALYZE_JOB_PROMPT_ID = 'analyze-job-description';
 export const DEFAULT_COVER_LETTER_PROMPT_ID = 'generate-cover-letter';
 export const DEFAULT_HARD_SKILL_ORDERING: HardSkillOrdering = 'library';
 /** Categories on, because that is how every built-in template renders today. */
@@ -382,9 +381,9 @@ export function normalizeProfileSettings(
   return {
     resumePromptId:
       toSafeString(source?.resumePromptId, existing?.resumePromptId ?? DEFAULT_RESUME_PROMPT_ID) || DEFAULT_RESUME_PROMPT_ID,
-    analyzeJobPromptId:
-      toSafeString(source?.analyzeJobPromptId, existing?.analyzeJobPromptId ?? DEFAULT_ANALYZE_JOB_PROMPT_ID) ||
-      DEFAULT_ANALYZE_JOB_PROMPT_ID,
+    // No `analyzeJobPromptId` any more: a posting is analysed once for every
+    // profile, by one prompt (owner decision J0). One a profile still stores
+    // is not read, and its next save drops it.
     coverLetterPromptId:
       toSafeString(source?.coverLetterPromptId, existing?.coverLetterPromptId ?? DEFAULT_COVER_LETTER_PROMPT_ID) ||
       DEFAULT_COVER_LETTER_PROMPT_ID,

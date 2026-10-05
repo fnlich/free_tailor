@@ -17,9 +17,11 @@ import {
   toAiRequestOverrides,
   Profile,
   Group,
-  JobAnalysis,
   TailoredContent,
+  type AnalyzedJob,
 } from '@/lib/api';
+import { dropsHeldAnalysis, heldAnalysisFor, holdAnalysis, type HeldAnalysis } from '@/lib/jobAnalysis';
+import AnalysisFacts from '@/components/AnalysisFacts';
 import {
   browserStorage,
   currentTabId,
@@ -37,7 +39,11 @@ import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
 import ImmediateRunConfirm from '@/components/ImmediateRunConfirm';
 import ImmediateRunFiles from '@/components/ImmediateRunFiles';
-import SheetsSourcePanel, { type ImportSheetSource, type SheetRunKind } from '@/components/SheetsSourcePanel';
+import SheetsSourcePanel, {
+  type ImportSheetSource,
+  type SheetRunKind,
+  type SheetRunSource,
+} from '@/components/SheetsSourcePanel';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import type { SheetJob } from '@/lib/sheetRows';
@@ -161,7 +167,7 @@ function formatCompanySummary(companyNames: string[]): string {
   return `${uniqueCompanies.slice(0, 3).join(', ')}, ...`;
 }
 
-function getAnalysisJobTitle(analysis?: JobAnalysis): string {
+function getAnalysisJobTitle(analysis?: AnalyzedJob): string {
   return analysis?.jobMeta?.title?.trim() ?? '';
 }
 
@@ -352,7 +358,16 @@ export default function Home() {
   /** Bumped after every run, so the balances on the page are re-read. */
   const [runRevision, setRunRevision] = useState(0);
   const [shortfall, setShortfall] = useState<CreditShortfall | null>(null);
-  const [jobAnalysis, setJobAnalysis] = useState<JobAnalysis | null>(null);
+  /**
+   * The posting's one analysis, held with the description it was made for
+   * (lib/jobAnalysis.ts). Not reset with the other outputs: the company, the
+   * role, the profile and the model are not the posting, and a change of any
+   * of them builds on the same analysis - sent by its `analysisId`, never
+   * asked for again. Editing the description is another posting, which
+   * `heldAnalysisFor` sees for itself.
+   */
+  const [heldAnalysis, setHeldAnalysis] = useState<HeldAnalysis<AnalyzedJob> | null>(null);
+  const currentAnalysis = heldAnalysisFor(heldAnalysis, jobDescription);
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewTailored, setPreviewTailored] = useState(false);
   const [isSinglePreviewOpen, setIsSinglePreviewOpen] = useState(false);
@@ -462,7 +477,6 @@ export default function Home() {
     setPreviewTailored(false);
     setIsSinglePreviewOpen(false);
     resetTailoredEditor();
-    setJobAnalysis(null);
     setSuccessMessage('');
     setUnconfirmedHardSkills([]);
     setUnconfirmedSoftSkills([]);
@@ -1005,7 +1019,8 @@ export default function Home() {
 
   /**
    * The request for the manual form's job: one posting, for these profiles,
-   * on the analysis the page already has - and, when finalising previews, each
+   * on the analysis the page already has - named by its `analysisId`, which
+   * every profile's resume is built on - and, when finalising previews, each
    * profile's previewed content with the token naming the model that wrote it,
    * so it is charged at that model.
    *
@@ -1019,7 +1034,7 @@ export default function Home() {
     previewTokenByProfileId,
   }: {
     targetProfiles: Profile[];
-    analysis: JobAnalysis;
+    analysis: HeldAnalysis<AnalyzedJob>;
     tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
     previewTokenByProfileId?: Map<string, string | undefined>;
   }): SubmitBatchRequest => {
@@ -1040,9 +1055,9 @@ export default function Home() {
       jobs: [
         {
           companyName: targetCompanyName,
-          role: (shouldShowRoleInput && role.trim()) || getAnalysisJobTitle(analysis),
+          role: (shouldShowRoleInput && role.trim()) || getAnalysisJobTitle(analysis.analysis),
           jobDescription,
-          jobAnalysis: analysis,
+          analysisId: analysis.analysisId,
         },
       ],
       ...(Object.keys(tailoredByProfileId).length > 0 ? { tailoredContentByProfileId: tailoredByProfileId } : {}),
@@ -1491,6 +1506,41 @@ export default function Home() {
     return null;
   };
 
+  /**
+   * The posting's analysis: the one this page holds, when it is for the
+   * description on the page now - else asked for, and held. The server
+   * analyses a posting once, ever, so asking again would cost no model call;
+   * not asking is still the rule, because the page already knows the answer.
+   */
+  const ensureAnalysis = async (): Promise<HeldAnalysis<AnalyzedJob>> => {
+    const held = heldAnalysisFor(heldAnalysis, jobDescription);
+    if (held) return held;
+    setGenerationStep('Analyzing job description...');
+    const next = holdAnalysis(await resumeApi.analyze(jobDescription), jobDescription);
+    setHeldAnalysis(next);
+    return next;
+  };
+
+  /**
+   * What a preview or generate request says about the posting: its stored
+   * analysis by id when the page holds it, and the description either way -
+   * without the id, the server finds the posting's analysis by its text.
+   */
+  const postingFields = (): { jobDescription: string; analysisId?: string } => {
+    const held = heldAnalysisFor(heldAnalysis, jobDescription);
+    return held ? { jobDescription, analysisId: held.analysisId } : { jobDescription };
+  };
+
+  /**
+   * A request that named the held analysis failed with a 400 - which is what
+   * an `analysisId` the server has no row for gets. Let it go, so the next
+   * press asks /resume/analyze again (a stored posting is found by its text,
+   * without a model).
+   */
+  const forgetAnalysisOn = (err: unknown) => {
+    if (dropsHeldAnalysis(err)) setHeldAnalysis(null);
+  };
+
   /** Everything a new manual run starts without: the previews, notices and receipt of the last. */
   const clearForManualRun = () => {
     setError('');
@@ -1503,7 +1553,6 @@ export default function Home() {
     setPreviewTailored(false);
     setIsSinglePreviewOpen(false);
     resetTailoredEditor();
-    setJobAnalysis(null);
     setMultiplePreviews([]);
     setMultiplePreviewTailored(false);
     setMultiplePreviewIndex(0);
@@ -1520,10 +1569,8 @@ export default function Home() {
     const targetCompanyName = companyName.trim();
 
     try {
-      setGenerationStep('Analyzing job description...');
       clearGenerationProgress();
-      const analysis = await resumeApi.analyze(jobDescription, aiRequestOverrides);
-      setJobAnalysis(analysis);
+      const analysis = await ensureAnalysis();
 
       const targetProfiles =
         generateMode === 'single'
@@ -1543,6 +1590,7 @@ export default function Home() {
       setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
       setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
     } catch (err) {
+      forgetAnalysisOn(err);
       reportRunFailure(err, kind === 'order' ? 'Could not place that order.' : 'Failed to generate resume');
     } finally {
       setIsGenerating(false);
@@ -1557,12 +1605,19 @@ export default function Home() {
    * confirmed - Generate Immediately in this tab.
    *
    * ONE request carrying every resume, not one per resume: the server queues
-   * the lot and hands them out as seats come free, and each posting's analysis
-   * happens inside its tasks, shared between the profiles that need it. A row
-   * without a Job Title goes without one - the server names the role from the
-   * posting's analysis rather than from a guess typed on this page.
+   * the lot and hands them out as seats come free. It names the sheet and tab
+   * the rows came from, so the server reads their Analysis cells itself - a
+   * row that holds its analysis is built on it and never analysed - and each
+   * other posting is analysed once, by its first task, for every profile that
+   * needs it. No analysis goes from this page. A row without a Job Title goes
+   * without one - the server names the role from the posting's analysis
+   * rather than from a guess typed on this page.
    */
-  const handleSheetRun = (kind: SheetRunKind, jobs: SheetJob[], meta: { skippedRows: number }) => {
+  const handleSheetRun = (
+    kind: SheetRunKind,
+    jobs: SheetJob[],
+    meta: { skippedRows: number; sheet: SheetRunSource }
+  ) => {
     let selectedProfiles: Profile[];
     try {
       selectedProfiles = getSelectedProfilesForSheetsBuilder();
@@ -1578,8 +1633,10 @@ export default function Home() {
         companyName: job.companyName,
         role: job.jobTitle,
         jobDescription: job.jobDescription,
+        ...(job.jobLink ? { jobLink: job.jobLink } : {}),
         sourceRowNumber: job.sourceRowNumber,
       })),
+      sheet: meta.sheet,
       ...getDefaultGenerationOptions(),
     };
     const skippedNote = meta.skippedRows
@@ -1635,10 +1692,8 @@ export default function Home() {
     clearForManualRun();
 
     try {
-      setGenerationStep('Analyzing job description...');
       clearGenerationProgress();
-      const analysis = await resumeApi.analyze(jobDescription, aiRequestOverrides);
-      setJobAnalysis(analysis);
+      const analysis = await ensureAnalysis();
 
       if (generateMode === 'single') {
         setGenerationStep('Building preview...');
@@ -1649,7 +1704,7 @@ export default function Home() {
           profileId: selectedProfileId!,
           templateId,
           jobDescription,
-          jobAnalysis: analysis,
+          analysisId: analysis.analysisId,
         });
         setPreviewHtml(preview.html);
         setPreviewTailored(preview.tailored);
@@ -1680,7 +1735,7 @@ export default function Home() {
       const res = await resumeApi.previewAll({
         ...aiRequestOverrides,
         jobDescription,
-        jobAnalysis: analysis,
+        analysisId: analysis.analysisId,
         profileIds,
       });
       const previewsWithDrafts = res.previews.map((preview) => ({
@@ -1698,6 +1753,7 @@ export default function Home() {
         `Preview generated for ${res.previews.length} profile(s). Review, then Generate Immediately or Order to build them.`
       );
     } catch (err) {
+      forgetAnalysisOn(err);
       reportRunFailure(err, 'Failed to build the preview');
     } finally {
       setIsGenerating(false);
@@ -1882,8 +1938,7 @@ export default function Home() {
             ...aiRequestOverrides,
             profileId: selectedProfileId!,
             templateId,
-            jobDescription,
-            jobAnalysis: jobAnalysis || undefined,
+            ...postingFields(),
             tailoredContent: nextTailored,
           });
           setPreviewHtml(refreshed.html);
@@ -1960,8 +2015,7 @@ export default function Home() {
                 ...aiRequestOverrides,
                 profileId,
                 templateId,
-                jobDescription,
-                jobAnalysis: jobAnalysis || undefined,
+                ...postingFields(),
                 tailoredContent: nextTailored,
               });
               return {
@@ -1995,6 +2049,8 @@ export default function Home() {
       }
       setSuccessMessage(`Added "${cleaned}" to ${type === 'hard' ? 'tech' : 'soft'} skills.`);
     } catch (err) {
+      // Not `forgetAnalysisOn`: a 400 here is as likely the skill's own refusal,
+      // which says nothing about the analysis the page holds.
       setError(err ?? 'Failed to confirm skill.');
     } finally {
       setIsGenerating(false);
@@ -2028,8 +2084,7 @@ export default function Home() {
         ...aiRequestOverrides,
         profileId: selectedProfileId!,
         templateId,
-        jobDescription,
-        jobAnalysis: jobAnalysis || undefined,
+        ...postingFields(),
         tailoredContent,
       });
       setPreviewHtml(preview.html);
@@ -2039,6 +2094,7 @@ export default function Home() {
       setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent?.unconfirmedSoftSkills));
       setSuccessMessage('Preview updated.');
     } catch (err) {
+      forgetAnalysisOn(err);
       setError(err ?? 'Failed to update preview.');
     } finally {
       setIsGenerating(false);
@@ -2074,10 +2130,7 @@ export default function Home() {
 
     const targetCompanyName = companyName.trim();
     try {
-      const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription, aiRequestOverrides));
-      if (!jobAnalysis) {
-        setJobAnalysis(analysis);
-      }
+      const analysis = await ensureAnalysis();
       const profile = profiles.find((p) => p.id === selectedProfileId);
       if (!profile) throw new Error('Please select a profile');
       // The progress and its Stop are on the page, under the dialog: close it.
@@ -2097,6 +2150,7 @@ export default function Home() {
       setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
       setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
     } catch (err) {
+      forgetAnalysisOn(err);
       reportRunFailure(err, 'Failed to generate resume');
     } finally {
       setIsGenerating(false);
@@ -2155,8 +2209,7 @@ export default function Home() {
         ...aiRequestOverrides,
         profileId,
         templateId,
-        jobDescription,
-        jobAnalysis: jobAnalysis || undefined,
+        ...postingFields(),
         tailoredContent: preview.tailoredContent,
       });
       const nextPreviews = multiplePreviews.map((item) => {
@@ -2176,6 +2229,7 @@ export default function Home() {
       setUnconfirmedSoftSkills(aggregated.soft);
       setSuccessMessage(`Preview updated for ${preview.profileName}.`);
     } catch (err) {
+      forgetAnalysisOn(err);
       setError(err ?? 'Failed to update preview.');
     } finally {
       setIsGenerating(false);
@@ -2218,10 +2272,7 @@ export default function Home() {
 
     const targetCompanyName = companyName.trim();
     try {
-      const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription, aiRequestOverrides));
-      if (!jobAnalysis) {
-        setJobAnalysis(analysis);
-      }
+      const analysis = await ensureAnalysis();
 
       const previewMap = new Map(multiplePreviews.map((p) => [p.profileId, p]));
       const profilesToGenerate = manualRunProfiles.filter((profile) => previewMap.get(profile.id)?.tailoredContent);
@@ -2649,6 +2700,17 @@ export default function Home() {
                     className="tl-input mt-2 h-72 resize-y"
                   />
                   <p className="mt-2 text-sm text-subtle">{jobDescription.length} characters</p>
+                  {/*
+                    What the posting's one analysis read, once there is one:
+                    every profile and model built on this description uses it,
+                    and editing the text makes it another posting.
+                  */}
+                  {currentAnalysis && (
+                    <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                      <span className="text-subtle">Analysed as</span>
+                      <AnalysisFacts analysis={currentAnalysis.analysis} withTitle />
+                    </div>
+                  )}
                 </div>
               </div>
             </Card>
@@ -2775,6 +2837,10 @@ export default function Home() {
                       inherited={inheritedChoice}
                       disabled={isGenerating}
                     />
+                    <p className="text-sm text-subtle">
+                      It tailors each resume and writes its cover letter. The job description itself is
+                      analysed once, the same way for every profile and every model.
+                    </p>
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm text-subtle">
                         {inheritsFromProfile
@@ -2985,6 +3051,7 @@ export default function Home() {
                     </Pill>
                   )}
                   <span className="min-w-0 truncate text-sm text-muted">{activeMultiplePreview.profileName}</span>
+                  <AnalysisFacts analysis={currentAnalysis?.analysis} />
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
@@ -3107,6 +3174,7 @@ export default function Home() {
             onClose={() => setIsSinglePreviewOpen(false)}
             generationStep={generationStep}
             costNote={<CostLine quote={quote} shortfall={shortfall} />}
+            titleNote={<AnalysisFacts analysis={currentAnalysis?.analysis} />}
             sidebar={
               <>
                 {unconfirmedPanel}

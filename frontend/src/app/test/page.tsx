@@ -4,16 +4,15 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   adminApi,
   AdminAppSettings,
-  AIModelRecord,
-  getAIProviderLabel,
   isProviderOffered,
-  PromptSummary,
-  promptsApi,
   resumeApi,
+  type PromptTestAnalysis,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { AdminOnly } from '@/components/auth/AuthGate';
+import AnalysisFacts from '@/components/AnalysisFacts';
 import { Card, Field, Notice, Pill, Section } from '@/components/ui/kit';
+import { formatDate } from '@/lib/format';
 import { messageWithDetail } from '@/lib/userMessage';
 
 import styles from './test.module.css';
@@ -63,24 +62,29 @@ const OUTPUT_KEY_CLASSES = [
 ];
 
 /**
- * The models this page may run: enabled, on a provider this installation
- * offers.
+ * The name of the model a new analysis runs on: the analysis model when it can
+ * run, else the app default's - the server's own fallback
+ * (`resolveAnalysisModel`) - or '' when nothing can run.
  *
- * `isProviderOffered` and nothing else for the provider half. A private copy
- * that reads only `providersEnabled` drops the LOCK clause, so a model this
- * machine cannot run is offered here and picking it produces a backend error -
- * and the next clause the backend's rule grows is missed here as well.
+ * `isProviderOffered` for the provider half, as everywhere: a private copy
+ * that reads only `providersEnabled` would drop the LOCK clause.
  */
-function runnableModels(settings: AdminAppSettings): AIModelRecord[] {
-  return settings.aiModels.filter(
+function analysisModelName(settings: AdminAppSettings): string {
+  const runnable = settings.aiModels.filter(
     (model) => model.enabled && isProviderOffered(settings, model.provider, settings.providersEnabled)
   );
+  const chosen = runnable.find((model) => model.id === settings.analysisModelId);
+  const fallback = runnable.find((model) => model.id === settings.defaultModelId) ?? runnable[0];
+  return (chosen ?? fallback)?.name ?? '';
 }
 
-/** The app default when it can run, otherwise the first model that can. */
-function pickDefaultModelId(settings: AdminAppSettings): string {
-  const models = runnableModels(settings);
-  return (models.find((model) => model.id === settings.defaultModelId) ?? models[0])?.id ?? '';
+/** The analysis alone, without what the server says about it beside it - which is no term of the posting's. */
+function splitPromptTestResult(result: PromptTestAnalysis): {
+  analysis: Record<string, unknown>;
+  meta: Pick<PromptTestAnalysis, 'analysisId' | 'jobFieldLabel' | 'source' | 'createdAt'>;
+} {
+  const { analysisId, jobFieldLabel, source, createdAt, ...analysis } = result;
+  return { analysis, meta: { analysisId, jobFieldLabel, source, createdAt } };
 }
 
 function normalizeTerm(value: string): string {
@@ -278,16 +282,16 @@ function renderHighlightedText(text: string, matches: HighlightMatch[]): ReactNo
 
 function TestPageBody() {
   const [jobDescription, setJobDescription] = useState('');
-  const [analysis, setAnalysis] = useState<unknown>(null);
   /*
-   * A MODEL id, the way every other caller names what to run - not a bare
-   * provider, which ran whichever of that provider's models came first, so the
-   * test could not be pointed at the model a real run would use.
+   * The posting's ONE analysis, as the server stores it. There is no prompt or
+   * model to pick: a posting is analysed once, ever, with the Analyze Job
+   * Description prompt on the analysis model, and testing is no exception - a
+   * posting analysed before answers with what it was analysed as, and an
+   * edited prompt shows on a posting never analysed before.
    */
-  const [selectedModelId, setSelectedModelId] = useState('');
-  const [analyzePrompts, setAnalyzePrompts] = useState<PromptSummary[]>([]);
-  const [selectedPromptId, setSelectedPromptId] = useState('analyze-job-description');
-  const [models, setModels] = useState<AIModelRecord[]>([]);
+  const [result, setResult] = useState<PromptTestAnalysis | null>(null);
+  /** The model a new analysis runs on, by name; '' when none can run, null when not known (yet). */
+  const [modelName, setModelName] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
@@ -295,22 +299,8 @@ function TestPageBody() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const [settings, promptList] = await Promise.all([
-          adminApi.getSettings(),
-          promptsApi.getAll(),
-        ]);
-        const analyzerPrompts = promptList.filter((prompt) => prompt.featureKey === 'analyze-job-description');
-        const offered = runnableModels(settings);
-        setModels(offered);
-        setAnalyzePrompts(analyzerPrompts);
-        setSelectedPromptId((current) =>
-          analyzerPrompts.some((prompt) => prompt.id === current)
-            ? current
-            : analyzerPrompts[0]?.id ?? 'analyze-job-description'
-        );
-        setSelectedModelId((current) =>
-          offered.some((model) => model.id === current) ? current : pickDefaultModelId(settings)
-        );
+        const settings = await adminApi.getSettings();
+        setModelName(analysisModelName(settings));
         setStoredDefaultTheme(settings.defaultTheme);
         applyTheme(getStoredTheme() ?? settings.defaultTheme);
       } catch (err) {
@@ -321,6 +311,8 @@ function TestPageBody() {
     void loadSettings();
   }, []);
 
+  const split = useMemo(() => (result ? splitPromptTestResult(result) : null), [result]);
+  const analysis = split?.analysis ?? null;
   const highlightTerms = useMemo(() => collectHighlightTerms(analysis), [analysis]);
   const matches = useMemo(
     () => findMatches(jobDescription, highlightTerms),
@@ -339,7 +331,7 @@ function TestPageBody() {
     if (trimmed.length < 50) {
       setError('Job description must be at least 50 characters.');
       setStatus('');
-      setAnalysis(null);
+      setResult(null);
       return;
     }
 
@@ -348,18 +340,17 @@ function TestPageBody() {
     setStatus('');
 
     try {
-      const result = await resumeApi.analyzePromptTest(trimmed, { model: selectedModelId }, selectedPromptId);
-      setAnalysis(result);
+      const answer = await resumeApi.analyzePromptTest(trimmed);
+      setResult(answer);
       setStatus('Analysis complete.');
     } catch (err) {
-      setAnalysis(null);
+      setResult(null);
       setError(messageWithDetail(err, 'Failed to analyze job description'));
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const hasAnyModel = models.length > 0;
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8">
@@ -368,6 +359,8 @@ function TestPageBody() {
           <h2 className="text-2xl font-bold tracking-tight text-ink">Job Keyword Prompt Test</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted">
             Paste a job description, run the analyzer, and compare the raw JSON against highlighted extracted terms.
+            Each posting is analysed once, ever: one analysed before answers with its stored analysis, and an edited
+            prompt shows on a posting never analysed before.
           </p>
         </div>
         <Pill tone={analysis ? 'sky' : 'grey'}>
@@ -375,7 +368,10 @@ function TestPageBody() {
         </Pill>
       </div>
 
-      <Section title="Analyzer" description="The job description to run, the analyze prompt to run it through, and the model to run it on.">
+      <Section
+        title="Analyzer"
+        description="The job description to analyse, with the Analyze Job Description prompt on the analysis model (Settings > General)."
+      >
         <form onSubmit={handleAnalyze} className="space-y-6">
           <Field label="Job description" htmlFor="prompt-test-description">
             <textarea
@@ -389,48 +385,19 @@ function TestPageBody() {
             />
           </Field>
 
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Analyze prompt" htmlFor="prompt-test-prompt">
-              <select
-                id="prompt-test-prompt"
-                value={selectedPromptId}
-                onChange={(event) => setSelectedPromptId(event.target.value)}
-                className="tl-input"
-                disabled={isAnalyzing}
-              >
-                {analyzePrompts.length === 0 && (
-                  <option value="analyze-job-description">Built-in analyzer</option>
-                )}
-                {analyzePrompts.map((prompt) => (
-                  <option key={prompt.id} value={prompt.id}>
-                    {prompt.name}{prompt.isBuiltIn ? ' (built-in)' : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Model" htmlFor="prompt-test-model">
-              <select
-                id="prompt-test-model"
-                value={selectedModelId}
-                onChange={(event) => setSelectedModelId(event.target.value)}
-                className="tl-input"
-                disabled={!hasAnyModel || isAnalyzing}
-              >
-                {!hasAnyModel && <option value="">No model can run</option>}
-                {models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {`${model.name} (${getAIProviderLabel(model.provider)})`}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
+          {modelName !== null && (
+            <p className="text-sm text-muted">
+              {modelName
+                ? `A posting not analysed before is analysed now, on ${modelName}.`
+                : 'No model can run here, so only a posting analysed before can be shown. Enable one under Settings > Models.'}
+            </p>
+          )}
 
           <div>
             <button
               type="submit"
-              disabled={isAnalyzing || !hasAnyModel}
+              // Not gated on a model: a posting analysed before answers from the store without one.
+              disabled={isAnalyzing}
               className="tl-button"
             >
               <span aria-hidden="true">{"->"}</span>
@@ -453,6 +420,16 @@ function TestPageBody() {
       </Section>
 
       <Section title="Results" description="The description with every extracted term marked, beside the JSON the analyzer returned.">
+        {split && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted">
+            <span>
+              {split.meta.source === 'sheet' ? 'Read from an app sheet' : 'Analysed by a model'}
+              {split.meta.createdAt ? ` on ${formatDate(split.meta.createdAt)}` : ''}
+            </span>
+            <AnalysisFacts analysis={result} />
+            <span className="break-all font-mono text-xs text-subtle">{split.meta.analysisId}</span>
+          </div>
+        )}
         {Boolean(analysis) && (
           <div className="flex flex-wrap gap-2">
             {outputKeySummaries.map((summary, index) => (
