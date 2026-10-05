@@ -231,11 +231,13 @@ function GroupsPageBody() {
 }
 
 /**
- * Included from Premium upwards.
+ * Included from Premium upwards, and for any administrator whatever their own
+ * subscription (owner decision B1).
  *
- * The gate is on the subscription alone, matching `requireSubscription('premium')`
- * on the routes: a page that rendered for somebody the API then refused would be
- * a worse experience than this explanation.
+ * The gate is `hasSubscription`, through `RequiresSubscription`, matching
+ * `requireSubscription(MULTI_PROFILE_SUBSCRIPTION)` on the routes: a page that
+ * rendered for somebody the API then refused would be a worse experience than
+ * this explanation.
  */
 export default function GroupsPage() {
   return (

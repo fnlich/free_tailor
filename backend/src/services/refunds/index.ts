@@ -93,9 +93,12 @@ import type { Batch, Task } from '../queue/taskQueue';
  * `RefundItemType`s): an order's resume is its ORDER ITEM, which outlives its
  * batch and carries its charge (`order_items.cost_milli`); a resume built by
  * POST /api/resume/generate is its RESERVATION (`charge`), which is that one
- * resume; and a queued resume NOT placed as an order is its TASK, while the
- * queue holds the batch - after that it cannot be named, because nothing
- * durable records what it alone cost. A task of an order's batch is always
+ * resume; and a queued resume with no order row is its TASK, while the queue
+ * holds the batch - after that it cannot be named, because nothing durable
+ * records what it alone cost. Every run queued now has an order row - an
+ * order's, or a Generate Immediately run's of kind `immediate` - so its
+ * resumes are order items, durable and priced; `task` is left for a builder
+ * run an older build queued. A task of a batch with an order row is always
  * resolved to its order item, so one resume never has two names and so can
  * never have two open requests.
  *
@@ -353,7 +356,8 @@ function resolveTask(batch: Batch, task: Task, ownerId: string | null): RefundIt
   const owner = typeof batch.shared.ownerId === 'string' ? batch.shared.ownerId : '';
   if (!owner || (ownerId !== null && owner !== ownerId)) throw notFound('resume');
 
-  // A resume of an order is named by its order item, always.
+  // A resume of a batch with an order row - an order, or a Generate
+  // Immediately run (kind `immediate`) - is named by its order item, always.
   if (isOrderBatch(batch) || findOrderForBatch(batch.id)) {
     const found = findOrderItemForBatch(batch.id, task.seq);
     if (!found) throw notFound('resume');

@@ -1,3 +1,4 @@
+import path from 'path';
 import { Router, type Request, type Response } from 'express';
 import {
   describeCharge,
@@ -6,8 +7,7 @@ import {
   releaseReservation,
   reserveCredits,
 } from '../services/credits';
-import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
-import { getUserAppSettings } from '../config/aiModelConfig';
+import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import {
   resolvePricedAiChoice,
   resolveSuppliedContentChoice,
@@ -18,7 +18,11 @@ import { readPreviewToken } from '../services/credits/previewToken';
 import { listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
 import { genericMessage, PublicError, publicStoredError, sendPublicError } from '../middleware/publicError';
 import {
+  batchKind,
   getGenerationQueue,
+  getTabLeases,
+  IMMEDIATE_BATCH_KIND,
+  isImmediateBatch,
   isOrderBatch,
   laneFor,
   newBatchId,
@@ -27,6 +31,7 @@ import {
   RESUME_TASK_KIND,
   taskCostMilli,
   type Batch,
+  type BatchKind,
   type BatchSnapshot,
   type ResumeJob,
   type ResumeTaskPayload,
@@ -34,10 +39,21 @@ import {
   type ResumeTaskResult,
   type TaskDescriptor,
 } from '../services/queue';
-import { createOrder, failOrder } from '../database/orderRepository';
+import {
+  createOrder,
+  failOrder,
+  findOrderForBatch,
+  findOrderItemByTask,
+  findOrderItemForBatch,
+  isOrderFileKind,
+  type Order,
+  type OrderFileKind,
+  type OrderItem,
+} from '../database/orderRepository';
+import { filesFromTaskResult } from '../services/orders/orderTracking';
 import { orderRetentionDays } from '../services/orders/retention';
-import { ORDER_OUTPUT_PATH_TEMPLATE } from '../utils/outputStorage';
-import { accountFolderName } from '../utils/generatedPath';
+import { ORDER_OUTPUT_PATH_TEMPLATE, sanitizeFileNameStem } from '../utils/outputStorage';
+import { accountFolderName, getGeneratedFilePath } from '../utils/generatedPath';
 import type { Profile } from '../types/profile';
 import type { JobAnalysis } from '../types/template';
 import { openBatchStream } from './batchStream';
@@ -51,8 +67,17 @@ import { openBatchStream } from './batchStream';
  *
  * The shape of the contract is the point. `POST` returns a batch id as soon as
  * the tasks are queued, before any of them has run. Progress is read back
- * separately, so closing the page cannot stop the work and reopening it can pick
- * the work back up.
+ * separately, so a reload can pick the work back up.
+ *
+ * A run is one of two kinds (`mode`). An ORDER runs on the server whether or
+ * not anybody is watching and is followed on /orders. GENERATE IMMEDIATELY is
+ * tied to the tab that started it (owner decision B4): the tab's progress
+ * stream holds a lease on the run, and when the tab is gone for longer than
+ * IMMEDIATE_TAB_GRACE_MS the run is cancelled and what had not started is
+ * refunded (services/queue/tabLease.ts). Both are filed under the order tree
+ * with an `orders` row - an immediate run's is never listed - so every queued
+ * resume is downloaded through an owner-checked route and refundable by its
+ * order item.
  */
 
 const router = Router();
@@ -88,14 +113,23 @@ type SubmitBody = {
    */
   previewTokenByProfileId?: Record<string, unknown>;
   /**
-   * Place this as an ORDER rather than a build the caller waits for.
-   *
-   * What the sheet import sends. It changes three things: the files are filed
-   * under the fixed order tree instead of the administrator's template, a
-   * durable record is kept that outlives the batch, and the response carries an
-   * order number the caller shows instead of waiting for results.
+   * `immediate` (Generate Immediately, the default) or `order` (the Order
+   * button). An order runs whether or not anybody is watching, is listed on
+   * /orders and answers with an order number; an immediate run is leased to
+   * the tab that started it (`tabId`) and goes ahead of orders in its lane.
+   * See `readRunKind`.
    */
+  mode?: unknown;
+  /** The older spelling of `mode: 'order'`, still read when `mode` is absent. */
   asOrder?: boolean;
+  /**
+   * The starting tab's own id, for `immediate`: the tab whose stream
+   * (`?tab=`) holds the run's lease and whose page may release it. A random
+   * id the page keeps for the life of the tab (sessionStorage), never shown
+   * back to anybody. Optional - a run without one is held by its owner's
+   * stream without a `tab` - and ignored for an order.
+   */
+  tabId?: unknown;
 };
 
 export type NormalizedJob = ResumeJob;
@@ -106,6 +140,33 @@ export class SubmitError extends PublicError {
     super(message, { status: 400 });
     this.name = 'SubmitError';
   }
+}
+
+/**
+ * Which kind of run a submission asks for.
+ *
+ * `mode` decides when it is there; it must be `immediate` or `order`, and
+ * anything else is refused rather than guessed - a typo that silently placed a
+ * three-hundred-row order as a run tied to one tab would stop the moment the
+ * tab closed. Without `mode`, the older `asOrder: true` still means an order,
+ * and anything else is Generate Immediately.
+ */
+export function readRunKind(body: Pick<SubmitBody, 'mode' | 'asOrder'>): BatchKind {
+  if (body.mode !== undefined && body.mode !== null) {
+    if (body.mode === ORDER_BATCH_KIND || body.mode === IMMEDIATE_BATCH_KIND) return body.mode;
+    throw new SubmitError('mode must be "immediate" or "order".');
+  }
+  return body.asOrder === true ? ORDER_BATCH_KIND : IMMEDIATE_BATCH_KIND;
+}
+
+/** What a tab id may look like: what a page mints (a UUID, say), and nothing that needs escaping anywhere. */
+const TAB_ID = /^[A-Za-z0-9_-]{1,100}$/;
+
+/** The submitting tab's id, or undefined when none was sent. Junk is refused, not dropped. */
+export function readTabId(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'string' && TAB_ID.test(value.trim())) return value.trim();
+  throw new SubmitError('tabId must be 1 to 100 letters, digits, "-" or "_".');
 }
 
 function readAiOverrides(body: SubmitBody): AiPreferences {
@@ -387,14 +448,42 @@ function collectOutcome(batchId: string, admin: boolean) {
 }
 
 /**
+ * A snapshot as a page reads it: the queue's own, plus what a page needs to
+ * follow a run - its `kind` (`immediate`, `order`, or null for one queued
+ * before kinds existed) and, on each finished task, the `files` it produced
+ * by kind (`resume-pdf`, `resume-docx`, `cover-letter-pdf`,
+ * `cover-letter-docx`): what a Generate Immediately page downloads, one
+ * `GET /batches/:id/tasks/:taskId/:kind` each. Kinds, never paths.
+ */
+type PageSnapshot = BatchSnapshot & {
+  kind: BatchKind | null;
+  tasks: Array<BatchSnapshot['tasks'][number] & { files?: OrderFileKind[] }>;
+};
+
+function decorate(snapshot: BatchSnapshot): PageSnapshot {
+  const batch = getGenerationQueue().getBatch(snapshot.batchId);
+  const values = new Map((batch?.tasks ?? []).map((task) => [task.id, task.value]));
+  return {
+    ...snapshot,
+    kind: batch ? batchKind(batch) : null,
+    tasks: snapshot.tasks.map((task) =>
+      task.state === 'done'
+        ? { ...task, files: filesFromTaskResult(values.get(task.id)).map((file) => file.kind) }
+        : task
+    ),
+  };
+}
+
+/**
  * A snapshot as this reader may see it. Which lane and seat a task is running on
  * (`runningOn`) is an administrator's business, and so is a raw stored error.
  */
-function readerSnapshot(snapshot: BatchSnapshot, admin: boolean): BatchSnapshot {
-  if (admin) return snapshot;
+function readerSnapshot(snapshot: BatchSnapshot, admin: boolean): PageSnapshot {
+  const decorated = decorate(snapshot);
+  if (admin) return decorated;
   return {
-    ...snapshot,
-    tasks: snapshot.tasks.map(({ runningOn: _lane, ...task }) =>
+    ...decorated,
+    tasks: decorated.tasks.map(({ runningOn: _lane, ...task }) =>
       task.error ? { ...task, error: readTaskError(task.error, false) } : task
     ),
   };
@@ -413,19 +502,25 @@ function fullSnapshot(snapshot: BatchSnapshot, admin: boolean) {
 router.post('/batches', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as SubmitBody;
-    const asOrder = body.asOrder === true;
-    const settings = await getUserAppSettings();
-    // An order does not use the administrator's template, so it must not be
-    // held to that template's requirements: refusing a sheet row for having no
-    // role, to fill a `{{job title}}` segment an order never renders, is a
-    // refusal for a reason that does not apply to it.
-    const jobs = normalizeJobs(body, asOrder ? false : settings.outputPathUsesJobTitle);
+    const kind = readRunKind(body);
+    const tabId = kind === IMMEDIATE_BATCH_KIND ? readTabId(body.tabId) : undefined;
+    // Every queued run is filed under the fixed order tree now, which never
+    // renders a `{{job title}}` segment - so no run is held to the
+    // administrator's template's requirements: refusing a row for having no
+    // role, to fill a segment nothing renders, is a refusal for a reason that
+    // does not apply. The role still comes from the analysis when a row has
+    // none (`resolveTaskRole`).
+    const jobs = normalizeJobs(body, false);
 
     const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
       res.status(400).json({ error: NO_MATCHING_PROFILES });
       return;
     }
+    // More than one profile - or all of them - needs a subscription that
+    // includes it (403 `subscription-too-low`), for an order and an
+    // immediate run alike. Before anything is priced or charged.
+    assertProfileScopeAllowed(req.user, { profileIds: body.profileIds, resolvedCount: profiles.length });
 
     // Minted here rather than inside `submit`, because the credits have to be
     // reserved against this batch BEFORE any task can start - and `submit`
@@ -441,8 +536,8 @@ router.post('/batches', async (req: Request, res: Response) => {
     /**
      * The charge, before the first model call.
      *
-     * Placed here on purpose: after `normalizeJobs` and the empty-profiles check
-     * (so a 400 never costs anything), after `buildTasks` (which only reads
+     * Placed here on purpose: after `normalizeJobs`, the empty-profiles check
+     * and the subscription check (so a 400 or 403 never costs anything), after `buildTasks` (which only reads
      * settings - no model call, no file), and before `submit`.
      *
      * Per handler rather than as router middleware, and that is the guarantee
@@ -461,7 +556,7 @@ router.post('/batches', async (req: Request, res: Response) => {
 
     const queue = getGenerationQueue();
     let batch;
-    let order = null;
+    let order: Order | null = null;
     try {
       /**
        * The order exists BEFORE the first task can finish.
@@ -474,17 +569,28 @@ router.post('/batches', async (req: Request, res: Response) => {
        * Inside the try, not above it, because the credits have already been
        * charged by this point - a throw out here without the release below
        * leaves the account short for a run that never started.
+       *
+       * Every run gets an order row - an immediate one too, of kind
+       * `immediate`, which /orders never lists. What the row buys a run that
+       * nobody ordered: its files are filed under the order tree (unique per
+       * run, under the account - a manual build used to land wherever the
+       * administrator's template said, where two accounts could write one
+       * file), they are served only to their owner, each resume is refundable
+       * by its order item, and the retention sweep deletes them
+       * IMMEDIATE_FILE_RETENTION_MS after the run ends (owner decision M4).
+       * An immediate row's `expires_at` is not what deletes its files - see
+       * `listFinishedImmediateRuns` - so it is stamped as placed.
        */
-      order = asOrder
-        ? createOrder(
+      order = createOrder(
             {
               userId: req.user!.id,
               batchId,
+              kind,
               label:
                 typeof body.label === 'string' && body.label.trim()
                   ? body.label.trim()
                   : `${jobs.length} job(s) x ${profiles.length} profile(s)`,
-              retentionDays: orderRetentionDays(),
+              retentionDays: kind === ORDER_BATCH_KIND ? orderRetentionDays() : 0,
             },
             descriptors.map((descriptor, seq) => ({
               seq,
@@ -499,8 +605,7 @@ router.post('/batches', async (req: Request, res: Response) => {
               // for this resume can come long after the batch is evicted.
               costMilli: taskCostMilli(descriptor.payload),
             }))
-          )
-        : null;
+          );
 
       /**
        * The order's number reaches the paths here, after it has been issued and
@@ -511,12 +616,11 @@ router.post('/batches', async (req: Request, res: Response) => {
        * dispatches on the spot. This window is the only place it fits, and the
        * payloads are ours to finish until they are handed over.
        */
-      if (order) {
-        for (const descriptor of descriptors) {
-          const payload = descriptor.payload as ResumeTaskPayload;
-          payload.orderNumber = order.number;
-          payload.pathTemplate = ORDER_OUTPUT_PATH_TEMPLATE;
-        }
+      const placed = order;
+      for (const descriptor of descriptors) {
+        const payload = descriptor.payload as ResumeTaskPayload;
+        payload.orderNumber = placed.number;
+        payload.pathTemplate = ORDER_OUTPUT_PATH_TEMPLATE;
       }
 
       batch = queue.submit(descriptors, {
@@ -528,9 +632,13 @@ router.post('/batches', async (req: Request, res: Response) => {
         jobCount: jobs.length,
         // The jobs live on the BATCH, once. Each task refers to its own by index,
         // so thirty tasks on one posting do not carry thirty copies of it.
-        // An order says so: it is followed on /orders, and the builder's
-        // active list leaves it out (see GET /batches).
-        shared: { jobs, ownerId: req.user!.id, ...(asOrder ? { kind: ORDER_BATCH_KIND } : {}) },
+        // The kind says how it is followed: an order on /orders (the builder's
+        // active list leaves it out, see GET /batches), an immediate run by
+        // the tab named here, which holds its lease.
+        shared: { jobs, ownerId: req.user!.id, kind, ...(tabId ? { tabId } : {}) },
+        // Somebody is sitting in front of an immediate run; nobody is waiting
+        // on an order. On the same seat, the first goes first.
+        urgent: kind === IMMEDIATE_BATCH_KIND,
       });
       // Written as one transaction rather than row by row: a batch that half
       // landed because the process died mid-loop would come back with tasks whose
@@ -558,19 +666,28 @@ router.post('/batches', async (req: Request, res: Response) => {
       throw error;
     }
 
+    // The lease starts at once, not when the tab first attaches: a tab that
+    // never does - it crashed, or lost the network the moment it had the id -
+    // must not leave a run building for nobody. Attaching inside the grace
+    // stops the timer.
+    if (kind === IMMEDIATE_BATCH_KIND) getTabLeases().arm(batch.id);
+
     console.log(
-      `[queue] batch ${batch.id}: ${descriptors.length} resume(s) queued ` +
-        `(${jobs.length} job(s) x ${profiles.length} profile(s))`
+      `[queue] ${kind === ORDER_BATCH_KIND ? `order ${order!.number}` : 'immediate run'} ${batch.id}: ` +
+        `${descriptors.length} resume(s) queued (${jobs.length} job(s) x ${profiles.length} profile(s))`
     );
 
     res.status(202).json({
       batchId: batch.id,
+      kind,
       total: descriptors.length,
       jobCount: jobs.length,
       profileCount: profiles.length,
       // The lanes and how busy they are, for an administrator's eyes only.
       ...(isAdmin(req) ? { queues: queue.stats() } : {}),
-      ...(order ? { orderId: order.id, orderNumber: order.number } : {}),
+      // An order's number is what the receipt shows. An immediate run's row
+      // is not the person's business - it is never listed - so it is not named.
+      ...(kind === ORDER_BATCH_KIND && order ? { orderId: order.id, orderNumber: order.number } : {}),
     });
   } catch (error) {
     // A refused submission (400), too little credit (402 with `neededMilli`
@@ -596,9 +713,10 @@ router.post('/batches', async (req: Request, res: Response) => {
  * Lenient where the submission is strict, on purpose. The builder asks while
  * the form is still being filled in, and a missing company name or role does
  * not change what anything costs - so jobs are counted, not validated, and no
- * profiles or no jobs is a quote of nothing rather than an error. The one
- * refusal is a request naming a model it may not use (400), because the
- * submission would be refused over it too. `costMilli` is the full amount even
+ * profiles or no jobs is a quote of nothing rather than an error. The two
+ * refusals are the submission's own: a request naming a model it may not use
+ * (400), and a run for more than one profile - or all of them - on a
+ * subscription that does not include that (403 `subscription-too-low`). `costMilli` is the full amount even
  * for an administrator, who is not charged it: `exempt` says so.
  *
  * Reads only. No reservation, no task, no model call.
@@ -607,7 +725,12 @@ router.post('/quote', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as SubmitBody;
     const jobCount = Array.isArray(body.jobs) ? body.jobs.length : 0;
-    const profiles = jobCount > 0 ? loadProfiles(req.user ?? null, body.profileIds) : [];
+    // The submission's subscription refusal, mirrored, so the cost line never
+    // prices a run that would be refused. Asked of the profiles even with no
+    // jobs yet, because the refusal is about WHO the run is for.
+    const targeted = loadProfiles(req.user ?? null, body.profileIds);
+    assertProfileScopeAllowed(req.user, { profileIds: body.profileIds, resolvedCount: targeted.length });
+    const profiles = jobCount > 0 ? targeted : [];
     const choices = await resolveProfileChoices(body, profiles, { admin: isAdmin(req), userId: req.user?.id });
 
     const prices = [...choices.values()].map((priced) => priced.costMilli);
@@ -668,17 +791,39 @@ function isBuilderRun(viewer: Viewer, batch: { shared: Record<string, unknown> }
   return viewer !== null && batch.shared.ownerId === viewer.id && !isOrderBatch(batch);
 }
 
+/** A `tab` as a request sends it: the query string's, trimmed, or '' for none. */
+function readRequestTab(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Whether a request comes from the tab an immediate run was started in.
+ *
+ * A run submitted without a `tabId` matches a request without a `tab`, so a
+ * page that never sent one still holds its own run - and a page that did must
+ * name it, so a second tab of the same account cannot hold (or stop) another
+ * tab's run by accident.
+ */
+function fromRunTab(batch: { shared: Record<string, unknown> }, tab: string): boolean {
+  const own = typeof batch.shared.tabId === 'string' ? batch.shared.tabId : '';
+  return tab === own;
+}
+
 /**
  * Every batch the server still holds that this account may see.
  *
  * `?active=1` is the builder's question - "is a run of mine still going?" -
  * and answers only the caller's own unfinished, non-order batches, whoever
- * the caller is (`isBuilderRun`). Without it, the list is everything the
- * caller may see, an administrator's included.
+ * the caller is (`isBuilderRun`). `&tab=<tabId>` narrows it to the Generate
+ * Immediately runs started from that tab, which is what a reloaded tab
+ * reattaches to - never another tab's run, whose downloads are not its own.
+ * Without `active`, the list is everything the caller may see, an
+ * administrator's included.
  */
 router.get('/batches', (req: Request, res: Response) => {
   const queue = getGenerationQueue();
   const activeOnly = req.query.active === '1' || req.query.active === 'true';
+  const tab = readRequestTab(req.query.tab);
   const admin = isAdmin(req);
   const viewer = req.user ?? null;
   res.json({
@@ -689,6 +834,7 @@ router.get('/batches', (req: Request, res: Response) => {
       // the active list and attaches to it, so an unfiltered list would
       // silently point somebody at a stranger's run.
       .filter((batch) => (activeOnly ? isBuilderRun(viewer, batch) : canSeeBatch(viewer, batch)))
+      .filter((batch) => !activeOnly || !tab || (isImmediateBatch(batch) && fromRunTab(batch, tab)))
       .map((batch) => queue.snapshot(batch.id))
       .filter((snapshot): snapshot is BatchSnapshot => Boolean(snapshot))
       .map((snapshot) => readerSnapshot(snapshot, admin)),
@@ -722,11 +868,24 @@ router.get('/batches/:id', (req: Request<{ id: string }>, res: Response) => {
  * settles, then a final `done`. That is what makes reconnecting trivially
  * correct: a page that joins late, or rejoins after a reload, never has to
  * reconcile the events it missed.
+ *
+ * `?tab=<tabId>`: for a Generate Immediately run, the stream of its OWNER
+ * from the tab it was started in (the `tabId` it was submitted with; none for
+ * a run submitted without one) is what keeps the run alive. While at least one
+ * such stream is open the run's lease is held; when the last closes, the
+ * IMMEDIATE_TAB_GRACE_MS timer starts, and a run nobody reattaches to inside
+ * it is cancelled with what had not started refunded (tabLease.ts). Such a
+ * stream is ended by the server every LEASE_READER_LIFETIME_MS (20 s), and
+ * the page attaches again: that renewal, not the connection closing, is how a
+ * tab whose network vanished silently is told from one still following. Any
+ * other reader - another tab, an administrator, a page following an order -
+ * only reads, for as long as it likes.
  */
 router.get('/batches/:id/stream', (req: Request<{ id: string }>, res: Response) => {
   const queue = getGenerationQueue();
-  const snapshot = visibleBatch(req, req.params.id) ? queue.snapshot(req.params.id) : null;
-  if (!snapshot) {
+  const batch = visibleBatch(req, req.params.id);
+  const snapshot = batch ? queue.snapshot(req.params.id) : null;
+  if (!batch || !snapshot) {
     res.status(404).json({
       error: 'That batch is no longer on the server.',
       reason: 'restarted-or-expired',
@@ -752,10 +911,189 @@ router.get('/batches/:id/stream', (req: Request<{ id: string }>, res: Response) 
     }
   });
 
-  // Detaches a listener and NOTHING else. The work is the queue's now; a page
-  // that navigates away is not a reason to stop building somebody's resumes.
-  res.on('close', unsubscribe);
+  // The run's own tab holds its lease while this stream is open - for
+  // LEASE_READER_LIFETIME_MS at most. Then the hold is counted out and the
+  // stream is ended here, without waiting for a `close` that a connection
+  // which vanished without a word (a laptop lid, a dead battery) would not
+  // send for many minutes; a page that is still there reads an ordinary end
+  // and attaches again a second later, holding afresh (tabLease.ts).
+  const holdsLease =
+    isImmediateBatch(batch) &&
+    req.user?.id === batch.shared.ownerId &&
+    fromRunTab(batch, readRequestTab(req.query.tab));
+  const letGo = holdsLease
+    ? getTabLeases().hold(batch.id, () => {
+        unsubscribe();
+        stream.end();
+      })
+    : () => {};
+
+  // For an order, or any reader that is not the run's tab, this detaches a
+  // listener and NOTHING else - a page that navigates away is not a reason to
+  // stop an order. For the run's own tab it also lets go of the lease, which
+  // starts the grace rather than stopping anything at once: a dropped
+  // connection can come straight back. (A page that is closed, reloaded or
+  // left sends /release, which stops the run now.)
+  res.on('close', () => {
+    unsubscribe();
+    letGo();
+  });
 });
+
+/**
+ * The page is leaving: stop its Generate Immediately run NOW.
+ *
+ * What a tab sends from `pagehide`, and when somebody leaves Build Resumes
+ * inside the app and confirms. The owner only (an administrator included gets
+ * 404 for somebody else's), and only from the run's own tab: `?tab=<tabId>`,
+ * the id it was submitted with (or no `tab` for a run submitted without one).
+ * Cancels exactly as POST /batches/:id/cancel does - queued resumes dropped
+ * and refunded, running ones aborted - and answers
+ * `{ released: true, cancelled, aborted }`, or `{ released: false, state }`
+ * for a run that had already finished.
+ *
+ * No body is read, so it works as a `fetch(..., { method: 'POST', keepalive:
+ * true, credentials: 'include' })` with the session cookie alone - no
+ * Authorization header and no Content-Type, which keeps it a CORS "simple"
+ * request with no preflight to lose while the page unloads - and as
+ * `navigator.sendBeacon(url)`.
+ *
+ * 409 `not-immediate` for an order (cancel that from /orders) or a run queued
+ * before kinds existed; 409 `tab-mismatch` when another tab asks.
+ */
+router.post('/batches/:id/release', (req: Request<{ id: string }>, res: Response) => {
+  const batch = getGenerationQueue().getBatch(req.params.id);
+  if (!batch || batch.shared.ownerId !== req.user!.id) {
+    res.status(404).json({ error: 'That run is not running.' });
+    return;
+  }
+  if (!isImmediateBatch(batch)) {
+    res.status(409).json({
+      error: 'Only a Generate Immediately run stops when its page closes. Cancel an order from Orders.',
+      code: 'not-immediate',
+    });
+    return;
+  }
+  if (!fromRunTab(batch, readRequestTab(req.query.tab))) {
+    res.status(409).json({ error: 'That run was started in another tab.', code: 'tab-mismatch' });
+    return;
+  }
+  if (batch.state !== 'running') {
+    res.json({ released: false, state: batch.state });
+    return;
+  }
+
+  const outcome = getTabLeases().release(batch.id) as { cancelled: number; aborted: number } | null;
+  console.log(
+    `[queue] Immediate run ${batch.id} stopped by its page: ` +
+      `${outcome?.cancelled ?? 0} resume(s) not started (refunded), ${outcome?.aborted ?? 0} aborted.`
+  );
+  res.json({ released: true, cancelled: outcome?.cancelled ?? 0, aborted: outcome?.aborted ?? 0 });
+});
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+/**
+ * What a downloaded file is called: the company first, then the file's own
+ * name. A Generate Immediately run downloads every resume into one folder,
+ * and a profile's file names do not usually say which posting each is for -
+ * five `Jane_Doe.pdf (n)` would leave the person opening each to find out.
+ */
+export function downloadFileName(companyName: string, absolutePath: string): string {
+  const base = path.basename(absolutePath);
+  const company = sanitizeFileNameStem(companyName);
+  if (!company || base.toLowerCase().includes(company.toLowerCase())) return base;
+  return `${company}_${base}`;
+}
+
+/** The order item a queued task produced, if its batch was filed with one. */
+function itemForTask(batchId: string, orderId: string, taskId: string): OrderItem | null {
+  const recorded = findOrderItemByTask(orderId, taskId);
+  if (recorded) return recorded;
+  // Not finished yet (the id is recorded with the outcome), or recorded under
+  // an earlier id: the live batch still knows the task's position.
+  const live = getGenerationQueue()
+    .getBatch(batchId)
+    ?.tasks.find((task) => task.id === taskId);
+  return live ? findOrderItemForBatch(batchId, live.seq)?.item ?? null : null;
+}
+
+/**
+ * One file of one finished resume of a queued run - what a Generate
+ * Immediately page auto-downloads as each resume lands.
+ *
+ * `:kind` is `resume-pdf`, `resume-docx`, `cover-letter-pdf` or
+ * `cover-letter-docx` (a snapshot's task lists the ones it has as `files`).
+ * The OWNER only: the run is found through its order row, whose account must
+ * be the caller's - 404 otherwise, an administrator included, and for an id
+ * that is not there, because the difference would confirm it exists. Read
+ * from the order row rather than the batch, so it keeps working after the
+ * queue has evicted a finished batch. 409 `not-ready` for a resume still
+ * being built; 410 `file-deleted` once IMMEDIATE_FILE_RETENTION_MS after the
+ * run (or an order's retention) has deleted it. Sent as an attachment named
+ * `<company>_<file name>` (`downloadFileName`).
+ */
+router.get(
+  '/batches/:id/tasks/:taskId/:kind',
+  async (req: Request<{ id: string; taskId: string; kind: string }>, res: Response) => {
+    try {
+      const notFound = () => res.status(404).json({ error: 'That file was not found.' });
+      const kind = req.params.kind;
+      if (!isOrderFileKind(kind)) {
+        notFound();
+        return;
+      }
+      const order = findOrderForBatch(req.params.id);
+      if (!order || order.userId !== req.user!.id) {
+        notFound();
+        return;
+      }
+      const item = itemForTask(req.params.id, order.id, req.params.taskId);
+      if (!item) {
+        notFound();
+        return;
+      }
+      if (item.state === 'queued' || item.state === 'running') {
+        res.status(409).json({ error: 'That resume is not ready yet.', code: 'not-ready' });
+        return;
+      }
+      const file = item.files.find((candidate) => candidate.kind === kind);
+      if (!file) {
+        notFound();
+        return;
+      }
+      const gone = () =>
+        res.status(410).json({
+          error: 'That file has been deleted from the server. Files are kept only for a short while.',
+          code: 'file-deleted',
+        });
+      if (file.removedAt) {
+        gone();
+        return;
+      }
+      // Resolved through the same traversal guard every download uses.
+      const absolute = await getGeneratedFilePath(file.path);
+      if (!absolute) {
+        gone();
+        return;
+      }
+
+      const extension = path.extname(absolute).toLowerCase();
+      if (CONTENT_TYPES[extension]) res.setHeader('Content-Type', CONTENT_TYPES[extension]);
+      res.download(absolute, downloadFileName(item.companyName, absolute), (sendError) => {
+        if (!sendError) return;
+        console.warn(`[queue] Could not finish sending ${file.path}.`, sendError);
+        if (!res.headersSent) gone();
+        else res.destroy();
+      });
+    } catch (error) {
+      sendPublicError(req, res, error, 'Could not read that file');
+    }
+  }
+);
 
 router.post('/batches/:id/cancel', (req: Request<{ id: string }>, res: Response) => {
   // Resolved through the viewer FIRST. Cancelling is destructive - it aborts

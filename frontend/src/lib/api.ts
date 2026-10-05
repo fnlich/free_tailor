@@ -406,6 +406,59 @@ export async function apiFetch<T>(
 }
 
 /**
+ * A file from the API, as a Blob - what a Generate Immediately run downloads.
+ *
+ * Its own function because `apiFetch` parses JSON. Fetched rather than opened
+ * with a plain `<a href>` to the API because a refusal then stays a refusal: an
+ * anchor pointed at another origin is a NAVIGATION, so a 410 for a file the
+ * retention sweep has deleted replaced the whole builder with the API's JSON -
+ * and leaving the page that way stopped the run. Here a refusal throws the same
+ * `ApiResponseError` every other call does, and the page says so in a notice.
+ *
+ * `fileName` is the server's own name from Content-Disposition, or null when
+ * the header cannot be read (another origin, which the API does not expose it
+ * to) - the caller then names the file itself.
+ */
+export async function apiFetchFile(
+  endpoint: string,
+  signal?: AbortSignal
+): Promise<{ blob: Blob; disposition: string | null }> {
+  let lastConnectionError: Error | null = null;
+  const tried: string[] = [];
+
+  for (const apiBase of buildApiBaseCandidates()) {
+    const url = `${apiBase}${endpoint}`;
+    tried.push(apiBase);
+    let response: Response;
+    try {
+      response = await fetch(url, { headers: getAuthHeaders(), credentials: 'include', signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      lastConnectionError = error instanceof Error ? error : new Error(String(error));
+      continue;
+    }
+
+    resolvedApiBase = apiBase;
+    if (!response.ok) {
+      const body = await readErrorBody(response);
+      if (response.status === 401) {
+        removeToken();
+        onUnauthorized?.();
+      }
+      throw new ApiResponseError(
+        typeof body.error === 'string' ? body.error : GENERIC_MESSAGE,
+        response.status,
+        url,
+        body
+      );
+    }
+    return { blob: await response.blob(), disposition: response.headers.get('content-disposition') };
+  }
+
+  throw new ApiUnreachableError(tried, lastConnectionError ?? new Error('no API base was configured'));
+}
+
+/**
  * Which kind of prompt this is. Sent by the server with every prompt, derived
  * from the feature it is attached to rather than stored on it.
  */
@@ -1388,12 +1441,28 @@ export const adminApi = {
     })),
 };
 
+/** The tabs of a spreadsheet the caller may build from, from `GET /import/tabs`. */
+export interface ImportSheetTabs {
+  spreadsheetId: string;
+  tabs: Array<{ title: string; gid?: number }>;
+  /** Today's tab on the account's own sheet when it has one, else the first tab; null for none. */
+  defaultTab: string | null;
+}
+
 export const importApi = {
   fetchGoogleSheetRange: (data: GoogleSheetsRangeRequest) =>
     apiFetch<GoogleSheetsRangeResponse>('/import', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  /**
+   * Every tab of a spreadsheet, in the spreadsheet's order: the account's own
+   * sheet without `sheetId`, or a sheet the caller may address (theirs, or an
+   * administrator's saved source) by id - 404 for any other.
+   */
+  listTabs: (sheetId?: string) =>
+    apiFetch<ImportSheetTabs>(`/import/tabs${sheetId ? `?sheetId=${encodeURIComponent(sheetId)}` : ''}`),
 };
 
 /**

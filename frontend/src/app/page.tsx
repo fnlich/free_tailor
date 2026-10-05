@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
   adminApi,
@@ -21,10 +21,12 @@ import {
   TailoredContent,
 } from '@/lib/api';
 import {
-  forgetBatch,
+  browserStorage,
+  currentTabId,
   generationApi,
-  rememberBatch,
-  rememberedBatch,
+  releaseRun,
+  saveTaskFile,
+  tabStorage,
   type BatchSnapshot,
   type GenerationQuote,
   type SubmitBatchRequest,
@@ -33,15 +35,44 @@ import GenerationProgress, { type GenerationProgressState } from '@/components/G
 import ProfileSelector from '@/components/ProfileSelector';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
-import SheetsImportModal, { ImportedSheetJob, type ImportSheetSource } from '@/components/SheetsImportModal';
+import ImmediateRunConfirm from '@/components/ImmediateRunConfirm';
+import ImmediateRunFiles from '@/components/ImmediateRunFiles';
+import SheetsSourcePanel, { type ImportSheetSource, type SheetRunKind } from '@/components/SheetsSourcePanel';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
+import type { SheetJob } from '@/lib/sheetRows';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
 import { describeRunCost, formatMoney } from '@/lib/format';
 import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
 import { nextAttach, reattachTarget } from '@/lib/batchFollow';
+import { canBuildForManyProfiles, startingResumeSelection } from '@/lib/subscriptions';
+import {
+  confirmsImmediate,
+  describeRunEnd,
+  downloadKey,
+  forgetRun,
+  leavesBuilder,
+  pendingDownloads,
+  readRememberedRun,
+  rememberRun,
+  savedFileCount,
+  skipImmediateConfirm,
+  withDownloaded,
+  type DownloadKind,
+  type PendingDownload,
+  type RememberedRun,
+} from '@/lib/immediateRun';
+import {
+  cancelOrderQuestion,
+  describeCancelOutcome,
+  isOrderLive,
+  ordersApi,
+  type CancelOutcome,
+  type Order,
+  type OrderState,
+} from '@/lib/orders';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
@@ -49,7 +80,7 @@ type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
 type SheetsTargetMode = 'single' | 'all' | 'group';
 
-/** What a placed sheet import reports back, before any of it has been built. */
+/** What a placed order reports back, before any of it has been built. */
 type PlacedOrder = {
   id: string;
   number: string;
@@ -57,7 +88,37 @@ type PlacedOrder = {
   jobCount: number;
   profileCount: number;
   skippedNote: string;
+  /** Set once Cancel on the receipt went through: what it stopped. */
+  cancelled?: CancelOutcome;
+  /**
+   * Set once the order is over by any other way - built, failed, or cancelled
+   * from Orders - as the receipt's poll (or a Cancel the server answered 409)
+   * found it: no Cancel is offered for it any more.
+   */
+  ended?: { state: OrderState; built?: number };
 };
+
+/** How often the receipt asks whether its order is still being built: as often as /orders does. */
+const RECEIPT_POLL_MS = 5000;
+
+/**
+ * The Generate Immediately run this page is following: built while this tab
+ * holds it, each resume downloaded as it lands. `tabId` is the tab it was
+ * started from - the one whose stream keeps it alive and whose page may stop
+ * it.
+ */
+type ActiveRun = { batchId: string; tabId: string };
+
+/** Nothing downloaded: `pendingDownloads` against it lists every finished resume's files. */
+const NONE_DOWNLOADED: ReadonlySet<string> = new Set();
+
+/** What leaving Build Resumes inside the app asks while a run is going. */
+const LEAVE_CONFIRM =
+  'Leave Build Resumes? Your Generate Immediately run stops when you leave this page: resumes not started yet are refunded, and ones not finished are not downloaded.';
+
+/** Where the multi-profile choices' Premium pill leads, and what it says on hover. */
+const SUBSCRIPTION_PATH = '/settings/subscription';
+const ONE_PROFILE_NOTE = 'Your subscription supports one profile';
 
 /**
  * The id standing for "this account's own job sheet".
@@ -117,6 +178,23 @@ const QUOTE_JOBS: SubmitBatchRequest['jobs'] = [{ companyName: 'Quote', role: 'Q
 /** A 402 from a run, as the sentence the page shows for it. */
 type CreditShortfall = { message: string };
 
+/** Waits `ms`, or less when `signal` aborts first; never rejects. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
@@ -171,11 +249,71 @@ function CostLine({
   );
 }
 
+/**
+ * The "Premium" pill on a choice the account's subscription does not include:
+ * a link to the page that explains subscriptions, with the reason on hover.
+ * The choice beside it is disabled; the server refuses the run anyway (403
+ * `subscription-too-low`) - this only stops the page offering it.
+ */
+function PremiumLock() {
+  return (
+    <Link href={SUBSCRIPTION_PATH} title={ONE_PROFILE_NOTE} aria-label={`Premium: ${ONE_PROFILE_NOTE}`} className="ml-auto shrink-0">
+      <Pill tone="violet">Premium</Pill>
+    </Link>
+  );
+}
+
+/**
+ * A Generate Immediately run's progress, with the way to stop it - in either
+ * mode, and inside the multi-profile preview, which covers the page.
+ */
+function RunProgress({
+  progress,
+  stopping,
+  onStop,
+  className = '',
+}: {
+  progress: GenerationProgressState;
+  stopping: boolean;
+  onStop: () => void;
+  className?: string;
+}) {
+  return (
+    <div className={`space-y-3 ${className}`}>
+      <GenerationProgress progress={progress} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted">
+          Each resume downloads as soon as it is built. Keep this page open until the run finishes.
+        </p>
+        <button
+          type="button"
+          onClick={onStop}
+          disabled={stopping}
+          className="tl-button-quiet"
+          data-tone="danger"
+          data-size="sm"
+        >
+          {stopping ? 'Stopping...' : 'Stop'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   // `refresh` re-reads the account after a run, so the balance in the top bar
   // moves when credits are spent or refunded rather than on the next reload.
   const { account, refresh: refreshAccount } = useAuth();
   const isAdmin = account?.role === 'admin';
+  /**
+   * Whether this account may build for more than one profile at once:
+   * Premium and up, or an administrator (owner decisions B1, B3). Below that,
+   * Multiple, All profiles, Specific group and Select Group are shown locked,
+   * and the target in effect is always the single profile - derived rather
+   * than corrected in an effect, so a subscription that changes under an open
+   * page cannot leave a locked choice selected.
+   */
+  const manyProfiles = canBuildForManyProfiles(account);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
@@ -187,10 +325,12 @@ export default function Home() {
    * setting, and then to the app default - nothing here is persisted.
    */
   const [aiOverrides, setAiOverrides] = useState<AiPreferences>({});
-  const [generateMode, setGenerateMode] = useState<GenerateMode>('single');
+  const [generateModeChoice, setGenerateMode] = useState<GenerateMode>('single');
+  const generateMode: GenerateMode = manyProfiles ? generateModeChoice : 'single';
   const [multipleTarget, setMultipleTarget] = useState<'all' | 'group'>('group');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
-  const [sheetsTargetMode, setSheetsTargetMode] = useState<SheetsTargetMode>('single');
+  const [sheetsTargetChoice, setSheetsTargetMode] = useState<SheetsTargetMode>('single');
+  const sheetsTargetMode: SheetsTargetMode = manyProfiles ? sheetsTargetChoice : 'single';
   const [selectedSheetsProfileId, setSelectedSheetsProfileId] = useState<string | null>(null);
   const [selectedSheetsGroupId, setSelectedSheetsGroupId] = useState<string>('');
   const [selectedSheetsSourceId, setSelectedSheetsSourceId] = useState<string>('');
@@ -227,7 +367,39 @@ export default function Home() {
   const [multiplePreviewTailored, setMultiplePreviewTailored] = useState(false);
   const [multiplePreviewIndex, setMultiplePreviewIndex] = useState(0);
   const [autoGenerate, setAutoGenerate] = useState(false);
-  const [isSheetsImportOpen, setIsSheetsImportOpen] = useState(false);
+  /** How many jobs the sheet panel's loaded rows hold; null until rows are loaded. */
+  const [sheetJobCount, setSheetJobCount] = useState<number | null>(null);
+  /** The Generate Immediately run being followed, for what the page draws. `activeRunRef` is the same, for handlers. */
+  const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
+  const activeRunRef = useRef<ActiveRun | null>(null);
+  const [stopping, setStopping] = useState(false);
+  /** A Generate Immediately waiting on its confirm: the run to start on Proceed. */
+  const [pendingImmediate, setPendingImmediate] = useState<(() => void) | null>(null);
+  /** Aborted when the page goes: stops following and downloading, never the server's work by itself. */
+  const pageAbortRef = useRef<AbortController | null>(null);
+  /**
+   * Set the moment this page releases its run because it is going - a
+   * confirmed in-app link, `pagehide` - before the unmount aborts anything.
+   * The release ends the run at once, and the stream can say so before the
+   * navigation has unmounted the page; without this, that ending read as an
+   * ordinary one and forgot the run, so coming back could neither say how it
+   * ended nor download what it had finished.
+   */
+  const leavingRef = useRef(false);
+  /**
+   * The run's download bookkeeping. `downloadStartedRef` holds every task
+   * whose files were asked for on THIS page - a snapshot repeats every finished
+   * task, and one still downloading must not be started twice - plus the files
+   * a page before a reload saved; `rememberedRef` is what survives a reload of
+   * the tab (lib/immediateRun.ts), written file by file as each is saved.
+   * `downloadChainRef` runs the downloads one at a time, in the order the
+   * resumes finished. `savedFilesRef` counts the run's files that reached this
+   * browser, starting from what the remembered list says was saved before.
+   */
+  const downloadStartedRef = useRef<Set<string>>(new Set());
+  const rememberedRef = useRef<RememberedRun | null>(null);
+  const downloadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const savedFilesRef = useRef(0);
 
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -240,11 +412,38 @@ export default function Home() {
    */
   const [error, setError] = useState<unknown>('');
   const [successMessage, setSuccessMessage] = useState('');
-  /** The receipt for a sheet import, kept as data so it can carry a link. */
+  /**
+   * How this tab's Generate Immediately run ended. Its own state, not
+   * `successMessage`: the reset that clears the outputs whenever an input
+   * changes also runs when the first load picks the profile - and a run
+   * picked back up on that load said how it ended just before, and was wiped.
+   * Replaced by the next run; cleared when a new build starts.
+   */
+  const [runNotice, setRunNotice] = useState('');
+  /** The receipt for a placed order, kept as data so it can carry a link and a Cancel. */
   const [placedOrder, setPlacedOrder] = useState<PlacedOrder | null>(null);
+  const [cancellingOrder, setCancellingOrder] = useState(false);
+  /** A resume of the run that could not be downloaded, apart from the run's own failures. */
+  const [downloadIssue, setDownloadIssue] = useState('');
+  /**
+   * Every finished resume of this tab's latest run, with its files - offered
+   * again under the progress (components/ImmediateRunFiles), because a browser
+   * that holds back a page's second automatic download does it silently.
+   */
+  const [runFiles, setRunFiles] = useState<{ batchId: string; items: PendingDownload[] } | null>(null);
+  /** `<taskId>:<kind>` of the file a "download again" is fetching, or ''. */
+  const [redownloading, setRedownloading] = useState('');
+  /** The notices and progress under the header - brought into view when a run starts or fails below them. */
+  const noticesRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadInitialData();
+    // Once, on mount. It reads `manyProfiles` to pick the starting target, and
+    // that is settled by then: AuthGate renders this page only once the
+    // account has loaded. A subscription that changes later is covered by
+    // `generateMode` and `sheetsTargetMode` being derived from it, without
+    // reloading every list on the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const resetTailoredEditor = useCallback(() => {
@@ -334,13 +533,16 @@ export default function Home() {
         setSelectedSheetsProfileId(initialProfileId);
       }
 
-      if (modelData.defaultResumeSelection === 'single') {
+      // An account that supports one profile starts on Single, whatever the
+      // administrator's default target says.
+      const startingSelection = startingResumeSelection(modelData.defaultResumeSelection, manyProfiles);
+      if (startingSelection === 'single') {
         setGenerateMode('single');
         setMultipleTarget('group');
         setSelectedGroupId('');
         setSheetsTargetMode('single');
         setSelectedSheetsGroupId('');
-      } else if (modelData.defaultResumeSelection === 'all') {
+      } else if (startingSelection === 'all') {
         setGenerateMode('multiple');
         setMultipleTarget('all');
         setSelectedGroupId('');
@@ -389,7 +591,7 @@ export default function Home() {
               name: 'My job sheet',
               sheetId: accountSheet.spreadsheetId,
               isOwnSheet: true,
-              preferredTab: accountSheet.todayTab,
+              todayTab: accountSheet.todayTab,
             },
           ]
         : [];
@@ -448,8 +650,12 @@ export default function Home() {
    */
   const quoteRequest = useMemo(() => {
     let target: Profile[] = [];
+    let jobs = QUOTE_JOBS;
     if (builderMode === 'sheets') {
       target = sheetsRunProfiles;
+      // Once rows are loaded the price is the run's: every loaded job for
+      // every profile. Before, it is what one row costs.
+      if (sheetJobCount) jobs = Array.from({ length: sheetJobCount }, () => QUOTE_JOBS[0]);
     } else if (builderMode === 'manual') {
       target = manualRunProfiles;
       if (generateMode === 'multiple' && !autoGenerate && hasPreviews) {
@@ -462,9 +668,9 @@ export default function Home() {
     const body: SubmitBatchRequest = {
       ...(aiOverrides.modelId ? { model: aiOverrides.modelId } : {}),
       profileIds,
-      jobs: QUOTE_JOBS,
+      jobs,
     };
-    return { key: `${profileIds.join(',')}|${aiOverrides.modelId ?? ''}|${runRevision}`, body };
+    return { key: `${profileIds.join(',')}|${jobs.length}|${aiOverrides.modelId ?? ''}|${runRevision}`, body };
   }, [
     aiOverrides.modelId,
     autoGenerate,
@@ -474,6 +680,7 @@ export default function Home() {
     manualRunProfiles,
     readyPreviewIds,
     runRevision,
+    sheetJobCount,
     sheetsRunProfiles,
   ]);
 
@@ -529,9 +736,6 @@ export default function Home() {
     accountSheet && !accountSheet.configured
       ? accountSheet.message ?? 'Google Sheets is not set up on this server yet.'
       : 'Your job sheet is not ready yet. Open Settings > Job Sheet and try again.';
-  const selectedSheetsProfileName = sheetsTargetMode === 'single'
-    ? profiles.find((profile) => profile.id === selectedSheetsProfileId)?.name ?? ''
-    : '';
 
   // Keep a sheet selected: the account's own unless the administrator has
   // deliberately chosen a saved source that is still in the list.
@@ -543,60 +747,156 @@ export default function Home() {
     );
   }, [sheetImportSources]);
 
-  useEffect(() => {
-    if (hasImportableSheet || !isSheetsImportOpen) return;
-    setIsSheetsImportOpen(false);
-  }, [hasImportableSheet, isSheetsImportOpen]);
-
   /**
-   * Picks a running batch back up after a reload.
+   * The page's lifetime, and what it hands back when it ends.
    *
-   * The work belongs to the server's queue, so closing this page never stopped
-   * it - but until this, reopening the page showed nothing and the resumes
-   * appeared on disk with no explanation. The remembered id says which run
-   * THIS browser started; the server's list of the caller's own active builds
-   * covers a different browser, cleared storage, or a second tab - and is the
-   * only authority on which runs are this account's and not orders
-   * (`reattachTarget`). Following anything else locked the page: an
-   * administrator's tab used to follow other people's runs, and anybody's
-   * followed an order they had just placed until its last resume.
+   * On mount: picks up this TAB's own Generate Immediately run after a reload.
+   * Only one the server lists as running from this tab (`?active=1&tab=`,
+   * `reattachTarget`) - never an order, another tab's run or another
+   * account's: following those locked the page, held a lease from the wrong
+   * tab, and downloaded somebody's resumes twice. Its stream from this tab
+   * holds the run's lease again, and only the resumes this tab has not
+   * downloaded yet are downloaded (the remembered set, lib/immediateRun.ts).
+   *
+   * A run this tab remembers that is no longer running ended while the page
+   * was away - stopped when it was left or reloaded, or finished. Whatever it
+   * built and this tab never downloaded is downloaded now, while the server
+   * still keeps it, and the page says how it ended.
+   *
+   * On unmount - leaving Build Resumes inside the app, by any route - the
+   * following stops and the run is released: Generate Immediately stops when
+   * its page is left (owner decision B4). A link click asks first (below);
+   * this is what makes the back button and every other way out stop it too.
    */
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    pageAbortRef.current = controller;
+    const { signal } = controller;
 
     const reattach = async () => {
+      const tabId = currentTabId();
+      const remembered = readRememberedRun(tabStorage(), tabId);
       const listed = await generationApi
-        .listActive()
+        .listActive(tabId)
         .then((answer) => (Array.isArray(answer?.batches) ? answer.batches : []))
         .catch(() => null);
-      const { batchId, forget } = reattachTarget(listed, rememberedBatch());
-      // Finished, gone after a restart, an order, or not this account's:
-      // forgotten rather than asked about again on every visit.
-      if (forget) forgetBatch();
+      if (signal.aborted) return;
+      const { batchId } = reattachTarget(listed, remembered?.batchId ?? null);
 
-      if (!batchId || cancelled) return;
-      setIsGenerating(true);
-      const snapshot = await followBatch(batchId, { phase: 'Building resumes' });
-      if (cancelled) return;
-      setIsGenerating(false);
-      setGenerationStep('');
-      clearGenerationProgress();
-      // Its failed resumes were refunded as it ran.
-      afterRun();
-      if (snapshot) {
-        setSuccessMessage(
-          `Finished ${snapshot.completed} of ${snapshot.total} resume(s) from a run started earlier.`
-        );
+      if (batchId) {
+        setIsGenerating(true);
+        try {
+          const snapshot = await followRun(
+            { batchId, tabId },
+            { phase: 'Building resumes' },
+            remembered?.batchId === batchId ? remembered.downloaded : []
+          );
+          if (signal.aborted) return;
+          setRunNotice(`The run this tab started earlier: ${describeRunEnd(snapshot, savedFilesRef.current)}`);
+        } finally {
+          if (!signal.aborted) {
+            setIsGenerating(false);
+            setGenerationStep('');
+            clearGenerationProgress();
+            // Its failed and stopped resumes were refunded as it ran.
+            afterRun();
+          }
+        }
+        return;
+      }
+
+      // Not running any more - stopped when the page was left or reloaded, or
+      // finished: what did it leave this tab to download?
+      if (listed !== null && remembered) {
+        const snapshot = await generationApi.snapshot(remembered.batchId, signal).catch(() => null);
+        if (signal.aborted) return;
+        if (snapshot && snapshot.state !== 'running') {
+          trackDownloads(remembered);
+          downloadFinished(remembered.batchId, snapshot);
+          await downloadChainRef.current;
+          if (signal.aborted) return;
+          setRunNotice(
+            `Your last run ended while this page was away (it stops when the page is left): ${describeRunEnd(snapshot, savedFilesRef.current)}`
+          );
+          afterRun();
+        }
+        // Only if it is still the one remembered: a run started while these
+        // downloads went is the tab's run now, and a reload must find it.
+        if (readRememberedRun(tabStorage(), tabId)?.batchId === remembered.batchId) forgetRun(tabStorage());
+        if (rememberedRef.current?.batchId === remembered.batchId) rememberedRef.current = null;
       }
     };
 
     void reattach();
     return () => {
-      cancelled = true;
+      controller.abort();
+      const run = activeRunRef.current;
+      if (run) {
+        activeRunRef.current = null;
+        releaseRun(run.batchId, run.tabId);
+      }
     };
     // Deliberately once, on mount. Re-running this on every render would attach
-    // a second reader to the same stream.
+    // a second reader to the same stream - and release the run on the way.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /*
+   * While a run is going, leaving asks first and stops it.
+   *
+   * - Closing the tab, reloading, or going to another site: the browser's own
+   *   leave prompt (`beforeunload`), then `pagehide` releases the run at once
+   *   with a keepalive request that outlives the page. Without the release
+   *   the server's grace timer stops it a little later; with it, nothing more
+   *   is started for a page that is gone.
+   * - A link to another page of the app: asked here, in the capture phase on
+   *   `window` so it runs before Next's router sees the click. "Cancel" keeps
+   *   the person, and the run, on this page; "OK" releases it and lets the
+   *   navigation happen. (Any other way out - the back button - is the
+   *   unmount above.)
+   */
+  useEffect(() => {
+    if (!activeRun) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Older browsers show the prompt only for a returnValue.
+      event.returnValue = '';
+    };
+    const onPageHide = () => {
+      const run = activeRunRef.current;
+      if (!run) return;
+      leavingRef.current = true;
+      activeRunRef.current = null;
+      releaseRun(run.batchId, run.tabId);
+    };
+    const onClick = (event: MouseEvent) => {
+      const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      const leaving = leavesBuilder(
+        { href: anchor.href, target: anchor.getAttribute('target'), download: anchor.hasAttribute('download') },
+        event,
+        { origin: window.location.origin, pathname: window.location.pathname }
+      );
+      if (!leaving || !activeRunRef.current) return;
+      if (!window.confirm(LEAVE_CONFIRM)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      const run = activeRunRef.current;
+      leavingRef.current = true;
+      activeRunRef.current = null;
+      releaseRun(run.batchId, run.tabId);
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('click', onClick, true);
+    };
+  }, [activeRun]);
 
   const getSelectedProfilesForSheetsBuilder = () => {
     if (sheetsTargetMode === 'single') {
@@ -704,42 +1004,337 @@ export default function Home() {
   };
 
   /**
-   * Runs a batch on the server and follows it to the end.
+   * The request for the manual form's job: one posting, for these profiles,
+   * on the analysis the page already has - and, when finalising previews, each
+   * profile's previewed content with the token naming the model that wrote it,
+   * so it is charged at that model.
    *
-   * One request carrying every resume, rather than one request per resume. That
-   * is the whole difference: the backend puts the tasks in a queue and hands
-   * them out as a seat's slots come free, so a seat that can build several
-   * resumes at once does. The loop this replaced awaited each resume in turn, so
-   * however many builds a seat could run, all but one of its slots sat idle.
-   *
-   * Progress comes back down the stream. Every line is a COMPLETE snapshot, so
-   * this can replace its state each time instead of applying deltas in order -
-   * which is also what makes it safe to reattach to a batch already in flight.
+   * No template: the server draws each resume with its profile's own
+   * (services/templateChoice.ts). A role left empty is the posting's title.
    */
-  const runBatch = async (
-    request: SubmitBatchRequest,
-    describe: { phase: string; jobCount?: number }
-  ): Promise<BatchSnapshot | null> => {
-    const submitted = await generationApi.submit(request);
-    rememberBatch(submitted.batchId);
-    return followBatch(submitted.batchId, describe);
+  const manualRunRequest = ({
+    targetProfiles,
+    analysis,
+    tailoredContentByProfileId,
+    previewTokenByProfileId,
+  }: {
+    targetProfiles: Profile[];
+    analysis: JobAnalysis;
+    tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
+    previewTokenByProfileId?: Map<string, string | undefined>;
+  }): SubmitBatchRequest => {
+    const tailoredByProfileId: Record<string, unknown> = {};
+    const tokensByProfileId: Record<string, string> = {};
+    for (const profile of targetProfiles) {
+      const tailored = tailoredContentByProfileId?.get(profile.id);
+      if (tailored) tailoredByProfileId[profile.id] = tailored;
+      const token = previewTokenByProfileId?.get(profile.id);
+      if (tailored && token) tokensByProfileId[profile.id] = token;
+    }
+    const targetCompanyName = companyName.trim();
+
+    return {
+      ...aiRequestOverrides,
+      label: targetCompanyName,
+      profileIds: targetProfiles.map((profile) => profile.id),
+      jobs: [
+        {
+          companyName: targetCompanyName,
+          role: (shouldShowRoleInput && role.trim()) || getAnalysisJobTitle(analysis),
+          jobDescription,
+          jobAnalysis: analysis,
+        },
+      ],
+      ...(Object.keys(tailoredByProfileId).length > 0 ? { tailoredContentByProfileId: tailoredByProfileId } : {}),
+      ...(Object.keys(tokensByProfileId).length > 0 ? { previewTokenByProfileId: tokensByProfileId } : {}),
+      ...getDefaultGenerationOptions(),
+    };
   };
 
   /**
-   * Watches a batch until it ends, driving the progress bar from its snapshots.
+   * This tab now follows `run`: what the leave guards, the Stop button and the
+   * downloads all key on. `downloaded` is what a reload of the tab had already
+   * saved, so it is not saved again.
+   */
+  const beginRun = (run: ActiveRun, downloaded: string[] = []) => {
+    leavingRef.current = false;
+    activeRunRef.current = run;
+    setActiveRun(run);
+    setRunNotice('');
+    setStopping(false);
+    setDownloadIssue('');
+    setRunFiles(null);
+    trackDownloads({ batchId: run.batchId, tabId: run.tabId, downloaded });
+    revealNotices();
+  };
+
+  /**
+   * Scrolls the notices under the header into view, if they are not: a sheet
+   * run is started from the foot of a long panel, and its progress, Stop and
+   * any refusal are drawn up here.
+   */
+  const revealNotices = () => {
+    window.requestAnimationFrame(() => noticesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+  };
+
+  /** Starts the download bookkeeping for a run, remembered in the tab so a reload can carry on. */
+  const trackDownloads = (remembered: RememberedRun) => {
+    rememberedRef.current = remembered;
+    rememberRun(tabStorage(), remembered);
+    downloadStartedRef.current = new Set(remembered.downloaded);
+    downloadChainRef.current = Promise.resolve();
+    // The files a page before a reload saved count too: "8 files" for a run
+    // whose twelve all arrived read as four missing.
+    savedFilesRef.current = savedFileCount(remembered.downloaded);
+  };
+
+  /**
+   * The run is over for this page. Forgotten - unless the page itself is
+   * going (unmounted, or released on its way out): then the remembered entry
+   * is what lets this tab download what it missed, and say how the run ended,
+   * when it comes back to Build Resumes.
+   */
+  const endRun = () => {
+    activeRunRef.current = null;
+    setActiveRun(null);
+    setStopping(false);
+    if (pageAbortRef.current?.signal.aborted || leavingRef.current) return;
+    forgetRun(tabStorage());
+    rememberedRef.current = null;
+  };
+
+  /**
+   * Downloads every resume of the snapshot that has finished and was not
+   * downloaded yet - each exactly once, one after another, in the order they
+   * finished. Called with every snapshot of the run; `pendingDownloads` sees
+   * through the repeats.
+   */
+  const downloadFinished = (batchId: string, snapshot: BatchSnapshot) => {
+    setRunFiles({ batchId, items: pendingDownloads(snapshot.tasks ?? [], NONE_DOWNLOADED) });
+    for (const item of pendingDownloads(snapshot.tasks ?? [], downloadStartedRef.current)) {
+      downloadStartedRef.current.add(item.taskId);
+      downloadChainRef.current = downloadChainRef.current.then(() => saveResume(batchId, item));
+    }
+  };
+
+  const saveResume = async (batchId: string, item: PendingDownload) => {
+    const signal = pageAbortRef.current?.signal;
+    if (signal?.aborted) return;
+    try {
+      for (const kind of item.kinds) {
+        await saveTaskFile(batchId, item, kind, signal);
+        savedFilesRef.current += 1;
+        // Remembered file by file, the moment each is handed over: a page that
+        // goes away between a resume's first file and its last then saves only
+        // the rest when it comes back - never one twice, never one skipped.
+        const remembered = rememberedRef.current;
+        if (remembered && remembered.batchId === batchId) {
+          rememberedRef.current = withDownloaded(remembered, [downloadKey(item.taskId, kind)]);
+          rememberRun(tabStorage(), rememberedRef.current);
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) return;
+      setDownloadIssue(
+        `Could not download the resume for ${item.companyName || 'this job'}` +
+          `${item.profileName ? ` (${item.profileName})` : ''}: ${userMessage(err)}`
+      );
+    }
+  };
+
+  /** A file from the list under the progress, downloaded again on request. */
+  const downloadAgain = async (batchId: string, item: PendingDownload, kind: DownloadKind) => {
+    const key = `${item.taskId}:${kind}`;
+    const signal = pageAbortRef.current?.signal;
+    setRedownloading(key);
+    setDownloadIssue('');
+    try {
+      await saveTaskFile(batchId, item, kind, signal);
+    } catch (err) {
+      if (signal?.aborted) return;
+      setDownloadIssue(
+        `Could not download the resume for ${item.companyName || 'this job'}` +
+          `${item.profileName ? ` (${item.profileName})` : ''}: ${userMessage(err)}`
+      );
+    } finally {
+      setRedownloading((current) => (current === key ? '' : current));
+    }
+  };
+
+  /**
+   * Generate Immediately: queues the run for THIS tab and follows it here,
+   * downloading each resume as it lands.
    *
-   * Separate from submitting, because this is also how the page picks a batch
-   * back up after a reload - the work did not stop, so neither should the view
-   * of it.
+   * One request for every resume - the server queues them and hands them out
+   * as seats come free, ahead of any orders on the same seat. The run is
+   * leased to this tab (`tabId`, sent with the stream too): if the page goes,
+   * or its stream drops for longer than the server's grace, whatever has not
+   * started is stopped and refunded. Resolves with the last snapshot once the
+   * last download has been handed to the browser.
+   */
+  const runImmediate = async (
+    request: SubmitBatchRequest,
+    describe: { phase: string; jobCount?: number }
+  ): Promise<BatchSnapshot | null> => {
+    const tabId = currentTabId();
+    const submitted = await generationApi.submit({ ...request, mode: 'immediate', tabId });
+    // Left while the submit was on its way: nothing here will follow the run,
+    // so stop it now rather than leaving it to the server's grace.
+    if (pageAbortRef.current?.signal.aborted) {
+      releaseRun(submitted.batchId, tabId);
+      return null;
+    }
+    return followRun({ batchId: submitted.batchId, tabId }, describe);
+  };
+
+  /** Follows this tab's run to its end, downloading as it goes. */
+  const followRun = async (
+    run: ActiveRun,
+    describe: { phase: string; jobCount?: number },
+    downloaded: string[] = []
+  ): Promise<BatchSnapshot | null> => {
+    beginRun(run, downloaded);
+    try {
+      const snapshot = await followBatch(run.batchId, describe, run.tabId);
+      // The last resumes' files, before saying how it went.
+      await downloadChainRef.current;
+      return snapshot;
+    } finally {
+      endRun();
+    }
+  };
+
+  /**
+   * Order: places the run on the server and answers with an order number at
+   * once. It is built whether or not anybody watches, and its files are
+   * collected on the Orders page - for a sheet of three hundred rows, or
+   * anybody who wants to close the tab.
+   */
+  const placeOrder = async (request: SubmitBatchRequest, skippedNote = '') => {
+    const submitted = await generationApi.submit({ ...request, mode: 'order' });
+    if (submitted.orderId && submitted.orderNumber) {
+      setPlacedOrder({
+        id: submitted.orderId,
+        number: submitted.orderNumber,
+        total: submitted.total,
+        jobCount: submitted.jobCount,
+        profileCount: submitted.profileCount,
+        skippedNote,
+      });
+    } else {
+      // A server that did not file it as an order. The work is queued either
+      // way, so say so rather than leaving the click looking like it failed.
+      setSuccessMessage(`Queued ${plural(submitted.total, 'resume')}.${skippedNote}`);
+    }
+  };
+
+  /** Stop, beside the progress: what is queued is dropped and refunded, what is building is stopped. */
+  const stopRun = async () => {
+    const run = activeRunRef.current;
+    if (!run) return;
+    setStopping(true);
+    try {
+      await generationApi.cancel(run.batchId);
+      // The stream's last line says it ended; following stops there.
+    } catch (err) {
+      setStopping(false);
+      setError(err ?? 'Could not stop the run.');
+    }
+  };
+
+  /** The receipt's order is over: it says how, and offers no Cancel. */
+  const markReceiptEnded = (order: Order) => {
+    setPlacedOrder((current) =>
+      current && current.id === order.id && !current.cancelled
+        ? { ...current, ended: { state: order.state, built: order.counts.done } }
+        : current
+    );
+  };
+
+  /** Cancel on the order receipt: what is left of it, refunded. */
+  const cancelPlacedOrder = async () => {
+    const order = placedOrder;
+    if (!order || !window.confirm(cancelOrderQuestion(order.number))) return;
+    setCancellingOrder(true);
+    try {
+      const outcome = await ordersApi.cancel(order.id);
+      setPlacedOrder((current) => (current && current.id === order.id ? { ...current, cancelled: outcome } : current));
+      afterRun();
+    } catch (err) {
+      // 409: there was nothing left to cancel - it finished between the poll
+      // and the press. Not a failure to report: the receipt says how it ended.
+      if (err instanceof ApiResponseError && err.status === 409) {
+        const latest = await ordersApi.get(order.id).catch(() => null);
+        if (latest) markReceiptEnded(latest);
+        else
+          setPlacedOrder((current) =>
+            current && current.id === order.id && !current.cancelled ? { ...current, ended: { state: 'done' } } : current
+          );
+      } else {
+        setError(err ?? 'Could not cancel that order.');
+      }
+    } finally {
+      setCancellingOrder(false);
+    }
+  };
+
+  /*
+   * The receipt follows its order until it ends, reading it every few seconds
+   * as /orders does - so it stops offering Cancel, and saying "being built",
+   * for an order that has finished. It stops asking once the order is over,
+   * cancelled from here, or the receipt is cleared.
+   */
+  const followedReceipt = placedOrder && !placedOrder.cancelled && !placedOrder.ended ? placedOrder.id : '';
+  useEffect(() => {
+    if (!followedReceipt) return;
+    let stopped = false;
+    const check = async () => {
+      try {
+        const order = await ordersApi.get(followedReceipt);
+        if (!stopped && !isOrderLive(order)) markReceiptEnded(order);
+      } catch {
+        // Offline, or a restart in progress: the next tick asks again.
+      }
+    };
+    const timer = window.setInterval(() => void check(), RECEIPT_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [followedReceipt]);
+
+  /**
+   * Generate Immediately asks first - unless "Don't show again" was ticked in
+   * this browser - because closing the tab stops it (owner decision B4).
+   */
+  const withImmediateConfirm = (start: () => void) => {
+    if (!confirmsImmediate(browserStorage())) {
+      start();
+      return;
+    }
+    setPendingImmediate(() => start);
+  };
+
+  /**
+   * Watches a batch until it ends, driving the progress bar from its snapshots
+   * - and, for this tab's run, downloading each resume as it finishes.
+   *
+   * `tabId` goes with the stream for this tab's own run: that open stream is
+   * what holds the run's lease. Aborted with the page (`pageAbortRef`), which
+   * stops the following and the downloads; stopping the RUN is the release.
    */
   const followBatch = async (
     batchId: string,
-    describe: { phase: string; jobCount?: number }
+    describe: { phase: string; jobCount?: number },
+    tabId?: string
   ): Promise<BatchSnapshot | null> => {
+    const signal = pageAbortRef.current?.signal;
     let last: BatchSnapshot | null = null;
+    const ownRun = () => activeRunRef.current?.batchId === batchId;
 
     const show = (snapshot: BatchSnapshot) => {
       last = snapshot;
+      if (ownRun()) downloadFinished(batchId, snapshot);
       const finished = snapshot.completed + snapshot.failed + snapshot.cancelled;
       // Named from the OLDEST running task rather than the newest, so the label
       // is steady instead of flickering between however many run at once.
@@ -787,242 +1382,123 @@ export default function Home() {
      * connection rather than the run.
      *
      * Every line is a complete snapshot, so rejoining costs nothing and needs no
-     * reconciliation. Bounded by attaches that brought NOTHING, in a row
-     * (lib/batchFollow): every attach that connects opens with a snapshot, so a
-     * long batch behind a proxy that cuts it every minute follows to the end,
-     * while a server refusing the stream outright stops it after twenty. A 404
-     * - restarted or expired - stops it at once: asking again cannot help.
+     * reconciliation. Never given up on while the server can still be building
+     * it (lib/batchFollow `nextAttach`): this tab's run always ends on the
+     * server - finished, stopped, or cancelled by its lease once this tab's
+     * stream has been gone for the grace - so the snapshot says so as soon as
+     * the server is reachable again. Attaches that bring nothing only slow
+     * down. A 404 - restarted or expired - stops it at once: asking again
+     * cannot help.
      */
     let idleInARow = 0;
     for (;;) {
+      if (signal?.aborted) break;
       let delivered = 0;
       try {
-        await generationApi.follow(batchId, (snapshot) => {
-          delivered += 1;
-          show(snapshot);
-        });
+        await generationApi.follow(
+          batchId,
+          (snapshot) => {
+            delivered += 1;
+            show(snapshot);
+          },
+          signal,
+          tabId
+        );
       } catch {
         // A dropped stream is not a failed batch - the work is the server's.
         // Fall through to the snapshot below, which is the authority.
       }
+      if (signal?.aborted) break;
 
       let gone = false;
       try {
-        last = await generationApi.snapshot(batchId);
+        const snapshot: BatchSnapshot = await generationApi.snapshot(batchId, signal);
+        last = snapshot;
+        // A stream that dropped before its last lines still leaves finished
+        // resumes to download.
+        if (ownRun()) downloadFinished(batchId, snapshot);
       } catch (error) {
         // Anything but a 404 (offline, a restart in progress) keeps the last
         // snapshot and tries again.
         gone = error instanceof ApiResponseError && error.status === 404;
       }
-      if (!last || last.state !== 'running') break;
+      if (!last || (last as BatchSnapshot).state !== 'running') break;
 
       const next = nextAttach(idleInARow, { delivered, gone });
       if (next.stop) break;
       idleInARow = next.idleInARow;
-      // A short pause, so a server that is refusing the stream outright does
-      // not turn this into a tight loop.
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // A pause, so a server that is refusing the stream outright does not turn
+      // this into a tight loop - cut short when the page goes.
+      await pause(next.delayMs, signal);
     }
 
-    forgetBatch();
     return last;
   };
 
-  /** Turns a finished batch into the shape the page reports after a generation. */
+  /**
+   * A finished run, in the shape the page reports: what was built, and the
+   * resumes that FAILED. A resume the run stopped before it was built is not a
+   * failure to report - it was refunded - but it is still one the previews
+   * keep (`unbuiltProfileIds`), so finalising again builds only those.
+   */
   const summarizeBatch = (snapshot: BatchSnapshot | null, fallbackCompany: string) => {
-    const failures: GenerationFailure[] = (snapshot?.failures ?? []).map((failure) => ({
-      profileId: failure.profileId,
-      profileName: failure.profileName,
-      companyName: failure.companyName || fallbackCompany,
-      error: failure.error,
-    }));
+    const tasks = snapshot?.tasks ?? [];
+    const failures: GenerationFailure[] = tasks
+      .filter((task) => task.state === 'failed')
+      .map((task) => ({
+        profileId: task.profileId,
+        profileName: task.profileName,
+        companyName: task.companyName || fallbackCompany,
+        error: task.error || 'This resume could not be built.',
+      }));
     return {
       generated: snapshot?.completed ?? 0,
       failed: failures.length,
       failures,
-      failedCompanies: snapshot?.failedCompanies ?? [],
+      unbuiltProfileIds: tasks.filter((task) => task.state !== 'done').map((task) => task.profileId),
+      failedCompanies: [...new Set(failures.map((failure) => failure.companyName))],
       unconfirmedHardSkills: snapshot?.unconfirmedHardSkills ?? [],
       unconfirmedSoftSkills: snapshot?.unconfirmedSoftSkills ?? [],
     };
   };
 
-  const generateSequentialResumes = async ({
-    targetProfiles,
-    analysis,
-    targetCompanyName,
-    resolvedRole,
-    tailoredContentByProfileId,
-    previewTokenByProfileId,
-  }: {
-    targetProfiles: Profile[];
-    analysis: JobAnalysis;
-    targetCompanyName: string;
-    resolvedRole: string;
-    tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
-    previewTokenByProfileId?: Map<string, string | undefined>;
-  }) => {
-    updateGenerationProgress(
-      targetProfiles.length,
-      0,
-      'Queueing resumes',
-      undefined,
-      targetCompanyName
-    );
-
-    const tailoredByProfileId: Record<string, unknown> = {};
-    const tokensByProfileId: Record<string, string> = {};
-    for (const profile of targetProfiles) {
-      const tailored = tailoredContentByProfileId?.get(profile.id);
-      if (tailored) tailoredByProfileId[profile.id] = tailored;
-      const token = previewTokenByProfileId?.get(profile.id);
-      if (tailored && token) tokensByProfileId[profile.id] = token;
+  /** How a Generate Immediately run ended, as the page's notices say it. */
+  const reportImmediateEnd = (snapshot: BatchSnapshot | null, fallbackCompany: string, extra = '') => {
+    const res = summarizeBatch(snapshot, fallbackCompany);
+    setRunNotice(`${describeRunEnd(snapshot, savedFilesRef.current)}${extra}`);
+    if (res.failed > 0) {
+      setError(
+        `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || fallbackCompany}. ${res.failures
+          .slice(0, 3)
+          .map((failure) => `${failure.profileName}: ${failure.error}`)
+          .join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
+      );
     }
-
-    const snapshot = await runBatch(
-      {
-        ...aiRequestOverrides,
-        label: `${targetCompanyName}`,
-        profileIds: targetProfiles.map((profile) => profile.id),
-        jobs: [
-          {
-            companyName: targetCompanyName,
-            role: resolvedRole,
-            jobDescription,
-            jobAnalysis: analysis,
-          },
-        ],
-        ...(Object.keys(tailoredByProfileId).length > 0
-          ? { tailoredContentByProfileId: tailoredByProfileId }
-          : {}),
-        ...(Object.keys(tokensByProfileId).length > 0 ? { previewTokenByProfileId: tokensByProfileId } : {}),
-        ...getDefaultGenerationOptions(),
-      },
-      { phase: 'Building resumes' }
-    );
-
-    return summarizeBatch(snapshot, targetCompanyName);
+    return res;
   };
 
-  /**
-   * A sheet import is placed as an ORDER, not waited for.
-   *
-   * It used to hold the page open until the last resume was rendered - which on
-   * three hundred rows is an hour of a browser tab that cannot be closed, and a
-   * reload part way through left the files on the server with nothing offering
-   * them. Now the server records what was asked for, answers with an order
-   * number, and the Orders page collects the files as they land.
-   */
-  const handleImportJobsFromSheets = async (
-    importedJobs: ImportedSheetJob[],
-    meta: { skippedRows: number }
-  ) => {
-    const selectedProfiles = getSelectedProfilesForSheetsBuilder();
-
-    setIsGenerating(true);
-    setError('');
-    setShortfall(null);
-    setSuccessMessage('');
-    setPlacedOrder(null);
-    resetGenerationOutputs();
-
-    try {
-      /**
-       * ONE request carrying every resume, not one request per resume.
-       *
-       * This was a nested loop - for each job, analyse it, then for each profile
-       * await a generate - so thirty sheet rows were thirty analyses and thirty
-       * builds, strictly one at a time. However many builds the seats could run
-       * at once, all but one slot sat idle for the whole run.
-       *
-       * Now the server queues the lot and hands them out as slots come free,
-       * and the analysis happens inside the task, shared between the profiles
-       * that need the same job.
-       */
-      const submitted = await generationApi.submit({
-        ...aiRequestOverrides,
-        asOrder: true,
-        label: `Sheets import (${importedJobs.length} job${importedJobs.length === 1 ? '' : 's'})`,
-        profileIds: selectedProfiles.map((profile) => profile.id),
-        jobs: importedJobs.map((job) => ({
-          companyName: job.companyName.trim(),
-          // Each row's own Job Title, as the sheet has it. A row without one
-          // goes without one: the server fills the role from the posting's
-          // analysis, as it does for a manual build, rather than from a
-          // guess typed on this page.
-          role: job.jobTitle.trim(),
-          jobDescription: job.jobDescription.trim(),
-          sourceRowNumber: job.sourceRowNumber,
-        })),
-        ...getDefaultGenerationOptions(),
-      });
-
-      const skippedNote = meta.skippedRows
-        ? ` Skipped ${meta.skippedRows} imported row(s) with missing required values.`
-        : '';
-
-      if (submitted.orderId && submitted.orderNumber) {
-        setPlacedOrder({
-          id: submitted.orderId,
-          number: submitted.orderNumber,
-          total: submitted.total,
-          jobCount: submitted.jobCount,
-          profileCount: submitted.profileCount,
-          skippedNote,
-        });
-      } else {
-        // An older server that does not place orders. The work is queued either
-        // way, so say so rather than leaving the click looking like it failed.
-        setSuccessMessage(
-          `Queued ${submitted.total} build(s) from ${submitted.jobCount} imported job(s).${skippedNote}`
-        );
-      }
-    } catch (err) {
-      reportRunFailure(err, 'Could not place that order.');
-    } finally {
-      setIsGenerating(false);
-      setGenerationStep('');
-      clearGenerationProgress();
-      afterRun();
-    }
-  };
-
-  const handleGenerate = async () => {
-    if (!companyName.trim()) {
-      setError('Please enter a company name');
-      return;
-    }
-    if (shouldShowRoleInput && !role.trim()) {
-      setError('Please enter a role');
-      return;
-    }
-    if (jobDescription.trim().length < 50) {
-      setError('Please provide a job description (minimum 50 characters)');
-      return;
-    }
-    if (generateMode === 'single' && !selectedProfileId) {
-      setError('Please select a profile');
-      return;
-    }
-    if (generateMode === 'multiple' && profiles.length === 0) {
-      setError('No profiles available');
-      return;
-    }
+  /** What the manual form must have before anything runs, as the sentence to show; null when ready. */
+  const manualFormProblem = (): string | null => {
+    if (!companyName.trim()) return 'Please enter a company name';
+    if (jobDescription.trim().length < 50) return 'Please provide a job description (minimum 50 characters)';
+    if (generateMode === 'single' && !selectedProfileId) return 'Please select a profile';
+    if (generateMode === 'multiple' && profiles.length === 0) return 'No profiles available';
     if (generateMode === 'multiple' && multipleTarget === 'group') {
       const selectedGroup = groups.find((group) => group.id === selectedGroupId);
-      if (!selectedGroup) {
-        setError('Please select a group');
-        return;
-      }
-      if (!selectedGroup.profileIds.length) {
-        setError('Selected group has no members');
-        return;
-      }
+      if (!selectedGroup) return 'Please select a group';
+      if (!selectedGroup.profileIds.length) return 'Selected group has no members';
     }
+    return null;
+  };
 
-    setIsGenerating(true);
+  /** Everything a new manual run starts without: the previews, notices and receipt of the last. */
+  const clearForManualRun = () => {
     setError('');
     setShortfall(null);
     setSuccessMessage('');
+    setRunNotice('');
+    setPlacedOrder(null);
+    setDownloadIssue('');
     setPreviewHtml('');
     setPreviewTailored(false);
     setIsSinglePreviewOpen(false);
@@ -1031,6 +1507,17 @@ export default function Home() {
     setMultiplePreviews([]);
     setMultiplePreviewTailored(false);
     setMultiplePreviewIndex(0);
+  };
+
+  /**
+   * Builds the manual form's job straight away (Auto-generate on): analysed,
+   * then one run for the target profiles - Generate Immediately, followed and
+   * downloaded here, or an Order (Multiple only), collected on Orders.
+   */
+  const runManual = async (kind: SheetRunKind) => {
+    setIsGenerating(true);
+    clearForManualRun();
+    const targetCompanyName = companyName.trim();
 
     try {
       setGenerationStep('Analyzing job description...');
@@ -1038,7 +1525,122 @@ export default function Home() {
       const analysis = await resumeApi.analyze(jobDescription, aiRequestOverrides);
       setJobAnalysis(analysis);
 
-      if (generateMode === 'single' && !autoGenerate) {
+      const targetProfiles =
+        generateMode === 'single'
+          ? profiles.filter((profile) => profile.id === selectedProfileId)
+          : getSelectedProfilesForManualBuilder();
+      if (targetProfiles.length === 0) throw new Error('Please select a profile');
+      const request = manualRunRequest({ targetProfiles, analysis });
+
+      if (kind === 'order') {
+        await placeOrder(request);
+        return;
+      }
+
+      updateGenerationProgress(targetProfiles.length, 0, 'Queueing resumes', undefined, targetCompanyName);
+      const snapshot = await runImmediate(request, { phase: 'Building resumes' });
+      const res = reportImmediateEnd(snapshot, targetCompanyName);
+      setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
+      setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
+    } catch (err) {
+      reportRunFailure(err, kind === 'order' ? 'Could not place that order.' : 'Failed to generate resume');
+    } finally {
+      setIsGenerating(false);
+      setGenerationStep('');
+      clearGenerationProgress();
+      afterRun();
+    }
+  };
+
+  /**
+   * A sheet's loaded rows, built for the Build target: as an Order, or - once
+   * confirmed - Generate Immediately in this tab.
+   *
+   * ONE request carrying every resume, not one per resume: the server queues
+   * the lot and hands them out as seats come free, and each posting's analysis
+   * happens inside its tasks, shared between the profiles that need it. A row
+   * without a Job Title goes without one - the server names the role from the
+   * posting's analysis rather than from a guess typed on this page.
+   */
+  const handleSheetRun = (kind: SheetRunKind, jobs: SheetJob[], meta: { skippedRows: number }) => {
+    let selectedProfiles: Profile[];
+    try {
+      selectedProfiles = getSelectedProfilesForSheetsBuilder();
+    } catch (err) {
+      setError(err ?? 'Please choose who to build for.');
+      return;
+    }
+    const request: SubmitBatchRequest = {
+      ...aiRequestOverrides,
+      label: `Google Sheet (${plural(jobs.length, 'job')})`,
+      profileIds: selectedProfiles.map((profile) => profile.id),
+      jobs: jobs.map((job) => ({
+        companyName: job.companyName,
+        role: job.jobTitle,
+        jobDescription: job.jobDescription,
+        sourceRowNumber: job.sourceRowNumber,
+      })),
+      ...getDefaultGenerationOptions(),
+    };
+    const skippedNote = meta.skippedRows
+      ? ` Skipped ${plural(meta.skippedRows, 'row')} with no company or no job description.`
+      : '';
+    const start = () => void runSheet(kind, request, skippedNote, jobs.length);
+    if (kind === 'immediate') withImmediateConfirm(start);
+    else start();
+  };
+
+  const runSheet = async (kind: SheetRunKind, request: SubmitBatchRequest, skippedNote: string, jobCount: number) => {
+    setIsGenerating(true);
+    setError('');
+    setShortfall(null);
+    setSuccessMessage('');
+    setRunNotice('');
+    setDownloadIssue('');
+    resetGenerationOutputs();
+
+    try {
+      if (kind === 'order') {
+        await placeOrder(request, skippedNote);
+        return;
+      }
+      updateGenerationProgress((request.profileIds?.length ?? 0) * jobCount, 0, 'Queueing resumes', undefined, undefined, undefined, undefined, jobCount);
+      const snapshot = await runImmediate(request, { phase: 'Building resumes', jobCount });
+      reportImmediateEnd(snapshot, '', skippedNote);
+    } catch (err) {
+      reportRunFailure(err, kind === 'order' ? 'Could not place that order.' : 'Could not build from the sheet.');
+    } finally {
+      // The receipt, the refusal or how the run ended - all drawn up top.
+      revealNotices();
+      setIsGenerating(false);
+      setGenerationStep('');
+      clearGenerationProgress();
+      afterRun();
+    }
+  };
+
+  /** The manual header's primary: Analyze & Preview, or - Auto-generate on - Generate Immediately. */
+  const handleGenerate = async () => {
+    const problem = manualFormProblem();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    if (autoGenerate) {
+      withImmediateConfirm(() => void runManual('immediate'));
+      return;
+    }
+
+    setIsGenerating(true);
+    clearForManualRun();
+
+    try {
+      setGenerationStep('Analyzing job description...');
+      clearGenerationProgress();
+      const analysis = await resumeApi.analyze(jobDescription, aiRequestOverrides);
+      setJobAnalysis(analysis);
+
+      if (generateMode === 'single') {
         setGenerationStep('Building preview...');
         const profile = profiles.find((p) => p.id === selectedProfileId);
         const templateId = profile?.preferredTemplate || 'default';
@@ -1060,97 +1662,58 @@ export default function Home() {
           setUnconfirmedHardSkills(toUnconfirmedItems(preview.tailoredContent.unconfirmedHardSkills));
           setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent.unconfirmedSoftSkills));
         }
-        setSuccessMessage('Preview generated. Review, edit manually if needed, then click Generate Resume to finalize.');
+        setSuccessMessage('Preview generated. Review, edit manually if needed, then click Generate Immediately to build it.');
         return;
       }
 
-      if (generateMode === 'multiple' && !autoGenerate) {
-        const profileIds =
-          multipleTarget === 'group'
-            ? groups.find((group) => group.id === selectedGroupId)?.profileIds
-            : undefined;
-        if (multipleTarget === 'group' && !profileIds) {
-          setError('Please select a group');
-          return;
-        }
-
-        setGenerationStep('Building previews...');
-        // The model the run names, as the finalise and its quote will:
-        // previewing on each profile's own while charging the menu's was
-        // the mismatch this used to have.
-        const res = await resumeApi.previewAll({
-          ...aiRequestOverrides,
-          jobDescription,
-          jobAnalysis: analysis,
-          profileIds,
-        });
-        const previewsWithDrafts = res.previews.map((preview) => ({
-          ...preview,
-          draft: preview.tailoredContent
-            ? JSON.stringify(preview.tailoredContent, null, 2)
-            : '',
-          error: '',
-        }));
-        setMultiplePreviews(previewsWithDrafts);
-        setMultiplePreviewTailored(res.tailored);
-        setMultiplePreviewIndex(0);
-        const aggregated = aggregateUnconfirmedFromPreviews(previewsWithDrafts);
-        setUnconfirmedHardSkills(aggregated.hard);
-        setUnconfirmedSoftSkills(aggregated.soft);
-        setSuccessMessage(`Preview generated for ${res.previews.length} profile(s). Review, then click Generate All to finalize.`);
+      const profileIds =
+        multipleTarget === 'group' ? groups.find((group) => group.id === selectedGroupId)?.profileIds : undefined;
+      if (multipleTarget === 'group' && !profileIds) {
+        setError('Please select a group');
         return;
       }
 
-      if (generateMode === 'single') {
-        const profile = profiles.find((p) => p.id === selectedProfileId);
-        const templateId = profile?.preferredTemplate || 'default';
-        updateGenerationProgress(1, 0, 'Building resume', profile?.name, companyName.trim());
-        setGenerationStep(`Generating 1/1: ${profile?.name ?? 'Selected profile'} x ${companyName.trim()}`);
-        const result = await resumeApi.generate({
-          ...aiRequestOverrides,
-          profileId: selectedProfileId!,
-          templateId,
-          jobDescription,
-          jobAnalysis: analysis,
-          companyName: companyName.trim(),
-          role: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
-          ...getDefaultGenerationOptions(),
-        });
-        updateGenerationProgress(1, 1, 'Building resume', profile?.name, companyName.trim());
-        setSuccessMessage('Resume generated successfully.');
-        setIsSinglePreviewOpen(false);
-        setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills));
-        setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills));
-      } else {
-        const targetProfiles = getSelectedProfilesForManualBuilder();
-        const res = await generateSequentialResumes({
-          targetProfiles,
-          analysis,
-          targetCompanyName: companyName.trim(),
-          resolvedRole: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
-        });
-        if (multipleTarget === 'group') {
-          const selectedGroup = groups.find((group) => group.id === selectedGroupId)!;
-          setSuccessMessage(`Generated ${res.generated} resume(s) for group "${selectedGroup.name}".`);
-        } else {
-          setSuccessMessage(`Generated ${res.generated} resume(s) successfully.`);
-        }
-        if (res.failed > 0) {
-          setError(
-            `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || companyName.trim()}. ${res.failures.slice(0, 3).map((failure) => `${failure.profileName}: ${failure.error}`).join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
-          );
-        }
-        setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
-        setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
-      }
+      setGenerationStep('Building previews...');
+      // The model the run names, as the finalise and its quote will:
+      // previewing on each profile's own while charging the menu's was
+      // the mismatch this used to have.
+      const res = await resumeApi.previewAll({
+        ...aiRequestOverrides,
+        jobDescription,
+        jobAnalysis: analysis,
+        profileIds,
+      });
+      const previewsWithDrafts = res.previews.map((preview) => ({
+        ...preview,
+        draft: preview.tailoredContent ? JSON.stringify(preview.tailoredContent, null, 2) : '',
+        error: '',
+      }));
+      setMultiplePreviews(previewsWithDrafts);
+      setMultiplePreviewTailored(res.tailored);
+      setMultiplePreviewIndex(0);
+      const aggregated = aggregateUnconfirmedFromPreviews(previewsWithDrafts);
+      setUnconfirmedHardSkills(aggregated.hard);
+      setUnconfirmedSoftSkills(aggregated.soft);
+      setSuccessMessage(
+        `Preview generated for ${res.previews.length} profile(s). Review, then Generate Immediately or Order to build them.`
+      );
     } catch (err) {
-      reportRunFailure(err, 'Failed to generate resume');
+      reportRunFailure(err, 'Failed to build the preview');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
       clearGenerationProgress();
-      afterRun();
     }
+  };
+
+  /** Order beside Generate Immediately, on manual Multiple with Auto-generate on. */
+  const handleOrderManual = () => {
+    const problem = manualFormProblem();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    void runManual('order');
   };
 
   const handleTailoredContentChange = (value: string) => {
@@ -1483,8 +2046,14 @@ export default function Home() {
     }
   };
 
-  const handleFinalizeGenerate = async () => {
-    if (!companyName.trim() || (shouldShowRoleInput && !role.trim()) || jobDescription.trim().length < 50 || !selectedProfileId) {
+  /**
+   * The single preview's Generate Immediately: the previewed content, built as
+   * a one-resume run in this tab - queued like any other, so it downloads,
+   * stops and refunds the way every Generate Immediately does - and charged at
+   * the model that wrote it (its preview token).
+   */
+  const handleFinalizeGenerate = () => {
+    if (!companyName.trim() || jobDescription.trim().length < 50 || !selectedProfileId) {
       setError('Please complete the required fields before generating.');
       return;
     }
@@ -1492,38 +2061,41 @@ export default function Home() {
       setError('Fix manual edits before generating.');
       return;
     }
+    withImmediateConfirm(() => void finalizeSingle());
+  };
 
+  const finalizeSingle = async () => {
     setIsGenerating(true);
     setError('');
     setShortfall(null);
     setSuccessMessage('');
+    setRunNotice('');
+    setPlacedOrder(null);
 
+    const targetCompanyName = companyName.trim();
     try {
       const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription, aiRequestOverrides));
       if (!jobAnalysis) {
         setJobAnalysis(analysis);
       }
       const profile = profiles.find((p) => p.id === selectedProfileId);
-      const templateId = profile?.preferredTemplate || 'default';
-      updateGenerationProgress(1, 0, 'Building resume', profile?.name, companyName.trim());
-      setGenerationStep(`Generating 1/1: ${profile?.name ?? 'Selected profile'} x ${companyName.trim()}`);
-      const result = await resumeApi.generate({
-        ...aiRequestOverrides,
-        profileId: selectedProfileId!,
-        templateId,
-        jobDescription,
-        jobAnalysis: analysis,
-        tailoredContent: tailoredContent || undefined,
-        ...(tailoredContent && previewToken ? { previewToken } : {}),
-        companyName: companyName.trim(),
-        role: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
-        ...getDefaultGenerationOptions(),
-      });
-      updateGenerationProgress(1, 1, 'Building resume', profile?.name, companyName.trim());
-      setSuccessMessage('Resume generated successfully.');
+      if (!profile) throw new Error('Please select a profile');
+      // The progress and its Stop are on the page, under the dialog: close it.
+      // "Open Preview" brings it back if the run is stopped.
       setIsSinglePreviewOpen(false);
-      setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills));
+      updateGenerationProgress(1, 0, 'Building resume', profile.name, targetCompanyName);
+      const snapshot = await runImmediate(
+        manualRunRequest({
+          targetProfiles: [profile],
+          analysis,
+          tailoredContentByProfileId: new Map([[profile.id, tailoredContent ?? undefined]]),
+          previewTokenByProfileId: new Map([[profile.id, previewToken ?? undefined]]),
+        }),
+        { phase: 'Building resume' }
+      );
+      const res = reportImmediateEnd(snapshot, targetCompanyName);
+      setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
+      setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
     } catch (err) {
       reportRunFailure(err, 'Failed to generate resume');
     } finally {
@@ -1611,12 +2183,15 @@ export default function Home() {
     }
   };
 
-  const handleFinalizeGenerateMultiple = async () => {
-    if (!companyName.trim() || (shouldShowRoleInput && !role.trim()) || jobDescription.trim().length < 50) {
+  /**
+   * The multi-profile preview's two ways to build: Generate Immediately in
+   * this tab (asked first), or Order.
+   */
+  const handleFinalizeGenerateMultiple = (kind: SheetRunKind) => {
+    if (!companyName.trim() || jobDescription.trim().length < 50) {
       setError('Please complete the required fields before generating.');
       return;
     }
-
     if (multipleTarget === 'group') {
       const selectedGroup = groups.find((group) => group.id === selectedGroupId);
       if (!selectedGroup) {
@@ -1628,92 +2203,76 @@ export default function Home() {
         return;
       }
     }
+    const start = () => void finalizeMultiple(kind);
+    if (kind === 'immediate') withImmediateConfirm(start);
+    else start();
+  };
 
+  const finalizeMultiple = async (kind: SheetRunKind) => {
     setIsGenerating(true);
     setError('');
     setShortfall(null);
     setSuccessMessage('');
+    setRunNotice('');
+    setPlacedOrder(null);
 
+    const targetCompanyName = companyName.trim();
     try {
       const analysis = jobAnalysis || (await resumeApi.analyze(jobDescription, aiRequestOverrides));
       if (!jobAnalysis) {
         setJobAnalysis(analysis);
       }
 
-      if (!autoGenerate && multiplePreviews.length > 0) {
-        const previewMap = new Map(multiplePreviews.map((p) => [p.profileId, p]));
-        const targetProfiles =
-          multipleTarget === 'group'
-            ? profiles.filter((p) => p.id &&
-                groups.find((g) => g.id === selectedGroupId)?.profileIds.includes(p.id))
-            : profiles;
-        const profilesToGenerate = targetProfiles.filter((profile) => previewMap.get(profile.id)?.tailoredContent);
-        if (!profilesToGenerate.length) {
-          throw new Error('No preview content available to generate.');
-        }
+      const previewMap = new Map(multiplePreviews.map((p) => [p.profileId, p]));
+      const profilesToGenerate = manualRunProfiles.filter((profile) => previewMap.get(profile.id)?.tailoredContent);
+      if (!profilesToGenerate.length) {
+        throw new Error('No preview content available to generate.');
+      }
 
-        /*
-         * ONE batch for every previewed profile, not one /generate each.
-         *
-         * The loop charged each resume as its own request, so a balance that
-         * ran out part way built and charged the first few, reported one
-         * resume's price as what "this run" needed, and left those first few
-         * in the list for a retry to build - and charge - again. As a batch
-         * the whole run is reserved at once, priced as the quote line says, and
-         * a 402 names that total before anything is built.
-         */
-        const res = await generateSequentialResumes({
-          targetProfiles: profilesToGenerate,
-          analysis,
-          targetCompanyName: companyName.trim(),
-          resolvedRole: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
-          tailoredContentByProfileId: new Map(
-            profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.tailoredContent])
-          ),
-          previewTokenByProfileId: new Map(
-            profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.previewToken])
-          ),
-        });
-        setSuccessMessage(`Generated ${res.generated} resume(s) successfully.`);
-        if (res.failed > 0) {
-          setError(
-            `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || companyName.trim()}. ${res.failures.slice(0, 3).map((failure) => `${failure.profileName}: ${failure.error}`).join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
-          );
-        }
-        // Only the previews that did NOT become a resume stay, so finalising
-        // again builds - and charges for - just those.
-        const remaining = keepUnbuiltPreviews(multiplePreviews, res.failures.map((failure) => failure.profileId));
-        const aggregated = aggregateUnconfirmedFromPreviews(multiplePreviews);
-        setUnconfirmedHardSkills(aggregated.hard);
-        setUnconfirmedSoftSkills(aggregated.soft);
-        setMultiplePreviews(remaining);
+      /*
+       * ONE batch for every previewed profile, not one /generate each.
+       *
+       * The loop charged each resume as its own request, so a balance that
+       * ran out part way built and charged the first few, reported one
+       * resume's price as what "this run" needed, and left those first few
+       * in the list for a retry to build - and charge - again. As a batch
+       * the whole run is reserved at once, priced as the quote line says, and
+       * a 402 names that total before anything is built.
+       */
+      const request = manualRunRequest({
+        targetProfiles: profilesToGenerate,
+        analysis,
+        tailoredContentByProfileId: new Map(
+          profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.tailoredContent])
+        ),
+        previewTokenByProfileId: new Map(
+          profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.previewToken])
+        ),
+      });
+
+      if (kind === 'order') {
+        await placeOrder(request);
+        // Placed: every previewed resume is on its way, so none is left to finalise.
+        setMultiplePreviews([]);
         setMultiplePreviewIndex(0);
-        if (remaining.length === 0) setMultiplePreviewTailored(false);
+        setMultiplePreviewTailored(false);
         return;
       }
 
-      const targetProfiles = getSelectedProfilesForManualBuilder();
-      const res = await generateSequentialResumes({
-        targetProfiles,
-        analysis,
-        targetCompanyName: companyName.trim(),
-        resolvedRole: shouldShowRoleInput ? role.trim() : (getAnalysisJobTitle(analysis) || ''),
-      });
-      if (multipleTarget === 'group') {
-        const selectedGroup = groups.find((group) => group.id === selectedGroupId)!;
-        setSuccessMessage(`Generated ${res.generated} resume(s) for group "${selectedGroup.name}".`);
-      } else {
-        setSuccessMessage(`Generated ${res.generated} resume(s) successfully.`);
-      }
-      if (res.failed > 0) {
-        setError(
-          `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || companyName.trim()}. ${res.failures.slice(0, 3).map((failure) => `${failure.profileName}: ${failure.error}`).join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
-        );
-      }
-      setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
+      updateGenerationProgress(profilesToGenerate.length, 0, 'Queueing resumes', undefined, targetCompanyName);
+      const snapshot = await runImmediate(request, { phase: 'Building resumes' });
+      const res = reportImmediateEnd(snapshot, targetCompanyName);
+      // Only the previews that did NOT become a resume stay, so finalising
+      // again builds - and charges for - just those.
+      const remaining = keepUnbuiltPreviews(multiplePreviews, res.unbuiltProfileIds);
+      const aggregated = aggregateUnconfirmedFromPreviews(multiplePreviews);
+      setUnconfirmedHardSkills(aggregated.hard);
+      setUnconfirmedSoftSkills(aggregated.soft);
+      setMultiplePreviews(remaining);
+      setMultiplePreviewIndex(0);
+      if (remaining.length === 0) setMultiplePreviewTailored(false);
     } catch (err) {
-      reportRunFailure(err, 'Failed to generate resume');
+      reportRunFailure(err, kind === 'order' ? 'Could not place that order.' : 'Failed to generate resume');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -1826,12 +2385,12 @@ export default function Home() {
       {/* Main Content */}
       <Page>
         {/*
-          The page's one primary action lives in the title row, where it always
-          was in spirit - it sat above the fields, not under them. Which action
-          that is depends on the way in: generate (or preview) when building by
-          hand, open the import dialog when building from a sheet. Back, and
-          Open Preview once a preview has been closed, are the quiet ones
-          beside it, shaped to match.
+          The page's primary action lives in the title row, where it always was
+          in spirit - it sat above the fields, not under them - when building by
+          hand: Analyze & Preview, or Generate Immediately (and, for several
+          profiles, Order beside it). A sheet's two actions sit under the rows
+          they build, in the sheet panel. Back, Open Preview once a preview has
+          been closed, and Stop while a run goes, are the quiet ones beside it.
         */}
         <PageHeader
           title="Build Resumes"
@@ -1840,23 +2399,20 @@ export default function Home() {
             builderMode !== null && (
               <>
                 {/* No shortfall here: the notice under the header carries it. */}
-                <CostLine
-                  quote={quote}
-                  label={
-                    builderMode === 'sheets'
-                      ? 'Each sheet row'
-                      : autoGenerate
+                {builderMode === 'manual' && (
+                  <CostLine
+                    quote={quote}
+                    label={
+                      autoGenerate
                         ? 'This run'
                         : // The button previews, which is free; generating is what costs.
                           'Generating'
-                  }
-                />
+                    }
+                  />
+                )}
                 <button
                   type="button"
-                  onClick={() => {
-                    setBuilderMode(null);
-                    setIsSheetsImportOpen(false);
-                  }}
+                  onClick={() => setBuilderMode(null)}
                   disabled={isGenerating}
                   className={`tl-button-quiet ${styles.pill}`}
                 >
@@ -1866,12 +2422,23 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => setIsSinglePreviewOpen(true)}
+                    disabled={isGenerating}
                     className={`tl-button-quiet ${styles.pill}`}
                   >
                     Open Preview
                   </button>
                 )}
-                {builderMode === 'manual' ? (
+                {builderMode === 'manual' && generateMode === 'multiple' && autoGenerate && !isGenerating && (
+                  <button
+                    type="button"
+                    onClick={handleOrderManual}
+                    className={`tl-button-quiet ${styles.pill}`}
+                    title="Built on the server whether or not this page stays open; collect the files on Orders"
+                  >
+                    Order ({plural(manualRunProfiles.length, 'profile')})
+                  </button>
+                )}
+                {builderMode === 'manual' && (
                   <button
                     onClick={handleGenerate}
                     disabled={isGenerating}
@@ -1883,32 +2450,13 @@ export default function Home() {
                         <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"></span>
                         {generationStep || 'Generating...'}
                       </>
+                    ) : !autoGenerate ? (
+                      'Analyze & Preview'
+                    ) : generateMode === 'single' ? (
+                      'Generate Immediately'
                     ) : (
-                      generateMode === 'single'
-                        ? autoGenerate
-                          ? 'Generate Resume'
-                          : 'Analyze & Preview'
-                        : autoGenerate
-                          ? `Generate All (${plural(manualRunProfiles.length, 'profile')})`
-                          : 'Analyze & Preview'
+                      `Generate Immediately (${plural(manualRunProfiles.length, 'profile')})`
                     )}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!hasImportableSheet) {
-                        setError(sheetImportNotice);
-                        return;
-                      }
-                      setError('');
-                      setIsSheetsImportOpen(true);
-                    }}
-                    disabled={isGenerating}
-                    className={`tl-button ${styles.wrap}`}
-                    data-shape="pill"
-                  >
-                    {isGenerating ? generationStep || 'Generating...' : 'Import from Google Sheet'}
                   </button>
                 )}
               </>
@@ -1916,8 +2464,9 @@ export default function Home() {
           }
         />
 
-        <div className="mb-6 space-y-3 empty:hidden">
+        <div ref={noticesRef} className="mb-6 scroll-mt-20 space-y-3 empty:hidden">
           <ErrorNotice error={error} onDismiss={() => setError('')} />
+          <ErrorNotice error={downloadIssue} onDismiss={() => setDownloadIssue('')} />
 
           {shortfall && (
             <Notice tone="error" className="flex items-start justify-between gap-4">
@@ -1939,27 +2488,74 @@ export default function Home() {
           )}
 
           {placedOrder && (
-            <Notice tone="success">
-              <p className="font-semibold">
-                You ordered successfully: Order number -{' '}
-                <span className="font-mono">{placedOrder.number}</span>
-              </p>
-              <p className="mt-1">
-                {placedOrder.total} resume(s) from {placedOrder.jobCount} imported job(s) across{' '}
-                {placedOrder.profileCount} profile(s) are being built. You can close this page - they
-                are waiting for you under{' '}
-                <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
-                  Order status &amp; built resumes
-                </Link>
-                .{placedOrder.skippedNote}
-              </p>
+            <Notice tone="success" className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+              <div className="min-w-0">
+                <p className="font-semibold">
+                  You ordered successfully: Order number -{' '}
+                  <span className="font-mono">{placedOrder.number}</span>
+                </p>
+                {placedOrder.cancelled ? (
+                  <p className="mt-1">
+                    Cancelled: {describeCancelOutcome(placedOrder.cancelled)} Anything already built is under{' '}
+                    <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
+                      Order status &amp; built resumes
+                    </Link>
+                    .
+                  </p>
+                ) : placedOrder.ended ? (
+                  <p className="mt-1">
+                    {placedOrder.ended.state === 'cancelled' ? 'This order was cancelled' : 'This order has finished'}
+                    {placedOrder.ended.built !== undefined
+                      ? `: ${placedOrder.ended.built} of ${plural(placedOrder.total, 'resume')} built`
+                      : ''}{' '}
+                    - see{' '}
+                    <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
+                      Order status &amp; built resumes
+                    </Link>
+                    .
+                  </p>
+                ) : (
+                  <p className="mt-1">
+                    {plural(placedOrder.total, 'resume')} for {plural(placedOrder.jobCount, 'job')} across{' '}
+                    {plural(placedOrder.profileCount, 'profile')} {placedOrder.total === 1 ? 'is' : 'are'} being
+                    built. You can close this page - they are waiting for you under{' '}
+                    <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
+                      Order status &amp; built resumes
+                    </Link>
+                    .{placedOrder.skippedNote}
+                  </p>
+                )}
+              </div>
+              {!placedOrder.cancelled && !placedOrder.ended && (
+                <button
+                  type="button"
+                  onClick={() => void cancelPlacedOrder()}
+                  disabled={cancellingOrder}
+                  className="tl-button-quiet shrink-0"
+                  data-tone="danger"
+                  data-size="sm"
+                >
+                  {cancellingOrder ? 'Cancelling...' : 'Cancel order'}
+                </button>
+              )}
             </Notice>
           )}
 
           {successMessage && <Notice tone="success">{successMessage}</Notice>}
+          {runNotice && <Notice tone="success">{runNotice}</Notice>}
 
-          {builderMode === 'sheets' && isGenerating && generationProgress && (
-            <GenerationProgress progress={generationProgress} />
+          {activeRun && generationProgress && (
+            <RunProgress progress={generationProgress} stopping={stopping} onStop={() => void stopRun()} />
+          )}
+
+          {runFiles && runFiles.items.length > 0 && (
+            <ImmediateRunFiles
+              items={runFiles.items}
+              running={activeRun?.batchId === runFiles.batchId}
+              downloading={redownloading}
+              onDownload={(item, kind) => void downloadAgain(runFiles.batchId, item, kind)}
+              onDismiss={() => setRunFiles(null)}
+            />
           )}
         </div>
 
@@ -1996,7 +2592,7 @@ export default function Home() {
             <span className="min-w-0">
               <span className="block text-lg font-semibold text-ink">Building Automatically from Google Sheet</span>
               <span className="mt-2 block text-sm text-muted">
-                Import jobs from Google Sheets, map columns once, then generate every selected profile against every imported row.
+                Pick a tab and rows of your Google Sheet, then build every selected profile against every row - right away, or as an order.
               </span>
             </span>
           </button>
@@ -2004,7 +2600,7 @@ export default function Home() {
         )}
 
         {builderMode !== null && (builderMode === 'manual' ? (
-          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
             <Card title="Job">
               <div className="space-y-6">
                 <div>
@@ -2021,17 +2617,20 @@ export default function Home() {
                   />
                 </div>
 
+                {/*
+                  Optional now: every queued build is filed under the order
+                  tree, which names no job title, and a role left empty is the
+                  one the posting's analysis reads (the server's own rule).
+                */}
                 {shouldShowRoleInput && (
                   <div>
-                    <label className="tl-label">
-                      Role <span className={styles.required}>*</span>
-                    </label>
+                    <label className="tl-label">Role</label>
                     <input
                       type="text"
                       value={role}
                       onChange={(e) => setRole(e.target.value)}
                       disabled={isGenerating}
-                      placeholder="Enter job role/title"
+                      placeholder="Taken from the job description when left empty"
                       className="tl-input mt-2"
                     />
                   </div>
@@ -2073,16 +2672,21 @@ export default function Home() {
                         />
                         <span className="text-sm font-medium text-ink">Single (one profile)</span>
                       </label>
-                      <label className="tl-choice" data-on={generateMode === 'multiple'}>
+                      <label
+                        className="tl-choice"
+                        data-on={generateMode === 'multiple'}
+                        title={manyProfiles ? undefined : ONE_PROFILE_NOTE}
+                      >
                         <input
                           type="radio"
                           name="generateMode"
                           value="multiple"
                           checked={generateMode === 'multiple'}
                           onChange={() => setGenerateMode('multiple')}
-                          disabled={isGenerating}
+                          disabled={isGenerating || !manyProfiles}
                         />
                         <span className="text-sm font-medium text-ink">Multiple (all profiles)</span>
+                        {!manyProfiles && <PremiumLock />}
                       </label>
                     </div>
                   </div>
@@ -2220,14 +2824,22 @@ export default function Home() {
             </Card>
           </div>
         ) : (
-          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
+          /*
+            `grid-cols-1` is `minmax(0, 1fr)`: without an explicit track the one
+            column below xl sizes to its content, and the loaded rows' table
+            widened the whole page on a phone instead of scrolling in its box.
+          */
+          <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
             {/*
               First in the source so a phone reads what this mode does - and
               why it cannot run yet - before the fields; beside them from xl up.
             */}
             <div className="space-y-3 xl:col-start-2 xl:row-start-1">
               <Notice tone="info">
-                Import a Google Sheet range where each row is one job. After column mapping, the builder will generate every selected profile against every imported row.
+                Each row of the tab is one job. Load the rows to check them, then build every selected
+                profile against every row: <strong>Generate Immediately</strong> builds them while this
+                page stays open and downloads each resume as it is ready; <strong>Order</strong> builds
+                them on the server, to collect on the Orders page.
               </Notice>
 
               {!hasImportableSheet && (
@@ -2237,7 +2849,7 @@ export default function Home() {
               )}
             </div>
 
-            <div className="xl:col-start-1 xl:row-start-1">
+            <div className="space-y-6 xl:col-start-1 xl:row-start-1">
               <Card title="Build target">
                 <div className="space-y-6">
                   <div>
@@ -2256,27 +2868,37 @@ export default function Home() {
                         />
                         <span className="text-sm font-medium text-ink">Single profile</span>
                       </label>
-                      <label className="tl-choice" data-on={sheetsTargetMode === 'all'}>
+                      <label
+                        className="tl-choice"
+                        data-on={sheetsTargetMode === 'all'}
+                        title={manyProfiles ? undefined : ONE_PROFILE_NOTE}
+                      >
                         <input
                           type="radio"
                           name="sheetsTargetMode"
                           value="all"
                           checked={sheetsTargetMode === 'all'}
                           onChange={() => setSheetsTargetMode('all')}
-                          disabled={isGenerating}
+                          disabled={isGenerating || !manyProfiles}
                         />
                         <span className="text-sm font-medium text-ink">All profiles</span>
+                        {!manyProfiles && <PremiumLock />}
                       </label>
-                      <label className="tl-choice" data-on={sheetsTargetMode === 'group'}>
+                      <label
+                        className="tl-choice"
+                        data-on={sheetsTargetMode === 'group'}
+                        title={manyProfiles ? undefined : ONE_PROFILE_NOTE}
+                      >
                         <input
                           type="radio"
                           name="sheetsTargetMode"
                           value="group"
                           checked={sheetsTargetMode === 'group'}
                           onChange={() => setSheetsTargetMode('group')}
-                          disabled={isGenerating}
+                          disabled={isGenerating || !manyProfiles}
                         />
                         <span className="text-sm font-medium text-ink">Specific group</span>
+                        {!manyProfiles && <PremiumLock />}
                       </label>
                     </div>
                   </div>
@@ -2288,6 +2910,25 @@ export default function Home() {
                       onChange={setSelectedSheetsProfileId}
                       isLoading={false}
                     />
+                  )}
+
+                  {/*
+                    Shown locked rather than left out, like the two targets
+                    above it: the page says what a Premium subscription adds,
+                    instead of a Default account never learning groups exist.
+                  */}
+                  {!manyProfiles && (
+                    <div title={ONE_PROFILE_NOTE}>
+                      <div className="flex items-center gap-2">
+                        <label htmlFor="sheets-group-locked" className="tl-label">
+                          Select Group
+                        </label>
+                        <PremiumLock />
+                      </div>
+                      <select id="sheets-group-locked" value="" disabled className="tl-input mt-2">
+                        <option value="">Building for a group needs Premium</option>
+                      </select>
+                    </div>
                   )}
 
                   {sheetsTargetMode === 'group' && (
@@ -2311,6 +2952,16 @@ export default function Home() {
 
                 </div>
               </Card>
+
+              <SheetsSourcePanel
+                sources={sheetImportSources}
+                selectedSourceId={selectedSheetsSourceId}
+                onSelectSource={setSelectedSheetsSourceId}
+                busy={isGenerating}
+                onRowsChange={setSheetJobCount}
+                onRun={handleSheetRun}
+                costLine={<CostLine quote={quote} label={sheetJobCount ? 'This run' : 'Each sheet row'} />}
+              />
             </div>
           </div>
         ))}
@@ -2354,11 +3005,20 @@ export default function Home() {
                   </button>
                   <CostLine quote={quote} shortfall={shortfall} />
                   <button
-                    onClick={handleFinalizeGenerateMultiple}
+                    type="button"
+                    onClick={() => handleFinalizeGenerateMultiple('order')}
+                    disabled={isGenerating}
+                    className="tl-button-quiet"
+                    title="Built on the server whether or not this page stays open; collect the files on Orders"
+                  >
+                    Order
+                  </button>
+                  <button
+                    onClick={() => handleFinalizeGenerateMultiple('immediate')}
                     disabled={isGenerating}
                     className={`tl-button ${styles.wrap}`}
                   >
-                    {isGenerating ? generationStep || 'Generating...' : 'Generate All'}
+                    {isGenerating ? generationStep || 'Generating...' : 'Generate Immediately'}
                   </button>
                   <button
                     type="button"
@@ -2376,7 +3036,16 @@ export default function Home() {
               <div className="min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-2 lg:overflow-hidden">
                 <div className="bg-surface-muted p-4 sm:p-6 lg:h-full lg:overflow-y-auto">
                   {isGenerating && generationProgress && (
-                    <GenerationProgress progress={generationProgress} className="mb-4" />
+                    activeRun ? (
+                      <RunProgress
+                        progress={generationProgress}
+                        stopping={stopping}
+                        onStop={() => void stopRun()}
+                        className="mb-4"
+                      />
+                    ) : (
+                      <GenerationProgress progress={generationProgress} className="mb-4" />
+                    )
                   )}
                   <div className={`resume-paper-shell ${styles.paper} mx-auto max-w-[816px]`}>
                     <iframe
@@ -2431,6 +3100,7 @@ export default function Home() {
           <ResumePreview
             html={previewHtml}
             onGenerate={handleFinalizeGenerate}
+            generateLabel="Generate Immediately"
             isGenerating={isGenerating}
             isTailored={previewTailored}
             isOpen={isSinglePreviewOpen}
@@ -2478,17 +3148,17 @@ export default function Home() {
 
       </Page>
 
-      <SheetsImportModal
-        isOpen={isSheetsImportOpen}
-        isSubmitting={isGenerating}
-        sources={sheetImportSources}
-        selectedSourceId={selectedSheetsSourceId}
-        selectedProfileName={selectedSheetsProfileName}
-        generationProgress={generationProgress}
-        onSelectSource={setSelectedSheetsSourceId}
-        onClose={() => setIsSheetsImportOpen(false)}
-        onConfirm={handleImportJobsFromSheets}
-      />
+      {pendingImmediate && (
+        <ImmediateRunConfirm
+          onCancel={() => setPendingImmediate(null)}
+          onProceed={(dontShowAgain) => {
+            if (dontShowAgain) skipImmediateConfirm(browserStorage());
+            const start = pendingImmediate;
+            setPendingImmediate(null);
+            start();
+          }}
+        />
+      )}
 
       {/* Footer */}
       <footer className="mt-auto py-6 text-center text-sm text-subtle">

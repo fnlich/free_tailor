@@ -1,4 +1,5 @@
 import { apiFetch, getPreferredApiBase } from './api';
+import type { CancelOutcome } from './orderCancel';
 
 /**
  * Orders: resumes built from a Google Sheet import, and how to get them back.
@@ -118,9 +119,15 @@ export function isOrderLive(order: { counts: OrderCounts; state: OrderState }): 
   return order.state === 'running' && order.counts.queued + order.counts.running > 0;
 }
 
+/**
+ * What Cancel asks before it stops an order, and what it says it did - on
+ * /orders, on an order's page and on the builder's receipt alike
+ * (lib/orderCancel.ts, which the backend suite runs).
+ */
+export { cancelOrderQuestion, describeCancelOutcome, type CancelOutcome } from './orderCancel';
+
 export const ordersApi = {
   list: () => apiFetch<{ orders: Order[] }>('/orders'),
   get: (id: string) => apiFetch<OrderDetail>(`/orders/${id}`),
-  cancel: (id: string) =>
-    apiFetch<{ cancelled: number; aborted: number }>(`/orders/${id}/cancel`, { method: 'POST' }),
+  cancel: (id: string) => apiFetch<CancelOutcome>(`/orders/${id}/cancel`, { method: 'POST' }),
 };

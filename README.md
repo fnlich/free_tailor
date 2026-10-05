@@ -28,7 +28,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **Credits** | A credit is a dollar, to the thousandth (`$0.023`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User and Administrator. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
-| **Order & Download** | A Google Sheet import is placed as an order and answers with an order number instead of making you wait. Track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
+| **Order & Download** | Two ways to build. **Generate Immediately** follows the run on the page and downloads each resume as it lands; closing the tab stops it and refunds what had not started. **Order** answers with an order number instead of making you wait: track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates. Each says which Technical Skills layouts it can print, and a profile is offered only the ones that print its own |
@@ -584,16 +584,18 @@ or Approved one is refused - by a partial UNIQUE index in the database, not only
 by the page - and a declined request does not stop asking again. A refunded one
 does: there is nothing left to give back.
 
-**Which resume.** An ordered resume is named by its order item, which keeps
-what it was charged after its batch is gone; a resume the builder built and
-handed straight back (`POST /api/resume/generate`) by its charge, which was that
-resume's alone; and a queued resume that
-was not placed as an order by its task, for as long as the queue still holds
-its run (up to an hour after it finishes - sooner on a busy install, since the
-queue keeps only the twenty most recently finished runs of any account). After
-that last one is gone it cannot be
-picked any more - *This run's resumes are no longer listed* - and the person is
-told to ask an administrator, who can grant credit from **Admin → Accounts**.
+**Which resume.** A queued resume - an order's, or a Generate Immediately
+run's, which is filed with an order record of its own that **Orders** never
+lists - is named by its order item, which keeps what it was charged after its
+batch is gone and after the run's files are deleted; a resume built by the older
+synchronous `POST /api/resume/generate` by its charge, which was that resume's
+alone. Only a builder run queued by a release from before Generate Immediately
+is named by its task, for as long as the queue still holds its run (up to an
+hour after it finishes - sooner on a busy install, since the queue keeps only
+the twenty most recently finished runs of any account). After that is gone it
+cannot be picked any more - *This run's resumes are no longer listed* - and the
+person is told to ask an administrator, who can grant credit from **Admin →
+Accounts**.
 
 **Everybody concerned is told.** A new request puts a notice in every
 administrator's bell; every change of state puts one in the bell of the person
@@ -687,7 +689,8 @@ separate checks and one is not a substitute for the other.
 | **Refund requests** (asking, and reading your own) | anybody signed in | about their own purchases and resumes only - somebody else's answers 404, never 403 |
 | **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
 | **Find Jobs** | ordinary users | opens today's tab of their own job sheet in a new tab. Not shown to administrators, who manage the installation rather than work a job sheet |
-| **Groups** | **Premium and above** | an entitlement, checked on the subscription alone |
+| **Groups** | **Premium and above**, and administrators | an entitlement, checked on the subscription - a group is a way to build for several profiles at once |
+| **Building for several profiles** (Multiple, All profiles, Specific group, Select Group) | **Premium and above**, and administrators | a Default subscription supports one profile. The run, its quote and the multi-profile preview answer 403 `subscription-too-low`; a single-profile run - Generate Immediately or Order - is open to everybody |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
 | **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for anybody signed in |
 | **Templates** (looking at them) | anybody signed in | the gallery and the full-page preview of each, from the top bar. Choosing a template is no use without seeing what it produces |
@@ -702,10 +705,12 @@ explains itself if the URL is typed - a blank screen reads as a broken link.
 **Hiding is not the protection**: every one of these is enforced by middleware on
 the routes, so an old tab or a hand-made request is refused just the same.
 
-One consequence worth knowing: because the group gate is on the subscription
-alone, **an administrator on the Default subscription is refused Groups too**.
-Every account starts on Default, so the first administrator has to be moved up
-under **Admin → Accounts** before they can use them.
+**Administrators are exempt from the subscription checks** - Groups, and
+building for several profiles - whatever their own subscription, as they are
+from credits and the profile cap. (An administrator on Default used to be
+refused Groups until somebody moved them up.) It is the role that exempts: the
+same account made an ordinary user is held to its subscription like anybody
+else.
 
 The same rule holds below the pages. The seats' health (`/api/admin/ai/health`),
 the queue lanes (`/api/generation/queues`), the prompt tools
@@ -1115,10 +1120,10 @@ filter's verdict in `Filter Result` and its reason in `Filter Reason` - two
 columns the filter owns, so `Rate`, `note` and `Job Finder` stay yours. Rows are appended after
 what is already there, and jobs already in the tab are skipped.
 
-**And the builder reads back out of it.** *Import from Sheets* on the builder
-offers your own sheet first and by default, on today's tab, with `Company`,
-`Job Title` and `Job Description` already mapped - because the layout is one
-this app wrote. Each row's role is its own `Job Title`; a row with none is
+**And the builder reads back out of it.** Sheet mode on the builder offers
+your own sheet first and by default, with a **Tab** select listing every tab
+(`GET /api/import/tabs`; today's selected) and `Company`, `Job Title` and
+`Job Description` already mapped - because the layout is one this app wrote. Each row's role is its own `Job Title`; a row with none is
 built with the title the posting's analysis reads from its description, as a
 manual build is. (The builder's *Fallback Role* field is gone: it put one
 typed role on every untitled row, whatever each job was.) A saved source is somebody else's spreadsheet and keeps the
@@ -1141,24 +1146,81 @@ zone the users actually live in.
 
 ### Order & Download
 
-There are two ways to generate, and which one you get follows from where the
-jobs came from rather than from a toggle.
+Every build is queued on the server, and there are two ways to start one -
+two buttons, chosen by what you want to wait for:
 
-**Building manually** is unchanged: one resume, built while you wait, downloaded
-when it is done.
+| | **Generate Immediately** | **Order** |
+|---|---|---|
+| Where | Manual mode (one profile, or Multiple) and sheet mode | Sheet mode, and manual **Multiple** |
+| While it runs | Follow it on the page, with progress and a **Stop** button | The page is free at once; follow it on **Orders** |
+| Files | Each resume **downloads by itself** as it lands | Kept on the server for five days; download one, a few, or all as a zip |
+| Closing the tab | **Stops the run** - at once, or after a short grace when it is the connection that went | Nothing - it runs whether or not anybody is watching |
+| On the seat | Goes ahead of orders waiting for the same seat | Waits its turn |
 
-**A Google Sheet import is placed as an order.** Pressing *Generate* in the
-import dialog answers immediately with
+**Who may build for how many profiles.** A Default subscription supports one
+profile, so the choices that build for more than one - **Multiple**, **All
+profiles**, **Specific group**, **Select Group**, in manual and sheet mode
+alike - need Premium or higher. Everything else is open to every
+subscription: sheet mode, a single profile, Generate Immediately and **Order**
+(a Default account orders for its one profile, with no row limit).
+Administrators are exempt whatever their own subscription. The builder shows
+the locked choices greyed out with a *Premium* pill; the server is the real
+lock - a run, a quote or a multi-profile preview for more than one profile (or
+for all of them) is refused with 403 `subscription-too-low`.
+
+**Sheet mode reads any tab.** Pick the sheet, the **Tab** (every tab of it is
+listed, today's selected), and the rows; *Load rows* shows the jobs found
+before anything is built, then **Generate Immediately** or **Order**.
+
+**Generate Immediately is tied to its tab.** The first click asks *"If you
+close the tab or the network drops, the run can be stopped. Would you like to
+proceed?"* (with *Don't show again*, remembered by the browser). While the page
+is open it follows the run, with progress and **Stop**, and each finished
+resume - resume and cover letter, in the formats the run asked for - downloads
+by itself, once. The run's files are also listed under the progress (*This
+run's files*), to download again if the browser held one back.
+
+Leaving the page stops the run at once: closing or reloading the tab (the
+browser asks first), or leaving Build Resumes inside the app (the page asks
+first). Resumes that had not started are refunded, and the one being built is
+stopped - and refunded, unless it finished first. A page that could not say
+it was leaving - a dropped connection, a laptop that slept, a browser that was
+killed - is given `IMMEDIATE_TAB_GRACE_MS` (30 seconds by default): the same
+tab reconnecting inside it carries on without downloading anything twice, and
+otherwise the run is cancelled the same way. A connection that vanished
+without closing - the lid shut, the network gone - is noticed too: the server
+ends the run's progress stream every 20 seconds and a page that is still there
+attaches again at once, so a tab that does not is counted gone within 20
+seconds, and the grace starts then. Back on Build Resumes in the same
+tab, the page downloads whatever the stopped run had finished that this tab
+had not, while the server still keeps it, and says how the run ended. A
+second tab - a duplicated one included - never follows, stops or downloads
+another tab's run.
+
+Its files are filed per account under the same tree as an order's - so two
+accounts can never write one file - served only to their owner, and **deleted
+`IMMEDIATE_FILE_RETENTION_MS` after the run ends** (ten minutes by default),
+whether or not they were downloaded: the download is the delivery. A
+downloaded resume stays charged either way. An immediate run never appears on
+**Orders**, and a resume of one is still refundable (see [Asking for a
+refund](#asking-for-a-refund)).
+
+**An Order answers immediately** with
 
 > You ordered successfully: Order number - `FT-20260920-0007`
 
 and the page is then free. That is the point: three hundred rows is an hour of
 work, and holding a browser tab open for it meant a reload part way through left
-the files on the server with nothing offering them. The server now records what
+the files on the server with nothing offering them. The server records what
 was asked for and builds it whether or not anybody is watching. It stays free
 when you come back, too: reopening **Build Resumes** picks up only a run you
-started from the builder yourself - never an order (that is what **Orders** is
-for), and never another account's, an administrator's included.
+started from that tab - never an order (that is what **Orders** is for), never
+another tab's, and never another account's, an administrator's included.
+**Cancel** on the receipt, on each live row of **Orders** and on the order
+itself stops what is left: resumes not yet started are refunded, and one
+already being built is stopped and refunded - unless it finishes first, when it
+is delivered and charged. The receipt follows its order, and once the order has
+finished it says so and stops offering **Cancel**.
 
 **Orders** in the navigation lists what you ordered, newest first, each with a
 `122 of 300` progress bar. Open one and every resume is there as it lands:
@@ -1186,10 +1248,24 @@ An order belongs to one account. Every route takes an id and checks it against
 the caller; somebody else's order answers **404**, not 403, because the
 difference between those two replies is itself an answer. The two older download
 routes - `/api/generated` and `/api/resume/download` - now ask the same question
-of any path an order owns: a fixed template makes an ordered path *derivable*
-rather than merely guessable, and a signed-in-only check would otherwise hand
-every account's resumes to anybody with a login. A path no order claims is a
-manual build and is unaffected.
+of any path an order (or a Generate Immediately run) owns: a fixed template
+makes such a path *derivable* rather than merely guessable, and a signed-in-only
+check would otherwise hand every account's resumes to anybody with a login. A
+path nothing claims is a resume built by the older synchronous
+`POST /api/resume/generate`, filed by the administrator's output template, and
+is unaffected.
+
+For a page or a script, the queue's contract is:
+
+| Call | What it does |
+|---|---|
+| `POST /api/generation/batches` | Queues a run. `mode: "immediate"` (the default) or `"order"` (`asOrder: true` is the older spelling); `tabId` names the starting tab of an immediate run. Answers `202 { batchId, kind, total, ... }`, plus `orderId` and `orderNumber` for an order |
+| `GET /api/generation/batches/:id/stream?tab=<tabId>` | Progress as NDJSON. The run's own tab, open, is what keeps an immediate run alive |
+| `GET /api/generation/batches?active=1&tab=<tabId>` | The immediate runs started from that tab and still going - what a reloaded tab reattaches to |
+| `POST /api/generation/batches/:id/release?tab=<tabId>` | Stops an immediate run now. No body, and the session cookie suffices, so a `keepalive` fetch or `sendBeacon` from `pagehide` works |
+| `GET /api/generation/batches/:id/tasks/:taskId/:kind` | One file of one finished resume (`resume-pdf`, `resume-docx`, `cover-letter-pdf`, `cover-letter-docx`), to its owner only |
+| `POST /api/generation/batches/:id/cancel`, `POST /api/orders/:id/cancel` | Cancels what is left of a run or an order |
+| `GET /api/import/tabs` | The tabs of your job sheet (or `?sheetId=` of one you may address), with `defaultTab` - today's |
 
 ### Where data lives
 
@@ -1198,7 +1274,7 @@ manual build and is unaffected.
 | Profiles, groups, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
-| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir` |
+| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir`. A Generate Immediately run has a row there too, `kind = 'immediate'`, which **Orders** never lists - it is what files its resumes per account, checks who downloads them, keeps what each was charged for a refund, and tells the sweep when its files are due (`finished_at` + `IMMEDIATE_FILE_RETENTION_MS`). An older build reads those rows as ordinary orders, so after a rollback they show up on its Orders page |
 | Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
 | Credit ledger and open reservations | The same database, in thousandths of a dollar. The ledger is append-only and `users.balance_milli` is a cache of the sum of its `delta_milli`; a disagreement between the two is reported at startup rather than silently repaired. The whole-credit columns beside them (`users.credits`, `credit_ledger.delta`, `credit_reservations.units`, `payments.credits`...) hold the history from before credits were dollars, and every row written since puts `0` in them |
@@ -2071,30 +2147,32 @@ free_tailor/
 
 ## 📤 Output Structure
 
-There are **two ways to generate, and they file their output differently.**
-
-**Building manually** is one resume at a time, downloaded as soon as it is
-built. It uses the output path template from the admin settings, for example:
+**Every queued build - an Order and a Generate Immediately run alike - is
+filed under one fixed layout**, a constant rather than a setting:
 
 ```
-{profile}/{date}/{company}/{role}/
+{account}/{date}/{order number}/{profile}/{company}/
 ├── {profile}.pdf
 ├── {profile}.docx
 ├── {profile}_cover_letter.pdf
 └── {profile}_cover_letter.docx
 ```
 
-File and folder names are templated per profile.
+File names (and the company folder's name) are templated per profile. An
+order's number is `FT-YYYYMMDD-NNNN`; a Generate Immediately run gets one of its
+own, `FT-RUN-YYYYMMDD-NNNN`, which nobody is shown and which takes nothing out
+of the orders' sequence. Its files are deleted `IMMEDIATE_FILE_RETENTION_MS`
+after it ends; an order's, after `ORDER_RETENTION_DAYS`.
 
-**Order & Download** is what a Google Sheet import does, and its layout is a
-constant rather than a setting:
-
-```
-{account}/{date}/{order number}/{profile}/{company}/
-```
+The output path template in the admin settings, for example
+`{profile}/{date}/{company}/{role}/`, now files only resumes built by the older
+synchronous `POST /api/resume/generate`, which the builder no longer uses. It
+had no account segment, so two accounts with a same-named profile building for
+the same company on the same day wrote one file, and either could download it -
+the reason builder runs moved onto the order layout.
 
 Not configurable on purpose. These files are listed, downloaded, zipped and
-eventually deleted *by path*, days after they were written - so a layout an
+eventually deleted *by path*, minutes or days after they were written - so a layout an
 administrator edited in between would strand a live order's files and point the
 purge at a directory that no longer holds them. The account comes first so that
 everything one person ordered lives under one directory, which is what lets the
@@ -2247,6 +2325,8 @@ matching it.
 | `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Unset, it is `APP_URL`, then the first `FRONTEND_URL`, then the origin the buyer's own browser is on |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `ORDER_RETENTION_SWEEP_MS` | How often that sweep runs, besides once at startup (default `21600000`, six hours; range 60000-86400000). *Startup* |
+| `IMMEDIATE_TAB_GRACE_MS` | How long a **Generate Immediately** run outlives a page that went without saying so: when the run's tab stops following it (network gone, laptop asleep, browser killed), the run is cancelled after this long unless that tab reconnects - a short drop loses nothing. A connection that vanished without closing is counted gone within 20 s first (the server ends the run's stream every 20 s and a live page attaches again), so such a run stops within this plus 20 s. Resumes that had not started are refunded (default `30000`; range 5000-600000). A page that is closed, reloaded or left stops its run at once instead |
+| `IMMEDIATE_FILE_RETENTION_MS` | How long a Generate Immediately run's files stay on the server after the run ends, **downloaded or not** - the page downloads each resume as it lands, so the server copy only has to outlive that download (default `600000`, ten minutes; range 60000-86400000). Checked every minute. The resumes stay charged, and the run is never listed on **Orders** |
 | `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
 | `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging. Nothing is written there except `templates/`, where the templates administrators save are kept beside the built-ins, so it must be writable for those and backed up with the database |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
@@ -2293,7 +2373,7 @@ file. Export them in the shell, for the install and the server alike:
 | **Mark refunded** on a card purchase's refund request answers *Could not confirm the refund with Stripe. Its credit stays off the balance until it is…*, and the row then says *A $X card refund was sent and not confirmed* | Stripe did not answer - a dropped connection, a timeout - so the refund may or may not have been made. The credit it was for stays held off the buyer's balance (so it cannot be spent while the money may be on its way back), and the amount sent is written down. Press **Mark refunded** again: it sends the same amount under the same `Idempotency-Key: refund:<payment>`, so Stripe answers with the refund it made, if it made one, and never makes a second; the request then turns *Refunded*, or - if Stripe refuses - the credit goes back. Or check the payment in the Stripe dashboard first. Until it is settled the request cannot be declined and the payment cannot be refunded from the payments list (see the next row). |
 | **Decline** on a purchase's refund request says *That purchase is being refunded right now*, or *A $X card refund was sent to Stripe for this request and never confirmed…*; or the payments list's **Refund** says *A refund request for this payment has a card refund that Stripe has not confirmed yet* | Expected: *Declined* tells the person no money moved, so it is refused while money is moving or may have moved. *Being refunded right now*: another administrator (or another tab) pressed **Mark refunded**, or **Refund** on the payments list, and Stripe has not answered yet - wait a moment and reload the queue; if the refund went through, the request is already *Refunded*. *Never confirmed*: see the row above - press **Mark refunded** again first, and decline only if Stripe refuses it. The payments list refuses its whole refund for the same reason: the request already holds that credit, and a whole refund on top would take it twice. A decline of a purchase that HAS been refunded closes the request as *Refunded* instead and tells the person. |
 | **Mark refunded** on a crypto purchase's refund request says *Crypto cannot be refunded automatically. Send $X back from your Cryptomus merchant dashboard first, then confirm here that you have.* | Expected: nothing can pull crypto back. Send that amount to the buyer from the Cryptomus dashboard, then confirm - the dialog sends `paidByHand: true` with the amount it named, or what you typed in *Amount actually sent* (whole cents, no more than was asked); the server refuses a confirmation that names no amount (*Say how much you sent back*). Only then is the request set *Refunded*, recorded at what you sent, and that much credit reversed. If the buyer spent some between the request and the confirmation, the reversal takes what is left and the answer reports the rest as a shortfall. |
-| A person's refund request is refused with *What this resume was charged is not on record*, or the resumes of a run show *This run's resumes are no longer listed* | The resume is from an order placed before refund requests existed (its item carries no charge) and its batch is gone, or it is a queued resume that was not placed as an order and the queue has since forgotten its run (an hour after it finished at most, or sooner once twenty newer runs on the install had finished). Nothing records what that one resume alone cost, so it cannot be named. Grant the amount by hand under **Admin → Accounts** - the run's reserve row in the account's Credit History says what each resume was charged. |
+| A person's refund request is refused with *What this resume was charged is not on record*, or the resumes of a run show *This run's resumes are no longer listed* | The resume is from an order placed before refund requests existed (its item carries no charge) and its batch is gone, or it is from a builder run queued before Generate Immediately runs were filed with a record of their own, and the queue has since forgotten its run (an hour after it finished at most, or sooner once twenty newer runs on the install had finished). Nothing records what that one resume alone cost, so it cannot be named. Grant the amount by hand under **Admin → Accounts** - the run's reserve row in the account's Credit History says what each resume was charged. |
 | **Mark refunded** on a resume's request says *That account no longer exists, so nothing can be credited back* | The account was deleted after asking. There is no balance left to credit: decline the request with the reason instead. |
 | After rolling back to an older build, every account's bell shows other people's notices - *New refund request FT-RF-…* with somebody's email, amount and reason, *Refund request declined*, *Refund made* | This build writes notices for ONE account (`notifications.recipient_id` set), and an older build has no recipient filter: it reads every row as an announcement for everybody. Stop the backend and run `sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM notifications WHERE recipient_id IS NOT NULL;"` - announcements are untouched, and the requests themselves stay in `refund_requests`, which the older build ignores. Do it before starting an older build (see *Rolling back past this* under [Asking for a refund](#asking-for-a-refund)). |
 | The contact dialog lists fewer channels than were saved, or none, and the backend log says `[contact] A stored contact channel no longer passes its check and is not shown.` (or *not valid JSON*) | The `contact` row in `app_settings` was edited outside the app, or holds a value a rule written since now refuses. Every read re-checks every channel and leaves out the ones that fail - a link on the sign-in page is never shown unchecked. Open **Admin → Settings → General**, fix or re-enter the channel, and save. |
@@ -2320,10 +2400,14 @@ file. Export them in the shell, for the install and the server alike:
 | On **Admin → Accounts** after an upgrade, changing a row's subscription, deleting an account, or any change the server refuses (demoting the last administrator, say) turns the page into *Application error: a client-side exception has occurred*; or **Add an account** answers *This page is from an older version of the app. Reload it and try again.* | The page was loaded before the upgrade that renamed plans to subscriptions. It sends the tier as `plan`, which this build refuses rather than ignores, and it reloads the account list expecting the old `plans` field, which is now `subscriptions` - so anything in the table that reloads the list breaks the page, and only the invite form, which does not reload after a refusal, gets as far as the sentence. Reload the page. A subscription change or invite was refused, not half-made: an invite meant for Premium would otherwise have created a Default account. A delete names no tier, so it did go through; the reloaded page shows it. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
-| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first. There is a lane per real resource - one per subscription seat: Claude, Codex and Gemini - so no seat can hold up another. |
+| How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first - except that a Generate Immediately run's resumes wait ahead of every Order's on the same seat (somebody is watching one; nobody is waiting on the other), first come, first served within each. There is a lane per real resource - one per subscription seat: Claude, Codex and Gemini - so no seat can hold up another. |
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released $X from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
-| A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones running are aborted. |
-| Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page gives up only after twenty attaches in a row that brought nothing, or at once when the server says the batch is gone (restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
+| A run keeps going after the page is closed - or stops when it is | Which one depends on how it was started. An **Order** belongs to the queue, not to the page: closing or reloading the page does not stop it, and its files keep landing on **Orders**; to stop it, press **Cancel** there. A **Generate Immediately** run is tied to the tab that started it: a dropped connection inside `IMMEDIATE_TAB_GRACE_MS` (30 s) picks it back up without downloading anything twice, but a tab that is closed or reloaded - or a page left inside the app after confirming - stops it, and the log says which: `[queue] Immediate run bat_... stopped by its page` (the page said it was leaving) or `[queue] Immediate run bat_... stopped: no page has followed it for 30000 ms` (the tab went away without saying so and did not come back). Either way the resumes that had not started are refunded and the run's finished files stay downloadable for `IMMEDIATE_FILE_RETENTION_MS`. For a run nobody will sit through, use **Order**. |
+| A Generate Immediately run stopped part way though the tab was still open | The page lost its connection to the server for longer than the grace (plus up to 20 s: the server ends the run's progress stream every 20 s, and a page that does not attach again by then is counted gone) - a laptop that slept, a network that dropped for a minute, a proxy that cut the progress stream and did not let it reconnect. The person sees the remaining resumes as *Cancelled* and the unstarted ones refunded. Raise `IMMEDIATE_TAB_GRACE_MS` (up to ten minutes) if your users' connections are like that, or have them **Order** long runs. |
+| Only the first resume of a Generate Immediately run downloaded, or the browser asks *This site is trying to download multiple files* | The browser blocks a page from starting several downloads on its own until it is allowed to. Choose **Allow** in that prompt (in Chrome: the icon at the end of the address bar, or *Site settings → Automatic downloads → Allow* for this site). The files are on the server for `IMMEDIATE_FILE_RETENTION_MS` after the run ends (ten minutes by default), and the page lists each one under the progress (*This run's files*) to download again while it is open; after that they are deleted, downloaded or not - an **Order** keeps them for days instead. |
+| Downloading a Generate Immediately resume answers *That file has been deleted from the server* | Its run ended more than `IMMEDIATE_FILE_RETENTION_MS` ago, and the files went with it (owner decision: an immediate run's files are only kept long enough to download). The resume stays charged; if it never reached the person, they can ask for a refund on it. Raise the setting, or use **Order**, when files are needed for longer. |
+| Building for several profiles is refused with *Building for more than one profile needs a Premium subscription or higher* | The account is on the Default subscription, which supports one profile: Multiple, All profiles, Specific group and Select Group need Premium or higher, for Generate Immediately and Order alike (403 `subscription-too-low`). One profile at a time works on every subscription. Move the account up under **Admin → Accounts → Subscription**; administrators are never refused. |
+| Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut used to cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page keeps following until the server says the run is over: after twenty attaches in a row that brought nothing it slows from one attach a second to one every 10 s, and it stops at once only when the server answers that the batch is gone (404: restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen seat can actually take: its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`). The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. The three choices the prompt does need - the layout and the two section switches - travel as three words of their own, and the profile's own soft skills are not sent at all, because the code lists them. |
 | The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. A profile's layout and section switches are not in the key, on purpose: the analysis reads the posting, not the profile, so one analysis serves every profile in a batch. |
@@ -2387,7 +2471,7 @@ file. Export them in the shell, for the install and the server alike:
 | Admin → Models lists models in red as *free*, and runs on them cost nothing | Every enabled model priced `$0.000` is listed: after the upgrade that is all of them, since their old prices were in credits and were reset, and a model a migration adds arrives unpriced. Set a price per resume on each. `0` is a valid price - a deliberately free model stays listed, so nobody gives resumes away without seeing it. Startup says *Every model is FREE until it is priced* once, on the upgrade. |
 | Admin → Models, Accounts or Payments refuses a save with *This page is from an older version of the app. Reload it and try again.* | The page was loaded before credits became dollars and sent an amount in the old unit - a price in credits (`creditsPerResume`), a balance or grant in credits (`credits`, `amount`), payment limits in cents, or a purchase as a count of credits. Read as dollars it would have moved money by the wrong amount, so nothing was saved. Reload the page. |
 | A price, balance or grant is refused: *... can have at most three decimal places: $0.001 is the smallest step* | Amounts are exact to a thousandth of a dollar, and anything finer is refused rather than rounded either way - `0.023` is fine, `0.0235` is not. A purchase must be a whole number of cents (`12.50`, not `12.505`), because that is all a card or an invoice can charge. |
-| Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, *Import from Sheets* and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen **before** signing in again - a consent given while it is in Testing keeps the seven-day limit: Cloud console -> Google Auth Platform -> Audience -> Publish app (older consoles: APIs \& Services -> OAuth consent screen -> PUBLISH APP). With the restricted Drive scope Google then shows a "Google hasn't verified this app" screen at sign-in; for your own install that is expected - Advanced -> Go to the app. A Google Workspace project can choose user type Internal instead, which has neither the expiry nor the warning. `deleted_client`, `disabled_client` or `invalid_client` instead of `invalid_grant` means the OAuth client itself is gone, and signing in again would re-use it: a deleted one can be restored for 30 days under Google Auth Platform -> Clients; otherwise make a new Desktop app client, download it into `backend/` and run `npm run sheets:login -- --client <that file>` - naming it, because an older `client_secret*.json` left there can otherwise be picked. If `GOOGLE_CREDENTIALS_PATH` names the credential, `sheets:login` re-uses the client from that file and says so if the app will keep reading a different one from the file it just saved. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
+| Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, the builder's sheet mode and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen **before** signing in again - a consent given while it is in Testing keeps the seven-day limit: Cloud console -> Google Auth Platform -> Audience -> Publish app (older consoles: APIs \& Services -> OAuth consent screen -> PUBLISH APP). With the restricted Drive scope Google then shows a "Google hasn't verified this app" screen at sign-in; for your own install that is expected - Advanced -> Go to the app. A Google Workspace project can choose user type Internal instead, which has neither the expiry nor the warning. `deleted_client`, `disabled_client` or `invalid_client` instead of `invalid_grant` means the OAuth client itself is gone, and signing in again would re-use it: a deleted one can be restored for 30 days under Google Auth Platform -> Clients; otherwise make a new Desktop app client, download it into `backend/` and run `npm run sheets:login -- --client <that file>` - naming it, because an older `client_secret*.json` left there can otherwise be picked. If `GOOGLE_CREDENTIALS_PATH` names the credential, `sheets:login` re-uses the client from that file and says so if the app will keep reading a different one from the file it just saved. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
 | A script ends with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c` (Windows) | A Node.js bug, not this app's: calling `process.exit()` just after network I/O races Node's own teardown on Windows ([nodejs/node#56645](https://github.com/nodejs/node/issues/56645)). Everything printed above it is complete and correct - read the report, not the crash; the only casualty was the exit code. The doctors and `sheets:login` now let the process end on its own, which avoids it on every Node version. Node itself fixed it in 24.20.0 and 26.7.0 ([nodejs/node#61999](https://github.com/nodejs/node/pull/61999)), and 22.x never got the fix, so a current 24 LTS is worth having anyway. |
 | Startup warns the sign-in is not a subscription | `claude auth status` reports something other than `authMethod: "oauth_token"`, so the CLI may have found an API key. A call it starts on one is stopped at its first event - `system/init` names the credential before the model answers - and the seat is held as signed out for 30 minutes so no further calls are billed. Run `claude auth login` as the user the server runs as, and remove whatever supplies the key - an `apiKeyHelper` in the CLI's own settings, say; `ANTHROPIC_API_KEY` in the environment is stripped from the child already. Then open **Admin → Settings**: its seat check lifts the hold once `claude auth status` reports the subscription, and a key still in the way is caught at the next call's first event again. |
 | Generation returns 429 with a `Retry-After`, and users see *AI generation is busy right now* | A seat's usage limit is spent: the Claude subscription's window, the ChatGPT plan's, or the Google account's quota. The Settings page shows the Claude window and its reset time; generation resumes on its own. The Gemini seat holds itself off for as long as Google's error asked - from 30 seconds up to 30 minutes, five when it named no delay - and logs `[ai] Holding off the Gemini seat for about ...`. |
@@ -2408,6 +2492,23 @@ npm test
 ```
 
 Runs the backend `node:test` suite against temporary SQLite databases and static directories.
+The run gets a temporary directory of its own (`backend/scripts/runTests.js` points
+`TMPDIR`/`TEMP`/`TMP` at it) and deletes it when the suite ends, so the system
+temp directory gains nothing from a run; `TAILOR_KEEP_TEST_TMP=1` keeps it for
+looking at what a failing test left behind.
+
+Generate Immediately and Order are pinned in `immediateRuns.test.js` (kinds,
+the tab lease through the stream, the release, the owner-checked per-file
+download and the deletion after the run, the refund by order item),
+`tabLease.test.js` (the grace on a mock clock), `queuePriority.test.js`
+(immediate before orders on one seat, retries and restores included) and
+`subscriptionGates.test.js` (one profile on every subscription, several only
+from Premium, administrators exempt); the Tab select's listing in
+`sheetTabs.test.js`. The page's own decisions - a tab's id, which resumes are
+still to download, the release request, how a run ended, the sheet rows - are
+run by `immediateRunHelpers.test.js`, and the whole of it in a browser by
+`test/e2e/immediate-run.js` and `test/e2e/sheet-panel.js`, against a seat and a
+Google Sheet stubbed by preloads (`backend/test/e2e/README.md`).
 
 The three seats are covered by `backend/test/claudeCli.test.js`,
 `codexCli.test.js` and `geminiCli.test.js`, which replay event streams from the

@@ -18,6 +18,21 @@ import { formatSequenceDate, nextDailyReference } from './dailySequence';
  */
 
 export type OrderState = 'running' | 'done' | 'failed' | 'cancelled' | 'expired';
+
+/**
+ * Which kind of run an order row records.
+ *
+ * `order` is what the Order button places, and the only kind /orders lists.
+ * `immediate` is a Generate Immediately run: it has a row so its resumes are
+ * filed under the order tree (unique per run, per account), downloaded through
+ * owner-checked routes, refundable by order item and swept - but nobody
+ * ordered it, so it is never listed, and its files go
+ * IMMEDIATE_FILE_RETENTION_MS after it ends rather than days later.
+ */
+export type OrderKind = 'order' | 'immediate';
+
+/** The number prefix per kind: an immediate run does not take an order number out of the FT- sequence. */
+const NUMBER_PREFIX: Record<OrderKind, string> = { order: 'FT-', immediate: 'FT-RUN-' };
 export type OrderItemState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 /**
@@ -52,6 +67,7 @@ export type OrderFile = {
 export type Order = {
   id: string;
   number: string;
+  kind: OrderKind;
   userId: string;
   batchId?: string;
   label: string;
@@ -112,6 +128,7 @@ type OrderRow = {
   finished_at: string | null;
   expires_at: string | null;
   purged_at: string | null;
+  kind: string | null;
 };
 
 type OrderItemRow = {
@@ -133,7 +150,7 @@ type OrderItemRow = {
 };
 
 const ORDER_COLUMNS = `id, number, user_id, batch_id, label, total, state,
-  created_at, updated_at, finished_at, expires_at, purged_at`;
+  created_at, updated_at, finished_at, expires_at, purged_at, kind`;
 
 const ITEM_COLUMNS = `id, order_id, seq, task_id, profile_id, profile_name, company_name,
   role, source_row_number, state, error, files, cost_milli, created_at, updated_at`;
@@ -146,6 +163,9 @@ function toOrder(row: OrderRow): Order {
   return {
     id: row.id,
     number: row.number,
+    // Anything but `immediate` is an order: that is every row from before the
+    // column, and the direction that lists a row rather than hiding it.
+    kind: row.kind === 'immediate' ? 'immediate' : 'order',
     userId: row.user_id,
     ...(row.batch_id ? { batchId: row.batch_id } : {}),
     label: row.label ?? '',
@@ -221,8 +241,8 @@ function toItem(row: OrderItemRow): OrderItem {
  * because both are numbers somebody quotes back at you and the numeric-MAX
  * trap in there is not worth falling into twice.
  */
-function nextOrderNumber(datePart: string): string {
-  return nextDailyReference('orders', 'number', 'FT-', datePart);
+function nextOrderNumber(prefix: string, datePart: string): string {
+  return nextDailyReference('orders', 'number', prefix, datePart);
 }
 
 export type NewOrderItem = {
@@ -243,6 +263,8 @@ export type NewOrder = {
   label?: string;
   /** How long the files are kept. The expiry is stamped, not recomputed later. */
   retentionDays: number;
+  /** `order` when absent. An immediate run's expiry is measured from when it ends instead. */
+  kind?: OrderKind;
 };
 
 /**
@@ -258,17 +280,19 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
   const timestamp = at.toISOString();
   const expiresAt = new Date(at.getTime() + order.retentionDays * 24 * 60 * 60 * 1000).toISOString();
   const datePart = formatSequenceDate(at);
+  const kind: OrderKind = order.kind === 'immediate' ? 'immediate' : 'order';
 
   const insert = db.transaction((number: string): OrderRow => {
     const id = `ord_${crypto.randomUUID()}`;
     db.prepare(
       `INSERT INTO orders (id, number, user_id, batch_id, label, total, state,
-                           created_at, updated_at, expires_at)
+                           created_at, updated_at, expires_at, kind)
        VALUES (@id, @number, @userId, @batchId, @label, @total, 'running',
-               @createdAt, @createdAt, @expiresAt)`
+               @createdAt, @createdAt, @expiresAt, @kind)`
     ).run({
       id,
       number,
+      kind,
       userId: order.userId,
       batchId: order.batchId ?? null,
       label: order.label ?? '',
@@ -309,7 +333,7 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      return toOrder(insert(nextOrderNumber(datePart)));
+      return toOrder(insert(nextOrderNumber(NUMBER_PREFIX[kind], datePart)));
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (!/UNIQUE constraint failed: orders.number/i.test(message)) throw error;
@@ -336,11 +360,16 @@ export function orderExistsForBatch(batchId: string): boolean {
   return Boolean(getDb().prepare('SELECT 1 FROM orders WHERE batch_id = ? LIMIT 1').get(batchId));
 }
 
+/**
+ * An account's ORDERS, newest first - what /orders lists. Never an immediate
+ * run: those are followed on the page that started them, and their files are
+ * gone minutes after they end (owner decision M4).
+ */
 export function listOrdersForUser(userId: string, limit = 50): Order[] {
   const rows = getDb()
     .prepare(
       `SELECT ${ORDER_COLUMNS} FROM orders
-       WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`
+       WHERE user_id = ? AND kind != 'immediate' ORDER BY created_at DESC, rowid DESC LIMIT ?`
     )
     .all(userId, limit) as OrderRow[];
   return rows.map(toOrder);
@@ -386,6 +415,19 @@ export function findOrderItemForBatch(batchId: string, seq: number): { order: Or
   if (!row) return null;
   const order = getOrder(row.order_id);
   return order ? { order, item: toItem(row) } : null;
+}
+
+/**
+ * The item a queued task produced, by the task's id - what a page that only
+ * has the batch's snapshot can name. Null until the task has finished (the id
+ * is recorded with the outcome), so a caller with the live batch falls back to
+ * the task's position (`findOrderItemForBatch`).
+ */
+export function findOrderItemByTask(orderId: string, taskId: string): OrderItem | null {
+  const row = getDb()
+    .prepare(`SELECT ${ITEM_COLUMNS} FROM order_items WHERE order_id = ? AND task_id = ? LIMIT 1`)
+    .get(orderId, taskId) as OrderItemRow | undefined;
+  return row ? toItem(row) : null;
 }
 
 /** Whose order a batch is, and its id - for resolving a queued task to the order item that names it. */
@@ -593,13 +635,37 @@ export function failOrder(orderId: string, message: string): void {
  * it settles.
  */
 export function listExpiredOrders(nowIso: string = now(), limit = 200): Order[] {
+  // Orders only: an immediate run's keep-until is measured from when it ENDS
+  // (listFinishedImmediateRuns), and its stamped expires_at could fall while
+  // a long run was still being downloaded from.
   const rows = getDb()
     .prepare(
       `SELECT ${ORDER_COLUMNS} FROM orders
-       WHERE purged_at IS NULL AND expires_at <= ? AND state != 'running'
+       WHERE purged_at IS NULL AND expires_at <= ? AND state != 'running' AND kind != 'immediate'
        ORDER BY expires_at ASC LIMIT ?`
     )
     .all(nowIso, limit) as OrderRow[];
+  return rows.map(toOrder);
+}
+
+/**
+ * Immediate runs that ended at or before `endedBeforeIso` and still have their
+ * files - the ones whose files are due for deletion (owner decision M4:
+ * charged, then deleted, downloaded or not).
+ *
+ * Measured from `finished_at`, which `settleOrderIfFinished` stamps when the
+ * last resume settles - so a run is never swept while it is still running,
+ * and a run that took an hour still gets its full grace after the last file.
+ */
+export function listFinishedImmediateRuns(endedBeforeIso: string, limit = 200): Order[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT ${ORDER_COLUMNS} FROM orders
+       WHERE kind = 'immediate' AND purged_at IS NULL AND state != 'running'
+         AND finished_at IS NOT NULL AND finished_at <= ?
+       ORDER BY finished_at ASC LIMIT ?`
+    )
+    .all(endedBeforeIso, limit) as OrderRow[];
   return rows.map(toOrder);
 }
 
@@ -669,4 +735,9 @@ export function markOrderPurged(orderId: string): void {
 /** Used by the retention tests, and by nothing else. */
 export function setOrderExpiryForTests(orderId: string, expiresAt: string): void {
   getDb().prepare(`UPDATE orders SET expires_at = ? WHERE id = ?`).run(expiresAt, orderId);
+}
+
+/** Used by the retention tests, and by nothing else. */
+export function setOrderFinishedAtForTests(orderId: string, finishedAt: string): void {
+  getDb().prepare(`UPDATE orders SET finished_at = ? WHERE id = ?`).run(finishedAt, orderId);
 }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
-import { isOrderLive, orderZipUrl, ordersApi, type Order } from '@/lib/orders';
+import { cancelOrderQuestion, describeCancelOutcome, isOrderLive, orderZipUrl, ordersApi, type Order } from '@/lib/orders';
 import { formatDate } from '@/lib/format';
 import { EmptyState, Notice, Page, PageHeader, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
@@ -29,6 +29,10 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  /** The order a Cancel is being sent for, so only its button says so. */
+  const [cancellingId, setCancellingId] = useState('');
+  /** What the last Cancel stopped, said once under the header. */
+  const [cancelNote, setCancelNote] = useState('');
   // Held in a ref, and written in an effect rather than during render, so the
   // polling interval does not have to be torn down and rebuilt on every
   // refresh just to see whether there is still anything worth polling for.
@@ -65,6 +69,28 @@ export default function OrdersPage() {
   }, [load]);
 
   /**
+   * Cancel, on a row that is still building: what is queued is dropped and
+   * refunded, and a resume already being built is stopped and refunded -
+   * unless it finishes first, when it is delivered and charged. Asked first,
+   * because it cannot be undone. The list is read again either way, so the row
+   * shows where it really stopped.
+   */
+  const cancelOrder = async (order: Order) => {
+    if (!window.confirm(cancelOrderQuestion(order.number))) return;
+    setCancellingId(order.id);
+    setCancelNote('');
+    try {
+      const outcome = await ordersApi.cancel(order.id);
+      setCancelNote(`Order ${order.number} cancelled: ${describeCancelOutcome(outcome)}`);
+    } catch (err) {
+      setError(messageWithDetail(err, 'Could not cancel that order.'));
+    } finally {
+      setCancellingId('');
+      void load();
+    }
+  };
+
+  /**
    * Polled, not streamed.
    *
    * The generation stream belongs to the batch, and a batch is evicted an hour
@@ -83,7 +109,7 @@ export default function OrdersPage() {
     <Page>
       <PageHeader
         title="Orders"
-        description="Every Google Sheet import is placed as an order. Files are kept for a few days, then deleted automatically - download anything you want to keep."
+        description="What you ordered on Build Resumes, built on the server whether or not a page is open. Files are kept for a few days, then deleted automatically - download anything you want to keep."
       />
 
       {error && (
@@ -92,15 +118,22 @@ export default function OrdersPage() {
         </Notice>
       )}
 
+      {cancelNote && (
+        <Notice tone="success" className="mb-6">
+          {cancelNote}
+        </Notice>
+      )}
+
       {loading ? (
         <Spinner />
       ) : orders.length === 0 ? (
         <EmptyState title="No orders yet">
-          Import jobs from your Google Sheet on the{' '}
+          Choose <strong>Order</strong> on{' '}
           <Link href="/" className="tl-link">
-            Builder
+            Build Resumes
           </Link>{' '}
-          and the resumes will appear here as they are built.
+          - from your Google Sheet, or for several profiles - and the resumes will appear here as they
+          are built.
         </EmptyState>
       ) : (
         /*
@@ -151,6 +184,17 @@ export default function OrdersPage() {
                         <a href={orderZipUrl(order.id)} className="tl-button-quiet">
                           Download all as .zip
                         </a>
+                      )}
+                      {isOrderLive(order) && (
+                        <button
+                          type="button"
+                          onClick={() => void cancelOrder(order)}
+                          disabled={cancellingId === order.id}
+                          className="tl-button-quiet"
+                          data-tone="danger"
+                        >
+                          {cancellingId === order.id ? 'Cancelling...' : 'Cancel'}
+                        </button>
                       )}
                     </div>
                   </td>

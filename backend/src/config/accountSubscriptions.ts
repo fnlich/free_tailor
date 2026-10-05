@@ -64,6 +64,15 @@ export const SUBSCRIPTIONS: Readonly<Record<AccountSubscriptionId, AccountSubscr
   },
 });
 
+/**
+ * The lowest subscription that may build for more than one profile at once -
+ * Multiple, All profiles, Specific group and Select Group, in the builder's
+ * manual and sheet modes alike (owner decisions B1-B3). A Default subscription
+ * supports one profile, so it builds for that one. Administrators are exempt
+ * (`hasSubscription`).
+ */
+export const MULTI_PROFILE_SUBSCRIPTION: AccountSubscriptionId = 'premium';
+
 /** The subscription a new account starts on. */
 export const DEFAULT_SUBSCRIPTION: AccountSubscriptionId = 'default';
 

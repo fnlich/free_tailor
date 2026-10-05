@@ -241,31 +241,36 @@ test("the form's placeholders are the server's sample text, field for field", ()
 
 // -- which running batch the builder picks back up --------------------------- //
 
-test('the builder picks back up only a batch the server lists as its own, never an order', () => {
+test("the builder picks back up only this tab's own Generate Immediately run, never an order", () => {
   const { reattachTarget } = loadFrontendModule('lib/batchFollow.ts');
-  const mine = { batchId: 'b-mine', state: 'running' };
-  const other = { batchId: 'b-other', state: 'running' };
+  const mine = { batchId: 'b-mine', state: 'running', kind: 'immediate' };
+  const other = { batchId: 'b-other', state: 'running', kind: 'immediate' };
 
-  // The remembered run, when the server still lists it.
+  // The remembered run, when the server still lists it for this tab.
   assert.deepEqual(reattachTarget([other, mine], 'b-mine'), { batchId: 'b-mine', forget: false });
-  // Remembered but not listed - finished, gone after a restart, an order, or
-  // another account's that this browser last remembered: forgotten, and the
-  // server's own list decides instead.
-  assert.deepEqual(reattachTarget([mine], 'b-someone-elses'), { batchId: 'b-mine', forget: true });
+  // Remembered but not listed - finished, stopped when the page was left,
+  // gone after a restart: forgotten, and the server's own list decides.
+  assert.deepEqual(reattachTarget([mine], 'b-stopped'), { batchId: 'b-mine', forget: true });
   assert.deepEqual(reattachTarget([], 'b-done'), { batchId: null, forget: true });
-  // Nothing remembered: the caller's first listed run (another tab, another browser).
+  // Nothing remembered (storage was blocked): the tab's first listed run.
   assert.deepEqual(reattachTarget([mine], null), { batchId: 'b-mine', forget: false });
   assert.deepEqual(reattachTarget([], null), { batchId: null, forget: false });
 
   // An order is followed on the Orders page, never here - even from a server
-  // that still lists one, and even when it is the remembered id.
+  // that still lists one, and even when it is the remembered id - and so is a
+  // run from before kinds, which no tab holds.
   const order = { batchId: 'b-order', state: 'running', kind: 'order' };
+  const legacy = { batchId: 'b-legacy', state: 'running', kind: null };
   assert.deepEqual(reattachTarget([order], null), { batchId: null, forget: false });
+  assert.deepEqual(reattachTarget([legacy], null), { batchId: null, forget: false });
   assert.deepEqual(reattachTarget([order, mine], 'b-order'), { batchId: 'b-mine', forget: true });
   // Only a running batch.
-  assert.deepEqual(reattachTarget([{ batchId: 'b-done', state: 'done' }], null), { batchId: null, forget: false });
+  assert.deepEqual(
+    reattachTarget([{ batchId: 'b-done', state: 'done', kind: 'immediate' }], null),
+    { batchId: null, forget: false }
+  );
 
-  // The list could not be read: attach nothing, and keep the remembered id
+  // The list could not be read: attach nothing, and keep the remembered run
   // for the next visit rather than forgetting it over a network blip.
   assert.deepEqual(reattachTarget(null, 'b-mine'), { batchId: null, forget: false });
 });

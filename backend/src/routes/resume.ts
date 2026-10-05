@@ -6,7 +6,7 @@ import {
   reserveCredits,
   settleRun,
 } from '../services/credits';
-import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import path from 'path';
 import {
   analyzeJobDescription,
@@ -474,6 +474,10 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       res.status(400).json({ error: NO_MATCHING_PROFILES });
       return;
     }
+    // Previewing several profiles is the first half of building for several,
+    // and is refused on the same terms (403 `subscription-too-low`) - before
+    // the analysis, so a refusal never costs a model call.
+    assertProfileScopeAllowed(req.user, { profileIds, resolvedCount: profiles.length });
 
 
     let analysis: JobAnalysis | undefined;

@@ -15,6 +15,8 @@ interface ResumePreviewProps {
   sidebar?: ReactNode;
   /** What generating will cost, shown beside the button that does it. */
   costNote?: ReactNode;
+  /** The generate button's label. */
+  generateLabel?: string;
 }
 
 export default function ResumePreview({
@@ -27,6 +29,7 @@ export default function ResumePreview({
   generationStep,
   sidebar,
   costNote,
+  generateLabel = 'Generate Resume',
 }: ResumePreviewProps) {
   if (!isOpen) return null;
 
@@ -73,7 +76,7 @@ export default function ResumePreview({
                   {generationStep || 'Generating...'}
                 </span>
               ) : (
-                'Generate Resume'
+                generateLabel
               )}
             </button>
             <button

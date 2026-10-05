@@ -11,12 +11,17 @@ export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_l
 export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company name}}';
 
 /**
- * Where an ORDERED resume is filed, and why it is a constant rather than a
- * setting.
+ * Where a QUEUED resume is filed - an order's and a Generate Immediately
+ * run's alike - and why it is a constant rather than a setting.
  *
  * `outputPathTemplate` above belongs to the administrator: they may rearrange
- * it whenever they like, and a manual build lands wherever it currently says.
- * An order cannot work that way. Its files are listed, downloaded, zipped and
+ * it whenever they like, and the one build still filed by it - the
+ * synchronous POST /api/resume/generate - lands wherever it currently says.
+ * A queued run cannot work that way. (An immediate run used to: with no
+ * account segment in the default, two accounts with a same-named profile
+ * building the same company on the same day wrote one file, and the download
+ * routes served it to either. It has an order row and a number now, and is
+ * filed here.) An order cannot work that way. Its files are listed, downloaded, zipped and
  * eventually deleted by path, days after they were written - so a layout edited
  * between the build and the download would strand a live order's files and aim
  * the purge at a directory that no longer holds them.

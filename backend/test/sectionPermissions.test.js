@@ -14,8 +14,9 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  * Two separate rules, deliberately not conflated:
  *   - templates are shared by the installation, so writing one is ADMIN work;
  *   - groups are an entitlement, so using them is a SUBSCRIPTION question.
- * An administrator on the Default subscription is therefore refused by the
- * second even though the first lets them through - see `requireSubscription`.
+ * They meet in one place: an administrator is exempt from the subscription
+ * check (owner decision B1), so an administrator on the Default subscription
+ * is let through both - see `hasSubscription`.
  */
 
 async function serve() {
@@ -167,21 +168,36 @@ test('the subscription gate covers writes as well as reads', async () => {
   }
 });
 
-test('being an administrator is not a substitute for the subscription', async () => {
+test('an administrator is exempt from the subscription, whatever their own', async () => {
   const server = await serve();
   try {
-    // Deliberate, and the reason it is written down: a role says who may change
-    // what everybody shares, a subscription says what your account includes.
-    // Every account starts on the Default subscription, so the first
-    // administrator is refused here until somebody moves them up.
+    // Owner decision B1: administrators are exempt, as they are from credits
+    // and the profile cap. Every account starts on Default, and the first
+    // administrator used to be refused Groups until somebody moved them up -
+    // a refusal that protected nothing, since they can change it themselves.
     assert.equal(server.users.getUserById(server.admin.id).subscription, 'default');
-    assert.equal((await server.call(server.adminToken, 'GET', '/api/groups')).status, 403);
+    assert.equal((await server.call(server.adminToken, 'GET', '/api/groups')).status, 200);
+    assert.equal((await server.call(server.adminToken, 'POST', '/api/groups', { name: 'x', profileIds: [] })).status !== 403, true);
 
-    const upgraded = server.onSubscription(server.admin, 'premium');
-    assert.equal((await server.call(upgraded, 'GET', '/api/groups')).status, 200);
+    // And it is the ROLE that exempts: the same account demoted to a user on
+    // Default is refused like anybody else.
+    server.users.updateUser(server.admin.id, { role: 'user' });
+    const demoted = server.users.createSession(server.admin.id);
+    assert.equal((await server.call(demoted, 'GET', '/api/groups')).status, 403);
   } finally {
     server.close();
   }
+});
+
+test('hasSubscription: the role exempts, the tier decides for everybody else', () => {
+  const { hasSubscription } = loadFresh('../dist/middleware/auth');
+  assert.equal(hasSubscription({ role: 'admin', subscription: 'default' }, 'premium-max'), true);
+  assert.equal(hasSubscription({ role: 'user', subscription: 'default' }, 'premium'), false);
+  assert.equal(hasSubscription({ role: 'user', subscription: 'premium' }, 'premium'), true);
+  assert.equal(hasSubscription({ role: 'user', subscription: 'premium-plus' }, 'premium'), true);
+  // An unknown stored tier resolves to the smallest, and nobody signed in has none.
+  assert.equal(hasSubscription({ role: 'user', subscription: 'gold' }, 'premium'), false);
+  assert.equal(hasSubscription(null, 'default'), false);
 });
 
 test('signing out closes both sections', async () => {

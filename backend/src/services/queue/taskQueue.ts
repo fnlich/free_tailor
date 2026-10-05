@@ -6,8 +6,9 @@ import { publicTaskError } from '../../middleware/publicError';
  * The queues the server runs generation out of.
  *
  * A TASK is one resume. A request to generate ten resumes appends ten tasks to
- * the tail of a queue and returns; slots take tasks off the head as they free
- * up, until the queue is empty. The request is a way to SUBMIT work, not the
+ * the tail of a queue - of its tier: an urgent batch's (Generate Immediately)
+ * wait ahead of the rest, see `enqueue` - and returns; slots take tasks off
+ * the head as they free up, until the queue is empty. The request is a way to SUBMIT work, not the
  * thing that performs it - which is what lets a batch outlive the page that
  * started it.
  *
@@ -168,6 +169,18 @@ export type Batch<T = unknown> = {
   controller: AbortController;
   /** Per-batch scratch the task runner uses; cleared when the batch finishes. */
   scratch: Map<string, unknown>;
+  /**
+   * Whether this batch's tasks go ahead of other work waiting in their lane.
+   *
+   * Set for a run somebody is sitting in front of (Generate Immediately) and
+   * not for an order, which nobody is waiting on: a 300-row order queued first
+   * would otherwise put every later Generate on that seat behind it, and an
+   * "immediate" run that waits an hour is not immediate. Within each tier the
+   * order is still first come, first served - see `enqueue`. The queue does not
+   * know what the flag means beyond that; the submit route and the restore
+   * decide it from the batch's kind.
+   */
+  urgent?: boolean;
 };
 
 export type BatchSnapshot = {
@@ -257,6 +270,13 @@ export type QueueStore = {
 export type QueueHooks = {
   taskStarted?(task: Task): void;
   taskFinished?(task: Task): void;
+  /**
+   * The batch stopped being work: its last task settled, or it was cancelled.
+   * Called once per batch, after every task's own `taskFinished`. Not called
+   * for a batch `restore` brings back already finished - the restore settles
+   * that one itself.
+   */
+  batchFinished?(batch: Batch): void;
 };
 
 /**
@@ -286,8 +306,10 @@ function describeError(error: unknown, task: Task): string {
 
 export class TaskQueue {
   /**
-   * One array per queue, and THE ORDER IS THE CONTRACT. A task submitted later
-   * never runs before one submitted earlier that an idle slot could take.
+   * One array per queue, and THE ORDER IS THE CONTRACT. Within a tier, a task
+   * submitted later never runs before one submitted earlier that an idle slot
+   * could take; an urgent batch's tasks wait ahead of every non-urgent one in
+   * their lane (`enqueue`).
    */
   private readonly queues: Record<QueueName, Task[]> = { cli: [], codex: [], gemini: [] };
 
@@ -408,6 +430,8 @@ export class TaskQueue {
        * fifty-one rows.
        */
       deferPersist?: boolean;
+      /** Queue ahead of non-urgent work in each lane. See `Batch.urgent`. */
+      urgent?: boolean;
     } = {}
   ): Batch<T> {
     // The caller may mint the id. `restore` already does, and a caller that must
@@ -432,12 +456,11 @@ export class TaskQueue {
       tasks,
       controller: new AbortController(),
       scratch: new Map(),
+      ...(meta.urgent ? { urgent: true } : {}),
     };
     this.batches.set(batchId, batch as Batch);
 
-    for (const task of tasks) {
-      this.queues[this.laneOf(task as Task)].push(task as Task);
-    }
+    this.enqueue(tasks as Task[]);
 
     if (!meta.deferPersist) {
       this.persist((store) => {
@@ -469,7 +492,15 @@ export class TaskQueue {
    * running at the time.
    */
   restore<T>(
-    meta: { id: string; label: string; jobCount: number; shared: Record<string, unknown>; createdAt: number },
+    meta: {
+      id: string;
+      label: string;
+      jobCount: number;
+      shared: Record<string, unknown>;
+      createdAt: number;
+      /** See `Batch.urgent`. Decided again from the stored batch, as at submit. */
+      urgent?: boolean;
+    },
     entries: Array<
       TaskDescriptor<T> & {
         id: string;
@@ -500,15 +531,14 @@ export class TaskQueue {
       tasks,
       controller: new AbortController(),
       scratch: new Map(),
+      ...(meta.urgent ? { urgent: true } : {}),
     };
     this.batches.set(meta.id, batch as Batch);
 
-    for (const task of tasks) {
-      // Every task's lane is checked, finished ones included: the snapshot and
-      // the stats count by lane, and a finished task still names one.
-      const lane = this.laneOf(task as Task);
-      if (task.state === 'queued') this.queues[lane].push(task as Task);
-    }
+    // Every task's lane is checked, finished ones included: the snapshot and
+    // the stats count by lane, and a finished task still names one.
+    for (const task of tasks) this.laneOf(task as Task);
+    this.enqueue((tasks as Task[]).filter((task) => task.state === 'queued'));
 
     // A batch whose every task had finished before the restart is finished, and
     // saying otherwise would leave it listed as active for ever.
@@ -584,6 +614,7 @@ export class TaskQueue {
       store.saveBatch(batch);
       for (const task of batch.tasks) store.saveTask(task);
     });
+    this.batchFinished(batch);
     this.emit({ type: 'done', batchId, snapshot: this.describe(batch) });
     this.dispatch();
     return { cancelled, aborted };
@@ -593,9 +624,13 @@ export class TaskQueue {
     const existing = this.listeners.get(batchId) ?? new Set<Listener>();
     existing.add(listener);
     this.listeners.set(batchId, existing);
+    // Safe to call twice: a stream ended on its own (`done`, or a tab lease's
+    // hold running out) unsubscribes again when its connection closes - by
+    // when a new reader may have made a NEW set for the batch, which an
+    // unguarded delete would have thrown away along with that reader's events.
     return () => {
       existing.delete(listener);
-      if (existing.size === 0) this.listeners.delete(batchId);
+      if (existing.size === 0 && this.listeners.get(batchId) === existing) this.listeners.delete(batchId);
     };
   }
 
@@ -646,6 +681,54 @@ export class TaskQueue {
   private laneOf(task: Task): QueueName {
     if (!isQueueName(task.queue)) task.queue = 'cli';
     return task.queue;
+  }
+
+  /**
+   * Puts tasks in line: an urgent batch's after the urgent work already
+   * waiting in their lane and before everything else, any other batch's at the
+   * tail.
+   *
+   * The ONE way into a lane - submit, restore and a retry all come through
+   * here - so the two tiers cannot be kept by one path and broken by another.
+   * A retry of an urgent task therefore goes to the back of the urgent work,
+   * not behind a three-hundred-row order, and a retried order task still goes
+   * to the very back. Dispatch stays "take the head" (`fill`): the order of the
+   * array is the whole policy.
+   *
+   * Grouped per lane and spliced in once, so an urgent batch of N into a lane
+   * holding M is one scan and one splice rather than N of each.
+   */
+  private enqueue(tasks: Task[]): void {
+    const byLane = new Map<QueueName, Task[]>();
+    for (const task of tasks) {
+      const lane = this.laneOf(task);
+      const list = byLane.get(lane) ?? [];
+      list.push(task);
+      byLane.set(lane, list);
+    }
+    for (const [lane, list] of byLane) {
+      const waiting = this.queues[lane];
+      const urgent = list.filter((task) => this.isUrgent(task));
+      const rest = list.filter((task) => !this.isUrgent(task));
+      if (urgent.length > 0) {
+        const firstOrdinary = waiting.findIndex((task) => !this.isUrgent(task));
+        waiting.splice(firstOrdinary === -1 ? waiting.length : firstOrdinary, 0, ...urgent);
+      }
+      waiting.push(...rest);
+    }
+  }
+
+  private isUrgent(task: Task): boolean {
+    return this.batches.get(task.batchId)?.urgent === true;
+  }
+
+  /** The `batchFinished` hook, guarded like the others: a listener that throws costs only itself. */
+  private batchFinished(batch: Batch): void {
+    try {
+      this.hooks?.batchFinished?.(batch);
+    } catch (error) {
+      console.warn('[queue] A batch-finished hook threw; the batch itself is unaffected.', error);
+    }
   }
 
   /**
@@ -841,9 +924,11 @@ export class TaskQueue {
    * registered runner would fail identically on every attempt - re-queueing
    * that one would only spend the attempts and delay the same answer.
    *
-   * It goes on the TAIL. A retry is not more urgent than the work already
-   * waiting, and a task that fails fast at the head would otherwise spin
-   * through its attempts while everything behind it waited.
+   * It goes on the TAIL of its tier (`enqueue`). A retry is not more urgent
+   * than the work already waiting, and a task that fails fast at the head would
+   * otherwise spin through its attempts while everything behind it waited -
+   * but an urgent run's retry still goes ahead of the orders, or a single
+   * failed attempt would drop a Generate Immediately behind all of them.
    */
   private retryTask(task: Task, error: string): boolean {
     const attempts = task.attempts ?? 1;
@@ -855,7 +940,7 @@ export class TaskQueue {
     // Kept, so a task waiting on its second go still says what went wrong the
     // first time rather than looking like it was never tried.
     task.error = error;
-    this.queues[task.queue].push(task);
+    this.enqueue([task]);
     this.persist((store) => store.saveTask(task));
     this.emitTask(task);
     return true;
@@ -874,6 +959,7 @@ export class TaskQueue {
     // of them. The finished batch is kept for an hour; its working set is not.
     batch.scratch.clear();
     this.persist((store) => store.saveBatch(batch));
+    this.batchFinished(batch);
     this.emit({ type: 'done', batchId: batch.id, snapshot: this.describe(batch) });
   }
 

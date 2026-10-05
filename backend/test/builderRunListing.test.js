@@ -111,7 +111,7 @@ test('the active list is the caller\'s own runs, never an order - administrators
     // And it says what it is, on the batch itself, which a restart keeps.
     const queue = queueModule.getGenerationQueue();
     assert.equal(queue.getBatch(alicesOrder).shared.kind, 'order');
-    assert.equal(queue.getBatch(alicesRun).shared.kind, undefined);
+    assert.equal(queue.getBatch(alicesRun).shared.kind, 'immediate');
   } finally {
     release();
     server.close();

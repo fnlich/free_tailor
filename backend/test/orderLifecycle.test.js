@@ -130,13 +130,13 @@ test('the items exist before any task can finish, one per resume, in submitted o
   }
 });
 
-test('an ordered build is filed under the account, and a manual one is not', async () => {
+test('an order and a Generate Immediately run are both filed under the account, by their own number', async () => {
   const server = await serve();
   try {
     const ordered = await (
       await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
     ).json();
-    const plain = await (await server.post('/api/generation/batches', { jobs: jobsFor(1) })).json();
+    const immediate = await (await server.post('/api/generation/batches', { jobs: jobsFor(1) })).json();
 
     const readPayload = (batchId) => {
       const rows = require('better-sqlite3')(`${server.dbDir}/free_tailor.db`)
@@ -144,25 +144,26 @@ test('an ordered build is filed under the account, and a manual one is not', asy
         .all(batchId);
       return JSON.parse(rows[0].data).payload;
     };
+    const ORDER_TREE = '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}';
 
     const orderedPayload = readPayload(ordered.batchId);
     assert.equal(orderedPayload.accountFolder, 'orderer@example.com');
     assert.equal(orderedPayload.orderNumber, ordered.orderNumber);
-    assert.equal(
-      orderedPayload.pathTemplate,
-      '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}',
-      'an order uses the fixed tree, not the administrator\'s template'
-    );
+    assert.equal(orderedPayload.pathTemplate, ORDER_TREE, 'an order uses the fixed tree, not the administrator\'s template');
 
-    // A manual build keeps the administrator's template - but it is still told
-    // WHO it is for, because `{{account name}}` is a token that template may
-    // use too, and filling it only for orders would file every queued build
-    // into one shared `unknown/` tree while the synchronous routes filed
-    // correctly.
-    const plainPayload = readPayload(plain.batchId);
-    assert.equal(plainPayload.accountFolder, 'orderer@example.com');
-    assert.equal(plainPayload.orderNumber, undefined);
-    assert.equal(plainPayload.pathTemplate, undefined);
+    // A run that was not ordered - Generate Immediately, the default - is
+    // filed the same way, under a number of its own: the administrator's
+    // template had no account segment, so two accounts with a same-named
+    // profile building the same company on the same day wrote ONE file, and
+    // either could download it.
+    assert.equal(immediate.kind, 'immediate');
+    assert.equal(immediate.orderNumber, undefined, 'an immediate run has no order number to show');
+    const immediatePayload = readPayload(immediate.batchId);
+    assert.equal(immediatePayload.accountFolder, 'orderer@example.com');
+    assert.match(immediatePayload.orderNumber, /^FT-RUN-\d{8}-\d{4}$/);
+    assert.equal(immediatePayload.pathTemplate, ORDER_TREE);
+    // And it does not take a number out of the orders' own sequence.
+    assert.match(ordered.orderNumber, /^FT-\d{8}-0001$/);
   } finally {
     server.close();
   }

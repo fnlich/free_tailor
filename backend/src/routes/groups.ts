@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { requireSubscription, requireUser } from '../middleware/auth';
+import { MULTI_PROFILE_SUBSCRIPTION } from '../config/accountSubscriptions';
 import { v4 as uuidv4 } from 'uuid';
 import { Group, CreateGroupDTO } from '../types/group';
 import { deleteGroup, getGroupFor, listGroupsFor, saveGroup } from '../database/groupRepository';
@@ -18,12 +19,13 @@ router.use(requireUser);
  * And a subscription that includes them.
  *
  * At the router, so reads are gated as well as writes: an account that may not
- * use groups should not be told how many it would have had. The check is on the
- * subscription alone - an administrator who has not been moved off the Default
- * subscription is refused here too, which is deliberate and documented on
- * `requireSubscription`.
+ * use groups should not be told how many it would have had. A group is a way
+ * to build for several profiles at once, so it needs the subscription the
+ * other multi-profile choices need. An administrator is exempt whatever their
+ * own subscription (`hasSubscription`), as they are from the multi-profile
+ * build gate and from credits.
  */
-router.use(requireSubscription('premium'));
+router.use(requireSubscription(MULTI_PROFILE_SUBSCRIPTION));
 
 
 function normalizeProfileIds(input: unknown): string[] {

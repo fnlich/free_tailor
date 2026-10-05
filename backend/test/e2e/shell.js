@@ -206,6 +206,60 @@ async function openSeededJob(page, company) {
   return { found, buttons };
 }
 
+/**
+ * Opens Build Resumes and presses one of its two entry cards ("Building
+ * Manually", "Building Automatically from Google Sheet").
+ */
+async function openBuilder(page, card) {
+  await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
+  await wait(350);
+  const pressed = await page.evaluate((label) => {
+    const button = Array.from(document.querySelectorAll('button')).find((b) => b.textContent.includes(label));
+    button?.click();
+    return Boolean(button);
+  }, card);
+  await wait(500);
+  return pressed;
+}
+
+/**
+ * A group of the builder's target radios as drawn: enabled or not, chosen or
+ * not, and the Premium pill beside it - a link to the Subscription page, with
+ * the reason on hover - if it has one.
+ */
+async function readChoices(page, name) {
+  return page.evaluate(
+    (radioName) =>
+      Array.from(document.querySelectorAll(`input[type="radio"][name="${radioName}"]`)).map((input) => {
+        const pill = input.closest('label')?.querySelector('a[href="/settings/subscription"]');
+        return {
+          value: input.value,
+          disabled: input.disabled,
+          checked: input.checked,
+          pill: pill ? pill.textContent.trim() : null,
+          title: pill ? pill.getAttribute('title') : null,
+        };
+      }),
+    name
+  );
+}
+
+/** The locked "Select Group" of sheet mode, if drawn: its select's state and its pill. */
+async function readLockedGroup(page) {
+  return page.evaluate(() => {
+    const select = document.getElementById('sheets-group-locked');
+    if (!select) return null;
+    const pill = select.parentElement?.querySelector('a[href="/settings/subscription"]');
+    return { disabled: select.disabled, pill: pill ? pill.textContent.trim() : null };
+  });
+}
+
+const ONE_PROFILE = 'Your subscription supports one profile';
+/** Locked as owner decisions B1-B3 say: disabled, with the Premium pill and its reason. */
+const isLocked = (choice) =>
+  Boolean(choice) && choice.disabled && choice.pill === 'Premium' && choice.title === ONE_PROFILE;
+const isOpen = (choice) => Boolean(choice) && !choice.disabled && choice.pill === null;
+
 /** What the shell looks like from inside the page. */
 async function inspect(page) {
   return page.evaluate(() => {
@@ -293,7 +347,9 @@ async function main() {
   const stamp = Date.now().toString(36);
   const user = users.createUser({ email: `e2e-shell-${stamp}@example.com`, name: 'Shell User' });
   const admin = users.findOrCreateUser({ email: 'boss@example.com' }).account;
-  users.updateUser(admin.id, { role: 'admin' });
+  // On Default on purpose: the builder must lock nothing for an administrator
+  // whatever their own subscription (owner decision B1).
+  users.updateUser(admin.id, { role: 'admin', subscription: 'default' });
 
   const userToken = users.createSession(user.id);
   const adminToken = users.createSession(admin.id);
@@ -488,6 +544,76 @@ async function main() {
       !shell.navLabels.includes('Groups'),
       `saw: ${shell.navLabels.join(', ')}`
     );
+
+    /*
+     * The builder's subscription locks (owner decisions B1-B3). A Default
+     * subscription supports one profile: Multiple, All profiles, Specific
+     * group and Select Group are drawn DISABLED with a Premium pill that leads
+     * to the Subscription page - shown, so the account learns what Premium
+     * adds - while Single, sheet mode and both ways to run stay open. The
+     * server is the real lock (403 `subscription-too-low`); this checks the
+     * page does not offer a door it would refuse.
+     */
+    check('user /: the Building Manually card opens', await openBuilder(page, 'Building Manually'));
+    const manualChoices = await readChoices(page, 'generateMode');
+    const single = manualChoices.find((choice) => choice.value === 'single');
+    const multiple = manualChoices.find((choice) => choice.value === 'multiple');
+    check(
+      'user / manual: Single is open and chosen',
+      isOpen(single) && single.checked,
+      JSON.stringify(manualChoices)
+    );
+    check(
+      'user / manual: Multiple is locked, with a Premium pill to /settings/subscription',
+      isLocked(multiple) && !multiple.checked,
+      JSON.stringify(manualChoices)
+    );
+    const importButton = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('button')).some((b) => /Import from Google Sheet/i.test(b.textContent))
+    );
+    check('user / manual: no "Import from Google Sheet" button', !importButton);
+
+    check('user /: the Google Sheet card opens', await openBuilder(page, 'Building Automatically from Google Sheet'));
+    const sheetChoices = await readChoices(page, 'sheetsTargetMode');
+    const byValue = (value) => sheetChoices.find((choice) => choice.value === value);
+    check(
+      'user / sheet: Single profile is open and chosen',
+      isOpen(byValue('single')) && byValue('single').checked,
+      JSON.stringify(sheetChoices)
+    );
+    check(
+      'user / sheet: All profiles and Specific group are locked with the Premium pill',
+      isLocked(byValue('all')) && isLocked(byValue('group')),
+      JSON.stringify(sheetChoices)
+    );
+    const lockedGroup = await readLockedGroup(page);
+    check(
+      'user / sheet: Select Group is drawn locked with the Premium pill',
+      Boolean(lockedGroup) && lockedGroup.disabled && lockedGroup.pill === 'Premium',
+      JSON.stringify(lockedGroup)
+    );
+    const sheetPage = await page.evaluate(() => ({
+      importButton: Array.from(document.querySelectorAll('button')).some((b) =>
+        /Import from Google Sheet/i.test(b.textContent)
+      ),
+      fallbackRole: /Fallback Role/i.test(document.body.innerText),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }));
+    check(
+      'user / sheet: no "Import from Google Sheet" button and no Fallback Role',
+      !sheetPage.importButton && !sheetPage.fallbackRole,
+      JSON.stringify(sheetPage)
+    );
+    check('user / sheet: no horizontal scrollbar', sheetPage.overflow <= 1, `overflow ${sheetPage.overflow}px`);
+
+    await page.setViewport(PHONE);
+    await openBuilder(page, 'Building Automatically from Google Sheet');
+    const sheetPhone = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+    );
+    check('user / sheet at 390: no horizontal scrollbar', sheetPhone <= 1, `overflow ${sheetPhone}px`);
+    await page.screenshot({ path: `${SHOTS}/shell-builder-sheet-locked-phone.png`, fullPage: true });
+    await page.setViewport(WIDE);
 
     /*
      * The way to the page where money is spent.
@@ -872,6 +998,25 @@ async function main() {
     for (const route of [...ROUTES, ...ADMIN_ROUTES]) {
       adminShell = await visit(adminPage, route, 'admin');
     }
+
+    /*
+     * An administrator is exempt from the subscriptions (owner decision B1),
+     * whatever their own is - this one is on Default - so nothing is locked.
+     */
+    await openBuilder(adminPage, 'Building Manually');
+    const adminManual = await readChoices(adminPage, 'generateMode');
+    check(
+      'admin / manual: Multiple is open, with no Premium pill',
+      isOpen(adminManual.find((choice) => choice.value === 'multiple')),
+      JSON.stringify(adminManual)
+    );
+    await openBuilder(adminPage, 'Building Automatically from Google Sheet');
+    const adminSheet = await readChoices(adminPage, 'sheetsTargetMode');
+    check(
+      'admin / sheet: every target is open, and no locked Select Group',
+      adminSheet.length === 3 && adminSheet.every(isOpen) && (await readLockedGroup(adminPage)) === null,
+      JSON.stringify(adminSheet)
+    );
 
     check(
       'admin: the same rail as everybody, Settings and Templates at its foot',

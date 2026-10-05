@@ -2,13 +2,15 @@ import fs from 'fs/promises';
 import path from 'path';
 import {
   listExpiredOrders,
+  listFinishedImmediateRuns,
   listOrderItems,
   markOrderPurged,
   recordItemFiles,
+  type Order,
   type OrderFile,
 } from '../../database/orderRepository';
 import { getOutputStorageSettings } from '../../config/aiModelConfig';
-import { orderRetentionSweepMs } from '../../config/operational';
+import { immediateFileRetentionMs, orderRetentionSweepMs } from '../../config/operational';
 import { getGeneratedFilePath } from '../../utils/generatedPath';
 
 /**
@@ -145,6 +147,28 @@ async function purgeOrder(
 
 /** One pass over everything past its keep-until date. */
 export async function purgeExpiredOrders(nowIso: string = new Date().toISOString()): Promise<PurgeReport> {
+  return purgePages(() => listExpiredOrders(nowIso));
+}
+
+/**
+ * One pass over the Generate Immediately runs that ended more than
+ * IMMEDIATE_FILE_RETENTION_MS ago (owner decision M4).
+ *
+ * Downloaded or not: the page downloads each resume as it lands, and what is
+ * left on the server after that is a copy nobody is going to come back for -
+ * an immediate run is never listed on /orders. The resumes stay charged; the
+ * order row stays too, marked expired, so a refund request about one of them
+ * still finds what it was charged.
+ */
+export async function purgeFinishedImmediateRuns(
+  nowMs: number = Date.now(),
+  retentionMs: number = immediateFileRetentionMs()
+): Promise<PurgeReport> {
+  const endedBefore = new Date(nowMs - retentionMs).toISOString();
+  return purgePages(() => listFinishedImmediateRuns(endedBefore));
+}
+
+async function purgePages(nextPage: () => Order[]): Promise<PurgeReport> {
   const report: PurgeReport = { orders: 0, filesRemoved: 0, filesMissing: 0 };
   const { outputBaseDir } = await getOutputStorageSettings();
   const emptiedDirectories = new Set<string>();
@@ -163,7 +187,7 @@ export async function purgeExpiredOrders(nowIso: string = new Date().toISOString
    * spin this for ever.
    */
   for (let page = 0; page < MAX_SWEEP_PAGES; page += 1) {
-    const expired = listExpiredOrders(nowIso);
+    const expired = nextPage();
     if (expired.length === 0) break;
 
     for (const order of expired) {
@@ -179,6 +203,18 @@ export async function purgeExpiredOrders(nowIso: string = new Date().toISOString
 }
 
 let sweepTimer: NodeJS.Timeout | null = null;
+let immediateTimer: NodeJS.Timeout | null = null;
+
+/**
+ * How often immediate runs' files are looked at. A minute, and a constant
+ * rather than a setting: their retention is minutes (IMMEDIATE_FILE_RETENTION_MS),
+ * so the six-hourly order sweep would keep them for hours, and a minute late
+ * is close enough to "ten minutes after the run" that nobody needs to tune it.
+ * The query reads a partial index of the runs that still have files
+ * (`idx_orders_immediate_unpurged`), so a minute's sweep costs nothing when
+ * there is nothing to delete.
+ */
+export const IMMEDIATE_RUN_SWEEP_MS = 60_000;
 
 /**
  * Starts the sweep, and is called from exactly one place: the server's listen
@@ -216,6 +252,25 @@ export function startOrderRetention(intervalMs: number = orderRetentionSweepMs()
   sweepTimer = setInterval(sweep, intervalMs);
   sweepTimer.unref?.();
 
+  // Generate Immediately runs, on their own, faster clock.
+  const sweepImmediate = () => {
+    void purgeFinishedImmediateRuns()
+      .then((report) => {
+        if (report.orders > 0) {
+          console.log(
+            `[orders] Retention: ${report.orders} Generate Immediately run(s) ended more than ` +
+              `${immediateFileRetentionMs()} ms ago, ${report.filesRemoved} file(s) deleted.`
+          );
+        }
+      })
+      .catch((error) => {
+        console.warn('[orders] Immediate-run retention sweep failed; it will run again.', error);
+      });
+  };
+  sweepImmediate();
+  immediateTimer = setInterval(sweepImmediate, IMMEDIATE_RUN_SWEEP_MS);
+  immediateTimer.unref?.();
+
   return stopOrderRetention;
 }
 
@@ -223,5 +278,9 @@ export function stopOrderRetention(): void {
   if (sweepTimer) {
     clearInterval(sweepTimer);
     sweepTimer = null;
+  }
+  if (immediateTimer) {
+    clearInterval(immediateTimer);
+    immediateTimer = null;
   }
 }

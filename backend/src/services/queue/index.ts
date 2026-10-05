@@ -12,6 +12,8 @@ import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
 import { geminiCliConcurrency } from '../ai/providers/geminiCli/options';
 import { closeIfSettled, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
+import { immediateTabGraceMs } from '../../config/operational';
+import { TabLeases } from './tabLease';
 import {
   isQueueName,
   registerTaskRunner,
@@ -34,6 +36,7 @@ import {
 } from './resumeTask';
 
 export { TaskQueue, registerTaskRunner, newBatchId, isQueueName, QUEUE_NAMES, LANE_PROVIDER } from './taskQueue';
+export { TabLeases, type TabLeaseDeps, type TabLeaseState } from './tabLease';
 export type {
   Assignment,
   Batch,
@@ -142,6 +145,23 @@ const store: QueueStore = {
 };
 
 let queue: TaskQueue | null = null;
+let leases: TabLeases | null = null;
+
+/**
+ * The tab leases of every immediate run in the process (services/queue/
+ * tabLease.ts), wired to the one queue: a lease that runs out cancels its
+ * batch through `cancel`, which is what refunds what had not started.
+ */
+export function getTabLeases(): TabLeases {
+  if (!leases) {
+    leases = new TabLeases({
+      cancel: (batchId) => getGenerationQueue().cancel(batchId),
+      isRunning: (batchId) => getGenerationQueue().getBatch(batchId)?.state === 'running',
+      graceMs: () => immediateTabGraceMs(),
+    });
+  }
+  return leases;
+}
 
 /**
  * What a task was charged, in thousandths of a dollar, read back from its
@@ -251,6 +271,10 @@ export function getGenerationQueue(): TaskQueue {
             : null
         );
       },
+      /** A run that is over needs no lease: nothing is left for a timer to stop. */
+      batchFinished: (batch) => {
+        leases?.forget(batch.id);
+      },
     },
     readMaxAttempts()
     );
@@ -304,17 +328,43 @@ export type RestoreReport = {
 };
 
 /**
- * What kind of run a batch is, on `shared.kind`. Only `order` is written for
- * now; a batch without one is a run the builder started and follows.
+ * What kind of run a batch is, on `shared.kind`:
+ *
+ * - `order` - placed with the Order button. Runs on the server whether or not
+ *   anybody is watching, is filed on /orders, and no builder tab follows it.
+ * - `immediate` - Generate Immediately. Tied to the tab that started it by a
+ *   lease (tabLease.ts) and cancelled when that tab is gone; its tasks go
+ *   ahead of orders in their lane (`urgent`); it has an `orders` row of kind
+ *   `immediate` that /orders never lists, so its files are filed and
+ *   owner-checked like an order's and deleted soon after it ends.
+ *
+ * Every batch submitted since both kinds existed carries one. A batch WITHOUT
+ * one was queued by an older build and restored: an order if the orders table
+ * says so (the restore writes that back), otherwise a builder run from before
+ * Generate Immediately, which is left to run to the end as it always did - no
+ * lease, no priority.
  *
  * On `shared` because `shared` is persisted whole and read back whole by the
  * restore - a field there survives a restart with no projection to update.
  */
 export const ORDER_BATCH_KIND = 'order';
+export const IMMEDIATE_BATCH_KIND = 'immediate';
+
+export type BatchKind = typeof ORDER_BATCH_KIND | typeof IMMEDIATE_BATCH_KIND;
 
 /** True for a batch placed as an order: it is filed on /orders, and no builder tab follows it. */
 export function isOrderBatch(batch: { shared: Record<string, unknown> }): boolean {
   return batch.shared.kind === ORDER_BATCH_KIND;
+}
+
+/** True for a Generate Immediately run: leased to its tab, ahead of orders in its lane. */
+export function isImmediateBatch(batch: { shared: Record<string, unknown> }): boolean {
+  return batch.shared.kind === IMMEDIATE_BATCH_KIND;
+}
+
+/** A batch's kind as a page reads it, or null for one queued before kinds existed. */
+export function batchKind(batch: { shared: Record<string, unknown> }): BatchKind | null {
+  return isOrderBatch(batch) ? ORDER_BATCH_KIND : isImmediateBatch(batch) ? IMMEDIATE_BATCH_KIND : null;
 }
 
 /**
@@ -500,6 +550,9 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           jobCount: data.jobCount ?? entries.length,
           shared,
           createdAt: data.createdAt ?? (Date.parse(row.createdAt) || Date.now()),
+          // Decided from the kind, exactly as at submit: `urgent` itself is
+          // not stored, because the kind already says it.
+          urgent: isImmediateBatch({ shared }),
         },
         entries
       );
@@ -514,6 +567,12 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
       // would wait for the reconciler, which releases everything outstanding -
       // the finished resumes included.
       if (batch.state !== 'running') settleRestoredBatch(batch as Batch);
+      // An immediate run lives only while a page follows it, and a restart
+      // closed every connection there was. Its tab gets the usual grace to
+      // reattach - a page whose stream reconnects after a quick restart
+      // carries on - and a run whose tab is gone stops instead of building
+      // for nobody.
+      else if (isImmediateBatch(batch)) getTabLeases().arm(batch.id);
       // Written back once, so the requeued tasks are queued on disk too - a
       // second restart must not count them as mid-flight all over again. Its
       // own catch, because the batch is back in the queue and running by now,
@@ -567,6 +626,8 @@ function settleRestoredBatch(batch: Batch): void {
 
 /** Tests share one process; a queue left running would leak into the next. */
 export function resetGenerationQueueForTests(): void {
+  leases?.reset();
+  leases = null;
   queue?.resetForTests();
   queue = null;
 }

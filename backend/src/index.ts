@@ -46,6 +46,7 @@ import {
   describeAiTimeoutsAboveRequestDeadline,
   describeNonDefaultOperationalSettings,
   httpRequestTimeoutMs,
+  immediateFileRetentionMs,
   jsonBodyMaxMb,
   serverPort,
 } from './config/operational';
@@ -411,7 +412,9 @@ const server = app.listen(PORT, HOST, () => {
   });
   /*
    * Deletes ordered resumes once their keep-until has passed, now and every
-   * ORDER_RETENTION_SWEEP_MS after (six hours by default).
+   * ORDER_RETENTION_SWEEP_MS after (six hours by default) - and Generate
+   * Immediately runs' files IMMEDIATE_FILE_RETENTION_MS after each run ends,
+   * checked every minute.
    *
    * Started HERE rather than when the module loads, which is the whole reason
    * it is a function: every test in this suite loads the modules it exercises,
@@ -420,7 +423,10 @@ const server = app.listen(PORT, HOST, () => {
    * it never holds the process open.
    */
   startOrderRetention();
-  console.log(`[orders] Ordered files are kept for ${orderRetentionDays()} day(s).`);
+  console.log(
+    `[orders] Ordered files are kept for ${orderRetentionDays()} day(s); a Generate Immediately ` +
+      `run's for ${Math.round(immediateFileRetentionMs() / 60_000)} minute(s) after it ends.`
+  );
 
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.

@@ -7,7 +7,7 @@ import ThemeToggle from '@/components/ThemeToggle';
 import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscriptions';
+import { hasSubscription, type AccountSubscriptionId } from '@/lib/subscriptions';
 import SignInPanel from './SignInPanel';
 
 /**
@@ -126,11 +126,11 @@ export function AdminOnly({ children }: { children: ReactNode }) {
  * a subscription limit, where what is needed is a different subscription on
  * your own account.
  *
- * Note it does not let administrators through. Being an administrator is a role
- * - who may change things shared by everybody - and a subscription is an
- * entitlement; the backend `requireSubscription` draws the same line, and a gate
- * that disagreed with it would show somebody a page whose every request then
- * failed.
+ * It lets administrators through, as the backend's `requireSubscription` does
+ * (owner decision B1: an administrator is exempt from the tiers, as from
+ * credits and the profile cap). A gate that disagreed with the backend either
+ * shows somebody a page whose every request then fails, or hides one that
+ * would have worked - `hasSubscription` is the shared rule.
  */
 export function RequiresSubscription({
   minimum,
@@ -146,7 +146,7 @@ export function RequiresSubscription({
 
   if (loading) return <p className="text-sm text-subtle">Loading...</p>;
 
-  if (!subscriptionAtLeast(account?.subscription, minimum)) {
+  if (!hasSubscription(account, minimum)) {
     return (
       <div className="tl-notice m-4 p-6 sm:m-8" data-tone="warn">
         <p className="font-semibold">Needs a {label} subscription</p>

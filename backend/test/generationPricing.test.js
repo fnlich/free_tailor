@@ -86,7 +86,10 @@ async function serve(name, { seeds = false } = {}) {
   queueModule.resetGenerationQueueForTests();
 
   const admin = users.createUser({ email: 'admin@example.com' });
-  const alice = users.createUser({ email: 'alice@example.com' });
+  // Premium: these are tests about what a run costs, and most of them price
+  // a run for both of Alice's profiles, which a Default subscription may not
+  // build (test/subscriptionGates.test.js).
+  const alice = users.updateUser(users.createUser({ email: 'alice@example.com' }).id, { subscription: 'premium' });
   const tokens = { admin: users.createSession(admin.id), alice: users.createSession(alice.id) };
 
   // Two profiles: one that picked Opus, one that inherits the default (Sonnet).

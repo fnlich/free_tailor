@@ -33,11 +33,15 @@ export type RefundRequestState = 'requested' | 'approved' | 'declined' | 'refund
  *
  * - `payment`: a purchase. Refundable: its unspent part.
  * - `order-item`: one resume of an order - durable, priced from the item.
- * - `task`: one resume of a queued run NOT placed as an order, while the queue
+ * - `task`: one resume of a queued run with NO order row, while the queue
  *   still holds its batch (up to an hour after it settles, sooner once twenty
- *   newer batches have finished). A task of an order's
- *   batch is always named by its order item instead, so one resume never has
- *   two names and so never two open requests.
+ *   newer batches have finished). Since Generate Immediately runs are filed
+ *   with an order row of their own (kind `immediate`), every run queued now
+ *   has one, so this names only a builder run queued by an older build and
+ *   restored - kept so a request made before the upgrade still reads, and
+ *   gone in practice once those batches are evicted. A task of a batch WITH
+ *   an order row is always named by its order item instead, so one resume
+ *   never has two names and so never two open requests.
  * - `charge`: one resume built synchronously by POST /api/resume/generate,
  *   named by its reservation - which is that resume alone.
  */

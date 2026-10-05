@@ -84,7 +84,7 @@ DB_DIR=/path/to/db node test/e2e/refunds.js
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js`, `shell.js` and `refunds.js` use puppeteer, which the backend
+`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js` and `sheet-panel.js` use puppeteer, which the backend
 already installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
@@ -121,6 +121,74 @@ narrow layout every width tried shook inside its band (1080x1450-1465,
 1000x1360-1375, 900x1242-1257, 760x1382-1397, 600x1203-1218). After it: none of
 84 template/viewport pairs, nor 80 in the narrow band, nor 20 with
 `E2E_NO_GUTTER=1`.
+
+## Building resumes, with the seat stubbed
+
+`immediate-run.js` and `sheet-panel.js` need resumes actually BUILT, which
+needs a model. `stub-seat.js` is that model: a `--require` preload, like
+`fake-providers.js`, that registers a canned Claude seat before the app loads -
+nothing is spawned, so a machine whose `claude` is signed in never spends its
+owner's subscription on a test. Each call waits `E2E_STUB_DELAY_MS` (2500 by
+default) so there is time to press Stop or leave a page mid-run, and an abort
+is honoured as the real runner honours it - a signal already aborted when the
+call starts is refused at once, so a stopped run's waiting resume is not built
+and charged behind the check. Set
+`E2E_OUTPUT_DIR` too: it writes the admin *Output folder* setting at boot, so
+the runs' PDFs land there and not in the repository's `generated/`.
+`stub-sheets.js` adds Google Sheets for `sheet-panel.js` - every account's job
+sheet exists, with an older day's tab, today's and a Notes tab, and canned rows
+- through the same two seams the unit tests use (the account sheet's client,
+and the range reader `POST /api/import` calls). Everything else is the
+shipping code: routes, the queue, the tab lease, order rows, files.
+
+```bash
+cd backend && npm run build
+E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-sheets.js dist/index.js
+# the frontend, built against that backend, in another terminal; then
+DB_DIR=/tmp/e2e-db node test/e2e/immediate-run.js   # E2E_DOWNLOADS=<dir> keeps the files
+DB_DIR=/tmp/e2e-db node test/e2e/sheet-panel.js
+```
+
+Leave `IMMEDIATE_TAB_GRACE_MS` at its default: `immediate-run.js` tells the
+page's own release from the server's 30-second grace by how soon the run
+stops.
+
+`immediate-run.js` — 29 claims, on the Default subscription. The first
+Generate Immediately asks first, in the owner's sentence, with *Don't show
+again*, and after it is ticked the next click goes straight through; the run
+shows progress and Stop, ends saying what it built, and its resume reaches the
+browser's download folder by itself, named for the company and the person, and
+is listed under the progress to download again. A run queued for the tab is
+picked back up by that tab after a reload - and never by a second tab, which
+gets an id of its own - followed to its end with every file of every resume
+handed to the browser exactly once. Stop mid-run says what was refunded and
+the server has it cancelled. A rail link while a run goes asks first: Cancel
+stays, OK leaves and the run is cancelled at once, and back on Build Resumes
+the page says how it ended. An order's live row on Orders offers Cancel, which
+asks, then says what it stopped; Orders lists that order and none of the
+immediate runs. Closing the tab cancels its run inside five seconds - the
+pagehide release, not the grace.
+
+What the browser SAVES is counted apart from what the page hands it: headless
+Chrome lets a page start only so many downloads by itself (about ten) and then
+drops the rest without a word, which is exactly the "multiple files" prompt a
+real person sees (README, Troubleshooting) and why the page lists the run's
+files to download again. The handed-over count is the page's promise; the saved
+count only has to be more than nothing.
+
+`sheet-panel.js` — 24 claims. The sheet card has no *Import from Google Sheet*
+button; the Tab select lists every tab in the spreadsheet's order and starts
+on today's, marked *(today)*; nothing can be built before rows are loaded.
+*Load rows* shows a job per row with a company and a description (rows 2, 3
+and 5 of today's tab), a link only where the cell is a web address (not the
+`javascript:` one), *From the posting* where there is no title, and the count
+of rows skipped; then Order and Generate Immediately, with the run priced.
+Another tab drops what was loaded and loads its own rows. Order answers with an
+order number and Cancel on the receipt asks, cancels, and the order reads
+cancelled on Orders; Generate Immediately builds the loaded rows here and
+hands each of their twelve files to the browser once. At 390px the loaded
+table scrolls inside its box rather than widening the page.
 
 ## Sign-in is seeded, deliberately
 

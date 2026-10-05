@@ -1,0 +1,313 @@
+/*
+ * The builder's sheet mode, in a real browser: the inline panel that replaced
+ * the "Import from Google Sheet" dialog.
+ *
+ * Google is stubbed (stub-sheets.js: three tabs, canned rows) and so is the
+ * seat (stub-seat.js); the routes, the account-sheet checks, the queue, the
+ * order rows and the files are the shipping code. It checks what the owner
+ * asked for:
+ *
+ *   - the Tab select is on the page, lists EVERY tab, and starts on today's
+ *   - Load rows shows the jobs found - company, title, a link only when it is
+ *     a web address - and counts the rows skipped, before anything is built
+ *   - another tab is another set of rows, loaded again
+ *   - Order answers with an order number, and Cancel on the receipt stops it
+ *   - Generate Immediately builds the loaded rows here and hands every file
+ *     to the browser once
+ *   - all of it on the Default subscription, and without a horizontal
+ *     scrollbar at 390px
+ *
+ *   E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
+ *     node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-sheets.js dist/index.js
+ *   DB_DIR=/tmp/e2e-db node test/e2e/sheet-panel.js
+ */
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const puppeteer = require('puppeteer');
+
+const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
+require(path.join(DIST, 'config', 'env'));
+const users = require(path.join(DIST, 'database', 'userRepository'));
+const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
+const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
+const { todaySheetTitle } = require(path.join(DIST, 'services', 'sheets', 'accountSheet'));
+
+const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
+const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
+const SHOTS = process.env.E2E_SHOTS || __dirname;
+const DOWNLOADS = process.env.E2E_DOWNLOADS || fs.mkdtempSync(path.join(os.tmpdir(), 'tailor-e2e-downloads-'));
+
+const WIDE = { width: 1440, height: 900 };
+const PHONE = { width: 390, height: 844 };
+const OLDER_TAB = '09/30/2026';
+
+let failures = 0;
+/** The detail is the reason it FAILED, so printing it on a pass reads as one. */
+function check(name, ok, detail = '') {
+  if (!ok) failures += 1;
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${!ok && detail ? `\n        ${detail}` : ''}`);
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function until(page, predicate, timeoutMs = 30_000, arg = null) {
+  try {
+    await page.waitForFunction(predicate, { timeout: timeoutMs, polling: 200 }, arg);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pressButton(page, text) {
+  return page.evaluate((label) => {
+    const button = Array.from(document.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent.trim() === label && !candidate.disabled
+    );
+    button?.click();
+    return Boolean(button);
+  }, text);
+}
+
+/** The Tab select as drawn: its options and the one chosen. */
+async function readTabs(page) {
+  return page.evaluate(() => {
+    const select = document.getElementById('sheet-tab');
+    if (!select) return null;
+    return {
+      disabled: select.disabled,
+      value: select.value,
+      options: Array.from(select.options).map((option) => ({ value: option.value, text: option.textContent.trim() })),
+    };
+  });
+}
+
+/** The preview table's rows, as cells of text, and what the panel says above it. */
+async function readPreview(page) {
+  return page.evaluate(() => {
+    const table = Array.from(document.querySelectorAll('table')).find(
+      (candidate) => candidate.querySelector('caption')?.textContent.includes('loaded rows')
+    );
+    const notice = Array.from(document.querySelectorAll('.tl-notice')).find((node) => /job.? in rows/.test(node.textContent));
+    return {
+      rows: table
+        ? Array.from(table.querySelectorAll('tbody tr')).map((tr) =>
+            Array.from(tr.querySelectorAll('td')).map((td) => ({
+              text: td.innerText.trim(),
+              href: td.querySelector('a')?.getAttribute('href') ?? null,
+            }))
+          )
+        : null,
+      notice: notice ? notice.innerText.replace(/\s+/g, ' ').trim() : null,
+      actions: Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim()).filter((t) => t === 'Order' || t === 'Generate Immediately'),
+    };
+  });
+}
+
+async function main() {
+  const stamp = Date.now().toString(36);
+  const today = todaySheetTitle();
+  const user = users.createUser({ email: `e2e-sheet-${stamp}@example.com`, name: 'Sheet User' });
+  const profileId = `p-sheet-${stamp}`;
+  saveProfile({
+    ...buildNewProfile(
+      {
+        name: 'Sam Sheet',
+        title: 'Senior Engineer',
+        contact: { email: 'sam@example.com', phone: '1', location: 'Remote' },
+        summary: 'Engineer who ships.',
+        experience: [
+          {
+            title: 'Engineer',
+            company: 'Acme',
+            startDate: '01/2020',
+            endDate: 'Present',
+            location: 'Remote',
+            description: 'Built product services.',
+            achievements: ['Cut build time by 37%.'],
+            skills: [],
+          },
+        ],
+        skills: ['TypeScript', 'Docker'],
+        education: [],
+      },
+      profileId
+    ),
+    ownerId: user.id,
+  });
+  const token = users.createSession(user.id);
+  const api = async (route) => {
+    const response = await fetch(`${API}${route}`, { headers: { authorization: `Bearer ${token}` } });
+    return { status: response.status, body: await response.json().catch(() => null) };
+  };
+
+  const handed = [];
+  const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+  const cdp = await browser.target().createCDPSession();
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOADS });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport(WIDE);
+    const dialogs = [];
+    page.on('dialog', async (dialog) => {
+      dialogs.push({ type: dialog.type(), message: dialog.message() });
+      await dialog.accept();
+    });
+    await page.exposeFunction('__e2eHanded', (name) => handed.push(name));
+    await page.evaluateOnNewDocument(() => {
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) window.__e2eHanded(this.download);
+        return click.call(this);
+      };
+    });
+    await page.goto(`${APP}/`, { waitUntil: 'domcontentloaded' });
+    await page.evaluate((value) => {
+      window.localStorage.setItem('adminToken', value);
+      window.localStorage.setItem('tailor-theme', 'light');
+    }, token);
+    await page.setCookie({ name: 'ft_session', value: token, domain: '127.0.0.1', path: '/', httpOnly: true, sameSite: 'Lax' });
+
+    /* ---------------------------------------------------------- the tab list */
+    await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
+    const opened = await page.evaluate(() => {
+      const card = Array.from(document.querySelectorAll('button')).find((b) =>
+        b.textContent.includes('Building Automatically from Google Sheet')
+      );
+      card?.click();
+      return Boolean(card);
+    });
+    check('the Google Sheet card opens', opened);
+    await until(page, () => {
+      const select = document.getElementById('sheet-tab');
+      return Boolean(select) && !select.disabled && select.options.length > 1;
+    }, 15_000);
+    const tabs = await readTabs(page);
+    check(
+      'the Tab select lists every tab of the sheet, in its order',
+      Boolean(tabs) && tabs.options.map((option) => option.value).join(' | ') === `${OLDER_TAB} | ${today} | Notes`,
+      JSON.stringify(tabs)
+    );
+    check(
+      "it starts on today's tab, marked as today",
+      tabs?.value === today && tabs.options.some((option) => option.value === today && /\(today\)/.test(option.text)),
+      JSON.stringify(tabs)
+    );
+    const importButton = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('button')).some((b) => /Import from Google Sheet/i.test(b.textContent))
+    );
+    check('no "Import from Google Sheet" button anywhere', !importButton);
+    const beforeLoad = await readPreview(page);
+    check('nothing can be built before rows are loaded', beforeLoad.actions.length === 0, JSON.stringify(beforeLoad.actions));
+
+    /* ------------------------------------------------------------- Load rows */
+    check('Load rows is pressed', await pressButton(page, 'Load rows'));
+    await until(page, () => Boolean(document.querySelector('table caption')), 10_000);
+    const loaded = await readPreview(page);
+    const companies = (loaded.rows ?? []).map((cells) => cells[1]?.text);
+    check(
+      "today's rows are shown before anything is built: a job per row with a company and a description",
+      companies.join(' | ') === 'Today Inc | Now LLC | Current Co' &&
+        (loaded.rows ?? []).map((cells) => cells[0]?.text).join(',') === '2,3,5',
+      JSON.stringify(loaded.rows)
+    );
+    const linkOf = (company) => (loaded.rows ?? []).find((cells) => cells[1]?.text === company)?.[3];
+    check(
+      'a link is a link only when it is a web address',
+      linkOf('Today Inc')?.href === 'https://today.example/jobs/1' && linkOf('Now LLC')?.href === null,
+      JSON.stringify([linkOf('Today Inc'), linkOf('Now LLC')])
+    );
+    check(
+      'a row with no title says the posting will name it',
+      (loaded.rows ?? []).find((cells) => cells[1]?.text === 'Current Co')?.[2]?.text === 'From the posting',
+      JSON.stringify(loaded.rows)
+    );
+    check(
+      'the panel counts the jobs and the rows it skipped',
+      /^3 jobs in rows 2-11 of/.test(loaded.notice ?? '') && /7 rows skipped/.test(loaded.notice ?? ''),
+      String(loaded.notice)
+    );
+    check('then both ways to build are offered', loaded.actions.join(',') === 'Order,Generate Immediately', JSON.stringify(loaded.actions));
+    const costLine = await page.evaluate(() => document.body.innerText.match(/This run: [^\n]*/)?.[0] ?? null);
+    check('the cost line prices the loaded rows', /^This run: 3 resumes/.test(costLine ?? ''), String(costLine));
+    await page.screenshot({ path: `${SHOTS}/sheet-1-loaded.png`, fullPage: true });
+
+    // Another tab is another set of rows: what was loaded goes, and is loaded again.
+    await page.select('#sheet-tab', OLDER_TAB);
+    await wait(300);
+    const switched = await readPreview(page);
+    check('choosing another tab drops the rows loaded from the last one', switched.rows === null && switched.actions.length === 0, JSON.stringify(switched));
+    await pressButton(page, 'Load rows');
+    await until(page, () => Boolean(document.querySelector('table caption')), 10_000);
+    const older = await readPreview(page);
+    check(
+      'and Load rows reads the chosen tab',
+      (older.rows ?? []).map((cells) => cells[1]?.text).join(' | ') === 'Older Co | Elder Ltd',
+      JSON.stringify(older.rows)
+    );
+
+    /* --------------------------------------------- Order, and Cancel on it */
+    check('Order is pressed', await pressButton(page, 'Order'));
+    const receipt = await until(page, () => /You ordered successfully: Order number - FT-\d{8}-\d{4}/.test(document.body.innerText), 15_000);
+    check('Order answers with an order number at once', receipt);
+    const orderNumber = await page.evaluate(() => document.body.innerText.match(/FT-\d{8}-\d{4}/)?.[0] ?? null);
+    await page.screenshot({ path: `${SHOTS}/sheet-2-ordered.png` });
+    check('the receipt offers Cancel', await pressButton(page, 'Cancel order'));
+    const cancelled = await until(
+      page,
+      () => /Cancelled: (\d+ resumes? (not started|being built)|nothing was left to stop)/.test(document.body.innerText),
+      10_000
+    );
+    check(
+      'Cancel on the receipt asks first, then says what it stopped',
+      cancelled && dialogs.some((d) => d.type === 'confirm' && d.message.includes(`Cancel what is left of order ${orderNumber}?`)),
+      JSON.stringify(dialogs)
+    );
+    const listed = (await api('/orders')).body?.orders ?? [];
+    const order = listed.find((entry) => entry.number === orderNumber);
+    check(
+      'the order is on Orders, cancelled, with both rows in it',
+      Boolean(order) && order.state === 'cancelled' && order.total === 2,
+      JSON.stringify(order)
+    );
+
+    /* ------------------------------------------- Generate Immediately, from rows */
+    await page.select('#sheet-tab', today);
+    await wait(300);
+    await pressButton(page, 'Load rows');
+    await until(page, () => Boolean(document.querySelector('table caption')), 10_000);
+    check('Generate Immediately is pressed', await pressButton(page, 'Generate Immediately'));
+    await until(page, () => Boolean(document.querySelector('[role="dialog"]')), 5000);
+    check('it asks first here too', /If you close the tab or the network drops/.test((await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText)) ?? ''));
+    await pressButton(page, 'Proceed');
+    const built = await until(page, () => /Built 3 of 3 resumes/.test(document.body.innerText), 90_000);
+    check('the loaded rows are built here', built, (await page.evaluate(() => document.body.innerText)).slice(0, 500));
+    const fromSheet = handed.filter((name) => /^(Today Inc|Now LLC|Current Co)/.test(name));
+    check(
+      'every file of every resume is handed to the browser once',
+      fromSheet.length === 12 && new Set(fromSheet).size === 12,
+      fromSheet.join(', ')
+    );
+    await page.screenshot({ path: `${SHOTS}/sheet-3-built.png`, fullPage: true });
+
+    /* ------------------------------------------------------------------ 390 */
+    await page.setViewport(PHONE);
+    await wait(500);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    check('at 390px, the loaded rows and their table add no horizontal scrollbar', overflow <= 1, `overflow ${overflow}px`);
+    await page.screenshot({ path: `${SHOTS}/sheet-4-phone.png`, fullPage: true });
+  } finally {
+    await browser.close();
+  }
+
+  console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

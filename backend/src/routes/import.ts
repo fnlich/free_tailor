@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { requireUser } from '../middleware/auth';
 import { fetchGoogleSheetsRange } from '../integrations/googleSheets';
 import { sendPublicError } from '../middleware/publicError';
-import { resolveAddressableSheet } from '../services/sheets/accountSheet';
+import { listAddressableSheetTabs, resolveAddressableSheet } from '../services/sheets/accountSheet';
 import { adminAllowedSheetIds } from '../services/sheets/jobSheetTarget';
 
 const router = Router();
@@ -15,6 +15,25 @@ const router = Router();
  */
 router.use(requireUser);
 
+
+/**
+ * The tabs of a spreadsheet the caller may address, for the builder's sheet
+ * panel: `GET /api/import/tabs` (their own sheet) or `?sheetId=` (theirs, or
+ * a shared source for an administrator). Answers `{ spreadsheetId, tabs:
+ * [{ title, gid }], defaultTab }` - `defaultTab` is today's tab on the
+ * account's own sheet. Somebody else's spreadsheet is 404, like everywhere
+ * else a sheet id is taken.
+ *
+ * The rows of the chosen tab are then read with `POST /` below, naming
+ * `tabName` and the row and column range.
+ */
+router.get('/tabs', async (req: Request, res: Response) => {
+  try {
+    res.json(await listAddressableSheetTabs(req.user!, req.query.sheetId, await adminAllowedSheetIds(req.user!)));
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to list the Google Sheet tabs');
+  }
+});
 
 /**
  * Reads a range out of a spreadsheet the caller is allowed to address.

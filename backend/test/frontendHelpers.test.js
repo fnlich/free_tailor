@@ -49,6 +49,41 @@ test("the frontend ranks the subscriptions in the backend's order", () => {
   }
 });
 
+test("the builder's multi-profile lock is the backend's: Premium and up, administrators exempt", () => {
+  const frontend = loadFrontendModule('lib/subscriptions.ts');
+  const backendTiers = require('../dist/config/accountSubscriptions');
+  const { hasSubscription } = require('../dist/middleware/auth');
+  assert.equal(frontend.MULTI_PROFILE_SUBSCRIPTION, backendTiers.MULTI_PROFILE_SUBSCRIPTION);
+
+  const tiers = [...backendTiers.SUBSCRIPTION_IDS, 'premium-ultra', undefined];
+  for (const role of ['admin', 'user', 'reporter', undefined]) {
+    for (const subscription of tiers) {
+      const account = { role, subscription };
+      for (const minimum of backendTiers.SUBSCRIPTION_IDS) {
+        assert.equal(
+          frontend.hasSubscription(account, minimum),
+          hasSubscription(account, minimum),
+          `${role}/${subscription} vs ${minimum}`
+        );
+      }
+      assert.equal(
+        frontend.canBuildForManyProfiles(account),
+        hasSubscription(account, backendTiers.MULTI_PROFILE_SUBSCRIPTION)
+      );
+    }
+  }
+  assert.equal(frontend.hasSubscription(null, 'default'), false);
+  assert.equal(frontend.canBuildForManyProfiles({ role: 'user', subscription: 'default' }), false);
+  assert.equal(frontend.canBuildForManyProfiles({ role: 'admin', subscription: 'default' }), true);
+
+  // The administrator's default target applies - except to an account that
+  // supports one profile, which starts on Single whatever the default says.
+  for (const selection of ['single', 'all', 'group']) {
+    assert.equal(frontend.startingResumeSelection(selection, true), selection);
+    assert.equal(frontend.startingResumeSelection(selection, false), 'single');
+  }
+});
+
 // -- the admin Settings seat cards ------------------------------------------ //
 
 test("each seat's card shows that seat's own holds, Gemini's included", () => {
@@ -227,32 +262,41 @@ test('polling stops on a settled or vanished payment and continues on a transien
 
 // -- the builder following a running batch ---------------------------------- //
 
-test('twenty empty attaches in a row stop following, one that delivered resets the count, a vanished batch stops at once', () => {
-  const { MAX_IDLE_REATTACHES, nextAttach } = loadFrontendModule('lib/batchFollow.ts');
+test("the builder follows its run until the server says it is over: empty attaches slow down, only a 404 stops it", () => {
+  const { MAX_IDLE_REATTACHES, REATTACH_MS, SLOW_REATTACH_MS, nextAttach } = loadFrontendModule('lib/batchFollow.ts');
   assert.equal(MAX_IDLE_REATTACHES, 20);
+  assert.ok(SLOW_REATTACH_MS > REATTACH_MS);
 
   // A healthy long batch behind a proxy that cuts it every minute: every
-  // attach opens with a snapshot, so it is followed however long it runs.
-  let state = { idleInARow: 0, stop: false };
+  // attach opens with a snapshot, so it is followed at full speed however
+  // long it runs.
+  let state = { idleInARow: 0, stop: false, delayMs: 0 };
   for (let attach = 0; attach < 200; attach += 1) {
     state = nextAttach(state.idleInARow, { delivered: 1, gone: false });
     assert.equal(state.stop, false);
+    assert.equal(state.delayMs, REATTACH_MS);
   }
   assert.equal(state.idleInARow, 0);
 
-  // A server refusing the stream outright: the twentieth empty attach stops it.
-  state = { idleInARow: 0, stop: false };
+  // A network that is down: attaches that bring nothing never give up - the
+  // run is still the server's, and the lease's grace can be ten minutes, so a
+  // page that stopped here stopped downloading resumes still being built. It
+  // slows to one attach every SLOW_REATTACH_MS from the twentieth on.
+  state = { idleInARow: 0, stop: false, delayMs: 0 };
   for (let attach = 1; attach < MAX_IDLE_REATTACHES; attach += 1) {
     state = nextAttach(state.idleInARow, { delivered: 0, gone: false });
     assert.equal(state.stop, false, `attach ${attach}`);
+    assert.equal(state.delayMs, REATTACH_MS, `attach ${attach}`);
   }
-  assert.equal(state.idleInARow, MAX_IDLE_REATTACHES - 1);
-  assert.equal(nextAttach(state.idleInARow, { delivered: 0, gone: false }).stop, true);
+  for (let attach = 0; attach < 500; attach += 1) {
+    state = nextAttach(state.idleInARow, { delivered: 0, gone: false });
+    assert.equal(state.stop, false);
+    assert.equal(state.delayMs, SLOW_REATTACH_MS);
+  }
 
-  // Nineteen empty, then one that delivered: the count starts again.
+  // The network comes back: one attach that delivered and the pace is back.
   const reset = nextAttach(state.idleInARow, { delivered: 3, gone: false });
-  assert.deepEqual(reset, { idleInARow: 0, stop: false });
-  assert.equal(nextAttach(reset.idleInARow, { delivered: 0, gone: false }).stop, false);
+  assert.deepEqual(reset, { idleInARow: 0, stop: false, delayMs: REATTACH_MS });
 
   // A 404 - restarted or expired - stops it at once, delivered or not.
   assert.equal(nextAttach(0, { delivered: 0, gone: true }).stop, true);

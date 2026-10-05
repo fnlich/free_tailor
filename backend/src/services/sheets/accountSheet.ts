@@ -9,10 +9,12 @@ import {
   getSpreadsheetVisibility,
   hasPersonalGrant,
   isGoogleSheetsConfigured,
+  listSheetTabs,
   setSpreadsheetVisibility,
   shareSpreadsheetWithEmail,
   type CreatedSpreadsheet,
   type EnsuredTab,
+  type SheetTab,
   type SheetVisibility,
 } from '../../integrations/googleSheets';
 import {
@@ -80,6 +82,8 @@ export type SheetsClient = {
   hasPersonalGrant(spreadsheetId: string, email: string): Promise<boolean>;
   getSpreadsheetVisibility(spreadsheetId: string): Promise<SheetVisibility>;
   setSpreadsheetVisibility(spreadsheetId: string, visibility: SheetVisibility): Promise<SheetVisibility>;
+  /** Every tab of a spreadsheet, in Google's order, with its gid. */
+  listSheetTabs(spreadsheetId: string): Promise<SheetTab[]>;
 };
 
 const warnedVisibility = new Set<string>();
@@ -135,6 +139,7 @@ const realClient: SheetsClient = {
   hasPersonalGrant,
   getSpreadsheetVisibility,
   setSpreadsheetVisibility,
+  listSheetTabs,
 };
 
 let client: SheetsClient = realClient;
@@ -508,6 +513,40 @@ export function assertSheetNotOwnedByAnotherAccount(account: UserAccount, sheetI
   // 404, like the other guard, so the status does not confirm that a
   // spreadsheet with this id exists.
   throw new SheetAccessError('That spreadsheet was not found.', 404);
+}
+
+export type AddressableSheetTabs = {
+  spreadsheetId: string;
+  /** Every tab, in the spreadsheet's own order. */
+  tabs: SheetTab[];
+  /**
+   * The tab a picker should start on: today's on the account's own sheet
+   * (which this call makes sure exists, like every read of it), else the
+   * first. Null for a spreadsheet with no tabs.
+   */
+  defaultTab: string | null;
+};
+
+/**
+ * The tabs of a spreadsheet this person may address - their own, or, for an
+ * administrator, a shared source they configured (`resolveAddressableSheet`,
+ * so anybody else's is 404).
+ *
+ * What the builder's sheet panel lists in its Tab select, so a run can be
+ * built from any day's tab rather than only today's.
+ */
+export async function listAddressableSheetTabs(
+  account: UserAccount,
+  requested: unknown,
+  allowedForAdmins: readonly string[] = []
+): Promise<AddressableSheetTabs> {
+  const state = await ensureAccountSheet(account);
+  const spreadsheetId = await resolveAddressableSheet(account, requested, allowedForAdmins, state);
+  const tabs = await client.listSheetTabs(spreadsheetId);
+  const own = spreadsheetId === state.spreadsheetId;
+  const defaultTab =
+    own && tabs.some((tab) => tab.title === state.todayTab) ? state.todayTab : tabs[0]?.title ?? null;
+  return { spreadsheetId, tabs, defaultTab };
 }
 
 /** The tab a job route writes to when the caller names none: today's. */

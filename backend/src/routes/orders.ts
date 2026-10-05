@@ -41,12 +41,19 @@ import { sanitizePathSegment } from '../utils/outputStorage';
 const router = Router();
 router.use(requireUser);
 
-/** The one gate. Returns null for "not yours" and "not there" alike. */
+/**
+ * The one gate. Returns null for "not yours" and "not there" alike - and for
+ * a Generate Immediately run, which has an order row only so its files are
+ * filed and owner-checked like an order's. Nobody ordered it, so it is not
+ * listed here, not opened here and not cancelled here: its page follows it,
+ * stops it (POST /generation/batches/:id/release or /cancel) and downloads
+ * its files (GET /generation/batches/:id/tasks/:taskId/:kind).
+ */
 function mine(req: Request): Order | null {
   const id = typeof req.params.id === 'string' ? req.params.id.trim() : '';
   if (!id) return null;
   const order = getOrder(id);
-  if (!order || order.userId !== req.user!.id) return null;
+  if (!order || order.userId !== req.user!.id || order.kind === 'immediate') return null;
   return order;
 }
 

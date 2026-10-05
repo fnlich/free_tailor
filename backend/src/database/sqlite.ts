@@ -152,6 +152,12 @@ const SCHEMA = `
    * expires_at is written at creation rather than computed from created_at,
    * so changing the retention window cannot silently reach back and delete
    * files somebody was promised for five days.
+   *
+   * kind is 'order' (the Order button) or 'immediate' (a Generate Immediately
+   * run, filed here so its files are owner-checked and swept like an order's,
+   * and never listed on /orders). An immediate run's files go
+   * IMMEDIATE_FILE_RETENTION_MS after finished_at, not at expires_at. Also in
+   * addMissingColumns, for an orders table made before it.
    */
   CREATE TABLE IF NOT EXISTS orders (
     id         TEXT PRIMARY KEY,
@@ -165,7 +171,8 @@ const SCHEMA = `
     updated_at TEXT NOT NULL,
     finished_at TEXT,
     expires_at TEXT NOT NULL,
-    purged_at  TEXT
+    purged_at  TEXT,
+    kind       TEXT NOT NULL DEFAULT 'order'
   );
 
   CREATE INDEX IF NOT EXISTS idx_orders_user
@@ -846,6 +853,10 @@ function addMissingColumns(db: Database.Database): void {
     // The credit a card refund holds off the balance until Stripe answers.
     // In the CREATE TABLE too; here for a refund_requests table made before it.
     { table: 'refund_requests', column: 'hold_key', definition: 'TEXT' },
+    // Which kind of run an order row records: every upgraded row was placed
+    // with the Order button, which is what the default says. `immediate` rows
+    // (Generate Immediately) are never listed on /orders.
+    { table: 'orders', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'order'" },
   ];
 
   for (const addition of additions) {
@@ -881,6 +892,18 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     table: 'notifications',
     columns: ['recipient_id', 'created_at'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications (recipient_id, created_at)',
+  },
+  // The minute-by-minute sweep of Generate Immediately runs whose files are
+  // due (listFinishedImmediateRuns). Partial, so it holds only the runs that
+  // still HAVE files: one row per run is a lot of rows, and the sweep must
+  // not read every run anybody ever made, every minute, to find none.
+  {
+    name: 'idx_orders_immediate_unpurged',
+    table: 'orders',
+    columns: ['kind', 'finished_at', 'purged_at'],
+    sql:
+      'CREATE INDEX IF NOT EXISTS idx_orders_immediate_unpurged ON orders (finished_at) ' +
+      "WHERE kind = 'immediate' AND purged_at IS NULL",
   },
 ];
 

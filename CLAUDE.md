@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~30s with the tsc step, 1313 tests)
+npm test                       # backend node:test suite (~35s with the tsc step, 1367 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -30,10 +30,15 @@ Facts worth knowing before you build:
   --if-missing`) for PDF rendering. It is idempotent and skips an existing
   download. If the download is blocked, `npm run setup:browser` retries, or set
   `CHROME_PATH` to an installed Chrome/Edge/Chromium/Brave.
-- **`npm test` builds first.** It is `tsc && node --test "test/*.test.js"`, so
+- **`npm test` builds first.** It is `tsc && node scripts/runTests.js`, so
   the suite runs the compiled output in `backend/dist`, never the sources.
   Editing a `.ts` and rerunning a single test file directly will run stale
-  JavaScript.
+  JavaScript. `scripts/runTests.js` runs `node --test "test/*.test.js"` (or
+  the files you pass it) with TMPDIR/TEMP/TMP pointed at a fresh directory of
+  its own and deletes that directory afterwards, propagating the exit code -
+  the suite makes ~760 temp directories per run and used to leave them all in
+  the system temp dir, which filled a disk. `TAILOR_KEEP_TEST_TMP=1` keeps it
+  and prints where. A test that writes anywhere but `os.tmpdir()` escapes it.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
   `src/bid-assistant/App.jsx` (lines 271, 305, 381; `src/app/page.tsx`
@@ -127,8 +132,17 @@ backend/src/
                       #   greps frontend/src to keep it so). Not the AI
                       #   "subscription seats", which share only the word.
                       #   middleware/auth.ts's requireSubscription(min) gates
-                      #   on it (403 `subscription-too-low`) and is NOT
-                      #   satisfied by being an admin.
+                      #   on it (403 `subscription-too-low`) and IS satisfied
+                      #   by being an admin (`hasSubscription`, owner decision
+                      #   B1 - groups.ts relies on it). The multi-profile lock
+                      #   is `assertProfileScopeAllowed` there: a run that
+                      #   resolves to more than one profile, or omits
+                      #   `profileIds` (= all), needs MULTI_PROFILE_SUBSCRIPTION
+                      #   (premium) - POST /generation/batches, its /quote and
+                      #   /resume/preview-all call it after resolving the
+                      #   profiles and before any charge or model call. A
+                      #   single-profile run, immediate or order, is open to
+                      #   every subscription.
   controllers/        # one file, the skills handlers routes/resume.ts mounts.
                       #   The library is one store for every account: reading it
                       #   and POST /skills/confirm (additive, idempotent) are
@@ -185,7 +199,17 @@ backend/src/
                       #   role but admin as losing one - not `user` by name.
                       #   refundRequests.ts (asking, and the admin queue) and
                       #   contact.ts (GET /api/contact is PUBLIC, no session)
-                      #   are described under "Money" below.
+                      #   are described under "Money" below. generation.ts is
+                      #   the queue's HTTP side - see services/queue/ below for
+                      #   its run kinds, the release route and the per-file
+                      #   download. import.ts's GET /tabs lists an addressable
+                      #   sheet's tabs (`listAddressableSheetTabs`: the
+                      #   resolveAddressableSheet guard, then the sheets
+                      #   client's listSheetTabs) with `defaultTab` = today's;
+                      #   POST / still reads a tab's rows. POST
+                      #   /resume/generate (synchronous, admin output
+                      #   template, refundable as `charge:`) is KEPT for any
+                      #   caller, but the builder queues every build now.
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor, migrate:legacy,
                       #   ai:rollback. The doctors share one shape -
@@ -203,12 +227,46 @@ backend/src/
                       #   there AND in the restore mapper or it silently does
                       #   not persist. The payload persists whole, which is why
                       #   a task's price lives on it (`payload.costMilli`) -
-                      #   and so does `batch.shared`, which is why an order
-                      #   batch is marked there (`shared.kind = 'order'`,
-                      #   `isOrderBatch`; one restored from before the mark is
-                      #   recognised by its `orders` row). The builder's
+                      #   and so does `batch.shared`, which is why a batch's
+                      #   KIND is there: `shared.kind = 'order' | 'immediate'`
+                      #   (`isOrderBatch`, `isImmediateBatch`; submit body
+                      #   `mode`, default immediate, `asOrder: true` an alias
+                      #   for order; a restored batch from before kinds is an
+                      #   order if its `orders` row says so, else an older
+                      #   builder run left to finish - no lease, no priority).
+                      #   EVERY run gets an `orders` row (`orders.kind`, an
+                      #   added column; immediate rows number `FT-RUN-...`, are
+                      #   hidden from listOrdersForUser and the order routes'
+                      #   `mine()`, and are filed under ORDER_OUTPUT_PATH_TEMPLATE
+                      #   like an order - the admin's output template no longer
+                      #   files any queued build). An immediate run is LEASED to
+                      #   its tab (tabLease.ts, `getTabLeases()`): the owner's
+                      #   stream with `?tab=` = `shared.tabId` holds it; when the
+                      #   last such reader closes, IMMEDIATE_TAB_GRACE_MS starts
+                      #   and its expiry calls `queue.cancel` (refunds through
+                      #   the usual hooks). A hold lasts LEASE_READER_LIFETIME_MS
+                      #   (20 s) and the route then ENDS that stream, so a reader
+                      #   counts by renewal - the page reattaches - and a peer
+                      #   that vanished without a FIN cannot hold the run until
+                      #   TCP gives up. Armed at submit and after a restore
+                      #   too; forgotten by the queue's `batchFinished` hook;
+                      #   POST /generation/batches/:id/release?tab= cancels at
+                      #   once (owner, own tab; no body, cookie auth, so a
+                      #   keepalive pagehide fetch works). An immediate batch is
+                      #   `urgent` (taskQueue `enqueue`: ahead of non-urgent
+                      #   tasks in its lane, FIFO within each tier, for submit,
+                      #   restore and the retry re-queue alike - not persisted,
+                      #   re-derived from the kind). Its files: GET
+                      #   /generation/batches/:id/tasks/:taskId/:kind (owner
+                      #   only, found through the orders row so eviction does
+                      #   not matter; snapshots list each done task's `files`
+                      #   kinds), deleted IMMEDIATE_FILE_RETENTION_MS after
+                      #   `finished_at`, downloaded or not (retention.ts's
+                      #   minute sweep, `listFinishedImmediateRuns`; the order
+                      #   sweep skips kind immediate). The builder's
                       #   `GET /generation/batches?active=1` lists only the
-                      #   caller's OWN non-order runs, admins included.
+                      #   caller's OWN non-order runs, admins included, and
+                      #   `&tab=` only that tab's immediate runs.
                       #   `restoreGenerationQueue` reports the `batchIds` it
                       #   put back, and index.ts hands them to
                       #   `reconcileCredits`, which never releases those
@@ -247,7 +305,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 110 files; fixtures/cli, codex and gemini
+  test/               # node:test, 116 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -359,6 +417,38 @@ frontend/src/
                       #   open with an h2, not a PageHeader. /admin/profiles
                       #   (and its editor), /admin/templates and /admin/groups
                       #   are not tabs, and do open with a PageHeader.
+  app/page.tsx        # Build Resumes. Every build is queued (POST
+                      #   /generation/batches) as Generate Immediately (`mode:
+                      #   'immediate'` + this tab's `tabId`, lib/generationQueue's
+                      #   currentTabId - claimed in sessionStorage, so a reload
+                      #   keeps it and a duplicated tab mints its own) or Order.
+                      #   An immediate run is followed with `?tab=` until the
+                      #   SERVER says it ended (lib/batchFollow `nextAttach`
+                      #   stops only on a 404 and otherwise slows down - the
+                      #   lease always ends the run server-side); each finished
+                      #   resume is downloaded once, fetched as a Blob and saved
+                      #   through a blob: anchor so a 410 stays a notice, each
+                      #   FILE kept in sessionStorage as `<taskId>:<kind>` the
+                      #   moment it is saved (a reload mid-resume saves only the
+                      #   rest), and listed again under the
+                      #   progress (components/ImmediateRunFiles) because a
+                      #   browser blocks a second automatic download silently.
+                      #   Leaving stops it: `pagehide` sends the keepalive
+                      #   release (no body, no Content-Type, the bearer only on
+                      #   the same origin), so a RELOAD stops it too, after the
+                      #   browser's prompt; an in-app link asks first
+                      #   (`leavesBuilder`, a capture-phase click listener) and
+                      #   unmounting releases it. The pure parts - tab id,
+                      #   downloads, the release request, the confirm's "Don't
+                      #   show again" (localStorage), how a run ended - are
+                      #   lib/immediateRun.ts, and the sheet panel's rows
+                      #   (components/SheetsSourcePanel) lib/sheetRows.ts, both
+                      #   run by test/immediateRunHelpers.test.js. The
+                      #   multi-profile choices lock on lib/subscriptions.ts
+                      #   `canBuildForManyProfiles` (the backend's
+                      #   hasSubscription, admins exempt; frontendHelpers.test.js
+                      #   runs both), and the target in effect is DERIVED from it
+                      #   rather than corrected in an effect.
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page, and formatMoney / parseDollars /
@@ -384,6 +474,10 @@ frontend/src/
                       #   buttons it gets, with no request in it, so
                       #   test/frontendRefunds.test.js runs it (and the reason
                       #   and amount rules it copies) against the server's code.
+                      #   lib/orderCancel.ts is what Cancel on an order asks AND
+                      #   says it did (/orders, an order's page, the builder's
+                      #   receipt) - one file, so the two agree that a resume
+                      #   stopped mid-build is refunded unless it finished.
 ```
 
 Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
@@ -592,9 +686,11 @@ exactly one: `payment:<id>`; `order-item:<id>` (durable - `order_items.cost_mill
 is copied from the task's `costMilli` at `createOrder`, because the task is
 evicted); `charge:<reservation id>` for a `/resume/generate` build (a
 `kind: 'request'` reservation is that one resume); `task:<id>` for a queued
-resume NOT placed as an order, only while the queue holds its batch (a task of
-an order's batch always resolves to its order item). Phase 4 files every
-immediate run as an order, which retires `task:`. A resume's refund is
+resume with NO order row, only while the queue holds its batch (a task of a
+batch with an order row always resolves to its order item). Every run queued
+now has one - a Generate Immediately run's is `orders.kind = 'immediate'` - so
+`task:` is left only for a builder run an older build queued; it stays so such
+requests still read. A resume's refund is
 `refundRequestedCharge` - `refundAgainstReservation` with `includeClosed`, key
 `refund-request:<id>`, reason `refund-request`, under the reservation's SQL cap
 - in the same `.immediate()` transaction as the state change and the notice.

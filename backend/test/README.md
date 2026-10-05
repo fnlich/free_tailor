@@ -12,9 +12,23 @@ Or run only the backend test suite:
 npm run test --prefix backend
 ```
 
-The backend tests use Node's built-in `node:test` runner and require no extra test dependencies. The test script builds TypeScript first, then runs the compiled JavaScript from `backend/dist`.
+The backend tests use Node's built-in `node:test` runner and require no extra test dependencies. The test script builds TypeScript first, then runs the compiled JavaScript from `backend/dist` through `backend/scripts/runTests.js`.
 
-Storage tests point `DB_DIR` (SQLite database) and `TAILOR_STATIC_DIR` (default prompts, skill seed, built-in templates) at temporary folders under the system temp directory, so they never touch the real database or shipped assets.
+Storage tests point `DB_DIR` (SQLite database) and `TAILOR_STATIC_DIR` (default prompts, skill seed, built-in templates) at temporary folders under `os.tmpdir()`, so they never touch the real database or shipped assets.
+
+**The run cleans up after itself.** The suite makes a fresh temporary directory for nearly every test (several hundred per run) and nothing deletes them one by one, so `scripts/runTests.js` gives the whole run a temporary root of its own - it sets `TMPDIR`, `TEMP` and `TMP` (what `os.tmpdir()` reads on each platform, inherited by any child a test spawns) to a new `tailor-test-run-*` directory, runs `node --test "test/*.test.js"`, deletes the directory and exits with the suite's own code. The system temp directory gains nothing from a run. To look at what a failing test left behind, keep it:
+
+```sh
+TAILOR_KEEP_TEST_TMP=1 npm run test --prefix backend
+```
+
+To run one file the same way (after `npm run build --prefix backend`, since the tests load `dist/`):
+
+```sh
+cd backend && node scripts/runTests.js test/orderRoutes.test.js
+```
+
+A test that writes somewhere other than `os.tmpdir()` escapes this, so new tests take their directories from `os.tmpdir()` (`helpers.js`'s `useTempStorage`, or `fs.mkdtempSync(path.join(os.tmpdir(), ...))`) like the rest.
 
 Coverage currently focuses on:
 

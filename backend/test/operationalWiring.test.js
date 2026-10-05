@@ -633,8 +633,10 @@ async function captureSweepInterval(value) {
 }
 
 test('ORDER_RETENTION_SWEEP_MS is the sweep interval; unset it is six hours', async () => {
-  assert.deepEqual(await captureSweepInterval('120000'), [120_000]);
-  assert.deepEqual(await captureSweepInterval(undefined), [6 * 60 * 60 * 1000]);
+  // The second interval is the Generate Immediately runs' own sweep, every
+  // minute whatever this says: their files live minutes, not days.
+  assert.deepEqual(await captureSweepInterval('120000'), [120_000, 60_000]);
+  assert.deepEqual(await captureSweepInterval(undefined), [6 * 60 * 60 * 1000, 60_000]);
 });
 
 async function captureBackfillPauses(value) {

@@ -3,7 +3,13 @@ import type { NextFunction, Request, Response } from 'express';
 import { resolveSession } from '../database/userRepository';
 import type { UserAccount } from '../types/account';
 
-import { SUBSCRIPTIONS, subscriptionAtLeast, type AccountSubscriptionId } from '../config/accountSubscriptions';
+import {
+  MULTI_PROFILE_SUBSCRIPTION,
+  SUBSCRIPTIONS,
+  subscriptionAtLeast,
+  type AccountSubscriptionId,
+} from '../config/accountSubscriptions';
+import { PublicError } from './publicError';
 
 /**
  * Who is making this request.
@@ -118,14 +124,45 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
 }
 
 /**
- * Signed in AND on a subscription at least this high, or 401/403.
+ * Whether an account's subscription reaches `minimum` - and an administrator's
+ * always does.
  *
- * Deliberately NOT satisfied by being an administrator. An admin is a role -
- * who may change shared settings - and a subscription is an entitlement;
- * conflating them would mean the answer to "may I use this" depended on two
- * unrelated things. The consequence is real and worth knowing: every account
- * starts on the Default subscription, so an administrator who has not been
- * moved up is refused here like anybody else.
+ * Administrators are exempt (owner decision B1), as they already are from
+ * credits and the profile cap. It used to be the other way: a subscription was
+ * read as an entitlement quite separate from the admin ROLE, so an
+ * administrator who had not moved themselves off Default was refused Groups,
+ * and would have been refused every multi-profile build below. An
+ * administrator runs the installation and can change their own subscription in
+ * a click, so the refusal protected nothing and cost them a trip to Admin ->
+ * Accounts. The entitlement and the role are still two checks; this is the one
+ * place they meet.
+ */
+export function hasSubscription(account: Pick<UserAccount, 'role' | 'subscription'> | null | undefined, minimum: AccountSubscriptionId): boolean {
+  if (!account) return false;
+  if (account.role === 'admin') return true;
+  return subscriptionAtLeast(account.subscription, minimum);
+}
+
+/**
+ * A request this account's subscription does not cover: 403
+ * `subscription-too-low`, naming the subscription it needs, in words the
+ * account holder can act on (they can ask for a higher one).
+ */
+export class SubscriptionTooLowError extends PublicError {
+  constructor(minimum: AccountSubscriptionId, message?: string) {
+    super(
+      message ?? `That part of this installation needs a ${SUBSCRIPTIONS[minimum].label} subscription or higher.`,
+      { status: 403, code: 'subscription-too-low', extra: { requiredSubscription: minimum } }
+    );
+    this.name = 'SubscriptionTooLowError';
+  }
+}
+
+/**
+ * Signed in AND on a subscription at least this high (or an administrator),
+ * or 401/403.
+ *
+ * Satisfied by being an administrator - see `hasSubscription`.
  */
 export function requireSubscription(minimum: AccountSubscriptionId) {
   return function subscriptionGuard(req: Request, res: Response, next: NextFunction): void {
@@ -133,17 +170,43 @@ export function requireSubscription(minimum: AccountSubscriptionId) {
       res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
       return;
     }
-    if (!subscriptionAtLeast(req.user.subscription, minimum)) {
-      const needed = SUBSCRIPTIONS[minimum].label;
-      res.status(403).json({
-        error: `That part of this installation needs a ${needed} subscription or higher.`,
-        code: 'subscription-too-low',
-        requiredSubscription: minimum,
-      });
+    if (!hasSubscription(req.user, minimum)) {
+      const refusal = new SubscriptionTooLowError(minimum);
+      res.status(refusal.status).json({ error: refusal.message, code: refusal.code, ...refusal.extra });
       return;
     }
     next();
   };
+}
+
+/**
+ * Refuses a run that would build for more than one profile, unless the
+ * account's subscription includes that (owner decisions B1-B3).
+ *
+ * The real lock behind the builder's disabled Multiple / All profiles /
+ * Specific group / Select Group: a Default subscription supports ONE profile,
+ * so anything that targets more than one is refused - in manual mode and in
+ * sheet mode, as Generate Immediately and as an Order alike. Ordering itself
+ * is not locked; a single-profile run of either kind is accepted on every
+ * subscription.
+ *
+ * A run is multi-profile when it RESOLVES to more than one profile, or when it
+ * names none at all: an omitted `profileIds` means "all profiles", which is
+ * one of the locked choices whatever the account happens to hold today. Read
+ * after the profiles are resolved and before anything is charged or asked of
+ * a model, so a refusal costs nothing.
+ */
+export function assertProfileScopeAllowed(
+  account: Pick<UserAccount, 'role' | 'subscription'> | null | undefined,
+  scope: { profileIds: unknown; resolvedCount: number }
+): void {
+  const multiple = !Array.isArray(scope.profileIds) || scope.resolvedCount > 1;
+  if (!multiple || hasSubscription(account, MULTI_PROFILE_SUBSCRIPTION)) return;
+  throw new SubscriptionTooLowError(
+    MULTI_PROFILE_SUBSCRIPTION,
+    `Building for more than one profile needs a ${SUBSCRIPTIONS[MULTI_PROFILE_SUBSCRIPTION].label} ` +
+      'subscription or higher. Choose a single profile.'
+  );
 }
 
 /**

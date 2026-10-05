@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import RefundRequestDialog, { REFUND_REQUESTS_PATH } from '@/components/credits/RefundRequestDialog';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import {
+  cancelOrderQuestion,
   FILE_KIND_LABELS,
   isOrderLive,
   orderFileUrl,
@@ -158,7 +159,7 @@ export default function OrderDetailPage() {
   };
 
   const handleCancel = async () => {
-    if (!order) return;
+    if (!order || !window.confirm(cancelOrderQuestion(order.number))) return;
     setCancelling(true);
     try {
       await ordersApi.cancel(order.id);

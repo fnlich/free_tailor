@@ -17,10 +17,15 @@ import type { Response } from 'express';
  * to reconcile the events it missed. That is worth more than SSE's `Last-Event-ID`
  * and costs one extra line per connection.
  *
- * Closing the connection does NOT cancel anything. The work belongs to the queue
- * rather than to any request, which is the whole point of the queue; a page that
- * navigates away is not a reason to stop building somebody's resumes. Cancelling
- * is its own endpoint, because it has to be asked for.
+ * Closing the connection does NOT cancel anything by itself. The work belongs to
+ * the queue rather than to any request; cancelling is its own endpoint, because
+ * it has to be asked for. The one thing a close can lead to is the end of a
+ * Generate Immediately run's tab lease: when the stream of the run's own tab
+ * closes - or, since a connection that vanished silently never closes, when
+ * its 20 s hold runs out and the route ends it - and no other comes back
+ * within IMMEDIATE_TAB_GRACE_MS, the run is cancelled
+ * (services/queue/tabLease.ts). The route decides who holds it, and an order
+ * is never affected.
  */
 
 export const NDJSON_CONTENT_TYPE = 'application/x-ndjson';

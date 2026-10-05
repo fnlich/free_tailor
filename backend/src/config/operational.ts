@@ -67,6 +67,8 @@ export const OPERATIONAL_INT_BOUNDS = {
   GENERATION_RENDER_CONCURRENCY: { fallback: 4, min: 1, max: 32, unit: 'render(s)' },
   PDF_RENDER_TIMEOUT_MS: { fallback: 30_000, min: 5_000, max: 300_000, unit: 'ms' },
   ORDER_RETENTION_SWEEP_MS: { fallback: 21_600_000, min: 60_000, max: 86_400_000, unit: 'ms' },
+  IMMEDIATE_TAB_GRACE_MS: { fallback: 30_000, min: 5_000, max: 600_000, unit: 'ms' },
+  IMMEDIATE_FILE_RETENTION_MS: { fallback: 600_000, min: 60_000, max: 86_400_000, unit: 'ms' },
   SMTP_CONNECTION_TIMEOUT_MS: { fallback: 10_000, min: 1_000, max: 300_000, unit: 'ms' },
   SMTP_SOCKET_TIMEOUT_MS: { fallback: 20_000, min: 1_000, max: 300_000, unit: 'ms' },
   SMTP_MAX_CONNECTIONS: { fallback: 2, min: 1, max: 20, unit: 'connection(s)' },
@@ -314,6 +316,38 @@ export function pdfRenderTimeoutMs(env: EnvSource = process.env): number {
  */
 export function orderRetentionSweepMs(env: EnvSource = process.env): number {
   return readInt('ORDER_RETENTION_SWEEP_MS', env);
+}
+
+/**
+ * How long a Generate Immediately run outlives its page, in ms.
+ *
+ * The grace between the last reader of an immediate run going away and the
+ * run being cancelled (services/queue/tabLease.ts). It is for a page that went
+ * WITHOUT saying so - a page that is closed, reloaded or left sends a release
+ * and stops its run at once. 30 seconds by default: long enough for a dropped
+ * connection or a laptop that slept to come back, short enough that a tab gone
+ * for good stops spending a seat on resumes nobody will download. A reader
+ * that vanished without closing its connection is counted out after at most
+ * LEASE_READER_LIFETIME_MS (20 s) first, so such a run stops within this plus
+ * 20 s. Bounded below at 5 s - a stream's reconnect has to fit - and above at
+ * 10 minutes, past which a lost tab no longer "stops" anything. Read each time
+ * a timer starts.
+ */
+export function immediateTabGraceMs(env: EnvSource = process.env): number {
+  return readInt('IMMEDIATE_TAB_GRACE_MS', env);
+}
+
+/**
+ * How long a Generate Immediately run's files are kept after the run ends, in
+ * ms - downloaded or not (owner decision M4).
+ *
+ * The page downloads each resume as it finishes, so the copy on the server is
+ * only there for that download to finish. Ten minutes by default; then the
+ * retention sweep deletes them, about a minute late at most. Bounded below at a
+ * minute so the last auto-download always has time. Read on every sweep.
+ */
+export function immediateFileRetentionMs(env: EnvSource = process.env): number {
+  return readInt('IMMEDIATE_FILE_RETENTION_MS', env);
 }
 
 /* ================================================================ mail */
@@ -703,6 +737,13 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
 
   // Orders
   intEntry('ORDER_RETENTION_SWEEP_MS', 'startup', 'services/orders/retention.ts', orderRetentionSweepMs),
+  intEntry(
+    'IMMEDIATE_TAB_GRACE_MS',
+    'per-call',
+    'services/queue/tabLease.ts (through services/queue/index.ts getTabLeases)',
+    immediateTabGraceMs
+  ),
+  intEntry('IMMEDIATE_FILE_RETENTION_MS', 'per-call', 'services/orders/retention.ts', immediateFileRetentionMs),
 ];
 
 /** `NAME=value`, quoted when the value has a space or a comma in it so the line still splits. */

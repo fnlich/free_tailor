@@ -110,7 +110,9 @@ export function canSee(item: NavItem, isAdmin: boolean, subscription: unknown): 
   if (!item.needs) return true;
   if (item.needs === 'admin') return isAdmin;
   if (item.needs === 'non-admin') return !isAdmin;
-  return subscriptionAtLeast(subscription, item.needs);
+  // An administrator is exempt from the subscription tiers, as the backend's
+  // `requireSubscription` is (owner decision B1).
+  return isAdmin || subscriptionAtLeast(subscription, item.needs);
 }
 
 function matches(pathname: string, href: string): boolean {

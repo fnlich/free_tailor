@@ -1,6 +1,6 @@
 /*
  * The few pieces of the resume builder (app/page.tsx, ResumePreview,
- * SheetsImportModal) that the shared kit in globals.css does not cover.
+ * SheetsSourcePanel) that the shared kit in globals.css does not cover.
  *
  * A module rather than utilities for two reasons that both come from
  * globals.css. The kit's .tl-* rules are UNLAYERED, so a Tailwind utility can

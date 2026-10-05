@@ -115,7 +115,9 @@ async function serve() {
   const users = require('../dist/database/userRepository');
   const { saveProfile } = require('../dist/database/profileRepository');
   const { buildNewProfile } = require('../dist/services/profileService');
-  const owner = users.createUser({ email: 'owner@example.com' });
+  // Premium, because the preview below covers several profiles at once,
+  // which a Default subscription may not (test/subscriptionGates.test.js).
+  const owner = users.updateUser(users.createUser({ email: 'owner@example.com' }).id, { subscription: 'premium' });
   const token = users.createSession(owner.id);
   saveProfile({
     ...buildNewProfile(
