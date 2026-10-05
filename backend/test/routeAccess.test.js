@@ -28,19 +28,23 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  *     administrator are refused none of the builder's.
  *
  * Access levels, least to most restricted:
- *   public  - no session needed (sign-in, contact, webhooks: their own checks)
- *   account - any signed-in role                     (requireAccount)
- *   builder - a user or an administrator, never a reporter (requireUser,
- *             requireSubscription)
- *   admin   - administrators                         (requireAdmin)
+ *   public   - no session needed (sign-in, contact, webhooks: their own checks)
+ *   account  - any signed-in role                    (requireAccount)
+ *   builder  - a user or an administrator, never a reporter (requireUser,
+ *              requireSubscription)
+ *   reporter - a reporter or an administrator, never a user (requireReporter):
+ *              Report Jobs. Beside `builder` rather than above it - neither
+ *              includes the other - and no router mixes the two.
+ *   admin    - administrators                        (requireAdmin)
  */
 
-const LEVELS = ['public', 'account', 'builder', 'admin'];
+const LEVELS = ['public', 'account', 'builder', 'reporter', 'admin'];
 const GUARD_LEVEL = {
   requireAccount: 'account',
   requireUser: 'builder',
   // requireSubscription(min)'s middleware: a builder tier, refusing a reporter by role first.
   subscriptionGuard: 'builder',
+  requireReporter: 'reporter',
   requireAdmin: 'admin',
 };
 
@@ -70,6 +74,13 @@ const MOUNTS = [
   { mount: '/api/credits', module: 'credits', access: 'account', why: "a reporter's earnings and payouts (A4)" },
   { mount: '/api/notifications', module: 'notifications', access: 'account', why: 'every account reads the bell (A3)' },
   { mount: '/api/sheet', module: 'sheet', access: 'account', why: 'Settings > Job Sheet, where a reporter finds jobs (A3)' },
+  {
+    mount: '/api/report',
+    module: 'report',
+    access: 'reporter',
+    why: 'Report Jobs: a reporter adds jobs from their own sheet and is paid for them; an administrator may open it (A3, J7)',
+  },
+  { mount: '/api/admin/job-lake', module: 'jobLake', access: 'admin', why: 'the lake, its merge, settings and admin sheet (J6, J9)' },
   { mount: '/api/profiles', module: 'profiles', access: 'builder' },
   {
     mount: '/api/templates',
@@ -385,6 +396,8 @@ test("a reporter reaches their own account, balance, ledger, bell, sheet, refund
       ['GET', '/api/sheet'],
       ['GET', '/api/contact'],
       ['GET', '/api/refund-requests'],
+      ['GET', '/api/report'],
+      ['GET', '/api/report/runs/current'],
     ]) {
       const answer = await server.call('reporter', method, url, body);
       assert.equal(answer.status, 200, `${method} ${url}: ${JSON.stringify(answer.body)}`);
@@ -415,6 +428,34 @@ test("a reporter reaches their own account, balance, ledger, bell, sheet, refund
       assert.equal(answer.status, 401, url);
       assert.equal(answer.body.code, 'not-signed-in', url);
     }
+  } finally {
+    server.close();
+  }
+});
+
+test('Report Jobs is a reporter\'s and an administrator\'s: a user is refused every route of it, by role', async () => {
+  const server = await serveEverything();
+  try {
+    const routers = loadRouters();
+    const row = MOUNTS.find((candidate) => candidate.mount === '/api/report');
+    const routes = routesOf(routers.get(row.mount));
+    assert.ok(routes.length >= 5, 'the reporter router declares its routes');
+    for (const route of routes) {
+      const url = `${row.mount}${route.samplePath === '/' ? '' : route.samplePath}`;
+      const answer = await server.call('user', route.method, url, {});
+      assert.equal(answer.status, 403, `${route.method} ${url}`);
+      assert.equal(answer.body?.code, 'role-not-allowed', `${route.method} ${url}`);
+      const signedOut = await server.call(null, route.method, url, {});
+      assert.equal(signedOut.status, 401, `${route.method} ${url} signed out`);
+    }
+    const asAdmin = await server.call('admin', 'GET', '/api/report');
+    assert.equal(asAdmin.status, 200);
+    assert.equal(asAdmin.body.paid, false, 'an administrator may open it, and is never paid');
+    const asReporter = await server.call('reporter', 'GET', '/api/report');
+    assert.equal(asReporter.body.paid, true);
+    // The admin lake is administrators' alone.
+    assert.equal((await server.call('user', 'GET', '/api/admin/job-lake')).body.code, 'not-an-admin');
+    assert.equal((await server.call('admin', 'GET', '/api/admin/job-lake')).status, 200);
   } finally {
     server.close();
   }

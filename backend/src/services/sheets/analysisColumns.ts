@@ -484,6 +484,17 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
   ]);
   const grids = await client.readRanges(spreadsheetId, ranges);
   const analysisOffset = JOB_SHEET_COLUMNS.analysis - ANALYSIS_FIRST_COLUMN;
+  // What may hold somebody's own text: Job Field, Salary and Analyzed At. Not
+  // Job Hash and Lake Status - the Job Data Lake is their only writer, and
+  // writes them before a row has any analysis (a Skipped row) or when this
+  // write failed (its status still lands) - and this write leaves them as
+  // they are. Counting them would leave such a row without its analysis
+  // cells for good.
+  const personal = new Set(
+    [JOB_SHEET_COLUMNS.jobField, JOB_SHEET_COLUMNS.salary, JOB_SHEET_COLUMNS.analyzedAt].map(
+      (column) => column - ANALYSIS_FIRST_COLUMN
+    )
+  );
   const current = new Map<number, { company: string; link: string; cell: ParsedAnalysisCell; others: boolean }>();
   runs.forEach(([from, to], runIndex) => {
     for (let row = from; row <= to; row += 1) {
@@ -493,7 +504,7 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
         company: identity[0] ?? '',
         link: identity[JOB_SHEET_COLUMNS.jobLink - JOB_SHEET_COLUMNS.company] ?? '',
         cell: parseAnalysisCell(analysisCells[analysisOffset]),
-        others: analysisCells.some((cell, index) => index !== analysisOffset && String(cell ?? '').trim() !== ''),
+        others: analysisCells.some((cell, index) => personal.has(index) && String(cell ?? '').trim() !== ''),
       });
     }
   });

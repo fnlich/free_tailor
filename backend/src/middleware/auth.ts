@@ -3,7 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { resolveSession } from '../database/userRepository';
 import type { UserAccount } from '../types/account';
 
-import { canBuildResumes } from '../config/accountRoles';
+import { canBuildResumes, canReportJobs } from '../config/accountRoles';
 import {
   MULTI_PROFILE_SUBSCRIPTION,
   SUBSCRIPTIONS,
@@ -158,6 +158,24 @@ export function requireUser(req: Request, res: Response, next: NextFunction): vo
     return;
   }
   if (!canBuildResumes(req.user.role)) {
+    refuseRole(res);
+    return;
+  }
+  next();
+}
+
+/**
+ * Signed in as an account that reports jobs - a reporter or an administrator
+ * (`canReportJobs`) - or 401/403 `role-not-allowed`. The Job Data Lake's
+ * reporter routes (/api/report): a user, who builds resumes, is refused them
+ * the way a reporter is refused the builder.
+ */
+export function requireReporter(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    res.status(401).json({ error: 'Sign in to do that.', code: 'not-signed-in' });
+    return;
+  }
+  if (!canReportJobs(req.user.role)) {
     refuseRole(res);
     return;
   }

@@ -122,7 +122,7 @@ function shouldGenerateCoverLetterDocx(value: unknown): boolean {
 async function analysisForRequest(
   req: Request,
   res: Response,
-  body: { analysisId?: unknown; jobDescription?: unknown; jobLink?: unknown }
+  body: { analysisId?: unknown; jobDescription?: unknown; jobLink?: unknown; companyName?: unknown }
 ): Promise<StoredJobAnalysis | null> {
   const named = typeof body.analysisId === 'string' ? body.analysisId.trim() : '';
   if (named) {
@@ -139,6 +139,9 @@ async function analysisForRequest(
     jd: jobDescription,
     link: jobLink,
     requestedBy: req.user?.id ?? null,
+    // Recorded on the stored analysis for the Job Data Lake's merge, which
+    // hashes a job on its company; never part of the posting's identity.
+    ...(typeof body.companyName === 'string' ? { company: body.companyName } : {}),
     signal: requestSignal(req, res),
   });
 }
@@ -214,13 +217,19 @@ router.get('/job-fields', (_req: Request, res: Response) => {
 router.post('/analyze', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   try {
-    const { jobDescription, jobLink } = req.body as { jobDescription?: unknown; jobLink?: unknown };
+    const { jobDescription, jobLink, companyName } = req.body as {
+      jobDescription?: unknown;
+      jobLink?: unknown;
+      companyName?: unknown;
+    };
     if (typeof jobDescription !== 'string' || jobDescription.trim().length < JOB_ANALYSIS_MIN_LENGTH) {
       res.status(400).json({ error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters` });
       return;
     }
 
-    const stored = await analysisForRequest(req, res, { jobDescription, jobLink });
+    // The company, when the caller knows it, goes onto the stored analysis
+    // like every other builder route's (never part of the posting's identity).
+    const stored = await analysisForRequest(req, res, { jobDescription, jobLink, companyName });
     if (!stored) {
       res.status(400).json({ error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters` });
       return;

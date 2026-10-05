@@ -253,6 +253,7 @@ async function analysisFor(input: ResumeTaskInput, signal: AbortSignal): Promise
     jd: input.job.jobDescription,
     link: input.job.jobLink,
     requestedBy: input.requestedBy ?? null,
+    company: input.job.companyName,
     signal,
   });
   if (stored) {

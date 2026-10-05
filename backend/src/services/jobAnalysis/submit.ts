@@ -16,6 +16,7 @@ import {
   type StoredJobAnalysis,
 } from './gate';
 import { postingKeysOf } from './identity';
+import { attachCompanyName } from '../../database/jobAnalysisRepository';
 
 /**
  * A batch's analyses, resolved ONCE PER JOB at submission - before the jobs
@@ -167,6 +168,7 @@ export async function resolveAnalysesAtSubmit(
             : {}),
         },
         requestedBy,
+        company: job.companyName,
         storedOnly: true,
       });
       if (stored) {
@@ -180,7 +182,10 @@ export async function resolveAnalysesAtSubmit(
     if (job.analysisId) {
       // Named by the page: written back only when it IS this posting's.
       const named = loadAnalysis(job.analysisId);
-      if (named && job.sheetRow?.writeBack && analysisMatchesPosting(named, { jd: job.jobDescription, link: job.jobLink })) {
+      const matches = Boolean(named && analysisMatchesPosting(named, { jd: job.jobDescription, link: job.jobLink }));
+      // The company the lake's merge will hash this job on, if nobody named one yet.
+      if (named && matches && !named.companyName) attachCompanyName(named.id, job.companyName);
+      if (named && matches && job.sheetRow?.writeBack) {
         if (writeBackFor(job, named)) report.writeBacks += 1;
       }
       report.resolved += 1;
@@ -188,6 +193,7 @@ export async function resolveAnalysesAtSubmit(
     }
     const stored = findStoredAnalysis({ jd: job.jobDescription, link: job.jobLink });
     if (!stored) continue;
+    if (!stored.companyName) attachCompanyName(stored.id, job.companyName);
     job.analysisId = stored.id;
     report.resolved += 1;
     if (writeBackFor(job, stored)) report.writeBacks += 1;

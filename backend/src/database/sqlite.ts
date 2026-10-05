@@ -746,8 +746,129 @@ const SCHEMA = `
     source           TEXT NOT NULL DEFAULT 'ai',
     created_by       TEXT,
     created_at       TEXT NOT NULL,
-    merged_at        TEXT
+    merged_at        TEXT,
+    company_name     TEXT NOT NULL DEFAULT ''
   );
+
+  /**
+   * The Job Data Lake (Phase 7; database/jobLakeRepository.ts): one row per
+   * JOB - a company hiring in a job field - not per posting.
+   *
+   * job_hash is services/jobLake/identity.ts's SHA-256 of the versioned
+   * (normalised company, job field id), UNIQUE: the duplicate check is one
+   * seek on it, inside the same IMMEDIATE transaction as the insert, so two
+   * reporters adding the same job at once get one row. company and the other
+   * values are stored as they were reported; company_key is the normalised
+   * company the hash was made from, for the admin page's company filter.
+   *
+   * A row is REPLACED, not duplicated, when its job is reported again after
+   * the duplicate window (J2b): its previous content goes to
+   * job_lake_history first, and requested_by, updated_at and the reward move
+   * to the new report. Within the window only seen_count and last_seen_at
+   * move. sheet_synced_at is the admin sheet's outbox: NULL until the row's
+   * current version was appended there, and NULL again after a replacement.
+   *
+   * reward_milli is what the current version paid its reporter (0: a merge,
+   * an administrator's report, a rate of $0.000, or the daily cap), at
+   * reward_rate_milli - the rate in effect then, snapshotted (J7) - and
+   * reward_revoked_milli what an administrator took back (reward_revoked_at
+   * set even when the balance had nothing left to take). The ledger row is
+   * keyed job-lake:<id>:<updated_at>, so a replacement can pay again and the
+   * same version never twice.
+   *
+   * report_ref names the sheet row a reporter's run reported the current
+   * version from (spreadsheet, row and tab; NULL for a merge): a later run that
+   * finds the job within the window from that SAME row is that report again -
+   * its Lake Status never reached the sheet - while the same posting on any
+   * other row, tab or day is a duplicate like any other.
+   *
+   * INTEGER ids rather than the UUIDs elsewhere: the full-text index below
+   * points at rows by rowid, which VACUUM may renumber on a table without an
+   * INTEGER PRIMARY KEY. AUTOINCREMENT, so a deleted row's id is never handed
+   * to another job and its ledger key never meets a new one.
+   */
+  CREATE TABLE IF NOT EXISTS job_lake (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_hash             TEXT NOT NULL,
+    hash_version         INTEGER NOT NULL,
+    company              TEXT NOT NULL DEFAULT '',
+    company_key          TEXT NOT NULL DEFAULT '',
+    job_field_id         TEXT NOT NULL,
+    title                TEXT NOT NULL DEFAULT '',
+    salary_min           REAL,
+    salary_max           REAL,
+    salary_currency      TEXT,
+    salary_period        TEXT,
+    salary_raw           TEXT,
+    job_url              TEXT NOT NULL DEFAULT '',
+    job_description      TEXT NOT NULL DEFAULT '',
+    analysis_id          TEXT,
+    requested_by         TEXT,
+    source               TEXT NOT NULL DEFAULT 'report',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    seen_count           INTEGER NOT NULL DEFAULT 1,
+    last_seen_at         TEXT,
+    sheet_synced_at      TEXT,
+    reward_milli         INTEGER NOT NULL DEFAULT 0,
+    reward_rate_milli    INTEGER,
+    reward_revoked_milli INTEGER NOT NULL DEFAULT 0,
+    reward_revoked_at    TEXT,
+    report_ref           TEXT
+  );
+
+  /** A lake row's earlier versions, each copied here the moment a later report replaced it. */
+  CREATE TABLE IF NOT EXISTS job_lake_history (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    lake_id              INTEGER NOT NULL,
+    job_hash             TEXT NOT NULL,
+    hash_version         INTEGER NOT NULL,
+    company              TEXT NOT NULL DEFAULT '',
+    job_field_id         TEXT NOT NULL,
+    title                TEXT NOT NULL DEFAULT '',
+    salary_min           REAL,
+    salary_max           REAL,
+    salary_currency      TEXT,
+    salary_period        TEXT,
+    salary_raw           TEXT,
+    job_url              TEXT NOT NULL DEFAULT '',
+    job_description      TEXT NOT NULL DEFAULT '',
+    analysis_id          TEXT,
+    requested_by         TEXT,
+    source               TEXT NOT NULL DEFAULT 'report',
+    version_at           TEXT NOT NULL,
+    seen_count           INTEGER NOT NULL DEFAULT 1,
+    reward_milli         INTEGER NOT NULL DEFAULT 0,
+    reward_rate_milli    INTEGER,
+    reward_revoked_milli INTEGER NOT NULL DEFAULT 0,
+    reward_revoked_at    TEXT,
+    replaced_at          TEXT NOT NULL
+  );
+
+  /**
+   * Free-text search over the lake's company, title and description, for the
+   * admin page. External content: the text lives once, in job_lake, and the
+   * three triggers keep the index in step with every insert, replacement and
+   * delete - nothing else writes it.
+   */
+  CREATE VIRTUAL TABLE IF NOT EXISTS job_lake_fts USING fts5(
+    company, title, job_description,
+    content = 'job_lake', content_rowid = 'id', tokenize = 'unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER IF NOT EXISTS job_lake_fts_insert AFTER INSERT ON job_lake BEGIN
+    INSERT INTO job_lake_fts (rowid, company, title, job_description)
+      VALUES (new.id, new.company, new.title, new.job_description);
+  END;
+  CREATE TRIGGER IF NOT EXISTS job_lake_fts_delete AFTER DELETE ON job_lake BEGIN
+    INSERT INTO job_lake_fts (job_lake_fts, rowid, company, title, job_description)
+      VALUES ('delete', old.id, old.company, old.title, old.job_description);
+  END;
+  CREATE TRIGGER IF NOT EXISTS job_lake_fts_update AFTER UPDATE OF company, title, job_description ON job_lake BEGIN
+    INSERT INTO job_lake_fts (job_lake_fts, rowid, company, title, job_description)
+      VALUES ('delete', old.id, old.company, old.title, old.job_description);
+    INSERT INTO job_lake_fts (rowid, company, title, job_description)
+      VALUES (new.id, new.company, new.title, new.job_description);
+  END;
 
   CREATE TABLE IF NOT EXISTS schema_meta (
     key        TEXT PRIMARY KEY,
@@ -915,6 +1036,15 @@ function addMissingColumns(db: Database.Database): void {
     // "the global rate", which is what every account was paid before there
     // was a per-account one - there was no reporter before it either.
     { table: 'users', column: 'report_rate_milli', definition: 'INTEGER' },
+    // The company a posting was built or reported for, which the analysis
+    // itself never reads off the posting - and the lake's merge needs, to
+    // hash the job. '' on every row stored before it, which the merge tab
+    // does not offer until a build or a report of the posting names one.
+    { table: 'job_analyses', column: 'company_name', definition: "TEXT NOT NULL DEFAULT ''" },
+    // The sheet row a lake row's current version was reported from. In the
+    // CREATE TABLE too; here for a job_lake table made before it. NULL reads
+    // as "no row": such a job found again is a duplicate, never `already`.
+    { table: 'job_lake', column: 'report_ref', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {
@@ -995,6 +1125,56 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     table: 'job_analyses',
     columns: ['job_field_id'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_job_analyses_job_field ON job_analyses (job_field_id)',
+  },
+  // The Job Data Lake (test/jobLakeStore.test.js pins every plan below).
+  // The duplicate check: one seek, and UNIQUE, so a second row for one job
+  // cannot exist however two writers interleave.
+  {
+    name: 'idx_job_lake_hash',
+    table: 'job_lake',
+    columns: ['job_hash'],
+    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_job_lake_hash ON job_lake (job_hash)',
+  },
+  // The admin page's default order, newest first.
+  {
+    name: 'idx_job_lake_updated',
+    table: 'job_lake',
+    columns: ['updated_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_updated ON job_lake (updated_at)',
+  },
+  // The admin page's field and company filters, each still in that order.
+  {
+    name: 'idx_job_lake_field_updated',
+    table: 'job_lake',
+    columns: ['job_field_id', 'updated_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_field_updated ON job_lake (job_field_id, updated_at)',
+  },
+  {
+    name: 'idx_job_lake_company_updated',
+    table: 'job_lake',
+    columns: ['company_key', 'updated_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_company_updated ON job_lake (company_key, updated_at)',
+  },
+  // "Requested by" - a reporter's own jobs, and the admin page's filter.
+  {
+    name: 'idx_job_lake_requested_by',
+    table: 'job_lake',
+    columns: ['requested_by'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_requested_by ON job_lake (requested_by)',
+  },
+  // The admin sheet's outbox: partial, so it holds only the rows still to
+  // append - none, most of the time - however large the lake grows.
+  {
+    name: 'idx_job_lake_unsynced',
+    table: 'job_lake',
+    columns: ['id', 'sheet_synced_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_unsynced ON job_lake (id) WHERE sheet_synced_at IS NULL',
+  },
+  {
+    name: 'idx_job_lake_history_lake',
+    table: 'job_lake_history',
+    columns: ['lake_id'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_history_lake ON job_lake_history (lake_id)',
   },
 ];
 

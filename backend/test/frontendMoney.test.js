@@ -430,6 +430,14 @@ const FRONTEND_MONEY_SOURCES = [
   'app/orders/[id]/page.tsx',
   'app/admin/models/page.tsx',
   'app/admin/models/modelPrice.ts',
+  // The Job Data Lake: a reporter's earnings and rate, the admin rate, cap and rewards.
+  'lib/jobLake.ts',
+  'lib/jobLakeDisplay.ts',
+  'app/report/page.tsx',
+  'app/admin/job-lake/page.tsx',
+  'app/admin/job-lake/LakeTab.tsx',
+  'app/admin/job-lake/MergeTab.tsx',
+  'app/admin/job-lake/SettingsTab.tsx',
 ];
 
 function withoutComments(source) {

@@ -4,6 +4,7 @@ import { isAccountRole, listRoles, ROLE_LABELS } from '../config/accountRoles';
 import { isSubscriptionId, listSubscriptions, resolveSubscription } from '../config/accountSubscriptions';
 import { isConfiguredAdmin, resolveAdminIdentity, type AdminSource } from '../config/adminIdentity';
 import { parseReportRateUsd } from '../config/reportRate';
+import { globalReportRateMilli } from '../services/jobLake/settings';
 import { createNotification } from '../database/notificationRepository';
 import { countProfilesForOwner } from '../database/profileRepository';
 import {
@@ -293,6 +294,9 @@ router.get('/', (_req: Request, res: Response) => {
     // The role catalog rides along like the subscriptions, so the page's
     // select is not a second copy of it.
     roles: listRoles(),
+    // What a reporter with no rate of their own is paid per accepted job
+    // (Admin -> Job Lake), so the per-reporter rate box can name it.
+    globalReportRateMilli: globalReportRateMilli(),
   });
 });
 

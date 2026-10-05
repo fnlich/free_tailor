@@ -674,7 +674,7 @@ then, under an *Assistant* divider, **Job Filter**, **Bid Assistant** and
 **Calendar**; and pinned to the bottom, **Templates** and **Settings**.
 Settings is your account's own tabs - Profile, Job Sheet, Payment Methods,
 Subscription - and for an administrator one more, **Administration**, whose
-nine shared-configuration pages appear as a second row once you are in it.
+ten shared-configuration pages appear as a second row once you are in it.
 Groups (`/admin/groups`, Premium and above) and Job Search (`/jobs`) have no
 entry of their own; they are reached by their address.
 
@@ -758,6 +758,7 @@ everybody but a reporter.
 | **Your account** (Settings → Profile, Job Sheet) | anybody signed in, reporters included | their own name and their own job sheet |
 | **Report Jobs** | reporters (administrators may open it) | adding jobs from their own sheet to the job lake |
 | **Payouts** (Record payout, the rate per job) | **administrators** | on Admin → Accounts, for a reporter's row |
+| **Job Lake** (the lake, its merge, the global rate and duplicate window, the admin sheet) | **administrators** | the lake is shared, and what a job pays is the installation's decision - see [The Job Data Lake](#the-job-data-lake) |
 | **Payments** (the list, refunds and the refund-request queue) | **administrators** | reconciliation against the provider's dashboard, and the only buttons in the product that move money outward |
 | **Refund requests** (asking) | users | about their own purchases and resumes only - somebody else's answers 404, never 403. Not a reporter: refunding a purchase gives back the unspent balance, which for them is earnings |
 | **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
@@ -1310,6 +1311,132 @@ rolls the day over at midnight UTC, which for a user in New York is seven in the
 evening - so an evening's work would land on the next day's tab. Set it to the
 zone the users actually live in.
 
+### The Job Data Lake
+
+The **job lake** is the installation's shared record of who is hiring for
+what: one row per **job** - a company hiring in a job field - not per posting.
+Reporters fill it from their own job sheets and are paid for each job it
+accepts; administrators also merge in the jobs that builds analysed. It lives
+in the database (`job_lake`, with full-text search), and every job it adds is
+also appended to an **admin sheet**, a spreadsheet the server keeps for the
+administrators.
+
+**What makes two jobs the same.** The company and the job field - the field
+from the posting's [analysis](#job-analysis-once-per-posting), by its id. The
+company is compared loosely: Unicode-normalised, lower case, punctuation and
+symbols dropped, a trailing legal suffix dropped (Inc, LLC, Ltd, Corp,
+Corporation, Co, Company, GmbH, PLC, S.A., AG, B.V., Pty Ltd, Co. Ltd. and a
+few more), then every space removed - so *OpenAI, Inc.*, *Open AI LLC* and
+*openai* are one company, and *Acme Corp* and *Acme Labs* are two. The lake
+keeps the values as they were reported; what it compares is a SHA-256 **job
+hash** of the normalised pair, versioned so that changing these rules later is
+a deliberate re-hash rather than a silent split. A posting with no field from
+the list (*Unclassified*), or no company, has no hash: it is never added and
+never paid for.
+
+**Duplicates and the window.** When a job comes in whose hash the lake
+already holds:
+
+- the lake row was added (or last replaced) **within the duplicate window** -
+  60 days by default - it is a **duplicate**: painted red in the reporter's
+  sheet, not paid, and the row's *seen* count goes up;
+- the lake row is **older** than that, the new report **replaces** it and
+  counts as **added**: paid, the row now says who reported it and when, and the
+  old version is kept in the row's history.
+
+The window is `JOB_LAKE_DUPLICATE_WINDOW_DAYS` in `.env`, and an
+administrator's value on **Admin → Job Lake** wins over it; that page says
+which is in effect and where it came from. The decision is made on the
+database alone - two reporters adding the same job at the same moment get one
+*added* and one *duplicate* - and never by reading a sheet.
+
+**Reporting (Report Jobs).** A reporter picks a tab of their own job sheet -
+today's is chosen for them - and a range of rows (up to 500 at a time),
+presses **Preview rows** to see the rows that hold a job and which of them a
+run will skip because they were reported before, and presses **Add to job
+lake**. The page opens with what a job pays them (their own rate, or the global
+one), what they have earned today against any daily cap, their balance and how
+many of the lake's jobs are theirs. The run goes on in the background, with a
+progress bar - the page may be left and come back to, and shows the last run
+for an hour after it ends; for each row:
+
+1. a row whose **Lake Status** already says *Added*, *Replaced*, *Duplicate*
+   or *Unclassified* - beside the **Analysis** cell of the posting in the row
+   now - is skipped: running the same rows again pays nothing and analyses
+   nothing. A status left by a posting the row held before (a new one pasted
+   over it) does not count, and the row is reported like any other;
+2. its posting's analysis is found, sheet first: the row's own **Analysis**
+   cell, else the stored analysis of the posting, else **one** model call
+   (written back into the row) - a posting analysed before costs nothing;
+3. the job is merged: **added**, **replaced** or **duplicate**, as above.
+
+Then the run writes each row's **Job Hash** and **Lake Status** - *Added*,
+*Replaced*, *Duplicate*, *Unclassified* or *Skipped* - into the row (the
+protected columns, written as plain values), paints the duplicates' rows red,
+and ends with *N out of M was added, your current credit is $X* - M being the
+rows it took to the lake, a row reported before not counted - over every row's
+outcome, the duplicates red there as well. *Skipped* means the
+row could not be reported this time - no company, or no description long
+enough to read a job field from - and the next run tries it again once the row
+is filled in. A row whose analysis failed (a seat down) is left without a
+status and tried again next time. The reporter's own rows only: nothing in the
+page or the request can name another spreadsheet.
+
+**Rewards.** Paid the moment a job is added, in the same database transaction
+as the lake row - at the reporter's own **rate per job** if an administrator
+set one on Admin → Accounts, otherwise at the **global rate** set on Admin →
+Job Lake (`$0.000` until somebody sets it: nobody is paid by default), in steps
+of `$0.001`. The rate in effect is recorded on the reward, so changing a rate
+reaches the next job, never one already paid. Duplicates, unclassified jobs and
+skipped rows pay `$0`, and a replaced job pays again - but the same version of a
+job never twice. An optional **daily cap** limits what one reporter earns per
+UTC day; a job past it is still added, and paid only what is left of the day.
+An administrator who reports is never paid, and nor is anybody for a merge.
+An administrator may **revoke** a reward - on its own, or when deleting the
+job - which takes it back off the reporter's balance, never below `$0.000`
+(earnings already paid out are not a debt), and tells them in the bell.
+Earnings are paid outside the app and recorded with **Record payout** (see
+[Roles](#roles)).
+
+**Merge (administrators).** **Admin → Job Lake → Merge** lists the jobs that
+**builds** analysed and nobody has merged yet - with a job field from the list
+and a company on record (a posting analysed before the analysis recorded
+companies is offered once a build or a report names its company). **Merge
+selected** or **Merge all** (1,000 at a time) adds them through the same rules,
+reports the duplicates, and pays nobody: the lake records the account whose
+build produced each one as having asked for it. No model is asked, and no
+sheet is read.
+
+**The admin sheet.** The first time the lake has a job to send, the server
+creates a spreadsheet of its own, *Tailor - Job Data Lake*, stores it in the
+settings and shares it - as an editor - with every enabled administrator's
+email; an administrator added later is added at the next sync (**Retry now**
+does it at once, with nothing to send). Every job the
+lake **adds** is appended as a new line (Company, Job Field, Title, Salary,
+Link, Requested By, Updated At, Job Hash); a replacement is a new line too, so
+the sheet is a log of everything the lake ever accepted. The database is the
+record and the sheet follows it: a job is committed first, then appended in
+batches - right after each report run and merge, and at every start - and an
+append that fails never undoes anything; the job waits, the page shows how
+many are waiting and why, and **Retry now** sends them. Taking an
+administrator off the sheet is done in Google, by hand. If the spreadsheet is
+deleted in Google, **Create a new admin sheet** makes another and sends it the
+whole lake.
+
+**Admin → Job Lake** (a tab of Settings → Administration) has three tabs of
+its own. **Lake** lists the lake - newest first, by company (compared as above),
+job field, salary, who reported it, when, and free text over company, title and
+description - and **Details** opens a row with its description and history,
+where **Revoke reward** takes the reward back and **Delete** removes the job
+(it can then be reported again, as a new one), with **Also revoke the reward**
+to take its reward back in the same step. **Merge** is the merge above.
+**Settings** holds the global rate per job (dollars, in `$0.001` steps), the
+duplicate window - with where the value in effect comes from: set there, `.env`
+or the built-in 60 - and the daily cap; and the admin sheet: its link, who it
+is shared with, how many jobs wait to be appended and why the last attempt
+failed, **Retry now**, and **Create a new admin sheet**. **Admin → Accounts**
+names the global rate in every empty per-reporter rate box.
+
 ### Order & Download
 
 Every build is queued on the server, and there are two ways to start one -
@@ -1455,6 +1582,7 @@ For a page or a script, the queue's contract is:
 | Credit ledger and open reservations | The same database, in thousandths of a dollar. The ledger is append-only and `users.balance_milli` is a cache of the sum of its `delta_milli`; a disagreement between the two is reported at startup rather than silently repaired. The whole-credit columns beside them (`users.credits`, `credit_ledger.delta`, `credit_reservations.units`, `payments.credits`...) hold the history from before credits were dollars, and every row written since puts `0` in them |
 | AI models and their prices | The same database, in the app settings row: each model's display name, seat, model name, price per resume (`pricePerResumeMilli`, thousandths of a dollar) and description. A run's price is copied onto each of its queued tasks (`costMilli`) when it is submitted |
 | API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory. A settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log; migration 007 deletes them from the oldest settings snapshot too |
+| The Job Data Lake | The same database: `job_lake` (one row per job, its `job_hash` unique, the reward its current version paid and at what rate), `job_lake_history` (each version a later report replaced) and `job_lake_fts` (the full-text index, kept in step by triggers). The rewards and revokes are ledger rows (`job-report-reward`, `job-report-reward-revoked`). The lake's settings and the admin sheet's id are app settings (`job-lake`, `job-lake.admin-sheet`). The admin sheet itself is a copy - a row whose `sheet_synced_at` is empty has not reached it yet |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
 | Built-in resume templates | `backend/static/templates/*.json`, read from the file on every request - so an edited file shows at once, with no import. What an administrator changes about a built-in - its name, description, disabled flag and the layouts it is offered for - is an override row in the database (`template_overrides`) laid over the file, never the file itself |
@@ -2030,6 +2158,29 @@ stays on them, so nobody but the server can clear them by hand. Its job filter
 reads its own prompt file, `backend/static/prompts/filter-google-sheet-job.json`,
 which the older checkout brings back with it.
 
+### 12. The Job Data Lake
+
+Nothing to do on upgrade; what changes on the first start:
+
+- New tables, `job_lake` and `job_lake_history`, and a full-text index over
+  the lake. They start empty: the lake holds what reporters add and
+  administrators merge from now on.
+- `job_analyses` gains `company_name`, empty on every posting analysed before.
+  The merge tab offers such a posting once a build or a report names its
+  company.
+- **Nobody is paid until an administrator sets the global rate** on Admin →
+  Job Lake (or a reporter's own rate on Admin → Accounts): the rate starts at
+  `$0.000`. The duplicate window is 60 days unless `.env` or that page says
+  otherwise.
+- The admin sheet is created the first time the lake has a job to send, not
+  at startup.
+
+**Rolling back**: an older build reads none of the lake's tables and leaves
+them alone. Rewards already paid stay in the balances (the balance is the sum of
+the ledger either way); an older frontend shows their ledger rows by their raw
+reasons, `job-report-reward` and `job-report-reward-revoked`. The Job Hash and
+Lake Status cells already written stay in the reporters' sheets.
+
 ---
 
 ## 🌐 Serving it on your own domain
@@ -2414,8 +2565,9 @@ unique across the install, which settles all of it in one segment.
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants - and one flagged *predates job fields* was written before postings had a job field: it still works, with the field list sent beside it on every call, but outside the cached part of the prompt. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund (see [Asking for a refund](#asking-for-a-refund)) |
+| **Job Lake** | The [Job Data Lake](#the-job-data-lake): query it (company, job field, salary, who reported it, when, free text), open a job and its history, delete one with or without taking its reward back; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
+| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
 
 ---
 
@@ -2537,6 +2689,7 @@ matching it.
 | `ORDER_RETENTION_SWEEP_MS` | How often that sweep runs, besides once at startup (default `21600000`, six hours; range 60000-86400000). *Startup* |
 | `IMMEDIATE_TAB_GRACE_MS` | How long a **Generate Immediately** run outlives a page that went without saying so: when the run's tab stops following it (network gone, laptop asleep, browser killed), the run is cancelled after this long unless that tab reconnects - a short drop loses nothing. A connection that vanished without closing is counted gone within 20 s first (the server ends the run's stream every 20 s and a live page attaches again), so such a run stops within this plus 20 s. Resumes that had not started are refunded (default `30000`; range 5000-600000). A page that is closed, reloaded or left stops its run at once instead |
 | `IMMEDIATE_FILE_RETENTION_MS` | How long a Generate Immediately run's files stay on the server after the run ends, **downloaded or not** - the page downloads each resume as it lands, so the server copy only has to outlive that download (default `600000`, ten minutes; range 60000-86400000). Checked every minute. The resumes stay charged, and the run is never listed on **Orders** |
+| `JOB_LAKE_DUPLICATE_WINDOW_DAYS` | The [Job Data Lake](#the-job-data-lake)'s duplicate window: a job reported again while its lake row was added or last replaced within this many days is a **duplicate** (red in the reporter's sheet, not paid); after it, the new report **replaces** the row and counts as added (default `60`, two months; range 1-3650). An administrator's value on **Admin → Job Lake** wins over this one, and that page says which is in effect |
 | `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
 | `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging. Nothing is written there except `templates/`, where the templates administrators save are kept beside the built-ins, so it must be writable for those and backed up with the database |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
@@ -2579,6 +2732,15 @@ file. Export them in the shell, for the install and the server alike:
 | The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A row moved or sorted since loading (`no longer matches`) is neither read nor written. On an administrator's shared sheet the column always says *When built*: only an account's own sheet has the protected columns. |
 | The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
 | The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab; its own columns are left as they are` | Sheet mode was pointed at a tab you made yourself (its first row is not the job sheet's header). That is allowed - its rows are read through the column mapping - but such a tab gets no analysis columns: nothing in it is re-headered, protected or written, and its postings are found in the database or analysed once. To have a tab's analyses written back, build from one of the app's dated tabs. |
+| A reporter's row stays without a **Lake Status** after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the status could not be written: the run's summary says the sheet was not updated, and the log has `[lake] Report run rep_...: the Lake Status cells of "<tab>" could not be written` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since)`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds its analysis and its lake row - no model call, no second reward - and writes *Added*. |
+| **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: rows already marked are skipped, and a row whose status never reached the sheet finds its analysis and its lake row - no model call, no second reward - and is written *Added*. |
+| **Report Jobs** says *"My notes" is not laid out as a job sheet tab, so it cannot be reported from.* (with the tab's own name) | The tab chosen is one the reporter made for themselves (notes, a list of their own): its first row is not the job sheet's header, so the program will not read it, protect it or write into it. Choose one of the dated tabs the program made; a job listed elsewhere has to be copied into one first. |
+| A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting on another row is a duplicate too - lower down in the same run, or pasted into another row or tab in a later one, by the same reporter or not; only a re-run of the very row that added it (its status never reached the sheet) reads *Added*. After the window, the same job reported again **replaces** the old one and is paid. |
+| A row a new posting was pasted into still shows the old posting's **Lake Status**, **Job Hash** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. A row is skipped as reported only when its status sits beside its own posting's analysis. |
+| A reported row says *Skipped* | It could not be reported this time: the row has no company, or no job description long enough to read a job field from. Fill it in and run the rows again - *Skipped* rows are tried again, unlike *Added*, *Replaced*, *Duplicate* and *Unclassified* ones. |
+| A reporter added jobs but earned `$0.000` | The global rate is still `$0.000` (Admin → Job Lake shows *not set*) and the reporter has no rate of their own, or the **daily cap** was reached (the job is added, the reward stops at the cap until the next UTC day), or the account is not a Reporter - an administrator reporting is never paid. Each lake row records the rate in effect when it was added. |
+| **Admin → Job Lake** says jobs are waiting for the admin sheet, or the log says `[lake] Could not append to the admin sheet` | The jobs are in the database - the sheet is a copy appended after them, and a failed append never undoes one. Under *Why the last attempt failed* the page shows the sentence and, on the line under it, Google's own reason: *Google Sheets is not configured on this server* means the server has no Google credential (see [The job sheet](#the-job-sheet)); *Google Sheets is busy right now*, over a Google 429, means the shared Sheets quota ran out even after backing off - **Retry now** later; *That spreadsheet or tab could not be found*, over a Google 404, means the spreadsheet was deleted in Google - use **Create a new admin sheet**, which sends it the whole lake (pressed while a sync is sending, that sync stops and starts again on the new sheet). Each sync also runs after the next report run or merge, and at startup. An administrator who cannot open the sheet was disabled when it was shared, or was appointed after the last sync - **Retry now** shares it with them. |
+| The **Merge** tab does not offer a job a build analysed | It offers only analyses with a job field from the list and a company on record, not merged before. An *Unclassified* posting is never offered; one analysed before the analysis recorded companies is offered once a build or a report names its company; and a posting a reporter already reported is merged already. |
 | A build fails with *That job analysis was not found. Analyse the job description again.* | The page sent the id of an analysis this server has not stored - a page left open across a database restore, or a request made by hand. Analyse the description again (the builder does it when you press Generate), which finds the posting if it is stored or analyses it once. |
 | Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates, job scrapers or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
 | A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before this page can show you one.* (or that their job sheet could not be reached, with a `Ref:`) | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
@@ -2745,6 +2907,17 @@ its indexes and query plans are in `jobAnalysisStore.test.js`, the gate as the
 only caller of the analysis prompt in `analysisGate.test.js`, and the job
 sheet's six columns - sheet-first builds, write-back, the protection, the
 backoff - in `analysisSheets.test.js`.
+
+The Job Data Lake is pinned in `jobLakeIdentity.test.js` (the company
+normalisation and the versioned hash), `jobLakeStore.test.js` (the tables, the
+indexes and their query plans, the duplicate window on a fake clock, rewards,
+revokes, four threads adding one job), `jobLakeSync.test.js` (the admin sheet's
+outbox) and `jobLakeReport.test.js` (a reporter's run, the merge and the admin
+API over HTTP). The two pages' own decisions - the rows a run is asked for, the
+settings a save sends, the lake's filters, the owner's line drawn from a real
+run's summary - are run against the server's code by
+`frontendJobLake.test.js`, and both pages in a browser by
+`test/e2e/report-run.js`, against a Google Sheet and a seat stubbed by preloads.
 
 The three seats are covered by `backend/test/claudeCli.test.js`,
 `codexCli.test.js` and `geminiCli.test.js`, which replay event streams from the

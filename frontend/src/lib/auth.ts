@@ -192,11 +192,19 @@ export const accountsApi = {
       `/admin/accounts/${encodeURIComponent(id)}/credits`
     ),
 
-  /** `roles` is the server's catalog; optional only because a backend older than reporters sends none. */
+  /**
+   * `roles` is the server's catalog; optional only because a backend older
+   * than reporters sends none. `globalReportRateMilli` is the rate a reporter
+   * with no rate of their own is paid (Admin -> Job Lake), which the empty
+   * rate boxes name; optional for a backend from before the job lake.
+   */
   list: () =>
-    apiFetch<{ accounts: ManagedAccount[]; subscriptions: AccountSubscription[]; roles?: RoleOption[] }>(
-      '/admin/accounts'
-    ),
+    apiFetch<{
+      accounts: ManagedAccount[];
+      subscriptions: AccountSubscription[];
+      roles?: RoleOption[];
+      globalReportRateMilli?: number;
+    }>('/admin/accounts'),
 
   create: (input: {
     email: string;

@@ -81,6 +81,7 @@ const ADMIN_ROUTES = [
   '/admin/skills',
   '/admin/notifications',
   '/admin/payments',
+  '/admin/job-lake',
   '/admin/accounts',
   '/test',
 ];
@@ -1493,15 +1494,18 @@ async function main() {
     const reportPage = await reporterPage.evaluate(() => ({
       title: document.querySelector('.tl-main h1')?.textContent.trim(),
       card: Array.from(document.querySelectorAll('.tl-card h2')).some((h) => h.textContent.trim() === 'Your job sheet'),
+      // The Phase 5 placeholder said adding jobs "arrives in a later release"; it has arrived.
       later: /arrives in a later release/.test(document.body.innerText),
+      // The rate a job pays them, which the page opens with.
+      rate: /per job added/i.test(document.body.innerText),
       // The sheet button, when this machine's Google account made one: a new tab, on https.
       links: Array.from(document.querySelectorAll('.tl-main a[target="_blank"]')).map((a) => a.getAttribute('href')),
       lit: Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item[data-active="true"]')).map((a) => a.textContent.trim()),
       home: document.querySelector('.tl-brand a[aria-label="Tailor home"]')?.getAttribute('href'),
     }));
     check(
-      'reporter /report: Report Jobs, their job sheet, and the note that adding jobs comes later',
-      reportPage.title === 'Report Jobs' && reportPage.card && reportPage.later,
+      'reporter /report: Report Jobs, their rate per job and their job sheet - no "later release" note',
+      reportPage.title === 'Report Jobs' && reportPage.card && reportPage.rate && !reportPage.later,
       JSON.stringify(reportPage)
     );
     check(

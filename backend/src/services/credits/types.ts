@@ -38,6 +38,18 @@ export const CREDIT_REASONS = [
   // clamped: a payout the balance cannot cover is refused instead
   // (creditRepository.debitReporterPayout).
   'reporter-payout',
+  // A reporter paid for a job the Job Data Lake accepted (owner decision J7):
+  // written in the SAME transaction as the lake row it pays for
+  // (database/jobLakeRepository.ts mergeIntoLake), keyed
+  // job-lake:<lake id>:<the version's updated_at>, so a replacement after the
+  // duplicate window pays again and one version never twice. Its amount is
+  // the rate in effect then - the reporter's own, else the global one - cut
+  // to what is left of the daily cap, and never written at $0.
+  'job-report-reward',
+  // That reward taken back by an administrator, as a deduction clamped at the
+  // balance (a reporter who was paid out already keeps $0, not a debt).
+  // Keyed job-lake-revoke:<lake id>:<updated_at>, so a version is revoked once.
+  'job-report-reward-revoked',
   // Credits became dollars, and every balance was reset to $0. One row per
   // account that held any, in the old unit, taking it to zero - or, for one
   // whose credits were all held by a run, moving nothing and saying so

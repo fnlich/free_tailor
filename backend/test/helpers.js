@@ -260,6 +260,7 @@ function storeJobAnalysis(analysis = {}, posting = {}) {
     promptHash: '',
     source: 'ai',
     createdBy: posting.createdBy ?? null,
+    ...(posting.companyName ? { companyName: posting.companyName } : {}),
   });
   return row.id;
 }

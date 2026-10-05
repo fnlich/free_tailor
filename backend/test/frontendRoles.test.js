@@ -354,13 +354,19 @@ test("a reporter's pages mount nothing that asks a route a reporter is refused",
   assert.match(history, /const asks = variant === 'credits';/);
   assert.match(history, /asks \? refundChargeIdFor\(entry\) : null/);
 
-  // Report Jobs reads only the account's own sheet - not /api/import, which is a builder's.
+  // Report Jobs reads only /api/report - the reporter's own sheet, tabs, rows
+  // and runs, behind requireReporter - never /api/import, which is a builder's.
   const report = codeOnly(fs.readFileSync(path.join(SRC, 'app/report/page.tsx'), 'utf8'));
-  assert.match(report, /sheetApi\.get\(\)/);
-  for (const builderOnly of ['importApi', "'/import", 'generationApi', 'profilesApi']) {
+  assert.match(report, /reportApi\.overview\(\)/);
+  for (const builderOnly of ['importApi', "'/import", 'generationApi', 'profilesApi', 'adminJobLakeApi', 'accountsApi']) {
     assert.equal(report.includes(builderOnly), false, `Report Jobs uses ${builderOnly}`);
   }
   assert.match(report, /<ReporterOnly>/);
+  const lakeApi = codeOnly(fs.readFileSync(path.join(SRC, 'lib/jobLake.ts'), 'utf8'));
+  const reportApi = lakeApi.slice(lakeApi.indexOf('export const reportApi'), lakeApi.indexOf('export type LakeRequester'));
+  const paths = [...reportApi.matchAll(/[`'](\/[^`'?$]*)/g)].map((match) => match[1]);
+  assert.ok(paths.length >= 5, `reportApi's paths are found: ${paths.join(', ')}`);
+  for (const route of paths) assert.match(route, /^\/report(\/|$)/, `reportApi asks ${route}`);
 });
 
 /**

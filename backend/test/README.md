@@ -85,6 +85,36 @@ Coverage currently focuses on:
   another link not, a 400 letting it go), the salary line, the posting
   normalisation, the Analysis cell's states and the sheet panel's column
   letters, each run against the server's own code
+- the Job Data Lake: the company normalisation and the versioned hash
+  (`jobLakeIdentity.test.js`); the tables and exactly the planned indexes with
+  EXPLAIN QUERY PLAN on the duplicate check and the admin page's default view,
+  the duplicate window on a fake clock (59 days a duplicate, 61 a replacement
+  with its history), the administrator's window over `.env` over 60, rewards at
+  the reporter's own rate else the global one, snapshotted, once per version,
+  under the daily cap (which a revoke does not free), never a $0 ledger row,
+  `already` only for the same sheet row, revoke and delete, the admin query,
+  and four threads adding the same job at once (`jobLakeStore.test.js`); the
+  admin sheet's outbox - created once (a failed header write finishes the same
+  spreadsheet), shared with enabled administrators at every sync, an idle one
+  included, a failed append kept and sent exactly once on retry with Google's
+  reason on the page, a replacement a new line, a duplicate none, a recreate
+  mid-sync sending the whole lake to the new sheet and marking nothing for the
+  old - and the duplicate decision made with every Google seam set to throw
+  (`jobLakeSync.test.js`); and over HTTP, a reporter's run against a sheet in
+  memory and counting seats (what is analysed, added, replaced, a duplicate,
+  unclassified or skipped, what is paid, written and painted red, a re-run
+  that analyses and pays nothing, the same posting pasted into another row or
+  tab a red duplicate, a Lake Status left by a replaced posting ignored, a
+  Skipped row's analysis cells written once it is reported, one row's seat or
+  merge failure failing only that row, Lake Status cells kept out of rows that
+  were sorted), the admin merge, the company a build or the Job Filter names
+  on an analysis, and the admin lake API (`jobLakeReport.test.js`). The pages' half (`frontendJobLake.test.js`):
+  the rows a run is asked for, the settings boxes and what a save sends, and
+  the lake's filters, each refused by the page exactly when and in the words
+  the server refuses them; every row and merge status given its words, only
+  a duplicate red; when Add to job lake may be pressed; a sheet's
+  `javascript:` link never an href; and the owner's line drawn from a real
+  run's summary, with a tab of the reporter's own refused in the run's words
 - what anybody but an administrator is told when something fails
   (`publicErrors.test.js`): public refusals in their own words, everything
   else as a generic sentence and a ref with the cause logged under it, and the
@@ -179,7 +209,8 @@ Coverage currently focuses on:
 - current auth middleware behavior, and who may reach what
   (`routeAccess.test.js`): one row per router `src/index.ts` mounts, deciding
   whether it is public, for any signed-in account, for users and
-  administrators (never a reporter), or for administrators; the test fails on a
+  administrators (never a reporter), for reporters and administrators (never a
+  user: Report Jobs), or for administrators; the test fails on a
   mount with no row and on any route whose guard - read off the router - is
   not the one its row decides, and over HTTP with a session per role it
   refuses a reporter every route that is not theirs (403 `role-not-allowed`)

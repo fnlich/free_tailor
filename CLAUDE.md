@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~55s with the tsc step, 1440 tests)
+npm test                       # backend node:test suite (~55s with the tsc step, 1499 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -50,7 +50,7 @@ Facts worth knowing before you build:
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. 31 of the 32 App Router pages carry no `dark:` at all (only
+  ignored. 32 of the 33 App Router pages carry no `dark:` at all (only
   `/test` does); they are built from the kit and the tokens rather than the
   utilities it remaps, but it is still loaded and still wins wherever it
   matches. New chrome uses the `@theme inline` tokens instead
@@ -94,7 +94,7 @@ order decides nothing, and with neither set there is no administrator.
 
 ```
 backend/src/
-  index.ts            # Express app: mounts 25 routers under /api
+  index.ts            # Express app: mounts 27 routers under /api
   config/             # env loading (.env, UTF-16 aware), browser resolution.
                       #   ENV_PATH resolves from the COMPILED module, so it is
                       #   always <repo root>/.env regardless of cwd - a file at
@@ -156,6 +156,9 @@ backend/src/
                       #   reporters; `requireAccount` is any signed-in role,
                       #   opted into only by auth's /account, credits,
                       #   notifications, sheet and refund-requests' GET /.
+                      #   `requireReporter` (`canReportJobs`: reporter or
+                      #   admin, never a user - 403 `role-not-allowed`) is
+                      #   /api/report's, a level of its own in the table below.
                       #   requireSubscription refuses a reporter by role first.
                       #   test/routeAccess.test.js is the table of EVERY mount
                       #   in index.ts and every route's effective guard (read
@@ -352,7 +355,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 122 files; fixtures/cli, codex and gemini
+  test/               # node:test, 127 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -368,8 +371,10 @@ frontend/src/
                       #   and their editor, whatever the path says. /report
                       #   (Report Jobs) is a REPORTER's home, behind
                       #   AuthGate's `ReporterOnly` (an admin may open it, a
-                      #   user is told what it is for); until Phase 7 it is
-                      #   their own sheet and a "later release" note.
+                      #   user is told what it is for): their rate, earnings
+                      #   and sheet, a tab and rows previewed, "Add to job
+                      #   lake", the run followed to the owner's line - see
+                      #   "The Job Data Lake" below, as for /admin/job-lake.
                       #   A REPORTER opens only lib/roles.ts's allowlist -
                       #   /report (and under it), /credits, /settings,
                       #   /settings/job-sheet, each exactly - and AuthGate
@@ -821,8 +826,10 @@ since reported as the shortfall. `payments.refund_cents` records the money
 returned (0 on an older refunded row reads as `amount_cents`), served as
 `refundAmountMilli`. A refund from the payments list closes the payment's open
 requests (`closeRequestsForRefundedPayment`). The frontend's `lib/credits.ts`
-knows the new ledger reasons, `refund-request` and `purchase-refund-failed`
-(drift-checked by test/frontendMoney.test.js).
+knows the new ledger reasons, `refund-request` and `purchase-refund-failed`,
+and the lake's `job-report-reward` and `job-report-reward-revoked` (see "The Job
+Data Lake" below; drift-checked by test/frontendMoney.test.js, which also lists
+the lake's money modules among those that may not floor or float-parse).
 
 **Notifications are no longer broadcast-only.** `notifications.recipient_id`
 NULL is an announcement (every row an older build wrote), set is a notice for
@@ -1107,7 +1114,15 @@ lake's merge tab, `job_field_id` for its filter - all four in
 `INDEXES_AFTER_COLUMNS`. test/jobAnalysisStore.test.js pins the gate's two
 lookups to single index seeks with EXPLAIN QUERY PLAN. No TTL, no cap, no
 overwrite of a readable row; a row found by its text that had no link is given the link it was
-found with (`attachLinkKey`, NULL only). `merged_at` is the Job Data Lake's.
+found with (`attachLinkKey`, NULL only). `merged_at` is the Job Data Lake's (set
+by `mergeIntoLake`, for a report or a merge, on every outcome but `unclassified`
+and `no-company`, which write nothing). `company_name`
+(an added column, '' on older rows) is the company a caller knew the posting by -
+the gate takes an optional `company` and records it on insert or, when the row
+has none, afterwards (`attachCompanyName`, '' only; the builder routes, the
+queue task, the submission step, the Job Filter and the reporter run all pass
+it) - because the analysis leaves company names out and the lake's merge hashes
+on it. Never part of a posting's identity.
 
 **Callers pass `analysisId`**, never an analysis: `/resume/analyze` answers the
 analysis plus `analysisId` and `jobFieldLabel`; `/resume/preview`,
@@ -1187,8 +1202,10 @@ program's cell for ANOTHER posting, is written back once per row and analysis
 (`analysisColumns.ts`'s `queueAnalysisWriteBack`, batched per spreadsheet for
 1.5 s, RAW, after re-reading the rows: skipped, and NOT settled, when moved;
 skipped when the cell already holds this posting's analysis, when it is not
-the program's JSON, or when it is empty but K:O hold something - a spare
-column an older build's tab left that somebody typed into; a stale program
+the program's JSON, or when it is empty but K, L or N hold something - a spare
+column an older build's tab left that somebody typed into; never M or O, the
+lake's own, which it writes before a row has an analysis (a Skipped row) and
+whose write lands when this one failed; a stale program
 cell is replaced whole, Job Hash and Lake Status emptied; `settled` is keyed
 on row + analysis id, and a tab whose protection had to be put back is
 forgotten from it; best-effort, never fails a resume).
@@ -1216,6 +1233,152 @@ New Variant, Duplicate, Save Active or model override for the analysis
 feature, and pills `predatesJobField` / `predatesSectionSwitches`. The profile
 editor's Extracting prompt select is gone with `analyzeJobPromptId`.
 test/frontendAnalysis.test.js runs every copy here against the server's code.
+
+## The Job Data Lake
+
+Phase 7, owner decisions J2-J10. One row per JOB - a company hiring in a job
+field - in `job_lake` (database/sqlite.ts; `database/jobLakeRepository.ts`
+is its only writer), not per posting. The doc block there and in
+`services/jobLake/` is the detail; what to know before touching it:
+
+**Identity** (`services/jobLake/identity.ts`, J2a): `normaliseCompany` -
+symbols dropped (before NFKC, which would spell `™` as TM), NFKC, lower case,
+`.` and apostrophes dropped and every other punctuation a space, trailing legal
+suffixes (`LEGAL_SUFFIXES_V1`, multi-word ones whole, stripped repeatedly, never
+to nothing) dropped, every space removed. `lakeIdentity(company, fieldId)` is
+SHA-256 of `v1\0companyKey\0fieldId`, or null for no company or a field not in
+config/jobFields.ts (`unclassified` included): never merged, never paid. The
+steps and the list are `JOB_LAKE_HASH_VERSION`; change either and it is a new
+version with a deliberate re-hash, never an edit.
+
+**Schema**: `job_lake` has an INTEGER AUTOINCREMENT id (the FTS5
+external-content index `job_lake_fts` points at rows by rowid, which VACUUM
+renumbers on a table without one; three triggers keep it in step) and the plan's
+indexes exactly - `job_hash` UNIQUE, `updated_at`, `(job_field_id, updated_at)`,
+`(company_key, updated_at)`, `requested_by`, and `id WHERE sheet_synced_at IS
+NULL` (the outbox) - plus `job_lake_history(lake_id)`, all in
+`INDEXES_AFTER_COLUMNS`. test/jobLakeStore.test.js pins them and their plans
+(`FIND_BY_HASH_SQL`, `LIST_DEFAULT_SQL`, `UNSYNCED_SQL`, `HISTORY_SQL`).
+
+**`mergeIntoLake(job, requestedBy, policy)`** is the only way in, for the
+reporter run and the admin merge alike: ONE `.immediate()` transaction - seek
+the hash; none -> INSERT (`added`); a row whose `updated_at` is within the window
+-> `seen_count`/`last_seen_at` bumped (`duplicate`; `updated_at` does NOT move,
+so the window runs from the add) - or `already` when that row is this very
+analysis from this very account AND the same sheet row (`job_lake.report_ref`,
+`reportRefOf(spreadsheet, tab, row)`, NULL for a merge, which is never
+`already`): a re-run whose Lake Status never landed, nothing moves, the run
+writes Added. The same posting on another row, tab or day is a `duplicate`;
+an older row -> copied to
+`job_lake_history`, overwritten, `requested_by`/`updated_at`/the reward moved,
+`sheet_synced_at` NULL again (`replaced`, which counts as ADDED). The analysis
+is marked merged in the same transaction. The decision reads the database ONLY
+(J10) - test/jobLakeSync.test.js runs it with every Google seam set to throw -
+and worker threads in test/jobLakeStore.test.js race four writers for one job.
+`services/jobLake/index.ts`'s wrapper resolves the policy from the settings at
+the moment of the merge (`setLakeClockForTests` is the fake clock).
+
+**Rewards** (J7) are paid INSIDE that transaction (creditRepository's
+`payJobReportReward`, a savepoint when nested): only to an account whose role is
+`reporter` at that moment (an admin reporting is never paid; a merge passes no
+reward), at `users.report_rate_milli ?? the global rate`, cut to what the daily
+cap leaves of the UTC day (`jobRewardsSince`, gross - a revoke does not free it),
+never a $0 row, keyed `job-lake:<id>:<updated_at>` (a replacement pays again,
+a version never twice), stamped with the merge's moment. The lake row records
+`reward_milli` and the rate in effect, `reward_rate_milli` (snapshot).
+`revokeLakeReward` / `deleteLakeEntry(..., { revokeReward })` take the current
+version's reward back once (`job-lake-revoke:<id>:<updated_at>`,
+`job-report-reward-revoked`, clamped at the balance like `applyAdjustment`, a
+notice to the reporter); a replaced version's reward stays paid.
+
+**Settings** (`services/jobLake/settings.ts`, `app_settings['job-lake']`):
+`reportRateMilli` (global, unset = $0.000 - nobody paid until set),
+`duplicateWindowDays` (WINS over `JOB_LAKE_DUPLICATE_WINDOW_DAYS`, an
+operational setting, default 60, 1-3650; `resolveDuplicateWindow` says
+`admin | env | default`), `dailyCapMilli` (unset = no cap). PUT takes
+`reportRateUsd`, `duplicateWindowDays`, `dailyCapUsd` (null/'' clears) and
+refuses `*Milli`. Admin -> Accounts' list carries `globalReportRateMilli`.
+
+**The reporter run** (`services/jobLake/reportRun.ts`, routes/report.ts under
+`requireReporter`, the caller's OWN sheet only - no spreadsheet id is read from
+any request): inspect the tab (a tab that is not a job tab is refused before it
+is touched), verify it on that same read, read B:E and K:P once, skip rows whose
+Lake Status is Added/Replaced/Duplicate/Unclassified (`Skipped` is retried)
+beside an Analysis cell for the posting in the row NOW (`lakeStatusIsRowsOwn`;
+the protected cells outlive a posting replaced in place, so a status left by
+the one before is ignored, and routes/report.ts's `reported` says the same),
+then Phase 6's `resolveAnalysesAtSubmit` (sheet first, no model) and the gate
+for the rest (three at a time, written back like a queued task's first
+analysis), merges in ROW ORDER, `flushAnalysisWriteBacks()` FIRST (a stale
+program cell's replacement empties M and O), then `writeLakeStatuses` - one RAW
+write of M:O per row still holding its posting (re-read first) and one
+`repeatCell` batch painting duplicates `DUPLICATE_ROW_COLOR`. In memory, one run
+per account (409 `run-in-progress`), kept an hour; a restart loses a run in
+progress and re-running finishes it. Seam: `setReportSheetsClientForTests`.
+
+**The admin merge** (`services/jobLake/merge.ts`, J6) lists
+`listMergeableAnalyses` - not merged, a field that is not `unclassified`, a
+company on record - and merges with `requested_by` = the analysis's `created_by`
+and NO reward; never a model, never a sheet.
+
+**The admin sheet** (`services/jobLake/adminSheet.ts`, J9/J10): created on first
+use by the server (`app_settings['job-lake.admin-sheet']`) - stored the moment
+it exists with `headerWritten: false`, so a header write that fails leaves that
+sheet to finish, never a second one (absent = true) - header written RAW,
+shared as writer with every ENABLED admin's email (more at each sync, an idle
+one included; nobody is unshared). An OUTBOX: rows with `sheet_synced_at IS NULL` are appended in
+batches of 200 (`appendValuesRaw`, `values:append` RAW + INSERT_ROWS, through
+the 429 backoff) and marked by id AND `updated_at`, and only while the sheet
+appended to is still the stored one; syncs are serialised; a
+failure keeps the rows and `lastError` - the sentence, then Google's `detail`
+on its own line - for the page. Runs after each report run
+and merge (`requestAdminLakeSync`), at boot (index.ts), and on "Retry now"
+(POST /api/admin/job-lake/sync); asks Google nothing with nothing to send and
+nobody to share with. `recreate` makes a new spreadsheet and reopens the outbox
+for every row in the same tick as it stores the new id; it never joins a plain
+creation in flight (it waits, then makes its own), and a sync appending to the
+old sheet meanwhile marks nothing and goes round again on the new one.
+At-least-once across a crash between Google's answer and the mark. Seam:
+`setAdminLakeSheetClientForTests`.
+
+**Routes**: `/api/report` (GET /, /tabs, /rows, POST /runs -> 202, GET
+/runs/current, /runs/:id) and `/api/admin/job-lake` (GET /, /settings, PUT
+/settings, GET|POST /sync, POST /sheet, GET|POST /merge, GET|DELETE /:id, POST
+/:id/revoke-reward), each a row in test/routeAccess.test.js. The run's summary
+is `{ added (added + replaced), total, duplicates, unclassified, replaced,
+skipped, failed, alreadyReported, earnedMilli, balanceMilli, sheetUpdated }`.
+
+**The pages.** lib/jobLake.ts is the API's shapes; lib/jobLakeDisplay.ts
+everything the two pages decide, with no React and no runtime import but
+lib/format.ts and lib/reporterPay.ts, so test/frontendJobLake.test.js runs it
+against the server: `readReportRange` is `readRunRange`'s refusal word for
+word, `lakeSettingsProblems` / `lakeSettingsChanges` are `updateLakeSettings`'s
+(only what changed is sent, AS TYPED, '' to clear), `lakeFilterProblem` the
+lake route's 400s, `notJobTabMessage` the run's own refusal, the statuses'
+labels are read against the source unions, and `describeRunSummary` - the
+owner's "N out of M was added, your current credit is $X" - is drawn from a
+real run's summary there. **/report** (app/report/page.tsx) asks GET
+/api/report on arrival (rate, today's earnings, balance, the LATEST run - a
+running one is followed, one that ended is shown for the hour the server
+keeps it), lists the tabs (`defaultTab` chosen), previews rows 2-501 by
+default, and enables Add to job lake only over a PREVIEW of the same tab and
+rows that has something to report (`startBlocker`); a 409 `run-in-progress`
+follows the run its `runId` names. It polls GET /runs/:id every
+`REPORT_POLL_MS` until the SERVER says it ended (a 404 is a restart: the run
+is gone, what it merged is not), then re-reads the overview, the account (the
+top bar's balance) and the preview of those rows. A duplicate's row is red
+(`isRedOutcome`, page.module.css - a rule more specific than the unlayered
+`.tl-table td`, stated for html.dark too). A link from a sheet or the lake
+reaches an href only through `safeWebLink` (http(s), a host, no credentials).
+**/admin/job-lake** (app/admin/job-lake/: page.tsx, LakeTab, MergeTab,
+SettingsTab) is a Settings -> Administration tab (navModel's
+SETTINGS_ADMIN_TABS), its own tabs in `?tab=` (lake, merge, settings) as
+Payments keeps them; the lake's filters apply on Search (a bumped epoch on
+usePagedList), Details is a kit Dialog with Revoke reward and Delete +
+"Also revoke the reward"; the money boxes are text, never `type="number"`,
+and the page is in frontendMoney.test.js's FRONTEND_MONEY_SOURCES.
+test/e2e/report-run.js drives both against stub-report-sheets.js and
+stub-seat.js.
 
 ## Conventions from the history
 

@@ -130,6 +130,9 @@ export const SETTINGS_ADMIN_TABS: SettingsTab[] = [
   { href: '/admin/skills', label: 'Skill Library' },
   { href: '/admin/notifications', label: 'Notifications' },
   { href: '/admin/payments', label: 'Payments' },
+  // The Job Data Lake: what reporters and merged builds added, its rate per
+  // job and duplicate window, and the admin sheet it is copied to.
+  { href: '/admin/job-lake', label: 'Job Lake' },
   { href: '/test', label: 'Prompt Test' },
 ];
 

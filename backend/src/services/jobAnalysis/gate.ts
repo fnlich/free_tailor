@@ -3,6 +3,7 @@ import { resolveAnalysisModel } from '../../config/aiModelConfig';
 import { describeAiChoice, type AiChoice } from '../../config/aiPreferences';
 import { renderJobFieldListForPrompt } from '../../config/jobFields';
 import {
+  attachCompanyName,
   attachLinkKey,
   findJobAnalysisByContentHash,
   findJobAnalysisByLinkKey,
@@ -95,6 +96,14 @@ export type AnalysisRequest = {
   sheetRow?: SheetRowAnalysis;
   /** The account whose action produced the analysis, recorded as `created_by`. */
   requestedBy?: string | null;
+  /**
+   * The company the posting is for, when the caller knows it - a build's
+   * job, a sheet row, a report. Recorded on the stored row (never over one
+   * already there): the analysis itself leaves company names out, and the
+   * Job Data Lake's merge hashes the job on it. Never part of the posting's
+   * identity.
+   */
+  company?: string;
   /**
    * Steps 0 and 1 only: the sheet's analysis or the stored one, else null -
    * never a model call. What a batch's submission asks, which must answer at
@@ -231,13 +240,22 @@ export function analysesInFlight(): number {
 /* ------------------------------------------------------------- the gate -- */
 
 export async function getOrCreateAnalysis(input: AnalysisRequest): Promise<StoredJobAnalysis | null> {
+  const found = await resolveAnalysis(input);
+  if (found && input.company && !found.companyName) {
+    attachCompanyName(found.id, input.company);
+    return getJobAnalysisById(found.id) ?? found;
+  }
+  return found;
+}
+
+async function resolveAnalysis(input: AnalysisRequest): Promise<StoredJobAnalysis | null> {
   const jd = typeof input.jd === 'string' ? input.jd.trim() : '';
   const link = typeof input.link === 'string' ? input.link.trim() : '';
   const keys = postingKeys({ jd, link });
 
   // 0. The sheet row's own analysis.
   if (input.sheetRow) {
-    const fromSheet = useSheetAnalysis(input.sheetRow, { jd, link, keys }, input.requestedBy ?? null);
+    const fromSheet = useSheetAnalysis(input.sheetRow, { jd, link, keys }, input.requestedBy ?? null, input.company ?? '');
     if (fromSheet) return fromSheet;
   }
 
@@ -265,7 +283,10 @@ export async function getOrCreateAnalysis(input: AnalysisRequest): Promise<Store
   const entry: InFlight = {
     controller,
     waiters: 0,
-    promise: analyseAndStore({ jd, link, keys: { hash: keys.hash, link: keys.link }, requestedBy: input.requestedBy ?? null }, controller.signal),
+    promise: analyseAndStore(
+      { jd, link, keys: { hash: keys.hash, link: keys.link }, requestedBy: input.requestedBy ?? null, company: input.company ?? '' },
+      controller.signal
+    ),
   };
   for (const key of flightKeys) inFlight.set(key, entry);
   // Out of the map once settled, whichever way: a success is in the store by
@@ -295,7 +316,8 @@ export async function getOrCreateAnalysis(input: AnalysisRequest): Promise<Store
 function useSheetAnalysis(
   sheetRow: SheetRowAnalysis,
   posting: { jd: string; link: string; keys: PostingKeys },
-  requestedBy: string | null
+  requestedBy: string | null,
+  company: string
 ): StoredJobAnalysis | null {
   const where = sheetRow.row ? `sheet row ${sheetRow.row}` : 'a sheet row';
   const named = sheetRow.analysisId ? getJobAnalysisById(sheetRow.analysisId) : null;
@@ -330,6 +352,7 @@ function useSheetAnalysis(
     promptHash: '',
     source: 'sheet',
     createdBy: requestedBy,
+    companyName: company,
   });
   if (inserted) console.log(`[analysis] Registered the analysis read from ${where} (${row.id}); no model was asked.`);
   return row;
@@ -383,7 +406,7 @@ function promptHash(content: string | undefined): string {
  * model reads postings, so every posting's job field comes from one model.
  */
 async function analyseAndStore(
-  input: { jd: string; link: string; keys: { hash: string; link: string | null }; requestedBy: string | null },
+  input: { jd: string; link: string; keys: { hash: string; link: string | null }; requestedBy: string | null; company: string },
   signal: AbortSignal
 ): Promise<StoredJobAnalysis> {
   const model = await resolveAnalysisModel();
@@ -424,6 +447,7 @@ async function analyseAndStore(
     promptHash: promptHash(record?.content),
     source: 'ai',
     createdBy: input.requestedBy,
+    companyName: input.company,
   });
   console.log(
     inserted

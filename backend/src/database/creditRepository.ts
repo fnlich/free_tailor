@@ -109,6 +109,8 @@ export type LedgerWrite = {
   actorId?: string;
   note?: string;
   idempotencyKey: string;
+  /** When it happened, if not this instant: a job reward is stamped with its merge's moment. */
+  createdAt?: string;
 };
 
 /**
@@ -135,7 +137,7 @@ function insertLedger(write: LedgerWrite): void {
       actorId: write.actorId ?? null,
       note: write.note ?? '',
       idempotencyKey: write.idempotencyKey,
-      createdAt: now(),
+      createdAt: write.createdAt ?? now(),
     });
 }
 
@@ -532,6 +534,155 @@ export function debitReporterPayout(input: {
     });
     return { ok: true, applied: true, balance, entry: readEntry() };
   }).immediate();
+}
+
+/* ------------------------------------------------------- job lake rewards */
+
+export type JobRewardOutcome = {
+  /** What was credited, in thousandths of a dollar: 0 when nothing was. */
+  paidMilli: number;
+  /** The balance afterwards (or as it stands, when nothing moved). */
+  balance: number;
+  /**
+   * Why nothing - or less than the rate - was paid: the account is not a
+   * reporter (an administrator reporting, a role changed meanwhile), the rate
+   * in effect is $0.000, today's cap was reached, or this version was paid
+   * already (the key is used).
+   */
+  short?: 'not-a-reporter' | 'zero-rate' | 'cap' | 'already-paid';
+};
+
+/** What one account has earned from the lake since `sinceIso`, in thousandths. Gross: a revoke does not free the cap. */
+export function jobRewardsSince(userId: string, sinceIso: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(delta_milli), 0) AS earned FROM credit_ledger
+        WHERE user_id = ? AND reason = 'job-report-reward' AND created_at >= ?`
+    )
+    .get(userId, sinceIso) as { earned: number };
+  return row.earned;
+}
+
+/**
+ * Pays a reporter for one job the lake accepted - for the CALLER's
+ * transaction (jobLakeRepository's `mergeIntoLake`), so the lake row and its
+ * reward commit together or not at all. Nested in that one it is a
+ * savepoint; called alone it is its own IMMEDIATE transaction.
+ *
+ * Every condition is read inside the transaction: the account is a reporter
+ * NOW (the UPDATE says so again), the key is unused, and what today's cap
+ * leaves. A reward is cut to what the cap leaves rather than refused whole,
+ * so the cap is reached exactly; nothing is written for $0 (a rate of
+ * $0.000, a reached cap), because a ledger row that moves nothing explains
+ * nothing.
+ */
+export function payJobReportReward(input: {
+  userId: string;
+  rateMilli: number;
+  /** Null for no cap. */
+  dailyCapMilli: number | null;
+  /** The start of the day the cap counts, as an ISO time. */
+  dayStartIso: string;
+  /**
+   * The moment of the merge it pays for, as the row's time: the cap counts
+   * rows by it, so the day a reward is counted in is the day of its merge.
+   */
+  at?: string;
+  idempotencyKey: string;
+  refId: string;
+  note: string;
+}): JobRewardOutcome {
+  if (!Number.isSafeInteger(input.rateMilli) || input.rateMilli < 0) {
+    throw new Error(`A job reward must be a whole number of thousandths of a dollar, not ${input.rateMilli}.`);
+  }
+  const db = getDb();
+  const timestamp = now();
+
+  return db.transaction((): JobRewardOutcome => {
+    if (keyUsed(input.idempotencyKey)) return { paidMilli: 0, balance: readBalance(input.userId), short: 'already-paid' };
+    const account = db.prepare('SELECT role FROM users WHERE id = ?').get(input.userId) as { role: string } | undefined;
+    if (!account || account.role !== 'reporter') {
+      return { paidMilli: 0, balance: readBalance(input.userId), short: 'not-a-reporter' };
+    }
+    if (input.rateMilli === 0) return { paidMilli: 0, balance: readBalance(input.userId), short: 'zero-rate' };
+
+    let amount = input.rateMilli;
+    if (input.dailyCapMilli !== null) {
+      const left = Math.max(0, input.dailyCapMilli - jobRewardsSince(input.userId, input.dayStartIso));
+      if (left === 0) return { paidMilli: 0, balance: readBalance(input.userId), short: 'cap' };
+      amount = Math.min(amount, left);
+    }
+
+    const changed = db
+      .prepare(
+        `UPDATE users SET balance_milli = balance_milli + @amount, updated_at = @timestamp
+          WHERE id = @userId AND role = 'reporter'`
+      )
+      .run({ amount, userId: input.userId, timestamp }).changes;
+    if (changed === 0) return { paidMilli: 0, balance: readBalance(input.userId), short: 'not-a-reporter' };
+
+    const balance = readBalance(input.userId);
+    insertLedger({
+      userId: input.userId,
+      deltaMilli: amount,
+      balanceAfterMilli: balance,
+      reason: 'job-report-reward',
+      refKind: 'job-lake',
+      refId: input.refId,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+      ...(input.at ? { createdAt: input.at } : {}),
+    });
+    return { paidMilli: amount, balance, ...(amount < input.rateMilli ? { short: 'cap' as const } : {}) };
+  }).immediate();
+}
+
+/**
+ * Takes a job reward back, for an administrator - clamped at the balance,
+ * like `applyAdjustment`'s revoke: a reporter whose earnings were already
+ * paid out keeps $0, not a debt this app could never collect. Records what
+ * actually moved, and nothing when nothing could. Once per key.
+ */
+export function revokeJobReportReward(input: {
+  userId: string;
+  amountMilli: number;
+  idempotencyKey: string;
+  refId: string;
+  actorId: string;
+  note: string;
+}): { takenMilli: number; balance: number } {
+  if (!Number.isSafeInteger(input.amountMilli) || input.amountMilli < 0) {
+    throw new Error(`A revoke must be a whole number of thousandths of a dollar, not ${input.amountMilli}.`);
+  }
+  const db = getDb();
+  const timestamp = now();
+  return db.transaction((): { takenMilli: number; balance: number } => {
+    const before = readBalance(input.userId);
+    if (input.amountMilli === 0 || keyUsed(input.idempotencyKey)) return { takenMilli: 0, balance: before };
+    const taken = Math.min(before, input.amountMilli);
+    if (taken === 0) return { takenMilli: 0, balance: before };
+    db.prepare(
+      'UPDATE users SET balance_milli = balance_milli - @taken, updated_at = @timestamp WHERE id = @userId'
+    ).run({ taken, userId: input.userId, timestamp });
+    const balance = readBalance(input.userId);
+    insertLedger({
+      userId: input.userId,
+      deltaMilli: -taken,
+      balanceAfterMilli: balance,
+      reason: 'job-report-reward-revoked',
+      refKind: 'job-lake',
+      refId: input.refId,
+      actorId: input.actorId,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return { takenMilli: taken, balance };
+  }).immediate();
+}
+
+/** An account's balance, in thousandths of a dollar - for a summary that says what somebody holds now. */
+export function readBalanceMilli(userId: string): number {
+  return readBalance(userId);
 }
 
 /* ----------------------------------------------------------------- reading */

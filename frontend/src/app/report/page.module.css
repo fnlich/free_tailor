@@ -1,0 +1,50 @@
+/*
+ * Report Jobs' two colours of its own, in both themes.
+ *
+ * A duplicate row is painted red here because the run paints the same row red
+ * in the reporter's sheet (DUPLICATE_ROW_COLOR, #F4CCCC), and the two should
+ * mean the same thing at a glance. It is a module rule rather than a utility
+ * on the <td> because `.tl-table td` in globals.css is unlayered and beats any
+ * utility on the cell - the selector below is more specific than it, so it
+ * wins wherever this file loads.
+ */
+
+.outcomes tr[data-duplicate='true'] > td {
+  background: #fef2f2;
+}
+
+.outcomes tr[data-duplicate='true'] > td:first-child {
+  box-shadow: inset 3px 0 0 #dc2626;
+}
+
+:global(html.dark) .outcomes tr[data-duplicate='true'] > td {
+  background: rgba(248, 113, 113, 0.1);
+}
+
+:global(html.dark) .outcomes tr[data-duplicate='true'] > td:first-child {
+  box-shadow: inset 3px 0 0 #f87171;
+}
+
+/* The run's bar: the kit's green on the theme's strongest surface. */
+.track {
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: var(--surface-strong);
+}
+
+.fill {
+  height: 100%;
+  background: #16a34a;
+  transition: width 300ms ease-out;
+}
+
+:global(html.dark) .fill {
+  background: #22c55e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
+}

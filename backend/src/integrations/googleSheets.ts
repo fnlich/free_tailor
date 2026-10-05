@@ -2493,6 +2493,57 @@ export function a1Range(tabName: string, fromRow: number, toRow: number, fromCol
   return buildA1Notation(tabName, fromRow, toRow, fromCol, toCol);
 }
 
+/** Whole columns of a tab in A1 notation (`'Job Lake'!A:H`): where an append looks for the table's end. */
+export function a1Columns(tabName: string, fromCol: number, toCol: number): string {
+  return `${quoteSheetTitle(tabName)}!${toColumnLetters(fromCol)}:${toColumnLetters(toCol)}`;
+}
+
+/**
+ * Appends rows after the last row of the table in `range`, in ONE call
+ * (`values:append`), every value RAW - a company called `=HYPERLINK(...)`
+ * stays those characters - and as NEW rows (`INSERT_ROWS`), so a row somebody
+ * typed below the table is pushed down rather than written over. Through the
+ * same 429 backoff as every other call.
+ */
+export async function appendValuesRaw(
+  spreadsheetId: string,
+  range: string,
+  rows: Array<Array<string | number | null>>
+): Promise<void> {
+  if (rows.length === 0) return;
+  await googleSheetsFetch(
+    `/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append` +
+      '?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ range, majorDimension: 'ROWS', values: rows }),
+    }
+  );
+}
+
+/** Light red, Google's own "light red 3": what a duplicate job's row is painted. */
+export const DUPLICATE_ROW_COLOR = { red: 0.957, green: 0.8, blue: 0.8 };
+
+/**
+ * A `:batchUpdate` request painting one whole row's background (`repeatCell`,
+ * no column bounds), touching nothing but the background - values, borders
+ * and text format stay as they are. Batched by the caller, one call per run.
+ */
+export function rowBackgroundRequest(
+  gid: number,
+  row: number,
+  color: { red: number; green: number; blue: number }
+): Record<string, unknown> {
+  return {
+    repeatCell: {
+      range: { sheetId: gid, startRowIndex: row - 1, endRowIndex: row },
+      cell: { userEnteredFormat: { backgroundColor: color } },
+      fields: 'userEnteredFormat.backgroundColor',
+    },
+  };
+}
+
 /* ------------------------------------------------------------- permissions -- */
 
 export type SheetVisibility = 'public' | 'private';

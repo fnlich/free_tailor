@@ -77,6 +77,7 @@ export const OPERATIONAL_INT_BOUNDS = {
   JOB_PAGE_BROWSER_TIMEOUT_MS: { fallback: 25_000, min: 1_000, max: 180_000, unit: 'ms' },
   APIFY_RUN_TIMEOUT_S: { fallback: 300, min: 30, max: 3_600, unit: 's' },
   CRYPTOMUS_INVOICE_LIFETIME_S: { fallback: 3_600, min: 300, max: 43_200, unit: 's' },
+  JOB_LAKE_DUPLICATE_WINDOW_DAYS: { fallback: 60, min: 1, max: 3_650, unit: 'day(s)' },
   // Frontend, server-only (read by the Next route handlers; listed for the record).
   CALENDAR_API_TIMEOUT_MS: { fallback: 12_000, min: 1_000, max: 120_000, unit: 'ms' },
   CALENDAR_DETAIL_CONCURRENCY: { fallback: 12, min: 1, max: 32, unit: 'request(s)' },
@@ -538,6 +539,22 @@ export function cryptomusInvoiceLifetimeS(env: EnvSource = process.env): number 
   return readInt('CRYPTOMUS_INVOICE_LIFETIME_S', env);
 }
 
+/* ======================================================== job data lake */
+
+/**
+ * The Job Data Lake's duplicate window, in days (owner decision J2b): a job
+ * reported again while its lake row was last added or replaced within this
+ * many days is a DUPLICATE - painted red, not paid; reported after it, the new
+ * report REPLACES the row and counts as added. 60 by default, two months.
+ *
+ * The .env half only: an administrator's value on /admin/job-lake wins over
+ * it (services/jobLake/settings.ts `resolveDuplicateWindow`, which also says
+ * where the value in effect came from). Read on every merge.
+ */
+export function jobLakeDuplicateWindowDays(env: EnvSource = process.env): number {
+  return readInt('JOB_LAKE_DUPLICATE_WINDOW_DAYS', env);
+}
+
 /* ================================================================== table */
 
 export type OperationalVariable = {
@@ -747,6 +764,14 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     immediateTabGraceMs
   ),
   intEntry('IMMEDIATE_FILE_RETENTION_MS', 'per-call', 'services/orders/retention.ts', immediateFileRetentionMs),
+
+  // Job Data Lake
+  intEntry(
+    'JOB_LAKE_DUPLICATE_WINDOW_DAYS',
+    'per-call',
+    'services/jobLake/settings.ts (an administrator\'s value on /admin/job-lake wins)',
+    jobLakeDuplicateWindowDays
+  ),
 ];
 
 /** `NAME=value`, quoted when the value has a space or a comma in it so the line still splits. */

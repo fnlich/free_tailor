@@ -26,6 +26,9 @@ import notificationRoutes, { adminNotificationsRouter } from './routes/notificat
 import refundRequestRoutes, { adminRefundRequestsRouter } from './routes/refundRequests';
 import contactRoutes, { adminContactRouter } from './routes/contact';
 import sheetRoutes from './routes/sheet';
+import reportRoutes from './routes/report';
+import jobLakeRoutes from './routes/jobLake';
+import { requestAdminLakeSync } from './services/jobLake/adminSheet';
 import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { describeAdminIdentity } from './config/adminIdentity';
@@ -253,6 +256,10 @@ app.use('/api/admin/accounts', accountRoutes);
 app.use('/api/credits', creditRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/sheet', sheetRoutes);
+// The Job Data Lake: a reporter's Report Jobs (reporters and administrators),
+// and the administrators' lake, merge, settings and admin sheet.
+app.use('/api/report', reportRoutes);
+app.use('/api/admin/job-lake', jobLakeRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
@@ -413,6 +420,10 @@ const server = app.listen(PORT, HOST, () => {
   void backfillAccountSheets().catch((error) => {
     console.warn('[sheets] The account spreadsheet backfill did not finish.', error);
   });
+  // The Job Data Lake's admin sheet catches up with whatever the last process
+  // added and never got to append - the database is the record, the sheet its
+  // outbox. Asks Google nothing when there is nothing to send.
+  requestAdminLakeSync('startup');
   /*
    * Deletes ordered resumes once their keep-until has passed, now and every
    * ORDER_RETENTION_SWEEP_MS after (six hours by default) - and Generate

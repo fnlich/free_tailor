@@ -25,6 +25,7 @@ import {
   jobFilterAnalysisOf,
 } from '../services/jobFilter';
 import { findStoredAnalysis, getOrCreateAnalysis } from '../services/jobAnalysis/gate';
+import { attachCompanyName } from '../database/jobAnalysisRepository';
 import { isAppOwnedSheet, queueAnalysisWriteBack } from '../services/sheets/analysisColumns';
 import { extractJobPageContent } from '../services/jobPageContent';
 import { scraperDefaultLocation, scraperMaxResults } from '../config/operational';
@@ -898,6 +899,8 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         let stored = findStoredAnalysis({ link: jobLink });
         if (stored) {
           reusedAnalyses += 1;
+          // Found by its link: the company the lake's merge hashes it on, if nobody named one yet.
+          if (!stored.companyName && typeof row[companyIndex] === 'string') attachCompanyName(stored.id, row[companyIndex]);
         } else {
           const jobContent = await extractJobPageContent(jobLink);
           scrapedRows += 1;
@@ -907,6 +910,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
             jd: jobContent,
             link: jobLink,
             requestedBy: req.user?.id ?? null,
+            company: typeof row[companyIndex] === 'string' ? row[companyIndex].trim() : '',
             signal: filterSignal,
           });
         }

@@ -30,6 +30,13 @@ export type StoredJobAnalysis = {
   createdBy: string | null;
   createdAt: string;
   mergedAt: string | null;
+  /**
+   * The company the posting was built or reported for - never read off the
+   * posting by the analysis, which leaves company names out. '' until a
+   * caller that knows it reaches the row (`attachCompanyName`). What the Job
+   * Data Lake's merge hashes the job on.
+   */
+  companyName: string;
 };
 
 type Row = {
@@ -46,11 +53,12 @@ type Row = {
   created_by: string | null;
   created_at: string;
   merged_at: string | null;
+  company_name: string | null;
 };
 
 const COLUMNS =
   'id, content_hash, link_key, job_link, job_description, analysis_json, job_field_id, ' +
-  'model_id, prompt_hash, source, created_by, created_at, merged_at';
+  'model_id, prompt_hash, source, created_by, created_at, merged_at, company_name';
 
 /** The gate's lookups, exported so the query-plan test runs exactly these statements. */
 export const FIND_BY_LINK_KEY_SQL = `SELECT ${COLUMNS} FROM job_analyses WHERE link_key = ?`;
@@ -129,6 +137,7 @@ function fromRow(row: Row | undefined): StoredJobAnalysis | null {
     createdBy: row.created_by,
     createdAt: row.created_at,
     mergedAt: row.merged_at,
+    companyName: row.company_name ?? '',
   };
 }
 
@@ -154,6 +163,8 @@ export type NewJobAnalysis = {
   promptHash: string;
   source: JobAnalysisSource;
   createdBy: string | null;
+  /** The company the posting is for, when the caller knows it. */
+  companyName?: string;
 };
 
 function salaryColumns(salary: JobSalary | null | undefined) {
@@ -203,11 +214,11 @@ export function insertJobAnalysisIfAbsent(input: NewJobAnalysis): { row: StoredJ
       `INSERT INTO job_analyses (
          id, content_hash, link_key, job_link, job_description, analysis_json, job_field_id, job_title,
          salary_min, salary_max, salary_currency, salary_period, salary_raw,
-         model_id, prompt_hash, source, created_by, created_at
+         model_id, prompt_hash, source, created_by, created_at, company_name
        ) VALUES (
          @id, @content_hash, @link_key, @job_link, @job_description, @analysis_json, @job_field_id, @job_title,
          @salary_min, @salary_max, @salary_currency, @salary_period, @salary_raw,
-         @model_id, @prompt_hash, @source, @created_by, @created_at
+         @model_id, @prompt_hash, @source, @created_by, @created_at, @company_name
        ) ON CONFLICT DO NOTHING`
     )
     .run({
@@ -219,6 +230,7 @@ export function insertJobAnalysisIfAbsent(input: NewJobAnalysis): { row: StoredJ
       ...analysisColumns(input),
       created_by: input.createdBy,
       created_at: now,
+      company_name: cleanCompanyName(input.companyName),
     });
 
   if (result.changes === 1) {
@@ -294,6 +306,63 @@ export function attachLinkKey(id: string, linkKey: string, jobLink: string): voi
     // link; this one keeps answering to its text. Not an error worth more than a line.
     console.warn(`[analysis] Could not record a link on stored analysis ${id}; it stays found by its text.`, error);
   }
+}
+
+/** A company name as stored: one line, trimmed, no longer than a sheet cell would sensibly hold. */
+function cleanCompanyName(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+}
+
+/**
+ * Gives a stored row the company a caller knows it by, when it had none - the
+ * same "fill in, never overwrite" as `attachLinkKey`: the first build or
+ * report that names the company is the one the lake's merge hashes on.
+ */
+export function attachCompanyName(id: string, companyName: unknown): void {
+  const company = cleanCompanyName(companyName);
+  if (!company) return;
+  try {
+    getDb()
+      .prepare("UPDATE job_analyses SET company_name = ? WHERE id = ? AND company_name = ''")
+      .run(company, id);
+  } catch (error) {
+    console.warn(`[analysis] Could not record a company on stored analysis ${id}.`, error);
+  }
+}
+
+/**
+ * Marks an analysis as having been through the Job Data Lake - added,
+ * replacing, or found a duplicate - so the merge tab stops offering it. Only
+ * the first time: when it first went in is what the row records.
+ */
+export function markJobAnalysisMerged(id: string, at: string): void {
+  getDb().prepare('UPDATE job_analyses SET merged_at = ? WHERE id = ? AND merged_at IS NULL').run(at, id);
+}
+
+/**
+ * What the lake's merge tab offers: stored analyses not merged yet, with a
+ * job field from the list and a company to hash the job on - an unclassified
+ * posting, or one no build named a company for, is never offered (J3, J6).
+ * Oldest first, on `idx_job_analyses_merge`.
+ */
+export const LIST_MERGEABLE_SQL =
+  `SELECT ${COLUMNS} FROM job_analyses ` +
+  "WHERE merged_at IS NULL AND job_field_id != 'unclassified' AND company_name != '' " +
+  'ORDER BY created_at, id LIMIT ? OFFSET ?';
+
+export function listMergeableAnalyses(limit: number, offset = 0): StoredJobAnalysis[] {
+  const rows = getDb().prepare(LIST_MERGEABLE_SQL).all(limit, offset) as Row[];
+  return rows.map(fromRow).filter((row): row is StoredJobAnalysis => row !== null);
+}
+
+export function countMergeableAnalyses(): number {
+  return (
+    getDb()
+      .prepare(
+        "SELECT COUNT(*) AS count FROM job_analyses WHERE merged_at IS NULL AND job_field_id != 'unclassified' AND company_name != ''"
+      )
+      .get() as { count: number }
+  ).count;
 }
 
 /** How many postings have been analysed. For the admin pages and the tests. */

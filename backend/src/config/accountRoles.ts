@@ -47,6 +47,16 @@ export function canBuildResumes(role: UserRole | undefined | null): boolean {
   return role === 'user' || role === 'admin';
 }
 
+/**
+ * Whether an account with this role may report jobs to the Job Data Lake
+ * (`/report`): a reporter, and an administrator, who may open every page.
+ * Never a user - building resumes and being paid per reported job are two
+ * different arrangements with an installation, and an account has one role.
+ */
+export function canReportJobs(role: UserRole | undefined | null): boolean {
+  return role === 'reporter' || role === 'admin';
+}
+
 /** The role catalog as the admin Accounts page reads it: `{ id, label }`, in order. */
 export function listRoles(): Array<{ id: UserRole; label: string }> {
   return ACCOUNT_ROLES.map((id) => ({ id, label: ROLE_LABELS[id] }));

@@ -19,6 +19,7 @@ import { describeLedgerBalance, describeLedgerChange, ledgerDirection } from '@/
 import {
   describePayoutAmount,
   describeReportRate,
+  globalRatePlaceholder,
   MAX_PAYOUT_NOTE,
   mintPayoutRequestId,
   parseReportRate,
@@ -181,6 +182,12 @@ function AccountsTable() {
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
   const [subscriptions, setSubscriptions] = useState<AccountSubscription[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>(FALLBACK_ROLES);
+  /**
+   * The rate a reporter with no rate of their own is paid, set on Admin -> Job
+   * Lake: what an empty rate box means, named by its figure. Null until the
+   * list arrives (or from a backend from before the job lake).
+   */
+  const [globalRateMilli, setGlobalRateMilli] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -229,6 +236,7 @@ function AccountsTable() {
       setAccounts(data.accounts);
       setSubscriptions(data.subscriptions);
       if (Array.isArray(data.roles) && data.roles.length > 0) setRoles(data.roles);
+      setGlobalRateMilli(typeof data.globalReportRateMilli === 'number' ? data.globalReportRateMilli : null);
       setError(null);
     } catch (caught) {
       setError(messageWithDetail(caught, 'Could not load accounts.'));
@@ -505,7 +513,7 @@ function AccountsTable() {
                   value={inviteRate}
                   disabled={inviting}
                   onChange={(event) => setInviteRate(event.target.value)}
-                  placeholder="Global rate"
+                  placeholder={globalRatePlaceholder(globalRateMilli)}
                   aria-describedby="invite-rate-hint"
                   className="tl-input tabular-nums"
                 />
@@ -536,7 +544,9 @@ function AccountsTable() {
               aria-live="polite"
             >
               {inviteRateProblem ||
-                'Dollars per job the job lake accepts, to $0.001. Leave it empty to pay the global rate.'}
+                `Dollars per job the job lake accepts, to $0.001. Leave it empty to pay the global rate${
+                  globalRateMilli === null ? '' : `, ${formatMoney(globalRateMilli)} now`
+                } (Settings > Job Lake).`}
             </p>
           )}
           <button
@@ -646,9 +656,9 @@ function AccountsTable() {
                                     type="text"
                                     inputMode="decimal"
                                     defaultValue={row.reportRateMilli === null ? '' : toDollarInput(row.reportRateMilli)}
-                                    placeholder="Global"
+                                    placeholder={globalRatePlaceholder(globalRateMilli, true)}
                                     disabled={busy}
-                                    title={`${describeReportRate(row.reportRateMilli)}. Type dollars to $0.001, or empty it for the global rate.`}
+                                    title={`${describeReportRate(row.reportRateMilli, globalRateMilli)}. Type dollars to $0.001, or empty it for the global rate.`}
                                     // On blur, like the balance: a write per keystroke
                                     // would store $0.07 on the way to $0.075.
                                     onBlur={(event) => {

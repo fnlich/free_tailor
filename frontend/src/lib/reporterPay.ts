@@ -35,9 +35,23 @@ export function parseReportRate(text: unknown): ReportRateParse {
   return { ok: true, milli: parsed.milli };
 }
 
-/** How a stored rate reads beside its box: its own figure, or the global one. */
-export function describeReportRate(milli: number | null | undefined): string {
-  return typeof milli === 'number' ? `${formatMoney(milli)} per job` : 'The global rate per job';
+/**
+ * How a stored rate reads beside its box: its own figure, or the global one -
+ * named with its figure when the page knows it (Admin -> Accounts' list carries
+ * `globalReportRateMilli`, set on Admin -> Job Lake), so "Global" is never a
+ * word that hides whether a reporter is being paid $0.000.
+ */
+export function describeReportRate(milli: number | null | undefined, globalMilli?: number | null): string {
+  if (typeof milli === 'number') return `${formatMoney(milli)} per job`;
+  return typeof globalMilli === 'number'
+    ? `The global rate per job, ${formatMoney(globalMilli)}`
+    : 'The global rate per job';
+}
+
+/** The placeholder of an empty rate box: the global rate, by its figure when it is known. */
+export function globalRatePlaceholder(globalMilli: number | null | undefined, short = false): string {
+  const word = short ? 'Global' : 'Global rate';
+  return typeof globalMilli === 'number' ? `${word} (${formatMoney(globalMilli)})` : word;
 }
 
 /** The server's MAX_PAYOUT_NOTE. */

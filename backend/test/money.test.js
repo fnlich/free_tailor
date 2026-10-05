@@ -135,6 +135,13 @@ const MONEY_SOURCES = [
   'services/refunds/index.ts',
   'routes/refundRequests.ts',
   'config/reportRate.ts',
+  // The Job Data Lake's rewards, revokes, rate and cap.
+  'database/jobLakeRepository.ts',
+  'services/jobLake/index.ts',
+  'services/jobLake/settings.ts',
+  'services/jobLake/reportRun.ts',
+  'routes/jobLake.ts',
+  'routes/report.ts',
 ];
 
 function withoutComments(source) {
