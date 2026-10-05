@@ -364,6 +364,9 @@ test('parseTailoredResumeContent inserts missing library-matched soft keyword in
   const parsed = parseTailoredResumeContent(content, makeProfile(), jobAnalysis);
 
   assert.match(parsed.summary, /\bAdaptable\b/);
+  // Not "Strengths include ...": the resume may have a Strengths section of
+  // its own now, or none, and the summary must not seem to name it.
+  assert.doesNotMatch(parsed.summary, /Strengths include/);
 });
 
 test('parseTailoredResumeContent does not append unsafe job-analysis fragments to role descriptions', () => {

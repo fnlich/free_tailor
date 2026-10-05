@@ -199,6 +199,21 @@ Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced s
   "collaborate with product and design teams"
 ]`,
       },
+      {
+        name: 'includeStrengths',
+        description: 'Whether the profile shows a Strengths section: "yes" or "no". On "no" the code discards any strengths returned.',
+        sampleValue: 'yes',
+      },
+      {
+        name: 'includeSoftSkills',
+        description: 'Whether the profile shows a Soft Skills section: "yes" or "no". The list itself is decided by code, from the profile first.',
+        sampleValue: 'no',
+      },
+      {
+        name: 'technicalSkillsLayout',
+        description: 'How the profile lays out Technical Skills: "grouped" (under category headings) or "plain" (one list). The skills themselves are decided by code.',
+        sampleValue: 'grouped',
+      },
     ],
   },
   {
@@ -241,6 +256,11 @@ Senior Software Engineer | Acme | 2022 - Present
 
 EDUCATION
 BS Computer Science | State University | 2018`,
+      },
+      {
+        name: 'templateName',
+        description: 'The name given to the template being created.',
+        sampleValue: 'Imported Template',
       },
     ],
   },
@@ -425,23 +445,44 @@ export function validatePromptContent(
   };
 }
 
-function resolveFeatureAllowedVariables(
-  content: string,
-  knownVariables: PromptVariableDefinition[]
-): PromptVariableDefinition[] {
-  const knownByName = new Map(
-    knownVariables.map((variable) => [variable.name, variable] as const)
-  );
+/**
+ * The variables a feature-linked prompt may use: exactly the ones its code
+ * supplies, and all of them.
+ *
+ * It used to be every variable the prompt's own text named, which made the
+ * check a tautology - `unknownVariables` came back empty for a feature prompt
+ * whatever it said. So `[[includeSoftSkillz]]` saved cleanly, and then every
+ * generation that used the record failed with "missing runtime values". Now a
+ * name the code does not supply is refused when it is saved, and listed as
+ * unknown on a record that already holds one (which could never have run).
+ *
+ * Each feature's list is the key set of the function that builds its values
+ * (`buildTailorResumePromptValues` and its siblings in resumeService, and
+ * `buildJobFilterPromptValues`); test/promptVariables.test.js fails when the
+ * two drift. Listing all of them, rather than the ones a record happens to
+ * use, is also what shows an administrator what a prompt CAN use.
+ */
+function featureAllowedVariables(featureKey: PromptFeatureKey): PromptVariableDefinition[] {
+  return cloneAllowedVariables(getPromptFeatureDefinition(featureKey).allowedVariables);
+}
 
-  return extractPromptVariables(content).map((name) => {
-    const known = knownByName.get(name);
-    return known
-      ? { ...known }
-      : {
-          name,
-          sampleValue: buildSampleValue(name),
-        };
-  });
+/** The names a feature's code supplies to its prompt, for the drift test and the docs. */
+export function listPromptFeatureVariableNames(featureKey: PromptFeatureKey): string[] {
+  return getPromptFeatureDefinition(featureKey).allowedVariables.map((variable) => variable.name);
+}
+
+/**
+ * True for a tailor-resume record written before the section switches: one
+ * whose text never mentions `[[includeStrengths]]`, so it still asks for
+ * strengths whatever the profile says.
+ *
+ * Shown on Admin -> Prompts as a note and nothing more. The record keeps
+ * working - the appended override and the post-processing enforce the
+ * switches for it - and its text is the administrator's, which no migration
+ * rewrites.
+ */
+function predatesSectionSwitches(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
+  return featureKey === 'tailor-resume' && !validation.usedVariables.includes('includeStrengths');
 }
 
 function buildSampleValue(variableName: string): string {
@@ -487,6 +528,14 @@ Looking for a backend-leaning engineer with Node.js, TypeScript, PostgreSQL, Doc
     case 'pdfText':
     case 'resumeText':
       return 'Sample resume text content for preview.';
+    case 'templateName':
+      return 'Imported Template';
+    case 'includeStrengths':
+      return 'yes';
+    case 'includeSoftSkills':
+      return 'no';
+    case 'technicalSkillsLayout':
+      return 'grouped';
     default:
       return `<sample:${variableName}>`;
   }
@@ -717,6 +766,7 @@ function toPromptSummary(record: PromptRecord): PromptSummary {
     modelName: record.modelName,
     allowedVariables: record.allowedVariables,
     validation: record.validation,
+    ...(record.predatesSectionSwitches ? { predatesSectionSwitches: true } : {}),
     isBuiltIn: record.isBuiltIn,
     isActiveForFeature: record.isActiveForFeature,
     usage: record.usage,
@@ -736,7 +786,8 @@ async function readBuiltInPromptRecord(definition: PromptFeatureDefinition): Pro
     stored.parsed.modelProvider ?? definition.modelProvider,
     stored.parsed.modelName ?? definition.modelName
   );
-  const allowedVariables = resolveFeatureAllowedVariables(stored.content, definition.allowedVariables);
+  const allowedVariables = featureAllowedVariables(definition.key);
+  const validation = validatePromptContent(stored.content, allowedVariables);
 
   return {
     id: definition.id,
@@ -750,7 +801,8 @@ async function readBuiltInPromptRecord(definition: PromptFeatureDefinition): Pro
     modelProvider: modelSelection?.provider,
     modelName: modelSelection?.modelName,
     allowedVariables,
-    validation: validatePromptContent(stored.content, allowedVariables),
+    validation,
+    ...(predatesSectionSwitches(definition.key, validation) ? { predatesSectionSwitches: true } : {}),
     isBuiltIn: true,
     isActiveForFeature: false,
     usage: definition.usage,
@@ -773,7 +825,7 @@ function readCustomPromptFile(id: string): (StoredPromptMeta & { content: string
   const feature = featureKey ? getPromptFeatureDefinition(featureKey) : null;
   const modelSelection = normalizePromptModelSelection(parsed.modelProvider, parsed.modelName);
   const allowedVariables = feature
-    ? resolveFeatureAllowedVariables(stored.content, feature.allowedVariables)
+    ? featureAllowedVariables(feature.key)
     : normalizeAllowedVariables(Array.isArray(parsed.allowedVariables) ? parsed.allowedVariables : []);
 
   return {
@@ -798,6 +850,7 @@ function readCustomPromptFile(id: string): (StoredPromptMeta & { content: string
 function readCustomPromptRecord(id: string): PromptRecord | null {
   const prompt = readCustomPromptFile(id);
   if (!prompt) return null;
+  const validation = validatePromptContent(prompt.content, prompt.allowedVariables);
 
   return {
     id: prompt.id,
@@ -811,7 +864,8 @@ function readCustomPromptRecord(id: string): PromptRecord | null {
     modelProvider: prompt.modelProvider,
     modelName: prompt.modelName,
     allowedVariables: prompt.allowedVariables,
-    validation: validatePromptContent(prompt.content, prompt.allowedVariables),
+    validation,
+    ...(predatesSectionSwitches(prompt.featureKey, validation) ? { predatesSectionSwitches: true } : {}),
     isBuiltIn: false,
     isActiveForFeature: false,
     usage: prompt.featureKey ? getPromptFeatureDefinition(prompt.featureKey).usage : undefined,
@@ -952,7 +1006,7 @@ function resolveCreateDraftContext(input: PromptCreateInput): {
   return {
     featureKey,
     responseFormat: feature.responseFormat,
-    allowedVariables: cloneAllowedVariables(feature.allowedVariables),
+    allowedVariables: featureAllowedVariables(featureKey),
   };
 }
 
@@ -970,9 +1024,9 @@ export async function createPrompt(input: PromptCreateInput): Promise<PromptReco
     throw new Error('Prompt content is required');
   }
 
-  const allowedVariables = draftContext.featureKey
-    ? resolveFeatureAllowedVariables(content, draftContext.allowedVariables)
-    : draftContext.allowedVariables;
+  // For a feature prompt, the variables its code supplies (see
+  // `featureAllowedVariables`); otherwise the ones the author declared.
+  const allowedVariables = draftContext.allowedVariables;
 
   assertValidPromptDraft(content, allowedVariables);
 
@@ -1022,7 +1076,7 @@ function resolveUpdateDraftContext(
   return {
     featureKey: nextFeatureKey,
     responseFormat: feature.responseFormat,
-    allowedVariables: cloneAllowedVariables(feature.allowedVariables),
+    allowedVariables: featureAllowedVariables(nextFeatureKey),
   };
 }
 
@@ -1042,9 +1096,7 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
       provider: existing?.parsed.modelProvider ?? feature.modelProvider,
       modelName: existing?.parsed.modelName ?? feature.modelName,
     });
-    const allowedVariables = resolveFeatureAllowedVariables(content, feature.allowedVariables);
-
-    assertValidPromptDraft(content, allowedVariables);
+    assertValidPromptDraft(content, featureAllowedVariables(feature.key));
     writeStoredPrompt(id, {
       id,
       featureKey: feature.key,
@@ -1075,9 +1127,7 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
     throw new Error('Prompt name is required');
   }
 
-  const allowedVariables = draftContext.featureKey
-    ? resolveFeatureAllowedVariables(content, draftContext.allowedVariables)
-    : draftContext.allowedVariables;
+  const allowedVariables = draftContext.allowedVariables;
 
   assertValidPromptDraft(content, allowedVariables);
 
@@ -1142,6 +1192,15 @@ export async function deletePrompt(id: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * The text a validate or preview call is about, and the variables it is
+ * checked against - the SAME ones a save would check it against, so a draft
+ * that validates clean is one that saves and runs.
+ *
+ * A draft that is not saved yet has no record to say which feature it belongs
+ * to, so it says so itself (`featureKey`); without one it is checked against
+ * the variables it declares, like an unattached prompt.
+ */
 function resolveDraftSource(
   record: PromptRecord | null,
   input: PromptPreviewInput
@@ -1151,7 +1210,7 @@ function resolveDraftSource(
     return {
       content,
       allowedVariables: record.featureKey
-        ? resolveFeatureAllowedVariables(content, getPromptFeatureDefinition(record.featureKey).allowedVariables)
+        ? featureAllowedVariables(record.featureKey)
         : record.isBuiltIn
           ? record.allowedVariables
           : normalizeAllowedVariables(input.allowedVariables ?? record.allowedVariables),
@@ -1159,7 +1218,10 @@ function resolveDraftSource(
   }
 
   const content = normalizePromptContent(input.content ?? '');
-  const allowedVariables = normalizeAllowedVariables(input.allowedVariables);
+  const featureKey = normalizeFeatureKey(input.featureKey);
+  const allowedVariables = featureKey
+    ? featureAllowedVariables(featureKey)
+    : normalizeAllowedVariables(input.allowedVariables);
 
   if (!content) {
     throw new Error('Prompt content is required');

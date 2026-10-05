@@ -38,8 +38,20 @@ export interface PromptSummary {
   responseFormat: PromptResponseFormat;
   modelProvider?: AIProvider;
   modelName?: string;
+  /**
+   * For a feature prompt, every variable its code supplies - which is also
+   * the only ones it may use; for an unattached one, the ones its author
+   * declared.
+   */
   allowedVariables: PromptVariableDefinition[];
   validation: PromptValidation;
+  /**
+   * Present (true) only on a tailor-resume record whose text never mentions
+   * `[[includeStrengths]]`: written before a profile could switch its Strengths
+   * and Soft Skills sections. Admin -> Prompts says so; the app enforces the
+   * switches for it anyway.
+   */
+  predatesSectionSwitches?: boolean;
   isBuiltIn: boolean;
   isActiveForFeature?: boolean;
   usage?: string;
@@ -75,6 +87,12 @@ export interface PromptUpdateInput {
 
 export interface PromptPreviewInput {
   id?: string;
+  /**
+   * For a draft not saved yet: the feature it is written for, so it is checked
+   * against the variables that feature's code supplies. Ignored with `id`,
+   * where the stored record says.
+   */
+  featureKey?: PromptFeatureKey;
   content?: string;
   allowedVariables?: PromptVariableDefinition[];
   sampleValues?: Record<string, string>;

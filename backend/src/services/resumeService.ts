@@ -25,6 +25,8 @@ import {
   DEFAULT_COVER_LETTER_PROMPT_ID,
   DEFAULT_RESUME_PROMPT_ID,
   getProfileHardSkillOrdering,
+  getProfileResumeSections,
+  type ResumeSectionChoices,
 } from './profileService';
 
 /**
@@ -549,17 +551,62 @@ const HARD_SKILL_CATEGORY_WEIGHT: Record<HardSkillCategory, number> = {
   other: 7,
 };
 /**
- * Appended to the tailor-resume turn.
+ * The profile's three section choices as the tailor-resume prompt reads them.
+ *
+ * Words rather than booleans, because a model reads "Strengths section: no"
+ * the way it was meant and "false" as a value to echo. Kept out of
+ * `profileJson` on purpose: that is the candidate's record, and these are how
+ * the operator wants it drawn (see `buildPromptProfile`).
+ */
+export interface ResumeSectionPromptValues {
+  includeStrengths: 'yes' | 'no';
+  includeSoftSkills: 'yes' | 'no';
+  technicalSkillsLayout: 'grouped' | 'plain';
+}
+
+export function buildResumeSectionPromptValues(profile?: Profile | null): ResumeSectionPromptValues {
+  const sections = getProfileResumeSections(profile);
+  return {
+    includeStrengths: sections.strengths ? 'yes' : 'no',
+    includeSoftSkills: sections.softSkills ? 'yes' : 'no',
+    technicalSkillsLayout: sections.layout === 'flat' ? 'plain' : 'grouped',
+  };
+}
+
+/**
+ * Appended to EVERY tailor-resume turn, whichever prompt record rendered it.
  *
  * The code below decides every skill list from the skill library and the job
  * analysis, then overwrites whatever the model returned. Telling the model to
  * omit those fields is therefore not a preference, it is what keeps the model
- * from spending output tokens on text that is discarded. It lives here rather
- * than in the stored prompt so an admin editing the prompt cannot remove it
- * without also changing the code that depends on it.
+ * from spending output tokens on text that is discarded.
+ *
+ * A function of the profile because the section switches are too. A prompt an
+ * administrator edited before the switches existed - a stored built-in row, or
+ * a per-profile custom one - has never heard of `[[includeStrengths]]` and
+ * still asks for 2-4 strengths and uses them as the keyword overflow. This is
+ * the part of the instruction no edit can remove, so those records obey the
+ * switches too: told here, and enforced again by `parseTailoredResumeContent`
+ * and the render gate whatever the model does.
  */
-const FINAL_SKILL_OVERRIDE = `FINAL SKILL OVERRIDE:
-Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills", "softSkills", "unconfirmedHardSkills", and "unconfirmedSoftSkills" from the JSON output. Technical skills and soft-skill keywords are already decided by code from skillsJSON and keywordsJson.`;
+export function buildFinalSkillOverride(profile?: Profile | null): string {
+  const values = buildResumeSectionPromptValues(profile);
+  const lines = [
+    'FINAL SKILL OVERRIDE:',
+    'Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills", "softSkills", "unconfirmedHardSkills", and "unconfirmedSoftSkills" from the JSON output. Technical skills and soft-skill keywords are already decided by code from skillsJSON and keywordsJson.',
+    'RESUME SECTIONS (these win over anything above that disagrees):',
+    values.technicalSkillsLayout === 'plain'
+      ? 'Technical skills layout: plain. The code lists the technical skills as one list; never restate them as a list.'
+      : 'Technical skills layout: grouped. The code lists the technical skills under category headings; never restate them as a list.',
+    values.includeSoftSkills === 'yes'
+      ? 'Soft skills section: yes. The code lists it from the candidate\'s profile.'
+      : 'Soft skills section: no.',
+    values.includeStrengths === 'yes'
+      ? 'Strengths section: yes. Return 2-4 "strengths" items, each {"title", "description"}.'
+      : 'Strengths section: no. Return "strengths": [] and write no strengths. Strengths are not an overflow bucket: work a checklist item that does not fit naturally into the summary or an achievement bullet, or leave it out.',
+  ];
+  return lines.join('\n');
+}
 
 function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
   return getProfileHardSkillOrdering(profile) === 'job-priority';
@@ -1050,6 +1097,70 @@ function buildLibraryAugmentedPromptLists(jobAnalysis: JobAnalysis): {
   };
 }
 
+/**
+ * A PLAIN (flat) tailored skills list: the library skills the posting names,
+ * and the candidate's own skills that are relevant to it - nothing else.
+ *
+ * The grouped layout pads its headings from the library (five headings, five
+ * skills apiece) because a category grid with one entry under a heading looks
+ * broken. A plain list has no such shape to fill, and padding it is how a
+ * profile claiming TypeScript and React came out listing Java, Ruby on Rails
+ * and AWS Macie for a TypeScript and Docker posting - skills nobody claimed,
+ * on a resume they would have to defend in an interview.
+ *
+ * "Relevant" is decided two ways, and both are about the candidate's OWN
+ * skills:
+ *
+ * - the posting names it (its text, or a skill list its analysis extracted);
+ * - it sits in the same library category as a skill the posting names - a
+ *   posting asking for PostgreSQL makes the candidate's other databases
+ *   relevant, and one asking for Docker their cloud skills.
+ *
+ * A profile skill the library does not know has no category, so only the
+ * first applies to it. Spelled as the library spells it where the library
+ * knows it, so the list does not carry "react" beside "Docker".
+ *
+ * A posting that names no skill the library knows - a management role, a
+ * stack the library has never heard of - leaves both empty, and an empty list
+ * is a "Technical Skills" heading over nothing. Then the list is the
+ * candidate's own library-known skills, exactly what the untailored preview
+ * in the editor showed them: still nothing they did not claim.
+ */
+function buildPlainTailoredHardSkills(jobAnalysis: JobAnalysis, profile?: Profile): string[] {
+  const jobSkills = buildLibraryAugmentedPromptLists(jobAnalysis).promptSkills;
+  if (!profile) return jobSkills;
+
+  const sourceText = getTailoringSourceText(jobAnalysis);
+  const analysisSkillKeys = new Set(
+    getHardSkillChecklist(jobAnalysis).map((skill) => canonicalSkillKey(skill)).filter(Boolean)
+  );
+  const jobCategories = new Set(
+    jobSkills
+      .map((skill) => getHardSkillRecord(skill)?.category)
+      .filter((category): category is LibraryHardSkillCategory => Boolean(category))
+  );
+
+  const claimed = normalizeSkillsList([
+    ...(profile.skills ?? []),
+    ...(profile.skillCategories ?? []).flatMap((group) => group?.skills ?? []),
+  ]);
+  const relevant = claimed
+    .map((skill) => {
+      const record = getHardSkillRecord(skill);
+      const named = containsLibraryTerm(sourceText, skill) || analysisSkillKeys.has(canonicalSkillKey(skill));
+      const sameArea = Boolean(record && jobCategories.has(record.category));
+      if (!named && !sameArea) return '';
+      return record?.skill ?? skill;
+    })
+    .filter(Boolean);
+
+  const chosen = removeBroaderCoveredSkills([...jobSkills, ...relevant]);
+  if (chosen.length > 0) return chosen;
+  return removeBroaderCoveredSkills(
+    claimed.map((skill) => getHardSkillRecord(skill)?.skill ?? '').filter(Boolean)
+  );
+}
+
 function getMatchedLibrarySoftSkills(jobAnalysis?: JobAnalysis): string[] {
   if (!jobAnalysis) return [];
   return getLibraryMatches(getTailoringSourceText(jobAnalysis), softSkills);
@@ -1067,20 +1178,56 @@ function getResumePlainText(content: Pick<TailoredContent, 'summary' | 'experien
     .join('\n');
 }
 
+/**
+ * The sentences `ensureMatchedSoftKeywordsInSummary` writes, in both the
+ * wording it uses now and the one it used before ("Strengths include ..."),
+ * so a summary carrying either can be put back the way the model wrote it.
+ */
+const INJECTED_SOFT_SKILL_SENTENCES = [
+  /\s*Working style: [^.]*\./g,
+  /\s*Strengths include [^.]*? across changing engineering contexts\./g,
+];
+
+function removeInjectedSoftSkillSentence(summary: string): string {
+  return INJECTED_SOFT_SKILL_SENTENCES.reduce((text, pattern) => text.replace(pattern, ''), summary).trim();
+}
+
+/**
+ * Puts the posting's library-matched soft skills into the summary when the
+ * resume has no Soft Skills section to carry them.
+ *
+ * Only then: with the section switched on they are listed there, and saying
+ * them twice is the keyword stuffing the prompt forbids. "Switched on" means
+ * on for the template the resume is drawn with - callers pass the profile
+ * through `profileForTemplate`, so on a template with no Soft Skills section
+ * the keywords still land here rather than in a list that never prints. And not as
+ * "Strengths include ...", which is what it said before the Strengths section
+ * could be shown - a summary naming "Strengths" over a resume with a
+ * different Strengths section, or none, reads as a mistake.
+ *
+ * A sentence this function wrote earlier is taken out first, so content
+ * tailored with the section off and finalised with it on - a preview held by
+ * the page across the switch - loses it, and running this twice on the same
+ * content adds it once.
+ */
 function ensureMatchedSoftKeywordsInSummary(
   summary: string,
   experience: TailoredContent['experience'],
-  jobAnalysis?: JobAnalysis
+  jobAnalysis: JobAnalysis | undefined,
+  softSkillsSection: boolean
 ): string {
+  const base = removeInjectedSoftSkillSentence(summary);
+  if (softSkillsSection) return base;
+
   const matchedSoftSkills = getMatchedLibrarySoftSkills(jobAnalysis);
-  if (matchedSoftSkills.length === 0) return summary;
+  if (matchedSoftSkills.length === 0) return base;
 
-  const resumeText = getResumePlainText({ summary, experience });
+  const resumeText = getResumePlainText({ summary: base, experience });
   const missingSoftSkills = matchedSoftSkills.filter((skill) => !containsLibraryTerm(resumeText, skill));
-  if (missingSoftSkills.length === 0) return summary;
+  if (missingSoftSkills.length === 0) return base;
 
-  const sentence = `Strengths include ${missingSoftSkills.join(', ')} across changing engineering contexts.`;
-  return [summary.trim().replace(/\.$/, ''), sentence]
+  const sentence = `Working style: ${missingSoftSkills.join(', ')}.`;
+  return [base.replace(/\.$/, ''), sentence]
     .filter(Boolean)
     .join('. ');
 }
@@ -1223,23 +1370,6 @@ function resolveHardSkill(skill: string): { display: string; category: HardSkill
   }
 
   return null;
-}
-
-function normalizeAllowedHardSkills(skills: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const raw of skills) {
-    const resolved = resolveHardSkill(raw);
-    if (!resolved) continue;
-    const display = resolved.display;
-    const key = display.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(display);
-  }
-
-  return result;
 }
 
 function getHardSkillPriority(skill: string): number {
@@ -1539,39 +1669,55 @@ function inferAtsSoftSkillsFromAnalysis(jobAnalysis?: JobAnalysis): string[] {
   return inferAtsSoftSkillsFromText(text);
 }
 
+/**
+ * Where each skill the posting names comes in its own order, keyed the way
+ * `prioritizeHardSkills` looks it up - by canonical key, so the posting's
+ * "node.js" and the library's "Node.js" are the same skill.
+ */
 function buildJobDescriptionSkillPriority(jobAnalysis?: JobAnalysis): Map<string, number> {
-  const normalized = normalizeAllowedHardSkills(getHardSkillChecklist(jobAnalysis));
   const priorityMap = new Map<string, number>();
-
-  normalized.forEach((skill, index) => {
-    priorityMap.set(skill.toLowerCase(), index);
-  });
-
+  for (const skill of normalizeSkillsList(getHardSkillChecklist(jobAnalysis))) {
+    const key = canonicalSkillKey(skill);
+    if (key && !priorityMap.has(key)) priorityMap.set(key, priorityMap.size);
+  }
   return priorityMap;
 }
 
+/** The in-code category and rank used to order a skill, whatever it is spelled like. */
+function hardSkillOrderingFacts(skill: string): { category: HardSkillCategory; priority: number } {
+  const alias = normalizeHardSkillAlias(skill);
+  return HARD_SKILL_ALIAS_MAP.get(alias) ?? { category: inferHardSkillCategory(alias), priority: Number.MAX_SAFE_INTEGER };
+}
+
+/**
+ * The "job priority" ordering: by area, then the posting's own order, then
+ * the library's.
+ *
+ * It ORDERS and nothing else. It used to run every skill through
+ * `resolveHardSkill`, a filter for model-written text, which drops anything
+ * with a full stop in it (Node.js, Next.js, Vue.js), most multi-word library
+ * skills, and renamed React to React.js - so a profile that chose this
+ * ordering lost skills the posting asked for, and a plain list for a posting
+ * naming Node.js, Next.js and React came out holding one skill. The list it
+ * is given is already decided (`normalizeTailoredContent`); the order is the
+ * only thing this setting is for.
+ */
 function prioritizeHardSkills(skills: string[], jobAnalysis?: JobAnalysis): string[] {
-  const normalized = normalizeAllowedHardSkills(skills);
-  const originalOrder = new Map<string, number>();
+  const normalized = normalizeSkillsList(skills);
+  const originalOrder = new Map(normalized.map((skill, index) => [skill.toLowerCase(), index] as const));
   const jdPriority = buildJobDescriptionSkillPriority(jobAnalysis);
 
-  normalized.forEach((skill, index) => {
-    originalOrder.set(skill.toLowerCase(), index);
-  });
-
   return [...normalized].sort((a, b) => {
-    const aResolved = resolveHardSkill(a);
-    const bResolved = resolveHardSkill(b);
-    const aCategory = aResolved?.category ?? 'other';
-    const bCategory = bResolved?.category ?? 'other';
-    const categoryDiff = HARD_SKILL_CATEGORY_WEIGHT[aCategory] - HARD_SKILL_CATEGORY_WEIGHT[bCategory];
+    const aFacts = hardSkillOrderingFacts(a);
+    const bFacts = hardSkillOrderingFacts(b);
+    const categoryDiff = HARD_SKILL_CATEGORY_WEIGHT[aFacts.category] - HARD_SKILL_CATEGORY_WEIGHT[bFacts.category];
 
     if (categoryDiff !== 0) {
       return categoryDiff;
     }
 
-    const aJdOrder = jdPriority.get(a.toLowerCase());
-    const bJdOrder = jdPriority.get(b.toLowerCase());
+    const aJdOrder = jdPriority.get(canonicalSkillKey(a));
+    const bJdOrder = jdPriority.get(canonicalSkillKey(b));
     const aInJd = typeof aJdOrder === 'number';
     const bInJd = typeof bJdOrder === 'number';
 
@@ -1588,8 +1734,7 @@ function prioritizeHardSkills(skills: string[], jobAnalysis?: JobAnalysis): stri
       return libraryPriorityDiff;
     }
 
-    const templatePriorityDiff = (aResolved?.priority ?? Number.MAX_SAFE_INTEGER)
-      - (bResolved?.priority ?? Number.MAX_SAFE_INTEGER);
+    const templatePriorityDiff = aFacts.priority - bFacts.priority;
     if (templatePriorityDiff !== 0) {
       return templatePriorityDiff;
     }
@@ -1829,9 +1974,18 @@ function promptJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAnalysis, profile?: Profile): TailoredContent {
+function normalizeTailoredContent(
+  content: TailoredContent,
+  jobAnalysis: JobAnalysis | undefined,
+  profile: Profile | undefined,
+  sections: ResumeSectionChoices
+): TailoredContent {
+  // Grouped pads its headings from the library, as it always has; plain does
+  // not pad at all (see `buildPlainTailoredHardSkills`).
   const codeDecidedHardSkills = jobAnalysis
-    ? flattenCategorizedSkills(buildLibraryAugmentedPromptLists(jobAnalysis).skills)
+    ? sections.layout === 'flat'
+      ? buildPlainTailoredHardSkills(jobAnalysis, profile)
+      : flattenCategorizedSkills(buildLibraryAugmentedPromptLists(jobAnalysis).skills)
     : normalizeSkillsList(content.hardSkills ?? content.skills ?? []);
 
   const atsSoftPriority = inferAtsSoftSkillsFromAnalysis(jobAnalysis);
@@ -1907,41 +2061,62 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     ...getIndustryTerms(jobAnalysis),
   ]).filter((keyword) => keyword.length >= 3);
 
-  const fallbackStrengths = normalizeSafeResponsibilityList(getResponsibilities(jobAnalysis))
-    .slice(0, 4)
-    .map((item, index) => ({
-      title: `Core Strength ${index + 1}`,
-      description: `Demonstrated impact in ${item.trim().replace(/\.$/, '')}.`,
-    }));
+  // The model's strengths, each made safe: a title is required (a strength
+  // with no name is not one, and inventing "Core Strength 2" for it is what
+  // this used to do), a sentence written from the employer's side is dropped
+  // rather than the whole description replaced with filler, and a description
+  // that names no checklist keyword gets two - the job the section has as the
+  // overflow bucket.
+  //
+  // Except an entry that IS one of the candidate's own, as typed. This step
+  // also runs on content it already produced - a preview sent back to
+  // /resume/generate, /resume/preview or the queue - and there the fallback
+  // below (their own strengths, verbatim) arrives looking like the model's.
+  // Treated as the model's, it gained a keyword sentence and lost its untitled
+  // entries on the second pass, so the resume differed from the preview the
+  // person approved. Kept as typed, every pass gives the same answer.
+  const own = ownStrengths(profile);
+  const isOwnStrength = (strength: { title: string; description: string }) =>
+    own.some((entry) => entry.title === strength.title && entry.description === strength.description);
+  const modelStrengths = (Array.isArray(content.strengths) ? content.strengths : [])
+    .map((strength) => {
+      const typed = {
+        title: typeof strength?.title === 'string' ? strength.title.trim() : '',
+        description: typeof strength?.description === 'string' ? strength.description.trim() : '',
+      };
+      if (isOwnStrength(typed)) return { ...typed, own: true };
+      const title = capitalizeFirstCharacter(
+        stripBoldTags(typeof strength?.title === 'string' ? strength.title : '').replace(/\s+/g, ' ')
+      );
+      const rawDescription = typeof strength?.description === 'string' ? strength.description : '';
+      const description = stripUnsafeResumeSentences(stripBoldTags(rawDescription), undefined)
+        .replace(/\.$/, '');
+      return { title, description, own: false };
+    })
+    .filter((strength) => strength.own || (strength.title && !isUnsafeJobPostingPhrase(strength.title)))
+    .map((strength, index) => {
+      if (strength.own || !strength.description) {
+        return { title: strength.title, description: strength.description };
+      }
+      const keywordA = strengthKeywordPool[index % Math.max(strengthKeywordPool.length, 1)] ?? '';
+      const keywordB = strengthKeywordPool[(index + 7) % Math.max(strengthKeywordPool.length, 1)] ?? '';
+      const keywordSnippet = uniqueCaseInsensitive([keywordA, keywordB].filter(Boolean)).join(' and ');
+      const hasKeyword = strengthKeywordPool.some((kw) =>
+        strength.description.toLowerCase().includes(kw.toLowerCase())
+      );
+      const suffix = hasKeyword || !keywordSnippet ? '.' : `. Focused on ${keywordSnippet}.`;
+      return { title: strength.title, description: `${strength.description}${suffix}` };
+    });
 
-  const baseStrengths = (content.strengths ?? []).length > 0 ? (content.strengths ?? []) : fallbackStrengths;
-  const normalizedStrengths = baseStrengths.map((strength, index) => {
-    const title = capitalizeFirstCharacter(
-      (strength?.title ?? `Core Strength ${index + 1}`).trim() || `Core Strength ${index + 1}`
-    );
-    const rawDescription = (strength?.description ?? '').trim();
-    const keywordA = strengthKeywordPool[index % Math.max(strengthKeywordPool.length, 1)] ?? '';
-    const keywordB = strengthKeywordPool[(index + 7) % Math.max(strengthKeywordPool.length, 1)] ?? '';
-    const keywordSnippet = [keywordA, keywordB]
-      .filter(Boolean)
-      .join(' and ');
-
-    const normalizedDescription = rawDescription && !isUnsafeJobPostingPhrase(rawDescription)
-      ? stripBoldTags(rawDescription).replace(/\s+/g, ' ').replace(/\.$/, '')
-      : 'Demonstrated impact in complex engineering environments';
-
-    const hasKeyword = strengthKeywordPool.some((kw) =>
-      normalizedDescription.toLowerCase().includes(kw.toLowerCase())
-    );
-    const suffix = hasKeyword || !keywordSnippet
-      ? '.'
-      : `. Focused on ${keywordSnippet}.`;
-
-    return {
-      title,
-      description: `${normalizedDescription}${suffix}`,
-    };
-  });
+  // Switched off, there are none, whatever the model sent - an admin's prompt
+  // written before the switch still asks for them. Switched on, the model's,
+  // and when it wrote none the candidate's own, exactly as they typed them:
+  // their words beat anything made up here.
+  const strengths = !sections.strengths
+    ? []
+    : modelStrengths.length > 0
+      ? modelStrengths
+      : own;
 
   const normalizedSummary = limitSummaryNumericMentions(
     normalizeSummary(
@@ -1952,7 +2127,8 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   const summaryWithMatchedSoftKeywords = ensureMatchedSoftKeywordsInSummary(
     normalizedSummary,
     normalizedExperience,
-    jobAnalysis
+    jobAnalysis,
+    sections.softSkills
   );
 
   return {
@@ -1962,9 +2138,59 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     experience: normalizedExperience,
     hardSkills,
     softSkills: softLimited,
-    strengths: normalizedStrengths,
+    strengths,
     // Keep legacy field aligned with hard skills for older templates/components.
     skills: hardSkills,
+  };
+}
+
+/** The profile's own strengths as they were typed, minus any with nothing in them. */
+function ownStrengths(profile?: Profile): TailoredContent['strengths'] {
+  return (profile?.strengths ?? [])
+    .map((strength) => ({
+      title: typeof strength?.title === 'string' ? strength.title.trim() : '',
+      description: typeof strength?.description === 'string' ? strength.description.trim() : '',
+    }))
+    .filter((strength) => strength.title || strength.description);
+}
+
+/**
+ * The soft skills a tailored resume lists, when its Soft Skills section is on.
+ *
+ * The candidate's own list first, verbatim and in their order - it is the one
+ * thing here they chose - then what the posting asks for that the library
+ * confirms, up to the usual ten. The generic top-up (Accountability,
+ * Adaptability, ...) only fills a list for somebody who entered none: with
+ * their own words available, adding stock ones would put words in their mouth.
+ *
+ * Returns the posting's unconfirmed candidates too, so the builder can still
+ * offer to add them to the library; minus any the candidate already lists.
+ */
+function decideSectionSoftSkills(
+  profile: Profile | undefined,
+  jobDerived: string[],
+  sourceText: string
+): { softSkills: string[]; unconfirmedSoftSkills: string[] } {
+  const own = normalizeSkillsList(profile?.softSkills);
+  const ownKeys = own.map((skill) => skill.toLowerCase());
+  const { confirmedSkills, unconfirmedSkills } = reconcileSkillBuckets({
+    extractedSkills: extractSoftSkills(sourceText),
+    modelSkills: jobDerived,
+    referenceSkills: softSkills,
+    supplementSkills: own.length > 0 ? [] : supplimentSoftSkills,
+    minimumCount: own.length > 0 ? 0 : 5,
+    finalizeSkills: finalizeSoftSkills,
+  });
+  // "Communication" adds nothing beside the candidate's own "Clear written
+  // communication", so a posting's skill already inside one of theirs is left out.
+  const coveredByOwn = (skill: string) => {
+    const key = skill.toLowerCase();
+    return ownKeys.some((ownKey) => ownKey.includes(key));
+  };
+  return {
+    softSkills: uniqueCaseInsensitive([...own, ...confirmedSkills.filter((skill) => !coveredByOwn(skill))])
+      .slice(0, MAX_SOFT_SKILLS),
+    unconfirmedSoftSkills: unconfirmedSkills.filter((skill) => !coveredByOwn(skill)),
   };
 }
 
@@ -2105,6 +2331,13 @@ export function buildTailorResumePromptValues(
       jobAnalysis.jobMeta.industry,
       jobAnalysis.jobMeta.department,
     ]),
+    // The profile's section switches and layout, as words. Separate variables
+    // rather than fields of profileJson (which never carries profileSettings),
+    // and referenced after it in the shipped prompt so the cacheable
+    // instruction prefix in front of [[profileJson]] stays byte-identical. A
+    // prompt record that never mentions them loses nothing: the same three
+    // facts travel in `buildFinalSkillOverride`, appended to every turn.
+    ...buildResumeSectionPromptValues(profile),
   };
 
   return promptValues;
@@ -2117,25 +2350,24 @@ export function parseTailoredResumeContent(
 ): TailoredContent {
   const jsonText = extractJSON(content);
   const parsed = JSON.parse(jsonText) as TailoredContent;
-  const finalResult = normalizeTailoredContent(parsed, jobAnalysis, profile);
-  const tailoringSourceText = getTailoringSourceText(jobAnalysis);
+  // Read from the profile as it is NOW. This also runs on content a client
+  // held from an earlier preview (/resume/generate, and a queued task), so a
+  // switch flipped or a layout changed since is what the content comes out as.
+  const sections = getProfileResumeSections(profile);
+  const finalResult = normalizeTailoredContent(parsed, jobAnalysis, profile, sections);
 
-  const {
-    confirmedSkills: confirmedSoftSkills,
-    unconfirmedSkills: unconfirmedSoftSkills,
-  } = reconcileSkillBuckets({
-    extractedSkills: extractSoftSkills(tailoringSourceText),
-    modelSkills: finalResult.softSkills,
-    referenceSkills: softSkills,
-    supplementSkills: supplimentSoftSkills,
-    minimumCount: 5,
-    finalizeSkills: finalizeSoftSkills,
-  });
+  // Switched off, the section is empty and nothing is offered for the library
+  // either: asking somebody to confirm soft skills for a section their resume
+  // does not show is a question about nothing.
+  const soft = sections.softSkills
+    ? decideSectionSoftSkills(profile, finalResult.softSkills, getTailoringSourceText(jobAnalysis))
+    : { softSkills: [], unconfirmedSoftSkills: [] };
+
   return {
     ...finalResult,
-    softSkills: confirmedSoftSkills,
+    softSkills: soft.softSkills,
     unconfirmedHardSkills: [],
-    unconfirmedSoftSkills,
+    unconfirmedSoftSkills: soft.unconfirmedSoftSkills,
     skills: finalResult.hardSkills,
   };
 }
@@ -2180,7 +2412,7 @@ export async function tailorResume(
     // providers taking a single flat string, so the instruction was silently
     // absent on the structured path - and the code below assumes the model
     // obeyed it, because skills are decided here, not by the model.
-    appendToUserBody: FINAL_SKILL_OVERRIDE,
+    appendToUserBody: buildFinalSkillOverride(profile),
     // A resume's work runs on the model it is charged at (see runChoiceWins).
     runChoiceWins: true,
     signal,
@@ -2196,6 +2428,21 @@ export async function tailorResume(
   }
 }
 
+export function buildCoverLetterPromptValues(
+  profile: Profile,
+  companyName: string,
+  role: string
+): Record<string, string> {
+  return {
+    // The same projection the tailoring call uses. A cover letter needs the
+    // person's history and nothing about this installation - and it certainly
+    // does not need their phone number, which is what the whole record carried.
+    profileJson: promptJson(buildPromptProfile(profile)),
+    companyName,
+    role,
+  };
+}
+
 /**
  * Generate a cover letter body when no job description is provided.
  * Returns only the body text (no salutation or sign-off).
@@ -2208,14 +2455,7 @@ export async function generateCoverLetter(
   signal?: AbortSignal
 ): Promise<string> {
   const promptId = getProfileCoverLetterPromptId(profile);
-  const promptValues = {
-    // The same projection the tailoring call uses. A cover letter needs the
-    // person's history and nothing about this installation - and it certainly
-    // does not need their phone number, which is what the whole record carried.
-    profileJson: promptJson(buildPromptProfile(profile)),
-    companyName,
-    role,
-  };
+  const promptValues = buildCoverLetterPromptValues(profile, companyName, role);
   const content = await createPromptCompletion({
     promptId,
     callSite: DEFAULT_COVER_LETTER_PROMPT_ID,
@@ -2235,16 +2475,17 @@ export async function generateCoverLetter(
   return content.trim();
 }
 
+export function buildExtractTemplatePromptValues(pdfText: string, templateName: string): Record<string, string> {
+  return { pdfText, templateName };
+}
+
 export async function extractTemplateFromPDF(
   pdfText: string,
   templateName: string,
   provider: AIProvider = DEFAULT_PROVIDER,
   signal?: AbortSignal
 ): Promise<{ html: string; css: string; sections: string[] }> {
-  const promptValues = {
-    pdfText,
-    templateName,
-  };
+  const promptValues = buildExtractTemplatePromptValues(pdfText, templateName);
   const content = await createPromptCompletion({
     promptId: 'extract-template-from-pdf',
     signal,
@@ -2268,14 +2509,16 @@ export async function extractTemplateFromPDF(
   }
 }
 
+export function buildExtractProfilePromptValues(resumeText: string): Record<string, string> {
+  return { resumeText };
+}
+
 export async function extractProfileFromResume(
   resumeText: string,
   provider: AIProvider = DEFAULT_PROVIDER,
   signal?: AbortSignal
 ): Promise<Omit<Profile, 'id' | 'createdAt' | 'updatedAt'>> {
-  const promptValues = {
-    resumeText,
-  };
+  const promptValues = buildExtractProfilePromptValues(resumeText);
   const content = await createPromptCompletion({
     promptId: 'extract-profile-from-resume',
     signal,

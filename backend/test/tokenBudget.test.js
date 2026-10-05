@@ -170,7 +170,32 @@ test('the whole tailoring payload stays under budget', () => {
   // A ceiling rather than an exact figure, so ordinary edits do not fail this -
   // but a change that puts the whole profile record back would sail past it.
   // Measured at 6,942 characters for this fixture shape, down from 9,365.
-  const values = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
-  const total = Object.values(values).reduce((sum, value) => sum + value.length, 0);
-  assert.ok(total < 8_000, `the tailoring payload has grown to ${total} characters`);
+  // Every value counts, the section switches' included.
+  for (const sections of [{}, { includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat' }]) {
+    const fixture = profileFixture();
+    const values = buildTailorResumePromptValues(
+      { ...fixture, profileSettings: { ...fixture.profileSettings, ...sections } },
+      ANALYSIS
+    );
+    const total = Object.values(values).reduce((sum, value) => sum + value.length, 0);
+    assert.ok(total < 8_000, `the tailoring payload has grown to ${total} characters`);
+  }
+});
+
+test('the section switches travel as their own words, never as profile settings', () => {
+  // They are how the operator wants the resume drawn, which is exactly the
+  // kind of thing `profileSettings` holds and the model is not sent - so they
+  // go as three short variables instead, after [[profileJson]], and the
+  // profile projection stays what it was.
+  const fixture = profileFixture({ softSkills: ['Persistence'] });
+  const values = buildTailorResumePromptValues(
+    { ...fixture, profileSettings: { ...fixture.profileSettings, includeStrengths: true, includeSoftSkills: true } },
+    ANALYSIS
+  );
+  assert.equal(values.includeStrengths, 'yes');
+  assert.equal(values.includeSoftSkills, 'yes');
+  assert.equal(values.technicalSkillsLayout, 'grouped');
+  assert.doesNotMatch(values.profileJson, /includeStrengths|includeSoftSkills|technicalSkillsLayout/);
+  // The list itself is decided by code, so it does not travel either.
+  assert.doesNotMatch(values.profileJson, /Persistence/);
 });

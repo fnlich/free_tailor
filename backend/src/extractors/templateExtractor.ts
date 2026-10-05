@@ -7,6 +7,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { getStaticTemplatesDir } from '../config/staticPaths';
 import {
   buildImportedTemplates,
+  inferTemplateCapabilities,
+  inferTemplateSkillsLayouts,
+  normalizeSkillsLayouts,
   TemplateImportError,
   type ImportedTemplate,
 } from '../services/templateImport';
@@ -53,13 +56,26 @@ export async function extractAndSaveTemplate(
     htmlContent: html,
     cssContent: css || '',
     sections,
+    // Whatever markup the model wrote, read the way any stored template is.
+    skillsLayouts: inferTemplateSkillsLayouts(html),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 
   saveStoredTemplate(template);
 
-  return template;
+  return readBackSaved(template);
+}
+
+/**
+ * What a mutation hands back: the template as a read returns it, not the
+ * object that was saved. A read is what derives `supportsSoftSkills` and
+ * `supportsStrengths` from the markup (they are never stored), so a response
+ * built from the saved object lacked them - or, after a manual rebuild, carried
+ * the OLD markup's values - while the next GET said otherwise.
+ */
+async function readBackSaved(template: Template): Promise<Template> {
+  return (await getTemplateById(template.id)) ?? template;
 }
 
 function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
@@ -95,6 +111,13 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
     htmlContent,
     cssContent: typeof record.cssContent === 'string' ? record.cssContent : '',
     sections,
+    // A read-time default rather than a migration. Every row written before
+    // layouts existed - imports, PDF extractions, manual templates, legacy
+    // copies - has none, built-ins never live in the table at all, and the
+    // inference has to exist anyway for the next import. A list the row does
+    // carry (an admin's reclassification, an imported file's) is kept.
+    skillsLayouts: normalizeSkillsLayouts(record.skillsLayouts) ?? inferTemplateSkillsLayouts(htmlContent),
+    ...inferTemplateCapabilities(htmlContent),
     createdAt,
     updatedAt,
     ...(record.manualConfig && typeof record.manualConfig === 'object'
@@ -110,11 +133,13 @@ function normalizeTemplateId(id: string): string {
 function applyTemplateOverride(template: Template): Template {
   const override = getTemplateOverride(template.id);
   if (!override) return template;
+  const skillsLayouts = normalizeSkillsLayouts(override.skillsLayouts);
   return {
     ...template,
     ...(typeof override.name === 'string' && override.name.trim() ? { name: override.name } : {}),
     ...(typeof override.description === 'string' ? { description: override.description } : {}),
     ...(typeof override.disabled === 'boolean' ? { disabled: override.disabled } : {}),
+    ...(skillsLayouts ? { skillsLayouts } : {}),
     updatedAt: override.updatedAt,
   };
 }
@@ -187,7 +212,10 @@ export async function getTemplateById(id: string): Promise<Template | null> {
   return template;
 }
 
-export async function updateTemplate(id: string, updates: Partial<Pick<Template, 'disabled' | 'name' | 'description'>>): Promise<Template | null> {
+export async function updateTemplate(
+  id: string,
+  updates: Partial<Pick<Template, 'disabled' | 'name' | 'description' | 'skillsLayouts'>>
+): Promise<Template | null> {
   const template = await getTemplateById(id);
   if (!template) return null;
 
@@ -208,7 +236,7 @@ export async function updateTemplate(id: string, updates: Partial<Pick<Template,
     updatedAt,
   };
   saveStoredTemplate(updated);
-  return updated;
+  return readBackSaved(updated);
 }
 
 /**
@@ -249,7 +277,7 @@ export async function uploadJsonTemplates(
   for (const entry of imported) {
     saveStoredTemplate(entry.template);
   }
-  return imported;
+  return Promise.all(imported.map(async (entry) => ({ ...entry, template: await readBackSaved(entry.template) })));
 }
 
 export async function deleteTemplate(id: string): Promise<boolean> {
@@ -293,11 +321,20 @@ export interface ManualTemplateConfig {
   sectionStyles?: Record<string, Record<string, { color?: string; fontSizePt?: number; fontFamily?: string; fontWeight?: string }>>;
 }
 
-const MANUAL_SECTIONS = ['summary', 'experience', 'hardSkills', 'education'] as const;
+/**
+ * Every section the manual builder can place, in the order the editor offers
+ * them (frontend ManualTemplateEditor's SECTIONS - keep the two in step).
+ *
+ * Strengths and Soft Skills were offered by the editor and silently dropped
+ * here, so a template built with them had neither. Their blocks are guarded on
+ * the list having entries, so a profile with the sections switched off - the
+ * default - renders exactly what a template without them would.
+ */
+const MANUAL_SECTIONS = ['summary', 'experience', 'strengths', 'hardSkills', 'softSkills', 'education'] as const;
 
 /** Default split when switching to 2 columns; any section can go in either column */
 const DEFAULT_LEFT = ['summary', 'experience'] as const;
-const DEFAULT_RIGHT = ['hardSkills', 'education'] as const;
+const DEFAULT_RIGHT = ['strengths', 'hardSkills', 'softSkills', 'education'] as const;
 
 function buildManualTemplateHTML(config: ManualTemplateConfig): string {
   const {
@@ -326,6 +363,8 @@ function buildManualTemplateHTML(config: ManualTemplateConfig): string {
     description: '.description',
     achievements: '.achievements',
     skillText: '.skill-box',
+    strengthTitle: '.strength-title',
+    strengthDescription: '.strength-description',
     degree: '.degree',
     institution: '.institution',
     date: '.edu-date',
@@ -431,6 +470,34 @@ function buildManualTemplateHTML(config: ManualTemplateConfig): string {
           {{/if}}
         </div>
       </div>`;
+      case 'strengths':
+        // The section class is what the renderer strips when a profile has
+        // Strengths switched off; the guard keeps an empty list from leaving a
+        // bare heading when it is on.
+        return `
+      {{#if strengths.length}}
+      <div class="section section-strengths"${dataSection}>
+        <div class="section-title">Strengths</div>
+        {{#each strengths}}
+        <div class="strength-item">
+          {{#if title}}<div class="strength-title">{{title}}</div>{{/if}}
+          {{#if description}}<div class="strength-description">{{description}}</div>{{/if}}
+        </div>
+        {{/each}}
+      </div>
+      {{/if}}`;
+      case 'softSkills':
+        return `
+      {{#if softSkills.length}}
+      <div class="section section-soft-skills"${dataSection}>
+        <div class="section-title">Soft Skills</div>
+        <div class="skills-grid">
+          {{#each softSkills}}
+          <div class="skill-box">{{this}}</div>
+          {{/each}}
+        </div>
+      </div>
+      {{/if}}`;
       case 'education':
         return `
       <div class="section"${dataSection}>
@@ -553,6 +620,9 @@ function buildManualTemplateHTML(config: ManualTemplateConfig): string {
       border-bottom: 1px solid #ddd;
       text-align: center;
     }
+    .strength-item { margin-bottom: 5px; }
+    .strength-title { font-weight: ${st.weight}; font-size: ${p.size}pt; font-family: ${st.font}; color: ${st.color}; }
+    .strength-description { font-size: ${p.size - 0.5}pt; font-family: ${p.font}; color: ${p.color}; line-height: 1.3; }
     .education-item { margin-bottom: 6px; }
     .degree { font-weight: ${st.weight}; font-size: ${st.size}pt; font-family: ${st.font}; color: ${st.color}; }
     .institution { font-size: ${p.size - 1}pt; font-family: ${p.font}; color: #555; }
@@ -616,6 +686,10 @@ export async function createManualTemplate(config: ManualTemplateConfig): Promis
     htmlContent: buildManualTemplateHTML(fullConfig),
     cssContent: '',
     sections: sectionOrder,
+    // Its skills block is a grid of one box per entry, which the compile step
+    // turns into category cells for categorized and leaves as one box per
+    // skill for flat - so both are offered.
+    skillsLayouts: ['categorized', 'flat'],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     manualConfig: fullConfig as Template['manualConfig'],
@@ -623,7 +697,7 @@ export async function createManualTemplate(config: ManualTemplateConfig): Promis
 
   saveStoredTemplate(template);
 
-  return template;
+  return readBackSaved(template);
 }
 
 export async function updateManualTemplate(id: string, config: ManualTemplateConfig): Promise<Template | null> {
@@ -658,6 +732,8 @@ export async function updateManualTemplate(id: string, config: ManualTemplateCon
     manualConfig: fullConfig as Template['manualConfig'],
   };
 
+  // The spread above carried the capability flags of the OLD markup; the
+  // read-back derives them from the new.
   saveStoredTemplate(updated);
-  return updated;
+  return readBackSaved(updated);
 }

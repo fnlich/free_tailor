@@ -70,7 +70,32 @@ test('generatePreviewHTML shows linkedin.com text while keeping the full LinkedI
   assert.doesNotMatch(html, />https:\/\/www\.linkedin\.com\/in\/jane-doe<\/a>/);
 });
 
-test('prepareResumeRenderData removes soft skills for rendered resumes', () => {
+test('the builder preview carries the same Content-Security-Policy as the profile editor preview', async () => {
+  // It holds whatever the model wrote, framed in the page; the policy keeps a
+  // stray script or remote fetch out even if the frame's own sandbox did not.
+  const profile = {
+    id: 'profile-csp',
+    name: 'Jane Doe',
+    title: 'Engineer',
+    contact: { phone: '', email: '', linkedin: '', location: '' },
+    summary: 'Summary',
+    experience: [],
+    strengths: [],
+    skills: [],
+    education: [],
+    createdAt: '',
+    updatedAt: '',
+  };
+  const template = (htmlContent) => ({ id: 't-csp', name: 'T', htmlContent, cssContent: '', createdAt: '', updatedAt: '' });
+
+  const withDoctype = await generatePreviewHTML(profile, template('<!DOCTYPE html><html><body>{{name}}</body></html>'));
+  assert.match(withDoctype, /^<!DOCTYPE html><meta http-equiv="Content-Security-Policy" content="default-src 'none';/);
+
+  const bare = await generatePreviewHTML(profile, template('<div>{{name}}</div>'));
+  assert.ok(bare.indexOf('Content-Security-Policy') < bare.indexOf('Jane Doe'));
+});
+
+test('prepareResumeRenderData leaves soft skills out unless the profile switches them on', () => {
   const tailoredContent = {
     title: 'Senior Software Engineer',
     summary: 'Summary',
@@ -127,8 +152,30 @@ test('prepareResumeRenderData removes soft skills for rendered resumes', () => {
     tailoredContent
   );
 
+  // Off - absent from profileSettings, as on every profile written before the
+  // switch - is what every resume has always rendered: no soft skills, even
+  // when the tailored content carries some.
   assert.deepEqual(firstRenderData.softSkills, []);
   assert.deepEqual(otherRenderData.softSkills, []);
+
+  const switchedOn = prepareResumeRenderData(
+    {
+      id: 'profile-5',
+      name: 'Sam Chen',
+      title: 'Senior Software Engineer',
+      contact: { phone: '1', email: 'sam@example.com', location: 'San Jose, CA' },
+      summary: 'Summary',
+      experience: [],
+      strengths: [],
+      skills: [],
+      education: [],
+      profileSettings: { includeSoftSkills: true },
+      createdAt: '',
+      updatedAt: '',
+    },
+    tailoredContent
+  );
+  assert.deepEqual(switchedOn.softSkills, ['Communication']);
 });
 
 test('prepareResumeRenderData enforces prompt-compliant skill category counts', () => {
@@ -428,6 +475,17 @@ test('the page box is read from the template, not assumed', async () => {
   assert.equal(letterBox.contentWidthPx, 816, 'no margins means the content is the whole page');
   assert.ok(letterBox.mediaScale < 1 && letterBox.mediaScale > 0.9, 'letter is scaled to fit A4');
   assert.ok(letterBox.usesViewportUnits, 'charcoal-sidebar sizes itself in vh');
+
+  // Laid out at 816px in a frame the width of the A4 sheet (794px): a
+  // transform does not shrink overflow, so without this a classic-scrollbar
+  // browser paints a horizontal bar under the page.
+  const chrome = (html) => html.slice(html.indexOf('resume-preview-page'));
+  assert.match(chrome(generateTemplatePreviewHTML(letter)), /overflow-x:\s*hidden/);
+  assert.doesNotMatch(
+    chrome(generateTemplatePreviewHTML(await getTemplateById('developer-mono'))),
+    /overflow-x:\s*hidden/,
+    'an A4 page is left alone'
+  );
 });
 
 test('a template preview carries the printed page box, not an arbitrary width', async () => {

@@ -9,15 +9,21 @@ import {
   type SkillCategoryGroup as ProfileSkillCategoryGroup,
   type TechnicalSkillsLayout,
 } from '../types/profile';
-import { getProfileTechnicalSkillsLayout } from '../services/profileService';
+import {
+  getProfileResumeSections,
+  profileForTemplate,
+  type ResumeSectionChoices,
+} from '../services/profileService';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getGeneratedFilePath, getResumeOutputFilename } from '../utils/generatedPath';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory,
+  type HardSkillRecord,
+  hardSkillIndexKey,
+  readHardSkillIndex,
   readHardSkillPriorityMap,
-  readHardSkillRecords,
   readSkills,
 } from '../database/skillsDatabase';
 const MAX_ROLE_BRIEF_LENGTH = 1200;
@@ -802,7 +808,7 @@ function getSkillCategory(skill: string): SkillCategory {
   const normalized = normalizeHardSkillAlias(skill);
   if (!normalized) return 'Frameworks and Libraries';
 
-  const libraryRecord = readHardSkillRecords().find((record) => normalizeHardSkillAlias(record.skill) === normalized);
+  const libraryRecord = getLibraryHardSkillRecord(skill);
   if (libraryRecord) return libraryRecord.category;
 
   if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_DATABASE_SKILLS)) {
@@ -824,10 +830,15 @@ function getSkillCategory(skill: string): SkillCategory {
   return 'Frameworks and Libraries';
 }
 
-function getLibraryHardSkillRecord(skill: string): ReturnType<typeof readHardSkillRecords>[number] | undefined {
-  const normalized = normalizeHardSkillAlias(skill);
+/**
+ * The library's record for a skill, through the index `skillsDatabase` keeps
+ * per change of the library rather than a fresh copy and a scan per lookup.
+ * Read-only: the record is the library's own.
+ */
+function getLibraryHardSkillRecord(skill: string): Readonly<HardSkillRecord> | undefined {
+  const normalized = hardSkillIndexKey(skill);
   if (!normalized) return undefined;
-  return readHardSkillRecords().find((record) => normalizeHardSkillAlias(record.skill) === normalized);
+  return readHardSkillIndex().get(normalized);
 }
 
 function normalizeLibraryHardSkills(skills: string[]): string[] {
@@ -1100,12 +1111,41 @@ function sortHardSkillsByPriority(skills: string[]): string[] {
 type SkillsData = {
   hardSkills?: string[];
   softSkills?: string[];
+  strengths?: Array<{ title?: unknown; description?: unknown }>;
   skills?: string[];
   skillInventory?: string[];
   /** The author's own grouping, when the profile carries one. */
   skillCategories?: ProfileSkillCategoryGroup[];
   profileSettings?: Profile['profileSettings'];
 };
+
+/** How a resume's render data is prepared, beyond what the profile itself says. */
+export interface ResumeRenderOptions {
+  /**
+   * Fill an INFERRED categorized block from the skill library - five headings
+   * of five - as generation always has. Off for the live profile preview, which
+   * shows the person the skills they entered and nothing they did not: a
+   * preview listing Kubernetes under a heading they never wrote, on a profile
+   * that never claimed it, reads as a bug in the editor. Flat and an authored
+   * grouping never pad, so this changes only the categorized, uncategorized,
+   * untailored case.
+   */
+  padSkillCategories?: boolean;
+}
+
+/** A strength a template can show: one with a title or a description, as text. */
+type RenderStrength = { title: string; description: string };
+
+function renderableStrengths(strengths: SkillsData['strengths']): RenderStrength[] {
+  if (!Array.isArray(strengths)) return [];
+  return strengths
+    .filter((item): item is { title?: unknown; description?: unknown } => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      title: typeof item.title === 'string' ? item.title.trim() : '',
+      description: typeof item.description === 'string' ? item.description.trim() : '',
+    }))
+    .filter((item) => item.title || item.description);
+}
 
 /**
  * The flat layout, as one group with no heading.
@@ -1194,17 +1234,38 @@ function renderSkillLines(groups: SkillCategoryGroup[]): string[] {
   return groups.map((group) => `${group.category}: ${group.skills.join(', ')}`);
 }
 
-type SkillsLimitedData<T> = T & {
+type SkillsLimitedData<T> = Omit<T, 'strengths' | 'softSkills'> & {
   hardSkills: string[];
   softSkills: string[];
   skills: string[];
+  strengths: RenderStrength[];
   skillCategories: SkillCategoryGroup[];
 };
 
-function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
-  const layout: TechnicalSkillsLayout = getProfileTechnicalSkillsLayout({
-    profileSettings: data.profileSettings,
-  });
+/**
+ * The skills a person entered, each under the library's heading for it, and
+ * nothing more - the categorized block without the padding. For the live
+ * preview; see `ResumeRenderOptions.padSkillCategories`.
+ *
+ * Library-known skills only, as the flat layout keeps: the two layouts of one
+ * profile must show the same skills, and the editor adds an unknown skill to
+ * the library as it is entered.
+ */
+function groupClaimedSkills(skills: string[]): SkillCategoryGroup[] {
+  const grouped = new Map<SkillCategory, string[]>(
+    SKILL_CATEGORY_ORDER.map((category) => [category, []])
+  );
+  for (const skill of normalizeLibraryHardSkills(skills)) {
+    grouped.get(getSkillCategory(skill))?.push(skill);
+  }
+  return SKILL_CATEGORY_ORDER
+    .map((category) => ({ category, skills: grouped.get(category) ?? [] }))
+    .filter((group) => group.skills.length > 0);
+}
+
+function applySkillsLimit<T extends SkillsData>(data: T, options: ResumeRenderOptions = {}): SkillsLimitedData<T> {
+  const sections = getProfileResumeSections({ profileSettings: data.profileSettings });
+  const layout: TechnicalSkillsLayout = sections.layout;
   const authored = (data.skillCategories ?? []).filter(
     (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
   );
@@ -1214,11 +1275,18 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
     return {
       ...data,
       hardSkills: lines,
-      softSkills: [],
+      // THE RENDER GATE for the two optional sections. Whatever the caller
+      // handed in - a profile's own lists, freshly tailored content, or content
+      // a client held from an earlier preview and sent back with a batch,
+      // never re-parsed - a section the profile has switched off renders
+      // nothing, and one switched on renders what it was given. Decided here,
+      // on every render, because this is the one step every path (preview,
+      // PDF, DOCX, the queue) goes through.
+      softSkills: sections.softSkills ? normalizeSkills(data.softSkills ?? []) : [],
       // The same lines under both names, because templates disagree about
       // which one they read and neither is more correct than the other.
       skills: lines,
-      strengths: [],
+      strengths: sections.strengths ? renderableStrengths(data.strengths) : [],
       skillCategories,
     } as SkillsLimitedData<T>;
   };
@@ -1259,6 +1327,10 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
     return finish(enforcePromptSkillCategoryCounts(selected, data.skillInventory));
   }
 
+  if (options.padSkillCategories === false) {
+    return finish(groupClaimedSkills(selected));
+  }
+
   return finish(
     buildSkillCategories(selected, data.skillInventory, {
       forceAllCategories: true,
@@ -1282,11 +1354,57 @@ function sanitizeTitleForATS(title: string): string {
     .trim();
 }
 
+/**
+ * A link a person typed, as an http(s) URL - or nothing.
+ *
+ * http and https only. These land in an `href`, and the live profile preview
+ * renders whatever is in the editor as it is typed: `javascript:` or `data:`
+ * there is a link that runs something. Handlebars escapes quotes, not
+ * schemes, so the scheme is the one thing the renderer has to police itself.
+ *
+ * A bare host ("linkedin.com/in/x") gets https, as it always has. Anything
+ * else that names a scheme is dropped. "Names a scheme" means a run of scheme
+ * characters with no dot before the first colon, so "www.example.com:8080/x"
+ * is still read as a host with a port. What comes out must also parse as a
+ * URL, so "https://javascript:alert(1)" - a scheme hidden behind the prefix -
+ * does not survive either.
+ *
+ * A control character anywhere refuses the whole value. A browser deletes
+ * tab, LF and CR from anywhere in an href before it parses it, so
+ * "java<TAB>script:" is checked here as a host with no scheme yet followed as
+ * `javascript:` there - and GitHub and portfolio keep the text as typed. The
+ * text checked has to be the text the browser will use.
+ */
 function normalizeExternalUrl(value: string | undefined): string {
-  const trimmed = value?.trim() ?? '';
-  if (!trimmed) return '';
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed.replace(/^\/+/, '')}`;
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  // eslint-disable-next-line no-control-regex
+  if (!trimmed || /[\u0000-\u001F\u007F]/.test(trimmed)) return '';
+
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed);
+  let candidate: string;
+  if (/^https?:\/\//i.test(trimmed)) {
+    candidate = trimmed;
+  } else if (scheme && !scheme[1].includes('.')) {
+    return '';
+  } else {
+    candidate = `https://${trimmed.replace(/^\/+/, '')}`;
+  }
+
+  try {
+    const { protocol } = new URL(candidate);
+    return protocol === 'http:' || protocol === 'https:' ? candidate : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A contact link kept as the person wrote it when it is safe to put in an
+ * `href`, and dropped when it is not. No built-in template links GitHub or a
+ * portfolio, but an uploaded one may, and its text is shown as typed.
+ */
+function safeContactLink(value: string | undefined): string {
+  return normalizeExternalUrl(value) ? (value ?? '').trim() : '';
 }
 
 function getExternalUrlDisplay(value: string | undefined): string {
@@ -1328,15 +1446,40 @@ function rewriteLinkedInAnchorDisplay(html: string): string {
   );
 }
 
-function enforceSkillCategoryLineBreaks(html: string): string {
+/**
+ * Turns a "Heading: a, b, c" skills line into a heading block over its skills,
+ * for templates that print the categorized lines through a loop the compile
+ * step did not rewrite.
+ *
+ * Only the Technical Skills lines themselves - the escaped `hardSkills` /
+ * `skills` entries this render was given - are touched. It used to rewrite
+ * any element of the whole page whose text merely began with a heading name,
+ * which was harmless while those lines were the only such text a resume could
+ * hold; a strength described as "Languages: English and Spanish" or a soft
+ * skill "Tools: Jira" lost its own markup and styling for a skills heading.
+ * A class cannot tell the sections apart (default.json draws hard and soft
+ * skills in the same `skill-box`), the text can.
+ */
+function enforceSkillCategoryLineBreaks(
+  html: string,
+  renderData: { hardSkills?: unknown; skills?: unknown }
+): string {
+  const skillLines = new Set(
+    [renderData.hardSkills, renderData.skills]
+      .flatMap((list) => (Array.isArray(list) ? list : []))
+      .filter((line): line is string => typeof line === 'string')
+      .map((line) => Handlebars.escapeExpression(line).trim())
+  );
+  if (skillLines.size === 0) return html;
   const categoryPattern = '(Programming &(?:amp;)? Scripting Languages|Languages|Frameworks (?:and|&(?:amp;)?) Libraries|Software Architecture &(?:amp;)? Design|Security|Cloud (?:and|&(?:amp;)?) Infrastructure|Infrastructure &(?:amp;)? Cloud|Databases (?:and|&(?:amp;)?) Storage|DevOps (?:and|&(?:amp;)?) CI/CD|Observability (?:and|&(?:amp;)?) Monitoring|Testing (?:and|&(?:amp;)?) Quality|APIs (?:and|&(?:amp;)?) Integration|Engineering Practices &(?:amp;)? Methodology|Data Engineering &(?:amp;)? Streaming|AI/ML &(?:amp;)? Data Science|Version Control &(?:amp;)? Collaboration|Operating Systems &(?:amp;)? Platforms|Frontend &(?:amp;)? UI/UX Development|Mobile Development|Cloud &(?:amp;)? DevOps|Databases|Tools &(?:amp;)? Practices|Tools|Methods)';
   const categoryTextPattern = new RegExp(
     `<(span|div)\\b([^>]*)>\\s*${categoryPattern}:\\s*([^<]*?)\\s*(?:[•·]|â€¢)?\\s*<\\/\\1>`,
     'gi'
   );
 
-  return html.replace(categoryTextPattern, (_match, _tagName, attributes, category, skills) => {
+  return html.replace(categoryTextPattern, (match, _tagName, attributes, category, skills) => {
     const normalizedSkills = String(skills ?? '').trim();
+    if (!skillLines.has(`${category}: ${normalizedSkills}`)) return match;
     const rawAttributes = String(attributes ?? '');
     const hasSkillChip = rawAttributes.includes('skill-chip');
     const cleanedAttributes = rawAttributes.replace(/\sclass=(["']).*?\1/i, '');
@@ -1345,64 +1488,121 @@ function enforceSkillCategoryLineBreaks(html: string): string {
   });
 }
 
-function stripTemplateSectionByClass(html: string, className: string): string {
-  let output = html;
-  let searchFrom = 0;
+/** The optional sections and the data each one renders, by the class that marks it in a template. */
+const OPTIONAL_SECTIONS = [
+  { className: 'section-soft-skills', field: 'softSkills', choice: 'softSkills' },
+  { className: 'section-strengths', field: 'strengths', choice: 'strengths' },
+] as const;
 
-  while (searchFrom < output.length) {
-    const classIndex = output.indexOf(className, searchFrom);
-    if (classIndex === -1) break;
-
-    const tagStart = output.lastIndexOf('<div', classIndex);
-    if (tagStart === -1) {
-      searchFrom = classIndex + className.length;
-      continue;
-    }
-
-    let cursor = tagStart;
-    let depth = 0;
-    let sectionEnd = -1;
-    const tagPattern = /<\/?div\b[^>]*>/gi;
-    tagPattern.lastIndex = tagStart;
-
-    let match: RegExpExecArray | null;
-    while ((match = tagPattern.exec(output)) !== null) {
-      const tag = match[0];
-      if (tag.startsWith('</')) {
-        depth -= 1;
-        if (depth === 0) {
-          sectionEnd = tagPattern.lastIndex;
-          break;
-        }
-      } else {
-        depth += 1;
-      }
-      cursor = tagPattern.lastIndex;
-    }
-
-    if (sectionEnd === -1 || cursor <= tagStart) {
-      searchFrom = classIndex + className.length;
-      continue;
-    }
-
-    const beforeSection = output.slice(0, tagStart);
-    const blockPrefixMatch = beforeSection.match(/\s*\{\{#if\s+(?:strengths|softSkills)\.length\}\}\s*$/);
-    const blockStart = blockPrefixMatch ? tagStart - blockPrefixMatch[0].length : tagStart;
-    const blockSuffixMatch = output.slice(sectionEnd).match(/^\s*\{\{\/if\}\}/);
-    const blockEnd = blockSuffixMatch ? sectionEnd + blockSuffixMatch[0].length : sectionEnd;
-
-    output = `${output.slice(0, blockStart)}${output.slice(blockEnd)}`;
-    searchFrom = blockStart;
-  }
-
-  return output;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function normalizeTemplateSkillsSections(html: string): string {
-  let output = stripTemplateSectionByClass(html, 'section-soft-skills');
-  output = stripTemplateSectionByClass(output, 'section-strengths');
-  output = output
-    .replace(/Hard Skills/g, 'Technical Skills')
+/** Where the element opened at `from` closes, counting nested elements of the same name; -1 if never. */
+function findClosingTag(html: string, tagName: string, from: number): number {
+  const tags = new RegExp(`<(/?)${escapeRegExp(tagName)}(?![\\w-])[^>]*>`, 'gi');
+  tags.lastIndex = from;
+  let depth = 1;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(html)) !== null) {
+    if (match[1]) {
+      depth -= 1;
+      if (depth === 0) return tags.lastIndex;
+    } else if (!match[0].endsWith('/>')) {
+      depth += 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The next element at or after `from` whose class list holds `className` as a
+ * whole token, from its opening tag to the end of its closing one.
+ *
+ * Anchored on the tag that CARRIES the class. The version this replaced found
+ * the class name anywhere and then took the nearest `<div` before it - which
+ * for `<div class="main">...<section class="section-strengths">` was the main
+ * column, so stripping Strengths took Experience with it. A class named in a
+ * stylesheet is not an opening tag, so a `<style>` is never mistaken for one.
+ */
+function nextClassedElement(
+  html: string,
+  className: string,
+  from: number
+): { start: number; end: number } | null {
+  const opener = new RegExp(
+    `<([a-zA-Z][\\w-]*)\\b[^>]*?(?<![\\w-])class\\s*=\\s*(["'])(?:(?!\\2)[\\s\\S])*?` +
+      `(?<![\\w-])${escapeRegExp(className)}(?![\\w-])(?:(?!\\2)[\\s\\S])*?\\2[^>]*>`,
+    'g'
+  );
+  opener.lastIndex = from;
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(html)) !== null) {
+    const end = findClosingTag(html, match[1], opener.lastIndex);
+    if (end !== -1) return { start: match.index, end };
+  }
+  return null;
+}
+
+/**
+ * The `{{#if field.length}} ... {{/if}}` immediately around [start, end), when
+ * there is one - both halves, or neither. Taking only the opening half would
+ * leave its `{{/if}}` behind and the template would no longer compile.
+ */
+function sectionGuardAround(
+  html: string,
+  start: number,
+  end: number,
+  field: string
+): { start: number; end: number } | null {
+  const before = new RegExp(`\\{\\{#if\\s+${field}\\.length\\s*\\}\\}\\s*$`).exec(html.slice(0, start));
+  const after = /^\s*\{\{\/if\s*\}\}/.exec(html.slice(end));
+  return before && after ? { start: start - before[0].length, end: end + after[0].length } : null;
+}
+
+/** Removes every element marked `className`, with the guard around it if it has one. */
+function stripTemplateSection(html: string, className: string, field: string): string {
+  let output = html;
+  let from = 0;
+  for (;;) {
+    const found = nextClassedElement(output, className, from);
+    if (!found) return output;
+    const cut = sectionGuardAround(output, found.start, found.end, field) ?? found;
+    output = `${output.slice(0, cut.start)}${output.slice(cut.end)}`;
+    from = cut.start;
+  }
+}
+
+/**
+ * Wraps every element marked `className` in `{{#if field.length}}`, unless it
+ * is already wrapped - so a section switched on but with nothing in it leaves
+ * no heading over an empty list. Idempotent.
+ */
+function guardTemplateSection(html: string, className: string, field: string): string {
+  const open = `{{#if ${field}.length}}`;
+  const close = '{{/if}}';
+  let output = html;
+  let from = 0;
+  for (;;) {
+    const found = nextClassedElement(output, className, from);
+    if (!found) return output;
+    if (sectionGuardAround(output, found.start, found.end, field)) {
+      from = found.end;
+      continue;
+    }
+    output = `${output.slice(0, found.start)}${open}${output.slice(found.start, found.end)}${close}${output.slice(found.end)}`;
+    from = found.end + open.length + close.length;
+  }
+}
+
+/**
+ * The five per-item skills loops the built-ins and the manual builder write,
+ * rewritten into one category heading and its joined skills per group. For the
+ * categorized layout only: flat hands these loops one entry per skill, which
+ * is exactly what they were written to draw.
+ */
+function rewritePerItemSkillLoops(html: string): string {
+  return html
     .replace(
       /\{\{#if hardSkills\.length\}\}\s*\{\{#each hardSkills\}\}\s*<div class="skill-box">\{\{this\}\}<\/div>\s*\{\{\/each\}\}\s*\{\{else\}\}\s*\{\{#each skills\}\}\s*<div class="skill-box">\{\{this\}\}<\/div>\s*\{\{\/each\}\}\s*\{\{\/if\}\}/g,
       '{{#each skillCategories}}<div class="skill-category"><div class="skill-category-title">{{category}}</div><div class="skill-category-skills">{{join skills ", "}}</div></div>{{/each}}'
@@ -1423,7 +1623,35 @@ function normalizeTemplateSkillsSections(html: string): string {
       /\{\{#each hardSkills\}\}\s*<li[^>]*>\{\{this\}\}<\/li>\s*\{\{\/each\}\}/g,
       '{{#each skillCategories}}<li><strong>{{category}}</strong><br>{{join skills ", "}}</li>{{/each}}'
     );
+}
 
+/**
+ * A template's markup as it is compiled for one profile's choices.
+ *
+ * - Soft Skills and Strengths: a section the profile switched off is removed
+ *   outright, so no template - however it is written - can show one; a section
+ *   switched on is guarded on its list, so an empty one leaves no heading. The
+ *   data step gates the same lists independently (see `applySkillsLimit`).
+ * - "Hard Skills" headings read "Technical Skills", in both layouts.
+ * - Categorized rewrites the per-item skills loops into category headings;
+ *   flat leaves them alone, because flat already hands them one entry per
+ *   skill. The rewrite used to run for both, which drew a flat list as ONE
+ *   item holding every skill, squeezed into a single column of a multi-column
+ *   list - the shipped markup was already the right flat design.
+ * - Any element around `{{category}}` is guarded, so the flat layout's one
+ *   headless group draws no empty heading in either.
+ */
+function normalizeTemplateSkillsSections(html: string, choices: ResumeSectionChoices): string {
+  let output = html;
+  for (const section of OPTIONAL_SECTIONS) {
+    output = choices[section.choice]
+      ? guardTemplateSection(output, section.className, section.field)
+      : stripTemplateSection(output, section.className, section.field);
+  }
+  output = output.replace(/Hard Skills/g, 'Technical Skills');
+  if (choices.layout === 'categorized') {
+    output = rewritePerItemSkillLoops(output);
+  }
   return guardEmptyCategoryHeadings(output);
 }
 
@@ -1467,16 +1695,23 @@ export function prepareResumeRenderData(
   profile: Profile,
   tailoredContent?: TailoredContent,
   companyName?: string,
-  role?: string
+  role?: string,
+  options: ResumeRenderOptions = {}
 ) {
   const linkedinHref = normalizeExternalUrl(profile.contact?.linkedin);
   const linkedinDisplay = getExternalUrlDisplay(profile.contact?.linkedin);
   const tailoredHardSkills = tailoredContent?.hardSkills ?? [];
   const tailoredSkills = tailoredContent?.skills ?? [];
+  const tailoredSoftSkills = normalizeSkills(tailoredContent?.softSkills);
+  const tailoredStrengths = renderableStrengths(tailoredContent?.strengths);
   const data = {
     ...profile,
     contact: {
       ...profile.contact,
+      ...(typeof profile.contact?.github === 'string' ? { github: safeContactLink(profile.contact.github) } : {}),
+      ...(typeof profile.contact?.portfolio === 'string'
+        ? { portfolio: safeContactLink(profile.contact.portfolio) }
+        : {}),
       linkedin: linkedinHref,
       linkedinHref,
       linkedinDisplay,
@@ -1489,24 +1724,63 @@ export function prepareResumeRenderData(
       ...tailoredHardSkills,
       ...tailoredSkills,
     ]),
+    // The profile's own lists, for an untailored render. Whether either is
+    // shown at all is the profile's switch, decided in `applySkillsLimit`.
+    softSkills: profile.softSkills ?? [],
+    strengths: profile.strengths ?? [],
     ...(tailoredContent && {
       summary: tailoredContent.summary,
       experience: tailoredContent.experience,
       skills: tailoredSkills,
       hardSkills: tailoredHardSkills,
-      softSkills: [],
-      strengths: []
+      // The tailored lists when they have anything in them, and the profile's
+      // own when they do not. Tailored content can predate the switch being
+      // turned on - a preview held by the page and sent back with a batch, or
+      // a queued task - and then carries nothing for the section; showing the
+      // person's own entries beats an empty section they asked for.
+      softSkills: tailoredSoftSkills.length > 0 ? tailoredSoftSkills : (profile.softSkills ?? []),
+      strengths: tailoredStrengths.length > 0 ? tailoredStrengths : (profile.strengths ?? []),
     })
   };
-  return normalizeExperienceDescriptions(applySkillsLimit(data));
+  return normalizeExperienceDescriptions(applySkillsLimit(data, options));
 }
 
-function compileTemplate(template: Template) {
+/** The render data a template is compiled against. */
+export type ResumeRenderData = ReturnType<typeof prepareResumeRenderData>;
+
+/**
+ * Compiled templates, by the markup and the choices it was compiled for.
+ *
+ * Keyed on the markup itself rather than id and updatedAt: a template object
+ * is not always a stored one (tests and the manual builder hand over fresh
+ * objects that can share an id), and a key that could match different markup
+ * would render the wrong template. The live preview compiles the same
+ * template on every pause in typing, which is what makes the cache worth
+ * having; it is bounded, oldest out first.
+ */
+const compiledTemplates = new Map<string, HandlebarsTemplateDelegate>();
+const COMPILED_TEMPLATE_CACHE_SIZE = 64;
+
+function compileTemplate(template: Template, choices: ResumeSectionChoices): HandlebarsTemplateDelegate {
   if (typeof template.htmlContent !== 'string' || !template.htmlContent.trim()) {
     throw new Error(`Template "${template.name || template.id}" is missing htmlContent`);
   }
 
-  return Handlebars.compile(normalizeTemplateSkillsSections(template.htmlContent));
+  const key = `${choices.layout}|${choices.softSkills ? 1 : 0}|${choices.strengths ? 1 : 0}|${template.htmlContent}`;
+  const cached = compiledTemplates.get(key);
+  if (cached) {
+    compiledTemplates.delete(key);
+    compiledTemplates.set(key, cached);
+    return cached;
+  }
+
+  const compiled = Handlebars.compile(normalizeTemplateSkillsSections(template.htmlContent, choices));
+  compiledTemplates.set(key, compiled);
+  if (compiledTemplates.size > COMPILED_TEMPLATE_CACHE_SIZE) {
+    const oldest = compiledTemplates.keys().next().value;
+    if (oldest !== undefined) compiledTemplates.delete(oldest);
+  }
+  return compiled;
 }
 
 export async function generateResumePDF(
@@ -1517,9 +1791,11 @@ export async function generateResumePDF(
   companyName?: string,
   role?: string
 ): Promise<string> {
+  // A switch the template has no section for is off here, exactly as it is in
+  // the DOCX and in the tailoring that wrote this content.
   const renderData = timePdfStageSync('render data preparation', () =>
     prepareResumeRenderData(
-      profile,
+      profileForTemplate(profile, template),
       tailoredContent,
       companyName,
       role
@@ -1583,21 +1859,21 @@ export async function generateResumePDF(
   }
 }
 
+/**
+ * The builder's preview of a tailored resume, shown in the page before it is
+ * generated. It carries the same Content-Security-Policy as the profile
+ * editor's preview: the document holds whatever the model wrote, and a frame
+ * is only as safe as the strictest thing guarding it - the page frames it with
+ * no permissions too, so either lock alone keeps a stray script or remote
+ * fetch out.
+ */
 export async function generatePreviewHTML(
   profile: Profile,
   template: Template,
   tailoredContent?: TailoredContent
 ): Promise<string> {
-  const renderData = prepareResumeRenderData(profile, tailoredContent);
-
-  // Compile and render template
-  const compiledTemplate = compileTemplate(template);
-  const html = enforceSkillCategoryLineBreaks(rewriteLinkedInAnchorDisplay(compiledTemplate(renderData)));
-
-  // Add CSS if separate
-  return template.cssContent 
-    ? `<style>${template.cssContent}</style>${html}`
-    : html;
+  const renderData = prepareResumeRenderData(profileForTemplate(profile, template), tailoredContent);
+  return withPreviewContentSecurityPolicy(assembleResumeDocument(template, renderTemplateBody(template, renderData)));
 }
 
 /** Sample profile for template preview */
@@ -1696,6 +1972,16 @@ const SAMPLE_PROFILE: Profile = {
     { title: 'Incident Ownership', description: 'Drives root-cause analysis through to the fix that prevents recurrence.' },
     { title: 'Communication', description: 'Writes the design document people actually read before the meeting.' },
   ],
+  // Shown only when a gallery preview asks for the section (see
+  // generateTemplatePreviewHTML); off, as for every profile by default.
+  softSkills: [
+    'Mentoring',
+    'Cross-team communication',
+    'Stakeholder management',
+    'Ownership',
+    'Clear technical writing',
+    'Calm under pressure',
+  ],
   skills: [
     'TypeScript', 'JavaScript', 'Python', 'Go', 'SQL', 'Java',
     'React', 'Next.js', 'Node.js', 'Express', 'Django', 'GraphQL',
@@ -1723,11 +2009,18 @@ const SAMPLE_PROFILE: Profile = {
   updatedAt: '',
 };
 
-/** Compiles a template against render data. Shared so preview and PDF agree. */
-function renderTemplateBody(template: Template, renderData: unknown): string {
-  const compiledTemplate = compileTemplate(template);
+/**
+ * Compiles a template against render data. Shared so preview and PDF agree.
+ *
+ * The compile choices are read from the render data's own profile settings -
+ * the same ones `applySkillsLimit` gated the data on - so the markup kept and
+ * the data handed to it can never be decided from two different places.
+ */
+function renderTemplateBody(template: Template, renderData: ResumeRenderData): string {
+  const compiledTemplate = compileTemplate(template, getProfileResumeSections(renderData));
   return enforceSkillCategoryLineBreaks(
-    rewriteLinkedInAnchorDisplay(compiledTemplate(renderData))
+    rewriteLinkedInAnchorDisplay(compiledTemplate(renderData)),
+    renderData
   );
 }
 
@@ -1766,7 +2059,14 @@ function previewPageChrome(box: ResumePageBox): string {
       ? ''
       : `
       transform: translateY(${box.mediaOffsetYPx.toFixed(2)}px) scale(${box.mediaScale.toFixed(5)});
-      transform-origin: top left;`;
+      transform-origin: top left;
+      /* A transform does not shrink layout overflow: the page still lays out
+         at its own width (816px for Letter) inside a frame sized to the A4
+         sheet it prints on (794px), and a classic-scrollbar browser paints a
+         horizontal bar under it - which then takes 15px of height and forces a
+         vertical one too. Horizontal only: on html this goes to the viewport,
+         and a multi-page preview opened in its own tab must still scroll down. */
+      overflow-x: hidden;`;
 
   /* `vh` and friends resolve against the viewport, which off-page is the
      preview iframe rather than the printed page. Only templates that actually
@@ -1812,10 +2112,98 @@ function previewPageChrome(box: ResumePageBox): string {
   </style>`;
 }
 
-export function generateTemplatePreviewHTML(template: Template): string {
-  const renderData = prepareResumeRenderData(SAMPLE_PROFILE);
+/**
+ * A template rendered with the sample resume, for the gallery.
+ *
+ * With no choices it is what the gallery has always shown: categorized, no
+ * Soft Skills or Strengths. A caller may ask for the flat layout or either
+ * section, so a template can be shown the way a particular profile would get
+ * it.
+ */
+export function generateTemplatePreviewHTML(
+  template: Template,
+  choices: Partial<ResumeSectionChoices> = {}
+): string {
+  const sample: Profile = {
+    ...SAMPLE_PROFILE,
+    profileSettings: {
+      ...(choices.layout ? { technicalSkillsLayout: choices.layout } : {}),
+      includeSoftSkills: choices.softSkills === true,
+      includeStrengths: choices.strengths === true,
+    },
+  };
+  const renderData = prepareResumeRenderData(sample);
   const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
   return `${document}${previewPageChrome(resolveTemplatePageBox(template))}`;
+}
+
+/**
+ * What the live profile preview's document may do: draw with its own inline
+ * styles and embedded images and fonts, and nothing else - no script, no
+ * request anywhere. The page frames it in a script-less sandbox as well; this
+ * is the second lock, and it travels with the document.
+ */
+export const PREVIEW_CONTENT_SECURITY_POLICY =
+  "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+
+/**
+ * Puts the policy ahead of everything in the document that could fetch -
+ * a policy only governs what is parsed after it, and a template's separate
+ * stylesheet is prepended before its own markup - but never ahead of a
+ * leading doctype: that would push the document into quirks mode, and the
+ * preview would lay out differently from the PDF it is previewing.
+ *
+ * Right after the doctype the parser opens the head for it, so the policy is
+ * in force from there; the template's own `<html>` and `<head>` tags then
+ * merge into the ones already open, as they do for any content placed there.
+ */
+function withPreviewContentSecurityPolicy(document: string): string {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CONTENT_SECURITY_POLICY}">`;
+  const doctype = /^\s*<!DOCTYPE[^>]*>/i.exec(document);
+  return doctype
+    ? `${doctype[0]}${meta}${document.slice(doctype[0].length)}`
+    : `${meta}${document}`;
+}
+
+export interface ProfilePreview {
+  html: string;
+  /**
+   * The printed page, in CSS px at 96 DPI: what the frame should be sized to
+   * before it is scaled to fit. A template that asks for a page other than A4
+   * is shrunk onto A4 by the print, and the preview chrome mirrors that, so
+   * its page is the A4 sheet. `contentHeightPx` is the height of one page's
+   * content box at that scale - approximately where a page break falls in the
+   * continuous preview.
+   */
+  page: { widthPx: number; heightPx: number; contentHeightPx: number };
+}
+
+/**
+ * A profile - an unsaved draft from the editor, usually - rendered through
+ * exactly the pipeline a generated resume takes (the same render data,
+ * compile choices, post-processing and document), untailored, with the
+ * gallery's page chrome so it is as wide as the printed page.
+ *
+ * Two differences from generation, both deliberate. A categorized block is not
+ * padded from the library (see `ResumeRenderOptions.padSkillCategories`). And
+ * the document carries a Content-Security-Policy, because it contains whatever
+ * is in the editor at that moment.
+ */
+export function generateProfilePreviewHTML(profile: Profile, template: Template): ProfilePreview {
+  const renderData = prepareResumeRenderData(profileForTemplate(profile, template), undefined, undefined, undefined, {
+    padSkillCategories: false,
+  });
+  const box = resolveTemplatePageBox(template);
+  const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
+  const shrunkOntoA4 = box.mediaScale !== 1;
+  return {
+    html: `${withPreviewContentSecurityPolicy(document)}${previewPageChrome(box)}`,
+    page: {
+      widthPx: Math.round(shrunkOntoA4 ? A4_PAGE_WIDTH_PX : box.pageWidthPx),
+      heightPx: Math.round(shrunkOntoA4 ? A4_PAGE_HEIGHT_PX : box.pageHeightPx),
+      contentHeightPx: Math.round(box.contentHeightPx * box.mediaScale),
+    },
+  };
 }
 
 export async function getGeneratedPDFPath(filename: string): Promise<string | null> {

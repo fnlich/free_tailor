@@ -31,9 +31,10 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **Order & Download** | A Google Sheet import is placed as an order and answers with an order number instead of making you wait. Track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
-| **Templates** | Built-in professional templates plus manual and uploaded templates |
+| **Templates** | Built-in professional templates plus manual and uploaded templates. Each says which Technical Skills layouts it can print, and a profile is offered only the ones that print its own |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
-| **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skill ordering |
+| **Per-Profile Settings** | Each profile chooses its prompts, template, file naming and skill ordering, whether its Technical Skills print as one **Plain** list or **Grouped** under headings, and whether its resumes carry a **Soft Skills** and a **Strengths** section |
+| **Live preview** | Editing a profile shows the resume it makes beside the form, redrawn as you type or pick a template - free, untailored, and nothing is saved until you press Save |
 | **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and the AI models - each with a display name, a seat, a model picked from that seat's own list, and a price per resume |
 | **Plain messages** | A failure tells an ordinary account what it can do about it, never how the server is set up; anything else is a generic sentence with a reference such as `ERR-7F3A9C`, and the cause is in the server log under it. Administrators see the cause on the page as well |
 | **PDF & DOCX** | Export resumes in both formats |
@@ -578,6 +579,200 @@ an ordinary account reads those as *This resume could not be built. Please try
 again, or contact your administrator.*, and an administrator reads them as
 stored.
 
+### Editing a profile
+
+**Profiles** in the sidebar lists your profiles. **New Profile** opens
+`/admin/profiles/new` and a profile's name or **Edit** opens
+`/admin/profiles/<id>` - a page of its own, so a profile can be linked to and
+survives a reload. **Upload Resume PDF**, and an **Import JSON** of a single
+profile, land in the new profile's editor. Despite the `/admin/` in the
+address, every signed-in account edits its own profiles here.
+
+The form is on the left and **the resume it makes is on the right**, redrawn as
+you work: a template, a layout or a switch shows at once, and typing about
+400 ms after the last key. Narrower than 1100px, the two are **Form** and
+**Preview** tabs, and nothing is drawn while the preview tab is hidden. The page
+on screen stays up while the next one draws, so typing never blanks it; a
+failure says *Not updated* with the reason and **Try again**, and leaves the
+last page up. A *Page 2* line marks roughly where the printed page breaks, and
+**Full size** opens the page at its printed width.
+
+What the preview is, exactly:
+
+- **The server draws it** (`POST /api/profiles/preview`) through the same
+  pipeline and the same template choice as a generated resume, so it is what
+  the next PDF looks like before a job tailors it. It is **untailored** - your
+  own words, no job.
+- **It costs nothing and keeps nothing.** No profile is saved, no model is
+  asked, no credit moves, and the plan's profile limit is not consulted (the
+  save checks it). Saving is still **Save**, and leaving through the page's own
+  buttons, or closing the tab, with changes unsaved asks first.
+- **It cannot run anything.** The document is framed in a sandbox with scripts
+  off, and carries its own policy, `default-src 'none'; style-src
+  'unsafe-inline'; img-src data:; font-src data:`, so nothing in it can fetch.
+  A contact link reaches the page only as an `http`/`https` address -
+  `javascript:` and every other scheme are dropped, in the PDF too.
+- **It shows what you entered.** A Grouped preview puts only your own skills
+  under the library's headings; a generated Grouped resume still fills those
+  headings out from the library for the job (see below). Plain, and Grouped
+  with no heading assigned by hand, draw only skills the shared skill library
+  knows. A skill you add in the editor is added to the library as you add it;
+  one that came in with an uploaded or imported profile and that the library
+  has never heard of is left off - see Troubleshooting.
+
+**Technical skills: Plain or Grouped.** The *Layout* choice under **Technical
+skills** is stored as `technicalSkillsLayout`: **Grouped** (`categorized`, the
+default) prints the skills under headings - Languages, Cloud and
+Infrastructure, and so on - and **Plain** (`flat`) as one list with no headings.
+While Grouped, each skill has a heading menu: *Work it out* lets the shared
+library file it, and anything else puts it where you say. Plain keeps the
+headings you assigned, so switching back restores them.
+
+The **Template** picker lists only templates that can print the profile's
+layout - see [Templates and the two skills
+layouts](#templates-and-the-two-skills-layouts) - and says how many it left
+out. A template another of your profiles uses is listed greyed out as *(used by
+&lt;name&gt;)*, so a short list never looks short for no reason; the current
+profile's own template is always selectable. Switching layout while the chosen
+template cannot print the new one moves the profile to one that can - its
+saved template if that fits, else `default` - and says so beside the control.
+
+On a **tailored** resume the two layouts list different skills:
+
+| Layout | What Technical Skills lists |
+|---|---|
+| **Grouped** | The posting's skills the library knows, under the library's headings, with those headings filled out from the library - as it always has |
+| **Plain** | The posting's skills the library knows, plus **your own** skills that the posting names or that share a library heading with one it names (a posting asking for PostgreSQL makes your other databases relevant). No padding, so it is usually shorter. A posting that names no skill the library knows (a management role, say) gets your own library-known skills, as the editor's preview shows them, rather than an empty section |
+
+Either way the code decides the list, never the model. *Job relevance*
+ordering (**Prompts and files → Hard skill ordering**) only reorders it; it
+used to drop names such as Node.js and Next.js and respell React as React.js,
+and does not any more.
+
+**Soft Skills and Strengths are switches**, `includeSoftSkills` and
+`includeStrengths` in the profile's settings. Both are **off unless you tick
+them** - which is exactly what every resume printed before they existed, so no
+existing profile's output changes. Turning one off keeps its list with the
+profile; it only stops it printing.
+
+| | On | Off |
+|---|---|---|
+| **Soft Skills** | A Soft Skills section: **your own list first**, in your order, then the soft skills the posting asks for that the library confirms, up to ten in all. A posting's skill already inside one of yours ("Communication" beside "Clear written communication") is left out. The stock list (Accountability, Adaptability, ...) only fills a profile that has none | No section, and the builder offers no soft skills to add to the library. The posting's soft skills that the library knows and the resume does not already mention go into the summary as one sentence, `Working style: ...` |
+| **Strengths** | A Strengths section: the ones the model writes for the job (it is asked for two to four), and if it writes none, **your own**, exactly as typed - and still as typed when that preview is generated. Never invented - a strength the model writes with no title is dropped, and a sentence written from the employer's side is removed on its own | No section. The model is told to return none and not to use strengths as an overflow for keywords, and anything it returns anyway is discarded |
+
+A section with nothing in it prints no heading, in the PDF and the DOCX alike.
+Not every template has somewhere to put these: **Burgundy Rule, Navy Rule and
+Charcoal Sidebar have neither section, and Ink Ledger has no Soft Skills**. The
+editor says so under a ticked switch (*... has no Strengths section; ticking it
+changes nothing here*), and the **Template** section shows which it has. On such
+a template **the switch behaves exactly as off, everywhere**: the model is told
+the section is off, the posting's soft skills go into the summary as
+`Working style: ...`, and the DOCX leaves the section out too. The DOCX follows
+one fixed layout whatever the template, but the template it is generated with
+decides its sections: it gains *Key Strengths* after the summary and *Soft
+Skills* after Technical Skills exactly when the PDF of the same generation has
+them.
+
+**A profile's soft skills** (`softSkills`) are names only: trimmed, the first
+spelling kept when one is typed twice in different case, at most 50 of at most
+100 characters. A save that leaves the list out keeps the stored one, and so
+does a save that leaves out either switch - an older page cannot turn them off
+by not knowing about them. The prompt that reads an uploaded resume PDF now
+asks for the soft skills the resume states, and for strengths only from a
+strengths section it actually has, where it used to make two or three up.
+
+**The switches are enforced after the model, not only asked of it.** Content
+tailored while a switch was one way and finalised after it changed - a builder
+preview held across the change, a queued batch - is re-read against the
+profile as it is now, and the renderer empties a switched-off section on every
+path (preview, PDF, DOCX, the queue) whatever the content carries.
+
+### Templates and the two skills layouts
+
+**Every template says which Technical Skills layouts it prints**, as
+`skillsLayouts` - `["categorized", "flat"]` or one of them. Seventeen of the
+nineteen built-ins print both. **Burgundy Rule and Navy Rule** lay their skills
+out as a grid of category cells, which has nothing sensible to do with one
+plain list, so they are `["categorized"]`: a Plain profile is not offered them.
+`default` prints both, and is where every fallback ends.
+
+A template that does not say - an uploaded one, a PDF extraction, one stored
+before this field existed - gets a list from its markup when it is
+read, with no migration: a per-item `{{#each hardSkills}}` or `{{#each skills}}`
+loop prints both; a template that reads only `{{#each skillCategories}}` is a
+category design and prints Grouped only (an `{{#each skills}}` INSIDE that
+loop is the category's own list and does not count); one with no skills at all
+is offered for both. An import keeps the list the file states; the manual builder's
+templates print both.
+
+An administrator can reclassify any template with `PATCH /api/templates/:id`
+and `{ "skillsLayouts": ["categorized"] }`. A built-in's goes into its override
+row, beside its name, description and disabled flag, and its file stays as
+shipped. Anything but a non-empty list of `categorized` and `flat` is refused
+with a 400 that says so.
+
+Two more things every template payload carries, worked out from the markup on
+every read and never stored: `supportsSoftSkills` and `supportsStrengths` -
+whether it has a section to put each in. The manual builder offers both
+sections now, guarded so an empty one prints nothing.
+
+**A resume never fails over a layout.** The template is the one asked for, else
+the profile's own, else `default` - the first of those that is enabled and
+prints the profile's layout; failing that, any enabled template that does; and
+failing even that, the first enabled one as it is. A choice that no longer
+fits, because an administrator reclassified it or the profile changed layout
+while a run was queued, is logged once, as `[templates] Profile <id> uses the flat skills
+layout, which template "<id>" does not offer; drawing it with "<id>" instead.`
+The live preview, the builder's previews, generation and the queue all ask the
+same question (`services/templateChoice.ts`), so the preview cannot show one
+template while the PDF prints another; when it falls back, the preview says
+*Drawn with ...* and why.
+
+The gallery's preview takes the same choices a profile makes:
+`GET /api/templates/:id/preview?layout=flat&softSkills=1&strengths=1`. With
+none it is the usual Grouped sample without either section. It is served under
+the same no-script policy as the profile preview, and a disabled template is a
+404 for anybody but an administrator.
+
+### Prompts and the section switches
+
+The tailoring prompt (`tailor-resume`) is given the profile's three choices as
+words, in three variables of its own:
+
+| Variable | Values |
+|---|---|
+| `[[includeStrengths]]` | `yes` or `no` |
+| `[[includeSoftSkills]]` | `yes` or `no` |
+| `[[technicalSkillsLayout]]` | `grouped` or `plain` |
+
+They are never inside `[[profileJson]]` - that is the candidate's record, and
+these are how it is drawn - and the shipped prompt names them after it, in a
+*RESUME SECTIONS* block, so the long start of the prompt that is the same for
+every resume stays the same. Its strengths instructions apply only when the
+Strengths section is `yes`; on `no` it asks for `"strengths": []`.
+
+**A prompt edited before the switches existed still obeys them.** The code
+appends a *FINAL SKILL OVERRIDE* to every tailoring turn, whichever prompt
+record rendered it, and it states the same three facts - so an administrator's
+edited copy, or a per-profile custom prompt that never heard of
+`[[includeStrengths]]`, is told the switches all the same, and the
+post-processing above enforces them again whatever the model returns. No
+migration rewrites an administrator's text. **Admin → Prompts** marks such a
+tailoring prompt: *This prompt predates the profile's Strengths and Soft Skills
+switches; the app still enforces them.* Nothing needs fixing; referencing
+`[[includeStrengths]]` in it clears the note.
+
+**A feature's prompt may use only the variables its code supplies.** Admin →
+Prompts lists every one a feature offers, and saving text that names any other
+is refused - *Unknown prompt variables: includeSoftSkillz* - where it used to
+save cleanly and then fail every resume that used it. `POST
+/api/prompts/validate` and `/preview` name such a variable in
+`unknownVariables`; a draft not saved yet says which feature it is for with
+`featureKey`. A record that already holds one (written by hand into the
+database, say) fails every resume that uses it, and the server log names it
+under the reference: *Prompt "..." contains unknown variables: ...* - see
+Troubleshooting.
+
 ### The job sheet
 
 Every account gets **one Google spreadsheet of its own**, and inside it **one tab
@@ -810,7 +1005,7 @@ manual build and is unaffected.
 | API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory. A settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log; migration 007 deletes them from the oldest settings snapshot too |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
-| Built-in resume templates | `backend/static/templates/*.json` |
+| Built-in resume templates | `backend/static/templates/*.json`, read from the file on every request - so an edited file shows at once, with no import. What an administrator changes about a built-in - its name, description, disabled flag and the layouts it is offered for - is an override row in the database (`template_overrides`) laid over the file, never the file itself |
 
 Nothing under `backend/static` is written to at runtime (`TAILOR_STATIC_DIR` reads the seeds from somewhere else instead). Edits made in the admin panel always go to the database.
 
@@ -1468,7 +1663,8 @@ free_tailor/
 │   │   │   │   ├── providers/claudeCli/  # The `claude` CLI seat
 │   │   │   │   ├── providers/codexCli/   # The `codex` CLI seat
 │   │   │   │   └── providers/geminiCli/  # The `gemini` CLI seat
-│   │   │   └── resumeService.ts          # Resume/cover-letter domain logic
+│   │   │   ├── resumeService.ts          # Resume/cover-letter domain logic
+│   │   │   └── templateChoice.ts         # The one rule for which template a resume is drawn with
 │   │   ├── generators/     # PDF, DOCX, cover letter generation
 │   │   ├── middleware/     # Auth, uploads, and publicError.ts - what a failure may tell whom
 │   │   ├── scripts/        # Legacy data import, provider-migration rollback
@@ -1483,9 +1679,11 @@ free_tailor/
 │   └── src/
 │       ├── app/            # Pages (/, /admin/*, /jobs, /bid-assistant, /calendar)
 │       ├── components/     # Reusable UI components
+│       │   ├── profile/    # The profile editor and its live preview, one file per group of sections
 │       │   ├── shell/      # The app shell: top bar, sidebar, settings sub-nav
 │       │   └── icons/      # The inline SVG icon set
-│       └── lib/            # API client, and userMessage.ts - one way to show a failure
+│       └── lib/            # API client, userMessage.ts - one way to show a failure -
+│                           #   and profileDraft.ts, the editor's form/payload/template rules
 └── generated/              # Default output location for resumes and cover letters
 ```
 
@@ -1538,14 +1736,14 @@ unique across the install, which settles all of it in one segment.
 | Section | Purpose |
 |---------|---------|
 | **Accounts** | Every account on the installation, with its role, plan, credits and profile use. Set a balance outright or add a delta, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it. Adding an account here sets somebody's plan before they arrive; it is not a way in, since they still prove the address through Google or a code |
-| **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
+| **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
 | **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in credits (a whole number from 0 to 1000, `0` shown as *Free*), and a description. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
-| **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
-| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Admin-only to change, since one edit changes what every account gets |
+| **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, output location, and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test runs a prompt on a model you pick by name. Every page here shows the cause of a failure under its message |
@@ -1729,10 +1927,22 @@ file. Export them in the shell, for the install and the server alike:
 | A run keeps going after the page is closed | It does now, and that is deliberate. The work belongs to the queue rather than to the request that submitted it, so closing or reloading the page does not stop it and files keep landing. Reopening the builder picks the run back up and shows live progress - it remembers the batch in this browser, and failing that asks the server what is still running. To actually stop a run, cancel it: queued resumes are dropped and the ones running are aborted. |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page gives up only after twenty attaches in a row that brought nothing, or at once when the server says the batch is gone (restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the chosen seat can actually take: its own slot count (`AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY`, `AI_GEMINI_CONCURRENCY`). The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
-| Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. |
-| The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. |
-| Technical Skills shows headings you do not want | Set **Technical Skills Layout** to `One plain list` under the profile's settings. The headings are kept, not deleted, so switching back restores them. |
-| A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
+| Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. The three choices the prompt does need - the layout and the two section switches - travel as three words of their own, and the profile's own soft skills are not sent at all, because the code lists them. |
+| The same job posting is analysed over and over | It is not any more. An analysis is deterministic, so the answer is kept for six hours keyed on the posting, the model, and the prompt's own text - a preview followed by a generate, or a sheet re-run after fixing one row, now costs one call instead of two. Editing the prompt invalidates it, so an admin never sees a stale answer from the version they just changed. A profile's layout and section switches are not in the key, on purpose: the analysis reads the posting, not the profile, so one analysis serves every profile in a batch. |
+| Technical Skills shows headings you do not want | Choose **Plain** under **Technical skills → Layout** in the profile's editor. The headings you assigned are kept, not deleted, so switching back to **Grouped** restores them. If the profile's template prints Grouped only (Burgundy Rule, Navy Rule), the editor moves the profile to one that prints Plain and says which. |
+| A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. With the profile on **Grouped**, pick that skill's heading from the menu beside it under **Technical skills** instead of *Work it out*; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
+| A template is missing from a profile's template picker | The picker lists only templates that print the profile's Technical Skills layout, and the hint under it says how many it left out. **Burgundy Rule and Navy Rule print Grouped only**, so a Plain profile is not offered them; an uploaded template that reads only `{{#each skillCategories}}` is Grouped only the same way. A template an administrator disabled is not listed to anybody. An administrator who knows a template prints both can say so with `PATCH /api/templates/:id` and `{ "skillsLayouts": ["categorized", "flat"] }`. |
+| A template in the picker is greyed out with *(used by ...)* | Another of your profiles uses it, and the editor offers each template to one profile of an account at a time. Pick another, or move the other profile off it first. The profile's own current template is always selectable. |
+| The profile preview says *Drawn with ...: ... has no Plain layout* (or *Grouped*), or *the template this profile names is not offered any more* | The profile's template cannot print its layout - an administrator reclassified it - or was disabled or deleted. Resumes for it fall back exactly as the preview did: the profile's own template, then `default`, then any enabled template that prints the layout. Pick a template in the editor to choose for yourself. The backend logs the fallback once, as `[templates] Profile <id> uses the flat skills layout, which template "<id>" does not offer; drawing it with "<id>" instead.` |
+| The profile preview, or a resume, says *No resume template is available right now. Please contact your administrator.* | No enabled template could be found to draw with: every template is disabled, `default` included - or the profile's own template and `default` are, and every template left enabled prints only the other layout. Under **Admin → Templates**, enable `default`, which prints both layouts and so serves every profile. The `Ref:` in the message finds the line in the backend log. |
+| The profile preview says *Not updated* | Its last request failed; the sentence under it says why, and **Try again** sends it again. The page shown is the last one that rendered, not the current draft. Nothing is lost - the form is unsaved until **Save**, whatever the preview does. |
+| A skill on the profile does not show in the preview | The preview draws only skills the shared skill library knows - in Plain, and in Grouped unless you assigned headings by hand - and this one came in with an uploaded or imported profile the library has never heard of. A skill added in the editor goes into the library as it is added, so remove it and add it again, or ask an administrator to add it under **Admin → Skills**. A tailored Plain resume still lists it when the posting names it. |
+| Soft Skills or Strengths do not appear on a resume, although the profile has them (or the prompt asks for them) | In order: the switch is **off** - both are off until ticked under **Soft skills** and **Strengths** in the profile's editor, and an off switch empties the section whatever the prompt or the model says; the **template has no such section** - Burgundy Rule, Navy Rule and Charcoal Sidebar have neither, Ink Ledger has no Soft Skills, and the editor says so under the switch; the DOCX of that generation leaves it out too, since the template it was generated with decides both files; or **the list is empty** - a section with nothing in it prints no heading. With Strengths on, a resume whose model wrote none uses the profile's own, so a missing Strengths section with the switch on means the profile has none either. |
+| The summary ends with *Working style: ...* | The profile's **Soft Skills** switch is off - or on, with a template that has no Soft Skills section (Burgundy Rule, Navy Rule, Charcoal Sidebar, Ink Ledger), which counts as off - so the posting's soft skills that the resume does not already mention are worked into the summary instead of a section of their own. Tick the switch and the next resume lists them in its Soft Skills section instead, without the sentence. Content tailored before this release said *Strengths include ... across changing engineering contexts.*; finalising it now rewrites that the same way. |
+| A Plain Technical Skills list is shorter than the Grouped one for the same job | By design. Plain lists the posting's skills the library knows plus your own related skills, and pads nothing. Grouped fills the library's headings out from the library for the job, as it always has. |
+| Saving a prompt under **Admin → Prompts** says *Unknown prompt variables: ...* | The text names a `[[variable]]` the feature's code never supplies - often a typo. The variables it can use are listed beside the prompt; correct the name. This used to save, and then fail every resume that used the prompt. |
+| Every resume built with one prompt fails with a `Ref:`, and the backend log under it says *Prompt "..." contains unknown variables: ...* | The stored prompt names a variable nothing supplies - written straight into the database, or saved before saves were checked. Open it under **Admin → Prompts**, where the name is reported, and correct or remove it. |
+| **Admin → Prompts** says *This prompt predates the profile's Strengths and Soft Skills switches; the app still enforces them.* | The tailoring prompt's text never mentions `[[includeStrengths]]` - it was edited before the switches existed. Nothing is broken: the code appends the switches to every tailoring turn and enforces them after the model. To make the text say so too, add the shipped prompt's *RESUME SECTIONS* block (`[[includeStrengths]]`, `[[includeSoftSkills]]`, `[[technicalSkillsLayout]]`); the note then goes. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
 | A model is missing from the model menus | The menus list only models that can run right now. Under **Admin → Models**, it is either *Disabled*, on a provider switched off under Admin → Settings (*Provider off*), or on a seat locked in this installation (*🔒 Locked*, with the reason). Nothing is locked by default, so a lock means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart. |
@@ -1801,6 +2011,14 @@ injected runner — so the suite needs no network, no `claude`, `codex` or
 `gemini` binary, and spawns no subprocess. A fixture's name says what it is:
 `recorded-` is a real capture, `constructed-` a real envelope around an answer
 that could not be captured here.
+
+The two skills layouts and the two section switches are pinned per template:
+`backend/test/templateLayouts.test.js` renders every built-in in each layout it
+declares and with each switch on and off, and checks the capability flags
+against the markup. The live preview's access rules and its lack of side
+effects are in `profilePreview.test.js`, run with every seat locked so a 200
+also proves no model was asked; the prompt variables and their drift check in
+`promptVariables.test.js`.
 
 The documentation is checked too. `backend/test/envExample.test.js` reads
 `.env.example` and this README against the table in

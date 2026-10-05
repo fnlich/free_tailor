@@ -2,30 +2,37 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   isProfileLimit,
   profilesApi,
   readProfileImportFile,
+  templatesApi,
   Profile,
-  CreateProfileDTO,
+  Template,
 } from '@/lib/api';
-import ProfileForm from '@/components/admin/ProfileForm';
-import chrome from '@/components/admin/profileTemplateChrome.module.css';
-import { IconClose } from '@/components/icons';
 import { EmptyState, ErrorNotice, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
+import { LAYOUT_LABELS, drawnTemplate, normalizeTechnicalSkillsLayout } from '@/lib/profileDraft';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
 import { pdfSizeRefusal } from '@/lib/upload';
 
+/**
+ * The account's profiles. Creating and editing one happen on their own routes
+ * (/admin/profiles/new, /admin/profiles/[id]), where the form has a live
+ * preview beside it; this page lists them and holds the ways in - new, a resume
+ * PDF, a JSON file.
+ */
 export default function ProfilesPage() {
+  const router = useRouter();
   // uploadMaxMb is the server's UPLOAD_MAX_MB, served on /auth/me - see lib/upload.ts.
   const { account, loading: authLoading, refresh, uploadMaxMb, refreshUploadMaxMb } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   /** One of the page's own sentences, or a caught failure for <ErrorNotice> to word. */
   const [error, setError] = useState<unknown>('');
-  const [showForm, setShowForm] = useState(false);
-  const [editingProfile, setEditingProfile] = useState<Profile | null>(null);
+  /** For each row's template name. Empty until it arrives, which only costs the names. */
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const [notice, setNotice] = useState('');
@@ -34,6 +41,7 @@ export default function ProfilesPage() {
 
   useEffect(() => {
     loadProfiles();
+    templatesApi.getAll().then(setTemplates, () => undefined);
   }, []);
 
   const loadProfiles = async () => {
@@ -44,35 +52,6 @@ export default function ProfilesPage() {
       setError(err ?? 'Failed to load your profiles.');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleCreate = async (data: CreateProfileDTO) => {
-    try {
-      await profilesApi.create(data);
-      await loadProfiles();
-      // The account's own count feeds the menu in the layout above, which would
-      // otherwise read one behind this page until the next navigation.
-      await refresh();
-      setShowForm(false);
-    } catch (err) {
-      // Rethrown so ProfileForm shows it in the modal the user is looking at.
-      // The re-sync matters for the race: two tabs at the limit, one wins, and
-      // the loser should find its buttons disabled rather than keep trying.
-      if (isProfileLimit(err)) await refresh();
-      throw err;
-    }
-  };
-
-  const handleUpdate = async (data: CreateProfileDTO) => {
-    if (!editingProfile) return;
-    try {
-      await profilesApi.update(editingProfile.id, data);
-      await loadProfiles();
-      setEditingProfile(null);
-      setShowForm(false);
-    } catch (err) {
-      throw err;
     }
   };
 
@@ -97,19 +76,11 @@ export default function ProfilesPage() {
   };
 
   const openCreateForm = () => {
-    setEditingProfile(null);
-    setShowForm(true);
+    router.push('/admin/profiles/new');
   };
 
-  const openEditForm = (profile: Profile) => {
-    setEditingProfile(profile);
-    setShowForm(true);
-  };
-
-  const closeForm = () => {
-    setEditingProfile(null);
-    setShowForm(false);
-  };
+  /** The editor, on the profile's own route. */
+  const editorHref = (profile: Pick<Profile, 'id'>) => `/admin/profiles/${encodeURIComponent(profile.id)}`;
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -134,12 +105,11 @@ export default function ProfilesPage() {
     try {
       setUploadProgress('Extracting profile information with AI...');
       const profile = await profilesApi.uploadResume(file);
-      await loadProfiles();
       await refresh();
       setUploadProgress('');
-      // Open edit form with the extracted profile so user can review/edit
-      setEditingProfile(profile);
-      setShowForm(true);
+      // Straight into the editor: what the model read out of a PDF is worth
+      // looking over before it is used, and the preview shows it as a resume.
+      router.push(editorHref(profile));
     } catch (err) {
       if (isProfileLimit(err)) await refresh();
       setError(err ?? 'Failed to read a profile from that PDF.');
@@ -181,11 +151,11 @@ export default function ProfilesPage() {
       await loadProfiles();
       await refresh();
 
-      if (result.imported === 1) {
-        // Straight into the form, like the PDF path: one imported profile is
+      if (result.imported === 1 && result.profiles[0]) {
+        // Straight into the editor, like the PDF path: one imported profile is
         // something you are about to look over anyway.
-        setEditingProfile(result.profiles[0]);
-        setShowForm(true);
+        router.push(editorHref(result.profiles[0]));
+        return;
       }
 
       const reused = result.keptIds > 0 ? ` ${result.keptIds} kept the id from the file.` : '';
@@ -340,33 +310,6 @@ export default function ProfilesPage() {
         <ErrorNotice error={error} />
       </div>
 
-      {showForm && (
-        <div className="tl-backdrop">
-          <div
-            className="tl-dialog max-w-4xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="profile-form-title"
-          >
-            <div className={chrome.dialogHead}>
-              <h2 id="profile-form-title" className="text-xl font-bold tracking-tight text-ink">
-                {editingProfile ? 'Edit Profile' : 'Create Profile'}
-              </h2>
-              <button type="button" onClick={closeForm} className="tl-icon-button" aria-label="Close">
-                <IconClose className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="px-6 pb-6">
-              <ProfileForm
-                initialData={editingProfile || undefined}
-                onSubmit={editingProfile ? handleUpdate : handleCreate}
-                onCancel={closeForm}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
       {profiles.length === 0 ? (
         <EmptyState
           title="No profiles"
@@ -389,20 +332,29 @@ export default function ProfilesPage() {
                   name instead of squeezing the title down to "Full-st...". */}
               <div className="min-w-[12rem] flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-base font-semibold text-ink">{profile.name}</h3>
+                  <h3 className="text-base font-semibold text-ink">
+                    <Link href={editorHref(profile)} className="hover:underline underline-offset-2">
+                      {profile.name || 'Untitled profile'}
+                    </Link>
+                  </h3>
                   {profile.disabled && <Pill tone="grey">Disabled</Pill>}
                 </div>
                 {profile.title && <p className="mt-0.5 truncate text-sm text-muted">{profile.title}</p>}
+                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-subtle">
+                  {/* What the next resume looks like, without opening the editor:
+                      the template it is DRAWN with, which is not the stored one
+                      when that cannot print this profile's layout. */}
+                  {templates.length > 0 && <DrawnTemplate templates={templates} profile={profile} />}
+                  <Pill tone="sky">
+                    {LAYOUT_LABELS[normalizeTechnicalSkillsLayout(profile.profileSettings?.technicalSkillsLayout)]}
+                  </Pill>
+                </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => openEditForm(profile)}
-                  className="tl-button-quiet"
-                  data-size="sm"
-                >
+                <Link href={editorHref(profile)} className="tl-button-quiet" data-size="sm">
                   Edit
-                </button>
+                </Link>
                 <button
                   onClick={() => handleToggleDisabled(profile)}
                   className="tl-button-quiet"
@@ -424,5 +376,26 @@ export default function ProfilesPage() {
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * The template a profile's resumes are drawn with, and - when that is not the
+ * one it names - which one it names and why it is not used, in the words the
+ * editor's picker uses.
+ */
+function DrawnTemplate({ templates, profile }: { templates: readonly Template[]; profile: Profile }) {
+  const { stored, drawn, layout } = drawnTemplate(templates, profile);
+  if (!stored) {
+    return <span>{drawn ? `Template no longer offered - drawn with ${drawn.name}` : 'Template no longer offered'}</span>;
+  }
+  if (!drawn || drawn.id === stored.id) return <span>{stored.name}</span>;
+  return (
+    <>
+      <span>Drawn with {drawn.name}</span>
+      <Pill tone="amber">
+        {stored.name}: not for {LAYOUT_LABELS[layout]}
+      </Pill>
+    </>
   );
 }

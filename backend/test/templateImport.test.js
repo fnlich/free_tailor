@@ -56,6 +56,9 @@ test('every built-in template survives an export and re-import unchanged', () =>
     assert.equal(entry.template.htmlContent, all[index].htmlContent);
     assert.equal(entry.template.cssContent, all[index].cssContent ?? '');
     assert.deepEqual(entry.template.sections, all[index].sections);
+    // The layouts a built-in declares come back as declared, not re-inferred:
+    // charcoal-sidebar reads only skillCategories and still offers both.
+    assert.deepEqual(entry.template.skillsLayouts, all[index].skillsLayouts);
     assert.ok(entry.keptId, 'an import into an empty install keeps its ids');
   }
 });

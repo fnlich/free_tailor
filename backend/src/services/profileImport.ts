@@ -38,6 +38,9 @@ const PROFILE_FIELDS = [
   // flat `skills` - so a profile whose only skills field is the grouped one
   // must still read as a profile.
   'skillCategories',
+  // Its own field since the Soft Skills switch, so a file that lists only
+  // those is still somebody's profile.
+  'softSkills',
   'education',
   'certifications',
   'profileSettings',

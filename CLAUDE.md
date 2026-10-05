@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~22s with the tsc step, 1105 tests)
+npm test                       # backend node:test suite (~22s with the tsc step, 1169 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -45,8 +45,10 @@ Facts worth knowing before you build:
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. Twenty of the 28 App Router pages carry no `dark:` at all and
-  theme entirely through it, so it stays. New chrome uses the `@theme inline` tokens instead
+  ignored. 29 of the 30 App Router pages carry no `dark:` at all (only
+  `/test` does); they are built from the kit and the tokens rather than the
+  utilities it remaps, but it is still loaded and still wins wherever it
+  matches. New chrome uses the `@theme inline` tokens instead
   (`bg-surface`, `border-line`, `text-muted`), which the shim never names, and
   needs no `dark:` variant. Three of its rules are catch-alls rather than
   dark-mode fixes — the bare `border` width class, every `shadow*`, and bare
@@ -139,7 +141,10 @@ backend/src/
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service
   middleware/         # auth, uploads, and publicError.ts - what a failure may
                       #   tell whom (see "The AI layer" below)
-  routes/             # one file per /api/* area
+  routes/             # one file per /api/* area. profiles.ts also holds
+                      #   POST /profiles/preview, the profile editor's live
+                      #   preview (see "Profiles, templates and the section
+                      #   switches" below).
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor, migrate:legacy,
                       #   ai:rollback. The doctors share one shape -
@@ -157,6 +162,11 @@ backend/src/
                       #   there AND in the restore mapper or it silently does
                       #   not persist. The payload persists whole, which is why
                       #   a task's price lives on it (`payload.creditCost`).
+  services/templateChoice.ts # THE answer to "which template is this resume
+                      #   drawn with" - resolveTemplateForProfile, for the live
+                      #   preview, /resume/preview, /preview-all,
+                      #   /resume/generate and the queue. Do not write a
+                      #   second copy of the fallback.
   bidAssistant/       # the Bid Assistant's own prompt building, and database.js.
                       #   Its job board is SHARED (deleting a job, which takes
                       #   every account's answers, and the one Ask AI template
@@ -177,14 +187,18 @@ backend/
                       #   services/scraperProviders.ts and routes/jobs.ts.
                       #   (bidAssistant/database.js and scripts/installBrowser.js
                       #   are JavaScript too.)
-  static/             # seed prompts, skills, templates — defaults only
-  test/               # node:test, 90 files; fixtures/cli, codex and gemini
+  static/             # shipped defaults, never written at runtime - but not
+                      #   all read the same way: see the note under this block
+  test/               # node:test, 96 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
                       #   /orders, /credits (+ /credits/invoice, drawn with no
                       #   shell - navModel's isBareRoute). /account redirects.
+                      #   /admin/profiles, /admin/profiles/new and
+                      #   /admin/profiles/[id] are EVERY account's own profiles
+                      #   and their editor, whatever the path says.
   components/shell/   # The app shell - top bar, rail, and the "Settings" title
                       #   and tabs above every settings route (Administration
                       #   is one tab with a second row of the /admin/* pages).
@@ -195,6 +209,19 @@ frontend/src/
                       #   .tl-tabs, .tl-button(-quiet), .tl-table(-box),
                       #   .tl-section, .tl-input in globals.css are the shared
                       #   pieces, as classes the dark-mode shim never names.
+  components/profile/ # The profile editor: ProfileEditor owns the draft and
+                      #   the save, the sections are split by area
+                      #   (ContentSections, HistorySections, SkillSections,
+                      #   TemplateSection, SettingsSections; parts.tsx), and
+                      #   ProfilePreview frames the server's render in two
+                      #   swapping <iframe sandbox="allow-same-origin"> (no
+                      #   allow-scripts - same-origin only so the page can
+                      #   measure it), debounced, aborting stale requests and
+                      #   keeping the last good page up. The decisions with no
+                      #   React in them - draft <-> payload, what the preview is
+                      #   sent, which templates the picker offers - are
+                      #   lib/profileDraft.ts, which imports types only so
+                      #   test/frontendHelpers.test.js can load it.
   components/icons/   # Hand-rolled inline SVG set (there is no icon library).
                       #   index.tsx is UI icons - one grid, one stroke, one
                       #   colour, and the ROW decides it. marks.tsx is brand
@@ -223,8 +250,11 @@ frontend/src/
                       #   .tl-* rules are unlayered, so a utility cannot override
                       #   their padding or height; use a data-* option or a
                       #   CSS module. /admin/* pages sit inside app/admin/
-                      #   layout.tsx's <main> and under the shell's Settings
-                      #   title, so they open with an h2, not a PageHeader.
+                      #   layout.tsx's <main>; the ones that are Settings tabs
+                      #   are also under the shell's Settings title, so they
+                      #   open with an h2, not a PageHeader. /admin/profiles
+                      #   (and its editor), /admin/templates and /admin/groups
+                      #   are not tabs, and do open with a PageHeader.
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page), lib/sheet.ts (the spreadsheet range
@@ -252,8 +282,71 @@ read and still refund with the right advice, and `chain_invoices`,
 the `CREATE TABLE` statements are gone from `database/sqlite.ts`, the tables
 are not dropped.
 
-All dynamic data lives in SQLite. `backend/static` holds seeds only — a running
-install reads its prompts, skills and templates from the database.
+All dynamic data lives in SQLite. `backend/static` is never written, but its
+three kinds of default are read three different ways. The skill library is
+copied into the database once, on first use, and read from there. A built-in
+prompt is read from its file until an administrator edits it; from then on its
+database row wins. **Built-in templates are read from `backend/static/templates`
+on every request** and never copied: the database holds only an override row
+per built-in (`template_overrides` - name, description, disabled,
+`skillsLayouts`) laid over the file, so editing a shipped template's JSON
+changes every install at its next request, and uploaded, extracted and manual
+templates live in the `templates` table.
+
+## Profiles, templates and the section switches
+
+A profile's resume choices are three fields of `ProfileSettings`:
+`technicalSkillsLayout` (`'categorized' | 'flat'`, shown as **Grouped** /
+**Plain**, absent = categorized) and the booleans `includeSoftSkills` and
+`includeStrengths`, absent = false - which is what every resume rendered before
+they existed, so they needed no migration. Read them with `profileService`'s
+getters (`getProfileResumeSections` for all three); a save keeps a stored value
+when the payload omits it, and only a boolean decides. `Profile.softSkills` is
+the person's own list (trimmed, case-insensitively unique, 50 x 100 chars).
+
+**The render gate** is `applySkillsLimit` in `generators/pdfGenerator.ts`: every
+path - the live preview, the PDF, the DOCX, the queue - empties a switched-off
+section there, whatever content it was handed, because batch and queued
+content can arrive from the client without being re-parsed. A template's
+`.section-soft-skills` / `.section-strengths` markup is stripped at compile time
+only when the switch is off, and per-item skill loops are rewritten into
+categories only for `categorized` (the compile cache is keyed on the markup plus
+those choices).
+
+**The template decides the switches too.** A switch that the generation's
+template has no section for counts as OFF everywhere: read the profile through
+`profileForTemplate(profile, template)` (`profileService`), which every render
+entry point does (`generateResumePDF`, `generatePreviewHTML`,
+`generateProfilePreviewHTML`, and `generateResumeDOCX`, which takes the
+template for exactly this) and every tailoring caller does before
+`tailorResume` / `parseTailoredResumeContent` / `finaliseHeldContent` (the two
+resume routes, `/preview-all` - which resolves each profile's template before
+tailoring - and `runResumeTask`). A new output or tailoring path that skips it
+prints a section the PDF does not, or loses the posting's soft skills from the
+summary to a list that never prints.
+
+Every template carries `skillsLayouts` (a non-empty subset, in the order
+`['categorized','flat']`): the built-ins state it in their JSON (Burgundy Rule
+and Navy Rule are categorized-only), anything stored without one gets
+`inferTemplateSkillsLayouts(html)` on read (`services/templateImport.ts`), and an
+admin's `PATCH /api/templates/:id { skillsLayouts }` goes into a built-in's
+override row. `supportsSoftSkills` / `supportsStrengths` are derived from the
+markup on every read and stripped before a stored row is written. Templates are
+offered to a profile only for its layout, and `services/templateChoice.ts`
+falls back rather than failing a resume over a mismatch.
+
+`POST /api/profiles/preview` (any signed-in account, body `{ profile,
+profileId?, templateId? }`, answers `{ html, templateId, page: { widthPx,
+heightPx, contentHeightPx } }`) renders a DRAFT untailored through the same
+pipeline as generation. `buildPreviewProfile` never throws and takes only the
+four render settings from the draft; nothing is saved, no plan limit is
+checked, no model is asked, no credit moves (test/profilePreview.test.js runs
+with every seat locked to prove it). The document carries
+`PREVIEW_CONTENT_SECURITY_POLICY` as a meta right after its doctype - before it
+would flip the page into quirks mode and away from the PDF's layout - and a
+Grouped preview is NOT padded from the library (`padSkillCategories: false`),
+while generation still is. The gallery's `GET /api/templates/:id/preview` sends
+the same policy as a header and takes `?layout=&softSkills=&strengths=`.
 
 ## The AI layer
 
@@ -316,6 +409,34 @@ a secret kept in `app_settings`), `/resume/generate` and `/generation/batches`
 (`previewTokenByProfileId`, which the quote takes alone) price and run on its
 model, and supplied content without a valid token is charged at least what the
 profile's own model costs (`resolveSuppliedContentChoice`).
+
+**Prompt variables are the code's, strictly.** A feature-linked prompt may use
+exactly the variables `PROMPT_FEATURES` declares for it (`promptService.ts`), and
+that list must equal the keys of the feature's value builder -
+`buildTailorResumePromptValues` and its siblings in `resumeService.ts`,
+`buildJobFilterPromptValues` in `jobFilter.ts`; test/promptVariables.test.js
+fails when they drift, so a new variable goes in both. Create, update,
+`/prompts/validate` and `/preview` refuse or report any other name (`Unknown
+prompt variables: x`; an unsaved draft names its `featureKey`), and a stored
+record holding one fails at render with `contains unknown variables`. The
+tailor-resume prompt gets the profile's section choices as three words -
+`[[includeStrengths]]` / `[[includeSoftSkills]]` yes|no and
+`[[technicalSkillsLayout]]` grouped|plain (`buildResumeSectionPromptValues`) -
+never inside `profileJson`, and referenced AFTER it in the shipped prompt so the
+cacheable stable part is byte-identical. Because an admin-edited row may never
+mention them, `buildFinalSkillOverride(profile)` - a function of the profile,
+not a constant - is appended to the user body of EVERY tailor-resume turn and
+states all three; `parseTailoredResumeContent` then enforces them against the
+profile as it is NOW (strengths `[]` when off, never a made-up "Core Strength";
+the profile's own soft skills first when on; a Plain hard-skill list with no
+library padding; the summary's `Working style:` sentence only while Soft Skills
+is off). `runResumeTask` runs client-held preview content through the same
+parse (`finaliseHeldContent`), as `/resume/generate` does, so a switch flipped
+between preview and batch is honoured. No migration touches an admin's prompt
+text; a tailor-resume record that never mentions `[[includeStrengths]]` is
+flagged `predatesSectionSwitches` for admins. The analysis cache key leaves the
+switches out on purpose: the analysis reads the posting, not the profile, and
+one analysis serves every profile in a batch.
 
 **What a failure may tell whom** (`middleware/publicError.ts`). Most people
 using an install do not run its server, so a response never names a seat, CLI,

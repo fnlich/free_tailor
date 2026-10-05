@@ -520,12 +520,13 @@ function cloneStore(store: SkillsStore): SkillsStore {
   };
 }
 
-function readStore(): SkillsStore {
+/** The cached store itself. Never hand it out: see `cloneStore`. */
+function currentStore(): SkillsStore {
   ensureSeeded();
 
   const databasePath = getDatabasePath();
   if (storeCache && storeCache.databasePath === databasePath) {
-    return cloneStore(storeCache.store);
+    return storeCache.store;
   }
 
   const rows = getDb().prepare('SELECT type, skill, priority, category FROM skills').all() as SkillRow[];
@@ -535,7 +536,46 @@ function readStore(): SkillsStore {
   });
 
   storeCache = { databasePath, store };
-  return cloneStore(store);
+  return store;
+}
+
+function readStore(): SkillsStore {
+  return cloneStore(currentStore());
+}
+
+/**
+ * The hard-skill library by lower-cased, whitespace-collapsed name, built once
+ * per change of the store.
+ *
+ * The renderer looks a skill up once per skill it places, and filling a
+ * categorized block walks the whole library - each lookup a fresh copy of
+ * ~1,500 records and a linear scan, which is what made one categorized render
+ * cost about a quarter of a second. The live profile preview renders on every
+ * pause in typing, so that cost is paid over and over.
+ *
+ * Keyed on the cached store's identity, which changes whenever the cache is
+ * rebuilt - after any write, or when DB_DIR moves - so it is never stale. The
+ * records are the cached ones and READ-ONLY; the first record wins a name
+ * written twice, as the `find` it replaces did.
+ */
+let hardSkillIndexCache: { store: SkillsStore; index: Map<string, Readonly<HardSkillRecord>> } | null = null;
+
+export function hardSkillIndexKey(skill: string): string {
+  return skill.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function readHardSkillIndex(): ReadonlyMap<string, Readonly<HardSkillRecord>> {
+  const store = currentStore();
+  if (hardSkillIndexCache && hardSkillIndexCache.store === store) {
+    return hardSkillIndexCache.index;
+  }
+  const index = new Map<string, Readonly<HardSkillRecord>>();
+  for (const record of store.hard) {
+    const key = hardSkillIndexKey(record.skill);
+    if (key && !index.has(key)) index.set(key, record);
+  }
+  hardSkillIndexCache = { store, index };
+  return index;
 }
 
 function findSoftSkillIndex(skills: string[], skill: string): number {

@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { Profile } from '@/lib/api';
 
 interface ProfileSelectorProps {
@@ -36,9 +37,12 @@ export default function ProfileSelector({
       {profiles.length === 0 && !isLoading && (
         <p className="mt-2 text-sm text-muted">
           No profiles available. Create one under{' '}
-          <a href="/admin/profiles" className="tl-link">
-            Profile
-          </a>
+          {/* A Link, not an <a>: it is a page of this app, which a plain
+              anchor reloads from scratch - and next lint has flagged it
+              since /admin/profiles gained the editor's child routes. */}
+          <Link href="/admin/profiles" className="tl-link">
+            Profiles
+          </Link>
           .
         </p>
       )}

@@ -165,32 +165,47 @@ test('prompt validation rejects unknown variables', async () => {
   );
 });
 
-test('feature-linked prompts derive variables from prompt content', async () => {
+test('feature-linked prompts may use only the variables their code supplies', async () => {
+  // This used to pin the opposite: a feature prompt's variables were whatever
+  // its text named, so [[customNote]] validated clean - and then every
+  // generation that used the record failed, because nothing supplies it.
   const { staticDir } = useTempStorage('prompts-feature-variables');
   writeDefaultPrompt(staticDir, 'tailor-resume', 'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]]');
 
   const promptService = loadFresh('../dist/services/promptService');
   const prompt = await promptService.getPromptById('tailor-resume');
 
+  // Every variable the feature's code supplies, which is what an editor needs to see.
   assert.deepEqual(
     prompt.allowedVariables.map((variable) => variable.name),
-    ['profileJson', 'jobAnalysisJson', 'customNote']
+    promptService.listPromptFeatureVariableNames('tailor-resume')
   );
   assert.deepEqual(prompt.validation, {
     usedVariables: ['profileJson', 'jobAnalysisJson', 'customNote'],
-    unknownVariables: [],
+    unknownVariables: ['customNote'],
   });
+  // Refused before it reaches a model, naming the variable.
+  await assert.rejects(
+    () => promptService.renderPromptSegmentsByExactId('tailor-resume', { profileJson: '{}', jobAnalysisJson: '{}' }),
+    /unknown variables: customNote/
+  );
+
+  await assert.rejects(
+    () =>
+      promptService.createPrompt({
+        name: 'Tailor Variant',
+        featureKey: 'tailor-resume',
+        content: 'Variant [[profileJson]] [[jobAnalysisJson]] [[customNote]]',
+      }),
+    /Unknown prompt variables: customNote/
+  );
 
   const variant = await promptService.createPrompt({
     name: 'Tailor Variant',
     featureKey: 'tailor-resume',
-    content: 'Variant [[profileJson]] [[jobAnalysisJson]] [[customNote]]',
+    content: 'Variant [[profileJson]] [[jobAnalysisJson]] [[includeStrengths]]',
   });
-
-  assert.deepEqual(
-    variant.allowedVariables.map((variable) => variable.name),
-    ['profileJson', 'jobAnalysisJson', 'customNote']
-  );
+  assert.deepEqual(variant.validation.unknownVariables, []);
 });
 
 test('editing a built-in prompt stores the edit in the database and keeps the static default untouched', async () => {

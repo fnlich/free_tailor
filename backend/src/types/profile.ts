@@ -87,6 +87,18 @@ export interface ProfileSettings {
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**
+   * Whether the resume carries a Soft Skills section.
+   *
+   * Absent means false, and false is what every resume rendered before this
+   * switch existed: the section was stripped from every template. So a profile
+   * nobody has touched since comes out exactly as it did, and only somebody who
+   * ticks the box sees the section appear. A rendering choice like the layout -
+   * the profile keeps its soft skills either way.
+   */
+  includeSoftSkills?: boolean;
+  /** Whether the resume carries a Strengths section. Absent means false, for the same reason. */
+  includeStrengths?: boolean;
+  /**
    * This profile's default model.
    *
    * Every field is optional and an absent one inherits the app default, so a
@@ -139,6 +151,15 @@ export interface Profile {
    * nothing is inferred.
    */
   skillCategories?: SkillCategoryGroup[];
+  /**
+   * The soft skills this person claims, in their own order.
+   *
+   * Optional because every profile written before the Soft Skills switch has
+   * none; absent and empty read the same. Rendered only when
+   * `profileSettings.includeSoftSkills` is on, and kept either way - turning the
+   * section off must not throw away the list somebody typed.
+   */
+  softSkills?: string[];
   education: Education[];
   certifications?: Certification[];
   createdAt: string;
@@ -163,6 +184,8 @@ export interface CreateProfileDTO {
    */
   skills?: unknown;
   skillCategories?: unknown;
+  /** A list of names; anything else in it is dropped. Omitted keeps what is stored. */
+  softSkills?: unknown;
   education?: Partial<Education>[];
   certifications?: Certification[];
 }

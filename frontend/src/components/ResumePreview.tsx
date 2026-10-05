@@ -102,7 +102,7 @@ export default function ResumePreview({
           <div className={sidebar ? 'bg-surface-muted p-4 sm:p-6 lg:h-full lg:overflow-y-auto' : ''}>
             {html ? (
               <div className={`resume-paper-shell ${styles.paper} mx-auto max-w-[816px]`}>
-                <iframe srcDoc={html} className="w-full h-[1056px] border-0" title="Resume Preview" />
+                <iframe srcDoc={html} sandbox="" className="w-full h-[1056px] border-0" title="Resume Preview" />
               </div>
             ) : (
               <div className="flex items-center justify-center h-[600px] text-muted">

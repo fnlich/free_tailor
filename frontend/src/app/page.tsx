@@ -2401,6 +2401,7 @@ export default function Home() {
                   <div className={`resume-paper-shell ${styles.paper} mx-auto max-w-[816px]`}>
                     <iframe
                       srcDoc={activeMultiplePreview.html}
+                      sandbox=""
                       className="w-full h-[1056px] border-0"
                       title={`Resume Preview - ${activeMultiplePreview.profileName}`}
                     />

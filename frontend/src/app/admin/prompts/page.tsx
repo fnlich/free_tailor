@@ -449,6 +449,9 @@ function PromptsPageBody() {
     try {
       const nextValidation = await promptsApi.validateDraft({
         id: draft.id,
+        // A new or duplicated variant has no id yet; without its feature the
+        // server checks it against no variables and calls every one unknown.
+        featureKey: draft.id ? undefined : draft.featureKey,
         content: draft.content,
         allowedVariables: draft.featureKey ? undefined : draft.allowedVariables,
       });
@@ -469,6 +472,9 @@ function PromptsPageBody() {
     try {
       const nextPreview = await promptsApi.previewDraft({
         id: draft.id,
+        // A new or duplicated variant has no id yet; without its feature the
+        // server checks it against no variables and calls every one unknown.
+        featureKey: draft.id ? undefined : draft.featureKey,
         content: draft.content,
         allowedVariables: draft.featureKey ? undefined : draft.allowedVariables,
       });
@@ -822,6 +828,20 @@ function PromptsPageBody() {
                       <StaticValue>{draft.featureLabel || draft.featureKey || 'No feature assigned'}</StaticValue>
                     </Field>
                   </div>
+
+                  {/*
+                    A resume prompt written before the profile's Strengths and
+                    Soft Skills switches never mentions them. Nothing breaks -
+                    the code appends the rules to every tailoring prompt - but an
+                    administrator reading this one would otherwise wonder why a
+                    switched-off section never appears.
+                  */}
+                  {draft.featureKey === 'tailor-resume' && !/\[\[\s*includeStrengths\s*\]\]/.test(draft.content) && (
+                    <Notice tone="info">
+                      This prompt predates the profile&apos;s Strengths and Soft Skills switches; the app
+                      still enforces them.
+                    </Notice>
+                  )}
 
                   {/*
                     Said here because nothing else would: a resume is charged at

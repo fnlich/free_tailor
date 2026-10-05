@@ -66,6 +66,45 @@ Coverage currently focuses on:
   and the shared job board's deletions are an administrator's
 - the batch progress stream's bare-newline heartbeat, which keeps a proxy's
   idle timeout from cutting a long batch (`batchStream.test.js`)
+- a profile's two section switches and its own soft skills
+  (`resumeSections.test.js`): off unless stored `true`, kept by a save that
+  omits them; the soft-skill list cleaned, bounded and kept; the preview's
+  profile builder never throwing and taking only the settings that change the
+  render; the render gate - a switched-off section empty whatever the content
+  carries, a switched-on one showing the tailored list or, when that is empty,
+  the profile's own; the live preview grouping only the skills entered while
+  generation still pads; links reaching an `href` only as http(s); and the
+  DOCX carrying Strengths and Soft Skills exactly when the PDF does
+- the templates and the two skills layouts (`templateLayouts.test.js`): every
+  built-in rendered in each layout it declares (one item per skill Plain,
+  headings Grouped) and with each switch on and off, its capability flags
+  against its markup, the section-stripping regressions, layouts inferred for
+  a template that states none and kept for one that does (stored, imported,
+  manual), an administrator's reclassification and its refusal by name, the
+  gallery preview's options and no-script policy, and the template resolver's
+  fallbacks
+- the live profile preview over HTTP (`profilePreview.test.js`), run with all
+  three seats locked so a 200 also proves no model was asked: nothing written
+  or charged even at the plan limit, the draft laid over the caller's own
+  profile and somebody else's a 404, half-typed drafts rendering, nothing typed
+  able to run, the layout and switches reaching the page, the template order
+  and layout fallback, a disabled template a 404 for a user only, and a 503
+  with a ref when no template is enabled
+- tailoring by the switches (`resumeSectionPrompts.test.js`): the three
+  prompt values as words outside `profileJson`, the shipped prompt and the
+  appended override saying what the switches say, strengths and soft skills
+  kept, replaced or emptied per switch with nothing invented, the summary's
+  `Working style:` sentence only while Soft Skills is off, a Plain list with
+  no library padding, job-relevance ordering that keeps every skill, and held
+  content - a builder preview, a queued task - finished against the profile as
+  it is now; and end to end, two profiles on one analysis each tailored by
+  their own switches through `/api/resume/preview-all`
+  (`sectionSwitchesEndToEnd.test.js`)
+- prompt variables (`promptVariables.test.js`): every feature declaring
+  exactly the variables its code supplies, a typo refused on save and named
+  on validate (also through the routes), the shipped prompts validating
+  clean, the note on a tailoring prompt that predates the switches, and such a
+  prompt still obeying them through a stub seat
 - the three CLI seats, each with no binary, no subprocess and no network:
   the Claude provider - argv, child environment, event reduction, failure
   classification, rate limits, outages and concurrency, and a sign-in hold

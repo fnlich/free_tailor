@@ -48,15 +48,6 @@
   background: var(--surface-secondary);
 }
 
-/*
- * A form made of kit Sections with a .dialogFoot under them. The last section
- * drops its hairline: the foot draws its own, and two a pixel apart read as
- * one thick rule.
- */
-.sectionedForm > section:last-of-type {
-  border-bottom: 0;
-}
-
 /* A file picker drawn as a dashed drop area. */
 .dropzone {
   display: block;

@@ -10,6 +10,9 @@
     "experience",
     "education"
   ],
+  "skillsLayouts": [
+    "categorized"
+  ],
   "createdAt": "2026-01-01T00:00:00.000Z",
   "updatedAt": "2026-07-07T05:38:02.8475820Z"
 }

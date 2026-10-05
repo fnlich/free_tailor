@@ -1,4 +1,5 @@
 import type { ManualTemplateConfigStored, Template } from '../types/template';
+import type { TechnicalSkillsLayout } from '../types/profile';
 
 /**
  * Reading an uploaded template file.
@@ -96,6 +97,98 @@ export function inferTemplateSections(html: string): string[] {
   // Never empty: an empty list is the thing the old check refused over, and a
   // template whose markup names no known section still renders whatever it has.
   return found.length > 0 ? found : ['summary', 'experience', 'skills', 'education'];
+}
+
+/** Every Technical Skills layout, in the order a template's list is kept in. */
+export const TECHNICAL_SKILLS_LAYOUTS: readonly TechnicalSkillsLayout[] = ['categorized', 'flat'];
+
+/**
+ * A `skillsLayouts` value as a template may carry it, or null when it carries
+ * none worth keeping.
+ *
+ * Lenient, because it runs on every read of a stored row: unknown entries are
+ * dropped rather than refused, and what survives comes back de-duplicated in
+ * the canonical order. An empty result is null - "renders no layout" is not a
+ * thing a template can mean, so the caller infers one instead. The admin edit
+ * is where a bad value is refused by name (see routes/templates.ts).
+ */
+export function normalizeSkillsLayouts(value: unknown): TechnicalSkillsLayout[] | null {
+  if (!Array.isArray(value)) return null;
+  const kept = TECHNICAL_SKILLS_LAYOUTS.filter((layout) => value.includes(layout));
+  return kept.length > 0 ? [...kept] : null;
+}
+
+/**
+ * The layouts a template's markup can render, for a template that does not
+ * say.
+ *
+ * - A per-item loop over `hardSkills` or `skills` renders both: categorized,
+ *   the compile step rewrites it into category headings; flat, it is left
+ *   alone and draws one item per skill.
+ * - A template that reads only `skillCategories` is a category design. Flat
+ *   reaches it as one headless group, which in a grid of category cells is one
+ *   squeezed cell - so it is offered for categorized only.
+ * - A template with no skills binding at all renders either equally (it shows
+ *   no skills), so it is offered for both rather than hidden from anybody.
+ *
+ * Built-ins do not rely on this: their static JSON states it, so a design that
+ * reads `skillCategories` but lays a headless group out well can say both.
+ *
+ * The per-item probe runs on the markup OUTSIDE every `skillCategories` block:
+ * inside one, `{{#each skills}}` is the category's own list - the natural way
+ * to write a category card - not a top-level loop with one item per skill.
+ */
+export function inferTemplateSkillsLayouts(html: string): TechnicalSkillsLayout[] {
+  const source = typeof html === 'string' ? html : '';
+  const perItem = /\{\{#each\s+(?:hardSkills|skills)\s*\}\}/.test(withoutCategoryLoops(source));
+  const categories = /\{\{#each\s+skillCategories\b/.test(source);
+  return categories && !perItem ? ['categorized'] : ['categorized', 'flat'];
+}
+
+/**
+ * `source` with every `{{#each skillCategories}}...{{/each}}` block cut out,
+ * matching each block's own `{{/each}}` by depth so a loop nested inside it
+ * closes before the block does. An unclosed block runs to the end.
+ */
+function withoutCategoryLoops(source: string): string {
+  const open = /\{\{#each\s+skillCategories\b[^}]*\}\}/g;
+  const token = /\{\{(#each\b|\/each)[^}]*\}\}/g;
+  let kept = '';
+  let from = 0;
+  let match: RegExpExecArray | null;
+  while ((match = open.exec(source))) {
+    kept += source.slice(from, match.index);
+    let depth = 1;
+    let end = source.length;
+    token.lastIndex = open.lastIndex;
+    let found: RegExpExecArray | null;
+    while (depth > 0 && (found = token.exec(source))) {
+      depth += found[1] === '/each' ? -1 : 1;
+      if (depth === 0) end = token.lastIndex;
+    }
+    from = end;
+    open.lastIndex = end;
+  }
+  return kept + source.slice(from);
+}
+
+/**
+ * Whether a template has anywhere to put the Soft Skills and Strengths
+ * sections, read from its markup the way `inferTemplateSections` reads the
+ * rest.
+ *
+ * Derived on every read and never stored, so it cannot go stale when a manual
+ * template is rebuilt or an admin edits a stored one.
+ */
+export function inferTemplateCapabilities(html: string): {
+  supportsSoftSkills: boolean;
+  supportsStrengths: boolean;
+} {
+  const source = typeof html === 'string' ? html : '';
+  return {
+    supportsSoftSkills: /\{\{[#\w\s]*softSkills\b/.test(source),
+    supportsStrengths: /\{\{[#\w\s]*strengths\b/.test(source),
+  };
 }
 
 function readStringList(value: unknown): string[] {
@@ -291,6 +384,9 @@ export function buildImportedTemplates(
         htmlContent,
         cssContent: typeof entry.cssContent === 'string' ? entry.cssContent : '',
         sections: sections.length > 0 ? sections : inferTemplateSections(htmlContent),
+        // Kept when the file states it, so an export of a reclassified template
+        // comes back classified the same way; otherwise read off the markup.
+        skillsLayouts: normalizeSkillsLayouts(entry.skillsLayouts) ?? inferTemplateSkillsLayouts(htmlContent),
         // The template's own history is a fact about it and survives;
         // `updatedAt` does not, because this row was written just now.
         createdAt: readTimestamp(entry.createdAt) ?? now,

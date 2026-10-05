@@ -20,7 +20,7 @@ import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
 import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
 import { ownerOfGeneratedFile } from '../database/orderRepository';
-import { getTemplateById } from '../extractors/templateExtractor';
+import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
 import { getUserAppSettings, type ModelRequestOptions } from '../config/aiModelConfig';
 import {
   normalizeAiPreferences,
@@ -36,8 +36,8 @@ import { PublicError, publicItemError, sendPublicError } from '../middleware/pub
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
 import { getProfileFor, listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
-import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
-import { GenerateResumeRequest, JobAnalysis, TailoredContent, Template } from '../types/template';
+import { DEFAULT_ANALYZE_JOB_PROMPT_ID, profileForTemplate } from '../services/profileService';
+import { GenerateResumeRequest, JobAnalysis, TailoredContent } from '../types/template';
 
 const router = Router();
 /**
@@ -103,35 +103,6 @@ function resolveGenerationRole(role: unknown, analysis?: import('../types/templa
     return role.trim();
   }
   return analysis?.jobMeta?.title?.trim() || '';
-}
-
-async function resolveTemplateForProfile(profile: Profile, requestedTemplateId?: string): Promise<Template | null> {
-  const candidateIds = [
-    typeof requestedTemplateId === 'string' ? requestedTemplateId.trim() : '',
-    typeof profile.preferredTemplate === 'string' ? profile.preferredTemplate.trim() : '',
-    'default',
-  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
-
-  for (const candidateId of candidateIds) {
-    const template = await getTemplateById(candidateId);
-    if (template && !template.disabled) {
-      return template;
-    }
-  }
-
-  return null;
-}
-
-/**
- * No enabled template to render with, not even the default. The fix is an
- * administrator's (Admin -> Templates), so the reader is told whom to ask and
- * the log gets a ref.
- */
-function noTemplate(): PublicError {
-  return new PublicError('No resume template is available right now. Please contact your administrator.', {
-    status: 503,
-    detail: 'No enabled template was found, not even "default".',
-  });
 }
 
 function getProfileAnalyzeJobPromptId(profile?: Profile): string {
@@ -416,6 +387,7 @@ async function tailorResumesForProfiles(
   requestChoice: AiChoice,
   overrides: AiPreferences,
   options: ModelRequestOptions,
+  templateId: string | undefined,
   signal?: AbortSignal
 ): Promise<{
   tailoredByProfileId: Map<string, TailoredContent>;
@@ -449,7 +421,11 @@ async function tailorResumesForProfiles(
   const outcomes = await mapWithConcurrency(profiles, capacity.limit, async (profile) => {
     const choice = await resolveAiChoice(overrides, profile, options);
     modelIdByProfileId.set(profile.id, choice.modelId);
-    return tailorResume(profile, analysis, choice, signal);
+    // Tailored for the template it will be drawn with, which the preview
+    // below resolves the same way: a section that template cannot print is
+    // off for the model too (see `profileForTemplate`).
+    const template = await resolveTemplateForProfile(profile, templateId);
+    return tailorResume(profileForTemplate(profile, template), analysis, choice, signal);
   });
 
   outcomes.forEach((outcome, index) => {
@@ -531,6 +507,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
           selectedModel,
           aiOverrides,
           requestOptions,
+          templateId,
           requestSignal(req, res)
         )
       : null;
@@ -557,7 +534,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       const tailoredContent = analysis
         ? bulkTailoring
           ? bulkTailoring.tailoredByProfileId.get(profile.id)
-          : await tailorResume(profile, analysis, selectedModel, requestSignal(req, res))
+          : await tailorResume(profileForTemplate(profile, template), analysis, selectedModel, requestSignal(req, res))
         : undefined;
       const writtenOn = tailoredContent
         ? bulkTailoring?.modelIdByProfileId.get(profile.id) ?? selectedModel.modelId
@@ -687,7 +664,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
-      throw noTemplate();
+      throw noTemplateAvailable();
     }
 
     // If job description provided, tailor the resume. Existing/manual content still
@@ -702,11 +679,14 @@ router.post('/generate', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
+    // Tailoring reads the profile through its template, as the render does: a
+    // switch the template has no section for is off for the model too.
+    const sectionProfile = profileForTemplate(profile, template);
     if (tailoredContent && analysis) {
-      tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
+      tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), sectionProfile, analysis);
     }
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
+      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res));
     }
     const resolvedRole = resolveGenerationRole(role, analysis);
     if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
@@ -750,7 +730,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       const [pdfFilename, docxFilename] = await timeResumeStage('Resume PDF/DOCX generation', () =>
         Promise.all([
           generateResumePDF(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole),
-          generateResumeDOCX(profile, tailoredContent, pathInfo, companyName.trim(), resolvedRole),
+          generateResumeDOCX(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole),
         ])
       );
       console.log(`[Resume timing] Build after LLM finished in ${formatDuration(buildAfterLlmStartedAt, process.hrtime.bigint())}`);
@@ -777,7 +757,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       const formatNorm = format === 'docx' ? 'docx' : 'pdf';
       const filename = await timeResumeStage(`Resume ${formatNorm.toUpperCase()} generation`, () =>
         formatNorm === 'docx'
-          ? generateResumeDOCX(profile, tailoredContent, pathInfo, companyName.trim(), resolvedRole)
+          ? generateResumeDOCX(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole)
           : generateResumePDF(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole)
       );
 
@@ -850,7 +830,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     // Ensure built-in templates exist, then load requested template
     const template = await resolveTemplateForProfile(profile, templateId);
     if (!template) {
-      throw noTemplate();
+      throw noTemplateAvailable();
     }
 
     // If job description provided, tailor the resume. Existing/manual content still
@@ -865,15 +845,18 @@ router.post('/preview', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
+    // Tailoring reads the profile through its template, as the render does: a
+    // switch the template has no section for is off for the model too.
+    const sectionProfile = profileForTemplate(profile, template);
     if (tailoredContent && analysis) {
-      tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
+      tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), sectionProfile, analysis);
     }
     // Only content THIS request wrote gets a token naming its model. Content
     // the request supplied is re-rendered, and a token for it would let any
     // model's work be re-labelled as the one the request names.
     let previewToken: string | undefined;
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
+      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res));
       previewToken = issuePreviewToken({ userId: req.user!.id, profileId: profile.id, modelId: selectedModel.modelId });
     }
 

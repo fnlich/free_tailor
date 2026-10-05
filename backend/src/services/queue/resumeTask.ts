@@ -6,15 +6,21 @@ import {
   retiredProviderFamily,
 } from '../../config/providerCatalog';
 import { generationRenderConcurrency } from '../../config/operational';
-import { getTemplateById } from '../../extractors/templateExtractor';
+import { resolveTemplateForProfile } from '../templateChoice';
+import { profileForTemplate } from '../profileService';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../../generators/coverLetterGenerator';
 import { generateResumePDF } from '../../generators/pdfGenerator';
 import { analysisCacheKey } from '../ai/analysisCache';
 import { getProviderSemaphore, warnOnce } from '../ai';
-import { analyzeJobDescription, generateCoverLetter, tailorResume } from '../resumeService';
+import {
+  analyzeJobDescription,
+  generateCoverLetter,
+  parseTailoredResumeContent,
+  tailorResume,
+} from '../resumeService';
 import type { Profile } from '../../types/profile';
-import type { JobAnalysis, Template } from '../../types/template';
+import type { JobAnalysis, TailoredContent } from '../../types/template';
 import { getGeneratedOutputPath } from '../../utils/generatedPath';
 import type { Assignment } from './taskQueue';
 
@@ -152,23 +158,6 @@ export function resetResumeTaskStateForTests(): void {
   inFlightAnalyses.clear();
 }
 
-async function resolveTemplate(
-  profile: Profile,
-  requestedTemplateId?: string
-): Promise<Template | null> {
-  const candidateIds = [
-    typeof requestedTemplateId === 'string' ? requestedTemplateId.trim() : '',
-    typeof profile.preferredTemplate === 'string' ? profile.preferredTemplate.trim() : '',
-    'default',
-  ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
-
-  for (const candidateId of candidateIds) {
-    const template = await getTemplateById(candidateId);
-    if (template && !template.disabled) return template;
-  }
-  return null;
-}
-
 /**
  * True for a stored choice that names a removed provider, or the "either site"
  * route they offered - the choices `currentChoice` resolves again.
@@ -257,6 +246,46 @@ async function analyseOnce(
  */
 export const __analyseOnceForTests = analyseOnce;
 
+/**
+ * Content a page held from an earlier preview, finished against the profile
+ * as it is NOW - what /resume/generate does with the same content.
+ *
+ * The preview was tailored for whatever the profile said then, and the person
+ * can flip a section switch or the skills layout before pressing Generate. A
+ * switch turned off is covered at render either way; the rest is not: a
+ * grouped skills list padded from the library would render as a plain one,
+ * padding and all, and a Soft Skills section turned on would show the
+ * posting's list rather than the candidate's own first. Running the same
+ * post-processing the tailoring call ends with puts all of it right, and it
+ * is idempotent on content it already produced.
+ *
+ * Never fatal: this content was charged for, and the render gate still holds
+ * the switches if it cannot be re-read - so a failure here renders it as sent.
+ */
+function finaliseHeldContent(
+  content: TailoredContent,
+  profile: Profile,
+  analysis: JobAnalysis
+): TailoredContent {
+  try {
+    return parseTailoredResumeContent(JSON.stringify(content), profile, analysis);
+  } catch (error) {
+    warnOnce(
+      'heldTailoredContentUnreadable',
+      `A queued resume's previewed content could not be re-read, so it renders as sent: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return content;
+  }
+}
+
+/**
+ * The finishing step on its own, for the tests: a whole task would also print
+ * a PDF, and nothing in the suite may start a browser.
+ */
+export const __finaliseHeldContentForTests = finaliseHeldContent;
+
 /** Builds one resume. Throws on failure; the queue records it against the task. */
 export async function runResumeTask(
   input: ResumeTaskInput,
@@ -265,14 +294,24 @@ export async function runResumeTask(
   const { profile, job } = input;
   const choice = await currentChoice(input.choice, profile);
 
-  const template = await resolveTemplate(profile, input.templateId);
+  // The same choice the preview and /resume/generate make, against the profile
+  // as it is NOW: a task queued before its profile changed layout is drawn
+  // with a template that fits the layout it renders in.
+  const template = await resolveTemplateForProfile(profile, input.templateId);
   if (!template) throw new Error('Default template not available');
 
   const analysis = await analyseOnce(job, choice, assignment.signal);
 
+  // Tailored for the template it is drawn with: a section switch that
+  // template has no section for is off for the model too, as it is in the
+  // PDF and the DOCX below.
+  const sectionProfile = profileForTemplate(profile, template);
   let tailoredContent = input.tailoredContent;
+  if (tailoredContent && analysis) {
+    tailoredContent = finaliseHeldContent(tailoredContent, sectionProfile, analysis);
+  }
   if (!tailoredContent && analysis) {
-    tailoredContent = await tailorResume(profile, analysis, choice, assignment.signal);
+    tailoredContent = await tailorResume(sectionProfile, analysis, choice, assignment.signal);
   }
 
   const coverLetterBody = tailoredContent?.coverLetter?.trim()
@@ -309,13 +348,14 @@ export async function runResumeTask(
     if (input.format === 'both') {
       const [pdf, docx] = await Promise.all([
         generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
-        generateResumeDOCX(profile, tailoredContent, pathInfo, job.companyName, job.role),
+        generateResumeDOCX(profile, template, tailoredContent, pathInfo, job.companyName, job.role),
       ]);
       result.pdf = pdf;
       result.docx = docx;
     } else if (input.format === 'docx') {
       result.docx = await generateResumeDOCX(
         profile,
+        template,
         tailoredContent,
         pathInfo,
         job.companyName,

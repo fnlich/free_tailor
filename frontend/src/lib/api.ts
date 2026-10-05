@@ -360,6 +360,12 @@ export async function apiFetch<T>(
       // IP or hostname rather than localhost.
       response = await fetch(url, { ...options, headers, credentials: 'include' });
     } catch (error) {
+      // A caller that aborted asked for nothing more. Trying the next base
+      // would start the request again under a signal that is already spent,
+      // and the loop would end in "cannot reach the backend" - a sentence the
+      // live preview, which aborts a stale render on every keystroke, would
+      // then show for a server that is up. The AbortError goes back as is.
+      if (options.signal?.aborted) throw error;
       // `fetch` rejects only when the request never completed: no server, DNS
       // failure, a refused CORS preflight, or a dropped connection. That, and
       // only that, is worth trying the next base for.
@@ -1463,6 +1469,18 @@ export interface Education {
   startDate: string;
   endDate: string;
   location: string;
+  /** Not edited by the profile editor, but kept: it travels with the row. */
+  gpa?: string;
+  achievements?: string[];
+}
+
+export interface Certification {
+  name: string;
+  issuer: string;
+  date: string;
+  /** Not edited by the profile editor, but kept: it travels with the row. */
+  expiryDate?: string;
+  credentialId?: string;
 }
 
 export type HardSkillOrdering = 'library' | 'job-priority';
@@ -1538,8 +1556,15 @@ export interface ProfileSettings {
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
   hardSkillOrdering?: HardSkillOrdering;
-  /** Categorized or flat Technical Skills. Absent means categorized. */
+  /** Categorized ("Grouped") or flat ("Plain") Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
+  /**
+   * Whether the resume carries a Soft Skills section. Absent means false, which
+   * is what every resume rendered before the switch existed.
+   */
+  includeSoftSkills?: boolean;
+  /** Whether the resume carries a Strengths section. Absent means false. */
+  includeStrengths?: boolean;
   /** This profile's default model. */
   ai?: AiPreferences;
 }
@@ -1564,14 +1589,13 @@ export interface Profile {
    * library. Every skill in here is also in `skills`.
    */
   skillCategories?: SkillCategoryGroup[];
-  hardSkills?: string[];
+  /**
+   * The soft skills this person claims, in their own order. Printed only when
+   * `profileSettings.includeSoftSkills` is on, and kept either way.
+   */
   softSkills?: string[];
   education: Education[];
-  certifications?: Array<{
-    name: string;
-    issuer: string;
-    date: string;
-  }>;
+  certifications?: Certification[];
   createdAt: string;
   updatedAt: string;
 }
@@ -1602,12 +1626,29 @@ export interface CreateProfileDTO {
    * whatever is stored alone; sending an empty list clears it.
    */
   skillCategories?: SkillCategoryGroup[];
-  hardSkills?: string[];
+  /** Omitted keeps what is stored; an empty list clears it. */
   softSkills?: string[];
   education?: Partial<Education>[];
+  certifications?: Certification[];
   preferredTemplate?: string;
   disabled?: boolean;
   profileSettings?: ProfileSettings;
+}
+
+/**
+ * What `POST /profiles/preview` answers: the draft drawn as a resume.
+ *
+ * `templateId` is the template it was really drawn with - not the one asked
+ * for when that one does not offer the draft's layout or is no longer enabled,
+ * because the server then falls back exactly as a generated resume would.
+ * `page` is the printed page in CSS px, which the frame is sized to before it
+ * is scaled; `contentHeightPx` is one page's content box, roughly where a page
+ * break falls in the continuous document.
+ */
+export interface ProfilePreviewResult {
+  html: string;
+  templateId: string;
+  page: { widthPx: number; heightPx: number; contentHeightPx?: number };
 }
 
 // Template types
@@ -1640,6 +1681,17 @@ export interface Template {
   updatedAt: string;
   manualConfig?: ManualTemplateConfigStored;
   isBuiltIn?: boolean;
+  /**
+   * The Technical Skills layouts this template is offered for: a category grid
+   * is Grouped only, most designs are both. Optional only for a server that
+   * predates it, which offered every template for every layout - read it
+   * through lib/profileDraft.ts's `templateSkillsLayouts` rather than directly.
+   */
+  skillsLayouts?: TechnicalSkillsLayout[];
+  /** Whether its markup has a Soft Skills section. Worked out by the server on every read. */
+  supportsSoftSkills?: boolean;
+  /** Whether its markup has a Strengths section. Worked out by the server on every read. */
+  supportsStrengths?: boolean;
 }
 
 export type PromptResponseFormat = 'json' | 'text';
@@ -1800,6 +1852,24 @@ export const profilesApi = {
       method: 'POST',
       body: JSON.stringify(document),
     }),
+
+  /**
+   * Draws an unsaved draft as a resume, for the editor's live preview.
+   *
+   * Saves nothing, asks no model and costs no credit. `profileId` lays the
+   * draft over that stored profile, so fields the editor never sends still
+   * show as they will after a save. Aborting `signal` rejects with the
+   * AbortError itself (see `apiFetch`), which the caller ignores.
+   */
+  preview: (
+    body: { profile: CreateProfileDTO; profileId?: string; templateId?: string },
+    signal?: AbortSignal
+  ) =>
+    apiFetch<ProfilePreviewResult>('/profiles/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
 };
 
 /** What `POST /profiles/import` reports back. */
@@ -1871,7 +1941,16 @@ export const templatesApi = {
 
   getById: (id: string) => apiFetch<Template>(`/templates/${id}`),
 
-  update: (id: string, data: { disabled?: boolean; name?: string; description?: string }) =>
+  update: (
+    id: string,
+    data: {
+      disabled?: boolean;
+      name?: string;
+      description?: string;
+      /** Administrators only; a non-empty list of known layouts or the server answers 400. */
+      skillsLayouts?: TechnicalSkillsLayout[];
+    }
+  ) =>
     apiFetch<Template>(`/templates/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -2015,8 +2094,14 @@ export const promptsApi = {
       method: 'POST',
     }),
 
+  /**
+   * `featureKey` names the feature a draft not saved yet is for (a new or
+   * duplicated variant has no `id`), so it is checked against the variables
+   * that feature's code supplies rather than against none.
+   */
   validateDraft: (data: {
     id?: string;
+    featureKey?: PromptFeatureKey;
     content?: string;
     allowedVariables?: PromptVariableDefinition[];
     sampleValues?: Record<string, string>;
@@ -2028,6 +2113,7 @@ export const promptsApi = {
 
   previewDraft: (data: {
     id?: string;
+    featureKey?: PromptFeatureKey;
     content?: string;
     allowedVariables?: PromptVariableDefinition[];
     sampleValues?: Record<string, string>;

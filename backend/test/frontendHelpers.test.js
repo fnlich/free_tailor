@@ -237,3 +237,39 @@ test('twenty empty attaches in a row stop following, one that delivered resets t
   assert.equal(nextAttach(0, { delivered: 0, gone: true }).stop, true);
   assert.equal(nextAttach(0, { delivered: 5, gone: true }).stop, true);
 });
+
+// -- the Profiles list: which template a profile is drawn with -------------- //
+
+test('the Profiles list names the template a profile is drawn with, as the server picks it', () => {
+  const { drawnTemplate } = loadFrontendModule('lib/profileDraft.ts');
+  const template = (id, skillsLayouts) => ({ id, name: id, skillsLayouts });
+  const templates = [
+    template('forest-chips', ['categorized']),
+    template('default', ['categorized', 'flat']),
+    template('ink-ledger', ['categorized', 'flat']),
+  ];
+  const plain = (preferredTemplate) => ({ preferredTemplate, profileSettings: { technicalSkillsLayout: 'flat' } });
+  const ids = ({ stored, drawn }) => [stored?.id ?? null, drawn?.id ?? null];
+
+  // An administrator made Forest Chips Grouped-only after a Plain profile chose it.
+  assert.deepEqual(ids(drawnTemplate(templates, plain('forest-chips'))), ['forest-chips', 'default']);
+  assert.equal(drawnTemplate(templates, plain('forest-chips')).layout, 'flat');
+  // Fits: drawn with its own.
+  assert.deepEqual(ids(drawnTemplate(templates, plain('ink-ledger'))), ['ink-ledger', 'ink-ledger']);
+  assert.deepEqual(
+    ids(drawnTemplate(templates, { preferredTemplate: 'forest-chips', profileSettings: {} })),
+    ['forest-chips', 'forest-chips']
+  );
+  // None named: default, which is "stored" in the sense of what it renders with.
+  assert.deepEqual(ids(drawnTemplate(templates, plain(undefined))), ['default', 'default']);
+  // One no longer offered.
+  assert.deepEqual(ids(drawnTemplate(templates, plain('gone'))), [null, 'default']);
+  // No default offering the layout: the first template that does.
+  const noDefault = [template('forest-chips', ['categorized']), template('ink-ledger', ['flat'])];
+  assert.deepEqual(ids(drawnTemplate(noDefault, plain('forest-chips'))), ['forest-chips', 'ink-ledger']);
+  // Nothing prints it at all: the choice as it is, as the server does.
+  assert.deepEqual(ids(drawnTemplate([template('forest-chips', ['categorized'])], plain('forest-chips'))), [
+    'forest-chips',
+    'forest-chips',
+  ]);
+});

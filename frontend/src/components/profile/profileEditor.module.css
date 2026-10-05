@@ -1,0 +1,340 @@
+/*
+ * The profile editor's workspace: the form, the live preview beside it, and the
+ * Form / Preview switch that replaces the second column on a narrow screen.
+ *
+ * Plain CSS for the kit's reason (components/ui/kit.tsx): the html.dark shim
+ * is unlayered and beats every utility, and the .tl-* rules are unlayered too,
+ * so a utility cannot override their layout. Everything reads the theme's
+ * variables, so nothing here needs a `dark:` variant. The one colour that does
+ * not follow the theme is the page of the resume, which is white in both,
+ * because it is the document being previewed rather than the app around it.
+ *
+ * 1100px is where the preview gets a column of its own beside the form. It
+ * is not what keeps the form's fields readable: those pairs go two-up on the
+ * FORM COLUMN's width (a container query on .formPane, `@lg:` in the
+ * sections), not the window's. On the window's they stayed two-up inside a
+ * 390px column at 1100px and clipped an ordinary job title.
+ */
+
+.workspace {
+  display: grid;
+  gap: 1.5rem;
+}
+
+/* ---------------------------------------------------- the narrow switch */
+
+.switcher {
+  position: sticky;
+  top: var(--tl-topbar-h);
+  z-index: 4;
+  margin-top: -0.5rem;
+  padding-top: 0.5rem;
+  background: var(--canvas);
+}
+
+@media (min-width: 1100px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.92fr);
+    align-items: start;
+    gap: 2rem;
+  }
+
+  .switcher {
+    display: none;
+  }
+}
+
+@media (max-width: 1099.98px) {
+  .workspace[data-pane='form'] .previewPane,
+  .workspace[data-pane='preview'] .formPane {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------- the form */
+
+.formPane {
+  min-width: 0;
+  container-type: inline-size;
+}
+
+/*
+ * Keyboard focus stops clear of the sticky save bar (69px), so a focused field
+ * is never scrolled to the window's bottom edge and left entirely under the
+ * bar - the browser only scrolls a newly focused element just into the
+ * window. On a narrow screen the Form / Preview switch is sticky at the top as
+ * well, so Shift+Tab stops below it.
+ */
+.formPane :is(input, select, textarea, button, a, [tabindex]) {
+  scroll-margin-bottom: 6rem;
+}
+
+@media (max-width: 1099.98px) {
+  .formPane :is(input, select, textarea, button, a, [tabindex]) {
+    scroll-margin-top: calc(var(--tl-topbar-h) + 4rem);
+  }
+}
+
+/* The kit Section's own hairline is enough between sections; the save bar
+   draws the last one. */
+.formPane > section:last-of-type {
+  border-bottom: 0;
+}
+
+/*
+ * Save and Cancel, pinned to the foot of the window so they are in reach from
+ * anywhere in a long form. The canvas behind it hides what scrolls under.
+ */
+.saveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.875rem 0;
+  border-top: 1px solid var(--line-subtle);
+  background: var(--canvas);
+}
+
+/*
+ * A failed save, said in the bar where Save was pressed. At the foot of a form
+ * several screens long it was out of view from anywhere but the bottom, and
+ * there it arrived half under the bar - so pressing Save just turned the
+ * button back. Capped, so an administrator's long detail cannot grow the bar
+ * over the whole window.
+ */
+.saveError {
+  flex: 1 0 100%;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+/* A row of chips: skills, soft skills. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/*
+ * A chip no wider than its row. The kit's pill never wraps, which suits a
+ * status word and not a typed phrase: a 66-character soft skill made a chip
+ * wider than a phone, pushed its × off the screen and scrolled the page
+ * sideways, and in the two-pane layout a grouped skill with its heading menu
+ * ran under the preview, where the × could not be clicked. Two class
+ * selectors, so these beat the unlayered .tl-pill rule.
+ */
+.chips > :global(.tl-pill) {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chips > :global(.tl-pill) > select {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* The × inside a chip. */
+.chipRemove {
+  margin-right: -0.25rem;
+  padding: 0 0.125rem;
+  font-size: 0.875rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.chipRemove:hover {
+  opacity: 1;
+}
+
+/* An input with its Add button: the input takes the room, the button keeps its size. */
+.addRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.addRow > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.addRow > button {
+  flex: none;
+}
+
+/* Two layout choices side by side, one under the other on a phone. */
+.choices {
+  display: grid;
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .choices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* --------------------------------------------------------- the preview */
+
+/*
+ * Sticky beside the form on a wide screen, the height of the window under the
+ * top bar, so the resume stays in view while the form scrolls past it.
+ */
+.previewPane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-subtle);
+  border-radius: 0.75rem;
+  background: var(--surface-secondary);
+}
+
+@media (min-width: 1100px) {
+  .previewPane {
+    position: sticky;
+    top: calc(var(--tl-topbar-h) + 1rem);
+    height: calc(100dvh - var(--tl-topbar-h) - 2rem);
+  }
+}
+
+.previewHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.previewStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--text-subtle);
+  font-size: 0.8125rem;
+}
+
+/* The dot beside "Up to date" / "Updating". */
+.statusDot {
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 9999px;
+  background: #16a34a;
+}
+
+.statusDot[data-state='updating'] {
+  background: var(--coin);
+}
+
+.statusDot[data-state='error'] {
+  background: #dc2626;
+}
+
+.previewNotes {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0;
+}
+
+.previewNotes:empty {
+  display: none;
+}
+
+/* The well the page sits in. It scrolls on a wide screen; on a narrow one the window does. */
+.previewScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 1rem;
+  background: var(--surface-muted);
+}
+
+@media (min-width: 1100px) {
+  .previewScroll {
+    overflow-y: auto;
+  }
+}
+
+/* The scaled page. Its box is set inline to the scaled size of the document. */
+.sheet {
+  position: relative;
+  margin-inline: auto;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(2, 6, 23, 0.14), 0 10px 30px rgba(2, 6, 23, 0.14);
+}
+
+/*
+ * The document, at its printed width and scaled down to the well. Never
+ * interactive: it is a picture of the resume, and a click on a link in it has
+ * nowhere it should go.
+ */
+.frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  background: #ffffff;
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+/* The next document, loading out of sight while the last one stays up. */
+.frame[data-front='false'] {
+  visibility: hidden;
+}
+
+/* Where a printed page would end: approximate, so dashed and quiet. */
+.pageBreak {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed rgba(100, 116, 139, 0.7);
+  pointer-events: none;
+}
+
+.pageBreak > span {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.375rem;
+  padding: 0 0.375rem;
+  border-radius: 0.25rem;
+  background: rgba(255, 255, 255, 0.92);
+  color: #475569;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+}
+
+/* Before the first document arrives. */
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 16rem;
+  color: var(--text-subtle);
+  font-size: 0.875rem;
+}
+
+/* The full-size viewer's page: printed size, scrolled rather than scaled. */
+.viewerScroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 1rem;
+}
+
+.viewerFrame {
+  display: block;
+  margin-inline: auto;
+  border: 0;
+  background: #ffffff;
+  box-shadow: 0 16px 48px rgba(2, 6, 23, 0.35);
+  /* As in the pane: a link in the resume would navigate the frame, and the
+     wheel and the pinch belong to the scroller around it. */
+  pointer-events: none;
+}

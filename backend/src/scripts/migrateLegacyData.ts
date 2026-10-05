@@ -23,6 +23,7 @@ import { getDatabasePath, getDb } from '../database/sqlite';
 import { hasProfile, saveProfile } from '../database/profileRepository';
 import { getGroup, saveGroup } from '../database/groupRepository';
 import { hasStoredTemplate, saveStoredTemplate } from '../database/templateRepository';
+import { inferTemplateSkillsLayouts, normalizeSkillsLayouts } from '../services/templateImport';
 import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompts } from '../database/promptRepository';
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
 import { migrate001 } from '../database/migrations/001_openrouter_to_claude_cli';
@@ -118,6 +119,9 @@ function importTemplates(dir: string, staticTemplatesDir: string): Counter {
       htmlContent: template.htmlContent,
       cssContent: template.cssContent || '',
       sections: Array.isArray(template.sections) ? template.sections : [],
+      // A legacy file names none; the read-time inference then decides, as it
+      // does for every stored template without one.
+      skillsLayouts: normalizeSkillsLayouts(template.skillsLayouts) ?? inferTemplateSkillsLayouts(template.htmlContent),
       createdAt: template.createdAt || now,
       updatedAt: template.updatedAt || now,
       ...(template.manualConfig ? { manualConfig: template.manualConfig } : {}),

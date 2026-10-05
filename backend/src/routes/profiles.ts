@@ -2,13 +2,16 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import pdf from 'pdf-parse';
 import { CreateProfileDTO, Profile } from '../types/profile';
-import { requireUser } from '../middleware/auth';
+import { isAdmin, requireUser } from '../middleware/auth';
 import { PublicError, sendPublicError } from '../middleware/publicError';
 import { checkProfileModelChoice } from '../config/aiModelConfig';
 import { pdfUpload } from '../middleware/pdfUpload';
 import { extractProfileFromResume } from '../services/resumeService';
-import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
+import { buildNewProfile, buildPreviewProfile, buildUpdatedProfile } from '../services/profileService';
 import { buildImportedProfiles } from '../services/profileImport';
+import { getTemplateById } from '../extractors/templateExtractor';
+import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
+import { generateProfilePreviewHTML } from '../generators/pdfGenerator';
 import {
   assertCanAddProfile,
   deleteProfile,
@@ -128,6 +131,67 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
   res.json({ message: 'Profile deleted successfully' });
+});
+
+/**
+ * The profile editor's live preview: the draft as a resume, as it would print.
+ *
+ * Body `{ profile, profileId?, templateId? }` - `profile` is the editor's
+ * draft, laid over the stored profile when `profileId` names one of the
+ * caller's (somebody else's is a 404, as everywhere here). Answers
+ * `{ html, templateId, page }`: a whole document to frame, the template it was
+ * actually drawn with, and the printed page's size to scale it by.
+ *
+ * Costs nothing and keeps nothing: no row is written, the plan's profile limit
+ * is not consulted (nothing is being added), no model is asked and no credit
+ * is reserved. It renders untailored, through the same pipeline and template
+ * choice as a generated resume (`resolveTemplateForProfile`), so what it shows
+ * is what the next PDF will look like before any job tailors it.
+ *
+ * The template is the requested one, else the draft's own, else `default`. A
+ * template named in the request that does not exist, or is disabled for
+ * anybody but an administrator, is a 404 rather than a quiet substitute - the
+ * editor asked for that one by name. One that exists but does not offer the
+ * draft's layout falls back as generation does, and `templateId` says so.
+ */
+router.post('/preview', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      profile?: unknown;
+      profileId?: unknown;
+      templateId?: unknown;
+    };
+
+    const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
+    const existing = profileId ? getProfileFor(req.user!, profileId) : null;
+    if (profileId && !existing) {
+      res.status(404).json({ error: 'Profile not found' });
+      return;
+    }
+
+    const admin = isAdmin(req);
+    const templateId = typeof body.templateId === 'string' ? body.templateId.trim() : '';
+    if (templateId) {
+      const requested = await getTemplateById(templateId);
+      if (!requested || (requested.disabled && !admin)) {
+        res.status(404).json({ error: 'Template not found' });
+        return;
+      }
+    }
+
+    const draft = buildPreviewProfile(body.profile, existing);
+    const template = await resolveTemplateForProfile(draft, templateId || undefined, {
+      allowDisabledRequested: admin,
+    });
+    if (!template) {
+      throw noTemplateAvailable();
+    }
+
+    const preview = generateProfilePreviewHTML(draft, template);
+    res.json({ html: preview.html, templateId: template.id, page: preview.page });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to render the preview');
+  }
 });
 
 /**

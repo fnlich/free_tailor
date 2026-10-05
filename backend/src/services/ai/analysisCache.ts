@@ -16,6 +16,14 @@ import { createHash } from 'crypto';
  * different model or a prompt an admin has since edited must not be served an
  * answer produced by the old one.
  *
+ * Nothing about the PROFILE is in the key, and that is deliberate too. The
+ * analysis is a reading of the posting; the profile's choices - its Strengths
+ * and Soft Skills switches, its grouped or plain skills - shape only the
+ * tailoring call and the render that follow it. One analysis is shared by
+ * every profile a posting is generated for (here, and in the queue's
+ * in-flight map), and keying it on a switch would buy a second identical
+ * answer for a seat turn. test/sectionSwitchesEndToEnd.test.js holds this.
+ *
  * Deliberately in memory and not in the database. An analysis is derived data
  * that can always be recomputed, the cost of a miss is one call rather than a
  * wrong answer, and a cache on disk would need an invalidation story for every

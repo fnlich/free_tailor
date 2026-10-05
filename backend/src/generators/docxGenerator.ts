@@ -3,16 +3,26 @@ import fs from 'fs/promises';
 import path from 'path';
 import HTMLtoDOCX from 'html-to-docx';
 import { Profile } from '../types/profile';
-import { TailoredContent } from '../types/template';
+import type { TailoredContent, Template } from '../types/template';
 import { prepareResumeRenderData } from './pdfGenerator';
+import { profileForTemplate } from '../services/profileService';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getResumeOutputFilename } from '../utils/generatedPath';
 
 /**
- * Builds HTML in Daniel-style: Arial, centered header (name, title, contact),
- * blue accent (#2B5C8A), section headers with underline.
+ * The DOCX's HTML: Arial, a centred header (name, title, contact), a blue
+ * accent (#2B5C8A), underlined section headings. One fixed layout whatever the
+ * template - html-to-docx turns it into Word paragraphs.
+ *
+ * Built from the same render data as the PDF and the preview, so the sections
+ * a profile switched off are already empty here (see `applySkillsLimit`).
+ * `generateResumeDOCX` reads the profile through the template the PDF is
+ * drawn with (`profileForTemplate`), so on a template with no Strengths or
+ * Soft Skills section those are off here too, and the two optional sections
+ * below appear exactly when the PDF's do. Exported for the tests;
+ * `generateResumeDOCX` is the only other caller.
  */
-function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>): string {
+export function buildResumeDocxHTML(data: ReturnType<typeof prepareResumeRenderData>): string {
   const esc = (s: string) =>
     String(s ?? '')
       .replace(/&/g, '&amp;')
@@ -36,7 +46,7 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
   const skillCategories = data.skillCategories ?? [];
   const skillParagraph = (body: string, gap: string) =>
     `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 ${gap} 0; line-height: 1.35;">${body}</p>`;
-  const technicalSkillsHtml = skillCategories.length > 0
+  const technicalSkillsHtml: string = skillCategories.length > 0
     ? skillCategories
       .map((group) => {
         // The flat layout arrives as one group whose heading is empty. Emitting
@@ -50,10 +60,50 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
         );
       })
       .join('\n  ')
-    : skillParagraph(
-      esc([...(data.hardSkills ?? data.skills ?? []), ...(data.softSkills ?? [])].filter(Boolean).join(', ')),
-      '14pt'
-    );
+    : (data.hardSkills ?? data.skills ?? []).some(Boolean)
+      ? skillParagraph(
+        // Technical skills only. Soft skills were folded in here once, which put
+        // "Communication" in a list of languages and frameworks; they have their
+        // own section now.
+        esc((data.hardSkills ?? data.skills ?? []).filter(Boolean).join(', ')),
+        '14pt'
+      )
+      : '';
+  // The same rule as the optional sections below: no heading over nothing.
+  const technicalSkillsSection = technicalSkillsHtml
+    ? `
+  <p style="${sectionStyle}"><u>Technical Skills</u></p>
+  ${technicalSkillsHtml}
+  <p style="margin: 0;"><br></p>
+`
+    : '';
+
+  // The two optional sections, each only when it has something in it - a
+  // heading over nothing takes a whole row of the page in Word.
+  const strengths = data.strengths ?? [];
+  const strengthsHtml = strengths.length > 0
+    ? `
+  <p style="${sectionStyle}"><u>Key Strengths</u></p>
+  ${strengths
+    .map((item) => {
+      const title = item.title ? `<strong>${esc(item.title)}</strong>` : '';
+      const description = item.description ? esc(item.description) : '';
+      return `<p style="font-size: 9pt; color: #1A1A1A; margin: 0 0 4pt 0; line-height: 1.35;">${
+        title && description ? `${title}: ${description}` : title || description
+      }</p>`;
+    })
+    .join('\n  ')}
+  <p style="margin: 0;"><br></p>
+`
+    : '';
+  const softSkills = data.softSkills ?? [];
+  const softSkillsHtml = softSkills.length > 0
+    ? `
+  <p style="${sectionStyle}"><u>Soft Skills</u></p>
+  ${skillParagraph(esc(softSkills.join(', ')), '14pt')}
+  <p style="margin: 0;"><br></p>
+`
+    : '';
 
   let html = `
 <!DOCTYPE html>
@@ -70,10 +120,7 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
   <p style="${sectionStyle}"><u>Professional Summary</u></p>
   <p style="font-size: 10pt; color: #1A1A1A; margin: 0 0 12pt 0; line-height: 1.35;">${esc(data.summary || '')}</p>
   <p style="margin: 0;"><br></p>
-
-  <p style="${sectionStyle}"><u>Technical Skills</u></p>
-  ${technicalSkillsHtml}
-  <p style="margin: 0;"><br></p>
+${strengthsHtml}${technicalSkillsSection}${softSkillsHtml}
 
   <p style="${sectionStyle}"><u>Professional Experience</u></p>
   ${(data.experience ?? [])
@@ -128,15 +175,27 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
   return html;
 }
 
+/**
+ * The resume as a Word file. `template` is the one the PDF of the same
+ * generation is drawn with: the DOCX has one fixed layout and never renders
+ * it, but it decides which of the optional sections exist, so the two files
+ * of a "both" download carry the same sections.
+ */
 export async function generateResumeDOCX(
   profile: Profile,
+  template: Template,
   tailoredContent: TailoredContent | undefined,
   pathInfo: GeneratedPathInfo,
   companyName: string,
   role: string
 ): Promise<string> {
-  const renderData = prepareResumeRenderData(profile, tailoredContent, companyName, role);
-  const html = buildHayatoStyleHTML(renderData);
+  const renderData = prepareResumeRenderData(
+    profileForTemplate(profile, template),
+    tailoredContent,
+    companyName,
+    role
+  );
+  const html = buildResumeDocxHTML(renderData);
 
   const docxBuffer = await HTMLtoDOCX(html, null, {
     font: 'Arial',

@@ -1,3 +1,5 @@
+import type { TechnicalSkillsLayout } from './profile';
+
 /** Stored config for manual templates; enables edit. Matches ManualTemplateConfig shape. */
 export interface ManualTemplateConfigStored {
   name: string;
@@ -24,6 +26,30 @@ export interface Template {
   htmlContent: string;
   cssContent: string;
   sections: string[];
+  /**
+   * The Technical Skills layouts this template renders well - a non-empty
+   * subset of `['categorized', 'flat']`, in that order.
+   *
+   * A list rather than one value because most templates render both once the
+   * compile step is layout-aware; the two whose skills block is a grid of
+   * category cells say `['categorized']`. A profile is offered only templates
+   * that list its layout, and generation falls back (see
+   * `services/templateChoice`) rather than failing when they disagree.
+   *
+   * Built-ins declare it in their static JSON; anything stored without it gets
+   * it from `inferTemplateSkillsLayouts` when it is read, so no row needs
+   * migrating.
+   */
+  skillsLayouts: TechnicalSkillsLayout[];
+  /**
+   * Read-only, worked out from the markup on every read and never stored:
+   * whether the template has anywhere to put the Soft Skills and Strengths
+   * sections a profile can switch on. The editor uses them to say "this
+   * template has no Strengths section" instead of leaving a ticked box that
+   * changes nothing.
+   */
+  supportsSoftSkills?: boolean;
+  supportsStrengths?: boolean;
   createdAt: string;
   updatedAt: string;
   /** Stored config for manual templates; enables edit */
@@ -117,10 +143,24 @@ export interface TailoredContent {
   summary: string;
   experience: TailoredExperience[];
   skills: string[];
+  /**
+   * Decided by code, never by the model. Grouped profiles get the posting's
+   * library skills with the library's headings filled out; plain ones get the
+   * posting's library skills and their own related skills, unpadded.
+   */
   hardSkills: string[];
+  /**
+   * Empty when the profile's Soft Skills section is off. On, the profile's own
+   * list first, then what the posting asks for that the library confirms.
+   */
   softSkills: string[];
+  /** The posting's soft skills the library does not know yet; empty when the section is off. */
   unconfirmedSoftSkills: string[];
   unconfirmedHardSkills: string[];
+  /**
+   * Empty when the profile's Strengths section is off, whatever the model
+   * returned. On, the model's, else the profile's own - never made up.
+   */
   strengths: TailoredStrength[];
   /** Cover letter body content without the greeting or sign-off */
   coverLetter?: string;

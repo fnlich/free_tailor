@@ -19,6 +19,8 @@ import {
   validateOutputFolderNameTemplate,
   validateOutputFileNameTemplate,
 } from '../utils/outputStorage';
+import type { Template } from '../types/template';
+import { inferTemplateCapabilities } from './templateImport';
 
 export const DEFAULT_RESUME_PROMPT_ID = 'tailor-resume';
 export const DEFAULT_ANALYZE_JOB_PROMPT_ID = 'analyze-job-description';
@@ -152,6 +154,123 @@ export function getProfileTechnicalSkillsLayout(
   return isTechnicalSkillsLayout(value) ? value : DEFAULT_TECHNICAL_SKILLS_LAYOUT;
 }
 
+/**
+ * Whether this profile's resumes carry a Soft Skills section.
+ *
+ * Only a stored `true` turns it on. Absent, and anything that is not a
+ * boolean, is off - which is what every resume rendered before the switch
+ * existed, so an untouched profile's output does not move.
+ */
+export function getProfileIncludeSoftSkills(profile?: Pick<Profile, 'profileSettings'> | null): boolean {
+  return profile?.profileSettings?.includeSoftSkills === true;
+}
+
+/** Whether this profile's resumes carry a Strengths section. Off unless stored `true`. */
+export function getProfileIncludeStrengths(profile?: Pick<Profile, 'profileSettings'> | null): boolean {
+  return profile?.profileSettings?.includeStrengths === true;
+}
+
+/**
+ * The three rendering choices a profile makes about its resume's sections.
+ *
+ * Read together because the renderer needs all three at once - the data step
+ * to decide what the sections hold, the compile step to decide which markup
+ * survives - and two readers of one profile must never disagree about them.
+ */
+export interface ResumeSectionChoices {
+  layout: TechnicalSkillsLayout;
+  softSkills: boolean;
+  strengths: boolean;
+}
+
+export function getProfileResumeSections(
+  profile?: Pick<Profile, 'profileSettings'> | null
+): ResumeSectionChoices {
+  return {
+    layout: getProfileTechnicalSkillsLayout(profile),
+    softSkills: getProfileIncludeSoftSkills(profile),
+    strengths: getProfileIncludeStrengths(profile),
+  };
+}
+
+/**
+ * The profile as a resume drawn with `template` reads it: a section switch the
+ * template has no markup for counts as off.
+ *
+ * ONE rule for every output of one generation. Without it the switch meant
+ * three different things on a template with no Strengths or Soft Skills
+ * section (burgundy-rule, navy-rule, charcoal-sidebar; ink-ledger has no Soft
+ * Skills): the PDF printed nothing, the DOCX - which ignores the template -
+ * printed the section anyway, and tailoring took the section as present, so
+ * the posting's soft-skill keywords left the summary for a list that never
+ * printed and the prompt steered overflow keywords into Strengths. Read
+ * through here, the switch on such a template behaves exactly as off - which
+ * is what the editor tells the person ("ticking it changes nothing here").
+ *
+ * The capabilities are read off the markup every time rather than taken from
+ * the object, which may be one a caller built (a test, the manual builder) or
+ * one saved before its markup changed. The same object comes back when
+ * nothing changes, so a caller can pass any profile through freely.
+ */
+export function profileForTemplate<P extends Pick<Profile, 'profileSettings'>>(
+  profile: P,
+  template?: Pick<Template, 'htmlContent'> | null
+): P {
+  if (!template) return profile;
+  const settings = profile.profileSettings;
+  const { supportsSoftSkills, supportsStrengths } = inferTemplateCapabilities(template.htmlContent);
+  const dropSoftSkills = settings?.includeSoftSkills === true && !supportsSoftSkills;
+  const dropStrengths = settings?.includeStrengths === true && !supportsStrengths;
+  if (!dropSoftSkills && !dropStrengths) return profile;
+  return {
+    ...profile,
+    profileSettings: {
+      ...settings,
+      ...(dropSoftSkills ? { includeSoftSkills: false } : {}),
+      ...(dropStrengths ? { includeStrengths: false } : {}),
+    },
+  };
+}
+
+/**
+ * A profile's own soft skills hold at most this many, of at most this many
+ * characters each.
+ *
+ * Generous for a list a person types - a resume shows a handful - and there
+ * to stop a pasted paragraph or a runaway import becoming a section that
+ * fills the page. An entry over the length is cut rather than dropped, so a
+ * long phrase still says most of what it meant.
+ */
+export const MAX_PROFILE_SOFT_SKILLS = 50;
+export const MAX_SOFT_SKILL_LENGTH = 100;
+
+/**
+ * A profile's soft skills: names only, trimmed, the first spelling of each
+ * kept when the same skill is written twice in different case, bounded.
+ */
+export function normalizeSoftSkillsList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of value) {
+    if (result.length >= MAX_PROFILE_SOFT_SKILLS) break;
+    if (typeof entry !== 'string') continue;
+    const skill = entry.trim().replace(/\s+/g, ' ').slice(0, MAX_SOFT_SKILL_LENGTH).trim();
+    if (!skill) continue;
+    const key = skill.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(skill);
+  }
+  return result;
+}
+
+/** Omitted keeps what is stored, like every other field here; anything else is normalized. */
+function normalizeSoftSkills(value: unknown, existing?: string[]): string[] {
+  if (typeof value === 'undefined') return normalizeSoftSkillsList(existing);
+  return normalizeSoftSkillsList(value);
+}
+
 function normalizeContact(input: CreateProfileDTO['contact'] | undefined, existing?: Contact): Contact {
   return {
     phone: toSafeString(input?.phone, existing?.phone ?? ''),
@@ -238,6 +357,14 @@ export function normalizeProfileSettings(
     : isTechnicalSkillsLayout(existing?.technicalSkillsLayout)
       ? existing.technicalSkillsLayout
       : DEFAULT_TECHNICAL_SKILLS_LAYOUT;
+  // A boolean in the payload decides; anything else - omitted, null, "yes" -
+  // keeps what is stored, and nothing stored is off. The same rule as the
+  // layout above, so a client that predates the switches cannot turn them off
+  // by saving a profile without them.
+  const includeSoftSkills =
+    typeof source?.includeSoftSkills === 'boolean' ? source.includeSoftSkills : existing?.includeSoftSkills === true;
+  const includeStrengths =
+    typeof source?.includeStrengths === 'boolean' ? source.includeStrengths : existing?.includeStrengths === true;
 
   return {
     resumePromptId:
@@ -262,6 +389,8 @@ export function normalizeProfileSettings(
     ),
     hardSkillOrdering,
     technicalSkillsLayout,
+    includeSoftSkills,
+    includeStrengths,
     // Only values this build understands survive, and an omitted one keeps
     // whatever was stored: a client that predates these fields must not blank
     // them by saving a profile without them.
@@ -286,6 +415,7 @@ export function normalizeProfilePayload(
     experience: normalizeExperience(data.experience, existing?.experience),
     strengths: normalizeStrengths(data.strengths, existing?.strengths),
     ...normalizeSkills(data, existing),
+    softSkills: normalizeSoftSkills(data.softSkills, existing?.softSkills),
     education: normalizeEducation(data.education, existing?.education),
     certifications: normalizeCertifications(data.certifications, existing?.certifications),
   };
@@ -366,4 +496,94 @@ export function buildUpdatedProfile(existing: Profile, data: CreateProfileDTO): 
     createdAt: existing.createdAt,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The settings a preview renders with. Everything else is the stored value or the default. */
+const PREVIEW_SETTING_KEYS = [
+  'technicalSkillsLayout',
+  'hardSkillOrdering',
+  'includeSoftSkills',
+  'includeStrengths',
+] as const;
+
+/**
+ * An unsaved draft from the profile editor, as the profile it would become -
+ * for the live preview, and for nothing that is ever stored.
+ *
+ * Lenient where the save is strict, because it runs on every pause in typing:
+ *
+ * - It NEVER throws. A half-typed file name template ("{{profile na") or one
+ *   naming a token that does not exist is the save's to refuse, with a message
+ *   the person can act on; refusing the preview over it would blank the resume
+ *   they are looking at for a field that does not change how it looks. So only
+ *   the settings that change the render are taken from the draft
+ *   (`PREVIEW_SETTING_KEYS`), and the file-naming templates and the model
+ *   choice stay as stored - which also keeps `checkProfileModelChoice` out of
+ *   the preview entirely.
+ * - A field of the wrong shape (a string where a list belongs, say, from a
+ *   client mid-edit) is treated as omitted, so the stored value shows rather
+ *   than an error.
+ * - The draft is laid over `existing` with the same omitted-keeps-stored rule
+ *   as a save, so fields the form never sends (certifications, a GitHub link)
+ *   look the way they will once it is saved.
+ *
+ * The id, owner and timestamps are the stored profile's, or placeholders for a
+ * profile that does not exist yet; none of them reaches a template.
+ */
+export function buildPreviewProfile(draft: unknown, existing?: Profile | null): Profile {
+  const source = isPlainRecord(draft) ? draft : {};
+  const text = (key: string) => (typeof source[key] === 'string' ? (source[key] as string) : undefined);
+  const list = (key: string) =>
+    Array.isArray(source[key])
+      ? (source[key] as unknown[]).filter((entry) => isPlainRecord(entry))
+      : undefined;
+
+  const settingsSource = isPlainRecord(source.profileSettings) ? source.profileSettings : {};
+  const renderSettings: Record<string, unknown> = {};
+  for (const key of PREVIEW_SETTING_KEYS) {
+    if (key in settingsSource) renderSettings[key] = settingsSource[key];
+  }
+
+  const years = source.totalYearsExperience;
+  const dto: CreateProfileDTO = {
+    name: text('name'),
+    title: text('title'),
+    totalYearsExperience: typeof years === 'number' || typeof years === 'string' ? (years as number) : undefined,
+    preferredTemplate: text('preferredTemplate'),
+    profileSettings: renderSettings as ProfileSettings,
+    contact: isPlainRecord(source.contact) ? (source.contact as CreateProfileDTO['contact']) : undefined,
+    summary: text('summary'),
+    experience: list('experience') as CreateProfileDTO['experience'],
+    strengths: list('strengths') as CreateProfileDTO['strengths'],
+    education: list('education') as CreateProfileDTO['education'],
+    certifications: list('certifications') as CreateProfileDTO['certifications'],
+    ...(typeof source.skills !== 'undefined' ? { skills: source.skills } : {}),
+    ...(typeof source.skillCategories !== 'undefined' ? { skillCategories: source.skillCategories } : {}),
+    ...(Array.isArray(source.softSkills) ? { softSkills: source.softSkills } : {}),
+  };
+
+  const placeholder = {
+    id: existing?.id ?? 'preview',
+    ...(existing?.ownerId ? { ownerId: existing.ownerId } : {}),
+    createdAt: existing?.createdAt ?? '',
+    updatedAt: existing?.updatedAt ?? '',
+  };
+
+  try {
+    return { ...normalizeProfilePayload(dto, existing ?? undefined), ...placeholder };
+  } catch {
+    // Only the stored file-naming templates can still throw here, and only if
+    // a row was written before they were validated. The draft's content is
+    // what the preview is for, so render it over clean settings instead.
+    const withoutStoredSettings = existing ? { ...existing, profileSettings: undefined } : undefined;
+    try {
+      return { ...normalizeProfilePayload(dto, withoutStoredSettings), ...placeholder };
+    } catch {
+      return { ...normalizeProfilePayload({}, undefined), ...placeholder };
+    }
+  }
 }

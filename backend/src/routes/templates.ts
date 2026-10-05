@@ -14,8 +14,9 @@ import {
   uploadJsonTemplates,
   type ManualTemplateConfig,
 } from '../extractors/templateExtractor';
-import { TemplateImportError } from '../services/templateImport';
-import { generateTemplatePreviewHTML } from '../generators/pdfGenerator';
+import { TECHNICAL_SKILLS_LAYOUTS, TemplateImportError } from '../services/templateImport';
+import { generateTemplatePreviewHTML, PREVIEW_CONTENT_SECURITY_POLICY } from '../generators/pdfGenerator';
+import type { TechnicalSkillsLayout } from '../types/profile';
 
 const router = Router();
 /**
@@ -78,15 +79,38 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// Get template preview HTML (sample data)
+/** A query flag: `1`, `true` and `yes` are on, anything else off. */
+function queryFlag(value: unknown): boolean {
+  return typeof value === 'string' && ['1', 'true', 'yes'].includes(value.trim().toLowerCase());
+}
+
+/**
+ * Get template preview HTML (sample data).
+ *
+ * `?layout=flat|categorized&softSkills=1&strengths=1` shows the template the
+ * way a profile with those choices gets it; with none it is the gallery's
+ * usual categorized sample without either section.
+ *
+ * The document is served from the API's own origin and framed by the admin
+ * gallery, and a template's markup is whatever was uploaded - so it goes out
+ * under the same no-script, no-request policy the profile preview carries. A
+ * disabled template is an administrator's staging state and 404s for anybody
+ * else, as it is missing from their list.
+ */
 router.get('/:id/preview', async (req: Request<{ id: string }>, res: Response) => {
   try {
     const template = await getTemplateById(req.params.id);
-    if (!template) {
+    if (!template || (template.disabled && !isAdmin(req))) {
       res.status(404).json({ error: 'Template not found' });
       return;
     }
-    const html = generateTemplatePreviewHTML(template);
+    const layout = req.query.layout === 'flat' || req.query.layout === 'categorized' ? req.query.layout : undefined;
+    const html = generateTemplatePreviewHTML(template, {
+      ...(layout ? { layout } : {}),
+      softSkills: queryFlag(req.query.softSkills),
+      strengths: queryFlag(req.query.strengths),
+    });
+    res.setHeader('Content-Security-Policy', PREVIEW_CONTENT_SECURITY_POLICY);
     res.type('html').send(html);
   } catch (error) {
     console.error('Error generating template preview:', error);
@@ -248,14 +272,44 @@ router.put('/:id/update-manual', requireAdmin, async (req: Request<{ id: string 
   }
 });
 
-// Update template (protected) - e.g. toggle disabled, name, description
+/**
+ * A `skillsLayouts` an administrator sent, checked strictly: a non-empty list
+ * of known layouts, returned de-duplicated in the canonical order - or the
+ * reason it is not one. Strict here where the read is lenient, because this is
+ * the one place a person can be told what they got wrong.
+ */
+function parseSkillsLayoutsUpdate(value: unknown): { layouts: TechnicalSkillsLayout[] } | { error: string } {
+  const reason =
+    'skillsLayouts must be a list naming at least one of "categorized" (Grouped) and "flat" (Plain), and nothing else.';
+  if (!Array.isArray(value) || value.length === 0) return { error: reason };
+  if (!value.every((entry) => (TECHNICAL_SKILLS_LAYOUTS as readonly unknown[]).includes(entry))) {
+    return { error: reason };
+  }
+  return { layouts: TECHNICAL_SKILLS_LAYOUTS.filter((layout) => value.includes(layout)) };
+}
+
+// Update template (protected) - e.g. toggle disabled, name, description, and
+// which skills layouts it is offered for (a built-in's goes in its override row)
 router.patch('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
-    const { disabled, name, description } = req.body as { disabled?: boolean; name?: string; description?: string };
-    const updates: { disabled?: boolean; name?: string; description?: string } = {};
+    const { disabled, name, description, skillsLayouts } = req.body as {
+      disabled?: boolean;
+      name?: string;
+      description?: string;
+      skillsLayouts?: unknown;
+    };
+    const updates: { disabled?: boolean; name?: string; description?: string; skillsLayouts?: TechnicalSkillsLayout[] } = {};
     if (typeof disabled === 'boolean') updates.disabled = disabled;
     if (typeof name === 'string') updates.name = name.trim();
     if (typeof description === 'string') updates.description = description.trim();
+    if (typeof skillsLayouts !== 'undefined') {
+      const parsed = parseSkillsLayoutsUpdate(skillsLayouts);
+      if ('error' in parsed) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+      updates.skillsLayouts = parsed.layouts;
+    }
     const updated = await updateTemplate(req.params.id, updates);
     if (!updated) {
       res.status(404).json({ error: 'Template not found' });
