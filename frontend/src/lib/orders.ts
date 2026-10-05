@@ -76,6 +76,12 @@ export type OrderItem = {
   files: OrderFile[];
   /** The kinds still on disk, so the page never offers a link to a deleted file. */
   available: OrderFileKind[];
+  /**
+   * What this resume was charged, in thousandths of a dollar - kept on the
+   * item because the run that charged it is gone within the hour. Null on an
+   * item placed before items carried it, and 0 for one never charged.
+   */
+  costMilli: number | null;
 };
 
 export type OrderDetail = Order & { items: OrderItem[] };

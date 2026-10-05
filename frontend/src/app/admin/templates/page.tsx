@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { templatesApi, Template, getApiOrigin } from '@/lib/api';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
 import { EmptyState, Field, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
@@ -673,9 +674,13 @@ function TemplatesPageBody() {
             isAdmin ? <div className="flex flex-wrap justify-center gap-3">{addActions}</div> : undefined
           }
         >
-          {isAdmin
-            ? 'Upload a PDF resume to extract its design as a template.'
-            : 'None are set up on this installation yet. Ask an administrator here to add one.'}
+          {isAdmin ? (
+            'Upload a PDF resume to extract its design as a template.'
+          ) : (
+            <>
+              None are set up on this installation yet. Ask an administrator here to add one. <ContactAdminLink />
+            </>
+          )}
         </EmptyState>
       ) : (
         <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">

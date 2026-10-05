@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
 import ThemeToggle from '@/components/ThemeToggle';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscriptions';
@@ -107,7 +108,8 @@ export function AdminOnly({ children }: { children: ReactNode }) {
         <p className="font-semibold">Administrators only</p>
         <p className="mt-1">
           This page manages settings shared by everybody on this installation, so it is limited to
-          administrator accounts. Ask an administrator here if you need something changed.
+          administrator accounts. Ask an administrator here if you need something changed.{' '}
+          <ContactAdminLink />
         </p>
       </div>
     );
@@ -152,7 +154,7 @@ export function RequiresSubscription({
           This part of the app is included from {label} upwards, and your account&apos;s
           subscription is <strong>{account?.subscriptionLabel ?? 'one that does not include it'}</strong>.
           Subscriptions are set by an administrator of this installation, so ask them to move your
-          account.
+          account. <ContactAdminLink />
         </p>
       </div>
     );

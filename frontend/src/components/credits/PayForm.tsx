@@ -9,6 +9,7 @@ import {
 } from '@stripe/react-stripe-js/checkout';
 import { formatMoney } from '@/lib/format';
 import { Spinner } from '@/components/ui/kit';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { PANEL, PRIMARY, QUIET } from './chrome';
 import { forgetStripe, stripeFor } from './stripeLoader';
 
@@ -65,7 +66,8 @@ function Inner({
     return (
       <div className={PANEL}>
         <p className="tl-status" data-tone="error">
-          The payment form could not be loaded. Please try again, or contact your administrator.
+          The payment form could not be loaded. Please try again, or contact your administrator.{' '}
+          <ContactAdminLink />
         </p>
         <button type="button" onClick={onCancel} className={`${QUIET} mt-4`}>
           Start again

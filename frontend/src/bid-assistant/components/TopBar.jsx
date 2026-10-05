@@ -6,6 +6,8 @@ import {
 import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconClose } from '@/components/icons';
 import { messageWithDetail } from '@/lib/userMessage';
+import { ContactAdminFor } from '@/components/ui/kit';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 
 // Returns the empty form state for creating a new Google Sheet source.
 function createEmptySheetForm() {
@@ -576,7 +578,7 @@ export default function TopBar({
             </p>
 
             {promptMessage && <p className="success-text">{promptMessage}</p>}
-            {promptError && <p className="error-text">{promptError}</p>}
+            {promptError && <p className="error-text">{promptError}<ContactAdminFor text={promptError} /></p>}
           </div>
         </div>
       )}
@@ -671,7 +673,7 @@ export default function TopBar({
                 </p>
 
                 {profileMessage && <p className="success-text">{profileMessage}</p>}
-                {profileError && <p className="error-text">{profileError}</p>}
+                {profileError && <p className="error-text">{profileError}<ContactAdminFor text={profileError} /></p>}
               </section>
             </div>
           </div>
@@ -803,9 +805,9 @@ export default function TopBar({
                   Select the tab first. Row numbers are the actual Google Sheet row numbers. Leave the range blank to import all populated rows from columns B:I.
                 </p>
 
-                {tabsError && <p className="error-text">{tabsError}</p>}
+                {tabsError && <p className="error-text">{tabsError}<ContactAdminFor text={tabsError} /></p>}
                 {importMessage && <p className="success-text">{importMessage}</p>}
-                {importError && <p className="error-text">{importError}</p>}
+                {importError && <p className="error-text">{importError}<ContactAdminFor text={importError} /></p>}
               </section>
 
               <section className="source-panel">
@@ -850,11 +852,11 @@ export default function TopBar({
                     only who to ask when the tabs do not appear. */}
                 <p className="muted-text">
                   Tabs are loaded automatically after you select the source. If they do not load, ask your
-                  administrator to give the app access to the spreadsheet.
+                  administrator to give the app access to the spreadsheet. <ContactAdminLink />
                 </p>
 
                 {formMessage && <p className="success-text">{formMessage}</p>}
-                {formError && <p className="error-text">{formError}</p>}
+                {formError && <p className="error-text">{formError}<ContactAdminFor text={formError} /></p>}
               </section>
             </div>
           </div>

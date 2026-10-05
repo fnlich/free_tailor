@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
+import ContactAdminDialog from '@/components/contact/ContactAdminDialog';
 import { IconUser } from '@/components/icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage } from '@/lib/auth';
@@ -28,6 +29,11 @@ export default function AccountMenu() {
   const { account, isAdmin, signOut } = useAuth();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  /*
+   * Outside the menu's own state: the item closes the menu and opens this, and
+   * the dialog has to outlive the panel it was opened from.
+   */
+  const [contacting, setContacting] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -151,6 +157,16 @@ export default function AccountMenu() {
                 Manage accounts
               </Link>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setContacting(true);
+              }}
+              className={ITEM}
+            >
+              Contact admin
+            </button>
           </div>
 
           <div className={`border-t-[1px] ${RULE} py-1`}>
@@ -175,6 +191,8 @@ export default function AccountMenu() {
           </div>
         </div>
       )}
+
+      {contacting && <ContactAdminDialog onClose={() => setContacting(false)} />}
     </div>
   );
 }

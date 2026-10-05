@@ -137,6 +137,12 @@ export type Payment = {
   creditedMilli: number;
   /** What a refund took back off the balance. */
   refundedMilli: number;
+  /**
+   * The money a refund RETURNED, in thousandths of a dollar: the whole charge
+   * from the payments list's Refund, the unspent part from a refund request -
+   * so it can be less than `amountMilli`. 0 until refunded.
+   */
+  refundAmountMilli: number;
   /** Non-null on a payment made before credits became dollars. */
   legacyCredits: LegacyPaymentCredits | null;
 };
@@ -201,6 +207,10 @@ export type RefundOutcome = {
   reversedMilli: number;
   /** What could not, because it had already been spent. */
   shortfallMilli: number;
+  /** The money returned. The whole charge, from this button. */
+  refundAmountMilli?: number;
+  /** Refund requests still open for the payment that this refund closed as Refunded. */
+  closedRequests?: number;
 };
 
 export const STATE_LABELS: Record<PaymentState, string> = {

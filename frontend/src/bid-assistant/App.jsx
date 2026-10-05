@@ -7,6 +7,7 @@ import { bidAssistantFetch, readError } from './lib/apiBase.js';
 import { DEFAULT_PROMPT_TEMPLATE } from './lib/promptTemplate.js';
 import { useAuth } from '@/contexts/AuthContext';
 import { messageWithDetail } from '@/lib/userMessage';
+import { ContactAdminFor } from '@/components/ui/kit';
 
 const selectedProfileStorageKey = 'selected-profile-id';
 
@@ -581,6 +582,7 @@ export default function App() {
       {errorMessage && (
         <div className="tl-notice error-banner" data-tone="error" role="alert">
           {errorMessage}
+          <ContactAdminFor text={errorMessage} />
         </div>
       )}
     </div>

@@ -3,7 +3,8 @@
 import type { CSSProperties, FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import styles from '@/components/CalendarWorkspace.module.css';
-import { Spinner } from '@/components/ui/kit';
+import { ContactAdminFor, Spinner } from '@/components/ui/kit';
+import { pageDialogs } from '@/lib/dialogStack';
 import type { CalendarExtractedLink } from '@/lib/calendar/linkExtractor';
 import {
   CALENDAR_DEFAULT_TIME_ZONE,
@@ -519,6 +520,11 @@ export default function CalendarWorkspace() {
     document.body.style.overflow = 'hidden';
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      // A kit dialog is open - Contact admin, from an error notice inside one
+      // of these modals - and the Escape is its: these modals are not on the
+      // dialog stack (they keep the page's scroll themselves), so anything on
+      // it is above them.
+      if (pageDialogs.size() > 0) return;
       if (event.key === 'Escape') {
         if (selectedEvent) {
           setSelectedEvent(null);
@@ -888,7 +894,12 @@ export default function CalendarWorkspace() {
 
   return (
     <div className={styles.pageShell}>
-      {error ? <div className="tl-notice" data-tone="error">{error}</div> : null}
+      {error ? (
+        <div className="tl-notice" data-tone="error">
+          {error}
+          <ContactAdminFor text={error} />
+        </div>
+      ) : null}
 
       <section className={styles.appFrame}>
         <aside className={styles.sidebar}>
@@ -1372,7 +1383,12 @@ export default function CalendarWorkspace() {
             {availabilityUserNames.length > 0 ? (
               <p className={styles.availabilityUsersText}>{availabilityUserNames.join(', ')}</p>
             ) : null}
-            {availabilityError ? <div className={`tl-notice ${styles.modalNotice}`} data-tone="error">{availabilityError}</div> : null}
+            {availabilityError ? (
+              <div className={`tl-notice ${styles.modalNotice}`} data-tone="error">
+                {availabilityError}
+                <ContactAdminFor text={availabilityError} />
+              </div>
+            ) : null}
 
             <div className={styles.availabilityResults}>
               {availabilityResults.length === 0 && !isLoadingAvailability && !availabilityError && !hasAvailabilitySearched ? (
@@ -1477,7 +1493,12 @@ export default function CalendarWorkspace() {
               </span>
             </div>
 
-            {jobLinksError ? <div className={`tl-notice ${styles.modalNotice}`} data-tone="error">{jobLinksError}</div> : null}
+            {jobLinksError ? (
+              <div className={`tl-notice ${styles.modalNotice}`} data-tone="error">
+                {jobLinksError}
+                <ContactAdminFor text={jobLinksError} />
+              </div>
+            ) : null}
 
             <div className={styles.jobLinksResults}>
               {jobLinkResults.length === 0 && !isLoadingJobLinks && !jobLinksError && !hasJobLinksSearched ? (

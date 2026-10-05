@@ -21,6 +21,16 @@ export const CREDIT_REASONS = [
   // rises without an administrator deciding it should.
   'purchase',
   'purchase-refund',
+  // A card refund request takes its credit off (as `purchase-refund`) BEFORE
+  // Stripe is asked, so it cannot be spent while the money is on its way back.
+  // This is that credit put back because Stripe REFUSED the refund
+  // (services/refunds). Keyed `<the hold's key>:returned`, so it returns once.
+  'purchase-refund-failed',
+  // A resume's charge given back because somebody asked and an administrator
+  // agreed (services/refunds). Keyed refund-request:<request id>, so one
+  // request credits once; refunded against the run's reservation, so no mix
+  // of these and the automatic refunds can give back more than it took.
+  'refund-request',
   // Credits became dollars, and every balance was reset to $0. One row per
   // account that held any, in the old unit, taking it to zero - or, for one
   // whose credits were all held by a run, moving nothing and saying so

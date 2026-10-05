@@ -4,6 +4,7 @@ import { DEFAULT_PROMPT_TEMPLATE } from '../lib/promptTemplate.js';
 import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconClose } from '@/components/icons';
 import { messageWithDetail } from '@/lib/userMessage';
+import { ContactAdminFor } from '@/components/ui/kit';
 
 // Creates a blank question row with a default character limit.
 function createQuestionRow(overrides = {}) {
@@ -354,7 +355,7 @@ export default function AskWindow({
         {loading ? 'Generating...' : submitLabel}
       </button>
 
-      {errorMessage && <p className="error-text">{errorMessage}</p>}
+      {errorMessage && <p className="error-text">{errorMessage}<ContactAdminFor text={errorMessage} /></p>}
     </>
   );
 

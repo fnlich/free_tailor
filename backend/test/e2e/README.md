@@ -73,11 +73,19 @@ node test/e2e/walkthrough.js
 npm run start --prefix ../frontend
 node test/e2e/buy-credits.js   # the three-step purchase dialog; puppeteer
 node test/e2e/browser.js       # the OLD buy page; needs playwright, which may not be installed
+
+# 5. Refund requests and Contact admin need NO provider at all: a card refund
+#    that fails at Stripe is part of what they check, and the fake providers
+#    would make it succeed. Stop step 2's server and start it bare, with the
+#    Stripe keys blanked - an exported empty value beats the one in .env -
+#    then point the script at the same DB_DIR the server uses.
+STRIPE_SECRET_KEY= STRIPE_PUBLISHABLE_KEY= STRIPE_WEBHOOK_SECRET= DB_DIR=/path/to/db node dist/index.js
+DB_DIR=/path/to/db node test/e2e/refunds.js
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js` and `shell.js` use puppeteer, which the backend already
-installs for PDF rendering, so they run anywhere this project does;
+`buy-credits.js`, `shell.js` and `refunds.js` use puppeteer, which the backend
+already installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
 Off the default ports - beside another server, say - every script reads
@@ -182,6 +190,41 @@ dialog opening in place; the form either mounting or saying plainly that it
 could not; the return page waiting for the webhook rather than congratulating
 on arrival; the balance and the ledger afterwards; backing out of a payment;
 and an admin refunding from the UI.
+
+`refunds.js` — 51 claims over asking for a refund, deciding it, and Contact
+admin, with no provider at all (step 5 above - against step 2's server, whose
+fake Stripe accepts every refund, the card checks fail, and the first of them
+says why): its purchases, run charges and order are
+written straight into the database the server reads (so `DB_DIR` must name the
+backend's), paid the way a webhook pays them. As the person asking: *Ask for
+refund* on a crypto purchase showing the unspent amount the server measured, a
+request with no reason refused in the server's words, the request sent with
+its reference, asking again showing the open request instead of a second form,
+Escape closing; a run charge in Credit History whose resumes the queue no
+longer holds saying to ask the administrator, with the link; an order's charge
+listing its resumes with the delivered one picked and the failed one not
+pickable; on the order's page, each resume's charge, *Ask for refund* on the
+delivered one, *Refunded automatically* on the one that did not build (whose
+error offers Contact admin), and the row turning to the request once asked. As
+the administrator: the bell announcing it with a link that lands on the queue
+tab and its open count; every Approve, Decline and Mark refunded inside the
+queue's box at 1440x900, with no sideways scroll; a crypto refund saying to
+send the money back by hand FIRST and refusing to go on until that is
+confirmed; a decline refused without a reason; a resume credited back; a card
+refund that fails at Stripe (there are no Stripe keys here) answering the
+generic sentence with its Ref and a Contact admin link - which opens a dialog
+OVER the refund dialog, closed alone by Escape with the page's scroll still
+locked until the second Escape; the request then still open with nothing
+outstanding and the credit the refund held back on the balance; the same
+dialog-over-dialog Escape on the payments list's own Refund dialog, whose
+typed note survives; and the state filter in the address. Then the person again: Refunded with what came back, Declined with
+the administrator's reason, both in their bell marked *For you* and linked to
+their Refund Requests tab, the order row Refunded and the credit as its own
+row - and nothing in a bystander's feed. Last, Contact admin from the account
+menu (a `mailto:` link, a Discord name to copy) and the editor pinning the
+server's refusal of a bad Telegram name to that row, with nothing saved. The
+person and the administrator browse in separate browser contexts: a sign-in
+is a cookie and a localStorage token, and one context would share them.
 
 ## The part a script cannot do
 

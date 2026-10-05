@@ -503,6 +503,144 @@ is refused rather than told that nothing could be reversed. Crypto cannot be
 refunded automatically - crypto can only be sent back, not pulled - and
 the app says so rather than pretending.
 
+### Asking for a refund
+
+Anybody can ask for money back, with a reason, about two kinds of thing - and
+an administrator decides, in one queue (**Admin → Payments**, *Refund
+requests*):
+
+- **A purchase** gives back its **unspent part**: what is left of what it put
+  on the balance - the balance, capped at what the purchase credited, the same
+  measure the Refund button's reversal uses - rounded down to whole cents,
+  because a card returns cents and a balance moves in tenths of one (`$39.993`
+  left asks for `$39.990`; the `$0.003` stays as credit). It is measured when
+  asked and again when refunded, and never goes above what was asked: somebody
+  who spends after asking gets back what is left.
+- **One resume's charge** comes back as **credit**, exactly what that resume
+  was charged. A resume that did not build already gave its charge back on its
+  own, and one still being built cannot be asked about yet. An administrator's
+  resumes, and free ones, were never charged.
+
+**Where to ask.** *Ask for refund* is on a purchase's row under **Credits →
+Card** or **Crypto** (in its Action column), on a resume charge in **Credits →
+Credit History** (a run's charge lists its resumes to pick from), and on each
+resume of an order's page (**Orders → an order**). It opens a small dialog that
+shows what would come back - measured by the server, never typed - and asks
+why. **Credits → Refund Requests** lists what you have asked, with its state:
+*Requested*, *Approved*, *Declined* with the administrator's reason, or
+*Refunded* with what came back. Something that cannot be asked about says why
+(still being built, refunded automatically because it did not build, never
+charged), and something with a request already open shows that request instead
+of a second button.
+
+Each request moves through four states, set by an administrator:
+
+| From | To | What happens |
+|---|---|---|
+| Requested | **Approved** | The refund is accepted. No money moves yet |
+| Requested or Approved | **Declined** | A reason is **required**, written by the administrator and shown to the person who asked. Final |
+| Requested or Approved | **Refunded** | The refund is made in the same step. Final |
+
+*Refunded* is where the money moves, and it moves once however often the button
+is pressed:
+
+- a **resume**: its charge goes back on the balance as one `refund-request` row
+  in the credit history (idempotency key `refund-request:<id>`), in the same
+  database transaction as the state change, and against the run's own
+  reservation - so no mixture of automatic and granted refunds can give a run
+  back more than it took;
+- a **card purchase**: a **partial Stripe refund** of the unspent part. The
+  same amount comes off the balance FIRST, in the same step that marks the
+  payment as being refunded, so it cannot be spent - or claimed by a second
+  refund - while Stripe answers, and what goes back always equals what came
+  off. The request turns *Refunded* only once Stripe has accepted it. If Stripe
+  **refuses**, the credit goes back on the balance (a *Returned - the refund to
+  your card did not go through* row) and the button can be pressed again,
+  measuring afresh. If Stripe **does not answer**, the refund may or may not
+  exist: the credit stays held, the row says a refund was sent and not
+  confirmed, and pressing again sends the same amount under the same
+  `Idempotency-Key: refund:<payment id>`, so Stripe answers with the refund it
+  made, if it made one, and cannot refund twice. Until then the request cannot
+  be declined, and the payments list's Refund is refused for that payment;
+- a **crypto purchase**: nothing can pull crypto back, so *Mark refunded* first
+  says how much to send and from where (*Send $X back from your Cryptomus
+  merchant dashboard first*); the administrator sends it by hand, then confirms
+  how much they sent - the amount named, or what they type, in whole cents and
+  no more than was asked - and that much credit is reversed. The amount is
+  recorded as sent, never measured again: if the buyer spent some in between,
+  the reversal takes what is left and the answer reports the rest as a
+  shortfall.
+
+*Declined* is never set on money that moved: a decline is refused while the
+purchase is being refunded (try again once it has finished) or holds a card
+refund Stripe never confirmed, and a decline of a purchase already refunded
+closes the request as *Refunded* instead and tells the person so.
+
+A purchase refunded straight from the payments list closes any request still
+open for it as *Refunded*, with the amount that went back.
+
+**One open request per item.** A second request for something with a Requested
+or Approved one is refused - by a partial UNIQUE index in the database, not only
+by the page - and a declined request does not stop asking again. A refunded one
+does: there is nothing left to give back.
+
+**Which resume.** An ordered resume is named by its order item, which keeps
+what it was charged after its batch is gone; a resume the builder built and
+handed straight back (`POST /api/resume/generate`) by its charge, which was that
+resume's alone; and a queued resume that
+was not placed as an order by its task, for as long as the queue still holds
+its run (up to an hour after it finishes - sooner on a busy install, since the
+queue keeps only the twenty most recently finished runs of any account). After
+that last one is gone it cannot be
+picked any more - *This run's resumes are no longer listed* - and the person is
+told to ask an administrator, who can grant credit from **Admin → Accounts**.
+
+**Everybody concerned is told.** A new request puts a notice in every
+administrator's bell; every change of state puts one in the bell of the person
+who asked - and nobody else's: *Your refund request for … was approved*,
+*… was declined: <the administrator's reason>*, *… was refunded ($0.161)*.
+
+**Rolling back past this.** An older build reads every row of `notifications`
+as an announcement for everybody: it has no idea some are addressed to one
+account. Started on this database, it would show every account's bell the
+notices written for one - each administrator's *New refund request* (which
+names the requester's email, the amount and their reason) and each requester's
+approved / declined / refunded notice. Before starting an older build, stop the
+backend and delete them:
+
+```bash
+sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM notifications WHERE recipient_id IS NOT NULL;"
+# or, without the sqlite3 shell, from the repository root:
+node -e "new (require('./backend/node_modules/better-sqlite3'))(process.argv[1]).exec('DELETE FROM notifications WHERE recipient_id IS NOT NULL')" "$DB_DIR/free_tailor.db"
+```
+
+The requests themselves stay in `refund_requests`, which an older build
+ignores, and announcements are untouched.
+
+### Contacting the administrator
+
+Under **Admin → Settings → General** an administrator lists how to reach them:
+email, Telegram, Discord, WhatsApp, or anything else, each with a label. The
+list is shown to **everybody** - the sign-in page and the account-disabled page
+included, and wherever a message says *contact your administrator* - so it is
+served without a session (`GET /api/contact`) and held to rules that keep a
+link on those pages safe: every type has its own (an email address that a
+`mailto:` can carry as it is, a Telegram username, a Discord name, a phone
+number with its country code), the server builds every link itself -
+`mailto:`, `https://t.me/<name>`, `https://wa.me/<digits>` - and an *other*
+value becomes a link only as an `http(s)` address with no user name or password
+in it. `javascript:`, `data:` and every other link scheme (`mailto:`, `tel:`,
+`ftp://`...) are refused on save - anything else is shown as plain text, so
+`Phone: +1 555 0100` and `Hours:9-5` are fine - and a stored row edited by hand
+is checked again on every read. A Discord name is
+shown to copy, never as a link.
+
+**Contact admin** opens that list from the account menu, under the sign-in
+form (*Trouble signing in?*), on the screen a disabled account is shown when it
+tries to sign in, and after every message that tells its reader to contact the
+administrator. *Preview what people see*, next to the editor's Save, opens it
+as everybody sees it.
+
 ### Getting around
 
 One shell owns the navigation on every page: a top bar, and a sidebar down the
@@ -510,8 +648,8 @@ left.
 
 **Top bar** - the brand, then on the right: your **credit balance** (press it to
 buy more), **notifications**, the **light/dark** switch, and your **account** -
-name, email, subscription, credits and profile use, with Settings, Subscription
-and sign-out under it - and **Templates** last, because everything before it acts on
+name, email, subscription, credits and profile use, with Settings, Subscription,
+Contact admin and sign-out under it - and **Templates** last, because everything before it acts on
 the session you are in and that one navigates away.
 
 **Sidebar** - your work at the top:
@@ -545,14 +683,16 @@ separate checks and one is not a substitute for the other.
 | Build Resumes, Calendar, Job Search, Job Filter, Bid Assistant, Profile | anybody signed in | their own work |
 | **Orders** | anybody signed in | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
 | **Buy credits** | anybody signed in | their own payments only, by the same 404 rule |
-| **Payments** (the list, and refunds) | **administrators** | reconciliation against the provider's dashboard, and the only button in the product that moves money outward |
+| **Payments** (the list, refunds and the refund-request queue) | **administrators** | reconciliation against the provider's dashboard, and the only buttons in the product that move money outward |
+| **Refund requests** (asking, and reading your own) | anybody signed in | about their own purchases and resumes only - somebody else's answers 404, never 403 |
+| **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
 | **Find Jobs** | ordinary users | opens today's tab of their own job sheet in a new tab. Not shown to administrators, who manage the installation rather than work a job sheet |
 | **Groups** | **Premium and above** | an entitlement, checked on the subscription alone |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
 | **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for anybody signed in |
 | **Templates** (looking at them) | anybody signed in | the gallery and the full-page preview of each, from the top bar. Choosing a template is no use without seeing what it produces |
 | **Templates** (adding, editing, disabling, deleting) | **administrators** | a template is shared - editing one changes how everybody's resumes look. A *disabled* template is an administrator's staging state and is not listed to anybody else |
-| **Notifications** (reading them) | anybody signed in | the bell in the top bar, with an unread dot until it is opened |
+| **Notifications** (reading them) | anybody signed in | the bell in the top bar, with an unread dot until it is opened: every announcement, and the notices written for that account alone (its refund requests; for an administrator, new ones) - never anybody else's |
 | **Notifications** (posting them) | **administrators** | one notice goes to every account on the installation |
 | **Test** | **administrators** | runs prompts directly and shows raw model output; a tool for whoever maintains the prompts |
 | **Settings** (all of it) | **administrators** | every page under it changes something shared |
@@ -1984,9 +2124,10 @@ unique across the install, which settles all of it in one segment.
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
 | **Templates** | Open to everybody from the top bar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into keywords, a resume PDF into a profile, a scraped page into job attributes) and **Building Prompts** (the tailored resume content and the cover letter). The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
-| **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it |
+| **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
+| **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund (see [Asking for a refund](#asking-for-a-refund)) |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, output location, and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test runs a prompt on a model you pick by name. Every page here shows the cause of a failure under its message |
+| **Settings** | One entry in the sidebar covering General, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per seat that is not locked (sign-in, in-flight calls, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test runs a prompt on a model you pick by name. Every page here shows the cause of a failure under its message |
 
 ---
 
@@ -2148,6 +2289,14 @@ file. Export them in the shell, for the install and the server alike:
 | `The payment form could not be loaded. Stripe's script did not load.` | Different failure, despite the similar wording: `js.stripe.com` never arrived. A script blocker, an offline moment or a corporate proxy will do it. Nothing was charged and no card was entered. This is also what a sandbox with no outbound network shows, which is why `backend/test/e2e/buy-credits.js` accepts it as a pass - it asserts the form mounts **or says plainly that it could not**, because a spinner with nothing said is the failure being designed out. |
 | A card payment says *Waiting for payment* for ever, but Stripe's dashboard shows it succeeded | The webhook is not arriving, and the webhook is the only thing in this application that adds credits. Locally: is `stripe listen --forward-to localhost:3001/api/payments/webhook/stripe` still running, and is `STRIPE_WEBHOOK_SECRET` the `whsec_...` **that command** printed? It is a different secret from the dashboard endpoint's. Deployed: open the endpoint in the Stripe dashboard and read its delivery attempts - they show the response this server gave. A 400 there means the signature did not verify, which is the wrong secret; a 404 means the URL is wrong. |
 | A buyer with a card on file is told *Your bank wants to authenticate this payment* | Their issuer refused the off-session charge and demanded a challenge, which a kept card cannot answer on its own. Nothing was charged. They can pay with the card form in the same dialog, which puts them in front of the challenge; an operator who sees this often can turn on *Always ask the cardholder's bank to authenticate* under **Admin → Payments**, which makes every kept-card charge on-session and gets the challenge instead of the refusal. |
+| **Mark refunded** (then **Refund $X**) on a card purchase's refund request answers *Could not make the refund. Please try again, or contact your administrator.* with a `Ref:`, and the request stays *Requested* (or *Approved*) | Stripe refused the partial refund - most often a charge disputed, too old to refund, or already refunded in the Stripe dashboard. No money moved: the credit the refund held off the balance while it asked is back (a *Returned - the refund to your card did not go through* row in the account's Credit History) and the request did not move. An administrator sees Stripe's own reason under the message, and `grep` for the `Ref` in the backend log finds it. Pressing **Mark refunded** again measures afresh; within 24 hours Stripe repeats its answer under the same `refund:<payment>` key. A charge already refunded in the Stripe dashboard (or disputed, or too old) cannot be refunded from here at all, and the payments list's **Refund** is no way round it: it asks Stripe for the whole charge under that same key, which Stripe refuses too. Decline the request with the reason instead - and if the money did go back through the dashboard, take back the credit it bought under **Admin → Accounts** (adjust the balance). |
+| **Mark refunded** on a card purchase's refund request answers *Could not confirm the refund with Stripe. Its credit stays off the balance until it is…*, and the row then says *A $X card refund was sent and not confirmed* | Stripe did not answer - a dropped connection, a timeout - so the refund may or may not have been made. The credit it was for stays held off the buyer's balance (so it cannot be spent while the money may be on its way back), and the amount sent is written down. Press **Mark refunded** again: it sends the same amount under the same `Idempotency-Key: refund:<payment>`, so Stripe answers with the refund it made, if it made one, and never makes a second; the request then turns *Refunded*, or - if Stripe refuses - the credit goes back. Or check the payment in the Stripe dashboard first. Until it is settled the request cannot be declined and the payment cannot be refunded from the payments list (see the next row). |
+| **Decline** on a purchase's refund request says *That purchase is being refunded right now*, or *A $X card refund was sent to Stripe for this request and never confirmed…*; or the payments list's **Refund** says *A refund request for this payment has a card refund that Stripe has not confirmed yet* | Expected: *Declined* tells the person no money moved, so it is refused while money is moving or may have moved. *Being refunded right now*: another administrator (or another tab) pressed **Mark refunded**, or **Refund** on the payments list, and Stripe has not answered yet - wait a moment and reload the queue; if the refund went through, the request is already *Refunded*. *Never confirmed*: see the row above - press **Mark refunded** again first, and decline only if Stripe refuses it. The payments list refuses its whole refund for the same reason: the request already holds that credit, and a whole refund on top would take it twice. A decline of a purchase that HAS been refunded closes the request as *Refunded* instead and tells the person. |
+| **Mark refunded** on a crypto purchase's refund request says *Crypto cannot be refunded automatically. Send $X back from your Cryptomus merchant dashboard first, then confirm here that you have.* | Expected: nothing can pull crypto back. Send that amount to the buyer from the Cryptomus dashboard, then confirm - the dialog sends `paidByHand: true` with the amount it named, or what you typed in *Amount actually sent* (whole cents, no more than was asked); the server refuses a confirmation that names no amount (*Say how much you sent back*). Only then is the request set *Refunded*, recorded at what you sent, and that much credit reversed. If the buyer spent some between the request and the confirmation, the reversal takes what is left and the answer reports the rest as a shortfall. |
+| A person's refund request is refused with *What this resume was charged is not on record*, or the resumes of a run show *This run's resumes are no longer listed* | The resume is from an order placed before refund requests existed (its item carries no charge) and its batch is gone, or it is a queued resume that was not placed as an order and the queue has since forgotten its run (an hour after it finished at most, or sooner once twenty newer runs on the install had finished). Nothing records what that one resume alone cost, so it cannot be named. Grant the amount by hand under **Admin → Accounts** - the run's reserve row in the account's Credit History says what each resume was charged. |
+| **Mark refunded** on a resume's request says *That account no longer exists, so nothing can be credited back* | The account was deleted after asking. There is no balance left to credit: decline the request with the reason instead. |
+| After rolling back to an older build, every account's bell shows other people's notices - *New refund request FT-RF-…* with somebody's email, amount and reason, *Refund request declined*, *Refund made* | This build writes notices for ONE account (`notifications.recipient_id` set), and an older build has no recipient filter: it reads every row as an announcement for everybody. Stop the backend and run `sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM notifications WHERE recipient_id IS NOT NULL;"` - announcements are untouched, and the requests themselves stay in `refund_requests`, which the older build ignores. Do it before starting an older build (see *Rolling back past this* under [Asking for a refund](#asking-for-a-refund)). |
+| The contact dialog lists fewer channels than were saved, or none, and the backend log says `[contact] A stored contact channel no longer passes its check and is not shown.` (or *not valid JSON*) | The `contact` row in `app_settings` was edited outside the app, or holds a value a rule written since now refuses. Every read re-checks every channel and leaves out the ones that fail - a link on the sign-in page is never shown unchecked. Open **Admin → Settings → General**, fix or re-enter the channel, and save. |
 | A refund says *Could not confirm the refund with Stripe* | The call went out and no answer came back, so this server does not know whether the refund exists - and it deliberately reversed no credits rather than guessing. Press **Refund** again: the request carries `Idempotency-Key: refund:<payment id>`, so Stripe cannot create a second refund for that payment, and the second attempt finishes the reversal. If you would rather look first, the payment in the Stripe dashboard shows whether a refund is there. |
 | A payment closed with *This server could not start that payment* | Not the provider - this end. The settings row would not load, or the database refused a write, before anything was sent anywhere. Nothing was charged. Read the backend log for the reference: the real error is there, and it is usually `DB_DIR` becoming unwritable or a settings row saved as something that will not parse. |
 | Buying with a card works, but paying with a SAVED card takes the money and never credits it | The webhook endpoint is not subscribed to `payment_intent.succeeded`. A saved card is charged off-session, which emits `payment_intent.*` and never `checkout.session.completed` - so the card path works and the saved-card path silently does not. Add `payment_intent.succeeded`, `payment_intent.payment_failed` and `payment_intent.canceled` to the endpoint's events. `stripe listen` forwards everything, so this only bites an endpoint created by hand. |
@@ -2275,6 +2424,19 @@ against the markup. The live preview's access rules and its lack of side
 effects are in `profilePreview.test.js`, run with every seat locked so a 200
 also proves no model was asked; the prompt variables and their drift check in
 `promptVariables.test.js`.
+
+Refund requests are pinned in `refundRequests.test.js` - every allowed and
+refused state change, a double-pressed *Refunded* moving money once, a card's
+partial Stripe refund of the unspent part with its credit held before Stripe
+is asked (two refunds of one account, or the buyer spending, while Stripe is
+held open cannot pay out more than was unspent; a refusal puts the credit back;
+no answer keeps it held and the retry sends the same), a Decline refused while
+the refund is with Stripe, crypto only after the by-hand confirmation and at
+the amount sent, one open request per item in SQL, and each notice reaching
+only the account it is for (`notificationRecipients.test.js`) - and the contact
+channels' rules, `javascript:` and `data:` included, in `contact.test.js`.
+`frontendRefunds.test.js` also parses every page and fails on a sentence that
+asks for an administrator with no Contact admin link after it.
 
 Money is pinned in `credits.test.js` (exact thousandths: seven `$0.023`
 resumes reserve `$0.161`, two refunds give back `$0.046`), `money.test.js` (the

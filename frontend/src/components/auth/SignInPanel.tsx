@@ -4,8 +4,10 @@ import Image from 'next/image';
 import Script from 'next/script';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import ContactAdminDialog, { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { Field, Notice } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
+import { ApiResponseError } from '@/lib/api';
 import { authApi, type SignInOptions } from '@/lib/auth';
 import { userMessage } from '@/lib/userMessage';
 
@@ -43,6 +45,16 @@ declare global {
 
 type Stage = 'address' | 'code';
 
+/**
+ * A sign-in the server refused because the ACCOUNT is disabled - the one 403
+ * either sign-in route answers (services/auth/authService.ts). The address
+ * was proven; trying again cannot help, and only an administrator can, so it
+ * gets a screen of its own rather than an error line under the form.
+ */
+function isDisabledAccount(error: unknown): boolean {
+  return error instanceof ApiResponseError && error.status === 403;
+}
+
 export default function SignInPanel() {
   const { adopt } = useAuth();
 
@@ -55,6 +67,9 @@ export default function SignInPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The server's sentence when the account turned out to be disabled. */
+  const [disabledAccount, setDisabledAccount] = useState<string | null>(null);
+  const [contacting, setContacting] = useState(false);
 
   const [googleScriptReady, setGoogleScriptReady] = useState(false);
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
@@ -75,7 +90,8 @@ export default function SignInPanel() {
       try {
         adopt((await authApi.google(credential)).account);
       } catch (caught) {
-        setError(userMessage(caught, 'That Google sign-in did not work.'));
+        if (isDisabledAccount(caught)) setDisabledAccount(userMessage(caught));
+        else setError(userMessage(caught, 'That Google sign-in did not work.'));
       } finally {
         setBusy(false);
       }
@@ -89,7 +105,9 @@ export default function SignInPanel() {
    * It has to be Google's: the credential is issued to the client id by
    * Google's own frame, so a button we drew ourselves would have nothing to
    * hand back. Both the script and the container must exist first, which is
-   * what the two conditions guard.
+   * what the two conditions guard - and `disabledAccount` is a dependency because
+   * the disabled-account card replaces the form: coming back from it mounts a
+   * fresh, empty container that needs the button drawn into it again.
    */
   useEffect(() => {
     if (!googleScriptReady) return;
@@ -107,7 +125,7 @@ export default function SignInPanel() {
       width: 320,
       text: 'signin_with',
     });
-  }, [googleScriptReady, options, signInWithGoogle]);
+  }, [googleScriptReady, options, signInWithGoogle, disabledAccount]);
 
   const sendCode = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -132,7 +150,8 @@ export default function SignInPanel() {
     try {
       adopt((await authApi.verifyCode(email, code)).account);
     } catch (caught) {
-      setError(userMessage(caught, 'That code did not work.'));
+      if (isDisabledAccount(caught)) setDisabledAccount(userMessage(caught));
+      else setError(userMessage(caught, 'That code did not work.'));
       setCode('');
     } finally {
       setBusy(false);
@@ -167,130 +186,168 @@ export default function SignInPanel() {
         <span className="tl-wordmark">Tailor</span>
       </div>
 
-      <div className="tl-card w-full max-w-md p-6 sm:p-8">
-        <h1 className="text-2xl font-bold tracking-tight text-ink">Sign in</h1>
-        <p className="mt-2 text-sm text-muted">Tailor keeps your profiles to your own account.</p>
-
-        {optionsError && (
-          <Notice tone="error" className="mt-6">
-            {optionsError}
-          </Notice>
-        )}
-
-        {/*
-          Who is looking is unknown here - nobody can be signed in - so this
-          says only who can fix it. What to set is in the backend's startup log
-          and the README, where the person who runs the server will look.
-        */}
-        {nothingConfigured && (
-          <Notice tone="warn" className="mt-6">
-            Sign-in isn&apos;t available right now. Please contact your administrator.
-          </Notice>
-        )}
-
-        {options?.google.available && (
-          <div className="mt-6">
-            <div ref={googleButtonRef} className="flex justify-center" />
-            {!googleScriptReady && (
-              <p className="text-center text-sm text-subtle">Loading Google sign-in...</p>
-            )}
-          </div>
-        )}
-
-        {options?.google.available && options.email.available && (
-          <div className="my-6 flex items-center gap-3">
-            <span className="h-px flex-1 bg-[var(--line-subtle)]" />
-            <span className="text-xs uppercase tracking-wide text-subtle">or</span>
-            <span className="h-px flex-1 bg-[var(--line-subtle)]" />
-          </div>
-        )}
-
-        {options?.email.available && stage === 'address' && (
-          <form onSubmit={sendCode} className="mt-6 space-y-5">
-            <Field label="Email address" htmlFor="signin-email">
-              <input
-                id="signin-email"
-                type="email"
-                required
-                autoComplete="email"
-                value={email}
-                disabled={busy}
-                onChange={(event) => setEmail(event.target.value)}
-                className="tl-input"
-                placeholder="you@example.com"
-              />
-            </Field>
-            <button type="submit" disabled={busy || !email} className="tl-button w-full">
-              {busy ? 'Sending...' : 'Email me a code'}
+      {disabledAccount ? (
+        <div className="tl-card w-full max-w-md p-6 sm:p-8">
+          <h1 className="text-2xl font-bold tracking-tight text-ink">This account is disabled</h1>
+          {/* The server's own sentence - it names who can re-enable it. Plain
+              text, not a Notice: the Contact admin button below is the link. */}
+          <p className="mt-3 break-words text-sm text-muted">{disabledAccount}</p>
+          <div className="mt-6 space-y-3">
+            <button type="button" onClick={() => setContacting(true)} className="tl-button w-full">
+              Contact admin
             </button>
-          </form>
-        )}
+            <button
+              type="button"
+              onClick={() => {
+                setDisabledAccount(null);
+                setStage('address');
+                setCode('');
+                setNotice(null);
+              }}
+              className="tl-button-quiet w-full"
+            >
+              Sign in with a different account
+            </button>
+          </div>
+          {contacting && <ContactAdminDialog onClose={() => setContacting(false)} />}
+        </div>
+      ) : (
+        <div className="tl-card w-full max-w-md p-6 sm:p-8">
+          <h1 className="text-2xl font-bold tracking-tight text-ink">Sign in</h1>
+          <p className="mt-2 text-sm text-muted">Tailor keeps your profiles to your own account.</p>
 
-        {options?.email.available && stage === 'code' && (
-          <form onSubmit={verifyCode} className="mt-6 space-y-5">
-            <Field label="Six-digit code" htmlFor="signin-code">
-              <input
-                id="signin-code"
-                // `inputMode` and `autoComplete` together are what let a phone
-                // offer the code straight from the notification.
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="\d{6}"
-                maxLength={6}
-                required
-                autoFocus
-                value={code}
-                disabled={busy}
-                onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                // Inline, because `.tl-input` sets its own font size and is
-                // unlayered, so a `text-2xl` utility here would lose to it.
-                style={{ fontSize: '1.5rem', lineHeight: '2rem', letterSpacing: '0.5em' }}
-                className="tl-input text-center"
-                placeholder="000000"
-              />
-            </Field>
-            <div className="space-y-3">
-              <button type="submit" disabled={busy || code.length !== 6} className="tl-button w-full">
-                {busy ? 'Checking...' : 'Sign in'}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setStage('address');
-                  setCode('');
-                  setError(null);
-                  setNotice(null);
-                }}
-                className="tl-button-quiet w-full"
-              >
-                Use a different address
-              </button>
+          {optionsError && (
+            <Notice tone="error" className="mt-6">
+              {optionsError}
+            </Notice>
+          )}
+
+          {/*
+            Who is looking is unknown here - nobody can be signed in - so this
+            says only who can fix it. What to set is in the backend's startup log
+            and the README, where the person who runs the server will look.
+          */}
+          {nothingConfigured && (
+            <Notice tone="warn" className="mt-6">
+              Sign-in isn&apos;t available right now. Please contact your administrator.
+            </Notice>
+          )}
+
+          {options?.google.available && (
+            <div className="mt-6">
+              <div ref={googleButtonRef} className="flex justify-center" />
+              {!googleScriptReady && (
+                <p className="text-center text-sm text-subtle">Loading Google sign-in...</p>
+              )}
             </div>
-          </form>
-        )}
+          )}
 
-        {notice && !error && (
-          /*
-           * `break-words`, because this sentence has an email address in it.
-           *
-           * The server answers "A six-digit code is on its way to <address>",
-           * and an address is one unbreakable word to a browser - neither `.`
-           * nor `@` is a break opportunity. Without this, an ordinary
-           * work address runs out of the notice, out of the card, and on a
-           * phone off the side of the window, taking the page's horizontal
-           * scroll with it. It starts going wrong at 39 characters.
-           */
-          <Notice tone="info" className="mt-5 break-words">
-            {notice}
-          </Notice>
-        )}
-        {error && (
-          <Notice tone="error" className="mt-5">
-            {error}
-          </Notice>
-        )}
-      </div>
+          {options?.google.available && options.email.available && (
+            <div className="my-6 flex items-center gap-3">
+              <span className="h-px flex-1 bg-[var(--line-subtle)]" />
+              <span className="text-xs uppercase tracking-wide text-subtle">or</span>
+              <span className="h-px flex-1 bg-[var(--line-subtle)]" />
+            </div>
+          )}
+
+          {options?.email.available && stage === 'address' && (
+            <form onSubmit={sendCode} className="mt-6 space-y-5">
+              <Field label="Email address" htmlFor="signin-email">
+                <input
+                  id="signin-email"
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={email}
+                  disabled={busy}
+                  onChange={(event) => setEmail(event.target.value)}
+                  className="tl-input"
+                  placeholder="you@example.com"
+                />
+              </Field>
+              <button type="submit" disabled={busy || !email} className="tl-button w-full">
+                {busy ? 'Sending...' : 'Email me a code'}
+              </button>
+            </form>
+          )}
+
+          {options?.email.available && stage === 'code' && (
+            <form onSubmit={verifyCode} className="mt-6 space-y-5">
+              <Field label="Six-digit code" htmlFor="signin-code">
+                <input
+                  id="signin-code"
+                  // `inputMode` and `autoComplete` together are what let a phone
+                  // offer the code straight from the notification.
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="\d{6}"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  value={code}
+                  disabled={busy}
+                  onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                  // Inline, because `.tl-input` sets its own font size and is
+                  // unlayered, so a `text-2xl` utility here would lose to it.
+                  style={{ fontSize: '1.5rem', lineHeight: '2rem', letterSpacing: '0.5em' }}
+                  className="tl-input text-center"
+                  placeholder="000000"
+                />
+              </Field>
+              <div className="space-y-3">
+                <button type="submit" disabled={busy || code.length !== 6} className="tl-button w-full">
+                  {busy ? 'Checking...' : 'Sign in'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setStage('address');
+                    setCode('');
+                    setError(null);
+                    setNotice(null);
+                  }}
+                  className="tl-button-quiet w-full"
+                >
+                  Use a different address
+                </button>
+              </div>
+            </form>
+          )}
+
+          {notice && !error && (
+            /*
+             * `break-words`, because this sentence has an email address in it.
+             *
+             * The server answers "A six-digit code is on its way to <address>",
+             * and an address is one unbreakable word to a browser - neither `.`
+             * nor `@` is a break opportunity. Without this, an ordinary
+             * work address runs out of the notice, out of the card, and on a
+             * phone off the side of the window, taking the page's horizontal
+             * scroll with it. It starts going wrong at 39 characters.
+             */
+            <Notice tone="info" className="mt-5 break-words">
+              {notice}
+            </Notice>
+          )}
+          {error && (
+            <Notice tone="error" className="mt-5">
+              {error}
+            </Notice>
+          )}
+        </div>
+      )}
+
+      {/*
+        Everybody sees how to reach the administrator (owner decision A2),
+        signed out included - somebody who cannot sign in is the person who
+        most needs to.
+      */}
+      {!disabledAccount && (
+        <p className="mt-6 text-center text-sm text-muted">
+          Trouble signing in? <ContactAdminLink />
+        </p>
+      )}
     </div>
   );
 }

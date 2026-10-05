@@ -126,6 +126,12 @@ export function userMessage(error: unknown, fallback: string = GENERIC_MESSAGE):
  * string, for the places that hold a failure as text: a status line under a
  * button, a row's error cell, a dialog's message.
  *
+ * Text cannot carry a link, so the "Contact admin" link that a sentence like
+ * "Please try again, or contact your administrator." deserves is added where
+ * the text is DRAWN: the kit's <Notice> (warn, error), <Status> (error) and
+ * <ErrorNotice> all add it when `asksForAdministrator` (lib/contactChannels.ts)
+ * says the sentence asks for one. Render the string through one of those.
+ *
  * Safe on any page for the same reason <ErrorNotice> is: the server attaches
  * `detail` for an administrator and nobody else, so for everybody else this is
  * exactly `userMessage`. It exists because the server's `error` is the generic

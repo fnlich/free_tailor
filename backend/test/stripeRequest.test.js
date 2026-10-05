@@ -111,6 +111,32 @@ test('every Stripe request carries the pinned version, not just the checkout', a
   }
 });
 
+test('a partial refund sends Stripe its amount in cents, under the payment\'s own idempotency key', async () => {
+  process.env.STRIPE_SECRET_KEY = 'sk_test_wire';
+  const stripe = loadFresh('../dist/integrations/stripe');
+  const stub = withStubbedFetch({ id: 're_1' });
+
+  try {
+    await stripe.refundPaymentIntent('pi_1', 'pay_wire', 3997);
+    await stripe.refundPaymentIntent('pi_2', 'pay_full');
+
+    const partial = Object.fromEntries(new URLSearchParams(stub.calls[0].init.body));
+    assert.deepEqual(partial, { payment_intent: 'pi_1', amount: '3997' });
+    // The key is the PAYMENT, never the amount: a retry carrying another
+    // amount must be refused by Stripe, not become a second refund.
+    assert.equal(stub.calls[0].init.headers['Idempotency-Key'], 'refund:pay_wire');
+
+    // No amount is a refund of the whole charge, exactly as before.
+    const full = Object.fromEntries(new URLSearchParams(stub.calls[1].init.body));
+    assert.deepEqual(full, { payment_intent: 'pi_2' });
+  } finally {
+    stub.restore();
+  }
+  // Never a fraction, a zero or a negative: refused before anything is sent.
+  await assert.rejects(() => stripe.refundPaymentIntent('pi_1', 'pay_wire', 39.97), /positive whole number of cents/);
+  await assert.rejects(() => stripe.refundPaymentIntent('pi_1', 'pay_wire', 0), /positive whole number of cents/);
+});
+
 test('a key in the wrong slot is refused rather than published', () => {
   const stripe = loadFresh('../dist/integrations/stripe');
 

@@ -1,29 +1,40 @@
 import { apiFetch } from './api';
 
 /**
- * Notifications: what an administrator posted, and whether this account has
- * caught up.
+ * Notifications: what an administrator posted for everybody, what the app
+ * wrote for this account alone (a refund request decided - or, for an
+ * administrator, a new one to decide), and whether this account has caught up.
  *
- * "Unread" is one timestamp per account rather than a read receipt per post.
- * A post here is an announcement to everybody, so the only question worth
- * answering is "is there anything since I last looked" - and the cheap answer
- * survives a new device, which a browser-local one would not.
+ * A feed holds the announcements and the reader's OWN notices, never anybody
+ * else's - the server decides that, list and unread count alike.
+ *
+ * "Unread" is one timestamp per account rather than a read receipt per post:
+ * the only question worth answering is "is there anything since I last
+ * looked", and the cheap answer survives a new device, which a browser-local
+ * one would not.
  */
 
 export type Notification = {
   id: string;
   title: string;
   body: string;
-  /** The administrator who posted it, for the admin list. May be empty. */
+  /** The administrator who posted it, for the admin list. Empty on one the app wrote. */
   authorId: string;
   authorName: string;
+  /** Null for an announcement to everybody; this account's id for a notice to it alone. */
+  recipientId: string | null;
+  /**
+   * The app page it is about - `/credits?tab=refunds` - or null. An app path
+   * only, and checked again before it becomes a link (lib/appLinks.ts).
+   */
+  link: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
 export type NotificationFeed = {
   notifications: Notification[];
-  /** Posts created since this account last opened the panel. */
+  /** Announcements and this account's own notices created since it last opened the panel. */
   unreadCount: number;
   /** Null when they have never opened it. */
   seenAt: string | null;

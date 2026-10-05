@@ -11,6 +11,7 @@ import {
   Profile,
   Template,
 } from '@/lib/api';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { EmptyState, ErrorNotice, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { LAYOUT_LABELS, drawnTemplate, normalizeTechnicalSkillsLayout } from '@/lib/profileDraft';
 import { useAuth } from '@/contexts/AuthContext';
@@ -297,7 +298,7 @@ export default function ProfilesPage() {
             </p>
             <p className="mt-1">
               Delete one below to make room, or ask an administrator of this installation to move your
-              account to a higher subscription.{' '}
+              account to a higher subscription. <ContactAdminLink />{' '}
               <Link href="/settings/subscription" className="font-medium underline underline-offset-2">
                 See your subscription
               </Link>

@@ -514,6 +514,35 @@ async function main() {
       `saw: ${creditsShell.navLabels.join(', ')}`
     );
 
+    /*
+     * The refund requests a person has made are a tab of /credits, and every
+     * notice about one links to it - so the address has to light that tab.
+     */
+    const creditTabs = async () =>
+      page.evaluate(() => ({
+        tabs: Array.from(document.querySelectorAll('[role="tablist"][aria-label="Credits"] [role="tab"]')).map((tab) =>
+          tab.textContent.trim()
+        ),
+        active: document
+          .querySelector('[role="tablist"][aria-label="Credits"] [role="tab"][aria-selected="true"]')
+          ?.textContent.trim(),
+        heading: document.querySelector('#refunds-heading')?.textContent.trim() ?? null,
+      }));
+    const creditsRow = await creditTabs();
+    check(
+      'user /credits: the tabs are Card, Crypto, Credit History and Refund Requests',
+      creditsRow.tabs.join(' / ') === 'Card / Crypto / Credit History / Refund Requests',
+      creditsRow.tabs.join(', ')
+    );
+    await visit(page, '/credits?tab=refunds', 'user');
+    await wait(500);
+    const refundsTab = await creditTabs();
+    check(
+      "user /credits?tab=refunds: lands on Refund Requests - where a refund notice's link goes",
+      refundsTab.active === 'Refund Requests' && refundsTab.heading === 'Refund Requests',
+      JSON.stringify(refundsTab)
+    );
+
     // The prefix collision that a vertical rail makes obvious.
     const filter = await visit(page, '/jobs/filter', 'user');
     check(
@@ -750,6 +779,12 @@ async function main() {
               !menu.hrefs.includes('/settings/plan'),
             JSON.stringify(menu)
           );
+          // How to reach the administrator is one press away from every page.
+          check(
+            `top bar ${label}: the account menu offers Contact admin`,
+            Boolean(menu) && /Contact admin/.test(menu.text),
+            JSON.stringify(menu?.text)
+          );
         }
         await page.keyboard.press('Escape');
         await page.evaluate(() => document.body.click());
@@ -917,6 +952,47 @@ async function main() {
 
     await adminPage.screenshot({ path: `${SHOTS}/shell-5-admin-light.png` });
 
+    // The refund queue is a tab of Payments, and a "New refund request"
+    // notice links straight to it.
+    await adminPage.goto(`${APP}/admin/payments?tab=refunds`, { waitUntil: 'networkidle2' });
+    await wait(600);
+    const queue = await adminPage.evaluate(() => ({
+      // The shell's own h1 says Settings; the page's says Payments.
+      title: Array.from(document.querySelectorAll('.tl-main h1'))
+        .map((h) => h.textContent.trim())
+        .find((text) => text === 'Payments'),
+      tabs: Array.from(document.querySelectorAll('[role="tablist"][aria-label="Payments"] [role="tab"]')).map((tab) =>
+        tab.textContent.trim()
+      ),
+      active: document
+        .querySelector('[role="tablist"][aria-label="Payments"] [role="tab"][aria-selected="true"]')
+        ?.textContent.trim(),
+      heading: document.querySelector('#refund-queue-heading')?.textContent.trim() ?? null,
+    }));
+    check(
+      'admin /admin/payments?tab=refunds: titled Payments, with the Refund requests tab lit',
+      queue.title === 'Payments' &&
+        queue.tabs[0] === 'Payments' &&
+        /^Refund requests/.test(queue.tabs[1] ?? '') &&
+        /^Refund requests/.test(queue.active ?? '') &&
+        queue.heading === 'Refund requests',
+      JSON.stringify(queue)
+    );
+
+    // Settings -> General carries the contact editor (its own section and Save).
+    await adminPage.goto(`${APP}/admin/settings`, { waitUntil: 'networkidle2' });
+    await wait(600);
+    const contactSection = await adminPage.evaluate(() => {
+      const headings = Array.from(document.querySelectorAll('.tl-section h2')).map((h) => h.textContent.trim());
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
+      return { headings, save: buttons.includes('Save contact details'), add: buttons.includes('Add a channel') };
+    });
+    check(
+      'admin /admin/settings: General has a Contact section with its own Save',
+      contactSection.headings.includes('Contact') && contactSection.save && contactSection.add,
+      JSON.stringify(contactSection)
+    );
+
     // Post a notification as the admin, and confirm the bell shows it.
     await adminPage.goto(`${APP}/admin/notifications`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1011,6 +1087,28 @@ async function main() {
     const removed = await removeSeededJob();
     check('api: the administrator deletes a Bid Assistant job', removed === 200, `got ${removed}`);
 
+    // Refund requests and the contact list: the queue and the editor are the
+    // administrators', the channels everybody's - signed out included.
+    const queueAsUser = await asUser('/admin/refund-requests');
+    check('api: an ordinary user cannot read the refund queue', queueAsUser.status === 403, `got ${queueAsUser.status}`);
+    const approveAsUser = await asUser('/admin/refund-requests/rfr_nope/approve', { method: 'POST' });
+    check('api: ...nor decide a refund request', approveAsUser.status === 403, `got ${approveAsUser.status}`);
+    const contactAsUser = await asUser('/admin/contact', { method: 'PUT', body: JSON.stringify({ channels: [] }) });
+    check('api: an ordinary user cannot change the contact details', contactAsUser.status === 403, `got ${contactAsUser.status}`);
+    const ownRequests = await asUser('/refund-requests');
+    check('api: an ordinary user lists their own refund requests', ownRequests.status === 200, `got ${ownRequests.status}`);
+    const signedOutRequests = await fetch(`${API}/refund-requests`);
+    check('api: signed out, there are no refund requests to list', signedOutRequests.status === 401, `got ${signedOutRequests.status}`);
+    const publicContact = await fetch(`${API}/contact`);
+    const publicContactBody = await publicContact.json().catch(() => null);
+    check(
+      'api: signed out, the contact channels are readable - and nothing else is in the answer',
+      publicContact.status === 200 &&
+        Object.keys(publicContactBody ?? {}).join() === 'channels' &&
+        /no-store/.test(publicContact.headers.get('cache-control') ?? ''),
+      `got ${publicContact.status} ${JSON.stringify(publicContactBody)?.slice(0, 160)}`
+    );
+
     const disabled = await asUser('/templates?includeDisabled=true');
     check('api: an ordinary user asking for disabled templates is answered', disabled.status === 200);
     const body = await disabled.json();
@@ -1019,6 +1117,35 @@ async function main() {
       Array.isArray(body) && body.every((t) => !t.disabled),
       'a disabled template leaked to a non-admin'
     );
+
+    /* ------------------------------------------------ signed out */
+    // Everybody sees how to reach the administrator (owner decision A2) - the
+    // person who cannot sign in most of all.
+    // A context of its own: the other pages' session cookie is not in it.
+    const strangers = await browser.createBrowserContext();
+    const visitor = await strangers.newPage();
+    await visitor.setViewport(PHONE);
+    await visitor.goto(`${APP}/`, { waitUntil: 'networkidle2' });
+    await wait(500);
+    const offered = await visitor.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Contact admin');
+      button?.click();
+      return Boolean(button);
+    });
+    await wait(700);
+    const contactDialog = await visitor.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"][aria-label="Contact admin"]');
+      return dialog
+        ? { text: dialog.innerText, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 }
+        : null;
+    });
+    check(
+      'signed out: the sign-in screen offers Contact admin, and it opens on a phone',
+      offered && Boolean(contactDialog) && !contactDialog.overflow && !/could not/i.test(contactDialog.text),
+      JSON.stringify(contactDialog)
+    );
+    await visitor.screenshot({ path: `${SHOTS}/shell-8-signed-out-contact.png` });
+    await strangers.close();
   } finally {
     // Off the shared board even when the walk stopped short of deleting it.
     if (!seededJobGone) await removeSeededJob().catch(() => {});

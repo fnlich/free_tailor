@@ -152,6 +152,22 @@ export function isWholeCents(milli: number): boolean {
 }
 
 /**
+ * The largest whole number of cents in a non-negative amount, as milli-dollars:
+ * $39.977 is $39.970.
+ *
+ * For the ONE place money leaves as cents without having arrived that way: a
+ * purchase refunded in part gives back its unspent balance, and a balance moves
+ * in $0.001 steps while a card - or a crypto invoice - can only return whole
+ * cents. Rounding DOWN is the only honest direction: the seven tenths of a cent
+ * stay on the balance as credit rather than being paid out as money nobody
+ * held. Exact integer arithmetic, not a float divided and floored.
+ */
+export function wholeCentsBelow(milli: number): number {
+  if (!Number.isSafeInteger(milli) || milli <= 0) return 0;
+  return milli - (milli % MILLI_PER_CENT);
+}
+
+/**
  * Milli-dollars as cents, for an amount already known to be whole cents.
  *
  * Throws rather than rounding: a purchase of $2.505 must have been refused

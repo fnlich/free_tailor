@@ -425,3 +425,98 @@ test('a payment from before credits were dollars refunds its money and reverses 
   assert.equal(outcome.payment.state, 'refunded');
   assert.ok(later);
 });
+
+/*
+ * Partial refunds - what a refund request makes of a purchase.
+ *
+ * A refund request returns only the UNSPENT part of a purchase: Stripe is
+ * asked for that amount, exactly that much credit is reversed, and the
+ * payment records both the money returned and the credit taken back, so the
+ * admin page and the invoice can say "refunded $39.970 of $50.000".
+ */
+test('a partial refund asks Stripe for that amount and reverses only that much', async () => {
+  const context = await setup();
+  const stripe = require('../dist/integrations/stripe');
+  const sent = [];
+  stripe.refundPaymentIntent = async (intent, paymentId, amountCents) => {
+    sent.push({ intent, paymentId, amountCents });
+  };
+
+  const payment = context.paidPayment(50);
+  context.spend(10);
+  assert.equal(context.balance(), 40_000);
+
+  const outcome = await context.payments.refundPayment(payment.id, context.admin.id, 'unspent part', {
+    amountMilli: 39_970,
+  });
+
+  assert.deepEqual(sent, [{ intent: 'pi_1', paymentId: payment.id, amountCents: 3_997 }]);
+  assert.equal(outcome.refundAmountMilli, 39_970, 'what went back to the card');
+  assert.equal(outcome.creditedMilli, 39_970, 'what the reversal set out to take');
+  assert.equal(outcome.reversedMilli, 39_970);
+  assert.equal(outcome.shortfallMilli, 0);
+  assert.equal(context.balance(), 30, 'the sub-cent remainder of the purchase stays as credit');
+
+  const stored = context.paymentsDb.getPayment(payment.id);
+  assert.equal(stored.state, 'refunded');
+  assert.equal(stored.refundCents, 3_997);
+  assert.equal(stored.refundedMilli, 39_970);
+  assert.equal(context.paymentsDb.toPaymentView(stored).refundAmountMilli, 39_970);
+});
+
+test('a full refund records the whole charge as returned, and an older refunded row reads the same way', async () => {
+  const context = await setup();
+  const payment = context.paidPayment(20);
+  await context.payments.refundPayment(payment.id, context.admin.id);
+  assert.equal(context.paymentsDb.getPayment(payment.id).refundCents, 2_000);
+
+  // A payment refunded before refunds could be partial has refund_cents 0:
+  // every one of those returned its whole charge, and reads so.
+  const { getDb } = require('../dist/database/sqlite');
+  getDb().prepare('UPDATE payments SET refund_cents = 0 WHERE id = ?').run(payment.id);
+  assert.equal(context.paymentsDb.toPaymentView(context.paymentsDb.getPayment(payment.id)).refundAmountMilli, 20_000);
+});
+
+test('a partial refund refuses an amount that is not whole cents, nothing, or more than the charge', async () => {
+  const context = await setup();
+  const payment = context.paidPayment(10);
+  for (const amountMilli of [1_005, 0, -10, 10_010]) {
+    await assert.rejects(
+      () => context.payments.refundPayment(payment.id, context.admin.id, '', { amountMilli }),
+      /partial refund/i
+    );
+  }
+  assert.equal(context.paymentsDb.getPayment(payment.id).state, 'paid', 'refused before the claim');
+  assert.equal(context.refunds.length, 0);
+});
+
+test('crypto sent back by hand is recorded and its credit reversed; a card cannot be refunded by hand', async () => {
+  const context = await setup();
+  const crypto = context.paymentsDb.createPayment({
+    userId: context.buyer.id,
+    method: 'crypto',
+    provider: 'cryptomus',
+    amountCents: 6_000,
+    creditMilli: 60_000,
+    currency: 'usd',
+  });
+  context.paymentsDb.attachProviderRef(crypto.id, 'inv-hand');
+  context.payments.creditPaid(crypto.id);
+
+  const outcome = await context.payments.refundPayment(crypto.id, context.admin.id, 'sent back', {
+    amountMilli: 25_000,
+    refundedByHand: true,
+  });
+  assert.equal(outcome.refundAmountMilli, 25_000);
+  assert.equal(outcome.reversedMilli, 25_000);
+  assert.equal(context.balance(), 35_000);
+  assert.equal(context.refunds.length, 0, 'nothing is asked of any provider');
+  assert.equal(context.paymentsDb.getPayment(crypto.id).state, 'refunded');
+
+  const card = context.paidPayment(5);
+  await assert.rejects(
+    () => context.payments.refundPayment(card.id, context.admin.id, '', { refundedByHand: true }),
+    /through Stripe, not by hand/
+  );
+  assert.equal(context.paymentsDb.getPayment(card.id).state, 'paid');
+});

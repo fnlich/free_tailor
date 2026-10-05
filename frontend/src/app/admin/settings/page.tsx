@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
+import ContactEditor from '@/components/contact/ContactEditor';
 import {
   AI_PROVIDERS,
   adminApi,
@@ -449,6 +450,8 @@ function AdminSettingsPageBody() {
             Try again
           </button>
         </ErrorNotice>
+        {/* Its own setting and its own endpoint, so it stays editable when the rest cannot load. */}
+        <ContactEditor />
       </div>
     );
   }
@@ -473,7 +476,7 @@ function AdminSettingsPageBody() {
       <header>
         <h2 className="text-2xl font-bold tracking-tight text-ink">General</h2>
         <p className="mt-1 text-sm text-muted">
-          Configure builder defaults, enabled providers, and output storage.
+          Configure builder defaults, enabled providers, output storage, and how people contact you.
         </p>
       </header>
 
@@ -856,6 +859,8 @@ function AdminSettingsPageBody() {
           </button>
         </div>
       </Section>
+
+      <ContactEditor />
     </div>
   );
 }

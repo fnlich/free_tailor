@@ -2,27 +2,34 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import BuyCreditsDialog from '@/components/credits/BuyCreditsDialog';
 import CreditHistory from '@/components/credits/CreditHistory';
 import OrderHistory from '@/components/credits/OrderHistory';
+import RefundRequestHistory from '@/components/credits/RefundRequestHistory';
 import { useTabRow } from '@/components/shell/useTabRow';
+import { Notice } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
 import { formatMoney } from '@/lib/format';
 import { paymentsApi, type PaymentOptions } from '@/lib/payments';
 import { messageWithDetail } from '@/lib/userMessage';
 
-type Tab = 'card' | 'crypto' | 'history';
+type Tab = 'card' | 'crypto' | 'history' | 'refunds';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'card', label: 'Card' },
   { id: 'crypto', label: 'Crypto' },
   { id: 'history', label: 'Credit History' },
+  { id: 'refunds', label: 'Refund Requests' },
 ];
 
-/** Anything the page does not recognise is the default tab, not an error. */
+/**
+ * Anything the page does not recognise is the default tab, not an error.
+ * `refunds` is where every notice about a refund request links.
+ */
 function readTab(value: string | null | undefined): Tab {
-  return value === 'crypto' || value === 'history' ? value : 'card';
+  return value === 'crypto' || value === 'history' || value === 'refunds' ? value : 'card';
 }
 
 /**
@@ -172,10 +179,11 @@ function CreditsBody() {
           </p>
         )}
 
+        {/* A Notice, so a sentence that says to contact the administrator gets the link to. */}
         {error && (
-          <p className="tl-notice" data-tone="error" role="alert">
+          <Notice tone="error" role="alert">
             {error}
-          </p>
+          </Notice>
         )}
 
         {status?.exempt && (
@@ -212,7 +220,9 @@ function CreditsBody() {
                 </ul>
               </>
             ) : (
-              <p className="mt-2 text-sm text-muted">Please contact your administrator.</p>
+              <p className="mt-2 text-sm text-muted">
+                Please contact your administrator. <ContactAdminLink />
+              </p>
             )}
             <p className="mt-3 text-sm text-muted">
               Until then, an administrator can add credit to your account directly.
@@ -255,6 +265,8 @@ function CreditsBody() {
       <div id="credits-panel" role="tabpanel" aria-labelledby={`credits-tab-${tab}`} className="mt-8">
         {tab === 'history' ? (
           <CreditHistory key="history" epoch={epoch} />
+        ) : tab === 'refunds' ? (
+          <RefundRequestHistory key="refunds" epoch={epoch} />
         ) : (
           <OrderHistory key={tab} method={tab} epoch={epoch} />
         )}

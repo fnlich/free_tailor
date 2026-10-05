@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 
 import {
-  countCreatedAfter,
+  countUnreadFor,
   createNotification,
   deleteNotification,
   getSeenAt,
-  listNotifications,
+  listAnnouncements,
+  listNotificationsFor,
   markSeen,
   updateNotification,
 } from '../database/notificationRepository';
@@ -13,6 +14,12 @@ import { requireAdmin, requireUser } from '../middleware/auth';
 
 /**
  * The notice board: one router for reading it, one for writing it.
+ *
+ * A reader's feed is the announcements every account reads plus the notices
+ * written for that account alone (a refund request decided, a new one for an
+ * administrator) - never anybody else's. The writing half is announcements
+ * only: a notice the app wrote for one account is not listed, edited or
+ * deleted there.
  *
  * Two routers rather than per-route guards, because the split is clean - every
  * read is open to anybody signed in, every write is administrator-only - and a
@@ -81,8 +88,8 @@ router.get('/', (req: Request, res: Response) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const seenAt = getSeenAt(req.user!.id);
     res.json({
-      notifications: listNotifications(limit),
-      unreadCount: countCreatedAfter(seenAt),
+      notifications: listNotificationsFor(req.user!.id, limit),
+      unreadCount: countUnreadFor(req.user!.id, seenAt),
       seenAt,
     });
   } catch (error) {
@@ -107,7 +114,7 @@ export const adminNotificationsRouter = Router();
 adminNotificationsRouter.use(requireAdmin);
 
 adminNotificationsRouter.get('/', (_req: Request, res: Response) => {
-  res.json({ notifications: listNotifications(100) });
+  res.json({ notifications: listAnnouncements(100) });
 });
 
 adminNotificationsRouter.post('/', (req: Request, res: Response) => {

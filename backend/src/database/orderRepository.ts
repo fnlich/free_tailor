@@ -77,6 +77,13 @@ export type OrderItem = {
   state: OrderItemState;
   error?: string;
   files: OrderFile[];
+  /**
+   * What this resume was charged, in thousandths of a dollar - its task's
+   * snapshotted price, copied when the order was placed. Null on an item
+   * placed before it was recorded. A charge, not a promise: an administrator
+   * was not charged at all, which the run's reservation says, not this.
+   */
+  costMilli: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -120,6 +127,7 @@ type OrderItemRow = {
   state: string;
   error: string | null;
   files: string;
+  cost_milli: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -128,7 +136,7 @@ const ORDER_COLUMNS = `id, number, user_id, batch_id, label, total, state,
   created_at, updated_at, finished_at, expires_at, purged_at`;
 
 const ITEM_COLUMNS = `id, order_id, seq, task_id, profile_id, profile_name, company_name,
-  role, source_row_number, state, error, files, created_at, updated_at`;
+  role, source_row_number, state, error, files, cost_milli, created_at, updated_at`;
 
 function now(): string {
   return new Date().toISOString();
@@ -197,6 +205,10 @@ function toItem(row: OrderItemRow): OrderItem {
     state: row.state as OrderItemState,
     ...(row.error ? { error: row.error } : {}),
     files: parseFiles(row.files ?? '[]'),
+    costMilli:
+      typeof row.cost_milli === 'number' && Number.isSafeInteger(row.cost_milli) && row.cost_milli >= 0
+        ? row.cost_milli
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -221,6 +233,8 @@ export type NewOrderItem = {
   companyName: string;
   role: string;
   sourceRowNumber?: number;
+  /** What the resume is charged, in thousandths of a dollar: its task's `costMilli`. */
+  costMilli?: number;
 };
 
 export type NewOrder = {
@@ -266,10 +280,10 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
     const insertItem = db.prepare(
       `INSERT INTO order_items (id, order_id, seq, task_id, profile_id, profile_name,
                                 company_name, role, source_row_number, state, files,
-                                created_at, updated_at)
+                                cost_milli, created_at, updated_at)
        VALUES (@id, @orderId, @seq, @taskId, @profileId, @profileName,
                @companyName, @role, @sourceRowNumber, 'queued', '[]',
-               @createdAt, @createdAt)`
+               @costMilli, @createdAt, @createdAt)`
     );
     for (const item of items) {
       insertItem.run({
@@ -282,6 +296,10 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
         companyName: item.companyName ?? '',
         role: item.role ?? '',
         sourceRowNumber: typeof item.sourceRowNumber === 'number' ? item.sourceRowNumber : null,
+        costMilli:
+          typeof item.costMilli === 'number' && Number.isSafeInteger(item.costMilli) && item.costMilli >= 0
+            ? item.costMilli
+            : null,
         createdAt: timestamp,
       });
     }
@@ -340,6 +358,42 @@ export function getOrderItem(orderId: string, itemId: string): OrderItem | null 
     .prepare(`SELECT ${ITEM_COLUMNS} FROM order_items WHERE order_id = ? AND id = ?`)
     .get(orderId, itemId) as OrderItemRow | undefined;
   return row ? toItem(row) : null;
+}
+
+/**
+ * One item by its own id, with the order it belongs to - for a refund request,
+ * which names the resume and nothing else. The caller still checks whose
+ * order it is.
+ */
+export function findOrderItem(itemId: string): { order: Order; item: OrderItem } | null {
+  const row = getDb()
+    .prepare(`SELECT ${ITEM_COLUMNS} FROM order_items WHERE id = ?`)
+    .get(itemId) as OrderItemRow | undefined;
+  if (!row) return null;
+  const order = getOrder(row.order_id);
+  return order ? { order, item: toItem(row) } : null;
+}
+
+/** The item of an order's batch at one position, if that batch was placed as an order. */
+export function findOrderItemForBatch(batchId: string, seq: number): { order: Order; item: OrderItem } | null {
+  const row = getDb()
+    .prepare(
+      `SELECT ${ITEM_COLUMNS.split(',').map((column) => `i.${column.trim()}`).join(', ')}
+         FROM order_items i JOIN orders o ON o.id = i.order_id
+        WHERE o.batch_id = ? AND i.seq = ?`
+    )
+    .get(batchId, seq) as OrderItemRow | undefined;
+  if (!row) return null;
+  const order = getOrder(row.order_id);
+  return order ? { order, item: toItem(row) } : null;
+}
+
+/** Whose order a batch is, and its id - for resolving a queued task to the order item that names it. */
+export function findOrderForBatch(batchId: string): Order | null {
+  const row = getDb()
+    .prepare(`SELECT ${ORDER_COLUMNS} FROM orders WHERE batch_id = ? LIMIT 1`)
+    .get(batchId) as OrderRow | undefined;
+  return row ? toOrder(row) : null;
 }
 
 const EMPTY_COUNTS: OrderCounts = {

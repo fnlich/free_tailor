@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { Field, Section, SettingsPage, StaticValue } from '@/components/settings/SettingsParts';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi, describeProfileUsage, type AccountSubscription } from '@/lib/auth';
@@ -101,7 +102,7 @@ export default function SubscriptionSettingsPage() {
               "Upgrade" button would just raise the question this sentence
               answers. */}
           Subscriptions are set by an administrator of this installation. Ask them to move your
-          account if you need more profiles.
+          account if you need more profiles. <ContactAdminLink />
         </p>
       </Section>
 

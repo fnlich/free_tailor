@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconChevronRight, IconClose } from '@/components/icons';
 import { messageWithDetail } from '@/lib/userMessage';
+import { ContactAdminFor } from '@/components/ui/kit';
 
 /*
  * The body, or null when there is none or it is not JSON. An HTML error page
@@ -252,7 +253,7 @@ function DeleteAnswerModal({
           </button>
         </div>
 
-        {errorMessage && <p className="error-text">{errorMessage}</p>}
+        {errorMessage && <p className="error-text">{errorMessage}<ContactAdminFor text={errorMessage} /></p>}
       </div>
     </div>
   );
@@ -651,7 +652,7 @@ export default function JobDetail({
       </section>
 
       {actionMessage && <p className="success-text">{actionMessage}</p>}
-      {errorMessage && <p className="error-text">{errorMessage}</p>}
+      {errorMessage && <p className="error-text">{errorMessage}<ContactAdminFor text={errorMessage} /></p>}
 
       {activeModal === 'job' && <JobInfoModal job={job} onClose={() => setActiveModal(null)} />}
       {activeModal === 'job-error' && (

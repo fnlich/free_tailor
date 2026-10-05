@@ -23,6 +23,8 @@ import authRoutes from './routes/auth';
 import accountRoutes from './routes/accounts';
 import creditRoutes from './routes/credits';
 import notificationRoutes, { adminNotificationsRouter } from './routes/notifications';
+import refundRequestRoutes, { adminRefundRequestsRouter } from './routes/refundRequests';
+import contactRoutes, { adminContactRouter } from './routes/contact';
 import sheetRoutes from './routes/sheet';
 import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
@@ -239,6 +241,10 @@ app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
 
 // Routes. Auth first: it is the only one reachable while signed out.
 app.use('/api/auth', authRoutes);
+// Public, like auth: how to reach the administrator is for people who cannot
+// sign in as much as for anybody (routes/contact.ts).
+app.use('/api/contact', contactRoutes);
+app.use('/api/admin/contact', adminContactRouter);
 app.use('/api/admin/accounts', accountRoutes);
 app.use('/api/credits', creditRoutes);
 app.use('/api/notifications', notificationRoutes);
@@ -251,6 +257,8 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin/payments', adminPaymentsRouter);
 app.use('/api/admin/notifications', adminNotificationsRouter);
+app.use('/api/refund-requests', refundRequestRoutes);
+app.use('/api/admin/refund-requests', adminRefundRequestsRouter);
 app.use('/api/admin', adminRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/import', importRoutes);

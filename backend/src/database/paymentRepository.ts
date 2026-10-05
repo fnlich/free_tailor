@@ -95,6 +95,13 @@ export type Payment = {
   creditedMilli: number;
   /** What a refund actually took back from the balance, in thousandths. See the note on refunds. */
   refundedMilli: number;
+  /**
+   * What the refund RETURNED to the buyer, in cents: the whole charge for a
+   * refund from the payments list, the unspent part for one a refund request
+   * asked for (services/refunds). 0 until refunded. A payment refunded before
+   * refunds could be partial reads as its whole charge, because it was.
+   */
+  refundCents: number;
   /** Non-null on a payment from before credits became dollars. */
   legacyCredits: LegacyPaymentCredits | null;
   createdAt: string;
@@ -106,18 +113,21 @@ export type Payment = {
  * field ending `Milli`, like every other amount in every response. The cents
  * the provider works in stay inside.
  */
-export type PaymentView = Omit<Payment, 'amountCents' | 'feeCents' | 'legacyCredits'> & {
+export type PaymentView = Omit<Payment, 'amountCents' | 'feeCents' | 'refundCents' | 'legacyCredits'> & {
   amountMilli: number;
   feeMilli: number;
+  /** What the refund returned to the buyer, in thousandths: `refundCents` x 10. 0 until refunded. */
+  refundAmountMilli: number;
   legacyCredits: (Omit<LegacyPaymentCredits, 'unitPriceCents'> & { unitPriceMilli: number }) | null;
 };
 
 export function toPaymentView(payment: Payment): PaymentView {
-  const { amountCents, feeCents, legacyCredits, ...rest } = payment;
+  const { amountCents, feeCents, refundCents, legacyCredits, ...rest } = payment;
   return {
     ...rest,
     amountMilli: centsToMilli(amountCents),
     feeMilli: centsToMilli(feeCents),
+    refundAmountMilli: centsToMilli(refundCents),
     legacyCredits: legacyCredits
       ? {
           credits: legacyCredits.credits,
@@ -150,6 +160,7 @@ type PaymentRow = {
   credit_milli: number;
   credited_milli: number;
   refunded_milli: number;
+  refund_cents: number;
   created_at: string;
   updated_at: string;
 };
@@ -157,7 +168,7 @@ type PaymentRow = {
 const PAYMENT_COLUMNS = `id, reference, user_id, method, provider, provider_ref, credits,
   amount_cents, currency, unit_price_cents, state, failure, credited_at, refunded_at,
   refunded_credits, fee_cents, credits_granted, credit_milli, credited_milli, refunded_milli,
-  created_at, updated_at`;
+  refund_cents, created_at, updated_at`;
 
 function now(): string {
   return new Date().toISOString();
@@ -181,6 +192,14 @@ function toPayment(row: PaymentRow): Payment {
     creditMilli: row.credit_milli ?? 0,
     creditedMilli: row.credited_milli ?? 0,
     refundedMilli: row.refunded_milli ?? 0,
+    // Every refund before refund requests returned the whole charge; the
+    // column is 0 on those rows, and on every payment not refunded.
+    refundCents:
+      (row.refund_cents ?? 0) > 0
+        ? row.refund_cents
+        : row.state === 'refunded'
+          ? row.amount_cents
+          : 0,
     // A payment made since the switch writes 0 credits; one from before it
     // always quoted at least one.
     legacyCredits:
@@ -434,8 +453,9 @@ export function markUnpaid(paymentId: string, state: 'failed' | 'expired', failu
 }
 
 /**
- * Records a refund, and how much of it the balance could actually give back,
- * in thousandths of a dollar.
+ * Records a refund: how much of it the balance could actually give back, in
+ * thousandths of a dollar, and how much money went back, in cents (the whole
+ * charge, or the part a refund request asked for).
  *
  * `reversedMilli` is not always what was credited. A balance may not go
  * negative, so refunding somebody who has already spent what they bought
@@ -444,18 +464,21 @@ export function markUnpaid(paymentId: string, state: 'failed' | 'expired', failu
  * reversed $12.400", because the alternative is a number that quietly does not
  * add up.
  */
-export function markRefunded(paymentId: string, reversedMilli: number): boolean {
+export function markRefunded(paymentId: string, reversedMilli: number, refundCents: number): boolean {
   if (!Number.isSafeInteger(reversedMilli) || reversedMilli < 0) {
     throw new Error(`A reversed amount must be a whole, non-negative number of thousandths, not ${reversedMilli}.`);
+  }
+  if (!Number.isSafeInteger(refundCents) || refundCents <= 0) {
+    throw new Error(`A refunded amount must be a positive whole number of cents, not ${refundCents}.`);
   }
   const timestamp = now();
   const result = getDb()
     .prepare(
       `UPDATE payments SET state = 'refunded', refunded_at = @at, refunded_milli = @reversed,
-                           updated_at = @at
+                           refund_cents = @refundCents, updated_at = @at
        WHERE id = @id AND state = 'refunding'`
     )
-    .run({ id: paymentId, reversed: reversedMilli, at: timestamp });
+    .run({ id: paymentId, reversed: reversedMilli, refundCents, at: timestamp });
   return result.changes > 0;
 }
 
@@ -467,14 +490,29 @@ export function markRefunded(paymentId: string, reversedMilli: number): boolean 
  * a refusal - rather than calling the provider a second time, measuring a
  * balance that the first caller has already moved, and reporting that nothing
  * could be reversed.
+ *
+ * Also refused while a refund REQUEST for this payment holds a card refund
+ * Stripe has not confirmed (`refund_requests.hold_key`, services/refunds): that
+ * request has already taken its credit off the balance, and a refund of the
+ * whole payment on top would take it a second time. `heldBy` is that request
+ * itself, coming back to finish its own refund. In the UPDATE rather than read
+ * first, so no second process can slip between the look and the claim. The
+ * payment still reads `paid` after this refusal, which is how the caller tells
+ * it from a claim somebody else holds.
  */
-export function beginRefund(paymentId: string): boolean {
+export function beginRefund(paymentId: string, heldBy: string | null = null): boolean {
   const result = getDb()
     .prepare(
       `UPDATE payments SET state = 'refunding', updated_at = @at
-       WHERE id = @id AND state = 'paid'`
+       WHERE id = @id AND state = 'paid'
+         AND NOT EXISTS (
+           SELECT 1 FROM refund_requests r
+            WHERE r.payment_id = @id AND r.hold_key IS NOT NULL
+              AND r.state IN ('requested', 'approved')
+              AND (@heldBy IS NULL OR r.id <> @heldBy)
+         )`
     )
-    .run({ id: paymentId, at: now() });
+    .run({ id: paymentId, heldBy, at: now() });
   return result.changes > 0;
 }
 

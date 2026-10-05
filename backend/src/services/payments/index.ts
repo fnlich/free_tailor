@@ -24,7 +24,7 @@ import {
 } from '../../database/paymentRepository';
 import type { UserAccount } from '../../types/account';
 import { normalizeOrigin, publicBaseUrl } from '../../config/publicUrl';
-import { centsToMilli, formatMoney } from '../../utils/money';
+import { centsToMilli, formatMoney, isWholeCents, milliToCents } from '../../utils/money';
 import * as stripe from '../../integrations/stripe';
 import * as cryptomus from '../../integrations/cryptomus';
 import { PublicError } from '../../middleware/publicError';
@@ -829,12 +829,44 @@ export function creditPaid(paymentId: string): CreditOutcome {
 /** What a refund did, in thousandths of a dollar. */
 export type RefundOutcome = {
   payment: Payment;
-  /** What the payment put on the balance. 0 for one from before credits were dollars. */
+  /** What went back to the buyer: the whole charge, or the part asked for. */
+  refundAmountMilli: number;
+  /**
+   * What the refund set out to take back off the balance: everything the
+   * payment credited, or - for a partial refund - the part returned. 0 for a
+   * payment from before credits were dollars.
+   */
   creditedMilli: number;
   /** What could be taken back off the balance. */
   reversedMilli: number;
   /** What could not be taken back because it was already spent. */
   shortfallMilli: number;
+};
+
+/**
+ * How a refund is made, beyond "all of it, through the provider".
+ */
+export type RefundOptions = {
+  /**
+   * Return only this much, in thousandths of a dollar - a positive whole
+   * number of cents, no more than was charged - and reverse only that much
+   * credit. A crypto refund request recorded by hand uses it (services/refunds).
+   * Absent: the whole charge, as the payments list's button does.
+   *
+   * A CARD refund request does not come through here: a partial refund is a
+   * promise about what is left unspent, so it takes its credit off the balance
+   * BEFORE the money leaves (services/refunds, `sendCardRefund`), where this
+   * calls the provider first and reverses after - which lets the buyer spend,
+   * or a second refund claim, the same credit while Stripe is answering.
+   */
+  amountMilli?: number;
+  /**
+   * The administrator has ALREADY sent a crypto payment's money back by hand,
+   * and is recording it: nothing is asked of the provider - nothing could be
+   * - and the credit is reversed. Refused for a card, which goes back through
+   * Stripe.
+   */
+  refundedByHand?: boolean;
 };
 
 /**
@@ -861,16 +893,34 @@ export type RefundOutcome = {
 export async function refundPayment(
   paymentId: string,
   actorId: string,
-  note = ''
+  note = '',
+  options: RefundOptions = {}
 ): Promise<RefundOutcome> {
   const payment = getPayment(paymentId);
   if (!payment) throw new PaymentError('That payment was not found.', 404);
+  const partial = options.amountMilli;
+  if (partial !== undefined) {
+    // Checked before the claim, so a bad amount leaves the payment as it was.
+    // A bug upstream rather than an administrator's typing, which is why it
+    // is said in a programmer's words.
+    if (!isWholeCents(partial) || partial <= 0 || partial > centsToMilli(payment.amountCents)) {
+      throw new Error(
+        `A partial refund must be a positive whole number of cents up to the charge, not ${partial} thousandths.`
+      );
+    }
+  }
+  if (options.refundedByHand && payment.provider === 'stripe') {
+    throw new PaymentError('A card payment is refunded through Stripe, not by hand.', 409);
+  }
   if (payment.state === 'refunded') throw new PaymentError('That payment is already refunded.', 409);
   if (payment.state === 'refunding') {
     throw new PaymentError('That payment is already being refunded.', 409);
   }
   if (payment.state !== 'paid') throw new PaymentError('Only a paid payment can be refunded.', 409);
-  if (!payment.providerRef) throw new PaymentError('That payment has no provider reference.', 409);
+  // Money sent back by hand needs no provider reference - nothing is asked of the provider.
+  if (!payment.providerRef && !options.refundedByHand) {
+    throw new PaymentError('That payment has no provider reference.', 409);
+  }
 
   /*
    * Claimed before anything is said to the provider.
@@ -884,32 +934,25 @@ export async function refundPayment(
    * them.
    */
   if (!beginRefund(payment.id)) {
+    // Still `paid` means the claim was refused for a refund REQUEST holding an
+    // unconfirmed card refund - see beginRefund - not for another refund.
+    if (getPayment(payment.id)?.state === 'paid') {
+      throw new PaymentError(
+        'A refund request for this payment has a card refund that Stripe has not confirmed yet, and its credit ' +
+          'is already off the balance. Finish it under Refund requests - Mark refunded sends the same refund ' +
+          'again, which cannot refund twice - before refunding from here.',
+        409
+      );
+    }
     throw new PaymentError('That payment is already being refunded.', 409);
   }
 
   try {
     if (payment.provider === 'stripe') {
-      /*
-       * Two shapes live in `provider_ref` now, and the prefix tells them apart.
-       *
-       * A checkout session (`cs_`) has to be read to find the payment intent
-       * behind it; a saved-card charge put the intent (`pi_`) there directly,
-       * and asking Stripe for a session by that id is a 404. Testing the prefix
-       * is inelegant, but it is Stripe's own namespacing and it cannot
-       * disagree with the value it describes - which a second column recording
-       * "what kind of reference this is" eventually would.
-       */
-      const reference = payment.providerRef;
-      const intent = reference.startsWith('pi_')
-        ? reference
-        : await (async () => {
-            const session = await stripe.getCheckoutSession(reference);
-            return typeof session.payment_intent === 'string'
-              ? session.payment_intent
-              : session.payment_intent?.id;
-          })();
-      if (!intent) throw new PaymentError('Stripe has no payment to refund for that session.', 409);
-      await stripe.refundPaymentIntent(intent, payment.id);
+      await sendCardRefund(payment, partial === undefined ? undefined : milliToCents(partial));
+    } else if (options.refundedByHand) {
+      // Sent back already, by the person recording it. Nothing to ask anybody;
+      // what follows reverses the credit and records the refund.
     } else {
       /*
        * Crypto cannot be pulled back, only sent back - and WHERE FROM depends on
@@ -959,7 +1002,7 @@ export async function refundPayment(
      * say the outcome is unknown, and say what to do about it.
      */
     releaseRefund(payment.id);
-    if (error instanceof stripe.StripeError && error.transport) {
+    if (isUnansweredRefund(error)) {
       console.error(
         `[payments] ${payment.reference}: the refund call to Stripe did not answer. ` +
           'It may or may not have been created; no credits were reversed.',
@@ -987,9 +1030,11 @@ export async function refundPayment(
   /*
    * Reverse what was CREDITED, measured when it was, in dollars - which is 0
    * for a payment from before credits were dollars, whose credits the switch
-   * already reset.
+   * already reset. A partial refund reverses only the part it returned: the
+   * rest of the purchase was spent, which is why only that part is going back.
    */
-  const credited = payment.creditedMilli;
+  const credited = partial === undefined ? payment.creditedMilli : Math.min(partial, payment.creditedMilli);
+  const refundCents = partial === undefined ? payment.amountCents : milliToCents(partial);
 
   const balanceBefore = getUserById(payment.userId)?.balanceMilli ?? 0;
   applyAdjustment({
@@ -1003,7 +1048,7 @@ export async function refundPayment(
   const balanceAfter = getUserById(payment.userId)?.balanceMilli ?? 0;
 
   const reversed = Math.max(0, balanceBefore - balanceAfter);
-  if (!markRefunded(payment.id, reversed)) {
+  if (!markRefunded(payment.id, reversed, refundCents)) {
     // The claim above makes this unreachable short of a direct database edit.
     // It is checked rather than assumed because the alternative is reporting a
     // refund that the record does not show.
@@ -1013,10 +1058,54 @@ export async function refundPayment(
 
   return {
     payment: getPayment(paymentId)!,
+    refundAmountMilli: centsToMilli(refundCents),
     creditedMilli: credited,
     reversedMilli: reversed,
     shortfallMilli: credited - reversed,
   };
+}
+
+/**
+ * Asks Stripe to refund a card payment - all of it, or `amountCents` of it -
+ * and does nothing else: no claim, no reversal, no record. The caller holds the
+ * claim (`beginRefund`) and decides what the answer means: `refundPayment` for
+ * the payments list, services/refunds for a refund request, which takes its
+ * credit off BEFORE calling this.
+ *
+ * Throws what Stripe answered (`StripeError`; `isUnansweredRefund` tells a
+ * refusal from no answer), or a PaymentError when the session has no payment
+ * behind it.
+ */
+export async function sendCardRefund(payment: Payment, amountCents?: number): Promise<void> {
+  /*
+   * Two shapes live in `provider_ref` now, and the prefix tells them apart.
+   *
+   * A checkout session (`cs_`) has to be read to find the payment intent
+   * behind it; a saved-card charge put the intent (`pi_`) there directly,
+   * and asking Stripe for a session by that id is a 404. Testing the prefix
+   * is inelegant, but it is Stripe's own namespacing and it cannot
+   * disagree with the value it describes - which a second column recording
+   * "what kind of reference this is" eventually would.
+   */
+  const reference = payment.providerRef ?? '';
+  const intent = reference.startsWith('pi_')
+    ? reference
+    : await (async () => {
+        const session = await stripe.getCheckoutSession(reference);
+        return typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
+      })();
+  if (!intent) throw new PaymentError('Stripe has no payment to refund for that session.', 409);
+  await stripe.refundPaymentIntent(intent, payment.id, amountCents);
+}
+
+/**
+ * Whether a refund call ended with NO answer - a dropped socket, a reply that
+ * never finished arriving - so the refund may or may not exist at Stripe, as
+ * opposed to Stripe refusing it. `StripeError.transport` is the same
+ * distinction `startCheckout` makes.
+ */
+export function isUnansweredRefund(error: unknown): boolean {
+  return error instanceof stripe.StripeError && error.transport;
 }
 
 export type WebhookOutcome = 'paid' | 'failed' | 'expired' | 'ignore';

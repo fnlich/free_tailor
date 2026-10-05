@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import { operatorDetail } from '@/lib/api';
+import { asksForAdministrator } from '@/lib/contactChannels';
 import { userMessage } from '@/lib/userMessage';
 
 /**
@@ -188,7 +190,47 @@ export function StaticValue({ children }: { children: ReactNode }) {
 
 export type Tone = 'info' | 'success' | 'warn' | 'error';
 
-/** A framed message: what is wrong, what to do, or what happened. */
+/**
+ * A sentence, followed by a "Contact admin" link when it tells its reader to
+ * contact an administrator - "Please try again, or contact your
+ * administrator." is a dead end without a way to do it.
+ *
+ * Only a sentence held as TEXT is read: that is what `userMessage` and
+ * `messageWithDetail` produce, and what a page puts in a Notice or a Status
+ * after a failure. A notice written as JSX says what it means for itself.
+ */
+function withContactLink(children: ReactNode, offer: boolean): ReactNode {
+  if (!offer || typeof children !== 'string') return children;
+  return (
+    <>
+      {children}
+      <ContactAdminFor text={children} />
+    </>
+  );
+}
+
+/**
+ * The same link for a sentence drawn OUTSIDE the kit's notices - a row's error
+ * cell, a dialog's own banner, the Bid Assistant's error lines: a space and
+ * "Contact admin" when `text` asks its reader to contact an administrator,
+ * and nothing otherwise. Put it straight after the text.
+ */
+export function ContactAdminFor({ text }: { text: unknown }) {
+  if (!asksForAdministrator(text)) return null;
+  return (
+    <>
+      {' '}
+      <ContactAdminLink />
+    </>
+  );
+}
+
+/**
+ * A framed message: what is wrong, what to do, or what happened.
+ *
+ * A warning or an error whose text asks the reader to contact an administrator
+ * gets a Contact admin link after it (see `withContactLink`).
+ */
 export function Notice({
   tone = 'info',
   role,
@@ -202,7 +244,7 @@ export function Notice({
 }) {
   return (
     <div className={`tl-notice ${className}`} data-tone={tone} role={role}>
-      {children}
+      {withContactLink(children, tone === 'error' || tone === 'warn')}
     </div>
   );
 }
@@ -218,7 +260,9 @@ export function Notice({
  * here: for everybody else there is simply nothing to draw.
  *
  * Renders nothing for a null, undefined or empty `error`, so a page can mount
- * it unconditionally next to the thing that can fail.
+ * it unconditionally next to the thing that can fail. A sentence that says to
+ * contact the administrator - every generic failure with a Ref does - ends in
+ * a Contact admin link that opens the channels they listed.
  */
 export function ErrorNotice({
   error,
@@ -241,7 +285,7 @@ export function ErrorNotice({
   const detail = operatorDetail(error);
   const body = (
     <>
-      <p className="break-words">{message}</p>
+      <p className="break-words">{withContactLink(message, true)}</p>
       {/* Administrators only: the server withholds `detail` from everyone else. */}
       {detail && <p className="mt-2 whitespace-pre-wrap break-words text-xs opacity-90">{detail}</p>}
       {children}
@@ -269,11 +313,14 @@ export function ErrorNotice({
   );
 }
 
-/** One line under a control saying what just happened: saved, or why not. */
+/**
+ * One line under a control saying what just happened: saved, or why not - and,
+ * when the why says to contact the administrator, a Contact admin link.
+ */
 export function Status({ tone, children }: { tone: 'ok' | 'error'; children: ReactNode }) {
   return (
     <p className="tl-status mt-3" data-tone={tone} role={tone === 'error' ? 'alert' : 'status'}>
-      {children}
+      {withContactLink(children, tone === 'error')}
     </p>
   );
 }

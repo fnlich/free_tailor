@@ -25,6 +25,7 @@ import * as stripe from '../integrations/stripe';
 import { quotePurchase, requireThreeDSecure } from '../services/payments/pricing';
 import { CREDIT_CURRENCY } from '../config/aiModelConfig';
 import { getUserById } from '../database/userRepository';
+import { closeRequestsForRefundedPayment } from '../services/refunds';
 
 /**
  * Buying credit, and an administrator's view of what was bought.
@@ -365,9 +366,13 @@ adminPaymentsRouter.post('/:id/refund', async (req: Request, res: Response) => {
       req.user!.id,
       typeof body.note === 'string' ? body.note : ''
     );
+    // The money went back, so any refund request still open for this payment
+    // is answered: closed as Refunded, its requester told, here rather than
+    // left in the queue for somebody to decline by hand.
+    const closedRequests = closeRequestsForRefundedPayment(outcome.payment.id, req.user!);
     // All three numbers, always. A refund that reversed $12.400 of $50.000 is
     // not a success worth reporting as a bare "done".
-    res.json({ ...outcome, payment: toPaymentView(outcome.payment) });
+    res.json({ ...outcome, payment: toPaymentView(outcome.payment), closedRequests });
   } catch (error) {
     fail(req, res, error);
   }

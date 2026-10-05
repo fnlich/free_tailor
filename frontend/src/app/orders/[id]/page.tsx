@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import RefundRequestDialog, { REFUND_REQUESTS_PATH } from '@/components/credits/RefundRequestDialog';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import {
   FILE_KIND_LABELS,
@@ -14,9 +15,12 @@ import {
   type OrderItem,
   type OrderItemState,
 } from '@/lib/orders';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatMoney } from '@/lib/format';
+import { REFUND_STATE_LABELS, REFUND_STATE_TONES, refundActionFor, refundCellNote } from '@/lib/refundDisplay';
+import { refundRequestsApi, type RefundOption } from '@/lib/refunds';
 import {
   Card,
+  ContactAdminFor,
   EmptyState,
   Field,
   Notice,
@@ -55,6 +59,12 @@ export default function OrderDetailPage() {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [cancelling, setCancelling] = useState(false);
+  /** What each resume could be refunded, by item id. Null until read, or when it could not be. */
+  const [refundOptions, setRefundOptions] = useState<Record<string, RefundOption> | null>(null);
+  /** The resume whose "Ask for refund" was pressed. */
+  const [asking, setAsking] = useState<string | null>(null);
+  /** Bumped after a request is sent, so its row says Requested rather than offering a second. */
+  const [refundsRead, setRefundsRead] = useState(0);
 
   // Kept in a ref, and written in an effect rather than during render, so the
   // polling interval below does not have to be torn down and rebuilt on every
@@ -100,6 +110,29 @@ export default function OrderDetailPage() {
     }, 3000);
     return () => clearInterval(timer);
   }, [load]);
+
+  /*
+   * What each resume could be refunded - one read for the whole order. Again
+   * whenever another resume settles (a finished one becomes refundable) and
+   * after a request is sent, but not on every poll while the order runs.
+   */
+  const settled = order ? order.counts.settled : -1;
+  useEffect(() => {
+    if (!orderId || settled < 0) return;
+    let alive = true;
+    refundRequestsApi.options({ orderId }).then(
+      (answer) => {
+        if (alive) setRefundOptions(Object.fromEntries(answer.items.map((item) => [item.itemId, item])));
+      },
+      () => {
+        // Not worth a banner over the order itself: the column simply offers nothing.
+        if (alive) setRefundOptions(null);
+      }
+    );
+    return () => {
+      alive = false;
+    };
+  }, [orderId, settled, refundsRead]);
 
   /** Every item with a file, and the subset of those the caller has ticked. */
   const readyItems = useMemo(
@@ -269,6 +302,8 @@ export default function OrderDetailPage() {
               <th scope="col">Resume</th>
               <th scope="col">Status</th>
               <th scope="col">Files</th>
+              <th scope="col">Charge</th>
+              <th scope="col">Refund</th>
             </tr>
           </thead>
           <tbody>
@@ -279,11 +314,22 @@ export default function OrderDetailPage() {
                 item={item}
                 selected={selected.has(item.id)}
                 onToggle={() => toggle(item.id)}
+                refund={refundOptions?.[item.id] ?? null}
+                onAskRefund={() => setAsking(item.id)}
               />
             ))}
           </tbody>
         </table>
       </div>
+
+      {asking && (
+        <RefundRequestDialog
+          source={{ orderId: order.id }}
+          itemId={asking}
+          onClose={() => setAsking(null)}
+          onRequested={() => setRefundsRead((value) => value + 1)}
+        />
+      )}
     </Page>
   );
 }
@@ -293,11 +339,16 @@ function OrderItemRow({
   item,
   selected,
   onToggle,
+  refund,
+  onAskRefund,
 }: {
   orderId: string;
   item: OrderItem;
   selected: boolean;
   onToggle: () => void;
+  /** What this resume could be refunded, as the server measured it. Null while unknown. */
+  refund: RefundOption | null;
+  onAskRefund: () => void;
 }) {
   const selectable = item.available.length > 0;
 
@@ -323,6 +374,7 @@ function OrderItemRow({
         {item.error && (
           <span className="tl-status mt-1 block" data-tone="error">
             {item.error}
+            <ContactAdminFor text={item.error} />
           </span>
         )}
       </td>
@@ -355,6 +407,54 @@ function OrderItemRow({
           <span className="text-subtle">&mdash;</span>
         )}
       </td>
+      <td className="whitespace-nowrap align-top tabular-nums">
+        {typeof item.costMilli === 'number' ? formatMoney(item.costMilli) : <span className="text-subtle">&mdash;</span>}
+      </td>
+      <td className="align-top">
+        <RefundCell option={refund} onAsk={onAskRefund} />
+      </td>
     </tr>
+  );
+}
+
+/**
+ * One resume's refund: a button while it can be asked about, the open
+ * request's state once it has been (one per resume), Refunded once given back,
+ * "Refunded automatically" or "Not charged" where that is the reason - and
+ * otherwise a dash, with the server's reason on hover (still building...).
+ */
+function RefundCell({ option, onAsk }: { option: RefundOption | null; onAsk: () => void }) {
+  if (!option) return <span className="text-subtle">&mdash;</span>;
+  const action = refundActionFor(option);
+  if (action.kind === 'ask') {
+    return (
+      <button type="button" onClick={onAsk} className="tl-button-quiet whitespace-nowrap" data-size="sm">
+        Ask for refund
+      </button>
+    );
+  }
+  if (action.kind === 'open') {
+    return (
+      <Link href={REFUND_REQUESTS_PATH} title={`Refund request ${action.request.reference}`}>
+        <Pill tone={REFUND_STATE_TONES[action.request.state]}>
+          {REFUND_STATE_LABELS[action.request.state]}
+        </Pill>
+      </Link>
+    );
+  }
+  if (action.kind === 'refunded') return <Pill tone="green">Refunded</Pill>;
+  const note = refundCellNote(option);
+  if (note) {
+    return (
+      <span className="block text-xs text-muted" title={action.reason}>
+        {note}
+      </span>
+    );
+  }
+  return (
+    <span className="text-subtle" title={action.reason}>
+      &mdash;
+      <span className="sr-only"> {action.reason}</span>
+    </span>
   );
 }

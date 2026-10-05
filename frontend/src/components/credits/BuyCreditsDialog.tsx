@@ -9,6 +9,7 @@ import PayDialog from './PayDialog';
 import { PRIMARY, QUIET } from './chrome';
 import { FIRST_STEP, readPurchaseAmount, wizardReducer, type Order, type Priced } from './order';
 import { stripeFor } from './stripeLoader';
+import { ContactAdminFor } from '@/components/ui/kit';
 import { useTheme } from '@/lib/useTheme';
 import { formatMoney, toDollarInput } from '@/lib/format';
 import {
@@ -317,6 +318,7 @@ export default function BuyCreditsDialog({
       {error && (
         <div className="tl-notice mb-4" data-tone="error">
           {error}
+          <ContactAdminFor text={error} />
         </div>
       )}
 

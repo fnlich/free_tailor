@@ -84,6 +84,16 @@ test('cents and thousandths convert exactly, and only a whole cent is chargeable
   assert.throws(() => money.milliToCents(12_345), /not a whole number of cents/);
 });
 
+test('a refund returns whole cents: the sub-cent remainder stays on the balance', () => {
+  assert.equal(money.wholeCentsBelow(39_993), 39_990);
+  assert.equal(money.wholeCentsBelow(39_990), 39_990);
+  assert.equal(money.wholeCentsBelow(9), 0, 'less than a cent returns nothing');
+  assert.equal(money.wholeCentsBelow(0), 0);
+  assert.equal(money.wholeCentsBelow(-50), 0);
+  assert.equal(money.wholeCentsBelow(1.5), 0, 'never a fraction of a thousandth');
+  assert.equal(money.isWholeCents(money.wholeCentsBelow(123_457)), true);
+});
+
 test('a provider amount is read exactly: trailing zeros agree, a half cent does not round into a match', () => {
   assert.equal(money.parseProviderCents('12.50'), 1_250);
   assert.equal(money.parseProviderCents('12.5'), 1_250);
@@ -121,6 +131,9 @@ const MONEY_SOURCES = [
   'routes/accounts.ts',
   'routes/generation.ts',
   'integrations/cryptomus.ts',
+  'database/refundRequestRepository.ts',
+  'services/refunds/index.ts',
+  'routes/refundRequests.ts',
 ];
 
 function withoutComments(source) {

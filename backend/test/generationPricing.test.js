@@ -271,6 +271,31 @@ test('a mixed-price batch is charged the sum, broken down by model, and each fai
   }
 });
 
+test("an order's resumes keep what each was charged, for a refund asked for after the batch is gone", async () => {
+  const server = await serve('order-item-cost');
+  try {
+    credits.setBalance(server.alice.id, 1_000, server.admin.id);
+    const submitted = await server.post('alice', '/generation/batches', {
+      jobs: jobsFor(2),
+      profileIds: ['p-opus', 'p-plain'],
+      asOrder: true,
+    });
+    assert.equal(submitted.status, 202);
+    const orders = require('../dist/database/orderRepository');
+    const items = orders.listOrderItems(submitted.body.orderId);
+    const batch = queueModule.getGenerationQueue().getBatch(submitted.body.batchId);
+    // Item by item, the task's own snapshotted price - Opus $0.023, Sonnet $0.010.
+    assert.deepEqual(
+      items.map((item) => item.costMilli),
+      batch.tasks.map((task) => task.payload.costMilli)
+    );
+    assert.deepEqual(items.map((item) => item.costMilli).sort(), [10, 10, 23, 23]);
+    await untilFinished(submitted.body.batchId);
+  } finally {
+    server.close();
+  }
+});
+
 test('a batch the balance cannot cover is a 402 naming the whole sum, and nothing is queued or taken', async () => {
   const server = await serve('batch-402');
   try {

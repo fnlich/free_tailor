@@ -8,6 +8,7 @@ import {
   getReservation,
   hasLedgerEntries,
   heldForUser,
+  isLedgerKeyUsed,
   countLedger,
   listLedger,
   listOpenReservations,
@@ -164,6 +165,40 @@ export function refundTaskUnit(batchId: string, taskId: string, costMilli: numbe
 }
 
 /**
+ * Gives back ONE delivered resume's charge, because its owner asked and an
+ * administrator agreed (services/refunds), and says how much moved: the
+ * amount, or 0 when nothing could.
+ *
+ * Not a parallel path: it is the same refund the queue hook makes for a unit
+ * that failed, against the same reservation and under the same SQL cap - so
+ * no mixture of automatic and granted refunds can return more than the run
+ * took. Two differences, both because the resume DID deliver: the run has
+ * usually settled by now, so a closed reservation takes it too; and the key is
+ * the request's, `refund-request:<id>`, so one request credits once however
+ * often it is pressed. The caller writes the request's state change in the
+ * same transaction, and treats 0 as "do not change it".
+ */
+export function refundRequestedCharge(input: {
+  requestId: string;
+  reservationId: string;
+  userId: string;
+  amountMilli: number;
+  actorId: string;
+  note: string;
+}): number {
+  return refundAgainstReservation({
+    reservationId: input.reservationId,
+    amountMilli: exactMilli(input.amountMilli, 'A refund'),
+    reason: 'refund-request',
+    idempotencyKey: `refund-request:${input.requestId}`,
+    note: input.note,
+    actorId: input.actorId,
+    includeClosed: true,
+    userId: input.userId,
+  }).refunded;
+}
+
+/**
  * A charge's line in the account's credit history, by model: "3 resumes: 2 x
  * Claude Sonnet @ $0.023, 1 x Codex @ $0.010 = $0.056".
  *
@@ -310,5 +345,6 @@ export {
   findInconsistentBalances,
   getReservation,
   hasLedgerEntries,
+  isLedgerKeyUsed,
   listOpenReservations,
 };

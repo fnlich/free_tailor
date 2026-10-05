@@ -495,6 +495,9 @@ router.post('/batches', async (req: Request, res: Response) => {
               ...(typeof descriptor.label.sourceRowNumber === 'number'
                 ? { sourceRowNumber: descriptor.label.sourceRowNumber }
                 : {}),
+              // Kept on the item because the task is not: a refund request
+              // for this resume can come long after the batch is evicted.
+              costMilli: taskCostMilli(descriptor.payload),
             }))
           )
         : null;

@@ -152,6 +152,16 @@ function keyUsed(idempotencyKey: string): boolean {
   );
 }
 
+/**
+ * Whether money has already moved under this key - for a caller deciding
+ * whether something is still refundable (a task whose `refund:task:<id>` was
+ * written gave its charge back already). A read, not a claim: the write paths
+ * above re-check it inside their own transaction.
+ */
+export function isLedgerKeyUsed(idempotencyKey: string): boolean {
+  return keyUsed(idempotencyKey);
+}
+
 export type DebitOutcome = { ok: true; balance: number } | { ok: false; balance: number };
 
 /**
@@ -226,7 +236,7 @@ export function debitAndReserve(input: {
  * Four gates, in order, inside one transaction:
  *   1. the reservation must exist and be open - an admin-exempt run, a batch
  *      from before credits existed, a run the dollar switch settled, or an
- *      already-closed run all no-op here;
+ *      already-closed run all no-op here (unless `includeClosed`, below);
  *   2. the idempotency key must be unused - this is what makes a hook that
  *      fires twice harmless;
  *   3. refunded + amount must not exceed what the run holds - a per-run
@@ -244,6 +254,16 @@ export function refundAgainstReservation(input: {
   idempotencyKey: string;
   note?: string;
   actorId?: string;
+  /**
+   * Refund into a CLOSED reservation too. Only for a refund an administrator
+   * granted on a resume that was delivered - by then its run has usually
+   * settled. Gate 1 is then "the reservation exists"; the cap in gate 3 still
+   * holds, so the run can never give back more than it took, however its
+   * automatic refunds and the granted ones mix.
+   */
+  includeClosed?: boolean;
+  /** Refuse unless the reservation is this account's. */
+  userId?: string;
 }): { refunded: number } {
   if (!Number.isSafeInteger(input.amountMilli)) {
     throw new Error(`A refund must be a whole number of thousandths of a dollar, not ${input.amountMilli}.`);
@@ -253,10 +273,13 @@ export function refundAgainstReservation(input: {
   const timestamp = now();
 
   return db.transaction((): { refunded: number } => {
-    const reservation = db
-      .prepare("SELECT * FROM credit_reservations WHERE id = ? AND state = 'open'")
-      .get(input.reservationId) as ReservationRow | undefined;
+    const reservation = (
+      input.includeClosed
+        ? db.prepare('SELECT * FROM credit_reservations WHERE id = ?').get(input.reservationId)
+        : db.prepare("SELECT * FROM credit_reservations WHERE id = ? AND state = 'open'").get(input.reservationId)
+    ) as ReservationRow | undefined;
     if (!reservation) return { refunded: 0 };
+    if (input.userId !== undefined && reservation.user_id !== input.userId) return { refunded: 0 };
 
     if (keyUsed(input.idempotencyKey)) return { refunded: 0 };
 

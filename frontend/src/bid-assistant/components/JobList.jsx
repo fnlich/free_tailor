@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { bidAssistantFetch, responseError } from '../lib/apiBase.js';
 import { IconClose } from '@/components/icons';
 import { messageWithDetail } from '@/lib/userMessage';
+import { ContactAdminFor } from '@/components/ui/kit';
 
 // Returns the search text used to filter visible jobs.
 function matchesSearch(job, searchText) {
@@ -194,7 +195,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
             Copy Links
           </button>
           {copyMessage && <span className="job-list-inline-status">{copyMessage}</span>}
-          {copyError && <span className="job-list-inline-status error-text">{copyError}</span>}
+          {copyError && <span className="job-list-inline-status error-text">{copyError}<ContactAdminFor text={copyError} /></span>}
         </div>
       </div>
 
@@ -263,7 +264,7 @@ export default function JobList({ jobs, selectedJobId, onSelectJob, filterDate }
                 </label>
               </div>
 
-              {copyError && <p className="error-text">{copyError}</p>}
+              {copyError && <p className="error-text">{copyError}<ContactAdminFor text={copyError} /></p>}
 
               <div className="form-actions">
                 <button type="submit" className="tl-button">

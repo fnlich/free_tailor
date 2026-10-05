@@ -178,6 +178,13 @@ const SCHEMA = `
   /*
    * One row per resume the order asked for - one profile against one job.
    *
+   * cost_milli is what that resume was charged, in thousandths of a dollar,
+   * copied from its task when the order is placed. The task and its batch are
+   * evicted an hour after the run settles, or sooner once twenty newer batches
+   * have finished, and a refund request for the resume
+   * can come days later; NULL on an item placed before the column existed,
+   * which is then priced from its task only while the queue still holds it.
+   *
    * seq is the position in the batch's task list, and it is how a finished
    * task finds its row: the queue hands back (batchId, seq) and nothing else
    * that survives a restart. files is a JSON array rather than a third table
@@ -197,6 +204,7 @@ const SCHEMA = `
     state             TEXT NOT NULL,
     error             TEXT,
     files             TEXT NOT NULL DEFAULT '[]',
+    cost_milli        INTEGER,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
   );
@@ -268,6 +276,13 @@ const SCHEMA = `
     credit_milli     INTEGER NOT NULL DEFAULT 0,
     credited_milli   INTEGER NOT NULL DEFAULT 0,
     refunded_milli   INTEGER NOT NULL DEFAULT 0,
+    /*
+     * What the refund returned to the buyer, in cents - the whole charge for a
+     * refund from the payments list, the unspent part for one a refund request
+     * asked for. 0 on a payment refunded before refunds could be partial, which
+     * every one of them was: read as amount_cents (paymentRepository).
+     */
+    refund_cents     INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
   );
@@ -398,14 +413,23 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_credit_ledger_ref  ON credit_ledger (ref_kind, ref_id);
 
   /**
-   * What an administrator has announced to everybody on this installation.
+   * What an administrator has announced to everybody on this installation -
+   * and, since refund requests, what the app has to tell ONE account.
    *
-   * Not addressed to anyone: there is no recipient column, because the thing
-   * being modelled is a notice board rather than a mailbox. Every signed-in
-   * account reads the same rows, and "have I seen these" is one timestamp on
-   * users rather than a row per account per notice - which would be a table
-   * that grows with the product of the two and answers no question this app
-   * asks.
+   * recipient_id NULL is an announcement: every signed-in account reads it,
+   * exactly as before the column existed, and every row an older build wrote
+   * reads that way. A recipient_id is a notice for that account alone - a
+   * refund request decided, or (to each administrator) a new one asked for.
+   * Still not a mailbox: "have I seen these" stays one timestamp on users
+   * rather than a row per account per notice, which would be a table that
+   * grows with the product of the two and answers no question this app asks.
+   * The feed and its unread count read recipient_id IS NULL OR recipient_id =
+   * the reader, through idx_notifications_recipient - created in getDb()
+   * after addMissingColumns, because on an upgraded database the column does
+   * not exist until then.
+   *
+   * link is an app path the notice is about ('' for none), so the panel can
+   * take somebody to their refund requests rather than describe where they are.
    *
    * author_id is kept for the admin list, so somebody can see who posted a
    * notice they disagree with. It is not a foreign key - nothing in this
@@ -457,11 +481,80 @@ const SCHEMA = `
     body        TEXT NOT NULL DEFAULT '',
     author_id   TEXT NOT NULL DEFAULT '',
     author_name TEXT NOT NULL DEFAULT '',
+    recipient_id TEXT,
+    link        TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
   );
 
   CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications (created_at DESC);
+
+  /*
+   * Somebody asking for money back - for a purchase (the unspent part of it,
+   * returned to the card or sent back by hand) or for one resume's charge
+   * (credited back to the balance) - and what an administrator decided.
+   *
+   * The money itself never moves here. A refunded resume is a credit_ledger
+   * row keyed refund-request:<id>, written in the same transaction as the
+   * state change; a refunded purchase is the payment's own refund. This row is
+   * the request and its decision: state is requested, approved, declined or
+   * refunded, and the last two are final.
+   *
+   * item_key names WHAT is being refunded in one string, so one rule can
+   * cover it: payment:<id>, order-item:<id>, task:<id> (a queued resume not
+   * placed as an order, while its batch is held) or charge:<reservation id>
+   * (one synchronously built resume). idx_refund_requests_open_item is the
+   * rule "one open request per item": a partial UNIQUE index over the open
+   * states, so a second request for the same item is refused by the database
+   * however the two arrive, and a declined one does not stop the next.
+   *
+   * amount_milli is what was refundable when asked; refunded_milli what was
+   * actually returned (a purchase is re-measured when it is refunded, never
+   * above what was asked). attempt_milli is the amount a card refund was sent
+   * to Stripe with, and hold_key the ledger key its credit was taken off the
+   * balance under - both written BEFORE the call, with the payment's claim, so
+   * the credit cannot be spent while the money is on its way back, and a retry
+   * after a dropped answer sends the same amount under the same idempotency
+   * key without taking the credit twice. Both are cleared when Stripe refuses
+   * and the credit goes back.
+   */
+  CREATE TABLE IF NOT EXISTS refund_requests (
+    id             TEXT PRIMARY KEY,
+    reference      TEXT NOT NULL UNIQUE,
+    account_id     TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    item_key       TEXT NOT NULL,
+    payment_id     TEXT,
+    order_item_id  TEXT,
+    task_id        TEXT,
+    reservation_id TEXT,
+    label          TEXT NOT NULL DEFAULT '',
+    amount_milli   INTEGER NOT NULL,
+    refunded_milli INTEGER NOT NULL DEFAULT 0,
+    attempt_milli  INTEGER,
+    hold_key       TEXT,
+    reason         TEXT NOT NULL,
+    state          TEXT NOT NULL DEFAULT 'requested',
+    decline_reason TEXT NOT NULL DEFAULT '',
+    decided_by     TEXT,
+    decided_at     TEXT,
+    refunded_by    TEXT,
+    refunded_at    TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_refund_requests_open_item
+    ON refund_requests (item_key) WHERE state IN ('requested', 'approved');
+
+  CREATE INDEX IF NOT EXISTS idx_refund_requests_state
+    ON refund_requests (state, created_at);
+
+  CREATE INDEX IF NOT EXISTS idx_refund_requests_account
+    ON refund_requests (account_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS idx_refund_requests_item
+    ON refund_requests (item_key, state);
 
   /**
    * A run that has been charged and has not finished being accounted for.
@@ -742,6 +835,17 @@ function addMissingColumns(db: Database.Database): void {
     { table: 'payments', column: 'credit_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
     { table: 'payments', column: 'credited_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
     { table: 'payments', column: 'refunded_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    // Refund requests. A notice for one account (NULL, every upgraded row, is
+    // an announcement to all of them, which is what they all were), the app
+    // path it is about, a partial refund's amount, and what an order's resume
+    // was charged - NULL on an older item, which reads as "not on record".
+    { table: 'notifications', column: 'recipient_id', definition: 'TEXT' },
+    { table: 'notifications', column: 'link', definition: "TEXT NOT NULL DEFAULT ''" },
+    { table: 'payments', column: 'refund_cents', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { table: 'order_items', column: 'cost_milli', definition: 'INTEGER' },
+    // The credit a card refund holds off the balance until Stripe answers.
+    // In the CREATE TABLE too; here for a refund_requests table made before it.
+    { table: 'refund_requests', column: 'hold_key', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {
@@ -758,6 +862,37 @@ function addMissingColumns(db: Database.Database): void {
         `[db] Could not add ${addition.table}.${addition.column}; continuing without it.`,
         error
       );
+    }
+  }
+}
+
+/**
+ * Indexes over columns `addMissingColumns` may have just added.
+ *
+ * Not in SCHEMA: on an upgraded database SCHEMA runs while the column does not
+ * exist yet, and an index naming it there fails every boot of that install
+ * while passing on every fresh one. Never fatal, like the columns themselves -
+ * a missing index is a slower query, not a wrong one.
+ */
+const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; columns: string[]; sql: string }> = [
+  // The feed and its unread count: recipient_id IS NULL OR recipient_id = me.
+  {
+    name: 'idx_notifications_recipient',
+    table: 'notifications',
+    columns: ['recipient_id', 'created_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications (recipient_id, created_at)',
+  },
+];
+
+function addIndexesAfterColumns(db: Database.Database): void {
+  for (const index of INDEXES_AFTER_COLUMNS) {
+    try {
+      const columns = db.prepare(`PRAGMA table_info(${index.table})`).all() as Array<{ name: string }>;
+      const names = new Set(columns.map((column) => column.name));
+      if (!index.columns.every((column) => names.has(column))) continue;
+      db.exec(index.sql);
+    } catch (error) {
+      console.error(`[db] Could not create ${index.name}; continuing without it.`, error);
     }
   }
 }
@@ -811,6 +946,7 @@ export function getDb(): Database.Database {
   }
   db.exec(SCHEMA);
   addMissingColumns(db);
+  addIndexesAfterColumns(db);
   // Saved templates are files now; an older build's rows are written out
   // once, here rather than in the numbered chain, which can wait for an
   // administrator for as long as nobody signs in. Never fatal.

@@ -26,6 +26,10 @@ export type CreditReason =
   | 'reconcile-orphan'
   | 'purchase'
   | 'purchase-refund'
+  /** Credit a card refund request held back, returned because Stripe refused the refund. */
+  | 'purchase-refund-failed'
+  /** A resume's charge given back because a refund request for it was granted. */
+  | 'refund-request'
   /**
    * Credits became dollars and every balance was reset to $0.000: one row per
    * account that held any, in its balance or in a run still going (that one
@@ -111,6 +115,8 @@ const REASON_PHRASES: Record<CreditReason, string> = {
   'reconcile-orphan': 'Returned - the run never finished',
   purchase: 'Bought',
   'purchase-refund': 'Refunded to your payment method',
+  'purchase-refund-failed': 'Returned - the refund to your card did not go through',
+  'refund-request': 'Refunded - your refund request was granted',
   reset: 'Reset to $0.000 when credits became dollars',
 };
 

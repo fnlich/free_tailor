@@ -451,6 +451,16 @@ export function deleteUser(id: string): boolean {
 
   return db.transaction(() => {
     db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(id);
+    // Notices written for this account alone: nobody else can ever read them.
+    // Announcements, refund requests, payments and the ledger stay - they are
+    // the installation's record of what happened, not the account's inbox.
+    // Guarded because the column is added at startup and is never fatal: an
+    // install that could not add it has no such notices to remove.
+    try {
+      db.prepare('DELETE FROM notifications WHERE recipient_id = ?').run(id);
+    } catch (error) {
+      console.error('[accounts] Could not remove the deleted account\'s notifications.', error);
+    }
     return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
   })();
 }

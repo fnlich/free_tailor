@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import ProfileEditor from '@/components/profile/ProfileEditor';
 import { ErrorNotice, Notice, PageHeader, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
@@ -52,7 +53,7 @@ export default function NewProfilePage() {
           </p>
           <p className="mt-1">
             Delete one to make room, or ask an administrator of this installation to move your account to a higher
-            subscription.{' '}
+            subscription. <ContactAdminLink />{' '}
             <Link href="/admin/profiles" className="font-medium underline underline-offset-2">
               Back to profiles
             </Link>

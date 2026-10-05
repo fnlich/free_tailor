@@ -3,9 +3,9 @@ import { getDb } from './sqlite';
 /**
  * Human-readable reference numbers, one sequence per day.
  *
- * `FT-20260920-0007`, `FT-PAY-20260920-0003` - short enough to read down a
+ * `FT-20260920-0007`, `FT-PAY-20260920-0003`, `FT-RF-20260920-0001` - short enough to read down a
  * phone, dated so support can find it, and sequential so the tenth of the day
- * is obviously the tenth. Shared by orders and payments because both are things
+ * is obviously the tenth. Shared by orders, payments and refund requests because all are things
  * somebody quotes back at you, and the arithmetic below has one trap in it that
  * is not worth falling into twice.
  *
@@ -14,7 +14,7 @@ import { getDb } from './sqlite';
  * answering to one name.
  */
 
-const ALLOWED_TABLES = new Set(['orders', 'payments']);
+const ALLOWED_TABLES = new Set(['orders', 'payments', 'refund_requests']);
 const ALLOWED_COLUMNS = new Set(['number', 'reference']);
 
 /** The `YYYYMMDD` part, in the server's own zone. */
@@ -44,7 +44,7 @@ export function formatSequenceDate(at: Date): string {
  * leaves the padding as presentation rather than something correctness rests on.
  */
 export function nextDailyReference(
-  table: 'orders' | 'payments',
+  table: 'orders' | 'payments' | 'refund_requests',
   column: 'number' | 'reference',
   prefix: string,
   datePart: string

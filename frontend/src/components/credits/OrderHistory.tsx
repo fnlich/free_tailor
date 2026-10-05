@@ -1,10 +1,12 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import Link from 'next/link';
+import RefundRequestDialog from './RefundRequestDialog';
 import TablePager from './TablePager';
 import { usePagedList } from './usePagedList';
 import { formatDate, formatMoney } from '@/lib/format';
+import { purchaseOffersRefund } from '@/lib/refundDisplay';
 import { describeCreditReceived, describePurchaseCredit } from '@/lib/paymentDisplay';
 import {
   isPaymentSettled,
@@ -69,6 +71,8 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
   );
   const list = usePagedList<Payment>(fetchPage, PAGE_SIZE, epoch);
   const copy = COPY[method];
+  /** The purchase whose "Ask for refund" was pressed. One dialog for the table, not one per row. */
+  const [asking, setAsking] = useState<Payment | null>(null);
 
   return (
     <section aria-labelledby="orders-heading">
@@ -109,7 +113,10 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
             </tr>
           </thead>
           <tbody>
-            {list.loaded && list.rows.map((payment) => <OrderRow key={payment.id} payment={payment} />)}
+            {list.loaded &&
+              list.rows.map((payment) => (
+                <OrderRow key={payment.id} payment={payment} onAskRefund={() => setAsking(payment)} />
+              ))}
           </tbody>
         </table>
         {/*
@@ -138,11 +145,13 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
           </p>
         )}
       </div>
+
+      {asking && <RefundRequestDialog source={{ paymentId: asking.id }} onClose={() => setAsking(null)} />}
     </section>
   );
 }
 
-function OrderRow({ payment }: { payment: Payment }) {
+function OrderRow({ payment, onAskRefund }: { payment: Payment; onAskRefund: () => void }) {
   const label = STATUS[payment.state] ?? payment.state;
   const tone = STATE_TONES[payment.state] ?? 'grey';
   const settled = isPaymentSettled(payment);
@@ -190,6 +199,14 @@ function OrderRow({ payment }: { payment: Payment }) {
         <span className="tl-pill" data-tone={tone}>
           {label}
         </span>
+        {/* A refund request gives back the unspent part, so a refund can be partial. */}
+        {payment.state === 'refunded' &&
+          payment.refundAmountMilli > 0 &&
+          payment.refundAmountMilli < payment.amountMilli && (
+            <span className="mt-1 block whitespace-nowrap text-xs text-muted tabular-nums">
+              {formatMoney(payment.refundAmountMilli)} returned
+            </span>
+          )}
       </td>
       <td>
         <div className="flex flex-col gap-2">
@@ -216,6 +233,11 @@ function OrderRow({ payment }: { payment: Payment }) {
           <Link href={`/credits/return?payment=${id}`} className="tl-button-quiet">
             Help
           </Link>
+          {purchaseOffersRefund(payment) && (
+            <button type="button" onClick={onAskRefund} className="tl-button-quiet whitespace-nowrap">
+              Ask for refund
+            </button>
+          )}
         </div>
       </td>
     </tr>

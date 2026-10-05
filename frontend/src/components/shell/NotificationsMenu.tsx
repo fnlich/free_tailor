@@ -1,8 +1,11 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { IconBell } from '@/components/icons';
+import { Pill } from '@/components/ui/kit';
+import { appLinkLabel, safeAppPath } from '@/lib/appLinks';
 import { useDismissable } from '@/lib/useDismissable';
 import {
   describePostedAt,
@@ -11,12 +14,19 @@ import {
 } from '@/lib/notifications';
 
 /**
- * What the administrators of this installation have posted.
+ * What the administrators of this installation have posted, and the notices
+ * written for this account alone - a refund request approved, declined or
+ * refunded, or (for an administrator) a new one to decide.
  *
  * The dot is the point of it: somebody who has read everything should be able
  * to tell at a glance, without opening anything. Opening the panel is what
  * marks them caught up, so the dot clears on the action that actually means
  * "I have seen these" rather than on a page load that happened to include it.
+ * The server counts both kinds into the one number, so a notice about your
+ * own refund lights the dot exactly as an announcement does.
+ *
+ * A notice about a page carries a link to it - an app path the server wrote,
+ * checked again here (lib/appLinks.ts) before it becomes one.
  */
 
 /** Slow enough not to matter, often enough that a post arrives the same session. */
@@ -124,22 +134,35 @@ export default function NotificationsMenu() {
               <p className="px-4 py-8 text-center text-sm text-subtle">Could not reach the server.</p>
             ) : items.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-subtle">
-                Nothing yet. Announcements from the administrators of this installation appear here.
+                Nothing yet. Announcements from the administrators of this installation, and news about
+                your own refund requests, appear here.
               </p>
             ) : (
-              items.map((item) => (
-                <article
-                  key={item.id}
-                  className="border-b-[1px] border-[color:var(--line-subtle)] px-4 py-3.5 last:border-b-0"
-                >
-                  <p className="text-sm font-semibold text-ink">{item.title}</p>
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{item.body}</p>
-                  <p className="mt-2 text-xs text-subtle">
-                    {describePostedAt(item.createdAt, now)}
-                    {item.authorName ? ` · ${item.authorName}` : ''}
-                  </p>
-                </article>
-              ))
+              items.map((item) => {
+                const href = safeAppPath(item.link);
+                return (
+                  <article
+                    key={item.id}
+                    className="border-b-[1px] border-[color:var(--line-subtle)] px-4 py-3.5 last:border-b-0"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="min-w-0 break-words text-sm font-semibold text-ink">{item.title}</p>
+                      {/* Said in words, not only by position: this one is about you. */}
+                      {item.recipientId && <Pill tone="sky">For you</Pill>}
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted">{item.body}</p>
+                    {href && (
+                      <Link href={href} onClick={() => setOpen(false)} className="tl-link mt-2 inline-block text-sm">
+                        {appLinkLabel(href)}
+                      </Link>
+                    )}
+                    <p className="mt-2 text-xs text-subtle">
+                      {describePostedAt(item.createdAt, now)}
+                      {item.authorName ? ` · ${item.authorName}` : ''}
+                    </p>
+                  </article>
+                );
+              })
             )}
           </div>
         </div>

@@ -524,11 +524,36 @@ export async function chargeSavedCard(input: SavedCardCharge): Promise<StripePay
   });
 }
 
-export async function refundPaymentIntent(paymentIntentId: string, paymentId: string): Promise<void> {
+/**
+ * Refunds a payment intent - all of it, or `amountCents` of it.
+ *
+ * `amountCents` is Stripe's own `amount`: a PARTIAL refund, in the smallest
+ * currency unit, which is how a refund request returns only the unspent part
+ * of a purchase. Absent, Stripe refunds the whole charge, which is what the
+ * payments list's Refund button does.
+ *
+ * The idempotency key is the PAYMENT either way, never the amount: a payment
+ * is refunded at most once here, and a retry that somehow carried a different
+ * amount must be refused by Stripe (a reused key with a different body is an
+ * error there) rather than create a second refund beside the first. The
+ * refund-request path writes its amount down before calling, so its own retry
+ * sends the same body and gets the same refund back.
+ */
+export async function refundPaymentIntent(
+  paymentIntentId: string,
+  paymentId: string,
+  amountCents?: number
+): Promise<void> {
+  if (amountCents !== undefined && (!Number.isSafeInteger(amountCents) || amountCents <= 0)) {
+    throw new Error(`A partial refund must be a positive whole number of cents, not ${amountCents}.`);
+  }
   await stripeFetch('/refunds', {
     method: 'POST',
     idempotencyKey: `refund:${paymentId}`,
-    body: { payment_intent: paymentIntentId },
+    body: {
+      payment_intent: paymentIntentId,
+      ...(amountCents !== undefined ? { amount: amountCents } : {}),
+    },
   });
 }
 

@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { AdminOnly } from '@/components/auth/AuthGate';
+import { useDialogLayer } from '@/components/ui/Dialog';
 import { Card, EmptyState, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
 import { adminApi, type PaymentTargetLimits, type PaymentTargetLimitsInput } from '@/lib/api';
 import {
@@ -17,11 +19,16 @@ import {
   isLegacyPurchase,
 } from '@/lib/paymentDisplay';
 import { formatDate, formatMoney, parseDollars, toDollarInput } from '@/lib/format';
+import { describeClosedRequests, openRequestCount, readRefundFilter } from '@/lib/refundDisplay';
+import { adminRefundRequestsApi, type RefundRequestCounts, type RefundStateFilter } from '@/lib/refunds';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
+import RefundQueue from './RefundQueue';
 
 /**
- * Every payment, for reconciliation and refunds.
+ * Every payment, for reconciliation and refunds - and, on its second tab
+ * (`?tab=refunds`, where every notice about a new request links), the queue of
+ * refund requests people have made.
  *
  * Under `/admin`, so the nav comes from that layout rather than from here.
  */
@@ -355,7 +362,9 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
  * Confirming a refund, as a dialog over the list.
  *
  * Escape and a click on the backdrop do what Cancel does, and nothing else -
- * the refund itself only ever starts from the button. A refusal is repeated in
+ * the refund itself only ever starts from the button. Escape only while this
+ * is the top dialog: its error notice offers Contact admin, which opens over
+ * it (`useDialogLayer`). A refusal is repeated in
  * here because the page's own notice is behind the backdrop while this is up -
  * but only one from a press in THIS dialog, so a stale error left on the page
  * by an earlier attempt does not greet the next payment opened.
@@ -379,13 +388,9 @@ function RefundDialog({
 }) {
   const [attempted, setAttempted] = useState(false);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCancel();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onCancel]);
+  // On the kit's dialog stack: its error notice can open Contact admin over
+  // it, and an Escape meant for that must not close this - and the note in it.
+  useDialogLayer(true, onCancel);
 
   return (
     <div
@@ -542,7 +547,7 @@ function PaymentsBody() {
        * left. Reporting a bare "refunded" would leave whoever pressed this
        * button to find out from the customer.
        */
-      setMessage(describeRefundOutcome(payment.reference, outcome));
+      setMessage(describeRefundOutcome(payment.reference, outcome) + describeClosedRequests(outcome.closedRequests));
       setConfirming('');
       setNote('');
       await load();
@@ -561,25 +566,14 @@ function PaymentsBody() {
 
   return (
     <div>
-      <header>
-        {/*
-          An h1 at the size of the other Administration pages' h2, and on
-          purpose: backend/test/e2e/browser.js waits for `h1:has-text("Payments")`
-          before it reads this page.
-        */}
-        <h1 className="text-2xl font-bold tracking-tight text-ink">Payments</h1>
-        <p className="mt-1 text-sm text-muted">
-          Every purchase of credit on this installation. Quote the reference when reconciling against
-          your provider&apos;s dashboard.
-          {total > payments.length && (
-            <> Showing the newest {payments.length} of {total}.</>
-          )}
-        </p>
-      </header>
-
       <PricingCard onSaved={() => void load()} />
 
       <div className="space-y-4 pt-8">
+        {total > payments.length && (
+          <p className="text-sm text-muted">
+            Showing the newest {payments.length} of {total} payments.
+          </p>
+        )}
         {error && (
           <Notice tone="error" role="alert">
             {error}
@@ -714,10 +708,150 @@ function PaymentsBody() {
   );
 }
 
+type PaymentsTab = 'payments' | 'refunds';
+
+const TABS: Array<{ id: PaymentsTab; label: string }> = [
+  { id: 'payments', label: 'Payments' },
+  { id: 'refunds', label: 'Refund requests' },
+];
+
+/** Anything the page does not recognise is the payments list, not an error. */
+function readTab(value: string | null | undefined): PaymentsTab {
+  return value === 'refunds' ? 'refunds' : 'payments';
+}
+
+/**
+ * The page's title and its two tabs. The tab and the queue's filter live in
+ * the URL and only there, as /credits does it, so the link in a "New refund
+ * request" notice lands on the queue - also when it is followed from this
+ * page.
+ */
+function PaymentsPage() {
+  const router = useRouter();
+  const search = useSearchParams();
+  const tab = readTab(search?.get('tab'));
+  const filter = readRefundFilter(search?.get('state'), 'open');
+
+  /*
+   * The open count for the tab's badge, read once on arrival so the Payments
+   * tab says there is a queue waiting; the queue itself keeps it current while
+   * it is open.
+   */
+  const [counts, setCounts] = useState<RefundRequestCounts | null>(null);
+  useEffect(() => {
+    let alive = true;
+    adminRefundRequestsApi.list(0, 1, 'open').then(
+      (answer) => {
+        if (alive) setCounts(answer.counts);
+      },
+      () => undefined
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const go = useCallback(
+    (changes: { tab?: PaymentsTab; state?: RefundStateFilter }) => {
+      const params = new URLSearchParams(search?.toString() ?? '');
+      if (changes.tab) {
+        if (changes.tab === 'payments') {
+          params.delete('tab');
+          params.delete('state');
+        } else params.set('tab', changes.tab);
+      }
+      if (changes.state) {
+        if (changes.state === 'open') params.delete('state');
+        else params.set('state', changes.state);
+      }
+      const query = params.toString();
+      router.replace(query ? `/admin/payments?${query}` : '/admin/payments', { scroll: false });
+    },
+    [router, search]
+  );
+
+  // Arrow keys move along the row, as the ARIA tabs pattern expects.
+  const tabRefs = useRef(new Map<PaymentsTab, HTMLButtonElement>());
+  const onTabKey = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = -1;
+    if (event.key === 'ArrowRight') next = (index + 1) % TABS.length;
+    else if (event.key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = TABS.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    tabRefs.current.get(TABS[next].id)?.focus();
+    go({ tab: TABS[next].id });
+  };
+
+  const waiting = openRequestCount(counts);
+
+  return (
+    <div>
+      <header>
+        {/*
+          An h1 at the size of the other Administration pages' h2, and on
+          purpose: backend/test/e2e/browser.js waits for `h1:has-text("Payments")`
+          before it reads this page.
+        */}
+        <h1 className="text-2xl font-bold tracking-tight text-ink">Payments</h1>
+        <p className="mt-1 text-sm text-muted">
+          Every purchase of credit on this installation, and the refunds people have asked for. Quote the
+          reference when reconciling against your provider&apos;s dashboard.
+        </p>
+      </header>
+
+      <div role="tablist" aria-label="Payments" className="tl-tabs mt-6">
+        {TABS.map((entry, index) => {
+          const active = entry.id === tab;
+          return (
+            <button
+              key={entry.id}
+              ref={(node) => {
+                if (node) tabRefs.current.set(entry.id, node);
+                else tabRefs.current.delete(entry.id);
+              }}
+              type="button"
+              role="tab"
+              id={`payments-tab-${entry.id}`}
+              aria-selected={active}
+              aria-controls="payments-panel"
+              tabIndex={active ? 0 : -1}
+              data-active={active}
+              className="tl-tab"
+              onClick={() => go({ tab: entry.id })}
+              onKeyDown={(event) => onTabKey(event, index)}
+            >
+              {entry.label}
+              {entry.id === 'refunds' && waiting > 0 && (
+                <span className="ml-2" aria-label={`${waiting} open`}>
+                  <Pill tone="amber">{waiting}</Pill>
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div id="payments-panel" role="tabpanel" aria-labelledby={`payments-tab-${tab}`} className="mt-8">
+        {tab === 'refunds' ? (
+          /* Keyed on the filter, so a new one starts from its first page. */
+          <RefundQueue key={filter} filter={filter} onFilter={(state) => go({ state })} onCounts={setCounts} />
+        ) : (
+          <PaymentsBody />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminPaymentsPage() {
   return (
     <AdminOnly>
-      <PaymentsBody />
+      {/* `useSearchParams` needs a Suspense boundary to prerender. */}
+      <Suspense fallback={<Spinner />}>
+        <PaymentsPage />
+      </Suspense>
     </AdminOnly>
   );
 }

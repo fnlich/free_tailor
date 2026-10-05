@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~30s with the tsc step, 1254 tests)
+npm test                       # backend node:test suite (~30s with the tsc step, 1313 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -36,7 +36,7 @@ Facts worth knowing before you build:
   JavaScript.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
-  `src/bid-assistant/App.jsx` (lines 270, 304, 380; `src/app/page.tsx`
+  `src/bid-assistant/App.jsx` (lines 271, 305, 381; `src/app/page.tsx`
   contributes none), and no warnings.
   Not a build gate: `next build` does not run ESLint. Do not treat a red lint as
   something your change caused without checking `git stash` first.
@@ -87,7 +87,7 @@ advance.
 
 ```
 backend/src/
-  index.ts            # Express app: mounts 21 routers under /api
+  index.ts            # Express app: mounts 25 routers under /api
   config/             # env loading (.env, UTF-16 aware), browser resolution.
                       #   ENV_PATH resolves from the COMPILED module, so it is
                       #   always <repo root>/.env regardless of cwd - a file at
@@ -183,6 +183,9 @@ backend/src/
                       #   (409 `own-account`; another admin may), and its
                       #   last-admin guard (`wouldStrandInstall`) counts ANY
                       #   role but admin as losing one - not `user` by name.
+                      #   refundRequests.ts (asking, and the admin queue) and
+                      #   contact.ts (GET /api/contact is PUBLIC, no session)
+                      #   are described under "Money" below.
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor, migrate:legacy,
                       #   ai:rollback. The doctors share one shape -
@@ -244,7 +247,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 106 files; fixtures/cli, codex and gemini
+  test/               # node:test, 110 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -305,17 +308,46 @@ frontend/src/
                       #   shared class strings and the note on why none of them
                       #   carries a `dark:` variant. Also the /credits history
                       #   tables: usePagedList.ts (paging with the race guards),
-                      #   TablePager, OrderHistory, CreditHistory. A colour on a
-                      #   .tl-table cell goes on an inner span - the unlayered
-                      #   td rule beats a utility on the td itself.
+                      #   TablePager, OrderHistory, CreditHistory,
+                      #   RefundRequestHistory (the Refund Requests tab). A
+                      #   colour on a .tl-table cell goes on an inner span - the
+                      #   unlayered td rule beats a utility on the td itself.
+                      #   RefundRequestDialog is "Ask for refund" from all three
+                      #   places a charge shows (a purchase's Action column, a
+                      #   `generation-reserve` row of Credit History, a resume
+                      #   on /orders/[id]); it reads the server's
+                      #   `/refund-requests/options` and never sends an amount.
+                      #   PayDialog is now only an alias of ui/Dialog.tsx.
+                      #   The administrators' queue is app/admin/payments/
+                      #   RefundQueue.tsx, the `?tab=refunds` of Payments, where
+                      #   every "New refund request" notice links.
   bid-assistant/      # the largest single feature directory here, and the only
                       #   JSX: its own App, components and stylesheet. Its
                       #   failures go through lib/apiBase.js's readError /
                       #   responseError, then messageWithDetail like the rest
   components/ui/      # The kit every page is built from: kit.tsx (Page,
                       #   PageHeader, Section, Card, Field, Notice, ErrorNotice,
-                      #   Pill, EmptyState, Spinner) over the .tl-* classes in
-                      #   globals.css, which state every colour for both themes.
+                      #   Pill, EmptyState, Spinner) and Dialog.tsx (the one
+                      #   modal: portal, Escape for the TOP dialog only, one
+                      #   scroll lock however many are stacked -
+                      #   lib/dialogStack.ts's `pageDialogs`) over the .tl-*
+                      #   classes in globals.css, which state every colour for
+                      #   both themes. A modal that draws its own chrome joins
+                      #   that stack with Dialog.tsx's `useDialogLayer` (the
+                      #   payments list's Refund dialog), or, keeping its own
+                      #   scroll lock, ignores Escape while
+                      #   `pageDialogs.size() > 0` (the calendar's) - else one
+                      #   Escape closes it AND the Contact admin opened from
+                      #   its error notice.
+                      #   Notice (warn/error), Status (error) and ErrorNotice
+                      #   end a TEXT sentence that asks the reader to contact an
+                      #   administrator (lib/contactChannels.ts
+                      #   `asksForAdministrator`) with a "Contact admin" link;
+                      #   text drawn outside them gets it from
+                      #   <ContactAdminFor text={...} />, and a sentence
+                      #   written as JSX puts <ContactAdminLink /> after it -
+                      #   test/frontendRefunds.test.js parses every page and
+                      #   fails on one that does not.
                       #   New UI uses these and the tokens (text-ink, text-muted,
                       #   bg-surface, border-hairline...), never bg-white /
                       #   text-gray-* / dark: - see the shim note above. The
@@ -339,6 +371,19 @@ frontend/src/
                       #   the ONE way a page turns a failure into text; never
                       #   print `err.message`, and render a caught error with
                       #   <ErrorNotice>, which shows an admin's `detail`).
+                      #   components/contact/ is Contact admin: the dialog
+                      #   anybody opens (account menu, sign-in and
+                      #   account-disabled screens, every "contact your
+                      #   administrator" sentence) and Settings -> General's
+                      #   editor, which pins the server's `fieldErrors` to rows
+                      #   by key. A link the server hands a page - a notice's
+                      #   `link`, a channel's `href` - goes through
+                      #   lib/appLinks.ts before it is an href; a page never
+                      #   builds one from a value. lib/refunds.ts is the refund
+                      #   API; lib/refundDisplay.ts how a request reads and which
+                      #   buttons it gets, with no request in it, so
+                      #   test/frontendRefunds.test.js runs it (and the reason
+                      #   and amount rules it copies) against the server's code.
 ```
 
 Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
@@ -533,6 +578,85 @@ run in flight are never refunded (the older build sees `units = 0`, then
 closes the reservation, and a closed one takes no refund here), and the first
 settings save of any kind rewrites every model without `creditsPerResume`, so
 an older build prices them all at 1 credit.
+
+**Refund requests** (owner decision M3; `services/refunds`,
+`database/refundRequestRepository.ts`, `routes/refundRequests.ts`). Anybody asks
+about their OWN purchase or resume, with a reason; an administrator moves it
+Requested -> Approved (no money), Requested|Approved -> Declined (reason
+required, final) or -> Refunded (the money moves in the same step, final). The
+state machine is in the WHERE clauses; a repeat of the same action answers 200
+`changed: false` and moves nothing. ONE OPEN REQUEST PER ITEM is a partial
+UNIQUE index on `refund_requests(item_key) WHERE state IN ('requested',
+'approved')`, not a route check. An item is one of four names, and a resume has
+exactly one: `payment:<id>`; `order-item:<id>` (durable - `order_items.cost_milli`
+is copied from the task's `costMilli` at `createOrder`, because the task is
+evicted); `charge:<reservation id>` for a `/resume/generate` build (a
+`kind: 'request'` reservation is that one resume); `task:<id>` for a queued
+resume NOT placed as an order, only while the queue holds its batch (a task of
+an order's batch always resolves to its order item). Phase 4 files every
+immediate run as an order, which retires `task:`. A resume's refund is
+`refundRequestedCharge` - `refundAgainstReservation` with `includeClosed`, key
+`refund-request:<id>`, reason `refund-request`, under the reservation's SQL cap
+- in the same `.immediate()` transaction as the state change and the notice.
+A purchase gives back its UNSPENT part, `wholeCentsBelow(min(balance,
+creditedMilli))` (the reversal `refundPayment` makes, in whole cents), measured
+when asked and re-measured at Refunded, never above `amountMilli`. A card does
+NOT go through `refundPayment`, which calls the provider first and reverses
+after: in services/refunds `refundCardPurchase`, ONE `.immediate()` transaction
+takes the re-measured amount off the balance (`purchase-refund`, a fresh key
+`purchase-refund:<payment>:<request>:<n>` per hold), writes `attempt_milli` and
+`hold_key` on the request and claims the payment (`beginRefund(id, requestId)`);
+only then is Stripe sent EXACTLY that (`sendCardRefund` -> `refundPaymentIntent`'s
+`amountCents`, key still `refund:<paymentId>`), so the buyer cannot spend it,
+nor a second refund measure it, while Stripe answers, and the shortfall is
+always 0. Accepted: payment and request turn Refunded together. Refused: the
+credit goes back (`purchase-refund-failed`, key `<hold>:returned`), the hold is
+cleared and the claim released in one transaction - the next press measures
+again. No answer (`isUnansweredRefund`): only the claim is released; the hold
+and `attempt_milli` stay, the retry sends the same body and takes nothing more.
+While a request holds one, `beginRefund` refuses every other claim on that
+payment IN ITS UPDATE (the payments list's whole refund says why), and a
+Decline is refused (409 `refund-unconfirmed`); a Decline is also refused while
+the payment is `refunding` (409 `refunding`, the DB claim, so across
+processes), and on a payment already `refunded` it closes the request from the
+payment instead (409 `request-final`, state `refunded`) - Declined never lands
+on money that moved. Crypto needs `{ paidByHand: true, amountUsd }` - the
+amount the administrator SENT, required, never measured again (409
+`paid-by-hand-required` with `amountMilli` first) - and goes through
+`refundPayment(..., { amountMilli, refundedByHand: true })`, a balance spent
+since reported as the shortfall. `payments.refund_cents` records the money
+returned (0 on an older refunded row reads as `amount_cents`), served as
+`refundAmountMilli`. A refund from the payments list closes the payment's open
+requests (`closeRequestsForRefundedPayment`). The frontend's `lib/credits.ts`
+knows the new ledger reasons, `refund-request` and `purchase-refund-failed`
+(drift-checked by test/frontendMoney.test.js).
+
+**Notifications are no longer broadcast-only.** `notifications.recipient_id`
+NULL is an announcement (every row an older build wrote), set is a notice for
+that account alone; every reader query is `recipient_id IS NULL OR
+recipient_id = me` (list AND unread count), through
+`idx_notifications_recipient`, which `getDb()` creates AFTER `addMissingColumns`
+(`INDEXES_AFTER_COLUMNS`) because an index in SCHEMA naming an added column
+fails every upgraded boot. `link` is an app path only (`safeAppPath`). The
+announcement editor lists, edits and deletes announcements only, and
+`deleteUser` deletes the account's own notices. The bell draws a notice's
+`link` only through lib/appLinks.ts's `safeAppPath` (a copy of the server's,
+run against it by test/frontendRefunds.test.js) and marks a notice "For you".
+An older build has no recipient filter and reads EVERY row as an announcement,
+so a rollback deletes `WHERE recipient_id IS NOT NULL` first (README, "Asking
+for a refund") - or every bell shows other people's refund notices, emails and
+reasons included.
+
+**Contact** (owner decision A2): `app_settings['contact'] = { channels: [{ type,
+label, value }] }`, types closed (`email|telegram|discord|whatsapp|other`),
+validated whole on save by `services/contact.ts`, which also BUILDS every
+`href` (`mailto:`, `https://t.me/<name>`, `https://wa.me/<digits>`, Discord
+none, `other` only as an `http(s)` URL without credentials; any other link
+scheme - `mailto:`, `tel:`, `x://` - is refused, and a label with a colon,
+`Hours:9-5`, is plain text). `GET /api/contact`
+is PUBLIC (no session - the sign-in and disabled-account pages need it) and
+re-checks every stored channel on read, so a hand-edited row cannot serve a
+`javascript:` link. Pages render `href` or plain text, never a link of their own.
 
 ## The AI layer
 

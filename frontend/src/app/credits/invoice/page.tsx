@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { ContactAdminFor } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiResponseError } from '@/lib/api';
 import { formatDate, formatMoney } from '@/lib/format';
@@ -102,7 +103,10 @@ function InvoiceBody() {
   if (!payment) {
     return (
       <Frame>
-        <Message title="Invoice unavailable">{'error' in current ? current.error : ''}</Message>
+        <Message title="Invoice unavailable">
+          {'error' in current ? current.error : ''}
+          <ContactAdminFor text={'error' in current ? current.error : ''} />
+        </Message>
       </Frame>
     );
   }
