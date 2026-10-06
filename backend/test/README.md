@@ -201,8 +201,9 @@ Coverage currently focuses on:
   `accountRoutes.test.js`, and the frontend's copy of the tier order is held
   to the backend's in `frontendHelpers.test.js`
 - money in thousandths of a dollar: the one parser and formatter (`"0.023"`
-  is 23, `"0.0235"` refused, always three decimals, whole cents only where a
-  card is charged or refunded) and a guard that no money module floors,
+  is 23, `"0.0235"` refused, shown with no trailing zeros - `$1`, `$4.1`,
+  `$0.023`, `$0` - never rounded, whole cents only where a card is charged or
+  refunded) and a guard that no money module floors,
   truncates or float-parses an amount (`money.test.js`); the switch from
   credits, on a database the build before dollars left - balances and prices
   reset with a `reset` row each, a run in progress settled, nothing free and
@@ -213,12 +214,23 @@ Coverage currently focuses on:
 - refund requests and Contact admin: every allowed and refused state change,
   a double-pressed *Refunded* moving money once, a card's partial refund with
   its credit held while Stripe answers, crypto at the amount sent by hand, one
-  open request per item in SQL (`refundRequests.test.js`); a notice reaching
+  open request per item in SQL, the requests seeded through the service now
+  that asking answers 410, and a row of an item type this build does not know
+  never refunded (`refundRequests.test.js`); a reporter's payout request -
+  asked once at a time, never at $0, by a reporter only; Record payout writing
+  one row keyed by the request, refused above the balance or for an account
+  no longer a reporter with nothing moved, and Admin -> Accounts' payout
+  closing the open request, the ledger adding up throughout
+  (`payoutRequests.test.js`); a notice reaching
   only the account it is for, in its feed and its unread count, by an index
   seek (`notificationRecipients.test.js`); the contact channels' rules and
-  the links the server builds (`contact.test.js`); and the pages' refund
-  decisions against the server's, plus every sentence that asks for an
-  administrator followed by a Contact admin link (`frontendRefunds.test.js`)
+  the links the server builds (`contact.test.js`); and the pages' refund and
+  payout decisions against the server's - nothing in the browser asking for a
+  refund any more, a decline's reason and a payout's note refused in the
+  server's words, Ask for Refund off exactly when and why the real payout
+  route says, Record payout in the queue refusing what the real route refuses
+  and a recorded payout reading *Paid out* - plus every sentence that asks for
+  an administrator followed by a Contact admin link (`frontendRefunds.test.js`)
 - Generate Immediately and Order: the two kinds, the tab lease through the
   stream, the release, the owner-checked per-file download and the deletion
   after the run (`immediateRuns.test.js`); the grace on a mock clock
@@ -261,6 +273,26 @@ Coverage currently focuses on:
   manual), an administrator's reclassification and its refusal by name, the
   gallery preview's options and no-script policy, and the template resolver's
   fallbacks
+- a switched-off section leaving no heading (`sectionHeadings.test.js`): every
+  built-in and uploaded-style markups with neither the class nor
+  `data-section` - a heading before the loop, in a plain div, outside a guard
+  around the loop, both sections in one column, in capitals, as a label before
+  an inline list, over a divider, as a bold label and a line break, printed by
+  the `join` helper, inside a guard that closes after the section's element -
+  with nothing else removed, the section and its heading back when switched
+  on, no empty heading when on with none, and none of them needing the compile
+  fallback; a photo, an icon, a CSS picture and lines of static text sharing
+  the section's element kept in every mode, while the section's own wrapper
+  still goes whole; an element that also holds the summary or the Experience
+  loop never taken - a column, a heading box holding the summary, the element
+  before the list - nor a paragraph past 60 characters that says "strength",
+  each built so that removing any one of the overlapping checks fails it; a
+  `data-section` element taken whole whatever its heading reads, so the
+  attribute decides on its own; a template the finds would stop compiling
+  drawn with less found and logged once, and one broken by itself failing with
+  its own error; markup that only looks like a section left alone; and the
+  profile preview route and the render a PDF prints from agreeing, the stored
+  file never rewritten
 - the live profile preview over HTTP (`profilePreview.test.js`), run with all
   three seats locked so a 200 also proves no model was asked: nothing written
   or charged even at the subscription's profile limit, the draft laid over the caller's own
@@ -319,7 +351,9 @@ Coverage currently focuses on:
   configured administrator, and recorded payouts are in
   `accountRoutes.test.js` and `accounts.test.js`
 - the reporter's side of the frontend (`frontendRoles.test.js`): its copy of
-  the role catalog is the backend's; of every App Router page, a reporter
+  the role catalog is the backend's; a reporter's Credits mounts no buyer's
+  panel and reads only their own requests (for payouts) and the payout routes;
+  of every App Router page, a reporter
   opens exactly Report Jobs, Credits and Settings -> Profile / Job Sheet and is
   sent to Report Jobs from the rest; the rail and Settings tabs offer them only
   those (an entry naming no roles is a builder's); the rate per job box and
@@ -329,6 +363,10 @@ Coverage currently focuses on:
   the Bid Assistant's client included, each of which is listed with why it
   may; and a configured administrator's row names ADMIN_EMAILS or SMTP_USER as
   the server says
+- which dev server the root `npm run dev` starts: the frontend on Turbopack,
+  with webpack's opt-in by name, because webpack's reloads every other open tab
+  when a new one connects - measured by `e2e/dev-reload.js`
+  (`devServer.test.js`)
 - which wins, the environment or `.env`: the environment, on both halves, with
   any name set in both reported by name only (`envFile.test.js`), and the mail
   doctor naming such a setting as overriding the file (`mailDoctor.test.js`)

@@ -57,7 +57,7 @@ export type { PayoutOutcome } from '../../database/creditRepository';
  * one gives back.
  */
 
-/** The most `CREDIT_SIGNUP_GRANT` may give a new account: $1000.000. */
+/** The most `CREDIT_SIGNUP_GRANT` may give a new account: $1,000. */
 export const MAX_SIGNUP_GRANT_MILLI = 1_000_000;
 
 /**
@@ -291,6 +291,40 @@ export function grantCredits(
     actorId,
     note,
   }).balance;
+}
+
+/** A payout's note: long enough for a method, a date and a reference, short enough for a ledger cell. */
+export const MAX_PAYOUT_NOTE = 500;
+
+/**
+ * The caller's id for one payout - a page's UUID, usually, or a payout
+ * request's own id (`rfr_<uuid>`) - so a repeat records once.
+ */
+export const PAYOUT_REQUEST_ID = /^[A-Za-z0-9_-]{8,100}$/;
+
+export type PayoutNoteRead =
+  | { ok: true; note: string }
+  | { ok: false; code: 'note-required' | 'note-too-long'; error: string };
+
+/**
+ * An administrator's note on a payout, as both places that record one read it
+ * (Admin -> Accounts' payout, and a reporter's payout request in the queue):
+ * required, because the record has to explain itself - how, when, a
+ * reference - and the reporter reads it in their own history.
+ */
+export function readPayoutNote(value: unknown): PayoutNoteRead {
+  const note = typeof value === 'string' ? value.trim() : '';
+  if (!note) {
+    return {
+      ok: false,
+      code: 'note-required',
+      error: 'Say how it was paid - a method, a date or a reference - so the record explains itself.',
+    };
+  }
+  if (note.length > MAX_PAYOUT_NOTE) {
+    return { ok: false, code: 'note-too-long', error: `Keep the note under ${MAX_PAYOUT_NOTE} characters.` };
+  }
+  return { ok: true, note };
 }
 
 /**

@@ -58,6 +58,8 @@ export function opensInNewTab(href: string): boolean {
  */
 const APP_LINK_LABELS: Record<string, string> = {
   '/credits?tab=refunds': 'See your refund requests',
+  // A reporter's notices: a payout request decided or recorded, a reward taken back.
+  '/credits': 'See your credits',
   '/admin/payments?tab=refunds': 'Open the refund queue',
 };
 

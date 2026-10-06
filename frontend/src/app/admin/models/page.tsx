@@ -283,19 +283,19 @@ function ModelsPageBody() {
         /*
          * Red, and above everything, while any model people can pick costs
          * nothing. After credits became dollars every price was reset to
-         * $0.000 (the owner's decision), and a model a migration seeds - or
+         * $0 (the owner's decision), and a model a migration seeds - or
          * every seed of a fresh install - arrives unpriced too: free on
          * purpose is allowed - 0 is a price - but never without somebody
          * having seen it. The server names the models (`freeEnabledModelIds`),
          * so this lists exactly what it would charge nothing for. The last
          * sentence names no single cause: on a fresh install nothing was
-         * reset, and one priced at $0.000 on purpose was not either.
+         * reset, and one priced at $0 on purpose was not either.
          */
         <Notice tone="error" role="alert" className="mt-6">
           <p className="font-semibold">
             {freeModels.length === 1
-              ? 'One enabled model is free: every resume on it costs $0.000.'
-              : `${freeModels.length} enabled models are free: every resume on them costs $0.000.`}
+              ? 'One enabled model is free: every resume on it costs $0.'
+              : `${freeModels.length} enabled models are free: every resume on them costs $0.`}
           </p>
           <p className="mt-1">
             {freeModels.map((model) => model.name || model.id).join(', ')}. Set a price per resume with
@@ -423,7 +423,7 @@ function ModelsPageBody() {
                   ? 'Required. Dollars to $0.001, like 0.023; 0 makes the model free.'
                   : draftPrice.message
                 : draftPrice.milli === 0
-                  ? 'Free - a resume on this model costs $0.000.'
+                  ? 'Free - a resume on this model costs $0.'
                   : `${formatMoney(draftPrice.milli)} a resume. 0 makes it free.`
             }
           >
@@ -432,7 +432,7 @@ function ModelsPageBody() {
               // Text, like every other dollar box: a number box hands over
               // what the BROWSER made of the keystrokes, not what was typed.
               // In an en-US Chrome "0,023" becomes "0023" before onChange sees
-              // it - $23.000 a resume, a thousand times the price meant -
+              // it - $23 a resume, a thousand times the price meant -
               // where the text reaches readPriceDraft and the server as typed
               // and is refused by name. The range and the $0.001 step are
               // theirs to check, not the box's.

@@ -282,7 +282,7 @@ test('Record payout says what the server would, in its words, before anything is
     assert.equal(pay.payoutLeaves('2.5', balance), 2_500);
     assert.deepEqual(pay.describePayoutAmount('2.5', balance), {
       tone: 'ok',
-      text: 'Leaves $2.500 of their $5.000 balance.',
+      text: 'Leaves $2.5 of their $5 balance.',
     });
     const paid = await call(`/${reporter.id}/payout`, { amountUsd: '2.5', note: 'Bank transfer, ref 4471', requestId });
     assert.equal(paid.status, 201);
@@ -298,7 +298,7 @@ test('Record payout says what the server would, in its words, before anything is
     assert.equal(pay.payoutProblem('2.5', 'Second', 2_500), '');
     assert.equal(pay.payoutLeaves('2.5', 2_500), 0);
     assert.equal(pay.payoutLeaves('2.501', 2_500), null);
-    assert.deepEqual(pay.describePayoutAmount('', 2_500), { tone: 'idle', text: 'Their balance is $2.500.' });
+    assert.deepEqual(pay.describePayoutAmount('', 2_500), { tone: 'idle', text: 'Their balance is $2.5.' });
   } finally {
     server.close();
   }
@@ -342,17 +342,28 @@ test("a reporter's pages mount nothing that asks a route a reporter is refused",
    */
   const credits = codeOnly(fs.readFileSync(path.join(SRC, 'app/credits/page.tsx'), 'utf8'));
   const earnings = functionBody(credits, 'EarningsCredits');
-  for (const builderOnly of ['paymentsApi', 'OrderHistory', 'RefundRequestHistory', 'BuyCreditsDialog', 'refundsApi']) {
+  for (const builderOnly of ['paymentsApi', 'OrderHistory', 'BuyCreditsDialog', 'refundsApi', 'adminRefundRequestsApi']) {
     assert.doesNotMatch(earnings, new RegExp(`\\b${builderOnly}\\b`), `a reporter's Credits mounts ${builderOnly}`);
   }
   assert.match(earnings, /<CreditHistory[^>]*variant="earnings"/);
+  // Their payout requests: the account's own list (GET /refund-requests, any
+  // signed-in account) read for payouts, and the two payout routes, which are
+  // a reporter's (requireReporter) - never a user's refund routes.
+  assert.match(earnings, /<RefundRequestHistory[^>]*variant="payouts"/);
+  assert.match(earnings, /payoutRequestsApi\.status\(\)/);
+  const refundsClient = codeOnly(fs.readFileSync(path.join(SRC, 'lib/refunds.ts'), 'utf8'));
+  const payoutClient = refundsClient.slice(refundsClient.indexOf('export const payoutRequestsApi'));
+  const payoutRoutes = [...payoutClient.slice(0, payoutClient.indexOf('\n};')).matchAll(/['`](\/[^'`?$]*)/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(payoutRoutes)], ['/refund-requests/payout']);
+  const historySource = codeOnly(fs.readFileSync(path.join(SRC, 'components/credits/RefundRequestHistory.tsx'), 'utf8'));
+  assert.match(historySource, /refundRequestsApi\.list\(offset, limit, undefined, payouts \? 'payout' : undefined\)/);
   // The switch is the role, read once AuthGate has the account.
   assert.match(functionBody(credits, 'CreditsBody'), /isReporter \? <EarningsCredits \/> : <PurchaserCredits \/>/);
 
-  // The earnings history asks for no refund: no Action column, no dialog.
+  // The histories ask for no refund - nobody's does any more (owner decision
+  // R1): no Action column, no dialog.
   const history = codeOnly(fs.readFileSync(path.join(SRC, 'components/credits/CreditHistory.tsx'), 'utf8'));
-  assert.match(history, /const asks = variant === 'credits';/);
-  assert.match(history, /asks \? refundChargeIdFor\(entry\) : null/);
+  assert.doesNotMatch(history, /Ask for refund|RefundRequestDialog|refundChargeIdFor|'Action'/);
 
   // Report Jobs reads only /api/report - the reporter's own sheet, tabs, rows
   // and runs, behind requireReporter - never /api/import, which is a builder's.

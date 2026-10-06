@@ -6,6 +6,7 @@ import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import BuyCreditsDialog from '@/components/credits/BuyCreditsDialog';
 import CreditHistory from '@/components/credits/CreditHistory';
 import OrderHistory from '@/components/credits/OrderHistory';
+import PayoutRequestDialog from '@/components/credits/PayoutRequestDialog';
 import RefundRequestHistory from '@/components/credits/RefundRequestHistory';
 import { useTabRow } from '@/components/shell/useTabRow';
 import { ErrorNotice, Notice } from '@/components/ui/kit';
@@ -13,6 +14,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { creditsApi, type CreditStatus } from '@/lib/credits';
 import { formatMoney } from '@/lib/format';
 import { paymentsApi, type PaymentOptions } from '@/lib/payments';
+import { payoutBlocker } from '@/lib/refundDisplay';
+import { payoutRequestsApi, type PayoutStatus } from '@/lib/refunds';
 import { messageWithDetail } from '@/lib/userMessage';
 
 type Tab = 'card' | 'crypto' | 'history' | 'refunds';
@@ -303,37 +306,59 @@ function PurchaserCredits() {
 }
 
 /**
- * A reporter's Credits (owner decisions A3, A4): what they have earned and not
- * yet been paid, and the history of it - job rewards in, payouts out.
+ * A reporter's Credits (owner decisions A3, A4, R1): what they have earned and
+ * not yet been paid, Ask for Refund - a request that an administrator pay it
+ * out - and the history of it: payout requests, job rewards in, payouts out.
  *
  * Its own component rather than switches through the purchaser's, because
  * what it leaves out is most of that page: no Purchase Credits, no card or
- * crypto order history, no Refund Requests and no Ask for refund. A reporter
- * cannot buy credit, and every request those panels make answers them 403
+ * crypto order history and no Refund Requests tab. A reporter cannot buy
+ * credit, and every request those panels make answers them 403
  * `role-not-allowed` - so they are not mounted here at all, rather than
- * mounted and hidden.
+ * mounted and hidden. Their own requests list (GET /refund-requests, any
+ * signed-in account) is read for payouts only.
  */
 function EarningsCredits() {
   const [status, setStatus] = useState<CreditStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  /** Whether Ask for Refund is on, and why not - the server's own answer. */
+  const [payout, setPayout] = useState<PayoutStatus | null>(null);
+  const [payoutLoading, setPayoutLoading] = useState(true);
+  const [asking, setAsking] = useState(false);
+  /** Bumped after a request is made or the dialog closes, so the lists below read again. */
+  const [epoch, setEpoch] = useState(0);
+  /** Bumped to read the balance and the payout standing again. */
+  const [reads, setReads] = useState(0);
 
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
-        const next = await creditsApi.status();
-        if (alive) setStatus(next);
-      } catch (caught) {
-        if (alive) setError(caught ?? new Error('Could not load your balance.'));
+        // Settled rather than all: a payout standing that cannot be read must
+        // not blank the balance, and the other way round.
+        const [balance, standing] = await Promise.allSettled([creditsApi.status(), payoutRequestsApi.status()]);
+        if (!alive) return;
+        if (balance.status === 'fulfilled') {
+          setStatus(balance.value);
+          setError(null);
+        } else {
+          setError(balance.reason ?? new Error('Could not load your balance.'));
+        }
+        setPayout(standing.status === 'fulfilled' ? standing.value : null);
       } finally {
-        if (alive) setLoading(false);
+        if (alive) {
+          setLoading(false);
+          setPayoutLoading(false);
+        }
       }
     })();
     return () => {
       alive = false;
     };
-  }, []);
+  }, [reads]);
+
+  const askBlocked = payoutBlocker(payout, payoutLoading);
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
@@ -350,19 +375,67 @@ function EarningsCredits() {
             </p>
           )}
         </div>
+
+        {/*
+          Where Purchase Credits sits for a user, in its style. Always on
+          screen, disabled with the reason when it cannot be pressed - nothing
+          to pay out, or a request already open - and that reason said under it
+          too, since a disabled button shows no tooltip on a phone.
+        */}
+        <div className="ml-auto">
+          <button
+            type="button"
+            className="tl-button"
+            data-shape="pill"
+            onClick={() => setAsking(true)}
+            disabled={Boolean(askBlocked)}
+            title={askBlocked || undefined}
+            aria-describedby={askBlocked && !payoutLoading ? 'payout-blocked' : undefined}
+          >
+            Ask for Refund
+          </button>
+        </div>
       </div>
+
+      {askBlocked && !payoutLoading && (
+        <p id="payout-blocked" className="mt-3 text-right text-xs text-subtle">
+          {askBlocked}
+        </p>
+      )}
 
       <p className="mt-4 max-w-3xl text-sm text-muted">
         Every job you add that the job lake accepts earns your rate per job, and it lands on this
-        balance. You are paid outside the app: each payout an administrator records is taken off the
-        balance and listed below, with how it was paid.
+        balance. You are paid outside the app: Ask for Refund asks an administrator to pay it out, and
+        each payout they record is taken off the balance and listed below, with how it was paid.
       </p>
 
       <ErrorNotice error={error} fallback="Your balance could not be loaded" className="mt-6" />
 
       <div className="mt-8">
-        <CreditHistory epoch={0} variant="earnings" />
+        <RefundRequestHistory epoch={epoch} variant="payouts" />
       </div>
+
+      <div className="mt-10">
+        <CreditHistory epoch={epoch} variant="earnings" />
+      </div>
+
+      {/* Mounted only while open, so a second request starts from an empty note. */}
+      {asking && (
+        <PayoutRequestDialog
+          balanceMilli={payout?.balanceMilli ?? status?.balanceMilli ?? 0}
+          onRequested={(_request, standing) => {
+            setPayout(standing);
+            setEpoch((value) => value + 1);
+          }}
+          onClose={() => {
+            setAsking(false);
+            // A refusal (a request opened in another tab, a payout recorded
+            // meanwhile) leaves the standing out of date; read it again.
+            setReads((value) => value + 1);
+            setEpoch((value) => value + 1);
+          }}
+        />
+      )}
     </main>
   );
 }

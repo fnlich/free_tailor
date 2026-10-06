@@ -12,10 +12,10 @@ import { formatLegacyUnitPrice, formatMoney } from './format';
  * Two kinds of payment exist and each reads in its own unit:
  *
  *  - **Since credits became dollars**, a payment credits exactly what it
- *    charges: $25.000 paid is $25.000 of credit, with nothing taken out.
+ *    charges: $25 paid is $25 of credit, with nothing taken out.
  *  - **Before**, it bought a COUNT of credits at a price per credit, possibly
  *    less a crypto fee - "200 Credits at $0.50 each" - and those credits were
- *    reset to $0.000 with every balance. Its receipt still says what was sold,
+ *    reset to $0 with every balance. Its receipt still says what was sold,
  *    in credits, and never converts them into dollars at some rate, which
  *    would put a figure on it that the account never held.
  */
@@ -43,7 +43,7 @@ function legacyNet(payment: Payment): number {
   return legacy.creditsGranted || legacy.credits;
 }
 
-/** What the payment was FOR: `$25.000`, or `200 credits` for one from before dollars. */
+/** What the payment was FOR: `$25`, or `200 credits` for one from before dollars. */
 export function describePurchaseCredit(payment: Payment): string {
   if (isLegacyPurchase(payment)) return credits(payment.legacyCredits!.credits);
   return formatMoney(payment.creditMilli || payment.amountMilli);
@@ -51,14 +51,14 @@ export function describePurchaseCredit(payment: Payment): string {
 
 /**
  * What the balance actually received, for a payment that has settled:
- * `$25.000`, or `197 credits` (a crypto fee came out of those).
+ * `$25`, or `197 credits` (a crypto fee came out of those).
  */
 export function describeCreditReceived(payment: Payment): string {
   if (isLegacyPurchase(payment)) return credits(legacyNet(payment));
   return formatMoney(payment.creditedMilli);
 }
 
-/** The return page's one-line description: `$25.000 of credit.` or `200 credits for $100.000.` */
+/** The return page's one-line description: `$25 of credit.` or `200 credits for $100.` */
 export function describePurchase(payment: Payment): string {
   if (isLegacyPurchase(payment)) {
     return `${credits(payment.legacyCredits!.credits)} for ${formatMoney(payment.amountMilli)}.`;
@@ -90,7 +90,7 @@ export type InvoiceView = {
  * request - and whatever an administrator sent by hand for crypto. The server
  * sends it as `refundAmountMilli` and already reads an older refunded row as
  * its whole charge; the fallback here only keeps a row without the field from
- * reading as $0.000 refunded.
+ * reading as $0 refunded.
  */
 export function refundedMoneyMilli(payment: Payment): number {
   if (payment.state !== 'refunded') return 0;
@@ -201,7 +201,7 @@ export function describeRefundedNote(payment: Payment): string {
 
 /**
  * What an administrator is told after pressing Refund: all three figures,
- * always. A refund that reversed $12.400 of $50.000 is not a success worth
+ * always. A refund that reversed $12.4 of $50 is not a success worth
  * reporting as a bare "done" - whoever pressed the button deserves to know
  * before the customer writes in.
  */

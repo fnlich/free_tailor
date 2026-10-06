@@ -8,12 +8,12 @@ import { describeDollarProblem, formatMoney, parseDollars } from '@/lib/format';
  * lib/format.ts.
  *
  * A price is dollars per resume to the thousandth - "0.023" is 23 thousandths
- * - from $0.000 to $1,000.000, and 0 makes the model free. There is NO default:
+ * - from $0 to $1,000, and 0 makes the model free. There is NO default:
  * the server refuses a new model without a price, and the box starts empty so
  * nobody saves a figure they did not choose.
  */
 
-/** The most a resume may cost: $1,000.000. The backend's MAX_PRICE_PER_RESUME_MILLI. */
+/** The most a resume may cost: $1,000. The backend's MAX_PRICE_PER_RESUME_MILLI. */
 const MAX_PRICE_MILLI = 1_000_000;
 
 /** The words every refusal of a price ends with - the server's own (config/pricePerResume.ts). */

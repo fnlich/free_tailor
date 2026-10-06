@@ -31,6 +31,7 @@ const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
 const creditLedger = require(path.join(DIST, 'database', 'creditRepository'));
+const { formatMoney } = require(path.join(DIST, 'utils', 'money'));
 
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
 const SHOTS = process.env.E2E_SHOTS || __dirname;
@@ -441,8 +442,15 @@ async function main() {
     await setTheme(page, 'light');
 
     let shell;
+    /** Every page that offered anything that asks for a refund - none may (owner decision R1). */
+    const askingPages = [];
+    const offersAsk = (target) =>
+      target.evaluate(() =>
+        Array.from(document.querySelectorAll('button, a')).some((node) => /ask for (a )?refund/i.test(node.textContent))
+      );
     for (const route of ROUTES) {
       shell = await visit(page, route, 'user');
+      if (await offersAsk(page)) askingPages.push(route);
     }
 
     /*
@@ -706,6 +714,25 @@ async function main() {
       refundsTab.active === 'Refund Requests' && refundsTab.heading === 'Refund Requests',
       JSON.stringify(refundsTab)
     );
+    // Read-only now: it says to contact the administrator, with the link.
+    const refundsLead = await page.evaluate(() => {
+      const lead = document.querySelector('#refunds-heading')?.parentElement?.querySelector('p');
+      return {
+        text: lead?.innerText ?? '',
+        contact: Boolean(lead && Array.from(lead.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Contact admin')),
+      };
+    });
+    check(
+      'user /credits?tab=refunds: says to contact the administrator for a refund, with Contact admin',
+      /contact your administrator/.test(refundsLead.text) && refundsLead.contact,
+      JSON.stringify(refundsLead)
+    );
+    for (const route of ['/credits?tab=crypto', '/credits?tab=history', '/credits?tab=refunds']) {
+      await page.goto(`${APP}${route}`, { waitUntil: 'networkidle2' });
+      await wait(300);
+      if (await offersAsk(page)) askingPages.push(route);
+    }
+    check('user: no page offers Ask for refund - not a purchase, a charge or an order', askingPages.length === 0, askingPages.join(', '));
 
     /*
      * Report Jobs is a reporter's page. A user who types its address is told
@@ -991,9 +1018,11 @@ async function main() {
      * see it: the bar did not overflow, the figure inside it was clipped. Two
      * accounts of their own, so nobody else's page shows a balance it did not
      * have: one in two figures, one in three - purchases start at $50 with
-     * presets to $1000, so both are ordinary.
+     * presets to $1000, so both are ordinary. Both with all three decimals,
+     * the widest a balance prints since trailing zeros are dropped ($150
+     * prints as "$150").
      */
-    for (const milli of [16_477, 150_000]) {
+    for (const milli of [16_477, 150_125]) {
       const holder = users.createUser({ email: `e2e-shell-pill-${milli}-${stamp}@example.com`, name: 'Pill' });
       creditLedger.applyAdjustment({
         userId: holder.id,
@@ -1020,7 +1049,7 @@ async function main() {
             : null;
         });
         const bar = await inspectTopBar(pillPage);
-        const expected = `$${(milli / 1000).toFixed(3)}`;
+        const expected = formatMoney(milli);
         check(
           `top bar ${width}px: a balance of ${expected} is shown whole, last digit included`,
           pill?.text === expected && pill.need <= pill.room && bar?.past <= 0 && bar?.brand?.whole,
@@ -1057,9 +1086,12 @@ async function main() {
     await setTheme(adminPage, 'light');
 
     let adminShell;
+    const adminAsking = [];
     for (const route of [...ROUTES, ...ADMIN_ROUTES]) {
       adminShell = await visit(adminPage, route, 'admin');
+      if (await offersAsk(adminPage)) adminAsking.push(route);
     }
+    check('admin: no page offers Ask for refund either', adminAsking.length === 0, adminAsking.join(', '));
 
     /*
      * An administrator is exempt from the subscriptions (owner decision B1),
@@ -1374,7 +1406,7 @@ async function main() {
       'admin Record payout: above the balance is refused before sending, in the server\'s words',
       Boolean(tooMuch) &&
         tooMuch.disabled &&
-        /more than this reporter's balance of \$7\.250/.test(tooMuch.line) &&
+        /more than this reporter's balance of \$7\.25\./.test(tooMuch.line) &&
         /more than this reporter's balance/.test(tooMuch.title),
       JSON.stringify(tooMuch)
     );
@@ -1383,7 +1415,7 @@ async function main() {
     const fits = await readPayout();
     check(
       'admin Record payout: says the balance it will leave',
-      Boolean(fits) && !fits.disabled && fits.line === 'Leaves $5.000 of their $7.250 balance.',
+      Boolean(fits) && !fits.disabled && fits.line === 'Leaves $5 of their $7.25 balance.',
       JSON.stringify(fits)
     );
     await adminPage.click(`${payoutForm} button[type="submit"]`);
@@ -1391,13 +1423,13 @@ async function main() {
     const afterPayout = await adminPage.evaluate(() => document.querySelector('.tl-notice[data-tone="info"]')?.textContent ?? '');
     check(
       'admin Record payout: recorded, with what it left',
-      /Recorded a payout of \$2\.250 to .+\. Their balance is now \$5\.000\./.test(afterPayout),
+      /Recorded a payout of \$2\.25 to .+\. Their balance is now \$5\./.test(afterPayout),
       afterPayout
     );
     const reporterLedger = await (await apiAs(adminToken)(`/admin/accounts/${reporter.id}/credits`)).json().catch(() => null);
     const payouts = (reporterLedger?.entries ?? []).filter((entry) => entry.reason === 'reporter-payout');
     check(
-      'admin Record payout: one reporter-payout row of -$2.250 carrying the note',
+      'admin Record payout: one reporter-payout row of -$2.25 carrying the note',
       payouts.length === 1 && payouts[0].deltaMilli === -2_250 && payouts[0].note === 'E2E bank transfer, ref 4471',
       JSON.stringify(payouts)
     );
@@ -1520,16 +1552,28 @@ async function main() {
     await reporterPage
       .waitForFunction(() => /Paid out by an administrator/.test(document.body.innerText), { timeout: 10_000 })
       .catch(() => null);
+    await reporterPage
+      .waitForFunction(() => /Payout requests/.test(document.body.innerText), { timeout: 10_000 })
+      .catch(() => null);
     const earnings = await reporterPage.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
+      // Ask for Refund sits where Purchase Credits sits for a user: the
+      // header row's right-hand slot, in the same pill button.
+      const header = document.querySelector('.tl-main h1')?.parentElement;
+      const slot = header?.querySelector(':scope > .ml-auto');
+      const ask = slot?.querySelector('button');
       return {
         title: document.querySelector('.tl-main h1')?.textContent.trim(),
         label: /Earned, not yet paid out/.test(document.body.innerText),
-        balance: /\$5\.000/.test(document.querySelector('.border-coin')?.textContent ?? ''),
+        balance: /^\$5$/.test(document.querySelector('.border-coin p.text-xl')?.textContent.trim() ?? ''),
         buy: buttons.includes('Purchase Credits'),
         tabs: document.querySelectorAll('[role="tablist"][aria-label="Credits"]').length,
         heading: document.querySelector('#ledger-heading')?.textContent.trim(),
-        asks: buttons.includes('Ask for refund'),
+        ask: ask
+          ? { text: ask.textContent.trim(), pill: ask.className === 'tl-button' && ask.dataset.shape === 'pill', disabled: ask.disabled }
+          : null,
+        payoutsHeading: document.querySelector('#refunds-heading')?.textContent.trim() ?? null,
+        oldAsk: buttons.includes('Ask for refund'),
         columns: Array.from(document.querySelectorAll('.tl-table thead th')).map((th) => th.textContent.trim()),
         payout: /Paid out by an administrator/.test(document.body.innerText) && /E2E bank transfer, ref 4471/.test(document.body.innerText),
       };
@@ -1540,9 +1584,19 @@ async function main() {
       JSON.stringify(earnings)
     );
     check(
-      'reporter /credits: no Purchase Credits, no order or refund tabs, no Ask for refund',
-      !earnings.buy && earnings.tabs === 0 && !earnings.asks && !earnings.columns.includes('Action'),
+      'reporter /credits: no Purchase Credits, no order or refund tabs, no per-row Ask for refund',
+      !earnings.buy && earnings.tabs === 0 && !earnings.oldAsk && !earnings.columns.includes('Action'),
       JSON.stringify(earnings)
+    );
+    check(
+      'reporter /credits: Ask for Refund where Purchase Credits sits, in its style - on, with $5 to pay out',
+      earnings.ask?.text === 'Ask for Refund' && earnings.ask.pill && earnings.ask.disabled === false,
+      JSON.stringify(earnings.ask)
+    );
+    check(
+      'reporter /credits: their payout requests are listed under it',
+      earnings.payoutsHeading === 'Payout requests',
+      JSON.stringify(earnings.payoutsHeading)
     );
     check(
       'reporter /credits: the history is Earnings and Payouts, with the payout and its note',

@@ -564,11 +564,15 @@ test('a delivered immediate resume is refundable by its order item', async () =>
     assert.equal(item.itemType, 'order-item');
     assert.equal(item.refundableMilli, 10);
 
-    const options = refunds.listRefundOptions(users.getUserById(server.alice.id), { chargeId: id });
-    assert.deepEqual(
-      options.items.map((option) => option.itemType),
-      ['order-item']
-    );
+    // And a request made for it (before asking was removed, or seeded so) is
+    // keyed on that order item, so the queue can still decide it.
+    const request = refunds.createRefundRequest(users.getUserById(server.alice.id), {
+      itemType: 'task',
+      itemId: task.id,
+      reason: 'Wrong company.',
+    });
+    assert.equal(request.itemType, 'order-item');
+    assert.equal(request.amountMilli, 10);
   } finally {
     server.close();
   }

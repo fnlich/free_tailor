@@ -14,7 +14,7 @@ import { describeDollarProblem, formatMoney, parseDollars } from './format';
  * Imports only lib/format.ts, which imports nothing at runtime.
  */
 
-/** $1000.000, the server's MAX_REPORT_RATE_MILLI - the price-per-resume ceiling. */
+/** $1,000, the server's MAX_REPORT_RATE_MILLI - the price-per-resume ceiling. */
 export const MAX_REPORT_RATE_MILLI = 1_000_000;
 
 export type ReportRateParse = { ok: true; milli: number | null } | { ok: false; error: string };
@@ -23,7 +23,7 @@ export type ReportRateParse = { ok: true; milli: number | null } | { ok: false; 
  * A rate per job as typed. Empty CLEARS the account's own rate, so the
  * installation's global rate applies (`milli: null`) - which is how the box
  * says "global" without a second control. Otherwise dollars to $0.001, from
- * $0.000 to $1000.000, refused by name rather than rounded.
+ * $0 to $1,000, refused by name rather than rounded.
  */
 export function parseReportRate(text: unknown): ReportRateParse {
   if (text === null || (typeof text === 'string' && text.trim() === '')) return { ok: true, milli: null };
@@ -39,7 +39,7 @@ export function parseReportRate(text: unknown): ReportRateParse {
  * How a stored rate reads beside its box: its own figure, or the global one -
  * named with its figure when the page knows it (Admin -> Accounts' list carries
  * `globalReportRateMilli`, set on Admin -> Job Lake), so "Global" is never a
- * word that hides whether a reporter is being paid $0.000.
+ * word that hides whether a reporter is being paid $0.
  */
 export function describeReportRate(milli: number | null | undefined, globalMilli?: number | null): string {
   if (typeof milli === 'number') return `${formatMoney(milli)} per job`;

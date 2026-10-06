@@ -548,7 +548,7 @@ test("a reporter's rate per job is set in dollars, cleared with empty, and only 
     for (const [bad, why] of [
       ['0.0005', /three decimal places/],
       ['-0.010', /cannot be negative/],
-      ['1000.001', /at most \$1,000\.000/],
+      ['1000.001', /at most \$1,000\./],
       ['ten', /must be an amount in dollars/],
     ]) {
       const refused = await patch({ reportRateUsd: bad });
@@ -787,7 +787,7 @@ test('a payout is recorded for a reporter as a deduction with a note, never abov
       [{ amountUsd: '1', note: 'ok', requestId: 'short' }, 400, 'bad-request-id', /request id/],
       // A page still sending an amount in credits.
       [{ amount: 1, note: 'Bank transfer' }, 400, 'stale-page', /older version/],
-      [{ amountUsd: '5.001', note: 'Bank transfer' }, 409, 'insufficient-balance', /more than this reporter's balance of \$5\.000/],
+      [{ amountUsd: '5.001', note: 'Bank transfer' }, 409, 'insufficient-balance', /more than this reporter's balance of \$5\. /],
     ]) {
       const refused = await payout(server.alice.id, body);
       assert.equal(refused.status, status, JSON.stringify(body));
@@ -849,7 +849,7 @@ test('a payout is recorded for a reporter as a deduction with a note, never abov
     const notices = listNotificationsFor(server.alice.id).filter((notice) => notice.title.startsWith('Payout recorded'));
     assert.equal(notices.length, 2);
     assert.equal(notices.every((notice) => notice.recipientId === server.alice.id && notice.link === '/credits'), true);
-    assert.ok(notices.some((notice) => /payout of \$2\.500 to you: Bank transfer, 2026-10-01, ref 4471\. Your balance is now \$2\.500\./.test(notice.body)));
+    assert.ok(notices.some((notice) => /payout of \$2\.5 to you: Bank transfer, 2026-10-01, ref 4471\. Your balance is now \$2\.5\./.test(notice.body)));
     assert.equal(listNotificationsFor(server.admin.id).some((notice) => notice.title.startsWith('Payout recorded')), false);
   } finally {
     server.close();

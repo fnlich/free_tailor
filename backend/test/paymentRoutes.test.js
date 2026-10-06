@@ -163,8 +163,8 @@ test('an amount that is not dollars and cents inside the bounds is refused', asy
     const cases = [
       [0, /dollars and cents/i],
       [-5, /dollars and cents/i],
-      ['2.49', /smallest card purchase is \$2\.500/i],
-      ['100.01', /largest card purchase is \$100\.000/i],
+      ['2.49', /smallest card purchase is \$2\.5\./i],
+      ['100.01', /largest card purchase is \$100\./i],
       ['2.505', /dollars and cents/i],
       ['lots', /dollars and cents/i],
       [null, /dollars and cents/i],

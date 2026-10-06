@@ -105,9 +105,9 @@ test('the amount is read exactly, in whole cents, and anything else is refused r
 test('the bounds are each method\'s own, in dollars, and say so in dollars', async () => {
   const { quotePurchase, resolveLimits, presetsFor } = await pricing();
 
-  await assert.rejects(() => quotePurchase('2.49', { method: 'card' }), /The smallest card purchase is \$2\.500\./);
-  await assert.rejects(() => quotePurchase('100.01', { method: 'card' }), /The largest card purchase is \$100\.000\./);
-  await assert.rejects(() => quotePurchase('49.99', { method: 'crypto' }), /The smallest crypto purchase is \$50\.000\./);
+  await assert.rejects(() => quotePurchase('2.49', { method: 'card' }), /The smallest card purchase is \$2\.5\./);
+  await assert.rejects(() => quotePurchase('100.01', { method: 'card' }), /The largest card purchase is \$100\./);
+  await assert.rejects(() => quotePurchase('49.99', { method: 'crypto' }), /The smallest crypto purchase is \$50\./);
   assert.equal((await quotePurchase('2000', { method: 'crypto' })).creditMilli, 2_000_000);
 
   assert.deepEqual(await resolveLimits({ method: 'crypto' }), {

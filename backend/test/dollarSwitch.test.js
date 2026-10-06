@@ -269,9 +269,9 @@ test('a database from before dollars: balances and prices reset, a run in progre
   );
   assert.match(
     resets[0].note,
-    /12 credits were reset to \$0\.000\. 3 more credits were held by a run in progress, which finishes on them; a resume of it that fails gives nothing back\.$/
+    /12 credits were reset to \$0\. 3 more credits were held by a run in progress, which finishes on them; a resume of it that fails gives nothing back\.$/
   );
-  assert.match(resets[1].note, /7 credits were reset to \$0\.000\.$/);
+  assert.match(resets[1].note, /7 credits were reset to \$0\.$/);
 
   // Bob's balance had no row behind it; it got 004's own opening row first,
   // so his old history adds up - and 004 has nothing left to do.

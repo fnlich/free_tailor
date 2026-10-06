@@ -249,7 +249,7 @@ test('a mixed-price batch is charged the sum, broken down by model, and each fai
     assert.equal(reserve.deltaMilli, -66);
     assert.match(
       reserve.note,
-      /^4 resumes: (2 x Claude Opus @ \$0\.023, 2 x Claude Sonnet @ \$0\.010|2 x Claude Sonnet @ \$0\.010, 2 x Claude Opus @ \$0\.023) = \$0\.066$/
+      /^4 resumes: (2 x Claude Opus @ \$0\.023, 2 x Claude Sonnet @ \$0\.01|2 x Claude Sonnet @ \$0\.01, 2 x Claude Opus @ \$0\.023) = \$0\.066$/
     );
 
     // Every task carries the price it was charged, outside its choice.
@@ -565,7 +565,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
         tailoredContent: written,
         ...(previewToken ? { previewToken } : {}),
       });
-      assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Sonnet @ $0.010 = $0.010');
+      assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Sonnet @ $0.01 = $0.01');
     }
     // ...while naming a dearer model than the profile's is charged that.
     await server.post('alice', '/resume/generate', {
@@ -601,7 +601,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
       tailoredContentByProfileId: { 'p-plain': written },
     });
     assert.equal(stripped.status, 202);
-    assert.match(reserveNote(), /1 x Claude Sonnet @ \$0\.010 = \$0\.010$/);
+    assert.match(reserveNote(), /1 x Claude Sonnet @ \$0\.01 = \$0\.01$/);
     await untilFinished(stripped.body.batchId);
   } finally {
     server.close();

@@ -3,7 +3,8 @@
  *
  * A credit is a dollar: the dialog asks for an amount of money, the checkout
  * carries it as `amountUsd`, and every amount coming back is thousandths of a
- * dollar in a field ending `Milli` - shown on the page as $0.000.
+ * dollar in a field ending `Milli` - shown on the page as $0.023, $4.1 or $50:
+ * every significant decimal and no trailing zero.
  *
  * `walkthrough.js` proves the API; `browser.js` proves the OLD buy page. This
  * is the flow that replaced it: choose a payment method, then an amount, then
@@ -696,7 +697,7 @@ async function main() {
     check(
       'and it is one line of credit at its charge, with no fee',
       paidInvoice.text.includes(`${cryptoCredit} of Tailor credit`) &&
-        /Transaction Fees\s+\$0\.000/.test(paidInvoice.text),
+        /Transaction Fees\s+\$0(?![.\d])/.test(paidInvoice.text),
       paidInvoice.text.slice(0, 600)
     );
 
@@ -1028,6 +1029,33 @@ async function main() {
     const cardHeading = await page.evaluate(() => document.querySelector('main h2')?.textContent.trim());
     check('the Card tab is the card order history', cardHeading === 'Card Orders History', String(cardHeading));
 
+    /*
+     * Nothing asks for a refund any more (owner decision R1): a paid purchase's
+     * Action(s) are its Invoice and Help, and Credit History has no Action
+     * column at all. Asking was a button on both.
+     */
+    const readAsks = () =>
+      page.evaluate(() => {
+        const main = document.querySelector('main');
+        return {
+          rows: main.querySelectorAll('table tbody tr').length,
+          headers: Array.from(main.querySelectorAll('table thead th')).map((th) => th.textContent.trim()),
+          asks: Array.from(main.querySelectorAll('button, a')).filter((node) => /ask for refund/i.test(node.textContent))
+            .length,
+          // Each row's last cell: Invoice (a link once paid, a disabled button
+          // before) and Help, and nothing else.
+          actions: Array.from(main.querySelectorAll('table tbody tr')).map((row) =>
+            Array.from(row.lastElementChild?.querySelectorAll('a, button') ?? []).map((node) => node.textContent.trim()).join(',')
+          ),
+        };
+      });
+    const cardActions = await readAsks();
+    check(
+      "the card orders offer Invoice and Help, and no Ask for refund",
+      cardActions.rows > 0 && cardActions.actions.every((cell) => cell === 'Invoice,Help') && cardActions.asks === 0,
+      JSON.stringify(cardActions)
+    );
+
     await clickText(page, 'main [role="tab"]', 'Credit History');
     await wait(800);
     const historyView = await page.evaluate(() => ({
@@ -1038,6 +1066,12 @@ async function main() {
       'Credit History is a tab of its own, kept in the URL',
       historyView.heading === 'Credit History' && /tab=history/.test(historyView.query),
       JSON.stringify(historyView)
+    );
+    const historyActions = await readAsks();
+    check(
+      'Credit History has no Action column and asks for nothing',
+      historyActions.rows > 0 && !historyActions.headers.includes('Action') && historyActions.asks === 0,
+      JSON.stringify(historyActions)
     );
     await clickText(page, 'main [role="tab"]', 'Card');
     await wait(800);

@@ -572,10 +572,10 @@ export interface GoogleSheetSource {
 }
 
 /**
- * The most a resume may be priced at: $1000.000, in thousandths of a dollar.
+ * The most a resume may be priced at: $1,000, in thousandths of a dollar.
  * Mirrors the backend's MAX_PRICE_PER_RESUME_MILLI; the server is the one that
  * enforces it. There is no default price - a new model is priced by whoever
- * adds it - and the least is $0.000, which makes a model free.
+ * adds it - and the least is $0, which makes a model free.
  */
 export const MAX_PRICE_PER_RESUME_MILLI = 1_000_000;
 
@@ -648,7 +648,7 @@ export function describeProviderModel(
   return findProviderModelOption(options, provider, modelName)?.label ?? modelName;
 }
 
-/** "Free ($0.000)", or "$0.023 / resume". */
+/** "Free ($0)", or "$0.023 / resume". */
 export function formatPricePerResume(milli: number): string {
   if (milli <= 0) return `Free (${formatMoney(0)})`;
   return `${formatMoney(milli)} / resume`;
@@ -885,7 +885,7 @@ export interface AdminAppSettings extends BuilderDefaults {
   outputPathTemplate: string;
   outputPathPreview: string;
   /**
-   * The ids of every ENABLED model priced $0.000 - free to everybody who
+   * The ids of every ENABLED model priced $0 - free to everybody who
    * picks it. Admin -> Models lists them in red: after credits became dollars
    * every model was, until an administrator priced it, and a model a
    * migration seeds arrives unpriced too. Free on purpose is allowed; free

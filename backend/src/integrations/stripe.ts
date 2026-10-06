@@ -374,7 +374,7 @@ export async function createCheckoutSession(input: CheckoutRequest): Promise<Str
           price_data: {
             currency: input.currency,
             unit_amount: input.amountCents,
-            // "$50.000 Tailor credit": what the buyer is buying, said the way
+            // "$50 Tailor credit": what the buyer is buying, said the way
             // their balance will show it, on Stripe's page and their receipt.
             product_data: { name: `${formatMoney(input.creditMilli)} Tailor credit`, description: input.reference },
           },

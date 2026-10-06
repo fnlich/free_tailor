@@ -5,7 +5,13 @@ const express = require('express');
 const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
- * Asking for a refund, and an administrator deciding (owner decision M3).
+ * Refund requests, and an administrator deciding (owner decision M3) - for
+ * purchases and resumes, which are no longer ASKED for (owner decision R1:
+ * POST /api/refund-requests and GET /options answer 410, below) but which an
+ * install upgraded with requests open must still decide. The requests are
+ * seeded through the service (`createRefundRequest`, kept unrouted for that),
+ * and decided over HTTP exactly as before. Payout requests, the one thing
+ * still asked for, are test/payoutRequests.test.js.
  *
  * The claims, in the order a reviewer would check them:
  *
@@ -79,6 +85,7 @@ async function serve() {
   const bob = users.createUser({ email: 'bob@example.com', name: 'Bob' });
   const boss = users.createUser({ email: 'boss@example.com', name: 'Boss' });
   const deputy = users.createUser({ email: 'deputy@example.com', name: 'Deputy' });
+  const scout = users.createUser({ email: 'scout@example.com', name: 'Scout', role: 'reporter' });
   assert.equal(boss.role, 'admin');
   assert.equal(deputy.role, 'admin');
 
@@ -98,7 +105,9 @@ async function serve() {
     bob: users.createSession(bob.id),
     boss: users.createSession(boss.id),
     deputy: users.createSession(deputy.id),
+    scout: users.createSession(scout.id),
   };
+  const accountOf = { alice, bob, boss, deputy, scout };
 
   const call = async (who, path, init = {}) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -180,8 +189,38 @@ async function serve() {
   };
 
   const feed = async (who) => (await call(who, '/api/notifications')).body;
-  const ask = (who, itemType, itemId, reason = 'It was for the wrong company.') =>
-    call(who, '/api/refund-requests', { method: 'POST', body: { itemType, itemId, reason } });
+  /**
+   * A request made the way one was before asking was removed: through the
+   * service, answered in the route's shape - 201 with the request, or the
+   * refusal's status, code and extras.
+   */
+  const ask = async (who, itemType, itemId, reason = 'It was for the wrong company.') => {
+    try {
+      const request = refunds.createRefundRequest(account(accountOf[who].id), {
+        itemType,
+        itemId,
+        ...(reason === null ? {} : { reason }),
+      });
+      return { status: 201, body: { request } };
+    } catch (error) {
+      if (!(error instanceof refunds.RefundRequestError)) throw error;
+      return { status: error.status, body: { error: error.message, code: error.code, ...(error.extra ?? {}) } };
+    }
+  };
+  /**
+   * What one item would give back now, as the removed options dialog read it:
+   * the server's own measure (`resolveRefundItem`) and any open request.
+   */
+  const measure = (who, itemType, itemId) => {
+    const item = refunds.resolveRefundItem(itemType, itemId, accountOf[who].id);
+    const open = refundDb.findOpenRequestForItem(item.itemKey);
+    return {
+      ...item,
+      available: !item.unavailable && !open,
+      unavailableCode: item.unavailable?.code ?? null,
+      paymentMethod: item.paymentMethod ?? null,
+    };
+  };
   const decide = (who, id, action, body = {}) =>
     call(who, `/api/admin/refund-requests/${id}/${action}`, { method: 'POST', body });
 
@@ -203,8 +242,10 @@ async function serve() {
     bob,
     boss,
     deputy,
+    scout,
     call,
     ask,
+    measure,
     decide,
     feed,
     purchase,
@@ -386,11 +427,8 @@ test("the reason is required, trimmed and capped; somebody else's item is a 404"
     const charge = s.syncCharge(s.alice.id);
     const payment = s.purchase(s.alice.id, 5);
 
-    for (const reason of [undefined, '', '  \n ']) {
-      const refused = await s.call('alice', '/api/refund-requests', {
-        method: 'POST',
-        body: { itemType: 'charge', itemId: charge, ...(reason === undefined ? {} : { reason }) },
-      });
+    for (const reason of [null, '', '  \n ']) {
+      const refused = await s.ask('alice', 'charge', charge, reason);
       assert.equal(refused.status, 400);
       assert.equal(refused.body.code, 'reason-required');
     }
@@ -406,19 +444,21 @@ test("the reason is required, trimmed and capped; somebody else's item is a 404"
       assert.equal(stranger.status, 404, `${itemType}: 404, never 403`);
       assert.equal(stranger.body.code, 'not-found');
     }
-    assert.equal((await s.call('bob', `/api/refund-requests/options?paymentId=${payment.id}`)).status, 404);
+    assert.throws(() => s.measure('bob', 'payment', payment.id), (error) => error.status === 404);
 
     const unknownType = await s.ask('alice', 'nonsense', charge);
     assert.equal(unknownType.status, 400);
     assert.equal(unknownType.body.code, 'bad-item');
 
-    // An amount in the body is not read: the server measures it.
-    const withAmount = await s.call('alice', '/api/refund-requests', {
-      method: 'POST',
-      body: { itemType: 'charge', itemId: charge, reason: 'please', amountMilli: 999_999, amountUsd: '999' },
+    // An amount is never taken from the asker: the server measures it.
+    const withAmount = s.refunds.createRefundRequest(s.users.getUserById(s.alice.id), {
+      itemType: 'charge',
+      itemId: charge,
+      reason: 'please',
+      amountMilli: 999_999,
+      amountUsd: '999',
     });
-    assert.equal(withAmount.status, 201);
-    assert.equal(withAmount.body.request.amountMilli, PRICE);
+    assert.equal(withAmount.amountMilli, PRICE);
 
     // Each account lists its own and nobody else's.
     assert.equal((await s.call('alice', '/api/refund-requests')).body.total, 1);
@@ -440,11 +480,8 @@ test('a card purchase refunds its unspent part through a partial Stripe refund',
     s.spend(s.alice.id, 10_007);
     assert.equal(s.balance(s.alice.id), 39_993);
 
-    // What the dialog shows: the unspent part, in whole cents.
-    const options = await s.call('alice', `/api/refund-requests/options?paymentId=${payment.id}`);
-    assert.equal(options.status, 200);
-    assert.equal(options.body.items.length, 1);
-    const option = options.body.items[0];
+    // What the server measures: the unspent part, in whole cents.
+    const option = s.measure('alice', 'payment', payment.id);
     assert.equal(option.kind, 'purchase');
     assert.equal(option.chargedMilli, 50_000);
     assert.equal(option.refundableMilli, 39_990, '$39.993 left, and a card returns cents: $39.990');
@@ -480,7 +517,7 @@ test('a card purchase refunds its unspent part through a partial Stripe refund',
 
     const notices = (await s.feed('alice')).notifications.filter((notice) => notice.recipientId === s.alice.id);
     assert.equal(notices.length, 1);
-    assert.match(notices[0].body, /was refunded \(\$39\.990\)/);
+    assert.match(notices[0].body, /was refunded \(\$39\.99\)/);
     assertBalancesAddUp(s);
   } finally {
     s.close();
@@ -794,7 +831,7 @@ test('crypto is refunded only once the administrator has sent it back by hand', 
     assert.equal(s.paymentsDb.getPayment(payment.id).state, 'refunded');
 
     const notice = (await s.feed('alice')).notifications.find((entry) => entry.recipientId === s.alice.id);
-    assert.match(notice.body, /refunded \(\$25\.000\)\. Your administrator has sent it back to you\./);
+    assert.match(notice.body, /refunded \(\$25\)\. Your administrator has sent it back to you\./);
     assertBalancesAddUp(s);
   } finally {
     s.close();
@@ -836,9 +873,7 @@ test("an order's resumes: a delivered one is refundable, a failed one already ga
     const { order, items, batchId } = s.placeOrder(s.alice.id, ['done', 'failed', 'done']);
     assert.equal(s.balance(s.alice.id), 1_000 - 3 * PRICE + PRICE, 'the failed one refunded itself');
 
-    const options = await s.call('alice', `/api/refund-requests/options?orderId=${order.id}`);
-    assert.equal(options.status, 200);
-    const [done, failed] = options.body.items;
+    const [done, failed] = items.map((item) => s.measure('alice', 'order-item', item.id));
     assert.equal(done.itemType, 'order-item');
     assert.equal(done.available, true);
     assert.equal(done.refundableMilli, PRICE);
@@ -861,11 +896,10 @@ test("an order's resumes: a delivered one is refundable, a failed one already ga
     assert.equal(reservation.state, 'closed');
     assert.equal(reservation.refundedMilli, 2 * PRICE);
 
-    // The same order seen from its charge row in the credit history.
-    const viaCharge = await s.call('alice', `/api/refund-requests/options?chargeId=${batchId}`);
-    assert.equal(viaCharge.body.items.length, 3);
-    assert.equal(viaCharge.body.items[0].unavailableCode, 'refunded');
-    assert.equal(viaCharge.body.items[2].available, true);
+    // Measured again: the refunded one says so, the other delivered one is still open to a request.
+    assert.equal(s.measure('alice', 'order-item', items[0].id).unavailableCode, 'refunded');
+    assert.equal(s.measure('alice', 'order-item', items[2].id).available, true);
+    void order;
     assertBalancesAddUp(s);
   } finally {
     s.close();
@@ -892,8 +926,7 @@ test('a resume still being built, a free one and an administrator\'s are not ref
 
     // No reservation: an administrator's run, or a free one.
     const exempt = s.placeOrder(s.boss.id, ['done'], { charge: false });
-    const bossItem = await s.call('boss', `/api/refund-requests/options?orderId=${exempt.order.id}`);
-    assert.equal(bossItem.body.items[0].unavailableCode, 'not-charged');
+    assert.equal(s.measure('boss', 'order-item', exempt.items[0].id).unavailableCode, 'not-charged');
 
     // A batch charge is several resumes: one of them must be named.
     const batch = s.placeOrder(s.alice.id, ['done']);
@@ -928,12 +961,11 @@ test('a queued resume not placed as an order is named by its task, and stays ref
     }
     assert.equal(queue.snapshot(batchId).completed, 2);
 
-    const options = await s.call('alice', `/api/refund-requests/options?chargeId=${batchId}`);
-    assert.equal(options.body.items.length, 2);
-    assert.equal(options.body.items[0].itemType, 'task');
-    assert.equal(options.body.items[0].refundableMilli, PRICE);
-
     const taskId = queue.getBatch(batchId).tasks[0].id;
+    const measured = s.measure('alice', 'task', taskId);
+    assert.equal(measured.itemType, 'task');
+    assert.equal(measured.refundableMilli, PRICE);
+
     const { request } = (await s.ask('alice', 'task', taskId)).body;
     assert.equal(request.itemType, 'task');
 
@@ -947,9 +979,7 @@ test('a queued resume not placed as an order is named by its task, and stays ref
     assert.equal(refunded.body.request.refundedMilli, PRICE);
     assert.equal(s.balance(s.alice.id), 1_000 - PRICE);
 
-    const gone = await s.call('alice', `/api/refund-requests/options?chargeId=${batchId}`);
-    assert.deepEqual(gone.body.items, []);
-    assert.match(gone.body.note, /no longer listed/);
+    assert.throws(() => s.measure('alice', 'task', taskId), /no longer listed/);
     assertBalancesAddUp(s);
   } finally {
     s.close();
@@ -1103,7 +1133,7 @@ test('a refund made from the payments list answers the open request for it', asy
     assert.equal(closed.state, 'refunded');
     assert.equal(closed.refundedMilli, 40_000);
     const notice = (await s.feed('alice')).notifications.find((entry) => entry.recipientId === s.alice.id);
-    assert.match(notice.body, /refunded \(\$40\.000\)/);
+    assert.match(notice.body, /refunded \(\$40\)/);
 
     // Pressing Refunded on it now changes nothing and asks Stripe nothing more.
     const again = await s.decide('boss', request.id, 'refund');
@@ -1132,6 +1162,91 @@ test('a resume refund for an account deleted since is refused rather than credit
       s.notificationsDb.listNotificationsFor(s.alice.id).filter((entry) => entry.recipientId === s.alice.id).length,
       0
     );
+  } finally {
+    s.close();
+  }
+});
+
+test('asking for a refund is closed: a stale page gets 410 and a sentence that sends it to an administrator', async () => {
+  const s = await serve();
+  try {
+    s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
+    const charge = s.syncCharge(s.alice.id);
+    const payment = s.purchase(s.alice.id, 5);
+
+    for (const who of ['alice', 'boss']) {
+      for (const [method, path, body] of [
+        ['POST', '/api/refund-requests', { itemType: 'charge', itemId: charge, reason: 'Wrong company.' }],
+        ['POST', '/api/refund-requests', {}],
+        ['GET', `/api/refund-requests/options?paymentId=${payment.id}`],
+        ['GET', '/api/refund-requests/options'],
+      ]) {
+        const answer = await s.call(who, path, { method, ...(body ? { body } : {}) });
+        const where = `${who} ${method} ${path}`;
+        assert.equal(answer.status, 410, where);
+        assert.equal(answer.body.code, 'refund-requests-closed', where);
+        assert.equal(answer.body.error, s.refunds.REFUND_ASKING_CLOSED_MESSAGE, where);
+        // The frontend ends a sentence like this with its Contact admin link.
+        assert.match(answer.body.error, /\bcontact your administrator\b/i, where);
+        assert.equal(answer.body.ref, undefined, 'a closed door is not a failure to look up');
+      }
+    }
+    assert.equal(s.refundDb.countRefundRequests(), 0, 'nothing was asked');
+    assert.equal(s.balance(s.alice.id), 1_000 - PRICE + 5_000, 'and nothing moved');
+
+    // A reporter meets the same role refusal as before: asking was never theirs.
+    for (const [method, path] of [
+      ['POST', '/api/refund-requests'],
+      ['GET', '/api/refund-requests/options?paymentId=x'],
+    ]) {
+      const answer = await s.call('scout', path, { method, ...(method === 'POST' ? { body: {} } : {}) });
+      assert.equal(answer.status, 403, `${method} ${path}`);
+      assert.equal(answer.body.code, 'role-not-allowed');
+    }
+    assert.equal((await s.call(null, '/api/refund-requests/options')).status, 401);
+
+    // Requests made before stay readable, and filterable by kind.
+    const { request } = (await s.ask('alice', 'charge', charge)).body;
+    const mine = await s.call('alice', '/api/refund-requests?kind=resume');
+    assert.deepEqual(mine.body.requests.map((row) => row.id), [request.id]);
+    assert.equal((await s.call('alice', '/api/refund-requests?kind=payout')).body.total, 0);
+    assert.equal((await s.call('alice', '/api/refund-requests?kind=purchase')).body.total, 0);
+    const bad = await s.call('alice', '/api/refund-requests?kind=gift');
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body.code, 'bad-kind');
+  } finally {
+    s.close();
+  }
+});
+
+test('a request whose item this build does not know reads, declines, and never refunds', async () => {
+  const s = await serve();
+  try {
+    s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
+    // As a newer build would write one, read after a rollback to this one.
+    const db = require('../dist/database/sqlite').getDb();
+    db.prepare(
+      `INSERT INTO refund_requests (id, reference, account_id, kind, item_key, label, amount_milli, reason, state,
+                                    created_at, updated_at)
+       VALUES ('rfr_future', 'FT-RF-20261006-9999', ?, 'gift', ?, 'A gift card', 5000, 'Please', 'requested',
+               '2026-10-06T00:00:00.000Z', '2026-10-06T00:00:00.000Z')`
+    ).run(s.alice.id, `gift-card:${s.alice.id}`);
+
+    const queue = await s.call('boss', '/api/admin/refund-requests');
+    const row = queue.body.requests.find((candidate) => candidate.id === 'rfr_future');
+    assert.ok(row, 'it is listed');
+    assert.equal(row.refundableNowMilli, 0, 'never measured as something it is not');
+    assert.match(row.refundableNowReason, /newer version of the app/);
+
+    const refused = await s.decide('boss', 'rfr_future', 'refund', { amountUsd: '5', note: 'x', paidByHand: true });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'unrecognised');
+    assert.equal(s.balance(s.alice.id), 1_000, 'nothing moved');
+
+    const declined = await s.decide('boss', 'rfr_future', 'decline', { reason: 'Not here.' });
+    assert.equal(declined.status, 200);
+    assert.equal(declined.body.request.state, 'declined');
+    assertBalancesAddUp(s);
   } finally {
     s.close();
   }

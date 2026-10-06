@@ -33,7 +33,7 @@ import { messageWithDetail } from '@/lib/userMessage';
  *
  *  - The GLOBAL rate per job, dollars in $0.001 steps: what a reporter
  *    without a rate of their own (Admin -> Accounts) is paid. Unset is
- *    $0.000, and the page says nobody is paid until it is set.
+ *    $0, and the page says nobody is paid until it is set.
  *  - The duplicate window in days, and where the value in effect comes from:
  *    the one set here, `JOB_LAKE_DUPLICATE_WINDOW_DAYS` in .env, or the
  *    built-in 60 - the one set here wins.
@@ -202,7 +202,7 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
                 className="tl-input tabular-nums"
               />
               <p id="lake-rate-steps" className="mt-2 text-xs text-subtle">
-                In steps of $0.001, from $0.000 to $1000.000. Empty: not set, nobody paid.
+                In steps of $0.001, from $0 to $1,000. Empty: not set, nobody paid.
               </p>
               {problems.rate && (
                 <p className="tl-status mt-2" data-tone="error" role="alert">

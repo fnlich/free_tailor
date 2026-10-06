@@ -160,24 +160,44 @@ export function isWholeCents(milli: number): boolean {
 }
 
 /**
- * Thousandths of a dollar as a person reads them: `$0.023`, `$3.977`,
- * `$50.000`, `$1,234.567`, `-$0.046`.
- *
- * ALWAYS three decimals - the owner's rule, because charges move in $0.001
- * steps and a figure rounded for display does not add up against the history
- * beneath it. Not `Intl.NumberFormat`, which would round to the currency's two
- * places, and not the viewer's locale: the same digits the server writes into
- * its own sentences ("This needs $0.161 of credit"), so a balance on this page
- * and the refusal that names it read alike.
+ * An amount's digits, split where a person reads them: the sign, the whole
+ * dollars with their thousands commas, and the fraction as all THREE digits.
+ * Built from the integer's digits, never from a float. Private, so the
+ * helpers that need a fixed number of decimals - a dollar box, a legacy unit
+ * price - do not depend on how `formatMoney` happens to print.
  */
-export function formatMoney(milli: number): string {
+function moneyParts(milli: number): { negative: boolean; dollars: string; fraction3: string } {
   // Display only. A value that is not a whole number of thousandths is a bug
   // upstream, and "$NaN" helps nobody find it.
   const whole = Number.isSafeInteger(milli) ? milli : Math.round(Number(milli) || 0);
-  const negative = whole < 0;
   const digits = String(Math.abs(whole)).padStart(4, '0');
-  const dollars = digits.slice(0, -3).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${negative ? '-' : ''}$${dollars}.${digits.slice(-3)}`;
+  return {
+    negative: whole < 0,
+    dollars: digits.slice(0, -3).replace(/\B(?=(\d{3})+(?!\d))/g, ','),
+    fraction3: digits.slice(-3),
+  };
+}
+
+/**
+ * Thousandths of a dollar as a person reads them: `$0.023`, `$3.977`, `$1`,
+ * `$4.1`, `$0`, `$1,234.5`, `-$0.046`. A copy of the server's (utils/money.ts),
+ * run against it by test/frontendMoney.test.js.
+ *
+ * Every digit that is not a trailing zero, and nothing else - the owner's
+ * rule. Charges move in $0.001 steps, so a figure rounded for display would
+ * hide the very digit that moved and not add up against the history beneath
+ * it, while "$1.000" for a dollar reads as a thousand to most people. So the
+ * fraction keeps its significant digits, never rounded, and drops the zeros
+ * after them, and a bare dot with them. Not `Intl.NumberFormat`, which would
+ * round to the currency's two places, and not the viewer's locale: the same
+ * digits the server writes into its own sentences ("This needs $0.161 of
+ * credit"), so a balance on this page and the refusal that names it read
+ * alike.
+ */
+export function formatMoney(milli: number): string {
+  const { negative, dollars, fraction3 } = moneyParts(milli);
+  const fraction = fraction3.replace(/0+$/, '');
+  return `${negative ? '-' : ''}$${dollars}${fraction ? `.${fraction}` : ''}`;
 }
 
 /** `+$0.023` / `-$0.046`: a movement, with its sign visible without reading the colour. */
@@ -189,21 +209,26 @@ export function formatSignedMoney(milli: number): string {
  * An amount as the text to put back into a dollar input: `0.023`, `2.50`,
  * `50.00`. Two decimals when the amount is whole cents and three when it is
  * not, so a purchase box reads like money and a price keeps its third digit -
- * and either one parses back to exactly the same amount.
+ * and either one parses back to exactly the same amount. No commas, which
+ * parseDollars refuses.
  */
 export function toDollarInput(milli: number): string {
-  const text = formatMoney(milli).replace(/[$,]/g, '');
-  return isWholeCents(milli) ? text.slice(0, -1) : text;
+  const { negative, dollars, fraction3 } = moneyParts(milli);
+  const fraction = isWholeCents(milli) ? fraction3.slice(0, 2) : fraction3;
+  return `${negative ? '-' : ''}${dollars.replace(/,/g, '')}.${fraction}`;
 }
 
 /**
  * A price per credit from BEFORE credits were dollars, as its receipt printed
  * it: whole cents, `$0.50`. Only for that one line - "200 Credits at $0.50
- * each" - which a receipt has to keep saying, because it is what was sold.
- * Every other amount is `formatMoney`.
+ * each" - which a receipt has to keep saying, because it is what was sold, in
+ * the two decimals it was sold in (never `$0.5`). Every other amount is
+ * `formatMoney`.
  */
 export function formatLegacyUnitPrice(milli: number): string {
-  return isWholeCents(milli) ? formatMoney(milli).slice(0, -1) : formatMoney(milli);
+  if (!isWholeCents(milli)) return formatMoney(milli);
+  const { negative, dollars, fraction3 } = moneyParts(milli);
+  return `${negative ? '-' : ''}$${dollars}.${fraction3.slice(0, 2)}`;
 }
 
 function countOf(count: number, noun: string): string {

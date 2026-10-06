@@ -188,7 +188,7 @@ function ReturnBody() {
                 no longer there.
               */}
               {isLegacyPurchase(payment)
-                ? 'Paid. This was bought before credits became dollars, and its credits were reset to $0.000 then.'
+                ? 'Paid. This was bought before credits became dollars, and its credits were reset to $0 then.'
                 : 'Paid. Your credit is on your balance.'}
             </p>
             <p className="mt-1">

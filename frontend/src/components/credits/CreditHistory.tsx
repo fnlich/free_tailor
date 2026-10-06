@@ -1,23 +1,20 @@
 'use client';
 
-import { useCallback, useState } from 'react';
-import RefundRequestDialog from './RefundRequestDialog';
+import { useCallback } from 'react';
 import TablePager from './TablePager';
 import { usePagedList } from './usePagedList';
 import styles from './history.module.css';
 import { creditsApi, describeLedgerReason, type LedgerEntry } from '@/lib/credits';
 import { formatDate } from '@/lib/format';
 import { describeLedgerBalance, describeLedgerChange, ledgerDirection } from '@/lib/ledger';
-import { refundChargeIdFor } from '@/lib/refundDisplay';
 
 const PAGE_SIZE = 10;
-const COLUMNS = ['Date', 'Change', 'Reason', 'Balance After', 'Note', 'Action'];
+const COLUMNS = ['Date', 'Change', 'Reason', 'Balance After', 'Note'];
 
 /**
  * How the list reads. `earnings` is a reporter's (owner decisions A3, A4): the
  * same ledger, titled for what moves on it - job rewards in, payouts recorded
- * by an administrator out - and with no Action column, because a reporter
- * asks for no refunds (the server refuses them one, 403 `role-not-allowed`).
+ * by an administrator out.
  */
 export type CreditHistoryVariant = 'credits' | 'earnings';
 
@@ -42,10 +39,9 @@ const COPY: Record<CreditHistoryVariant, { title: string; lead: string; empty: s
  * In dollars to the thousandth - except rows from before credits became
  * dollars, which say what they moved then, in credits (lib/ledger.ts).
  *
- * A charge for resumes offers "Ask for refund" (`refundChargeIdFor`). One
- * charge can pay for a whole run, so the dialog asks which resume - the
- * server lists the run's resumes from the charge's own id. Not in the
- * `earnings` variant, a reporter's, which asks for nothing.
+ * Read-only, for everybody: a charge is no longer asked back from here
+ * (owner decision R1) - an administrator gives credit back directly, and a
+ * reporter asks for a payout from the top of their Credits page instead.
  */
 export default function CreditHistory({
   epoch,
@@ -55,15 +51,11 @@ export default function CreditHistory({
   variant?: CreditHistoryVariant;
 }) {
   const copy = COPY[variant];
-  const asks = variant === 'credits';
-  const columns = asks ? COLUMNS : COLUMNS.filter((column) => column !== 'Action');
   const fetchPage = useCallback(async (offset: number, limit: number) => {
     const response = await creditsApi.ledger(offset, limit);
     return { rows: response.entries, total: response.total, offset: response.offset };
   }, []);
   const list = usePagedList<LedgerEntry>(fetchPage, PAGE_SIZE, epoch);
-  /** The charge whose "Ask for refund" was pressed. */
-  const [asking, setAsking] = useState<string | null>(null);
 
   // Sorted on `seq`, not the timestamp: two movements written in the same
   // millisecond tie on `createdAt`. A copy, so the hook's array is untouched.
@@ -100,7 +92,7 @@ export default function CreditHistory({
         <table className="tl-table">
           <thead>
             <tr>
-              {columns.map((column) => (
+              {COLUMNS.map((column) => (
                 <th key={column} scope="col">
                   {column}
                 </th>
@@ -109,43 +101,26 @@ export default function CreditHistory({
           </thead>
           <tbody>
             {list.loaded &&
-              ordered.map((entry) => {
-                const chargeId = asks ? refundChargeIdFor(entry) : null;
-                return (
-                  <tr key={entry.id}>
-                    <td className="whitespace-nowrap">{formatDate(entry.createdAt, { style: 'short' })}</td>
-                    {/* Colours on spans: `.tl-table td` is unlayered and would beat a utility on the cell. */}
-                    <td className="whitespace-nowrap tabular-nums">
-                      <span
-                        className={
-                          ledgerDirection(entry) > 0 ? styles.gain : ledgerDirection(entry) < 0 ? styles.loss : undefined
-                        }
-                      >
-                        {describeLedgerChange(entry)}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="text-ink">{describeLedgerReason(entry)}</span>
-                    </td>
-                    <td className="whitespace-nowrap tabular-nums">{describeLedgerBalance(entry)}</td>
-                    <td className="break-words">{entry.note || '—'}</td>
-                    {asks && (
-                      <td>
-                        {chargeId ? (
-                          <button
-                            type="button"
-                            onClick={() => setAsking(chargeId)}
-                            className="tl-button-quiet whitespace-nowrap"
-                            data-size="sm"
-                          >
-                            Ask for refund
-                          </button>
-                        ) : null}
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
+              ordered.map((entry) => (
+                <tr key={entry.id}>
+                  <td className="whitespace-nowrap">{formatDate(entry.createdAt, { style: 'short' })}</td>
+                  {/* Colours on spans: `.tl-table td` is unlayered and would beat a utility on the cell. */}
+                  <td className="whitespace-nowrap tabular-nums">
+                    <span
+                      className={
+                        ledgerDirection(entry) > 0 ? styles.gain : ledgerDirection(entry) < 0 ? styles.loss : undefined
+                      }
+                    >
+                      {describeLedgerChange(entry)}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="text-ink">{describeLedgerReason(entry)}</span>
+                  </td>
+                  <td className="whitespace-nowrap tabular-nums">{describeLedgerBalance(entry)}</td>
+                  <td className="break-words">{entry.note || '—'}</td>
+                </tr>
+              ))}
           </tbody>
         </table>
         {/* Below the table, not in a spanning cell - see OrderHistory for why. */}
@@ -168,8 +143,6 @@ export default function CreditHistory({
           </p>
         )}
       </div>
-
-      {asking && <RefundRequestDialog source={{ chargeId: asking }} onClose={() => setAsking(null)} />}
     </section>
   );
 }

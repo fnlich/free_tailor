@@ -1,12 +1,10 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import Link from 'next/link';
-import RefundRequestDialog from './RefundRequestDialog';
 import TablePager from './TablePager';
 import { usePagedList } from './usePagedList';
 import { formatDate, formatMoney } from '@/lib/format';
-import { purchaseOffersRefund } from '@/lib/refundDisplay';
 import { describeCreditReceived, describePurchaseCredit } from '@/lib/paymentDisplay';
 import {
   isPaymentSettled,
@@ -71,8 +69,6 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
   );
   const list = usePagedList<Payment>(fetchPage, PAGE_SIZE, epoch);
   const copy = COPY[method];
-  /** The purchase whose "Ask for refund" was pressed. One dialog for the table, not one per row. */
-  const [asking, setAsking] = useState<Payment | null>(null);
 
   return (
     <section aria-labelledby="orders-heading">
@@ -114,9 +110,7 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
           </thead>
           <tbody>
             {list.loaded &&
-              list.rows.map((payment) => (
-                <OrderRow key={payment.id} payment={payment} onAskRefund={() => setAsking(payment)} />
-              ))}
+              list.rows.map((payment) => <OrderRow key={payment.id} payment={payment} />)}
           </tbody>
         </table>
         {/*
@@ -145,13 +139,11 @@ export default function OrderHistory({ method, epoch }: { method: PaymentMethod;
           </p>
         )}
       </div>
-
-      {asking && <RefundRequestDialog source={{ paymentId: asking.id }} onClose={() => setAsking(null)} />}
     </section>
   );
 }
 
-function OrderRow({ payment, onAskRefund }: { payment: Payment; onAskRefund: () => void }) {
+function OrderRow({ payment }: { payment: Payment }) {
   const label = STATUS[payment.state] ?? payment.state;
   const tone = STATE_TONES[payment.state] ?? 'grey';
   const settled = isPaymentSettled(payment);
@@ -230,14 +222,14 @@ function OrderRow({ payment, onAskRefund }: { payment: Payment; onAskRefund: () 
               </button>
             </span>
           )}
+          {/*
+            No "Ask for refund" (owner decision R1): an administrator refunds a
+            purchase from the payments list, and the Refund Requests tab says
+            to contact them, with the link.
+          */}
           <Link href={`/credits/return?payment=${id}`} className="tl-button-quiet">
             Help
           </Link>
-          {purchaseOffersRefund(payment) && (
-            <button type="button" onClick={onAskRefund} className="tl-button-quiet whitespace-nowrap">
-              Ask for refund
-            </button>
-          )}
         </div>
       </td>
     </tr>

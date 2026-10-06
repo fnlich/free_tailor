@@ -13,20 +13,25 @@ import {
   amountSentProblem,
   byHandRefundBody,
   cleanRefundReason,
+  declineReasonProblem,
   describeDecision,
+  describePayoutBalanceNow,
+  describePayoutConfirmation,
   describeRefundConfirmation,
   describeRefundMade,
   isStaleRefundRefusal,
   MAX_REFUND_REASON,
   REFUND_FILTERS,
-  REFUND_STATE_LABELS,
   REFUND_STATE_TONES,
-  refundReasonProblem,
+  refundActionLabel,
+  refundStateLabel,
   type AdminRefundAction,
 } from '@/lib/refundDisplay';
+import { describePayoutAmount, MAX_PAYOUT_NOTE, payoutProblem } from '@/lib/reporterPay';
 import {
   adminRefundRequestsApi,
   type AdminRefundRequest,
+  type RefundBody,
   type RefundRequestCounts,
   type RefundStateFilter,
 } from '@/lib/refunds';
@@ -34,8 +39,9 @@ import {
 const PAGE_SIZE = 25;
 
 /**
- * The refund requests queue: what people have asked to have refunded, and the
- * three decisions an administrator makes about each.
+ * The refund requests queue: reporters' payout requests, and the refund
+ * requests people made before asking for refunds was removed - and the three
+ * decisions an administrator makes about each.
  *
  *  - **Approve** (from Requested): accepted, no money moves; they are told.
  *  - **Decline** (from Requested or Approved): with a reason the person who
@@ -44,6 +50,9 @@ const PAGE_SIZE = 25;
  *    the same step - credit back for a resume, a partial Stripe refund for a
  *    card, and for crypto only once the administrator confirms they sent the
  *    money back by hand. Final.
+ *  - **Record payout**, its place on a payout request: what the administrator
+ *    actually paid the reporter outside the app, and how - up to the balance
+ *    then (owner decision R2). The request turns Paid out in the same step.
  *
  * Every one of them is confirmed in a dialog that says what will happen
  * BEFORE the button - a crypto refund says "send it back first" there, not in
@@ -90,8 +99,9 @@ export default function RefundQueue({
             Refund requests
           </h2>
           <p className="mt-1 max-w-3xl text-sm text-muted">
-            What people have asked to have refunded, with their reason. Open requests are listed oldest
-            first. Each decision is sent to the person who asked as a notification.
+            Reporters asking to be paid out their earnings, and refunds people asked for before asking was
+            removed, with their reason. Open requests are listed oldest first. Each decision is sent to the
+            person who asked as a notification.
           </p>
         </div>
         <label className="block w-56 max-w-full">
@@ -192,8 +202,9 @@ export default function RefundQueue({
             list.retry();
           }}
           // Refused because the row is out of date - decided by another
-          // administrator, refunded from the payments list, gone: the list
-          // behind the dialog is read again, so closing it shows what is true.
+          // administrator, refunded from the payments list, paid out from
+          // Admin -> Accounts, gone: the list behind the dialog is read again,
+          // so closing it shows what is true.
           onStale={list.retry}
         />
       )}
@@ -219,6 +230,8 @@ function QueueRow({
 }) {
   const actions = adminRefundActions(request.state);
   const now = request.refundableNowMilli;
+  const payout = request.kind === 'payout';
+  const balanceNow = describePayoutBalanceNow(request);
   return (
     <tr>
       <td className="whitespace-nowrap">{formatDate(request.createdAt, { style: 'short' })}</td>
@@ -228,7 +241,9 @@ function QueueRow({
         <span className="mt-1 block text-xs text-subtle">
           {request.kind === 'purchase'
             ? `Purchase${request.paymentProvider ? ` · ${request.paymentProvider === 'stripe' ? 'card' : 'crypto'}` : ''}`
-            : 'Resume'}
+            : payout
+              ? 'Payout'
+              : 'Resume'}
         </span>
       </td>
       <td className="[overflow-wrap:anywhere]">
@@ -239,16 +254,25 @@ function QueueRow({
       </td>
       <td className="whitespace-nowrap tabular-nums">
         <span className="block text-ink">{formatMoney(request.amountMilli)}</span>
+        {/*
+          A payout's balance NOW, always while it is open: the most Record
+          payout may record, and more than was asked once they earned since.
+        */}
+        {balanceNow !== null && (
+          <span className="mt-1 block whitespace-normal text-xs text-muted">{balanceNow}</span>
+        )}
         {/* An open request is re-measured: a buyer who spent since asking gets back what is left. */}
-        {now !== null && now !== request.amountMilli && (
+        {!payout && now !== null && now !== request.amountMilli && (
           <span className="mt-1 block whitespace-normal text-xs text-muted">
             {now > 0 ? `${formatMoney(now)} now` : request.refundableNowReason || 'Nothing left now'}
           </span>
         )}
       </td>
-      <td className="whitespace-pre-wrap [overflow-wrap:anywhere]">{request.reason}</td>
+      <td className="whitespace-pre-wrap [overflow-wrap:anywhere]">
+        {request.reason || <span className="text-subtle">&mdash;</span>}
+      </td>
       <td className="[overflow-wrap:anywhere]">
-        <Pill tone={REFUND_STATE_TONES[request.state] ?? 'grey'}>{REFUND_STATE_LABELS[request.state] ?? request.state}</Pill>
+        <Pill tone={REFUND_STATE_TONES[request.state] ?? 'grey'}>{refundStateLabel(request)}</Pill>
         {request.state === 'declined' && request.declineReason && (
           <span className="mt-1.5 block whitespace-pre-wrap break-words text-xs text-muted">
             {request.declineReason}
@@ -256,7 +280,8 @@ function QueueRow({
         )}
         {request.state === 'refunded' && (
           <span className="mt-1.5 block text-xs text-muted tabular-nums">
-            {formatMoney(request.refundedMilli)} {request.kind === 'resume' ? 'credited back' : 'returned'}
+            {formatMoney(request.refundedMilli)}{' '}
+            {payout ? 'paid out' : request.kind === 'resume' ? 'credited back' : 'returned'}
           </span>
         )}
         {request.attemptMilli !== null && request.state !== 'refunded' && (
@@ -287,7 +312,7 @@ function QueueRow({
             )}
             {actions.includes('refund') && (
               <button type="button" className="tl-button whitespace-nowrap" data-size="sm" onClick={() => onDecide('refund')}>
-                Mark refunded
+                {refundActionLabel(request)}
               </button>
             )}
           </div>
@@ -315,9 +340,24 @@ function DecisionDialog({
   onDone: (message: string) => void;
   onStale: () => void;
 }) {
+  const payoutPrompt = describePayoutConfirmation(request);
+  const isPayout = request.kind === 'payout';
+  const recordsPayout = isPayout && action === 'refund';
+
   const [reason, setReason] = useState('');
   const [sentByHand, setSentByHand] = useState(false);
   const [amountSent, setAmountSent] = useState('');
+  // Record payout: what was actually paid, prefilled with the smaller of what
+  // was asked and the balance now, and how it was paid.
+  const [paidAmount, setPaidAmount] = useState(() => toDollarInput(payoutPrompt.prefillMilli));
+  const [paidNote, setPaidNote] = useState('');
+  /*
+   * The reporter's balance as the SERVER last named it: the queue's figure
+   * until a refusal (`insufficient-balance`) brings a newer one - another
+   * administrator may have recorded a payout from Admin -> Accounts since the
+   * list was read - so the box's own check holds to what the server holds to.
+   */
+  const [payoutBalance, setPayoutBalance] = useState(payoutPrompt.balanceMilli);
   const [attempted, setAttempted] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -330,16 +370,19 @@ function DecisionDialog({
 
   const who = request.accountEmail || 'the person who asked';
   const confirmation = describeRefundConfirmation(request);
-  const byHand = action === 'refund' && (confirmation.byHand || handAmount !== null);
+  const byHand = action === 'refund' && !isPayout && (confirmation.byHand || handAmount !== null);
   const handMilli = handAmount ?? confirmation.amountMilli;
 
-  const reasonProblem = action === 'decline' ? refundReasonProblem(reason, 'admin') : null;
+  const reasonProblem = action === 'decline' ? declineReasonProblem(reason) : null;
   const sentProblem = byHand ? amountSentProblem(amountSent, request.amountMilli) : null;
+  // The same check, in the same words and order, as Admin -> Accounts' payout.
+  const payoutError = recordsPayout ? payoutProblem(paidAmount, paidNote, payoutBalance) || null : null;
+  const payoutAmountLine = recordsPayout ? describePayoutAmount(paidAmount, payoutBalance) : null;
   const blocked = action === 'refund' ? confirmation.blocked : null;
 
   const run = async () => {
     setAttempted(true);
-    if (reasonProblem || sentProblem || blocked) return;
+    if (reasonProblem || sentProblem || payoutError || blocked) return;
     if (byHand && !sentByHand) return;
     setWorking(true);
     setError(null);
@@ -351,10 +394,13 @@ function DecisionDialog({
         const answer = await adminRefundRequestsApi.decline(request.id, reason);
         onDone(describeDecision('decline', answer.request, answer.changed));
       } else {
-        const answer = await adminRefundRequestsApi.refund(
-          request.id,
-          byHand ? byHandRefundBody(amountSent, handMilli) : {}
-        );
+        // Sent as typed: the server parses the amount again and decides.
+        const body: RefundBody = recordsPayout
+          ? { amountUsd: paidAmount.trim(), note: paidNote }
+          : byHand
+            ? byHandRefundBody(amountSent, handMilli)
+            : {};
+        const answer = await adminRefundRequestsApi.refund(request.id, body);
         onDone(describeRefundMade(answer.request, answer.outcome, answer.changed));
       }
     } catch (caught) {
@@ -362,6 +408,11 @@ function DecisionDialog({
         const named = caught.number('amountMilli');
         setHandAmount(typeof named === 'number' ? named : confirmation.amountMilli);
         setAttempted(false);
+      } else if (caught instanceof ApiResponseError && caught.code === 'insufficient-balance') {
+        const named = caught.number('balanceMilli');
+        if (typeof named === 'number') setPayoutBalance(named);
+        // The row's "Balance now" is out of date too.
+        onStale();
       } else if (
         caught instanceof ApiResponseError &&
         (isStaleRefundRefusal(caught.code) || (action === 'refund' && caught.status >= 500))
@@ -381,16 +432,20 @@ function DecisionDialog({
       ? `Approve ${request.reference}?`
       : action === 'decline'
         ? `Decline ${request.reference}?`
-        : confirmation.title;
+        : recordsPayout
+          ? payoutPrompt.title
+          : confirmation.title;
 
   const confirmLabel =
     action === 'approve'
       ? 'Approve'
       : action === 'decline'
         ? 'Decline'
-        : byHand
-          ? 'Mark refunded'
-          : `Refund ${formatMoney(confirmation.amountMilli)}`;
+        : recordsPayout
+          ? 'Record payout'
+          : byHand
+            ? 'Mark refunded'
+            : `Refund ${formatMoney(confirmation.amountMilli)}`;
 
   return (
     <Dialog
@@ -408,7 +463,9 @@ function DecisionDialog({
             className="tl-button"
             data-tone={action === 'decline' ? 'danger' : undefined}
             onClick={() => void run()}
-            disabled={working || Boolean(blocked) || (attempted && Boolean(reasonProblem || sentProblem))}
+            disabled={
+              working || Boolean(blocked) || (attempted && Boolean(reasonProblem || sentProblem || payoutError))
+            }
           >
             {working ? 'Working…' : confirmLabel}
           </button>
@@ -418,8 +475,17 @@ function DecisionDialog({
       <div className="space-y-4">
         {action === 'approve' && (
           <p className="text-sm text-muted">
-            The refund is accepted, and {who} is told so. No money moves yet: Mark refunded makes the refund
-            when you are ready.
+            {isPayout ? (
+              <>
+                The payout request is accepted, and {who} is told so. Nothing is recorded yet: Record payout
+                records what you sent, once you have paid them.
+              </>
+            ) : (
+              <>
+                The refund is accepted, and {who} is told so. No money moves yet: Mark refunded makes the refund
+                when you are ready.
+              </>
+            )}
           </p>
         )}
 
@@ -445,7 +511,65 @@ function DecisionDialog({
           </div>
         )}
 
-        {action === 'refund' && (
+        {recordsPayout && (
+          <>
+            <p className="text-sm text-muted">{payoutPrompt.body}</p>
+            {blocked && <Notice tone="warn">{blocked}</Notice>}
+            {!blocked && (
+              <div className="space-y-4">
+                <div>
+                  <label htmlFor="payout-amount" className="tl-label">
+                    Amount paid ($)
+                  </label>
+                  {/* Text, never a number box: in an en-US browser a number box turns "0,023" into "0023". */}
+                  <input
+                    id="payout-amount"
+                    type="text"
+                    inputMode="decimal"
+                    className="tl-input mt-2 tabular-nums"
+                    value={paidAmount}
+                    autoFocus
+                    onChange={(event) => setPaidAmount(event.target.value)}
+                    aria-describedby="payout-amount-line"
+                    aria-invalid={payoutAmountLine?.tone === 'error'}
+                  />
+                  {payoutAmountLine && (
+                    <p
+                      id="payout-amount-line"
+                      className="tl-status mt-2"
+                      data-tone={payoutAmountLine.tone === 'error' ? 'error' : undefined}
+                    >
+                      {payoutAmountLine.text}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label htmlFor="payout-note" className="tl-label">
+                    How it was paid
+                  </label>
+                  <textarea
+                    id="payout-note"
+                    className="tl-input mt-2"
+                    rows={3}
+                    value={paidNote}
+                    onChange={(event) => setPaidNote(event.target.value)}
+                    placeholder="A method, a date or a reference"
+                    aria-invalid={attempted && Boolean(payoutError)}
+                  />
+                  <p className="mt-2 flex justify-between gap-3 text-xs text-subtle">
+                    <span>Kept with the payout in their history, and quoted in their notice.</span>
+                    <span className="tabular-nums">
+                      {paidNote.trim().length} / {MAX_PAYOUT_NOTE}
+                    </span>
+                  </p>
+                </div>
+                {attempted && payoutError && <Status tone="error">{payoutError}</Status>}
+              </div>
+            )}
+          </>
+        )}
+
+        {action === 'refund' && !recordsPayout && (
           <>
             <p className="text-sm text-muted">{confirmation.body}</p>
             {blocked && <Notice tone="warn">{blocked}</Notice>}
@@ -483,7 +607,12 @@ function DecisionDialog({
           </>
         )}
 
-        <ErrorNotice error={error} fallback={action === 'refund' ? 'Could not make the refund' : 'Could not record that'} />
+        <ErrorNotice
+          error={error}
+          fallback={
+            recordsPayout ? 'Could not record the payout' : action === 'refund' ? 'Could not make the refund' : 'Could not record that'
+          }
+        />
       </div>
     </Dialog>
   );

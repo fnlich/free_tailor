@@ -180,13 +180,15 @@ export function milliToCents(milli: number): number {
 }
 
 /**
- * Milli-dollars as a person reads them: `$0.023`, `$3.977`, `$1,250.000`,
- * `-$0.046`.
+ * Milli-dollars as a person reads them: `$0.023`, `$3.977`, `$1,250`, `$4.1`,
+ * `$0`, `-$0.046`.
  *
- * ALWAYS three decimals, because charges move in $0.001 steps: a balance shown
- * as "$3.98" after a $0.023 charge would hide the very digit that moved, and a
- * figure rounded for display is a figure that does not add up against the
- * history beneath it. Built from the integer's digits, never from a float.
+ * Every digit that is not a trailing zero, and nothing else: charges move in
+ * $0.001 steps, so a balance shown as "$3.98" after a $0.023 charge would hide
+ * the very digit that moved, while "$1.000" for a dollar reads as a thousand to
+ * most people (the owner's report). So the fraction keeps its significant
+ * digits - never rounded - and drops the zeros after them, and a bare dot with
+ * them. Built from the integer's digits, never from a float.
  */
 export function formatMoney(milli: number): string {
   // An amount is always a whole number of thousandths; anything else is a bug
@@ -196,5 +198,6 @@ export function formatMoney(milli: number): string {
   const negative = whole < 0;
   const digits = String(Math.abs(whole)).padStart(4, '0');
   const dollars = digits.slice(0, -3).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${negative ? '-' : ''}$${dollars}.${digits.slice(-3)}`;
+  const fraction = digits.slice(-3).replace(/0+$/, '');
+  return `${negative ? '-' : ''}$${dollars}${fraction ? `.${fraction}` : ''}`;
 }

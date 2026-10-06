@@ -1,22 +1,33 @@
 /*
- * Asking for a refund, deciding it, and Contact admin - in a real browser.
+ * Payout requests, the refund requests left from before, and Contact admin -
+ * in a real browser.
  *
- * test/refundRequests.test.js proves the server's state machine and
- * test/frontendRefunds.test.js the page's pure decisions. This proves they are
- * joined up: a person presses "Ask for refund" on a purchase, the request
- * reaches every administrator's bell with a link to the queue, an
- * administrator marks one refunded and declines another, and the person reads
- * both outcomes - in the Refund Requests tab and in their own bell, and in
- * nobody else's.
+ * test/payoutRequests.test.js and test/refundRequests.test.js prove the
+ * server's state machine and test/frontendRefunds.test.js the page's pure
+ * decisions. This proves they are joined up (owner decisions R1, R2):
+ *
+ *  - nobody but a reporter asks any more: a user's purchases, Credit History
+ *    and order offer no Ask for refund, the Refund Requests tab is read-only
+ *    and says to contact the administrator, and a stale page's ask is
+ *    answered 410;
+ *  - a reporter presses Ask for Refund - where a user's Purchase Credits sits
+ *    - the request reaches every administrator's bell with a link to the
+ *    queue, an administrator records what they actually paid (more than was
+ *    asked, up to the balance then), and the reporter reads it as Paid out,
+ *    in their list and their bell;
+ *  - the requests a user made BEFORE asking was removed are still decided in
+ *    the queue: one marked refunded by hand, one declined, a resume credited
+ *    back, and a card refund that fails at Stripe - and the person reads each
+ *    outcome, in the Refund Requests tab and their own bell, and nobody else's.
  *
  * Nothing is bought: the purchases are written straight into the database the
  * server reads (the same DB_DIR), paid the way a webhook pays them
- * (`creditPaid`), because a refund request is about a paid purchase however it
- * was paid. The crypto one is the one that can be refunded with no provider -
- * by hand, which is exactly the path that needs the "send it back FIRST" step
- * on the page. The card one, with no Stripe keys, fails at Stripe - which is
- * how this reaches the generic "contact your administrator" sentence, its
- * Contact admin link, and a dialog over a dialog.
+ * (`creditPaid`), and the old requests are made through the service the
+ * routes used to call (`createRefundRequest`, kept unrouted for exactly
+ * this). The crypto one is refunded by hand, which is the path that needs the
+ * "send it back FIRST" step on the page. The card one, with no Stripe keys,
+ * fails at Stripe - which is how this reaches the generic "contact your
+ * administrator" sentence, its Contact admin link, and a dialog over a dialog.
  *
  * Servers are expected to be up already, sharing DB_DIR with this script -
  * the backend WITHOUT test/e2e/fake-providers.js and without Stripe keys, or
@@ -36,6 +47,7 @@ const paymentRepository = require(path.join(DIST, 'database', 'paymentRepository
 const payments = require(path.join(DIST, 'services', 'payments'));
 const credits = require(path.join(DIST, 'services', 'credits'));
 const orders = require(path.join(DIST, 'database', 'orderRepository'));
+const refunds = require(path.join(DIST, 'services', 'refunds'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -183,26 +195,52 @@ async function readBell(page) {
   return { label, notices };
 }
 
+
+/** Whether anything on the page offers to ask for a refund the old way. */
+function offersAsk(page) {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll('button, a')).some((node) => /^ask for refund$/i.test(node.textContent.trim()) &&
+      node.textContent.trim() !== 'Ask for Refund')
+  );
+}
+
+/** The header's Ask for Refund on a reporter's Credits: where it sits, how it looks, whether it is on and why not. */
+function readAskButton(page) {
+  return page.evaluate(() => {
+    const header = document.querySelector('.tl-main h1')?.parentElement;
+    const button = header?.querySelector(':scope > .ml-auto > button');
+    return button
+      ? {
+          text: button.textContent.trim(),
+          pill: button.className === 'tl-button' && button.dataset.shape === 'pill',
+          disabled: button.disabled,
+          title: button.getAttribute('title') ?? '',
+          line: document.getElementById('payout-blocked')?.textContent.trim() ?? '',
+        }
+      : null;
+  });
+}
+
 async function main() {
   const stamp = Date.now().toString(36);
   const user = users.createUser({ email: `e2e-refunds-${stamp}@example.com`, name: 'Refund Asker' });
   const bystander = users.createUser({ email: `e2e-bystander-${stamp}@example.com`, name: 'Bystander' });
+  const reporter = users.createUser({ email: `e2e-payout-${stamp}@example.com`, name: 'Payout Reporter', role: 'reporter' });
   const admin = users.findOrCreateUser({ email: 'boss@example.com' }).account;
   users.updateUser(admin.id, { role: 'admin' });
 
   const userToken = users.createSession(user.id);
   const bystanderToken = users.createSession(bystander.id);
+  const reporterToken = users.createSession(reporter.id);
   const adminToken = users.createSession(admin.id);
   const asUser = apiAs(userToken);
   const asAdmin = apiAs(adminToken);
 
   // Two crypto purchases (one to refund by hand, one to decline) and a card
-  // one (to fail at Stripe), all paid; and one run's charge in the history.
+  // one (to fail at Stripe), all paid.
   const crypto = seedPurchase(user.id, { method: 'crypto', provider: 'cryptomus', dollars: 25 });
   const second = seedPurchase(user.id, { method: 'crypto', provider: 'cryptomus', dollars: 5 });
   const card = seedPurchase(user.id, { method: 'card', provider: 'stripe', dollars: 10 });
-  const run = credits.reserveCredits(users.getUserById(user.id), 161, { kind: 'batch', id: `e2e-run-${stamp}` });
-  check('setup: three paid purchases and a $0.161 run charge', run.costMilli === 161, JSON.stringify(run));
 
   // An order of two $0.023 resumes, charged as one run: one delivered, one
   // that did not build - as the queue would have left them.
@@ -218,6 +256,27 @@ async function main() {
     error: 'Could not build this resume. Please try again, or contact your administrator. (Ref: ERR-e2e001)',
   });
   orders.settleOrderIfFinished(order.id);
+  const acmeItem = orders.listOrderItems(order.id).find((item) => item.companyName === 'Acme');
+
+  // The requests this person made before asking was removed - the four kinds
+  // the queue still decides - through the service the routes used to call.
+  const asked = (itemType, itemId, reason) =>
+    refunds.createRefundRequest(users.getUserById(user.id), { itemType, itemId, reason });
+  const first = asked('payment', crypto.id, 'Bought twice by mistake.');
+  const secondRequest = asked('payment', second.id, 'Changed my mind.');
+  const cardRequest = asked('payment', card.id, 'Not needed.');
+  const resumeRequest = asked('order-item', acmeItem.id, 'The layout came out broken.');
+  const reference = first.reference;
+  const secondRef = secondRequest.reference;
+  const cardRef = cardRequest.reference;
+  const resumeRef = resumeRequest.reference;
+  check(
+    'setup: four requests from before asking was removed - two crypto purchases, a card purchase and a resume',
+    [first, secondRequest, cardRequest, resumeRequest].every((request) => request.state === 'requested') &&
+      first.amountMilli === 25_000 &&
+      resumeRequest.amountMilli === 23,
+    JSON.stringify([first, resumeRequest].map((request) => [request.reference, request.amountMilli]))
+  );
 
   // The administrator's contact list, through the API the editor uses.
   const saved = await asAdmin('/admin/contact', {
@@ -231,218 +290,151 @@ async function main() {
   });
   check('setup: the administrator lists two ways to reach them', saved.status === 200, `got ${saved.status}`);
 
+  // A page left open from before asking was removed: answered, not obeyed.
+  const stale = await asUser('/refund-requests', {
+    method: 'POST',
+    body: JSON.stringify({ itemType: 'payment', itemId: crypto.id, reason: 'From an old tab.' }),
+  });
+  const staleBody = await stale.json().catch(() => ({}));
+  const staleOptions = await asUser(`/refund-requests/options?paymentId=${encodeURIComponent(crypto.id)}`);
+  check(
+    'a stale page asking for a refund is answered 410, in a sentence that says to contact the administrator',
+    stale.status === 410 &&
+      staleOptions.status === 410 &&
+      staleBody.code === 'refund-requests-closed' &&
+      staleBody.error === refunds.REFUND_ASKING_CLOSED_MESSAGE,
+    JSON.stringify({ status: stale.status, options: staleOptions.status, staleBody })
+  );
+
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   try {
-    /* ------------------------------------------------ the person asking */
+    /* ------------------------------------------------ the person: nothing asks */
     const page = await browser.newPage();
     await page.setViewport(WIDE);
     await signIn(page, userToken);
 
     await page.goto(`${APP}/credits?tab=crypto`, { waitUntil: 'networkidle2' });
     await until(page, (ref) => document.body.innerText.includes(ref), crypto.reference);
+    const cryptoRow = (await rowText(page, crypto.reference)) ?? '';
     check(
-      'user /credits Crypto: a paid purchase offers Ask for refund',
-      await pressInRow(page, crypto.reference, 'Ask for refund'),
-      await rowText(page, crypto.reference)
-    );
-    const opened = await until(page, () =>
-      /You would get back/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const offer = await dialogText(page, 'Ask for a refund');
-    check(
-      'user: the dialog says what would come back - the unspent $25.000, sent back by hand for crypto',
-      opened && /\$25\.000/.test(offer) && /sent back to you by your administrator/.test(offer),
-      JSON.stringify(offer)
+      'user /credits Crypto: a paid purchase offers its Invoice and Help, and no Ask for refund',
+      /Invoice/.test(cryptoRow) && /Help/.test(cryptoRow) && !(await offersAsk(page)),
+      JSON.stringify(cryptoRow)
     );
 
-    // No reason: refused on the page, in the server's words.
-    await pressInDialog(page, 'Ask for a refund', 'Ask for refund');
-    await wait(200);
-    check(
-      'user: a request with no reason is refused before it is sent',
-      /Say why you are asking for a refund\./.test((await dialogText(page, 'Ask for a refund')) ?? ''),
-      await dialogText(page, 'Ask for a refund')
-    );
-
-    await typeInto(page, '#refund-reason', 'Bought twice by mistake.');
-    await pressInDialog(page, 'Ask for a refund', 'Ask for refund');
-    await until(page, () =>
-      /Refund request FT-RF-/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const sentText = (await dialogText(page, 'Ask for a refund')) ?? '';
-    const reference = (sentText.match(/FT-RF-\d{8}-\d{4}/) ?? [])[0];
-    check('user: the request is sent, with its reference and amount', Boolean(reference) && /\$25\.000/.test(sentText), sentText);
-    await page.screenshot({ path: `${SHOTS}/refunds-1-asked.png` });
-    await pressInDialog(page, 'Ask for a refund', 'Done');
-    await wait(300);
-
-    // One open request per item: asking again shows the open one, no second form.
-    await pressInRow(page, crypto.reference, 'Ask for refund');
-    await until(page, () =>
-      /is open for this/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const again = await page.evaluate(() => ({
-      text: document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '',
-      reasonBox: Boolean(document.querySelector('#refund-reason')),
-    }));
-    check(
-      'user: asking again shows the open request rather than a second form',
-      again.text.includes(`Refund request ${reference} is open for this - Requested.`) && !again.reasonBox,
-      JSON.stringify(again)
-    );
-    await page.keyboard.press('Escape');
-    await wait(300);
-    check(
-      'user: Escape closes the dialog',
-      (await dialogText(page, 'Ask for a refund')) === null,
-      'still open'
-    );
-
-    // The other two through the API, as the dialog sends them.
-    const secondAsked = await asUser('/refund-requests', {
-      method: 'POST',
-      body: JSON.stringify({ itemType: 'payment', itemId: second.id, reason: 'Changed my mind.' }),
-    });
-    const secondBody = await secondAsked.json().catch(() => ({}));
-    const cardAsked = await asUser('/refund-requests', {
-      method: 'POST',
-      body: JSON.stringify({ itemType: 'payment', itemId: card.id, reason: 'Not needed.' }),
-    });
-    const cardBody = await cardAsked.json().catch(() => ({}));
-    check(
-      'setup: two more requests',
-      secondAsked.status === 201 && cardAsked.status === 201,
-      `${secondAsked.status} ${cardAsked.status}`
-    );
-    const secondRef = secondBody.request?.reference ?? '';
-    const cardRef = cardBody.request?.reference ?? '';
-
-    // A run's charge in Credit History asks which resume - and once the queue
-    // no longer holds the run, says to ask the administrator, with the link.
-    await page.goto(`${APP}/credits?tab=history`, { waitUntil: 'networkidle2' });
-    await until(page, () => document.body.innerText.includes('-$0.161'));
-    check(
-      'user /credits Credit History: a run charge offers Ask for refund',
-      await pressInRow(page, '-$0.161', 'Ask for refund'),
-      await rowText(page, '-$0.161')
-    );
-    await until(page, () =>
-      /no longer listed/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const gone = await page.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"][aria-label="Ask for a refund"]');
-      return {
-        text: dialog?.innerText ?? '',
-        contact: Boolean(
-          dialog && Array.from(dialog.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Contact admin')
-        ),
-      };
-    });
-    check(
-      "user: a run the queue no longer holds says to ask the administrator - with a Contact admin link",
-      /Ask your administrator/.test(gone.text) && gone.contact,
-      JSON.stringify(gone)
-    );
-    await page.keyboard.press('Escape');
-
-    // One charge can pay for a whole order: from Credit History the dialog
-    // lists its resumes, the one that can be asked about picked, the one that
-    // did not build shown with why it cannot be.
     await page.goto(`${APP}/credits?tab=history`, { waitUntil: 'networkidle2' });
     await until(page, () => document.body.innerText.includes('-$0.046'));
-    await pressInRow(page, '-$0.046', 'Ask for refund');
-    await until(page, () =>
-      /Which resume\?/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const picker = await page.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"][aria-label="Ask for a refund"]');
-      const radios = Array.from(dialog?.querySelectorAll('input[type="radio"]') ?? []);
-      return {
-        text: dialog?.innerText ?? '',
-        radios: radios.map((radio) => ({
-          label: radio.closest('label')?.innerText ?? '',
-          checked: radio.checked,
-          disabled: radio.disabled,
-        })),
-        reasonBox: Boolean(dialog?.querySelector('#refund-reason')),
-      };
-    });
-    const acme = picker.radios.find((radio) => /Acme/.test(radio.label));
-    const globex = picker.radios.find((radio) => /Globex/.test(radio.label));
+    const history = await page.evaluate(() => ({
+      headers: Array.from(document.querySelectorAll('main table thead th')).map((th) => th.textContent.trim()),
+    }));
     check(
-      "user Credit History: an order's charge lists its resumes - the delivered one picked, the failed one not pickable",
-      picker.radios.length === 2 &&
-        acme?.checked &&
-        !acme.disabled &&
-        globex?.disabled &&
-        /not delivered/.test(globex.label) &&
-        /You would get back/.test(picker.text) &&
-        picker.reasonBox,
-      JSON.stringify(picker)
+      'user /credits Credit History: the run charge is listed, with no Action column and no Ask for refund',
+      !history.headers.includes('Action') && !(await offersAsk(page)),
+      JSON.stringify(history)
     );
-    await page.keyboard.press('Escape');
-    await wait(300);
 
-    // One resume of an order: its charge, and Ask for refund on the one that
-    // was delivered; the one that did not build was refunded on its own, and
-    // its error says to contact the administrator - with the link.
     await page.goto(`${APP}/orders/${order.id}`, { waitUntil: 'networkidle2' });
-    await until(page, () => /Ask for refund/.test(document.body.innerText));
-    const delivered = (await rowText(page, 'Acme')) ?? '';
-    const failedItem = await page.evaluate(() => {
+    await until(page, () => /Globex/.test(document.body.innerText));
+    const orderPage = await page.evaluate(() => {
       const row = Array.from(document.querySelectorAll('tbody tr')).find((node) => node.textContent.includes('Globex'));
       return {
-        text: row?.innerText ?? '',
-        ask: Boolean(row && Array.from(row.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Ask for refund')),
+        headers: Array.from(document.querySelectorAll('table thead th')).map((th) => th.textContent.trim()),
+        acme: Array.from(document.querySelectorAll('tbody tr')).find((node) => node.textContent.includes('Acme'))?.innerText ?? '',
         contact: Boolean(row && Array.from(row.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Contact admin')),
-        why: Boolean(row?.querySelector('[title^="This resume was not delivered"]')),
       };
     });
     check(
-      "user /orders/[id]: a delivered resume shows its $0.023 charge and offers Ask for refund",
-      /\$0\.023/.test(delivered) && /Ask for refund/.test(delivered),
-      JSON.stringify(delivered)
+      "user /orders/[id]: each resume's charge, no Refund column and no Ask for refund",
+      /\$0\.023/.test(orderPage.acme) && !orderPage.headers.includes('Refund') && !(await offersAsk(page)),
+      JSON.stringify(orderPage)
     );
     check(
-      'user /orders/[id]: one that did not build offers none, says it was refunded automatically, and its error offers Contact admin',
-      !failedItem.ask && failedItem.why && /Refunded automatically/.test(failedItem.text) && failedItem.contact,
-      JSON.stringify(failedItem)
-    );
-    await pressInRow(page, 'Acme', 'Ask for refund');
-    await until(page, () =>
-      /You would get back/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const resumeOffer = (await dialogText(page, 'Ask for a refund')) ?? '';
-    check(
-      'user: a resume would come back as credit - what it was charged',
-      /\$0\.023 back on your balance as credit/.test(resumeOffer) && /Jane Doe \/ Acme/.test(resumeOffer),
-      JSON.stringify(resumeOffer)
-    );
-    await typeInto(page, '#refund-reason', 'The layout came out broken.');
-    await pressInDialog(page, 'Ask for a refund', 'Ask for refund');
-    await until(page, () =>
-      /Refund request FT-RF-/.test(document.querySelector('[role="dialog"][aria-label="Ask for a refund"]')?.innerText ?? '')
-    );
-    const resumeRef = (((await dialogText(page, 'Ask for a refund')) ?? '').match(/FT-RF-\d{8}-\d{4}/) ?? [])[0] ?? '';
-    await pressInDialog(page, 'Ask for a refund', 'Done');
-    await until(page, () => {
-      const row = Array.from(document.querySelectorAll('tbody tr')).find((node) => node.textContent.includes('Acme'));
-      return Boolean(row && /Requested/.test(row.innerText) && !/Ask for refund/.test(row.innerText));
-    });
-    check(
-      "user /orders/[id]: once asked, the resume's row shows the request, not a second button",
-      Boolean(resumeRef) && /Requested/.test((await rowText(page, 'Acme')) ?? ''),
-      JSON.stringify(await rowText(page, 'Acme'))
+      "user /orders/[id]: a resume that did not build still says why, with Contact admin",
+      orderPage.contact,
+      JSON.stringify(orderPage)
     );
     await page.screenshot({ path: `${SHOTS}/refunds-0-order.png` });
 
     await page.goto(`${APP}/credits?tab=refunds`, { waitUntil: 'networkidle2' });
     await until(page, (ref) => document.body.innerText.includes(ref), reference);
-    const listed = await rowText(page, reference);
+    const listed = (await rowText(page, reference)) ?? '';
+    const lead = await page.evaluate(() => {
+      const paragraph = document.querySelector('#refunds-heading')?.parentElement?.querySelector('p');
+      return {
+        text: paragraph?.innerText ?? '',
+        contact: Boolean(
+          paragraph && Array.from(paragraph.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Contact admin')
+        ),
+      };
+    });
     check(
-      'user /credits Refund Requests: the request is listed as Requested, with the reason',
-      Boolean(listed) && /Requested/.test(listed) && /Bought twice by mistake\./.test(listed) && /\$25\.000/.test(listed),
+      'user /credits Refund Requests: an older request is listed as Requested, with its reason and amount',
+      /Requested/.test(listed) && /Bought twice by mistake\./.test(listed) && /\$25(?![.\d])/.test(listed),
       JSON.stringify(listed)
+    );
+    check(
+      'user /credits Refund Requests: read-only - it says to contact the administrator, with the link',
+      /contact your administrator/.test(lead.text) && lead.contact && !(await offersAsk(page)),
+      JSON.stringify(lead)
+    );
+
+    /* ------------------------------------------------ the reporter asks */
+    const reporterContext = await browser.createBrowserContext();
+    const reporterPage = await reporterContext.newPage();
+    await reporterPage.setViewport(WIDE);
+    await signIn(reporterPage, reporterToken);
+    await reporterPage.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await until(reporterPage, () => Boolean(document.getElementById('payout-blocked')));
+    const empty = await readAskButton(reporterPage);
+    check(
+      "reporter /credits at $0: Ask for Refund where Purchase Credits sits, in its style, off - and says why",
+      empty?.text === 'Ask for Refund' &&
+        empty.pill &&
+        empty.disabled &&
+        empty.title === 'There are no earnings on your balance to pay out yet.' &&
+        empty.line === empty.title,
+      JSON.stringify(empty)
+    );
+
+    credits.grantCredits(reporter.id, 5_000, admin.id, 'E2E job rewards');
+    await reporterPage.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await until(reporterPage, () => {
+      const button = document.querySelector('.tl-main h1')?.parentElement?.querySelector(':scope > .ml-auto > button');
+      return Boolean(button && !button.disabled);
+    });
+    const ready = await readAskButton(reporterPage);
+    check('reporter /credits with $5 earned: Ask for Refund is on', ready?.disabled === false, JSON.stringify(ready));
+    await reporterPage.click('.tl-main .ml-auto > button');
+    await until(reporterPage, () => Boolean(document.querySelector('[role="dialog"][aria-label="Ask for a payout"]')));
+    const askDialog = (await dialogText(reporterPage, 'Ask for a payout')) ?? '';
+    check(
+      'reporter: the dialog asks an administrator to pay out the whole $5 balance - no amount to type',
+      /pay out your earned balance, \$5\./.test(askDialog) &&
+        !(await reporterPage.$('[role="dialog"] input[inputmode="decimal"]')),
+      JSON.stringify(askDialog)
+    );
+    await reporterPage.type('#payout-request-note', 'PayPal to my usual address, please.');
+    await pressInDialog(reporterPage, 'Ask for a payout', 'Ask for payout');
+    await until(reporterPage, () =>
+      /Payout request FT-RF-/.test(document.querySelector('[role="dialog"][aria-label="Ask for a payout"]')?.innerText ?? '')
+    );
+    const sentText = (await dialogText(reporterPage, 'Ask for a payout')) ?? '';
+    const payoutRef = (sentText.match(/FT-RF-\d{8}-\d{4}/) ?? [])[0] ?? '';
+    check('reporter: the request is sent, with its reference and the $5 it asks for', Boolean(payoutRef) && /for \$5\./.test(sentText), sentText);
+    await reporterPage.screenshot({ path: `${SHOTS}/refunds-1-payout-asked.png` });
+    await pressInDialog(reporterPage, 'Ask for a payout', 'Done');
+    await until(reporterPage, (ref) => document.body.innerText.includes(ref), payoutRef);
+    const open = await readAskButton(reporterPage);
+    const openRow = (await rowText(reporterPage, payoutRef)) ?? '';
+    check(
+      'reporter: one at a time - the button is off while the request is open, and says so',
+      open?.disabled === true && /already have a payout request open/.test(open.title),
+      JSON.stringify(open)
+    );
+    check(
+      'reporter: the request is listed under Payout requests, Requested, with the note',
+      /Requested/.test(openRow) && /PayPal to my usual address/.test(openRow) && /\$5(?![.\d])/.test(openRow),
+      JSON.stringify(openRow)
     );
 
     /* ------------------------------------------------ the administrator */
@@ -456,16 +448,21 @@ async function main() {
     await wait(400);
 
     const adminBell = await readBell(adminPage);
+    const newPayout = adminBell.notices.find((n) => n.text.includes(`New payout request ${payoutRef}`));
     const newRequest = adminBell.notices.find((n) => n.text.includes(`New refund request ${reference}`));
     check(
-      "admin: the bell says there is something new, and a new request's notice links to the queue",
+      "admin: the bell says there is something new, and the payout request's notice links to the queue",
       /new/.test(adminBell.label ?? '') &&
-        Boolean(newRequest) &&
-        newRequest.link === '/admin/payments?tab=refunds' &&
-        newRequest.linkText === 'Open the refund queue' &&
-        /\$25\.000/.test(newRequest.text) &&
-        /Bought twice by mistake/.test(newRequest.text),
-      JSON.stringify({ label: adminBell.label, newRequest })
+        Boolean(newPayout) &&
+        newPayout.link === '/admin/payments?tab=refunds' &&
+        newPayout.linkText === 'Open the refund queue' &&
+        newPayout.text.includes(`${reporter.email} asks to be paid out $5 of earnings: "PayPal to my usual address, please."`),
+      JSON.stringify({ label: adminBell.label, newPayout })
+    );
+    check(
+      'admin: the older refund request was announced the same way',
+      Boolean(newRequest) && /\$25 back/.test(newRequest.text) && /Bought twice by mistake/.test(newRequest.text),
+      JSON.stringify(newRequest)
     );
     await adminPage.evaluate(() => {
       const link = Array.from(document.querySelectorAll('[role="dialog"][aria-label="Notifications"] a')).find(
@@ -474,7 +471,7 @@ async function main() {
       link?.click();
     });
     await until(adminPage, () => Boolean(document.querySelector('#refund-queue-heading')));
-    await until(adminPage, (ref) => document.body.innerText.includes(ref), reference);
+    await until(adminPage, (ref) => document.body.innerText.includes(ref), payoutRef);
     const queue = await adminPage.evaluate(() => ({
       url: window.location.pathname + window.location.search,
       active: document
@@ -486,6 +483,27 @@ async function main() {
       queue.url === '/admin/payments?tab=refunds' && /^Refund requests\s*\d+/.test(queue.active ?? ''),
       JSON.stringify(queue)
     );
+
+    // The reporter earned more since asking: the row says the balance NOW.
+    credits.grantCredits(reporter.id, 1_500, admin.id, 'E2E job rewards, later');
+    await adminPage.goto(`${APP}/admin/payments?tab=refunds`, { waitUntil: 'networkidle2' });
+    await until(adminPage, () => /Balance now \$6\.5/.test(document.body.innerText));
+    const payoutRow = await adminPage.evaluate((ref) => {
+      const row = Array.from(document.querySelectorAll('tbody tr')).find((node) => node.textContent.includes(ref));
+      return {
+        text: row?.innerText ?? '',
+        buttons: Array.from(row?.querySelectorAll('button') ?? []).map((b) => b.textContent.trim()),
+      };
+    }, payoutRef);
+    check(
+      'admin: a payout request is marked Payout, asks $5, names the balance now ($6.5), and offers Record payout',
+      /Payout/.test(payoutRow.text) &&
+        /\$5(?![.\d])/.test(payoutRow.text) &&
+        /Balance now \$6\.5/.test(payoutRow.text) &&
+        payoutRow.buttons.join() === 'Approve,Decline,Record payout',
+      JSON.stringify(payoutRow)
+    );
+
     // The buttons are the only controls on the page: in view at a desktop
     // width, not past the table box's edge behind a sideways scroll. Measured,
     // because pressing them by script works on a clipped button too.
@@ -506,20 +524,76 @@ async function main() {
       };
     });
     check(
-      'admin 1440x900: every Approve, Decline and Mark refunded lies inside the queue box, with no sideways scroll',
-      reach.found && reach.count >= 8 && reach.outside.length === 0 && !reach.scrolls,
+      'admin 1440x900: every Approve, Decline, Mark refunded and Record payout lies inside the queue box, with no sideways scroll',
+      reach.found && reach.count >= 15 && reach.outside.length === 0 && !reach.scrolls,
       JSON.stringify(reach)
+    );
+
+    // Record payout: what was actually sent, prefilled with the smaller of what
+    // was asked and the balance now, and how - refused in the server's words.
+    check('admin: Record payout opens', await pressInRow(adminPage, payoutRef, 'Record payout'));
+    const payoutTitle = `Record a payout to ${reporter.email}?`;
+    await until(adminPage, (name) => Boolean(document.querySelector(`[role="dialog"][aria-label="${name}"]`)), payoutTitle);
+    const payoutForm = await adminPage.evaluate(() => ({
+      amount: document.querySelector('#payout-amount')?.value ?? null,
+      line: document.querySelector('#payout-amount-line')?.textContent.trim() ?? '',
+    }));
+    const payoutBody = (await dialogText(adminPage, payoutTitle)) ?? '';
+    check(
+      'admin: the amount starts at the $5 asked, and the dialog names the $6.5 balance it may go up to',
+      payoutForm.amount === '5.00' &&
+        /asked to be paid out \$5 of earnings; their balance now is \$6\.5\./.test(payoutBody) &&
+        payoutForm.line === 'Leaves $1.5 of their $6.5 balance.',
+      JSON.stringify({ payoutForm, payoutBody })
+    );
+    await pressInDialog(adminPage, payoutTitle, 'Record payout');
+    await wait(200);
+    check(
+      'admin: a payout with no note of how it was paid is refused before it is sent',
+      /Say how it was paid - a method, a date or a reference - so the record explains itself\./.test(
+        (await dialogText(adminPage, payoutTitle)) ?? ''
+      ),
+      await dialogText(adminPage, payoutTitle)
+    );
+    await typeInto(adminPage, '#payout-amount', '7');
+    const tooMuch = await adminPage.evaluate(() => document.querySelector('#payout-amount-line')?.textContent.trim() ?? '');
+    check(
+      "admin: more than the balance is refused as it is typed, in the server's words",
+      tooMuch === "That is more than this reporter's balance of $6.5. Record what was actually paid, up to the balance.",
+      tooMuch
+    );
+    await typeInto(adminPage, '#payout-amount', '6.5');
+    await adminPage.type('#payout-note', 'E2E PayPal, ref 9917');
+    await adminPage.screenshot({ path: `${SHOTS}/refunds-2-record-payout.png` });
+    await pressInDialog(adminPage, payoutTitle, 'Record payout');
+    await until(adminPage, (ref) => document.body.innerText.includes(`${ref} paid out:`), payoutRef);
+    const paidSaid = await adminPage.evaluate(() => document.body.innerText);
+    check(
+      'admin: recorded - more than was asked, up to the balance - and the page says what',
+      paidSaid.includes(
+        `${payoutRef} paid out: $6.5 recorded as paid to ${reporter.email} and taken off their balance. They have been told.`
+      ),
+      paidSaid.slice(0, 400)
+    );
+    const payoutLedger = credits.getLedger(reporter.id).filter((entry) => entry.reason === 'reporter-payout');
+    check(
+      "admin: one reporter-payout row of -$6.5 in the reporter's history, with the note, and a balance of $0",
+      payoutLedger.length === 1 &&
+        payoutLedger[0].deltaMilli === -6_500 &&
+        /E2E PayPal, ref 9917/.test(payoutLedger[0].note) &&
+        users.getUserById(reporter.id).balanceMilli === 0,
+      JSON.stringify(payoutLedger)
     );
 
     // Crypto: the confirmation says to send it back by hand FIRST, and will
     // not go on until the administrator says they have.
-    check('admin: an open request offers Mark refunded', await pressInRow(adminPage, reference, 'Mark refunded'));
+    check('admin: an open refund request offers Mark refunded', await pressInRow(adminPage, reference, 'Mark refunded'));
     const byHandTitle = `Mark ${reference} refunded?`;
     await until(adminPage, (name) => Boolean(document.querySelector(`[role="dialog"][aria-label="${name}"]`)), byHandTitle);
     const byHand = (await dialogText(adminPage, byHandTitle)) ?? '';
     check(
       'admin: a crypto refund says to send the money back by hand first, before anything moves',
-      /Crypto cannot be refunded automatically\. Send \$25\.000 back from your Cryptomus merchant dashboard first/.test(byHand),
+      /Crypto cannot be refunded automatically\. Send \$25 back from your Cryptomus merchant dashboard first/.test(byHand),
       JSON.stringify(byHand)
     );
     await pressInDialog(adminPage, byHandTitle, 'Mark refunded');
@@ -528,7 +602,7 @@ async function main() {
       'admin: ...and refuses to go on until they confirm they have',
       /Confirm that you have sent the money back first\./.test((await dialogText(adminPage, byHandTitle)) ?? '')
     );
-    await adminPage.screenshot({ path: `${SHOTS}/refunds-2-by-hand.png` });
+    await adminPage.screenshot({ path: `${SHOTS}/refunds-3-by-hand.png` });
     await adminPage.evaluate((name) => {
       document.querySelector(`[role="dialog"][aria-label="${name}"] input[type="checkbox"]`)?.click();
     }, byHandTitle);
@@ -537,7 +611,7 @@ async function main() {
     const refundedSaid = await adminPage.evaluate(() => document.body.innerText);
     check(
       'admin: marked refunded, and the page says what moved',
-      refundedSaid.includes(`${reference} marked refunded: $25.000 recorded as sent back by hand`),
+      refundedSaid.includes(`${reference} marked refunded: $25 recorded as sent back by hand`),
       refundedSaid.slice(0, 400)
     );
 
@@ -578,14 +652,14 @@ async function main() {
     // says to contact the administrator, so it carries the link - and that
     // opens a dialog over this one, which Escape closes alone.
     check('admin: the card request offers Mark refunded', await pressInRow(adminPage, cardRef, 'Mark refunded'));
-    const cardTitle = `Refund $10.000 to ${user.email}'s card?`;
+    const cardTitle = `Refund $10 to ${user.email}'s card?`;
     await until(adminPage, (name) => Boolean(document.querySelector(`[role="dialog"][aria-label="${name}"]`)), cardTitle);
     check(
       'admin: a card refund says it is a partial Stripe refund of the unspent part',
       /partial Stripe refund/.test((await dialogText(adminPage, cardTitle)) ?? '')
     );
     const balanceBeforeCard = users.getUserById(user.id).balanceMilli;
-    await pressInDialog(adminPage, cardTitle, 'Refund $10.000');
+    await pressInDialog(adminPage, cardTitle, 'Refund $10');
     await until(adminPage, (name) => {
       const dialog = document.querySelector(`[role="dialog"][aria-label="${name}"]`);
       return Boolean(dialog && Array.from(dialog.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Contact admin'));
@@ -602,7 +676,7 @@ async function main() {
     await pressInDialog(adminPage, cardTitle, 'Contact admin');
     await until(adminPage, () => Boolean(document.querySelector('[role="dialog"][aria-label="Contact admin"]')));
     await until(adminPage, () => /help@example\.com/.test(document.querySelector('[role="dialog"][aria-label="Contact admin"]')?.innerText ?? ''));
-    await adminPage.screenshot({ path: `${SHOTS}/refunds-3-dialog-over-dialog.png` });
+    await adminPage.screenshot({ path: `${SHOTS}/refunds-4-dialog-over-dialog.png` });
     await adminPage.keyboard.press('Escape');
     await wait(300);
     const stacked = {
@@ -695,10 +769,16 @@ async function main() {
     await until(adminPage, () => window.location.search.includes('state=refunded'));
     await until(adminPage, (ref) => document.body.innerText.includes(ref), reference);
     const refundedRow = (await rowText(adminPage, reference)) ?? '';
+    const paidOutRow = (await rowText(adminPage, payoutRef)) ?? '';
     check(
       'admin: the Refunded filter lists it, with what went back',
-      /Refunded/.test(refundedRow) && /\$25\.000 returned/.test(refundedRow) && !(await rowText(adminPage, secondRef)),
+      /Refunded/.test(refundedRow) && /\$25 returned/.test(refundedRow) && !(await rowText(adminPage, secondRef)),
       JSON.stringify(refundedRow)
+    );
+    check(
+      'admin: ...and the payout as Paid out, with what was recorded',
+      /Paid out/.test(paidOutRow) && /\$6\.5 paid out/.test(paidOutRow) && !/Refunded/.test(paidOutRow),
+      JSON.stringify(paidOutRow)
     );
 
     /* ------------------------------------------------ the person, after */
@@ -711,7 +791,7 @@ async function main() {
     const afterDecline = (await rowText(page, secondRef)) ?? '';
     check(
       'user: Refunded, with what came back and how',
-      /Refunded/.test(afterRefund) && /\$25\.000 sent back to you by your administrator\./.test(afterRefund),
+      /Refunded/.test(afterRefund) && /\$25 sent back to you by your administrator\./.test(afterRefund),
       JSON.stringify(afterRefund)
     );
     check(
@@ -719,14 +799,8 @@ async function main() {
       /Declined/.test(afterDecline) && /Declined: Credit already used for resumes\./.test(afterDecline),
       JSON.stringify(afterDecline)
     );
-    await page.screenshot({ path: `${SHOTS}/refunds-4-outcomes.png` });
+    await page.screenshot({ path: `${SHOTS}/refunds-5-outcomes.png` });
 
-    await page.goto(`${APP}/orders/${order.id}`, { waitUntil: 'networkidle2' });
-    await until(page, () => {
-      const row = Array.from(document.querySelectorAll('tbody tr')).find((node) => node.textContent.includes('Acme'));
-      return Boolean(row && /Refunded/.test(row.innerText));
-    });
-    check("user /orders/[id]: the resume's row says Refunded", /Refunded/.test((await rowText(page, 'Acme')) ?? ''));
     await page.goto(`${APP}/credits?tab=history`, { waitUntil: 'networkidle2' });
     await until(page, () => /your refund request was granted/.test(document.body.innerText));
     const granted = (await rowText(page, 'your refund request was granted')) ?? '';
@@ -755,11 +829,48 @@ async function main() {
     check(
       "a bystander's feed has none of it",
       Array.isArray(otherFeed?.notifications) &&
-        !otherFeed.notifications.some((n) => /refund/i.test(`${n.title} ${n.body}`)),
+        !otherFeed.notifications.some((n) => /refund|payout/i.test(`${n.title} ${n.body}`)),
       JSON.stringify(otherFeed?.notifications?.map((n) => n.title))
     );
 
+    /* ------------------------------------------------ the reporter, after */
+    await reporterPage.bringToFront();
+    await reporterPage.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await until(reporterPage, () => /Paid out/.test(document.body.innerText));
+    const paidRow = (await rowText(reporterPage, payoutRef)) ?? '';
+    check(
+      'reporter: the request reads Paid out, with what was recorded - more than they asked',
+      /Paid out/.test(paidRow) && /\$6\.5 paid out to you\./.test(paidRow),
+      JSON.stringify(paidRow)
+    );
+    const ledgerRow = (await rowText(reporterPage, 'E2E PayPal, ref 9917')) ?? '';
+    check(
+      'reporter: Earnings and Payouts has the payout, -$6.5, with how it was paid',
+      /-\$6\.5/.test(ledgerRow) && /Paid out by an administrator/.test(ledgerRow),
+      JSON.stringify(ledgerRow)
+    );
+    const spent = await readAskButton(reporterPage);
+    check(
+      'reporter: with the balance paid out, Ask for Refund is off again, saying there is nothing to pay out',
+      spent?.disabled === true && spent.title === 'There are no earnings on your balance to pay out yet.',
+      JSON.stringify(spent)
+    );
+    const reporterBell = await readBell(reporterPage);
+    const recorded = reporterBell.notices.find((n) => /Payout recorded: \$6\.5/.test(n.text));
+    check(
+      'reporter: the bell says the payout was recorded, For you, linking to their Credits',
+      Boolean(recorded) &&
+        recorded.forYou &&
+        recorded.link === '/credits' &&
+        recorded.linkText === 'See your credits' &&
+        recorded.text.includes(`It answers your payout request ${payoutRef}.`),
+      JSON.stringify(recorded)
+    );
+    await reporterPage.keyboard.press('Escape');
+    await reporterPage.screenshot({ path: `${SHOTS}/refunds-6-paid-out.png` });
+
     /* ------------------------------------------------ Contact admin */
+    await page.bringToFront();
     await page.keyboard.press('Escape');
     await page.click(`button[title="Account: ${user.name}"]`);
     await until(page, () =>
@@ -819,7 +930,7 @@ async function main() {
       Boolean(refusal.onRow) && refusal.elsewhere === 0,
       JSON.stringify(refusal)
     );
-    await adminPage.screenshot({ path: `${SHOTS}/refunds-5-contact-editor.png` });
+    await adminPage.screenshot({ path: `${SHOTS}/refunds-7-contact-editor.png` });
     const stillSaved = await (await fetch(`${API}/contact`)).json();
     check(
       'admin: ...and nothing was saved - a refused save is refused whole',
@@ -838,7 +949,29 @@ async function main() {
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
     );
     check('phone /credits?tab=refunds: no horizontal scrollbar', !overflow);
-    await phone.screenshot({ path: `${SHOTS}/refunds-6-phone.png` });
+    await phone.screenshot({ path: `${SHOTS}/refunds-8-phone.png` });
+
+    const reporterPhoneContext = await browser.createBrowserContext();
+    const reporterPhone = await reporterPhoneContext.newPage();
+    await reporterPhone.setViewport(PHONE);
+    await signIn(reporterPhone, reporterToken);
+    await reporterPhone.goto(`${APP}/credits`, { waitUntil: 'networkidle2' });
+    await until(reporterPhone, (ref) => document.body.innerText.includes(ref), payoutRef);
+    const reporterOverflow = await reporterPhone.evaluate(() => {
+      const button = document.querySelector('.tl-main .ml-auto > button');
+      const rect = button?.getBoundingClientRect();
+      return {
+        past: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        button: rect ? rect.right <= window.innerWidth + 1 && rect.left >= -1 : false,
+        line: Boolean(document.getElementById('payout-blocked')),
+      };
+    });
+    check(
+      'phone reporter /credits: no horizontal scrollbar, Ask for Refund in view, and its reason said under it',
+      !reporterOverflow.past && reporterOverflow.button && reporterOverflow.line,
+      JSON.stringify(reporterOverflow)
+    );
+    await reporterPhone.screenshot({ path: `${SHOTS}/refunds-9-reporter-phone.png` });
   } finally {
     await browser.close();
   }

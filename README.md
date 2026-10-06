@@ -25,11 +25,11 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 |---------|-------------|
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
 | **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets each account's subscription; there is no checkout for one |
-| **Credits** | A credit is a dollar, to the thousandth (`$0.023`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
+| **Credits** | A credit is a dollar, to the thousandth (`$0.023`), shown without trailing zeros (`$1`, `$4.1`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User, Reporter and Administrator. Users build resumes. Reporters add job postings to the installation's job lake and are paid per job accepted, with no resume builder and no job scrapers. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody. See [Roles](#roles) |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Order & Download** | Two ways to build. **Generate Immediately** follows the run on the page and downloads each resume as it lands; closing the tab stops it and refunds what had not started. **Order** answers with an order number instead of making you wait: track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
-| **Refunds and Contact admin** | A user can **ask for a refund** of a purchase or of one resume, with a reason, and an administrator approves, declines or refunds it from one queue; every step reaches the person's bell. **Contact admin** lists how to reach the administrator, on every page and on the sign-in screen |
+| **Payouts, refunds and Contact admin** | A reporter can **ask for a payout** of their earned balance (*Ask for Refund*), and an administrator records what they sent, approves or declines it from one queue - where refund requests made before asking was removed are still decided; every step reaches the person's bell. Users and administrators no longer ask for refunds in the app. **Contact admin** lists how to reach the administrator, on every page and on the sign-in screen |
 | **Job analysis, once** | Each job posting is read once, ever - its keywords, title, job field and stated salary - and every profile, model, retry and run after reuses it. In an account's own job sheet the analysis is written into six columns only the program can edit |
 | **Job Data Lake** | One shared record of who is hiring for what. **Reporters** add jobs from their own job sheets and are paid per job accepted; administrators merge in what builds analysed, and every job added is copied to an administrators' spreadsheet |
 | **Several sign-ins per seat** | An administrator can add more **providers** of a seat - another Claude, Codex or Gemini account signed in at a folder of its own - each with its own limit and queue, and resumes spread over them. Building again for an unchanged profile, posting and model reuses the tailoring with no model call |
@@ -119,7 +119,7 @@ place: [Rolling back this release](#-rolling-back-this-release).
 |---|---|---|
 | **Plans are subscriptions** | The account tier (Default, Premium, Premium+, Premium Max) is called a subscription on every page, in the API and in the database (`users.plan` became `users.subscription`). `/settings/plan` opens **Settings → Subscription** | Nothing, beyond step 12. A script that reads `plan` reads `subscription` now - see [Plans are now subscriptions](#8-plans-are-now-subscriptions) |
 | **Credits are dollars** | A credit is a dollar, counted to `$0.001`. Balances and model prices were **reset** to `$0.000`, not converted; history keeps its old figures. Purchases credit exactly what they charge - the crypto fee is gone | Steps 5 and 7 - see [Credits](#credits) and [Credits are dollars](#10-credits-are-dollars) |
-| **Ask for a refund** | A user asks about a purchase (its unspent part comes back) or one resume (its charge comes back as credit), with a reason. An administrator approves, declines with a reason, or refunds, in **Admin → Payments → Refund requests** - a card refund goes to Stripe from there. Notices now reach one account as well as everybody | Watch the queue. See [Asking for a refund](#asking-for-a-refund) |
+| **Ask for a refund** | A user asks about a purchase (its unspent part comes back) or one resume (its charge comes back as credit), with a reason. An administrator approves, declines with a reason, or refunds, in **Admin → Payments → Refund requests** - a card refund goes to Stripe from there. Notices now reach one account as well as everybody | Watch the queue. See [Refund and payout requests](#refund-and-payout-requests) |
 | **Contact admin** | The administrator's contact channels - email, Telegram, Discord, WhatsApp, a link - shown to everybody, the sign-in and account-disabled screens included | Step 9. See [Contacting the administrator](#contacting-the-administrator) |
 | **Generate Immediately and Order** | Every build is queued. **Generate Immediately** is tied to the tab that started it: it downloads each resume as it lands, closing or leaving the tab stops it and refunds what had not started, and its files are deleted ten minutes after it ends. **Order** runs whether or not anybody watches. Building for more than one profile needs Premium or higher; a single profile, sheet mode and Order are open to every subscription. The builder's *Fallback Role* is gone - an untitled row takes the title its posting's analysis reads | Step 13. See [Order & Download](#order--download) |
 | **Reporters** | A third role, beside User and Administrator: Report Jobs, Credits and two Settings tabs - no resume builder, no job scrapers, no buying credits. Paid per job the lake accepts; an administrator records each payout made outside the app with **Record payout** | Step 10. See [Roles](#roles) |
@@ -350,20 +350,25 @@ install that used the metered APIs](#6-upgrading-an-install-that-used-the-metere
 ### Credits
 
 **A credit is a dollar**, counted to the thousandth: a balance reads `$3.977`, a
-price `$0.023`, a purchase `$50.000`. Every amount is stored and moved as an
+price `$0.023`, a purchase `$50`. Every amount is stored and moved as an
 integer count of thousandths of a dollar (`23` is `$0.023`), so nothing ever
 rounds - seven resumes at `$0.023` cost exactly `$0.161`, and two of them failing
-give back exactly `$0.046`. Every API response carries money that way, in fields
-ending `Milli` (`balanceMilli`, `costMilli`, `pricePerResumeMilli`...), and every
-request takes it as dollars in fields ending `Usd` (`"0.023"`), read digit by
-digit and refused with more than three decimals.
+give back exactly `$0.046`. An amount is **shown with every digit that matters
+and no trailing zeros** - `$1`, `$4.1`, `$0.023`, `$0`, `$1,234.5`, `-$0.046` -
+never rounded (the thousandth a charge moved is always there) and never padded
+(`$1.000` read as a thousand dollars). Notes already stored in a history keep
+the text they were written with, so older rows may still read `$0.050`. Every
+API response carries money as integers, in fields ending `Milli`
+(`balanceMilli`, `costMilli`, `pricePerResumeMilli`...), and every request takes
+it as dollars in fields ending `Usd` (`"0.023"`), read digit by digit and
+refused with more than three decimals.
 
 A resume - one profile against one job - costs **the price of the model it is
 built with**, however many files that produces. Every model has a *price per
 resume* in dollars, set under **Admin → Models** in steps of `$0.001`, from
-`$0.000` (free) to `$1000.000`. A new model is priced by whoever adds it - there
+`$0` (free) to `$1,000`. A new model is priced by whoever adds it - there
 is no default - and a model with no price (one a migration seeds, or one priced
-before credits were dollars) reads as `$0.000`, which **Admin → Models lists in
+before credits were dollars) reads as `$0`, which **Admin → Models lists in
 red** for as long as any enabled model is free. A run asking for PDF and DOCX
 plus a cover letter writes four files and costs one resume's price, because what
 was asked for is one tailored resume.
@@ -379,7 +384,7 @@ way the price is fixed at submit: each task carries what it was charged
 (`costMilli`), so a price changed mid-run, a server restart, or a queued task
 re-resolved after its model went away never re-prices it. A run across several
 models is charged the sum, and the reservation in Credit History says how it
-was made up - `4 resumes: 2 x Claude Opus @ $0.023, 2 x Claude Sonnet @ $0.010 = $0.066`.
+was made up - `4 resumes: 2 x Claude Opus @ $0.023, 2 x Claude Sonnet @ $0.01 = $0.066`.
 
 The charge happens **at submit, before the first model call**, and every resume
 that does not build gives back exactly what it was charged. So the invariant
@@ -407,7 +412,7 @@ being refused on the thirtieth after twenty-nine resumes already exist.
 - **Previews are free.** `/preview` and `/preview-all` write no file, and the
   tailored output they return is reused by the real run - charging both would
   bill the ordinary preview-then-generate flow twice for one piece of model work.
-  A new account at `$0.000` can still paste a job description and see the
+  A new account at `$0` can still paste a job description and see the
   result; what it cannot do is take the file away.
 - **Administrators are exempt.** They can already set any balance, so metering
   them is a formality - the cost line tells them *Administrators are not
@@ -422,13 +427,13 @@ being refused on the thirtieth after twenty-nine resumes already exist.
   nowhere.
 - **History from before dollars reads as it happened.** Credits were once whole
   units bought at a price (50c by default), and the upgrade reset every balance
-  to `$0.000` rather than pick a rate - see [Credits are
+  to `$0` rather than pick a rate - see [Credits are
   dollars](#10-credits-are-dollars). Rows and payments from then are shown in the
   credits they were written in (`legacyCredits` in the API), never converted,
   and each account that held any - in its balance, or in a run still going -
   has a `reset` row explaining the jump.
 
-A brand-new account starts at **$0.000**. Set `CREDIT_SIGNUP_GRANT` - in
+A brand-new account starts at **$0**. Set `CREDIT_SIGNUP_GRANT` - in
 **dollars**, e.g. `5` or `0.25` - to give an open installation a self-serve
 trial, or let people buy their own.
 
@@ -441,7 +446,7 @@ paid out by hand - see [Roles](#roles)), and every `/api/payments` route
 answers them 403 `role-not-allowed`.
 
 **What you pay is what you get.** A credit is a dollar and nothing comes out of
-it: pay `$50` by card or by crypto and the balance rises by exactly `$50.000`.
+it: pay `$50` by card or by crypto and the balance rises by exactly `$50`.
 There is no price per credit to set and no fee - the 2.2% the crypto row used to
 keep is gone, and the provider's own fees are the operator's to absorb. Each
 method has its own bounds in dollars, set under **Admin → Payments** (card
@@ -708,35 +713,51 @@ is refused rather than told that nothing could be reversed. Crypto cannot be
 refunded automatically - crypto can only be sent back, not pulled - and
 the app says so rather than pretending.
 
-### Asking for a refund
+### Refund and payout requests
 
-Anybody but a reporter can ask for money back, with a reason, about two kinds
-of thing - and an administrator decides, in one queue (**Admin → Payments**, *Refund
-requests*):
+**Only a reporter asks, and only to be paid out.** Users and administrators no
+longer ask for refunds of purchases or resumes in the app (the owner's
+decision): *Ask for refund* is gone from purchases, Credit History and orders,
+and a page left open from before is answered *Refunds are no longer asked for
+in the app. If you think a purchase or a resume should be refunded, contact
+your administrator.* (`POST /api/refund-requests` and `GET
+/api/refund-requests/options` answer 410 `refund-requests-closed`). An
+administrator can still give money or credit back directly - the payments
+list's Refund, or the **+/-** beside a balance on Admin → Accounts. **Credits →
+Refund Requests** still lists what an account asked before, read-only, and
+every request still open from before stays in the administrators' queue and is
+decided exactly as below.
+
+**A payout request.** A reporter's **Credits** page has **Ask for Refund**
+where a user's has *Purchase Credits*. It asks an administrator to pay out the
+earned balance - the whole balance as it stands, never an amount the reporter
+types - with an optional note (how they would like to be paid, say). One
+request may be open at a time, and none at `$0`. Every administrator gets a
+notice (*New payout request FT-RF-…*), and the request joins the same queue
+(**Admin → Payments**, *Refund requests*), marked *Payout* with the reporter's
+balance now. There an administrator **Records the payout** with what they
+actually sent outside the app - prefilled with the smaller of what was asked
+and the balance now, and anything up to the balance at that moment, more than
+was asked included (earnings since asking count) - and a note saying how. That
+writes one `reporter-payout` row in the reporter's history, keyed by the request
+(`payout:<account>:<request id>`, so a double press records once), and turns the
+request *Paid out* in the same step; the reporter is told (*Payout recorded:
+$X*). Above the balance, an account no longer a reporter, or one deleted since
+is refused and moves nothing - decline the request instead. Recording a payout
+from **Admin → Accounts** while a request is open closes that request as paid
+in the same step, so it cannot be paid twice.
+
+The older kinds still in the queue are:
 
 - **A purchase** gives back its **unspent part**: what is left of what it put
   on the balance - the balance, capped at what the purchase credited, the same
   measure the Refund button's reversal uses - rounded down to whole cents,
   because a card returns cents and a balance moves in tenths of one (`$39.993`
-  left asks for `$39.990`; the `$0.003` stays as credit). It is measured when
+  left asks for `$39.99`; the `$0.003` stays as credit). It is measured when
   asked and again when refunded, and never goes above what was asked: somebody
   who spends after asking gets back what is left.
 - **One resume's charge** comes back as **credit**, exactly what that resume
-  was charged. A resume that did not build already gave its charge back on its
-  own, and one still being built cannot be asked about yet. An administrator's
-  resumes, and free ones, were never charged.
-
-**Where to ask.** *Ask for refund* is on a purchase's row under **Credits →
-Card** or **Crypto** (in its Action column), on a resume charge in **Credits →
-Credit History** (a run's charge lists its resumes to pick from), and on each
-resume of an order's page (**Orders → an order**). It opens a small dialog that
-shows what would come back - measured by the server, never typed - and asks
-why. **Credits → Refund Requests** lists what you have asked, with its state:
-*Requested*, *Approved*, *Declined* with the administrator's reason, or
-*Refunded* with what came back. Something that cannot be asked about says why
-(still being built, refunded automatically because it did not build, never
-charged), and something with a request already open shows that request instead
-of a second button.
+  was charged.
 
 Each request moves through four states, set by an administrator:
 
@@ -744,7 +765,7 @@ Each request moves through four states, set by an administrator:
 |---|---|---|
 | Requested | **Approved** | The refund is accepted. No money moves yet |
 | Requested or Approved | **Declined** | A reason is **required**, written by the administrator and shown to the person who asked. Final |
-| Requested or Approved | **Refunded** | The refund is made in the same step. Final |
+| Requested or Approved | **Refunded** (*Paid out* for a payout) | The refund - or, for a payout, the record of what was sent - is made in the same step. Final |
 
 *Refunded* is where the money moves, and it moves once however often the button
 is pressed:
@@ -796,8 +817,9 @@ the amount returned.
 
 **One open request per item.** A second request for something with a Requested
 or Approved one is refused - by a partial UNIQUE index in the database, not only
-by the page - and a declined request does not stop asking again. A refunded one
-does: there is nothing left to give back.
+by the page - and a declined request does not stop asking again. For a payout
+the item is the reporter's account, so each reporter has at most one open
+payout request, and may ask again once it is paid out or declined.
 
 **Which resume.** A queued resume - an order's, or a Generate Immediately
 run's, which is filed with an order record of its own that **Orders** never
@@ -808,14 +830,15 @@ alone. Only a builder run queued by a release from before Generate Immediately
 is named by its task, for as long as the queue still holds its run (up to an
 hour after it finishes - sooner on a busy install, since the queue keeps only
 the twenty most recently finished runs of any account). After that is gone it
-cannot be picked any more - *This run's resumes are no longer listed* - and the
-person is told to ask an administrator, who can grant credit from **Admin →
-Accounts**.
+cannot be measured any more - *That resume is no longer listed* - and an
+administrator can grant credit from **Admin → Accounts** instead.
 
 **Everybody concerned is told.** A new request puts a notice in every
 administrator's bell; every change of state puts one in the bell of the person
 who asked - and nobody else's: *Your refund request for … was approved*,
-*… was declined: <the administrator's reason>*, *… was refunded ($0.161)*.
+*… was declined: <the administrator's reason>*, *… was refunded ($0.161)*; for
+a payout, *Your payout request FT-RF-… was approved* or *… was declined: …*,
+and *Payout recorded: $X*.
 
 **Rolling back past this** needs these notices deleted first: an older build
 reads every row of `notifications` as an announcement for everybody, so it
@@ -893,8 +916,8 @@ Every account holds exactly one role, and an administrator changes it on
 
 | Role | Who | What they reach |
 |---|---|---|
-| **User** | every new sign-in | the resume builder and everything around it: profiles, templates, Build Resumes, Orders, groups (by subscription), the job pages, buying credits and asking for refunds |
-| **Reporter** | made by an administrator - by changing a user's role, or by adding the account as a Reporter before its first sign-in | **Report Jobs**, **Credits** (their earnings and payouts), a link to their own job sheet, **Settings → Profile** and **Job Sheet**, notifications and **Contact admin**. No resume builder, no job scrapers, no buying credits |
+| **User** | every new sign-in | the resume builder and everything around it: profiles, templates, Build Resumes, Orders, groups (by subscription), the job pages and buying credits |
+| **Reporter** | made by an administrator - by changing a user's role, or by adding the account as a Reporter before its first sign-in | **Report Jobs**, **Credits** (their earnings, payouts and **Ask for Refund** - a payout request), a link to their own job sheet, **Settings → Profile** and **Job Sheet**, notifications and **Contact admin**. No resume builder, no job scrapers, no buying credits |
 | **Administrator** | the addresses in `ADMIN_EMAILS` (else `SMTP_USER`), and anybody an administrator promotes | everything, including what the whole installation shares |
 
 A reporter adds job postings to the installation's job lake from their own
@@ -906,7 +929,10 @@ the global rate. Earnings land on their balance like any credit. They are
 people - and the administrator records each payment with **Record payout**:
 an amount and a note saying how it was paid, which takes it off the balance
 and shows in the reporter's history and bell. A payout is never more than the
-balance, and only a reporter has one. A reporter cannot buy credits.
+balance, and only a reporter has one. A reporter can ask for one with **Ask for
+Refund** on their Credits page - a payout request in the administrators' queue
+(see [Refund and payout requests](#refund-and-payout-requests)). A reporter
+cannot buy credits.
 
 Changing a role keeps everything the account owns - profiles, orders,
 balance - out of reach of the routes the new role cannot use. An Order
@@ -948,10 +974,11 @@ everybody but a reporter.
 | **Credits** (balance and history) | anybody signed in, reporters included | their own. A reporter's history is their earnings and payouts |
 | **Your account** (Settings → Profile, Job Sheet) | anybody signed in, reporters included | their own name and their own job sheet |
 | **Report Jobs** | reporters (administrators may open it) | adding jobs from their own sheet to the job lake |
-| **Payouts** (Record payout, the rate per job) | **administrators** | on Admin → Accounts, for a reporter's row |
+| **Payouts** (Record payout, the rate per job) | **administrators** | on Admin → Accounts, for a reporter's row, and on a payout request in the refund queue |
+| **Payout requests** (asking) | **reporters** | for their own earned balance (`GET`/`POST /api/refund-requests/payout`). An administrator is refused (409 `not-a-reporter`): their balance is not earnings |
 | **Job Lake** (the lake, its merge, the global rate and duplicate window, the admin sheet) | **administrators** | the lake is shared, and what a job pays is the installation's decision - see [The Job Data Lake](#the-job-data-lake) |
 | **Payments** (the list, refunds and the refund-request queue) | **administrators** | reconciliation against the provider's dashboard, and the only buttons in the product that move money outward |
-| **Refund requests** (asking) | users | about their own purchases and resumes only - somebody else's answers 404, never 403. Not a reporter: refunding a purchase gives back the unspent balance, which for them is earnings |
+| **Refund requests** (asking) | nobody | removed: a user or administrator is answered 410 `refund-requests-closed` with a sentence asking them to contact the administrator, a reporter 403 `role-not-allowed` as before |
 | **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
 | **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
 | **Find Jobs** | anybody signed in | opens today's tab of their own job sheet in a new tab: from the sidebar for users and administrators, from the account menu and Report Jobs for a reporter |
@@ -961,7 +988,7 @@ everybody but a reporter.
 | **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for any user |
 | **Templates** (looking at them) | users | the gallery and the full-page preview of each, from the sidebar. Choosing a template is no use without seeing what it produces |
 | **Templates** (adding, editing, disabling, deleting) | **administrators** | a template is shared - editing one changes how everybody's resumes look. A *disabled* template is an administrator's staging state and is not listed to anybody else |
-| **Notifications** (reading them) | anybody signed in, reporters included | the bell in the top bar, with an unread dot until it is opened: every announcement, and the notices written for that account alone (its refund requests; for an administrator, new ones) - never anybody else's |
+| **Notifications** (reading them) | anybody signed in, reporters included | the bell in the top bar, with an unread dot until it is opened: every announcement, and the notices written for that account alone (its refund and payout requests, its payouts; for an administrator, new requests) - never anybody else's |
 | **Notifications** (posting them) | **administrators** | one notice goes to every account on the installation |
 | **Test** | **administrators** | runs prompts directly and shows raw model output; a tool for whoever maintains the prompts |
 | **Settings** (the shared configuration - General, Accounts, Models...) | **administrators** | every page under it changes something shared |
@@ -1182,6 +1209,33 @@ Two more things every template payload carries, worked out from the markup on
 every read and never stored: `supportsSoftSkills` and `supportsStrengths` -
 whether it has a section to put each in. The manual builder offers both
 sections now, guarded so an empty one prints nothing.
+
+**A section switched off goes whole - heading included - and nothing else goes
+with it.** The renderer finds it, at compile time and never by rewriting the
+stored file, by the `section-strengths` / `section-soft-skills` class every
+built-in and the manual builder put on it; else by a `data-section="strengths"`
+(or `"softSkills"`) attribute; else, for markup with neither - an uploaded
+template, typically - from where the list is printed, a `{{#each strengths}}`
+loop or an inline `{{join softSkills ", "}}`: the nearest element around it
+that holds the section and nothing else (its heading, the list, a divider), or
+the list's container (with any `{{#if strengths.length}}` right around it)
+plus the heading element before it, past a divider or a line break
+(`<h2>Strengths</h2><hr>`, `<b>Strengths</b><br>`). So *Strengths* over an
+emptied list no longer survives in an uploaded template, in the live preview
+or the PDF (the DOCX draws its own sections from the gated lists, so it never
+printed one). An element is taken whole only when the section is ALL it
+holds: a sidebar that also holds a photo, an icon, a *References* block or any
+line of text keeps all of that and loses only the heading and the list, and
+soft skills drawn inside the Technical Skills block lose their items and leave
+the block's heading. Switched on with nothing in it, the same section is
+guarded, so it prints no empty heading either. A heading the finder cannot
+tell from the template's other content - bare text beside other data, a label
+inside its own `{{#if}}`, a picture between the heading and the list - stays
+over an emptied list; the Troubleshooting table says how to mark the section
+so it goes whole. And if finding a section would leave markup that no longer
+compiles (a Handlebars block that opens inside the section's element and
+closes outside it), the template is drawn with less found rather than not at
+all, and the backend says so once.
 
 **A resume never fails over a layout.** The template is the one asked for, else
 the profile's own, else `default` - the first of those that is enabled and
@@ -1578,7 +1632,7 @@ page or the request can name another spreadsheet.
 **Rewards.** Paid the moment a job is added, in the same database transaction
 as the lake row - at the reporter's own **rate per job** if an administrator
 set one on Admin → Accounts, otherwise at the **global rate** set on Admin →
-Job Lake (`$0.000` until somebody sets it: nobody is paid by default), in steps
+Job Lake (`$0` until somebody sets it: nobody is paid by default), in steps
 of `$0.001`. The rate in effect is recorded on the reward, so changing a rate
 reaches the next job, never one already paid. Duplicates, unclassified jobs and
 skipped rows pay `$0`, and a replaced job pays again - but the same version of a
@@ -1586,7 +1640,7 @@ job never twice. An optional **daily cap** limits what one reporter earns per
 UTC day; a job past it is still added, and paid only what is left of the day.
 An administrator who reports is never paid, and nor is anybody for a merge.
 An administrator may **revoke** a reward - on its own, or when deleting the
-job - which takes it back off the reporter's balance, never below `$0.000`
+job - which takes it back off the reporter's balance, never below `$0`
 (earnings already paid out are not a debt), and tells them in the bell.
 Earnings are paid outside the app and recorded with **Record payout** (see
 [Roles](#roles)).
@@ -1697,8 +1751,9 @@ accounts can never write one file - served only to their owner, and **deleted
 `IMMEDIATE_FILE_RETENTION_MS` after the run ends** (ten minutes by default),
 whether or not they were downloaded: the download is the delivery. A
 downloaded resume stays charged either way. An immediate run never appears on
-**Orders**, and a resume of one is still refundable (see [Asking for a
-refund](#asking-for-a-refund)).
+**Orders**, and a request for a resume of one made before asking was removed
+is still decided in the queue (see [Refund and payout
+requests](#refund-and-payout-requests)).
 
 **An Order answers immediately** with
 
@@ -1945,12 +2000,28 @@ The frontend swaps the hostname in `NEXT_PUBLIC_API_URL` for the hostname the pa
 npm run dev
 ```
 
-This starts the backend in watch mode and the frontend dev server. For a production-style frontend build use `npm run dev:poll` or run each side separately:
+This starts the backend in watch mode and the frontend's dev server on
+Turbopack, which compiles each page the first time it is opened and again when
+its source changes. For a production-style frontend build use `npm run dev:poll`
+or run each side separately:
 
 ```bash
-cd backend && npm run dev        # http://<server-ip>:3001
-cd frontend && npm run dev:live  # http://<server-ip>:3000
+cd backend && npm run dev          # http://<server-ip>:3001
+cd frontend && npm run dev:turbo   # http://<server-ip>:3000 (dev server, Turbopack)
+cd frontend && npm run dev         # http://<server-ip>:3000 (production-style: build, then start)
 ```
+
+`npm run dev:live` (or `npm run dev:live --prefix frontend` on its own) runs the
+frontend on **webpack's** dev server instead. It is kept for anyone who needs
+webpack, but it is no longer the default, for a reason you can see: whenever a
+new tab of the app connects to it after anything has compiled, it reloads every
+other open tab - and a Build Resumes tab that reloads stops the Generate
+Immediately run going in it (Troubleshooting, *Opening a second tab of the app
+reloads the first one*). `backend/test/e2e/dev-reload.js` reproduces that in a
+browser; against Next 16.1.6 it failed on `dev:live` (the first tab reloaded
+both times a second tab opened, and its run was cancelled) and passed on
+`dev:turbo` - twice, waiting 10 and then 15 seconds - and on the
+production-style `dev`.
 
 The backend prints every address it is reachable on when it starts, followed by
 a readiness line for each AI provider. A locked one is reported as locked
@@ -2867,18 +2938,18 @@ unique across the install, which settles all of it in one segment.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription and role - User, Reporter or Administrator - before they arrive; it is not a way in, since they still prove the address through Google or a code. A row whose address is in `ADMIN_EMAILS` (or is `SMTP_USER`'s, when `ADMIN_EMAILS` is empty) says so, naming the setting: it can be given another role, but becomes an administrator again at its next sign-in. A **Reporter** row has a **rate per job** (dollars, empty for the global rate) and **Record payout** - the amount paid outside the app and a note saying how, taken off the balance, never more than it (see [Roles](#roles)) |
+| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription and role - User, Reporter or Administrator - before they arrive; it is not a way in, since they still prove the address through Google or a code. A row whose address is in `ADMIN_EMAILS` (or is `SMTP_USER`'s, when `ADMIN_EMAILS` is empty) says so, naming the setting: it can be given another role, but becomes an administrator again at its next sign-in. A **Reporter** row has a **rate per job** (dollars, empty for the global rate) and **Record payout** - the amount paid outside the app and a note saying how, taken off the balance, never more than it; recording one while the reporter has a payout request open closes that request as paid (see [Roles](#roles)) |
 | **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
 | **Providers** (on **Models**) | Every place a seat runs: the built-in provider of each type, configured from `.env`, and any added - a name, a type, a **sign-in folder** on this server (passed to the CLI as `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME`, so it can be another account), optionally its own binary, and its own **concurrency_max_requests** (1-32). Each row shows where each value comes from (this page, `.env`, or the default) and its live state. Paths are checked as they are saved; a provider building something cannot be removed, only switched off - its waiting work moves to another of its type - and a built-in one can only be switched off. See [Several providers of one type](#several-providers-of-one-type) |
-| **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0.000` to `$1000.000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0.000` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
+| **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0` to `$1,000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
 | **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants - and one flagged *predates job fields* was written before postings had a job field: it still works, with the field list sent beside it on every call, but outside the cached part of the prompt. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
-| **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund (see [Asking for a refund](#asking-for-a-refund)) |
+| **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
 | **Job Lake** | The [Job Data Lake](#the-job-data-lake): query it (company, job field, salary, who reported it, when, free text), open a job and its history, delete one with or without taking its reward back; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
@@ -2949,7 +3020,7 @@ matching it.
 | `NEXT_PUBLIC_CALENDAR_DEFAULT_TIMEZONE` | The calendar page's starting time zone, an IANA name (default `America/Los_Angeles`). A zone outside the five the page lists is added to its menu under its city's name; an unknown one falls back with a console warning. *Rebuild* |
 | `CALENDAR_API_TIMEOUT_MS` / `CALENDAR_DETAIL_CONCURRENCY` | The calendar's own API routes, which run in the Next.js server: the timeout of each calendar.online request (default `12000`, range 1000-120000) and how many event-detail requests the link scan runs at once (default `12`, range 1-32). Server-only, not `NEXT_PUBLIC_`: restart the frontend, no rebuild |
 | `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave it empty and the `SMTP_USER` address is used instead; with neither set the install has **no administrator at all** and says so at startup. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
-| `CREDIT_SIGNUP_GRANT` | What a brand-new account starts with, **in dollars**, to `$0.001`: `5` is `$5.000`, `0.25` is `$0.250`. `0` by default; above `1000` clamps. It was a count of credits before credits became dollars, so an old `5` (about `$2.50` of resumes at 50c a credit) now grants `$5` - check it when upgrading. A value with more than three decimals warns once and grants nothing |
+| `CREDIT_SIGNUP_GRANT` | What a brand-new account starts with, **in dollars**, to `$0.001`: `5` is `$5`, `0.25` is `$0.25`. `0` by default; above `1000` clamps. It was a count of credits before credits became dollars, so an old `5` (about `$2.50` of resumes at 50c a credit) now grants `$5` - check it when upgrading. A value with more than three decimals warns once and grants nothing |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_MAX_CONNECTIONS` | The pooled SMTP connection: connect and greeting timeout (default `10000`), idle socket timeout (default `20000`) - both range 1000-300000, never 0, because an unbounded wait is a sign-in that never returns - and the pool's width (default `2`, range 1-20). *Startup* |
@@ -3060,14 +3131,20 @@ file. Export them in the shell, for the install and the server alike:
 | A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting on another row is a duplicate too - lower down in the same run, or pasted into another row or tab in a later one, by the same reporter or not; only a re-run of the very row that added it (its status never reached the sheet) reads *Added*. After the window, the same job reported again **replaces** the old one and is paid. |
 | A row a new posting was pasted into still shows the old posting's **Lake Status**, **Job Hash** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. A row is skipped as reported only when its status sits beside its own posting's analysis. |
 | A reported row says *Skipped* | It could not be reported this time: the row has no company, or no job description long enough to read a job field from. Fill it in and run the rows again - *Skipped* rows are tried again, unlike *Added*, *Replaced*, *Duplicate* and *Unclassified* ones. |
-| A reporter added jobs but earned `$0.000` | The global rate is still `$0.000` (Admin → Job Lake shows *not set*) and the reporter has no rate of their own, or the **daily cap** was reached (the job is added, the reward stops at the cap until the next UTC day), or the account is not a Reporter - an administrator reporting is never paid. Each lake row records the rate in effect when it was added. |
+| A reporter added jobs but earned `$0` | The global rate is still `$0` (Admin → Job Lake shows *not set*) and the reporter has no rate of their own, or the **daily cap** was reached (the job is added, the reward stops at the cap until the next UTC day), or the account is not a Reporter - an administrator reporting is never paid. Each lake row records the rate in effect when it was added. |
 | **Admin → Job Lake** says jobs are waiting for the admin sheet, or the log says `[lake] Could not append to the admin sheet` | The jobs are in the database - the sheet is a copy appended after them, and a failed append never undoes one. Under *Why the last attempt failed* the page shows the sentence and, on the line under it, Google's own reason: *Google Sheets is not configured on this server* means the server has no Google credential (see [The job sheet](#the-job-sheet)); *Google Sheets is busy right now*, over a Google 429, means the shared Sheets quota ran out even after backing off - **Retry now** later; *That spreadsheet or tab could not be found*, over a Google 404, means the spreadsheet was deleted in Google - use **Create a new admin sheet**, which sends it the whole lake (pressed while a sync is sending, that sync stops and starts again on the new sheet). Each sync also runs after the next report run or merge, and at startup. An administrator who cannot open the sheet was disabled when it was shared, or was appointed after the last sync - **Retry now** shares it with them. |
 | The **Merge** tab does not offer a job a build analysed | It offers only analyses with a job field from the list and a company on record, not merged before. An *Unclassified* posting is never offered; one analysed with no company named - the builder's analysis names none, so a posting that was only previewed has none - is offered once a build, a job filter run or a report names its company; and a posting a reporter already reported is merged already. |
 | A build fails with *That job analysis was not found. Analyse the job description again.* | The page sent the id of an analysis this server has not stored - a page left open across a database restore, or a request made by hand. Analyse the description again (the builder does it when you press Generate), which finds the posting if it is stored or analyses it once. |
 | Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates, job scrapers or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
 | A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before jobs can be reported.* (or that their job sheet could not be reached, with a `Ref:`); **Settings → Job Sheet** ends the same sentence *...before this page can show you one.* | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
 | An administrator made somebody a User or Reporter, and they are an administrator again | Their address is in `ADMIN_EMAILS` (or, with that unset, it is the `SMTP_USER` address). Those are promoted at every sign-in and every start, and never demoted, so a slip on the Accounts page cannot lock the operator out - the row and the change's own message say so. Take the address out of `ADMIN_EMAILS`, restart the backend, then change the role. |
-| **Record payout** answers *That is more than this reporter's balance of $X. Record what was actually paid, up to the balance.* | A payout records money already paid outside the app, and is never more than the balance: it is refused rather than cut down, because a record saying less was paid than was is wrong. If more really was paid, the balance was short first - read the reporter's **History** on Admin → Accounts, and add the missing earnings with the **+/-** button beside the balance (add or take away credit, with a note) before recording the payout. *Only a reporter is paid out* means the account is not a Reporter; use the **+/-** button for anybody else. |
+| **Record payout** (on Admin → Accounts, or on a payout request in the refund queue) answers *That is more than this reporter's balance of $X. Record what was actually paid, up to the balance.* | A payout records money already paid outside the app, and is never more than the balance: it is refused rather than cut down, because a record saying less was paid than was is wrong. If more really was paid, the balance was short first - read the reporter's **History** on Admin → Accounts, and add the missing earnings with the **+/-** button beside the balance (add or take away credit, with a note) before recording the payout. *Only a reporter is paid out* means the account is not a Reporter; use the **+/-** button for anybody else. |
+| **Record payout** on a payout request answers *That account is no longer a reporter, so no payout can be recorded against its balance. Decline the request instead.* (or *That account no longer exists ...*) | The reporter was made a user or an administrator, or deleted, after asking. Nothing was recorded and the request is still open: decline it with a reason. If they are to be paid anyway, make them a Reporter again first. |
+| A reporter's **Ask for Refund** is greyed out | It asks for the whole earned balance, so it is offered only with something on the balance (`$0` has nothing to pay out) and only while no payout request of theirs is open - one at a time. The button's tooltip, and the line under it, say which; the open request is listed under it, and an administrator answers it in **Admin → Payments → Refund requests**. |
+| A page answers *Refunds are no longer asked for in the app. If you think a purchase or a resume should be refunded, contact your administrator.* | Users and administrators no longer ask for refunds in the app - a tab left open from before still had the old **Ask for refund** button (410 `refund-requests-closed`). Reload the page. An administrator refunds a purchase from the payments list, or adds credit back with the **+/-** beside a balance on Admin → Accounts; requests made before are still in the queue. |
+| Credit History shows `$0.050` on an older row and `$0.05` on a newer one | Amounts are shown without trailing zeros now (`$1`, not `$1.000`). A note written into a history row is stored as text and keeps the figure it was written with; the amount column beside it is always the new format. |
+| An uploaded template still prints a **Strengths** or **Soft Skills** heading with the section switched off | The section is found by the `section-strengths` / `section-soft-skills` class, a `data-section="strengths"` / `"softSkills"` attribute, or - for markup with neither - from where the list is printed (`{{#each strengths}}`, `{{join softSkills ", "}}`): an element around it that holds the section and nothing else - no other data, no text, no picture - or the heading element before the list's container, past a divider (`<hr>`, an empty box) or a line break. A heading that is bare text beside other data, sits inside a `{{#if}}` of its own before the list, or has a picture or a line of text between it and the list is not found, and one in an element that also holds a photo or static text is taken without that element. Put the class or the attribute on the element that holds the heading and the list (not on the list alone), and the section goes whole. |
+| The backend logs `[templates] Template "<id>" does not compile with its Strengths / Soft Skills section found from the list, ...` or `... section removed, so it is drawn with both sections in place ...` | Finding the section would have cut through a Handlebars block - typically an `{{#if}}` or `{{#each}}` that opens inside the section's element and closes after it (`<div class="section-strengths">{{#if summary}}...</div>{{/if}}`), which Handlebars accepts and the cut cannot. Rather than fail every resume on the template, it is drawn with less found: only the class- or `data-section`-marked section, or none - a switched-off list still prints empty, but its heading may stay. Move the block wholly inside or wholly outside the section's element (and mark the element with `section-strengths` / `section-soft-skills`), save the template, and the section goes whole again. Logged once per template while the server runs. |
 | Coin arrived on the retired on-chain path and was never credited | The watcher and the admin queue that showed these are gone, but the records are not. An unattributable transfer, or one that arrived against an order it could not be credited to, is still in the database: `SELECT * FROM chain_orphans WHERE resolved_at IS NULL;` and `SELECT * FROM chain_invoices WHERE state = 'held';` against your `DB_DIR`. Each row carries the transaction id, the amount and why it was held. Settle it by hand and adjust the balance from the accounts page - nothing in the app will surface it for you any more. |
 | The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and, signed in as an administrator, read the buy page's own reason under the greyed-out button: it names which key is missing. Anybody else is told only *Not available right now*. |
 | Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
@@ -3113,8 +3190,9 @@ file. Export them in the shell, for the install and the server alike:
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released $X from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
 | A run keeps going after the page is closed - or stops when it is | Which one depends on how it was started. An **Order** belongs to the queue, not to the page: closing or reloading the page does not stop it, and its files keep landing on **Orders**; to stop it, press **Cancel** there. A **Generate Immediately** run is tied to the tab that started it: a dropped connection inside `IMMEDIATE_TAB_GRACE_MS` (30 s) picks it back up without downloading anything twice, but a tab that is closed or reloaded - or a page left inside the app after confirming - stops it, and the log says which: `[queue] Immediate run bat_... stopped by its page` (the page said it was leaving) or `[queue] Immediate run bat_... stopped: no page has followed it for 30000 ms` (the tab went away without saying so and did not come back). Either way the resumes that had not started are refunded and the run's finished files stay downloadable for `IMMEDIATE_FILE_RETENTION_MS`. For a run nobody will sit through, use **Order**. |
 | A Generate Immediately run stopped part way though the tab was still open | The page lost its connection to the server for longer than the grace (plus up to 20 s: the server ends the run's progress stream every 20 s, and a page that does not attach again by then is counted gone) - a laptop that slept, a network that dropped for a minute, a proxy that cut the progress stream and did not let it reconnect. The person sees the remaining resumes as *Cancelled* and the unstarted ones refunded. Raise `IMMEDIATE_TAB_GRACE_MS` (up to ten minutes) if your users' connections are like that, or have them **Order** long runs. |
+| Opening a second tab of the app reloads the first one, and a Generate Immediately run going there stops (*Your last run ended while this page was away ... Stopped after building 0 of 1 resume*) | The frontend is on **webpack's** dev server - `npm run dev:live`, or the root `npm run dev` of a release before this one. In Next 16.1 that server sends every open tab a "sync" when a new tab connects, and a tab that has not seen the latest compile (the page the new tab opened is one) takes it for a restarted server and reloads itself; a reloaded Build Resumes tab releases its run as it goes, which the server then stops and refunds. Nothing in the app reloads a tab. Run `npm run dev` (Turbopack) or the production-style `npm run dev --prefix frontend` instead - neither reloads, and a production `next start` has no such server at all. `cd backend && DB_DIR=... E2E_MODE=dev:live node test/e2e/dev-reload.js` shows which a given setup does (backend/test/e2e/README.md). |
 | Only the first resume of a Generate Immediately run downloaded, or the browser asks *This site is trying to download multiple files* | The browser blocks a page from starting several downloads on its own until it is allowed to. Choose **Allow** in that prompt (in Chrome: the icon at the end of the address bar, or *Site settings → Automatic downloads → Allow* for this site). The files are on the server for `IMMEDIATE_FILE_RETENTION_MS` after the run ends (ten minutes by default), and the page lists each one under the progress (*This run's files*) to download again while it is open; after that they are deleted, downloaded or not - an **Order** keeps them for days instead. |
-| Downloading a Generate Immediately resume answers *That file has been deleted from the server* | Its run ended more than `IMMEDIATE_FILE_RETENTION_MS` ago, and the files went with it (owner decision: an immediate run's files are only kept long enough to download). The resume stays charged; if it never reached the person, they can ask for a refund on it. Raise the setting, or use **Order**, when files are needed for longer. |
+| Downloading a Generate Immediately resume answers *That file has been deleted from the server* | Its run ended more than `IMMEDIATE_FILE_RETENTION_MS` ago, and the files went with it (owner decision: an immediate run's files are only kept long enough to download). The resume stays charged; if it never reached the person, an administrator can add the credit back with the **+/-** beside their balance on Admin → Accounts. Raise the setting, or use **Order**, when files are needed for longer. |
 | A link to `/api/generated/...` or `/api/resume/download/...` answers `{"error":"File not found"}` for a file that is on disk | The file is another account's: an order or a Generate Immediately run recorded it, or it sits in a run's own folder (`<account>/<date>/<order number>/...`, where a resume is written before it is recorded as finished - and stays, unrecorded, when its build fails). Whose it is is decided on the path as the server opens it, so a `//`, a `./`, a `..`, a symlink or (on Windows and macOS) another case of the same name is the same file and gets the same answer; an administrator is refused like anybody else, as before. Its owner downloads it from **Orders**, or from the run's own page while the files last. Otherwise the path leaves the output directory, names a folder rather than a file, or the file is gone. |
 | Building for several profiles is refused with *Building for more than one profile needs a Premium subscription or higher* | The account is on the Default subscription, which supports one profile: Multiple, All profiles, Specific group and Select Group need Premium or higher, for Generate Immediately and Order alike (403 `subscription-too-low`). One profile at a time works on every subscription. Move the account up under **Admin → Accounts → Subscription**; administrators are never refused. |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut used to cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page keeps following until the server says the run is over: after twenty attaches in a row that brought nothing it slows from one attach a second to one every 10 s, and it stops at once only when the server answers that the batch is gone (404: restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
@@ -3179,8 +3257,8 @@ file. Export them in the shell, for the install and the server alike:
 | A model shows *Not in model list* | Its model name is not in its seat's list any more - the list was overridden in `.env` since it was saved. It keeps running exactly as before; the flag only says the form cannot offer that name again. Editing its name or price keeps it, while changing its model means picking one from the list. |
 | *Set Default* is refused with *"..." cannot be the default* or *is switched off* | The model cannot run, and a default nobody can run would only fail every run that names no model: switch it on under Admin → Models, switch its provider on under Admin → Settings, or unlock its seat (`AI_LOCKED_PROVIDERS`). Nothing is quietly substituted. |
 | *This needs $0.161 of credit and the account has $0.023* | The run costs the sum of each resume's model price, and the balance is short. Buy credit, generate fewer at once, or pick a model with a lower price per resume - the builder's cost line shows the total before the run starts. An administrator can grant credit under Accounts, and is never charged. |
-| Every balance is `$0.000` after upgrading, and Credit History ends with a *reset* row | Credits became dollars, and the owner's decision was to reset rather than convert: a credit was bought at a price (50c by default), so no one rate would be right for every balance. The `reset` row shows the old balance in credits; the old rows and payments are kept as they were, read-only. What every account held is in `app_settings["migration-log.credits-to-dollars"]` if you want to grant some of it back - in dollars, under Accounts. See [Credits are dollars](#10-credits-are-dollars). |
-| Admin → Models lists models in red as *free*, and runs on them cost nothing | Every enabled model priced `$0.000` is listed: after the upgrade that is all of them, since their old prices were in credits and were reset, and a model a migration adds arrives unpriced. Set a price per resume on each. `0` is a valid price - a deliberately free model stays listed, so nobody gives resumes away without seeing it. Startup says *Every model is FREE until it is priced* once, on the upgrade. |
+| Every balance is `$0` after upgrading, and Credit History ends with a *reset* row | Credits became dollars, and the owner's decision was to reset rather than convert: a credit was bought at a price (50c by default), so no one rate would be right for every balance. The `reset` row shows the old balance in credits; the old rows and payments are kept as they were, read-only. What every account held is in `app_settings["migration-log.credits-to-dollars"]` if you want to grant some of it back - in dollars, under Accounts. See [Credits are dollars](#10-credits-are-dollars). |
+| Admin → Models lists models in red as *free*, and runs on them cost nothing | Every enabled model priced `$0` is listed: after the upgrade that is all of them, since their old prices were in credits and were reset, and a model a migration adds arrives unpriced. Set a price per resume on each. `0` is a valid price - a deliberately free model stays listed, so nobody gives resumes away without seeing it. Startup says *Every model is FREE until it is priced* once, on the upgrade. |
 | Admin → Models, Accounts or Payments refuses a save with *This page is from an older version of the app. Reload it and try again.* | The page was loaded before credits became dollars and sent an amount in the old unit - a price in credits (`creditsPerResume`), a balance or grant in credits (`credits`, `amount`), payment limits in cents, or a purchase as a count of credits. Read as dollars it would have moved money by the wrong amount, so nothing was saved. Reload the page. |
 | A price, balance or grant is refused: *... can have at most three decimal places: $0.001 is the smallest step* | Amounts are exact to a thousandth of a dollar, and anything finer is refused rather than rounded either way - `0.023` is fine, `0.0235` is not. A purchase must be a whole number of cents (`12.50`, not `12.505`), because that is all a card or an invoice can charge. |
 | Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, the builder's sheet mode and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen **before** signing in again - a consent given while it is in Testing keeps the seven-day limit: Cloud console -> Google Auth Platform -> Audience -> Publish app (older consoles: APIs \& Services -> OAuth consent screen -> PUBLISH APP). With the restricted Drive scope Google then shows a "Google hasn't verified this app" screen at sign-in; for your own install that is expected - Advanced -> Go to the app. A Google Workspace project can choose user type Internal instead, which has neither the expiry nor the warning. `deleted_client`, `disabled_client` or `invalid_client` instead of `invalid_grant` means the OAuth client itself is gone, and signing in again would re-use it: a deleted one can be restored for 30 days under Google Auth Platform -> Clients; otherwise make a new Desktop app client, download it into `backend/` and run `npm run sheets:login -- --client <that file>` - naming it, because an older `client_secret*.json` left there can otherwise be picked. If `GOOGLE_CREDENTIALS_PATH` names the credential, `sheets:login` re-uses the client from that file and says so if the app will keep reading a different one from the file it just saved. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
@@ -3272,7 +3350,16 @@ that could not be captured here.
 The two skills layouts and the two section switches are pinned per template:
 `backend/test/templateLayouts.test.js` renders every built-in in each layout it
 declares and with each switch on and off, and checks the capability flags
-against the markup. The live preview's access rules and its lack of side
+against the markup; `sectionHeadings.test.js` renders every built-in and a set
+of uploaded-style markups (a heading before the loop, a heading in a plain div,
+a guard around the loop only, both sections in one column, a divider under the
+heading, the `join` helper...) with each switch off - no heading left,
+Experience and Technical Skills intact - and on, keeps a photo, an icon or a
+line of text that shares the section's element in every mode, never takes an
+element that also holds the summary or the Experience loop, or a paragraph past
+60 characters, finds a `data-section` element whatever its heading reads, draws a template
+the section finds would stop compiling with less found, and holds the profile
+preview route and the render a PDF prints from to the same answer. The live preview's access rules and its lack of side
 effects are in `profilePreview.test.js`, run with every seat locked so a 200
 also proves no model was asked; the prompt variables and their drift check in
 `promptVariables.test.js`.
@@ -3285,7 +3372,8 @@ held open cannot pay out more than was unspent; a refusal puts the credit back;
 no answer keeps it held and the retry sends the same), a Decline refused while
 the refund is with Stripe, crypto only after the by-hand confirmation and at
 the amount sent, one open request per item in SQL, and each notice reaching
-only the account it is for (`notificationRecipients.test.js`) - and the contact
+only the account it is for (`notificationRecipients.test.js`), the asking
+routes answering 410 - and the contact
 channels' rules, `javascript:` and `data:` included, in `contact.test.js`.
 `frontendRefunds.test.js` also parses every page and fails on a sentence that
 asks for an administrator with no Contact admin link after it.
@@ -3300,12 +3388,18 @@ session for each role, unless a reporter is refused every route that is not
 theirs with 403 `role-not-allowed` and reaches the ones that are. Roles, the
 reporter's rate per job and **Record payout** (never above the balance, once
 per press, the ledger still summing to the balance) are in
-`accountRoutes.test.js` and `accounts.test.js`.
+`accountRoutes.test.js` and `accounts.test.js`; payout requests - only a
+reporter asks, one at a time, never at `$0`; Record payout writes one row keyed
+by the request, refuses above the balance or for an account no longer a
+reporter without moving anything, and Admin → Accounts' payout closes the open
+request - in `payoutRequests.test.js`.
 
 Money is pinned in `credits.test.js` (exact thousandths: seven `$0.023`
 resumes reserve `$0.161`, two refunds give back `$0.046`), `money.test.js` (the
-one dollar parser and formatter, and a guard that no money path floors,
-truncates or float-parses an amount), `paymentFees.test.js` (a purchase credits
+one dollar parser and formatter - `$1`, `$4.1`, `$0.023`, `$0`, `$1,234.5`,
+`-$0.046` - a guard that no money path floors,
+truncates or float-parses an amount, and that the docs outside the release
+history spell an amount the same way, with no padding zeros), `paymentFees.test.js` (a purchase credits
 exactly what it charges, by card and by crypto) and `dollarSwitch.test.js`,
 which builds a database the way the build before dollars left it - balances, a
 run in progress, a queued order, a pending checkout - and boots this one on it.
@@ -3314,10 +3408,14 @@ The frontend has no test runner, so its decisions that need no browser are
 small modules the backend suite transpiles and tests
 (`frontendHelpers.test.js`, `frontendEditorHelpers.test.js`). What does need
 one is in `backend/test/e2e/`, run by hand against servers that are already up:
-`shell.js` walks every page as each role, and `preview-vibration.js` opens the
+`shell.js` walks every page as each role, `preview-vibration.js` opens the
 profile editor with real scrollbars (puppeteer hides them by default) and
 watches the preview's size every frame for each template, at the window sizes
-where it used to shake.
+where it used to shake, `section-switches.js` unticks Strengths and Soft Skills
+in the same editor and reads the preview frame after each click, and
+`dev-reload.js` opens a second tab against whichever
+dev server is running and fails if the first one reloads or loses its run
+(`devServer.test.js` holds the root `dev` to the mode that passed).
 
 The documentation is checked too. `backend/test/envExample.test.js` reads
 `.env.example` and this README against the table in

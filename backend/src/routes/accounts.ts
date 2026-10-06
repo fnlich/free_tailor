@@ -5,7 +5,6 @@ import { isSubscriptionId, listSubscriptions, resolveSubscription } from '../con
 import { isConfiguredAdmin, resolveAdminIdentity, type AdminSource } from '../config/adminIdentity';
 import { parseReportRateUsd } from '../config/reportRate';
 import { globalReportRateMilli } from '../services/jobLake/settings';
-import { createNotification } from '../database/notificationRepository';
 import { countProfilesForOwner } from '../database/profileRepository';
 import {
   countAdmins,
@@ -22,8 +21,10 @@ import {
   updateUser,
 } from '../database/userRepository';
 import { requireAdmin } from '../middleware/auth';
+import { sendPublicError } from '../middleware/publicError';
 import { ensureAccountSheet } from '../services/sheets/accountSheet';
-import { getLedger, grantCredits, recordReporterPayout, setBalance } from '../services/credits';
+import { getLedger, grantCredits, PAYOUT_REQUEST_ID, readPayoutNote, setBalance } from '../services/credits';
+import { recordDirectPayout } from '../services/refunds';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 import { describeDollarProblem, formatMoney, parseDollars } from '../utils/money';
 
@@ -40,11 +41,6 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../utils/money
 
 const router = Router();
 router.use(requireAdmin);
-
-/** A payout's note: long enough for a method, a date and a reference, short enough for a ledger cell. */
-const MAX_PAYOUT_NOTE = 500;
-/** The page's id for one payout - a UUID, usually - so a repeat records once. */
-const PAYOUT_REQUEST_ID = /^[A-Za-z0-9_-]{8,100}$/;
 
 type AccountRow = UserAccount & {
   subscriptionLabel: string;
@@ -562,6 +558,11 @@ router.post('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
  * `requestId` (optional, the page's id for this one payout) makes a repeat -
  * a double press, a retried request - answer `recorded: false` with the first
  * row, instead of recording the payout twice.
+ *
+ * A payout recorded here also closes the reporter's open payout request, if
+ * they have one, in the same transaction (`recordDirectPayout`) - so the
+ * refund queue cannot pay that request a second time. `closedRequestId`
+ * names it; null when none was open.
  */
 router.post('/:id/payout', (req: Request<{ id: string }>, res: Response) => {
   if (refuseRetiredCreditFields(req, res, ['amount', 'credits'])) return;
@@ -585,18 +586,12 @@ router.post('/:id/payout', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
-  const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
-  if (!note) {
-    res.status(400).json({
-      error: 'Say how it was paid - a method, a date or a reference - so the record explains itself.',
-      code: 'note-required',
-    });
+  const readNote = readPayoutNote(req.body?.note);
+  if (!readNote.ok) {
+    res.status(400).json({ error: readNote.error, code: readNote.code });
     return;
   }
-  if (note.length > MAX_PAYOUT_NOTE) {
-    res.status(400).json({ error: `Keep the note under ${MAX_PAYOUT_NOTE} characters.`, code: 'note-too-long' });
-    return;
-  }
+  const note = readNote.note;
 
   const rawRequestId = req.body?.requestId;
   let requestId: string | undefined;
@@ -608,13 +603,20 @@ router.post('/:id/payout', (req: Request<{ id: string }>, res: Response) => {
     requestId = rawRequestId;
   }
 
-  const outcome = recordReporterPayout({
-    userId: target.id,
-    amountMilli,
-    actorId: req.user!.id,
-    note,
-    ...(requestId ? { requestId } : {}),
-  });
+  let direct: ReturnType<typeof recordDirectPayout>;
+  try {
+    direct = recordDirectPayout({
+      accountId: target.id,
+      amountMilli,
+      admin: req.user!,
+      note,
+      ...(requestId ? { requestId } : {}),
+    });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Could not record the payout');
+    return;
+  }
+  const outcome = direct.outcome;
   if (!outcome.ok) {
     if (outcome.reason === 'no-account') {
       res.status(404).json({ error: 'No such account.' });
@@ -632,24 +634,9 @@ router.post('/:id/payout', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
-  if (outcome.applied) {
-    // The reporter's own record of being paid, in the bell as well as in
-    // their history. After the payout rather than inside its transaction: a
-    // notice that could not be written is a missing courtesy, and must not
-    // undo a record of money that has already left.
-    try {
-      createNotification({
-        recipientId: target.id,
-        title: `Payout recorded: ${formatMoney(amountMilli)}`,
-        body:
-          `An administrator recorded a payout of ${formatMoney(amountMilli)} to you: ${note.replace(/[.!?]+$/, '')}. ` +
-          `Your balance is now ${formatMoney(outcome.balance)}.`,
-        link: '/credits',
-      });
-    } catch (error) {
-      console.warn(`[accounts] Recorded a payout for ${target.email} but could not notify them.`, error);
-    }
-  }
+  // The reporter's notice ("Payout recorded: $X", in the bell as well as in
+  // their history) went out with it, after the commit: a notice that could
+  // not be written must not undo a record of money that has already left.
 
   const updated = getUserById(target.id) ?? target;
   res.status(outcome.applied ? 201 : 200).json({
@@ -657,6 +644,7 @@ router.post('/:id/payout', (req: Request<{ id: string }>, res: Response) => {
     balanceMilli: outcome.balance,
     entry: outcome.entry,
     recorded: outcome.applied,
+    closedRequestId: direct.closedRequest?.id ?? null,
   });
 });
 

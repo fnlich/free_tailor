@@ -104,7 +104,7 @@ test('each method is judged by its own floor, not the other one\'s', async () =>
   try {
     const tooSmallForCard = await server.checkout({ method: 'card', amountUsd: '2.49' });
     assert.equal(tooSmallForCard.status, 400);
-    assert.match((await tooSmallForCard.json()).error, /smallest card purchase is \$2\.500/i);
+    assert.match((await tooSmallForCard.json()).error, /smallest card purchase is \$2\.5\./i);
 
     assert.equal((await server.checkout({ method: 'card', amountUsd: '2.50' })).status, 201);
 
@@ -112,7 +112,7 @@ test('each method is judged by its own floor, not the other one\'s', async () =>
     // which is the whole point of per-method limits.
     const tooSmallForCrypto = await server.checkout({ method: 'crypto', amountUsd: '2.50' });
     assert.equal(tooSmallForCrypto.status, 400);
-    assert.match((await tooSmallForCrypto.json()).error, /smallest crypto purchase is \$50\.000/i);
+    assert.match((await tooSmallForCrypto.json()).error, /smallest crypto purchase is \$50\./i);
 
     assert.equal((await server.checkout({ method: 'crypto', amountUsd: '50' })).status, 201);
   } finally {
@@ -125,7 +125,7 @@ test('each method is judged by its own ceiling', async () => {
   try {
     const overCard = await server.checkout({ method: 'card', amountUsd: '100.01' });
     assert.equal(overCard.status, 400);
-    assert.match((await overCard.json()).error, /largest card purchase is \$100\.000/i);
+    assert.match((await overCard.json()).error, /largest card purchase is \$100\./i);
 
     // Crypto's ceiling is $2000, so the same amount is fine there.
     assert.equal((await server.checkout({ method: 'crypto', amountUsd: '100.01' })).status, 201);
@@ -390,7 +390,7 @@ test('a quote is judged by the same limits a checkout is', async () => {
 
     const refused = await server.call(server.aliceToken, '/api/payments/quote?method=crypto&amountUsd=2.50');
     assert.equal(refused.status, 400);
-    assert.match((await refused.json()).error, /smallest crypto purchase is \$50\.000/i);
+    assert.match((await refused.json()).error, /smallest crypto purchase is \$50\./i);
 
     /*
      * An `asset` in the query is not read at all now, so it cannot steer the
@@ -400,7 +400,7 @@ test('a quote is judged by the same limits a checkout is', async () => {
      */
     const ignored = await server.call(server.aliceToken, '/api/payments/quote?method=crypto&amountUsd=2.50&asset=card');
     assert.equal(ignored.status, 400);
-    assert.match((await ignored.json()).error, /smallest crypto purchase is \$50\.000/i);
+    assert.match((await ignored.json()).error, /smallest crypto purchase is \$50\./i);
 
     // Half a cent is not an amount anything can charge.
     const halfCent = await server.call(server.aliceToken, '/api/payments/quote?method=card&amountUsd=12.505');

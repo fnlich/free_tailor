@@ -150,7 +150,7 @@ test('a valid Stripe event credits the account exactly once', async () => {
     assert.ok(purchase, 'a purchase row was written');
     assert.equal(purchase.deltaMilli, 100_000, 'exactly the $100 charged');
     assert.equal(purchase.balanceAfterMilli, 100_000);
-    assert.match(purchase.note, /\$100\.000$/);
+    assert.match(purchase.note, / - \$100$/);
   } finally {
     server.close();
   }

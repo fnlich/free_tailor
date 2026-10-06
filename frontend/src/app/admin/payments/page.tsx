@@ -434,7 +434,7 @@ function RefundDialog({
           ) : (
             <>
               The money goes back through {payment.provider}. Credit already spent
-              cannot be reversed - a balance never goes below $0.000 - and this will say
+              cannot be reversed - a balance never goes below $0 - and this will say
               how much was.
               {isLegacyPurchase(payment) && (
                 <>

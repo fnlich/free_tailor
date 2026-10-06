@@ -259,7 +259,7 @@ export function describeRunProgress(run: Pick<ReportRun, 'state' | 'progress'>):
 /**
  * A row's outcome as the line under the table counts it: what it paid, or
  * nothing. A reporter who is not paid (an administrator) sees "-" rather than
- * a column of $0.000 that reads like a rate of nothing.
+ * a column of $0 that reads like a rate of nothing.
  */
 export function describeRowReward(row: Pick<ReportRowOutcome, 'rewardMilli'>, paid: boolean): string {
   if (!paid || row.rewardMilli <= 0) return '-';
@@ -444,7 +444,7 @@ export function lakeSettingsDraft(settings: LakeSettings): LakeSettingsDraft {
 /** The server's window bounds (OPERATIONAL_INT_BOUNDS.JOB_LAKE_DUPLICATE_WINDOW_DAYS). */
 export const DUPLICATE_WINDOW_MIN_DAYS = 1;
 export const DUPLICATE_WINDOW_MAX_DAYS = 3650;
-/** The server's MAX_DAILY_CAP_MILLI: $1,000,000.000. */
+/** The server's MAX_DAILY_CAP_MILLI: $1,000,000. */
 export const MAX_DAILY_CAP_MILLI = 1_000_000_000;
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -474,7 +474,7 @@ function parseCap(text: string): Parsed<number | null> {
 
 function parseRate(text: string): Parsed<number | null> {
   // The same rule as a reporter's own rate (config/reportRate.ts): dollars to
-  // $0.001, $0.000-$1000.000, empty for none.
+  // $0.001, $0-$1,000, empty for none.
   const parsed = parseReportRate(text);
   return parsed.ok ? { ok: true, value: parsed.milli } : { ok: false, error: parsed.error };
 }
@@ -673,7 +673,7 @@ export function describeDeleteConfirm(
   const base = `Delete ${job} from the lake? It can then be reported again, as a new job.`;
   if (!canRevoke(entry)) return base;
   return revokeReward
-    ? `${base} Its ${formatMoney(entry.reward.milli)} reward is taken back from the reporter's balance, never below $0.000.`
+    ? `${base} Its ${formatMoney(entry.reward.milli)} reward is taken back from the reporter's balance, never below $0.`
     : `${base} The reporter keeps its ${formatMoney(entry.reward.milli)} reward.`;
 }
 

@@ -5,7 +5,7 @@ const test = require('node:test');
 
 const ts = require('typescript');
 
-const { useTempStorage } = require('./helpers');
+const { useAdminEmails, useTempStorage } = require('./helpers');
 
 /**
  * The browser's half of refund requests and Contact admin.
@@ -16,15 +16,18 @@ const { useTempStorage } = require('./helpers');
  * claim:
  *
  *  - MIRRORS of a server rule, run against the server's own compiled code over
- *    the same inputs: the reason a request or a decline must give, the amount
- *    a crypto refund may say was sent, the app path a notice may link to, the
- *    contact types and their default labels. A box that accepts what the
- *    server refuses is a form that cannot be sent and does not say why.
- *  - DECISIONS with no React in them: which button a charge or a purchase
- *    gets, which a request in the queue gets, what the confirmation says
- *    before money moves, which sentences get a Contact admin link, which of
- *    two open dialogs Escape closes, and that a link the server built is the
- *    only kind that reaches an anchor.
+ *    the same inputs: the reason a decline must give, the note a payout
+ *    request may carry, why Ask for Refund is off, what Record payout refuses
+ *    (through the real queue route), the amount a crypto refund may say was
+ *    sent, the app path a notice may link to, the contact types and their
+ *    default labels. A box that accepts what the server refuses is a form
+ *    that cannot be sent and does not say why.
+ *  - DECISIONS with no React in them: which button a request in the queue
+ *    gets, what the confirmation says before money moves or a payout is
+ *    recorded, how a payout reads once paid out, which sentences get a
+ *    Contact admin link, which of two open dialogs Escape closes, and that a
+ *    link the server built is the only kind that reaches an anchor - and that
+ *    nothing in the browser asks for a refund any more (owner decision R1).
  */
 
 const SRC = path.join(__dirname, '..', '..', 'frontend', 'src');
@@ -90,9 +93,58 @@ function reasonRefusal(run) {
   }
 }
 
-// -- reasons -------------------------------------------------------------- //
+/**
+ * The real refund-request routes on a fresh database: a reporter with earnings
+ * to ask about, and an administrator to decide - for the claims about payouts,
+ * which only the routes can settle.
+ */
+async function payoutServer() {
+  useTempStorage(`frontend-payouts-${Math.random().toString(36).slice(2)}`);
+  useAdminEmails('boss@example.com');
+  const express = require('express');
+  // The same modules `server()` reads, not fresh copies: a second copy of the
+  // database module would open a second connection to this file, and the two
+  // would lock each other out. Connections are kept per file, so the new
+  // DB_DIR is all a fresh installation needs.
+  const users = require('../dist/database/userRepository');
+  const credits = require('../dist/services/credits');
+  const { attachUser } = require('../dist/middleware/auth');
+  const routes = require('../dist/routes/refundRequests');
 
-test("a refund reason is refused by the page exactly when, and in the words, the server refuses it", () => {
+  const boss = users.createUser({ email: 'boss@example.com', name: 'Boss' });
+  const scout = users.createUser({ email: 'scout@example.com', name: 'Scout', role: 'reporter' });
+  const ids = { boss, scout };
+  const tokens = { boss: users.createSession(boss.id), scout: users.createSession(scout.id) };
+
+  const app = express();
+  app.use(express.json());
+  app.use(attachUser);
+  app.use('/api/refund-requests', routes.default);
+  app.use('/api/admin/refund-requests', routes.adminRefundRequestsRouter);
+  const listening = app.listen(0);
+  const port = listening.address().port;
+  const call = async (who, route, init = {}) => {
+    const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method: init.method ?? 'GET',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${tokens[who]}` },
+      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+    });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null };
+  };
+  return {
+    users,
+    ids,
+    call,
+    earn: (who, milli) => credits.grantCredits(ids[who].id, milli, boss.id, 'Job rewards'),
+    balance: (who) => users.getUserById(ids[who].id).balanceMilli,
+    close: () => listening.close(),
+  };
+}
+
+// -- reasons and notes ----------------------------------------------------- //
+
+test("a decline's reason and a payout's note are refused by the page exactly when, and in the words, the server refuses them", () => {
   const { refunds } = server();
   const display = load('lib/refundDisplay.ts');
   assert.equal(display.MAX_REFUND_REASON, refunds.MAX_REFUND_REASON);
@@ -112,36 +164,63 @@ test("a refund reason is refused by the page exactly when, and in the words, the
   for (const input of inputs) {
     assert.equal(display.cleanRefundReason(input), refunds.cleanReason(input) ?? '', JSON.stringify(input));
 
-    // The requester's check runs before anything is looked up, so an unknown
-    // payment is fine here: a reason refusal comes first or not at all.
-    const serverSaid = reasonRefusal(() =>
-      refunds.createRefundRequest({ id: 'nobody' }, { itemType: 'payment', itemId: 'p', reason: input })
-    );
-    assert.equal(display.refundReasonProblem(input, 'requester'), serverSaid, `requester: ${JSON.stringify(input)}`);
-
     const adminSaid = reasonRefusal(() => refunds.declineRefund('nothing', { id: 'admin' }, { reason: input }));
-    assert.equal(display.refundReasonProblem(input, 'admin'), adminSaid, `admin: ${JSON.stringify(input)}`);
+    assert.equal(display.declineReasonProblem(input), adminSaid, `admin: ${JSON.stringify(input)}`);
+
+    // A payout's note is checked before the account is looked up, so an
+    // unknown account is fine here: a note refusal comes first or not at all.
+    const reporterSaid = reasonRefusal(() => refunds.createPayoutRequest({ id: 'nobody' }, { reason: input }));
+    assert.equal(display.payoutNoteProblem(input), reporterSaid, `reporter: ${JSON.stringify(input)}`);
   }
+  // Optional: no note is a request with nothing to add.
+  assert.equal(display.payoutNoteProblem(''), null);
 });
 
-// -- what a charge offers ------------------------------------------------- //
+// -- nothing asks for a refund any more ----------------------------------- //
 
-function option(overrides = {}) {
-  return {
-    kind: 'resume',
-    itemType: 'order-item',
-    itemId: 'item-1',
-    label: 'FT-20261005-0001 - Jane / Acme',
-    chargedMilli: 23,
-    refundableMilli: 23,
-    available: true,
-    unavailableCode: null,
-    unavailableReason: null,
-    paymentMethod: null,
-    openRequest: null,
-    ...overrides,
+test('no page asks for a refund: the asking routes are gone from the client, and only a reporter asks to be paid out', () => {
+  const walk = (dir, out = []) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, out);
+      else if (/\.(tsx?|jsx?)$/.test(entry.name)) out.push(full);
+    }
+    return out;
   };
-}
+  const code = (file) => fs.readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+
+  assert.equal(fs.existsSync(path.join(SRC, 'components', 'credits', 'RefundRequestDialog.tsx')), false);
+  for (const file of walk(SRC)) {
+    const text = code(file);
+    const where = path.relative(SRC, file);
+    // The two routes that answer 410 now, and the button that called them.
+    assert.doesNotMatch(text, /refund-requests\/options/, `${where} reads the closed options route`);
+    assert.doesNotMatch(text, />\s*Ask for refund\s*</, `${where} still offers Ask for refund`);
+    assert.doesNotMatch(text, /refundRequestsApi\.(?:create|options)\b/, `${where} asks for a refund`);
+  }
+  const client = code(path.join(SRC, 'lib', 'refunds.ts'));
+  // Every POST the client makes outside the administrators' queue.
+  const posts = [...client.matchAll(/apiFetch<[^>]*>\(\s*['`]([^'`]+)['`],\s*\{\s*method: 'POST'/g)]
+    .map((m) => m[1])
+    .filter((route) => !route.startsWith('/admin/'));
+  assert.deepEqual(posts, ['/refund-requests/payout'], 'the one request a page may make is a payout request');
+
+  // The reporter's Credits has the button, where a user's has Purchase Credits.
+  const credits = code(path.join(SRC, 'app', 'credits', 'page.tsx'));
+  const earnings = credits.slice(credits.indexOf('function EarningsCredits('), credits.indexOf('function CreditsBody('));
+  assert.match(earnings, /<div className="ml-auto">\s*<button[\s\S]*?data-shape="pill"[\s\S]*?Ask for Refund\s*<\/button>/);
+  assert.match(earnings, /disabled=\{Boolean\(askBlocked\)\}/);
+  assert.match(earnings, /<PayoutRequestDialog/);
+  assert.match(earnings, /<RefundRequestHistory[^>]*variant="payouts"/);
+  const purchaser = credits.slice(credits.indexOf('function PurchaserCredits('), credits.indexOf('function EarningsCredits('));
+  assert.doesNotMatch(purchaser, /Ask for Refund|PayoutRequestDialog|payoutRequestsApi/);
+  // The dialog never sends a figure: the server reads the balance itself.
+  const dialog = code(path.join(SRC, 'components', 'credits', 'PayoutRequestDialog.tsx'));
+  assert.match(dialog, /payoutRequestsApi\.create\(note\)/);
+  assert.doesNotMatch(dialog, /amountUsd|<input[^>]*inputMode="decimal"/);
+});
+
+// -- how a request reads --------------------------------------------------- //
 
 function request(overrides = {}) {
   return {
@@ -165,121 +244,102 @@ function request(overrides = {}) {
   };
 }
 
-test('a charge offers Ask, says an open request is open, or says why not - never a second request', () => {
-  const { refundActionFor } = load('lib/refundDisplay.ts');
-
-  assert.deepEqual(refundActionFor(option()), { kind: 'ask' });
-
-  // One open request per item: the open one is shown, and no Ask - even
-  // though the item itself could still be refunded.
-  const open = request({ state: 'approved' });
-  assert.deepEqual(refundActionFor(option({ available: false, openRequest: open })), { kind: 'open', request: open });
-
-  assert.deepEqual(
-    refundActionFor(option({ available: false, refundableMilli: 0, unavailableCode: 'refunded', unavailableReason: 'x' })),
-    { kind: 'refunded' }
-  );
-  assert.deepEqual(
-    refundActionFor(
-      option({
-        available: false,
-        refundableMilli: 0,
-        unavailableCode: 'in-progress',
-        unavailableReason: 'This resume is still being built.',
-      })
-    ),
-    { kind: 'none', reason: 'This resume is still being built.' }
-  );
-});
-
-test('a purchase offers "Ask for refund" only while paid and credited in dollars - the server\'s own rule', () => {
-  const { purchaseOffersRefund } = load('lib/refundDisplay.ts');
-
-  assert.equal(purchaseOffersRefund({ state: 'paid', creditedMilli: 25000 }), true);
-  // Paid before credits were dollars: nothing of it is on any balance, and
-  // the server refuses it as `legacy` - so no button that can only be refused.
-  assert.equal(purchaseOffersRefund({ state: 'paid', creditedMilli: 0 }), false);
-  for (const state of ['pending', 'failed', 'expired', 'refunding', 'refunded']) {
-    assert.equal(purchaseOffersRefund({ state, creditedMilli: 25000 }), false, state);
-  }
-
-  // The server's rule it mirrors, pinned to its source: refunded and
-  // refunding first, then not paid, then nothing credited in dollars.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'refunds', 'index.ts'), 'utf8');
-  assert.match(source, /if \(payment\.state !== 'paid'\) \{\s*return unavailable\('not-paid'/);
-  assert.match(source, /if \(payment\.creditedMilli <= 0\) \{\s*return unavailable\(\s*'legacy'/);
-});
-
-test("a resume's Refund cell says it came back on its own, or was never charged, rather than a bare dash", () => {
-  const { refundCellNote } = load('lib/refundDisplay.ts');
-  assert.equal(refundCellNote({ unavailableCode: 'auto-refunded' }), 'Refunded automatically');
-  assert.equal(refundCellNote({ unavailableCode: 'not-charged' }), 'Not charged');
-  for (const code of ['in-progress', 'cost-unknown', 'refunded', null]) {
-    assert.equal(refundCellNote({ unavailableCode: code }), null, String(code));
-  }
-});
-
-test('only a dollar-era charge for resumes in the credit history offers a refund, by its reservation', () => {
-  const { refundChargeIdFor } = load('lib/refundDisplay.ts');
-  const row = (overrides) => ({
-    seq: 1,
-    id: 'l1',
-    userId: 'u1',
-    deltaMilli: -161,
-    balanceAfterMilli: 839,
-    legacyCredits: null,
-    reason: 'generation-reserve',
-    refKind: 'batch',
-    refId: 'batch-1',
-    note: '',
-    createdAt: '2026-10-05T10:00:00.000Z',
+function payoutRequest(overrides = {}) {
+  return request({
+    kind: 'payout',
+    itemType: 'payout',
+    itemId: 'u-scout',
+    label: 'Payout of earnings',
+    amountMilli: 5_000,
+    reason: '',
     ...overrides,
   });
+}
 
-  assert.equal(refundChargeIdFor(row()), 'batch-1');
-  assert.equal(refundChargeIdFor(row({ refKind: 'request', refId: ' req-1 ' })), 'req-1');
-  // Everything else is not a charge for resumes, or not one that can be given back.
-  assert.equal(refundChargeIdFor(row({ reason: 'purchase', deltaMilli: 5000 })), null);
-  assert.equal(refundChargeIdFor(row({ reason: 'generation-refund', deltaMilli: 23 })), null);
-  assert.equal(refundChargeIdFor(row({ reason: 'refund-request', deltaMilli: 23 })), null);
-  assert.equal(refundChargeIdFor(row({ deltaMilli: 0 })), null);
-  assert.equal(refundChargeIdFor(row({ refId: '' })), null);
-  // From before credits were dollars: reset with every balance.
-  assert.equal(refundChargeIdFor(row({ deltaMilli: 0, legacyCredits: { delta: -3, balanceAfter: 7 } })), null);
-});
-
-test("the requester's line says what happens next, the administrator's reason, or what came back", () => {
-  const { describeRequestOutcome, REFUND_STATE_LABELS, REFUND_STATE_TONES, describeRefundOffer } =
+test("the requester's line says what happens next, the administrator's reason, or what came back - and a payout is Paid out", () => {
+  const { describeRequestOutcome, REFUND_STATE_LABELS, REFUND_STATE_TONES, refundStateLabel, refundKindLabel } =
     load('lib/refundDisplay.ts');
+  const { REFUND_REQUEST_KINDS } = require('../dist/database/refundRequestRepository');
 
   assert.deepEqual(Object.keys(REFUND_STATE_LABELS).sort(), ['approved', 'declined', 'refunded', 'requested']);
   assert.deepEqual(Object.keys(REFUND_STATE_TONES).sort(), Object.keys(REFUND_STATE_LABELS).sort());
+  // Every kind the server writes has a word, and one it does not know reads as itself.
+  for (const kind of REFUND_REQUEST_KINDS) assert.notEqual(refundKindLabel(kind), kind, kind);
+  assert.equal(refundKindLabel('payout'), 'Payout');
+  assert.equal(refundKindLabel('gift'), 'gift');
 
   assert.match(describeRequestOutcome(request()), /Waiting for an administrator/);
   assert.equal(
     describeRequestOutcome(request({ state: 'declined', declineReason: 'It was downloaded twice.' })),
     'Declined: It was downloaded twice.'
   );
-  assert.equal(
-    describeRequestOutcome(request({ state: 'refunded', refundedMilli: 23 })),
-    '$0.023 back on your balance.'
-  );
+  assert.equal(describeRequestOutcome(request({ state: 'refunded', refundedMilli: 23 })), '$0.023 back on your balance.');
   assert.equal(
     describeRequestOutcome(
       request({ state: 'refunded', kind: 'purchase', itemType: 'payment', paymentMethod: 'card', refundedMilli: 39990 })
     ),
-    '$39.990 on its way back to your card.'
+    '$39.99 on its way back to your card.'
   );
   assert.match(
     describeRequestOutcome(request({ state: 'refunded', kind: 'purchase', paymentMethod: 'crypto', refundedMilli: 5000 })),
-    /^\$5\.000 sent back to you by your administrator/
+    /^\$5 sent back to you by your administrator/
   );
 
-  assert.match(describeRefundOffer(option()), /^\$0\.023 back on your balance as credit/);
-  assert.match(
-    describeRefundOffer(option({ kind: 'purchase', itemType: 'payment', paymentMethod: 'card', refundableMilli: 39990 })),
-    /^\$39\.990 back to your card: what is left unspent/
-  );
+  // A payout: "Paid out", never "Refunded", with what was RECORDED - which may
+  // be more than was asked (owner decision R2).
+  assert.equal(refundStateLabel(payoutRequest({ state: 'refunded', refundedMilli: 6_500 })), 'Paid out');
+  assert.equal(refundStateLabel(payoutRequest()), 'Requested');
+  assert.equal(refundStateLabel(request({ state: 'refunded' })), 'Refunded');
+  assert.equal(describeRequestOutcome(payoutRequest({ state: 'refunded', refundedMilli: 6_500 })), '$6.5 paid out to you.');
+  assert.match(describeRequestOutcome(payoutRequest({ state: 'approved' })), /The payout itself follows/);
+});
+
+test("Ask for Refund is off exactly when, and for the reason, the server says a reporter cannot ask", async () => {
+  const s = await payoutServer();
+  try {
+    const { payoutBlocker, describePayoutAsk } = load('lib/refundDisplay.ts');
+    const standing = async (who) => {
+      const answer = await s.call(who, '/api/refund-requests/payout');
+      assert.equal(answer.status, 200, who);
+      return answer.body;
+    };
+
+    // Nothing earned yet: off, in the server's words.
+    let status = await standing('scout');
+    assert.equal(status.available, false);
+    assert.equal(payoutBlocker(status, false), status.unavailableReason);
+    assert.equal(status.unavailableCode, 'nothing-to-pay-out');
+
+    // Earned: on, and the dialog names the whole balance.
+    s.earn('scout', 4_100);
+    status = await standing('scout');
+    assert.equal(status.available, true);
+    assert.equal(payoutBlocker(status, false), '');
+    assert.match(describePayoutAsk(status.balanceMilli), /pay out your earned balance, \$4\.1\./);
+
+    // Asked: off again while the request is open - one at a time.
+    const asked = await s.call('scout', '/api/refund-requests/payout', { method: 'POST', body: { reason: 'PayPal please' } });
+    assert.equal(asked.status, 201);
+    assert.equal(asked.body.request.amountMilli, 4_100);
+    status = asked.body.status;
+    assert.equal(status.unavailableCode, 'request-open');
+    assert.equal(payoutBlocker(status, false), status.unavailableReason);
+    // ...and a second press is refused in the same words the button's tooltip said.
+    const again = await s.call('scout', '/api/refund-requests/payout', { method: 'POST', body: {} });
+    assert.equal(again.status, 409);
+    assert.equal(again.body.error, payoutBlocker(status, false));
+
+    // An administrator passes the reporter guard and is refused by the service, by name.
+    const admin = await standing('boss');
+    assert.equal(admin.unavailableCode, 'not-a-reporter');
+    assert.equal(payoutBlocker(admin, false), admin.unavailableReason);
+
+    // Not read yet, or not readable: off, and said so rather than asked blind.
+    assert.match(payoutBlocker(null, true), /Checking/);
+    assert.match(payoutBlocker(null, false), /could not be read/);
+  } finally {
+    s.close();
+  }
 });
 
 // -- the administrators' queue -------------------------------------------- //
@@ -327,7 +387,7 @@ test('Mark refunded says what will move before it moves - and crypto says send i
     })
   );
   // The re-measured amount, not what was asked: they spent some since.
-  assert.equal(card.title, "Refund $12.340 to jane@example.com's card?");
+  assert.equal(card.title, "Refund $12.34 to jane@example.com's card?");
   assert.match(card.body, /partial Stripe refund/);
   assert.equal(card.byHand, false);
 
@@ -342,12 +402,123 @@ test('Mark refunded says what will move before it moves - and crypto says send i
     })
   );
   assert.equal(crypto.byHand, true);
-  assert.match(crypto.body, /^Crypto cannot be refunded automatically\. Send \$50\.000 back from your Cryptomus merchant dashboard first/);
+  assert.match(crypto.body, /^Crypto cannot be refunded automatically\. Send \$50 back from your Cryptomus merchant dashboard first/);
 
   const nothing = describeRefundConfirmation(
     adminRequest({ refundableNowMilli: 0, refundableNowReason: 'Nothing of this purchase is left unspent to refund.' })
   );
   assert.match(nothing.blocked, /^Nothing of this purchase is left unspent to refund\. Decline the request instead\.$/);
+
+  // A payout is never described as a refund, even through this.
+  const payout = describeRefundConfirmation(
+    adminRequest({ ...payoutRequest(), accountEmail: 'scout@example.com', refundableNowMilli: 6_000 })
+  );
+  assert.equal(payout.title, 'Record a payout to scout@example.com?');
+  assert.equal(payout.byHand, false);
+  assert.equal(payout.amountMilli, 5_000);
+});
+
+test('Record payout is prefilled with the smaller of what was asked and the balance now, and says what it records', () => {
+  const { describePayoutConfirmation, describePayoutBalanceNow, refundActionLabel } = load('lib/refundDisplay.ts');
+  const row = (overrides) => adminRequest({ ...payoutRequest(), accountEmail: 'scout@example.com', ...overrides });
+
+  // Earned more since asking: what was asked, and the balance named as the most.
+  const more = describePayoutConfirmation(row({ refundableNowMilli: 6_500 }));
+  assert.equal(more.prefillMilli, 5_000);
+  assert.equal(more.balanceMilli, 6_500);
+  assert.equal(more.blocked, null);
+  assert.match(more.body, /asked to be paid out \$5 of earnings; their balance now is \$6\.5\./);
+  // Paid some out from Admin -> Accounts since (that closes the request, but a
+  // list read before it still shows it): the balance now, never above it.
+  assert.equal(describePayoutConfirmation(row({ refundableNowMilli: 1_200 })).prefillMilli, 1_200);
+  // Nothing left, or no longer a reporter: blocked with the server's reason.
+  const gone = describePayoutConfirmation(
+    row({ refundableNowMilli: 0, refundableNowReason: 'That account is no longer a reporter, so its balance is not paid out.' })
+  );
+  assert.equal(gone.blocked, 'That account is no longer a reporter, so its balance is not paid out. Decline the request instead.');
+
+  assert.equal(describePayoutBalanceNow(row({ refundableNowMilli: 6_500 })), 'Balance now $6.5');
+  assert.equal(describePayoutBalanceNow(row({ refundableNowMilli: 0, refundableNowReason: 'Gone.' })), 'Gone.');
+  assert.equal(describePayoutBalanceNow(row({ state: 'refunded', refundableNowMilli: null })), null);
+  assert.equal(describePayoutBalanceNow(adminRequest()), null, 'only a payout says its balance');
+  assert.equal(refundActionLabel(row({})), 'Record payout');
+  assert.equal(refundActionLabel(adminRequest()), 'Mark refunded');
+});
+
+test("Record payout in the queue refuses what the real route refuses, in its words, and records what it lets through", async () => {
+  const s = await payoutServer();
+  try {
+    const pay = load('lib/reporterPay.ts');
+    const display = load('lib/refundDisplay.ts');
+    s.earn('scout', 5_000);
+    const asked = await s.call('scout', '/api/refund-requests/payout', { method: 'POST', body: {} });
+    assert.equal(asked.status, 201);
+    const id = asked.body.request.id;
+    const listed = (await s.call('boss', '/api/admin/refund-requests')).body.requests.find((row) => row.id === id);
+    const prompt = display.describePayoutConfirmation(listed);
+    assert.equal(prompt.balanceMilli, 5_000);
+    assert.equal(prompt.prefillMilli, 5_000);
+
+    // Earned more since: up to the new balance is allowed, as the box says.
+    s.earn('scout', 1_500);
+    const balance = s.balance('scout');
+    const cases = [
+      ['', 'Bank transfer'],
+      ['0', 'Bank transfer'],
+      ['-1', 'Bank transfer'],
+      ['0.0005', 'Bank transfer'],
+      ['abc', 'Bank transfer'],
+      ['1', ''],
+      ['1', 'x'.repeat(501)],
+      ['6.501', 'Bank transfer'],
+    ];
+    for (const [amountUsd, note] of cases) {
+      const said = pay.payoutProblem(amountUsd, note, balance);
+      assert.notEqual(said, '', `the page refuses ${JSON.stringify([amountUsd, note])}`);
+      const refused = await s.call('boss', `/api/admin/refund-requests/${id}/refund`, {
+        method: 'POST',
+        body: { amountUsd, note },
+      });
+      assert.ok(refused.status === 400 || refused.status === 409, `${amountUsd}: ${refused.status}`);
+      assert.equal(refused.body.error, said, JSON.stringify([amountUsd, note]));
+      // Each is about the press, so the dialog stays open on what was typed.
+      assert.equal(display.isStaleRefundRefusal(refused.body.code), false, refused.body.code);
+    }
+    assert.equal(s.balance('scout'), balance, 'no refusal moved anything');
+
+    // More than was asked, up to the balance: recorded, and the request Paid out.
+    assert.equal(pay.payoutProblem('6.5', 'Bank transfer, ref 4471', balance), '');
+    const paid = await s.call('boss', `/api/admin/refund-requests/${id}/refund`, {
+      method: 'POST',
+      body: { amountUsd: '6.5', note: 'Bank transfer, ref 4471' },
+    });
+    assert.equal(paid.status, 200);
+    assert.equal(paid.body.changed, true);
+    assert.equal(s.balance('scout'), 0);
+    assert.equal(display.refundStateLabel(paid.body.request), 'Paid out');
+    assert.equal(
+      display.describeRefundMade(paid.body.request, paid.body.outcome, paid.body.changed),
+      `${paid.body.request.reference} paid out: $6.5 recorded as paid to scout@example.com and taken off their ` +
+        'balance. They have been told.'
+    );
+    // A second press: already paid out, nothing more recorded.
+    const again = await s.call('boss', `/api/admin/refund-requests/${id}/refund`, {
+      method: 'POST',
+      body: { amountUsd: '6.5', note: 'Bank transfer, ref 4471' },
+    });
+    assert.equal(again.status, 200);
+    assert.equal(
+      display.describeRefundMade(again.body.request, again.body.outcome, again.body.changed),
+      `${paid.body.request.reference} was already paid out - nothing more was recorded.`
+    );
+    // And the reporter's own list reads it as the page will.
+    const mine = (await s.call('scout', '/api/refund-requests?kind=payout')).body.requests;
+    assert.equal(mine.length, 1);
+    assert.equal(display.refundStateLabel(mine[0]), 'Paid out');
+    assert.equal(display.describeRequestOutcome(mine[0]), '$6.5 paid out to you.');
+  } finally {
+    s.close();
+  }
 });
 
 test("the amount a crypto refund says was sent is held to the server's rule", () => {
@@ -367,14 +538,14 @@ test("the amount a crypto refund says was sent is held to the server's rule", ()
     if (!parsed.ok) return money.describeDollarProblem(parsed.problem, 'The amount sent back');
     if (parsed.milli <= 0 || !money.isWholeCents(parsed.milli) || parsed.milli > asked) {
       return (
-        'The amount sent back must be whole cents, more than $0.000 and no more than the ' +
+        'The amount sent back must be whole cents, more than $0 and no more than the ' +
         `${money.formatMoney(asked)} asked for.`
       );
     }
     return null;
   };
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'refunds', 'index.ts'), 'utf8');
-  assert.match(source, /The amount sent back must be whole cents, more than \$0\.000 and no more than the/);
+  assert.match(source, /The amount sent back must be whole cents, more than \$0 and no more than the/);
   assert.match(source, /describeDollarProblem\(parsed\.problem, 'The amount sent back'\)/);
   assert.equal(typeof refunds.refundRequest, 'function');
 
@@ -421,16 +592,19 @@ test('the queue says what each decision did, and a repeat press as "already", ne
   const card = adminRequest({ kind: 'purchase', paymentMethod: 'card', paymentProvider: 'stripe' });
   assert.equal(
     describeRefundMade(card, { refundedMilli: 39990, reversedMilli: 39990, shortfallMilli: 0 }, true),
-    'FT-RF-20261005-0001 refunded: $39.990 back to the card, and $39.990 of credit taken off the balance.'
+    'FT-RF-20261005-0001 refunded: $39.99 back to the card, and $39.99 of credit taken off the balance.'
   );
   // Only money sent back by hand can fall short, and the sentence does not
   // guess why the rest was gone.
   const crypto = adminRequest({ kind: 'purchase', paymentMethod: 'crypto', paymentProvider: 'cryptomus' });
   assert.equal(
     describeRefundMade(crypto, { refundedMilli: 10000, reversedMilli: 7000, shortfallMilli: 3000 }, true),
-    'FT-RF-20261005-0001 marked refunded: $10.000 recorded as sent back by hand. Only $7.000 of credit could be ' +
-      'taken off the balance - the other $3.000 was no longer on it.'
+    'FT-RF-20261005-0001 marked refunded: $10 recorded as sent back by hand. Only $7 of credit could be ' +
+      'taken off the balance - the other $3 was no longer on it.'
   );
+  // A payout already paid out says so in payout words.
+  const payout = adminRequest({ ...payoutRequest(), state: 'refunded' });
+  assert.equal(describeRefundMade(payout, null, false), 'FT-RF-20261005-0001 was already paid out - nothing more was recorded.');
 
   assert.equal(describeClosedRequests(0), '');
   assert.equal(describeClosedRequests(undefined), '');
@@ -448,9 +622,26 @@ test("a refusal that means the queue's row is out of date reads the list again -
     'account-missing',
     'refunding',
     'refund-unconfirmed',
+    // A payout's account no longer a reporter; a request a newer build wrote.
+    'not-a-reporter',
+    'unrecognised',
   ];
-  // About this press, not the row: what was typed, or the by-hand confirmation still to give.
-  const notStale = ['paid-by-hand-required', 'bad-amount', 'reason-required', 'reason-too-long', 'bad-item', 'request-open'];
+  // About this press, not the row: what was typed, or the by-hand confirmation
+  // still to give. A payout above the balance names the balance now, and the
+  // dialog stays open to record less; asking with nothing to pay out is the
+  // reporter's side.
+  const notStale = [
+    'paid-by-hand-required',
+    'bad-amount',
+    'reason-required',
+    'reason-too-long',
+    'bad-item',
+    'request-open',
+    'insufficient-balance',
+    'nothing-to-pay-out',
+    'note-required',
+    'note-too-long',
+  ];
   for (const code of stale) assert.equal(isStaleRefundRefusal(code), true, code);
   for (const code of notStale) assert.equal(isStaleRefundRefusal(code), false, code);
   assert.equal(isStaleRefundRefusal(undefined), false);
@@ -459,6 +650,15 @@ test("a refusal that means the queue's row is out of date reads the list again -
   // a new one fails here until somebody decides which.
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'refunds', 'index.ts'), 'utf8');
   const codes = new Set([...source.matchAll(/,\s*\d{3},\s*'([a-z][a-z-]*)'/g)].map((match) => match[1]));
+  // Record payout's note is read by services/credits `readPayoutNote`, shared with Admin -> Accounts.
+  const credits = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'credits', 'index.ts'), 'utf8');
+  const noteReader = credits.slice(credits.indexOf('export function readPayoutNote('));
+  for (const match of noteReader.slice(0, noteReader.indexOf('\n}\n')).matchAll(/code: '([a-z][a-z-]*)'/g)) {
+    codes.add(match[1]);
+  }
+  for (const code of ['insufficient-balance', 'not-a-reporter', 'nothing-to-pay-out', 'unrecognised', 'note-required']) {
+    assert.ok(codes.has(code), `${code} is read from the source`);
+  }
   assert.ok(codes.size >= 10, `found only ${[...codes].join(', ')}`);
   for (const code of codes) {
     assert.ok(stale.includes(code) || notStale.includes(code), `${code} is neither stale nor about the press`);
@@ -561,6 +761,8 @@ test("a notice's link is an app path by the server's own rule, or nothing", () =
   // The two pages the server links refund notices to read as what they are.
   assert.equal(appLinkLabel('/credits?tab=refunds'), 'See your refund requests');
   assert.equal(appLinkLabel('/admin/payments?tab=refunds'), 'Open the refund queue');
+  // Where a reporter's payout notices link: their Credits, which has no tabs.
+  assert.equal(appLinkLabel('/credits'), 'See your credits');
   assert.equal(appLinkLabel('/orders'), 'Open');
 });
 

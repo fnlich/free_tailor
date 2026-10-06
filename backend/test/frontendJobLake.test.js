@@ -153,7 +153,7 @@ test("the summary line is the owner's sentence, to the thousandth", () => {
   const lake = display();
   assert.equal(
     lake.describeRunSummary({ added: 32, total: 70, balanceMilli: 4000 }),
-    '32 out of 70 was added, your current credit is $4.000'
+    '32 out of 70 was added, your current credit is $4'
   );
   assert.equal(
     lake.describeRunSummary({ added: 0, total: 0, balanceMilli: 23 }),
@@ -174,10 +174,10 @@ test("the summary line is the owner's sentence, to the thousandth", () => {
   };
   assert.equal(
     lake.describeRunBreakdown(summary, true),
-    'This run earned $0.210. 1 of the added replaced an older version of the same job, 2 duplicates (red), 1 skipped.'
+    'This run earned $0.21. 1 of the added replaced an older version of the same job, 2 duplicates (red), 1 skipped.'
   );
   assert.match(lake.describeRunBreakdown(summary, false), /^Administrators are not paid/);
-  assert.equal(lake.describeRowReward({ rewardMilli: 70 }, true), '$0.070');
+  assert.equal(lake.describeRowReward({ rewardMilli: 70 }, true), '$0.07');
   assert.equal(lake.describeRowReward({ rewardMilli: 70 }, false), '-');
   assert.equal(lake.describeRowReward({ rewardMilli: 0 }, true), '-');
 });
@@ -297,7 +297,7 @@ test('a save sends only what changed, as typed, and a saved form sends nothing',
   const after = settings.readLakeSettings({});
   assert.equal(after.reportRateMilli, 70);
   assert.equal(after.duplicateWindow.days, 45);
-  // The form refilled from what was stored sends nothing; "0.070" for $0.070 is no change either.
+  // The form refilled from what was stored sends nothing; "0.070" for $0.07 is no change either.
   assert.deepEqual(lake.lakeSettingsChanges(lake.lakeSettingsDraft(after), after), {});
   assert.deepEqual(lake.lakeSettingsChanges({ rate: '0.070', window: '45', cap: '' }, after), {});
   // Emptying a box clears it: '' is sent, which the server reads as "unset".
@@ -342,10 +342,10 @@ test('the duplicate window says what is in effect and where it comes from, as th
 test('rewards, revokes, the sync and a merge read the way the admin page says them', () => {
   const lake = display();
   assert.equal(lake.describeReward({ milli: 0, rateMilli: null, revokedMilli: 0, revokedAt: null }), 'Not paid');
-  assert.equal(lake.describeReward({ milli: 70, rateMilli: 70, revokedMilli: 0, revokedAt: null }), '$0.070 at $0.070 per job');
+  assert.equal(lake.describeReward({ milli: 70, rateMilli: 70, revokedMilli: 0, revokedAt: null }), '$0.07 at $0.07 per job');
   assert.equal(
     lake.describeReward({ milli: 70, rateMilli: 70, revokedMilli: 20, revokedAt: '2026-10-05T00:00:00Z' }),
-    '$0.070 at $0.070 per job - $0.020 taken back'
+    '$0.07 at $0.07 per job - $0.02 taken back'
   );
   const paid = { reward: { milli: 70, rateMilli: 70, revokedMilli: 0, revokedAt: null }, requestedBy: 'u1' };
   assert.equal(lake.canRevoke(paid), true);
@@ -354,17 +354,17 @@ test('rewards, revokes, the sync and a merge read the way the admin page says th
   assert.equal(lake.canRevoke({ ...paid, reward: { ...paid.reward, milli: 0 } }), false);
   assert.match(
     lake.describeRevoke({ revoked: true, takenMilli: 20, rewardMilli: 70, userId: 'u1', balanceMilli: 0 }, 'rita@example.com'),
-    /^Took back \$0\.020 of the \$0\.070 reward - all rita@example\.com had left/
+    /^Took back \$0\.02 of the \$0\.07 reward - all rita@example\.com had left/
   );
   assert.equal(
     lake.describeRevoke({ revoked: true, takenMilli: 70, rewardMilli: 70, userId: 'u1', balanceMilli: 130 }, 'rita@example.com'),
-    'Took back the $0.070 reward from rita@example.com. Their balance is now $0.130.'
+    'Took back the $0.07 reward from rita@example.com. Their balance is now $0.13.'
   );
   assert.match(lake.describeRevoke({ revoked: false, takenMilli: 0, rewardMilli: 0, userId: null, balanceMilli: null }, 'x'), /no reward to take back/);
 
   const entry = { company: 'Acme', jobFieldLabel: 'Backend', ...paid };
-  assert.match(lake.describeDeleteConfirm(entry, true), /\$0\.070 reward is taken back/);
-  assert.match(lake.describeDeleteConfirm(entry, false), /keeps its \$0\.070 reward/);
+  assert.match(lake.describeDeleteConfirm(entry, true), /\$0\.07 reward is taken back/);
+  assert.match(lake.describeDeleteConfirm(entry, false), /keeps its \$0\.07 reward/);
   assert.doesNotMatch(lake.describeDeleteConfirm({ ...entry, requestedBy: null }, true), /reward/);
 
   const sync = { unsynced: 0, running: false, lastAttemptAt: null, lastSuccessAt: null, lastAppended: 0, lastError: null };
@@ -639,7 +639,7 @@ test("a run draws the owner's line from the server's own summary, its duplicate 
   const { run } = (await h.call('reporter', 'GET', `/report/runs/${started.body.run.id}`)).body;
   assert.equal(lake.isRunLive(run), false);
 
-  assert.equal(lake.describeRunSummary(run.summary), '1 out of 2 was added, your current credit is $0.050');
+  assert.equal(lake.describeRunSummary(run.summary), '1 out of 2 was added, your current credit is $0.05');
   assert.deepEqual(
     run.rows.map((row) => [row.row, lake.reportStatusLabel(row.status), lake.isRedOutcome(row)]),
     [

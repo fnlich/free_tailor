@@ -20,7 +20,7 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../utils/money
 
 export const MIN_REPORT_RATE_MILLI = 0;
 
-/** $1000.000, the price-per-resume ceiling: a box with no ceiling gets 1000000 typed into it. */
+/** $1,000, the price-per-resume ceiling: a box with no ceiling gets 1000000 typed into it. */
 export const MAX_REPORT_RATE_MILLI = 1_000_000;
 
 export type ReportRateParse = { ok: true; milli: number | null } | { ok: false; error: string };

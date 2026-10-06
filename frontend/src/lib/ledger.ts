@@ -11,7 +11,7 @@ import { formatMoney, formatSignedMoney } from './format';
  * The rule they keep: **a row is shown in the unit it was written in.** Rows
  * since credits became dollars move thousandths of a dollar. Rows from before
  * - and the `reset` row that ended them - moved whole credits, and carry those
- * figures as `legacyCredits`. Printing such a row as `$0.000` would say
+ * figures as `legacyCredits`. Printing such a row as `$0` would say
  * nothing happened; converting it at some rate would put a figure on it that
  * the account never held. So it says `-12 credits`, which is what it did.
  */

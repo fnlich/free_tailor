@@ -362,7 +362,8 @@ function AccountsTable() {
       const paid = formatMoney(-result.entry.deltaMilli);
       setNotice(
         result.recorded
-          ? `Recorded a payout of ${paid} to ${row.email}. Their balance is now ${formatMoney(result.balanceMilli)}.`
+          ? `Recorded a payout of ${paid} to ${row.email}. Their balance is now ${formatMoney(result.balanceMilli)}.` +
+              (result.closedRequestId ? ' Their open payout request was closed as paid out with it.' : '')
           : `That payout of ${paid} to ${row.email} was already recorded, so nothing more was taken. ` +
               `Their balance is ${formatMoney(result.balanceMilli)}.`
       );
@@ -940,7 +941,7 @@ function AccountsTable() {
                               </button>
                               <p className="w-full text-xs text-subtle">
                                 Dollars, to $0.001: a positive amount adds, a negative one takes away
-                                and stops at $0.000. The field in the table above sets a total instead.
+                                and stops at $0. The field in the table above sets a total instead.
                               </p>
                             </form>
                           )}

@@ -4,8 +4,8 @@ import { getDb } from './sqlite';
 import { formatSequenceDate, nextDailyReference } from './dailySequence';
 
 /**
- * Refund requests: somebody asking for money back, and what an administrator
- * decided.
+ * Refund requests: somebody asking for money back - or a reporter asking to be
+ * paid out their earnings - and what an administrator decided.
  *
  * This module moves no money and knows nothing about balances or providers -
  * services/refunds does that, and writes the state change here in the same
@@ -25,7 +25,8 @@ import { formatSequenceDate, nextDailyReference } from './dailySequence';
  * arrive, and a declined request does not stop the next one.
  */
 
-export type RefundRequestKind = 'purchase' | 'resume';
+export type RefundRequestKind = 'purchase' | 'resume' | 'payout';
+export const REFUND_REQUEST_KINDS: readonly RefundRequestKind[] = ['purchase', 'resume', 'payout'];
 export type RefundRequestState = 'requested' | 'approved' | 'declined' | 'refunded';
 
 /**
@@ -44,8 +45,16 @@ export type RefundRequestState = 'requested' | 'approved' | 'declined' | 'refund
  *   never has two names and so never two open requests.
  * - `charge`: one resume built synchronously by POST /api/resume/generate,
  *   named by its reservation - which is that resume alone.
+ * - `payout`: a REPORTER's earned balance, named by the account itself
+ *   (`payout:<accountId>`), so the open-request index allows each reporter one
+ *   open payout request at a time. Paid outside the app; Refunded here records
+ *   what the administrator sent (services/refunds `payOutRequest`).
+ *
+ * Only `payout` is still ASKED for. Purchases and resumes are no longer asked
+ * about (owner decision R1); requests for them made before stay readable and
+ * decidable in the administrators' queue.
  */
-export const REFUND_ITEM_TYPES = ['payment', 'order-item', 'task', 'charge'] as const;
+export const REFUND_ITEM_TYPES = ['payment', 'order-item', 'task', 'charge', 'payout'] as const;
 export type RefundItemType = (typeof REFUND_ITEM_TYPES)[number];
 
 export const REFUND_REQUEST_STATES: readonly RefundRequestState[] = ['requested', 'approved', 'declined', 'refunded'];
@@ -53,6 +62,21 @@ export const OPEN_REFUND_STATES: readonly RefundRequestState[] = ['requested', '
 
 export function isRefundItemType(value: unknown): value is RefundItemType {
   return typeof value === 'string' && (REFUND_ITEM_TYPES as readonly string[]).includes(value);
+}
+
+export function isRefundRequestKind(value: unknown): value is RefundRequestKind {
+  return typeof value === 'string' && (REFUND_REQUEST_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * The kind an item type is - the item key is what every rule here is keyed on
+ * (the open-request index, the refunded check), so it, not the stored `kind`
+ * column, says what a request is about.
+ */
+export function kindOfItemType(itemType: RefundItemType): RefundRequestKind {
+  if (itemType === 'payment') return 'purchase';
+  if (itemType === 'payout') return 'payout';
+  return 'resume';
 }
 
 export function isRefundRequestState(value: unknown): value is RefundRequestState {
@@ -104,6 +128,13 @@ export type RefundRequest = {
   refundedAt?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * True for a row whose item type this build does not know - written by a
+   * newer build and read after a rollback. It reads, and it can be approved or
+   * declined, but nothing ever moves money for it: guessing what it names is
+   * how an account id gets looked up as a payment.
+   */
+  unrecognised?: true;
 };
 
 type RefundRequestRow = {
@@ -146,12 +177,18 @@ function now(): string {
 function toRequest(row: RefundRequestRow): RefundRequest {
   const separator = row.item_key.indexOf(':');
   const itemType = row.item_key.slice(0, separator);
+  // The kind follows the item, never a default: an earlier build read every
+  // kind it did not know as a resume and every item type as a payment, so a
+  // payout request (`payout:<accountId>`) would have been measured as a
+  // purchase whose id is an account id. An item type this build does not know
+  // is marked, and refunding it is refused (services/refunds).
+  const known = isRefundItemType(itemType);
   return {
     id: row.id,
     reference: row.reference,
     accountId: row.account_id,
-    kind: row.kind === 'purchase' ? 'purchase' : 'resume',
-    itemType: isRefundItemType(itemType) ? itemType : 'payment',
+    kind: known ? kindOfItemType(itemType) : isRefundRequestKind(row.kind) ? row.kind : 'resume',
+    itemType: known ? itemType : 'payment',
     itemId: row.item_key.slice(separator + 1),
     itemKey: row.item_key,
     ...(row.payment_id ? { paymentId: row.payment_id } : {}),
@@ -172,6 +209,7 @@ function toRequest(row: RefundRequestRow): RefundRequest {
     ...(row.refunded_at ? { refundedAt: row.refunded_at } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(known ? {} : { unrecognised: true as const }),
   };
 }
 
@@ -302,29 +340,65 @@ function statesClause(states: readonly RefundRequestState[] | undefined): { sql:
 }
 
 /**
+ * A kind filter, as item-key prefixes - the item key, not the `kind` column,
+ * says what a request is (`kindOfItemType`). Each prefix bound, never spliced.
+ */
+function kindsClause(kinds: readonly RefundRequestKind[] | undefined): { sql: string; values: string[] } {
+  const wanted = (kinds ?? []).filter(isRefundRequestKind);
+  if (wanted.length === 0) return { sql: '', values: [] };
+  const prefixes = REFUND_ITEM_TYPES.filter((type) => wanted.includes(kindOfItemType(type))).map((type) => `${type}:`);
+  return {
+    sql: `(${prefixes.map(() => 'substr(item_key, 1, length(?)) = ?').join(' OR ')})`,
+    values: prefixes.flatMap((prefix) => [prefix, prefix]),
+  };
+}
+
+/** The WHERE of one account's list: the account, then any state and kind filters. */
+function accountWhere(
+  accountId: string,
+  options: { states?: readonly RefundRequestState[]; kinds?: readonly RefundRequestKind[] }
+): { sql: string; values: string[] } {
+  const states = statesClause(options.states);
+  const kinds = kindsClause(options.kinds);
+  return {
+    sql: ['account_id = ?', states.sql, kinds.sql].filter(Boolean).join(' AND '),
+    values: [accountId, ...states.values, ...kinds.values],
+  };
+}
+
+/**
  * One account's requests, newest first. `rowid` breaks the tie on created_at,
  * so two requests made in the same tick cannot swap places between pages.
  */
 export function listRefundRequestsForAccount(
   accountId: string,
-  options: { states?: readonly RefundRequestState[]; limit?: number; offset?: number } = {}
+  options: {
+    states?: readonly RefundRequestState[];
+    kinds?: readonly RefundRequestKind[];
+    limit?: number;
+    offset?: number;
+  } = {}
 ): RefundRequest[] {
-  const { sql, values } = statesClause(options.states);
+  const { sql, values } = accountWhere(accountId, options);
   const rows = getDb()
     .prepare(
       `SELECT ${COLUMNS} FROM refund_requests
-        WHERE account_id = ?${sql ? ` AND ${sql}` : ''}
+        WHERE ${sql}
         ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
     )
-    .all(accountId, ...values, options.limit ?? 50, options.offset ?? 0) as RefundRequestRow[];
+    .all(...values, options.limit ?? 50, options.offset ?? 0) as RefundRequestRow[];
   return rows.map(toRequest);
 }
 
-export function countRefundRequestsForAccount(accountId: string, states?: readonly RefundRequestState[]): number {
-  const { sql, values } = statesClause(states);
+export function countRefundRequestsForAccount(
+  accountId: string,
+  states?: readonly RefundRequestState[],
+  kinds?: readonly RefundRequestKind[]
+): number {
+  const { sql, values } = accountWhere(accountId, { ...(states ? { states } : {}), ...(kinds ? { kinds } : {}) });
   const row = getDb()
-    .prepare(`SELECT COUNT(*) AS n FROM refund_requests WHERE account_id = ?${sql ? ` AND ${sql}` : ''}`)
-    .get(accountId, ...values) as { n: number };
+    .prepare(`SELECT COUNT(*) AS n FROM refund_requests WHERE ${sql}`)
+    .get(...values) as { n: number };
   return row.n;
 }
 

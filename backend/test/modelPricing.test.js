@@ -147,7 +147,7 @@ test('an out-of-range or junk stored price clamps or reads as free instead of fa
   );
   const lines = capture.warnings.filter((line) => line.includes('"too-dear" has pricePerResumeMilli'));
   assert.equal(lines.length, 1, 'once, however many reads');
-  assert.match(lines[0], /\$1,000\.000/);
+  assert.match(lines[0], /read as \$1,000\./);
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), row, 'nothing written back');
 });
 
@@ -180,7 +180,7 @@ test('an administrator prices a new model in dollars, exactly, and a bad or miss
     ['0.0235', /at most three decimal places/],
     [0.1 + 0.2, /at most three decimal places/],
     ['-1', /cannot be negative/],
-    ['1000.001', /from \$0\.000 to \$1,000\.000/],
+    ['1000.001', /from \$0 to \$1,000 in steps of \$0\.001/],
     ['two', /must be an amount in dollars/],
     ['1,5', /must be an amount in dollars/],
     ['', /is required/],
@@ -309,17 +309,17 @@ test('the history line breaks a charge down by model display name', () => {
       { modelLabel: 'Codex', costMilli: 1_000 },
       { modelLabel: 'Claude Sonnet', costMilli: 23 },
     ]),
-    '3 resumes: 2 x Claude Sonnet @ $0.023, 1 x Codex @ $1.000 = $1.046'
+    '3 resumes: 2 x Claude Sonnet @ $0.023, 1 x Codex @ $1 = $1.046'
   );
   assert.equal(describeCharge([{ modelLabel: 'Gemini', costMilli: 1 }]), '1 resume: 1 x Gemini @ $0.001 = $0.001');
-  assert.equal(describeCharge([{ modelLabel: 'Gemini', costMilli: 0 }]), '1 resume: 1 x Gemini @ $0.000 = $0.000');
+  assert.equal(describeCharge([{ modelLabel: 'Gemini', costMilli: 0 }]), '1 resume: 1 x Gemini @ $0 = $0');
   // The same model at two prices - repriced between two charges - is two groups.
   assert.equal(
     describeCharge([
       { modelLabel: 'Codex', costMilli: 10 },
       { modelLabel: 'Codex', costMilli: 30 },
     ]),
-    '2 resumes: 1 x Codex @ $0.010, 1 x Codex @ $0.030 = $0.040'
+    '2 resumes: 1 x Codex @ $0.01, 1 x Codex @ $0.03 = $0.04'
   );
 });
 

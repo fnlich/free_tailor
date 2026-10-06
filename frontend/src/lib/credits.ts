@@ -37,10 +37,10 @@ export type CreditReason =
   | 'reporter-payout'
   /** A reporter paid for a job the job lake accepted, at the rate in effect then. */
   | 'job-report-reward'
-  /** That reward taken back by an administrator, never below a $0.000 balance. */
+  /** That reward taken back by an administrator, never below a $0 balance. */
   | 'job-report-reward-revoked'
   /**
-   * Credits became dollars and every balance was reset to $0.000: one row per
+   * Credits became dollars and every balance was reset to $0: one row per
    * account that held any, in its balance or in a run still going (that one
    * moves 0 credits). Always carries `legacyCredits`.
    */
@@ -129,7 +129,7 @@ const REASON_PHRASES: Record<CreditReason, string> = {
   'reporter-payout': 'Paid out by an administrator',
   'job-report-reward': 'Earned - a job you reported was added to the job lake',
   'job-report-reward-revoked': 'Taken back - an administrator revoked a job reward',
-  reset: 'Reset to $0.000 when credits became dollars',
+  reset: 'Reset to $0 when credits became dollars',
 };
 
 /**

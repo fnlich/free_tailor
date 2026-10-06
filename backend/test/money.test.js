@@ -58,20 +58,35 @@ test('every refusal reads the same way, naming what was being typed', () => {
   assert.match(money.describeDollarProblem('empty', 'The balance'), /is required/);
 });
 
-test('an amount always reads with three decimals, built from its digits', () => {
-  assert.equal(money.formatMoney(0), '$0.000');
+test('an amount reads with every significant digit and no trailing zero, built from its digits', () => {
+  // The owner's examples: "$1.000" read as a thousand dollars to most people.
+  assert.equal(money.formatMoney(1_000), '$1');
+  assert.equal(money.formatMoney(4_100), '$4.1');
   assert.equal(money.formatMoney(23), '$0.023');
-  assert.equal(money.formatMoney(161), '$0.161');
-  assert.equal(money.formatMoney(46), '$0.046');
-  assert.equal(money.formatMoney(3_977), '$3.977');
-  assert.equal(money.formatMoney(50_000), '$50.000');
-  assert.equal(money.formatMoney(1_234_567), '$1,234.567');
+  assert.equal(money.formatMoney(0), '$0');
+  assert.equal(money.formatMoney(1_234_500), '$1,234.5');
   assert.equal(money.formatMoney(-46), '-$0.046');
+  // Never rounded: the thousandth that moved is the digit a person checks.
+  assert.equal(money.formatMoney(161), '$0.161');
+  assert.equal(money.formatMoney(3_977), '$3.977');
+  assert.equal(money.formatMoney(1_234_567), '$1,234.567');
   assert.equal(money.formatMoney(1), '$0.001');
+  assert.equal(money.formatMoney(10), '$0.01');
+  assert.equal(money.formatMoney(100), '$0.1');
+  assert.equal(money.formatMoney(2_500), '$2.5');
+  assert.equal(money.formatMoney(2_050), '$2.05');
+  assert.equal(money.formatMoney(2_005), '$2.005');
+  assert.equal(money.formatMoney(50_000), '$50');
+  assert.equal(money.formatMoney(1_000_000), '$1,000');
+  assert.equal(money.formatMoney(1_000_000_000), '$1,000,000');
+  assert.equal(money.formatMoney(-1_000), '-$1');
+  assert.equal(money.formatMoney(-2_500), '-$2.5');
+  // Never a bare dot, a negative zero or a float's spelling.
+  for (const milli of [0, -0, 1_000, 20_000, 1_000_000]) assert.doesNotMatch(money.formatMoney(milli), /\.$|\.0|^-\$0$|e/);
   // Seven $0.023 resumes, as integers: exactly $0.161. As floats a sum is
   // only sometimes right - ten $0.10 grants come to 0.9999999999999999.
   assert.notEqual([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1].reduce((a, b) => a + b, 0), 1);
-  assert.equal(money.formatMoney(Array.from({ length: 10 }, () => 100).reduce((a, b) => a + b, 0)), '$1.000');
+  assert.equal(money.formatMoney(Array.from({ length: 10 }, () => 100).reduce((a, b) => a + b, 0)), '$1');
   assert.equal(money.formatMoney(23 * 7), '$0.161');
   assert.equal(money.formatMoney(23 * 2), '$0.046');
 });
@@ -162,4 +177,44 @@ test('no money path floors, truncates or float-parses an amount', () => {
   assert.doesNotMatch(webhook, /parseFloat\s*\(/);
   const queue = withoutComments(fs.readFileSync(path.join(root, 'services/queue/index.ts'), 'utf8'));
   assert.doesNotMatch(queue, /Number\.isInteger\s*\(/);
+});
+
+/**
+ * The docs describe what a person sees, so an amount in them is spelled the
+ * way formatMoney spells it: `$50` and `$0.05`, never `$50.000` or `$0.050`,
+ * which is the padding the formatter dropped (and `$1.000` read as a
+ * thousand). Not read: the release history - "What changed in this release",
+ * the numbered upgrade notes from the first "Upgrading ..." on, "Rolling back
+ * this release" - which records each upgrade in the words of its day and is
+ * rewritten per release; and a line that quotes the old spelling on purpose to
+ * explain it (QUOTES_THE_OLD_SPELLING).
+ */
+const DOCS = ['README.md', 'CLAUDE.md', '.env.example', 'backend/src/README.md', 'backend/test/README.md', 'backend/test/e2e/README.md'];
+const PADDED_AMOUNT = /\$\d[\d,]*\.\d\d0(?!\d)/g;
+const QUOTES_THE_OLD_SPELLING = ['read as a thousand', 'older rows may still read', 'on an older row'];
+
+function currentDocLines(text) {
+  const lines = [];
+  let fenced = false;
+  let history = false;
+  text.split('\n').forEach((line, index) => {
+    if (/^\s*```/.test(line)) fenced = !fenced;
+    if (!fenced && /^## /.test(line)) history = /What changed in this release|Rolling back this release/.test(line);
+    if (!fenced && /^### \d+\. Upgrading/.test(line)) history = true;
+    if (!history) lines.push({ number: index + 1, line });
+  });
+  return lines;
+}
+
+test('the docs spell every amount the way formatMoney does, without trailing zeros', () => {
+  assert.equal(money.formatMoney(50_000), '$50', 'the spelling this test holds the docs to');
+  const repo = path.join(__dirname, '..', '..');
+  const padded = [];
+  for (const doc of DOCS) {
+    for (const { number, line } of currentDocLines(fs.readFileSync(path.join(repo, doc), 'utf8'))) {
+      if (QUOTES_THE_OLD_SPELLING.some((phrase) => line.includes(phrase))) continue;
+      for (const [amount] of line.matchAll(PADDED_AMOUNT)) padded.push(`${doc}:${number} ${amount}`);
+    }
+  }
+  assert.deepEqual(padded, [], 'restate these in the current spelling ($50, $0.05)');
 });

@@ -10,7 +10,7 @@
  * The session is seeded and injected, because there is no offline sign-in.
  * Everything after that is clicks.
  *
- * Money is dollars to the thousandth on every page ($20.000): a credit is a
+ * Money is dollars to the thousandth on every page ($20, $0.023): a credit is a
  * dollar, and a purchase credits exactly what it charges. The locators below
  * still describe the buy page from before the three-step dialog - see the
  * README; buy-credits.js is the one that walks the dialog - so read the page
@@ -69,7 +69,7 @@ async function main() {
   check('the buy page loads', heading.includes('Credits'), heading);
 
   const balanceShown = await page.locator('text=Current Balance').locator('..').innerText();
-  check('it shows a balance of $0.000 to start', /\$0\.000/.test(balanceShown), balanceShown.replace(/\n/g, ' | '));
+  check('it shows a balance of $0 to start', /\$0(?![.\d])/.test(balanceShown), balanceShown.replace(/\n/g, ' | '));
 
   const cardButton = page.getByRole('button', { name: /pay by credit or debit card/i });
   const cryptoButton = page.getByRole('button', { name: /pay by crypto/i });
@@ -78,10 +78,10 @@ async function main() {
   await page.fill('#credits', '20');
   await page.waitForTimeout(150);
   const totalText = await page.locator('text=Total').locator('..').innerText();
-  check('the total is the amount chosen, in dollars', /\$20\.000/.test(totalText), totalText.replace(/\n/g, ' | '));
+  check('the total is the amount chosen, in dollars', /\$20(?![.\d])/.test(totalText), totalText.replace(/\n/g, ' | '));
 
   const boundsLine = await page.locator('text=/at a time/').innerText();
-  check('the bounds are stated in dollars', /\$2\.500 and \$100\.000/.test(boundsLine), boundsLine);
+  check('the bounds are stated in dollars', /\$2\.5 and \$100(?![.\d])/.test(boundsLine), boundsLine);
 
   await page.screenshot({ path: `${SHOTS}/1-buy-page.png` });
 
@@ -125,7 +125,7 @@ async function main() {
   check('and no checkout page opened anywhere', !page.url().includes('4242'), page.url());
 
   const panel = await page.locator('main').innerText();
-  check('the panel restates what is being bought', /\$20\.000/.test(panel), panel.replace(/\n/g, ' | ').slice(0, 200));
+  check('the panel restates what is being bought', /\$20(?![.\d])/.test(panel), panel.replace(/\n/g, ' | ').slice(0, 200));
   check(
     'and offers a way back out',
     (await page.getByRole('button', { name: /^Cancel$/ }).count()) +
@@ -148,13 +148,13 @@ async function main() {
   await page.waitForSelector('text=Paid. Your credit is on your balance.', { timeout: 20000 });
   check('the return page reports the payment once the webhook has landed', true);
   const returnCopy = await page.locator('main').innerText();
-  check('and shows the reference and what was bought', /FT-PAY-/.test(returnCopy) && /\$20\.000 of credit\./.test(returnCopy), returnCopy.replace(/\n/g, ' | ').slice(0, 200));
+  check('and shows the reference and what was bought', /FT-PAY-/.test(returnCopy) && /\$20 of credit\./.test(returnCopy), returnCopy.replace(/\n/g, ' | ').slice(0, 200));
   await page.screenshot({ path: `${SHOTS}/3-return-paid.png` });
 
   console.log('\n=== Back on the buy page ===');
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
   const balanceAfter = await page.locator('text=Current Balance').locator('..').innerText();
-  check('the balance has the $20.000 on it', /\$20\.000/.test(balanceAfter), balanceAfter.replace(/\n/g, ' | '));
+  check('the balance has the $20 on it', /\$20(?![.\d])/.test(balanceAfter), balanceAfter.replace(/\n/g, ' | '));
   // 'Payment history' since the credits page was reworked; this said 'Your
   // payments' for three commits after the heading changed, and the script needs
   // playwright so nothing here ever ran to find out.
@@ -204,13 +204,13 @@ async function main() {
   await refundButton.click();
   await adminPage.fill('input[placeholder="Why this is being refunded"]', 'end-to-end test');
   await adminPage.getByRole('button', { name: /refund it/i }).click();
-  await adminPage.waitForSelector('text=/refunded, and all \$20\.000 of credit reversed/', { timeout: 20000 });
+  await adminPage.waitForSelector('text=/refunded, and all \$20 of credit reversed/', { timeout: 20000 });
   check('a refund from the UI reports what it reversed', true);
   await adminPage.screenshot({ path: `${SHOTS}/7-refunded.png`, fullPage: true });
 
   await page.goto(`${APP}/credits`, { waitUntil: 'networkidle' });
   const finalBalance = await page.locator('text=Current Balance').locator('..').innerText();
-  check('and the buyer\'s balance comes back down', /\$0\.000/.test(finalBalance), finalBalance.replace(/\n/g, ' | '));
+  check('and the buyer\'s balance comes back down', /\$0(?![.\d])/.test(finalBalance), finalBalance.replace(/\n/g, ' | '));
 
   // js.stripe.com is unreachable from this sandbox, and the page reporting that
   // is the correct behaviour rather than a defect - so those are not counted.

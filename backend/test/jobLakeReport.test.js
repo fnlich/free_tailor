@@ -830,7 +830,7 @@ test('the admin lake: query, a row and its history, revoke and delete, settings 
   assert.equal((await h.call('owner', 'POST', `/admin/job-lake/${first.lakeId}/revoke-reward`)).body.revoke.revoked, false);
   const { listNotificationsFor } = require('../dist/database/notificationRepository');
   const notices = listNotificationsFor(h.reporter.id).map((notice) => notice.title);
-  assert.ok(notices.includes('Job reward taken back: $0.100'), notices.join('\n'));
+  assert.ok(notices.includes('Job reward taken back: $0.1'), notices.join('\n'));
   assert.deepEqual(listNotificationsFor(h.otherReporter.id).map((notice) => notice.title), [], 'only the reporter it was taken from');
   const ledger = await h.call('reporter', 'GET', '/credits/ledger');
   assert.deepEqual(ledger.body.entries.map((entry) => [entry.reason, entry.deltaMilli]), [

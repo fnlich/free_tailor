@@ -13,7 +13,7 @@
  *     of their own is refused before a run is started
  *   - "Add to job lake" runs in the background with a progress bar, and ends
  *     with the owner's line, "2 out of 5 was added, your current credit is
- *     $0.100", and every row's outcome - the duplicate red
+ *     $0.1", and every row's outcome - the duplicate red
  *   - the sheet was written: the same rows previewed again say they were
  *     reported - all but the two Skipped, which a run tries again
  *   - the top bar's balance moved with the run
@@ -48,7 +48,7 @@ const SHOTS = process.env.E2E_SHOTS || __dirname;
 
 const WIDE = { width: 1440, height: 900 };
 const PHONE = { width: 390, height: 844 };
-const OWNER_LINE = '2 out of 5 was added, your current credit is $0.100';
+const OWNER_LINE = '2 out of 5 was added, your current credit is $0.1';
 
 let failures = 0;
 /** The detail is the reason it FAILED, so printing it on a pass reads as one. */
@@ -114,7 +114,7 @@ async function main() {
   users.updateUser(reporter.id, { role: 'reporter' });
   // The global rate: what a reporter with no rate of their own is paid.
   const set = settings.updateLakeSettings({ reportRateUsd: '0.05' }, admin.id);
-  check('the global rate is set to $0.050', set.ok, JSON.stringify(set));
+  check('the global rate is set to $0.05', set.ok, JSON.stringify(set));
 
   const reporterToken = users.createSession(reporter.id);
   const adminToken = users.createSession(admin.id);
@@ -138,7 +138,7 @@ async function main() {
       tabs: Array.from(document.getElementById('report-tab')?.options ?? []).map((option) => option.value),
       from: document.getElementById('report-from-row')?.value,
       to: document.getElementById('report-to-row')?.value,
-      rate: /per job added\s*\$0\.050/i.test(document.body.innerText),
+      rate: /per job added\s*\$0\.05(?!\d)/i.test(document.body.innerText),
       later: /arrives in a later release/.test(document.body.innerText),
       sheetLinks: Array.from(document.querySelectorAll('.tl-main a[target="_blank"]')).map((a) => a.getAttribute('href')),
     }));
@@ -229,8 +229,8 @@ async function main() {
       JSON.stringify(outcomes?.map((row) => [row.cells[1], row.red, row.background]))
     );
     check(
-      'each added row earned $0.050, the duplicate nothing',
-      byCompany['Acme Corp']?.cells[4] === '$0.050' && byCompany['Globex LLC']?.cells[4] === '$0.050' && duplicate?.cells[4] === '-',
+      'each added row earned $0.05, the duplicate nothing',
+      byCompany['Acme Corp']?.cells[4] === '$0.05' && byCompany['Globex LLC']?.cells[4] === '$0.05' && duplicate?.cells[4] === '-',
       JSON.stringify(outcomes?.map((row) => row.cells))
     );
 
@@ -250,13 +250,13 @@ async function main() {
         /Reported before \(Duplicate\)/.test(again?.[1]?.cells[4] ?? ''),
       JSON.stringify(again?.map((row) => row.cells[4]))
     );
-    const balance = await until(page, () => /\$0\.100/.test(document.querySelector('.tl-topbar')?.innerText ?? ''), 15_000);
-    check('the top bar balance moved with the run: $0.100', balance, await page.evaluate(pillText));
+    const balance = await until(page, () => /\$0\.1(?!\d)/.test(document.querySelector('.tl-topbar')?.innerText ?? ''), 15_000);
+    check('the top bar balance moved with the run: $0.1', balance, await page.evaluate(pillText));
     await page.screenshot({ path: `${SHOTS}/report-3-done.png`, fullPage: true });
 
     const overview = await api(reporterToken, '/report');
     check(
-      'GET /api/report: $0.100 earned today, 2 jobs in the lake',
+      'GET /api/report: $0.1 earned today, 2 jobs in the lake',
       overview.body?.earnedTodayMilli === 100 && overview.body?.lakeJobs === 2 && overview.body?.balanceMilli === 100,
       JSON.stringify(overview.body && { earned: overview.body.earnedTodayMilli, jobs: overview.body.lakeJobs })
     );
@@ -291,9 +291,9 @@ async function main() {
     await until(adminPage, () => /2 jobs in the lake/.test(document.body.innerText), 20_000);
     const lake = await readTable(adminPage, 'Jobs in the lake');
     check(
-      'Admin -> Job Lake lists the two added jobs, each paid $0.050',
+      'Admin -> Job Lake lists the two added jobs, each paid $0.05',
       lake?.length === 2 &&
-        lake.every((row) => /\$0\.050 at \$0\.050 per job/.test(row.cells[6])) &&
+        lake.every((row) => /\$0\.05 at \$0\.05 per job/.test(row.cells[6])) &&
         lake.map((row) => row.cells[1]).sort().join(', ') === 'Acme Corp, Globex LLC',
       JSON.stringify(lake?.map((row) => row.cells))
     );
@@ -322,7 +322,7 @@ async function main() {
     const detail = await adminPage.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? '');
     check(
       'the detail shows the reward, the requester and the history',
-      /\$0\.050 at \$0\.050 per job/.test(detail) && /e2e-lake-reporter-/.test(detail) && /Earlier versions/.test(detail),
+      /\$0\.05 at \$0\.05 per job/.test(detail) && /e2e-lake-reporter-/.test(detail) && /Earlier versions/.test(detail),
       detail.slice(0, 400)
     );
     await adminPage.screenshot({ path: `${SHOTS}/lake-1-detail.png`, fullPage: true });
@@ -339,12 +339,12 @@ async function main() {
       const confirm = document.querySelector('[role="alertdialog"]');
       Array.from(confirm?.querySelectorAll('button') ?? []).find((b) => b.textContent.trim() === 'Delete')?.click();
     });
-    const deleted = await until(adminPage, () => /Deleted Globex LLC - .* from the lake\. Took back the \$0\.050 reward/.test(document.body.innerText), 10_000);
+    const deleted = await until(adminPage, () => /Deleted Globex LLC - .* from the lake\. Took back the \$0\.05 reward/.test(document.body.innerText), 10_000);
     check('delete with "Also revoke the reward" takes the job and its reward back', deleted);
     await until(adminPage, () => /1 job in the lake/.test(document.body.innerText), 10_000);
     const reporterAfter = await api(reporterToken, '/report');
     check(
-      "the reporter's balance dropped by exactly that reward: $0.050",
+      "the reporter's balance dropped by exactly that reward: $0.05",
       reporterAfter.body?.balanceMilli === 50,
       String(reporterAfter.body?.balanceMilli)
     );
@@ -391,13 +391,13 @@ async function main() {
 
     // Admin -> Accounts: an empty rate box names the global rate by its figure.
     await adminPage.goto(`${APP}/admin/accounts`, { waitUntil: 'networkidle2' });
-    await until(adminPage, () => /Global rate \(\$0\.050\)|Global \(\$0\.050\)/.test(document.documentElement.innerHTML), 15_000);
+    await until(adminPage, () => /Global rate \(\$0\.05\)|Global \(\$0\.05\)/.test(document.documentElement.innerHTML), 15_000);
     const placeholders = await adminPage.evaluate(() =>
       Array.from(document.querySelectorAll('input')).map((input) => input.getAttribute('placeholder')).filter((value) => /Global/.test(value ?? ''))
     );
     check(
-      'Admin -> Accounts: the rate boxes name the global rate, $0.050',
-      placeholders.length > 0 && placeholders.every((value) => /\$0\.050/.test(value)),
+      'Admin -> Accounts: the rate boxes name the global rate, $0.05',
+      placeholders.length > 0 && placeholders.every((value) => /\$0\.05\)/.test(value)),
       JSON.stringify(placeholders)
     );
   } finally {

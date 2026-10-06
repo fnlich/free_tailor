@@ -1,10 +1,9 @@
-import type { LedgerEntry } from './credits';
-import type { Payment } from './payments';
 import { describeDollarProblem, formatMoney, isWholeCents, parseDollars, toDollarInput } from './format';
 import type {
   AdminRefundRequest,
+  PayoutStatus,
+  RefundKind,
   RefundMoved,
-  RefundOption,
   RefundRequest,
   RefundRequestCounts,
   RefundRequestState,
@@ -12,15 +11,19 @@ import type {
 } from './refunds';
 
 /**
- * How a refund request reads, and which buttons it gets - on /credits, on an
- * order's page, and in the administrators' queue.
+ * How a refund or payout request reads, and which buttons it gets - on
+ * /credits (a user's old requests, a reporter's payout requests) and in the
+ * administrators' queue.
  *
  * Its own module, apart from lib/refunds.ts, because these are decisions with
  * no request in them, and backend/test/frontendRefunds.test.js loads them -
- * which it can only do for a module whose one runtime import is lib/format.ts.
- * The reason rules below are COPIES of the server's (services/refunds), and
- * that test runs both over the same text: a box that accepts what the server
- * refuses is a form that cannot be sent and does not say why.
+ * which it can only do for a module whose runtime imports are pure (lib/format.ts
+ * here). The reason and note rules below are COPIES of the server's
+ * (services/refunds), and that test runs both over the same text: a box that
+ * accepts what the server refuses is a form that cannot be sent and does not
+ * say why. A payout's amount and note are checked by lib/reporterPay.ts's
+ * `payoutProblem`, the one Admin -> Accounts uses, because the server refuses
+ * both in the same words.
  */
 
 /** The longest reason either side may write - the server's `MAX_REFUND_REASON`. */
@@ -32,6 +35,26 @@ export const REFUND_STATE_LABELS: Record<RefundRequestState, string> = {
   declined: 'Declined',
   refunded: 'Refunded',
 };
+
+/**
+ * A state as its pill says it. A payout that Refunded recorded was PAID OUT,
+ * not refunded - the server's notices say so too.
+ */
+export function refundStateLabel(request: Pick<RefundRequest, 'kind' | 'state'>): string {
+  if (request.kind === 'payout' && request.state === 'refunded') return 'Paid out';
+  return REFUND_STATE_LABELS[request.state] ?? request.state;
+}
+
+export const REFUND_KIND_LABELS: Record<RefundKind, string> = {
+  purchase: 'Purchase',
+  resume: 'Resume',
+  payout: 'Payout',
+};
+
+/** A kind as a word, and anything this build does not know as itself rather than a guess. */
+export function refundKindLabel(kind: RefundKind | string): string {
+  return REFUND_KIND_LABELS[kind as RefundKind] ?? kind;
+}
 
 /** A kit Pill tone per state, named as plain strings so this module imports no component. */
 export const REFUND_STATE_TONES: Record<RefundRequestState, 'amber' | 'sky' | 'red' | 'green'> = {
@@ -73,37 +96,46 @@ export function cleanRefundReason(value: string): string {
 }
 
 /**
- * Why a reason would be refused, in the server's words - or null when it
- * would be taken. `requester` is somebody asking; `admin` an administrator
- * declining, whose reason the person who asked will read.
+ * Why an administrator's reason for declining would be refused, in the
+ * server's words - or null when it would be taken. The person who asked reads
+ * it. (Nobody writes a reason to ASK for a refund any more; a reporter's
+ * payout note is `payoutNoteProblem`, and optional.)
  */
-export function refundReasonProblem(value: string, whose: 'requester' | 'admin'): string | null {
+export function declineReasonProblem(value: string): string | null {
   const reason = cleanRefundReason(value);
-  if (!reason) {
-    return whose === 'requester'
-      ? 'Say why you are asking for a refund.'
-      : 'Write the reason for declining - the person who asked will read it.';
-  }
+  if (!reason) return 'Write the reason for declining - the person who asked will read it.';
   if (reason.length > MAX_REFUND_REASON) return `Keep the reason under ${MAX_REFUND_REASON} characters.`;
+  return null;
+}
+
+/**
+ * Why a reporter's payout note would be refused, in the server's words
+ * (services/refunds `createPayoutRequest`) - or null. Optional: an empty note
+ * is a request with nothing to add.
+ */
+export function payoutNoteProblem(value: string): string | null {
+  if (cleanRefundReason(value).length > MAX_REFUND_REASON) return `Keep the note under ${MAX_REFUND_REASON} characters.`;
   return null;
 }
 
 /* ------------------------------------------------- the requester's side */
 
-/** Where the money goes when a request is refunded. */
-export type RefundRoute = 'credit' | 'card' | 'by-hand';
+/** Where the money goes when a request is refunded - for a payout, outside the app. */
+export type RefundRoute = 'credit' | 'card' | 'by-hand' | 'payout';
 
 /**
  * A resume's charge comes back as credit; a card purchase through Stripe; a
  * crypto purchase by hand, from the merchant dashboard, because nothing can
- * pull crypto back. The provider decides when it is known (the queue has it),
- * the method otherwise.
+ * pull crypto back; a payout is paid outside the app and only RECORDED here.
+ * The provider decides when it is known (the queue has it), the method
+ * otherwise.
  */
 export function refundRoute(request: {
   kind: RefundRequest['kind'];
   paymentMethod: RefundRequest['paymentMethod'];
   paymentProvider?: AdminRefundRequest['paymentProvider'];
 }): RefundRoute {
+  if (request.kind === 'payout') return 'payout';
   if (request.kind === 'resume') return 'credit';
   if (request.paymentProvider) return request.paymentProvider === 'stripe' ? 'card' : 'by-hand';
   return request.paymentMethod === 'card' ? 'card' : 'by-hand';
@@ -113,19 +145,23 @@ const ROUTE_PHRASES: Record<RefundRoute, string> = {
   credit: 'back on your balance',
   card: 'on its way back to your card',
   'by-hand': 'sent back to you by your administrator',
+  payout: 'paid out to you',
 };
 
 /**
  * The line under a request's pill on /credits: what happens next, why not, or
  * what came back. A declined request carries the administrator's own reason -
- * the one thing the person reading it needs from the decision.
+ * the one thing the person reading it needs from the decision. A payout says
+ * what was RECORDED as paid, which may be more than was asked.
  */
 export function describeRequestOutcome(request: RefundRequest): string {
   switch (request.state) {
     case 'requested':
       return 'Waiting for an administrator to decide.';
     case 'approved':
-      return 'Approved. The refund itself follows, and you will be told when it is made.';
+      return request.kind === 'payout'
+        ? 'Approved. The payout itself follows, and you will be told when it is recorded.'
+        : 'Approved. The refund itself follows, and you will be told when it is made.';
     case 'declined':
       return request.declineReason ? `Declined: ${request.declineReason}` : 'Declined.';
     case 'refunded':
@@ -136,93 +172,29 @@ export function describeRequestOutcome(request: RefundRequest): string {
 }
 
 /**
- * What asking would give back, said before anybody writes a reason: the
- * amount, where it goes, and - for a purchase - that it is the UNSPENT part,
- * measured again when it is refunded.
+ * Why a reporter's Ask for Refund is off, as its tooltip and the line under it
+ * say - the server's own sentence when it sent one - or '' when it is on.
+ * While the standing is still loading, or could not be read, it is off too,
+ * with that said: a button that asks blind would only be refused.
  */
-export function describeRefundOffer(option: RefundOption): string {
-  const money = formatMoney(option.refundableMilli);
-  if (option.kind === 'resume') {
-    return `${money} back on your balance as credit - what this resume was charged.`;
+export function payoutBlocker(status: PayoutStatus | null, loading: boolean): string {
+  if (!status) return loading ? 'Checking whether you can ask for a payout.' : 'Your payout standing could not be read.';
+  if (status.available) return '';
+  if (status.unavailableReason) return status.unavailableReason;
+  if (status.unavailableCode === 'request-open' || status.openRequest) {
+    return 'You already have a payout request open. An administrator will record the payout, or tell you why not.';
   }
-  const lead =
-    option.paymentMethod === 'card'
-      ? `${money} back to your card`
-      : `${money} sent back to you by your administrator (crypto cannot be refunded automatically)`;
+  if (status.balanceMilli <= 0) return 'There are no earnings on your balance to pay out yet.';
+  return "Only a reporter's earned balance is paid out.";
+}
+
+/** What the payout dialog says before anything is sent: the whole balance, paid outside the app. */
+export function describePayoutAsk(balanceMilli: number): string {
   return (
-    `${lead}: what is left unspent of this purchase, in whole cents. Credit you spend before it is ` +
-    'refunded is not given back twice - you get back what is left then.'
+    `This asks an administrator to pay out your earned balance, ${formatMoney(balanceMilli)}. They pay you ` +
+    'outside the app, then record what they sent; it comes off your balance and you are told in your ' +
+    'notifications. Jobs you add meanwhile keep earning, and may be paid out with it.'
   );
-}
-
-/** One line for an item that already has a request open: which, and where it stands. */
-export function describeOpenRequest(request: RefundRequest): string {
-  return `Refund request ${request.reference} is open for this - ${REFUND_STATE_LABELS[request.state] ?? request.state}.`;
-}
-
-/**
- * What a place that shows a charge offers for it:
- *
- *  - `ask`: a request can be made now;
- *  - `open`: one already is, Requested or Approved - one per item, so the
- *    place says so rather than offering a second;
- *  - `refunded`: it was given back already;
- *  - `none`: it cannot be asked about, with the server's reason (still being
- *    built, refunded automatically, never charged...).
- */
-export type RefundAction =
-  | { kind: 'ask' }
-  | { kind: 'open'; request: RefundRequest }
-  | { kind: 'refunded' }
-  | { kind: 'none'; reason: string };
-
-export function refundActionFor(option: RefundOption): RefundAction {
-  if (option.openRequest) return { kind: 'open', request: option.openRequest };
-  if (option.available) return { kind: 'ask' };
-  if (option.unavailableCode === 'refunded') return { kind: 'refunded' };
-  return { kind: 'none', reason: option.unavailableReason || 'This cannot be refunded here.' };
-}
-
-/**
- * A few words for a resume's Refund cell on an order's page when it cannot be
- * asked about, where a dash would hide something worth knowing: that the
- * charge already came back on its own, or that there never was one. Every
- * other reason (still building, not on record...) is a dash, and the server's
- * full sentence is the cell's title either way.
- */
-export function refundCellNote(option: Pick<RefundOption, 'unavailableCode'>): string | null {
-  if (option.unavailableCode === 'auto-refunded') return 'Refunded automatically';
-  if (option.unavailableCode === 'not-charged') return 'Not charged';
-  return null;
-}
-
-/**
- * Whether a purchase on the order history gets "Ask for refund": paid - not
- * pending, failed, refunded or being refunded - and credited in dollars. One
- * that bought credits before they became dollars put nothing on any balance
- * today (the switch reset it), and the server refuses it for exactly that
- * (`creditedMilli` 0 - its `legacy` rule), so offering a button that can only
- * be refused would be noise. Whether anything is left UNSPENT is the server's
- * to measure, when the dialog opens: it says what would come back, or why
- * nothing would.
- */
-export function purchaseOffersRefund(payment: Pick<Payment, 'state' | 'creditedMilli'>): boolean {
-  return payment.state === 'paid' && payment.creditedMilli > 0;
-}
-
-/**
- * The charge a credit history row names, when that row is one a refund can be
- * asked about from: a run's charge in dollars (`generation-reserve`, negative,
- * written since credits became dollars), whose `refId` is the reservation the
- * server's options read. Null for every other row - a grant, a purchase, a
- * refund, and a charge from before dollars, which was reset with every balance.
- */
-export function refundChargeIdFor(entry: LedgerEntry): string | null {
-  if (entry.reason !== 'generation-reserve') return null;
-  if (entry.legacyCredits) return null;
-  if (!(entry.deltaMilli < 0)) return null;
-  const id = typeof entry.refId === 'string' ? entry.refId.trim() : '';
-  return id || null;
 }
 
 /* ------------------------------------------------- the administrators' side */
@@ -231,8 +203,9 @@ export type AdminRefundAction = 'approve' | 'decline' | 'refund';
 
 /**
  * The buttons a request gets in the queue, from the transitions the server
- * allows: Approve only from Requested; Decline and Refunded from either open
- * state; nothing once Declined or Refunded, which are final.
+ * allows: Approve only from Requested; Decline and Refunded (Record payout,
+ * for a payout) from either open state; nothing once Declined or Refunded,
+ * which are final.
  */
 export function adminRefundActions(state: RefundRequestState): AdminRefundAction[] {
   if (state === 'requested') return ['approve', 'decline', 'refund'];
@@ -247,6 +220,61 @@ function whoAsked(request: AdminRefundRequest): string {
 /** What Refunded would move now: the server's re-measure, or what was asked when it sent none. */
 export function refundableNow(request: AdminRefundRequest): number {
   return request.refundableNowMilli ?? request.amountMilli;
+}
+
+/** The words for Refunded on a request: "Record payout" for a payout, "Mark refunded" otherwise. */
+export function refundActionLabel(request: Pick<AdminRefundRequest, 'kind'>): string {
+  return request.kind === 'payout' ? 'Record payout' : 'Mark refunded';
+}
+
+/** "Balance now $4.1" under an open payout's amount: the most Record payout may record. */
+export function describePayoutBalanceNow(request: AdminRefundRequest): string | null {
+  if (request.kind !== 'payout' || request.refundableNowMilli === null) return null;
+  if (request.refundableNowMilli <= 0 && request.refundableNowReason) return request.refundableNowReason;
+  return `Balance now ${formatMoney(request.refundableNowMilli)}`;
+}
+
+export type PayoutConfirmation = {
+  title: string;
+  body: string;
+  /** What was asked: the balance when the reporter asked. */
+  askedMilli: number;
+  /** The reporter's balance now - the most that may be recorded (owner decision R2). */
+  balanceMilli: number;
+  /** What the amount box starts at: the smaller of what was asked and the balance now. */
+  prefillMilli: number;
+  /** Set when nothing may be recorded now; the confirm button stays off and this says why. */
+  blocked: string | null;
+};
+
+/**
+ * What Record payout says before anything is recorded. The administrator pays
+ * the reporter OUTSIDE the app first; this records what they actually sent -
+ * prefilled with the smaller of what was asked and the balance now, and
+ * anything up to the balance then, more than was asked included (earnings
+ * since asking count). Above the balance, an account no longer a reporter or
+ * one deleted since is refused by the server and moves nothing.
+ */
+export function describePayoutConfirmation(request: AdminRefundRequest): PayoutConfirmation {
+  const who = whoAsked(request);
+  const balanceMilli = Math.max(0, request.refundableNowMilli ?? request.amountMilli);
+  const prefillMilli = Math.min(request.amountMilli, balanceMilli);
+  const blocked =
+    balanceMilli <= 0
+      ? `${request.refundableNowReason || 'There is nothing on their balance to pay out.'} Decline the request instead.`
+      : null;
+  return {
+    title: `Record a payout to ${who}?`,
+    body:
+      `They asked to be paid out ${formatMoney(request.amountMilli)} of earnings; their balance now is ` +
+      `${formatMoney(balanceMilli)}. Pay them outside the app first, then record here what you actually sent ` +
+      'and how - anything up to their balance. It comes off the balance as one payout in their history, the ' +
+      'request turns Paid out in the same step, and they are told.',
+    askedMilli: request.amountMilli,
+    balanceMilli,
+    prefillMilli,
+    blocked,
+  };
 }
 
 export type RefundConfirmation = {
@@ -274,6 +302,12 @@ export function describeRefundConfirmation(request: AdminRefundRequest): RefundC
       : null;
   const route = refundRoute(request);
 
+  if (route === 'payout') {
+    // Never described as a refund: the queue draws Record payout's own form
+    // from describePayoutConfirmation, and this answers alike if asked.
+    const payout = describePayoutConfirmation(request);
+    return { title: payout.title, body: payout.body, byHand: false, amountMilli: payout.prefillMilli, blocked: payout.blocked };
+  }
   if (route === 'credit') {
     return {
       title: `Credit ${money} back to ${who}?`,
@@ -326,7 +360,7 @@ export function amountSentProblem(value: string, askedMilli: number): string | n
   if (!parsed.ok) return describeDollarProblem(parsed.problem, 'The amount sent back');
   if (parsed.milli <= 0 || !isWholeCents(parsed.milli) || parsed.milli > askedMilli) {
     return (
-      `The amount sent back must be whole cents, more than $0.000 and no more than the ` +
+      `The amount sent back must be whole cents, more than $0 and no more than the ` +
       `${formatMoney(askedMilli)} asked for.`
     );
   }
@@ -351,10 +385,13 @@ export function byHandRefundBody(amountSent: string, confirmedMilli: number): { 
  * purchase refunded from the payments list or spent, being refunded right now
  * (`refunding`) or holding a card refund Stripe never confirmed
  * (`refund-unconfirmed`, which the row says once read again), the request or
- * its account gone - so the queue reads its list again behind the error. Not
- * `paid-by-hand-required`, which is the dialog asking for the by-hand
- * confirmation, nor `bad-amount` or a reason refusal, which are about what was
- * typed.
+ * its account gone, a payout's account no longer a reporter
+ * (`not-a-reporter`), a request a newer build wrote (`unrecognised`) - so the
+ * queue reads its list again behind the error. Not `paid-by-hand-required`,
+ * which is the dialog asking for the by-hand confirmation, nor `bad-amount`,
+ * a reason or note refusal, or a payout above the balance
+ * (`insufficient-balance`, which names the balance now and leaves the dialog
+ * open to record less), which are about what was typed.
  */
 export function isStaleRefundRefusal(code: string | undefined): boolean {
   return (
@@ -364,7 +401,9 @@ export function isStaleRefundRefusal(code: string | undefined): boolean {
     code === 'nothing-unspent' ||
     code === 'account-missing' ||
     code === 'refunding' ||
-    code === 'refund-unconfirmed'
+    code === 'refund-unconfirmed' ||
+    code === 'not-a-reporter' ||
+    code === 'unrecognised'
   );
 }
 
@@ -388,16 +427,27 @@ export function describeDecision(
  * What the queue says after Refunded: what went back and, for a purchase, how
  * much credit came off the balance - all of it, or short by what was no longer
  * there. A card's credit is held before Stripe is asked, so only money sent
- * back by hand can fall short. Nothing moved is said as plainly as something
- * did.
+ * back by hand can fall short. A payout says what was recorded as paid.
+ * Nothing moved is said as plainly as something did.
  */
 export function describeRefundMade(
   request: AdminRefundRequest,
   outcome: RefundMoved | null,
   changed: boolean
 ): string {
-  if (!outcome) return `${request.reference} was already refunded - nothing more was moved.`;
+  const payout = request.kind === 'payout';
+  if (!outcome) {
+    return payout
+      ? `${request.reference} was already paid out - nothing more was recorded.`
+      : `${request.reference} was already refunded - nothing more was moved.`;
+  }
   const money = formatMoney(outcome.refundedMilli);
+  if (payout) {
+    return changed
+      ? `${request.reference} paid out: ${money} recorded as paid to ${whoAsked(request)} and taken off their ` +
+          'balance. They have been told.'
+      : `${money} was recorded for ${request.reference}, but the request had been decided elsewhere meanwhile.`;
+  }
   if (!changed) {
     return (
       `${money} went back for ${request.reference}, but the request had been decided elsewhere meanwhile ` +

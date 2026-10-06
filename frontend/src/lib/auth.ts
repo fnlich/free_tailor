@@ -167,6 +167,12 @@ export type PayoutResult = {
   balanceMilli: number;
   entry: LedgerEntry;
   recorded: boolean;
+  /**
+   * The reporter's open payout request this payout answered, closed as paid
+   * in the same step - so the queue cannot pay it a second time. Null when
+   * none was open (absent from a server from before payout requests).
+   */
+  closedRequestId?: string | null;
 };
 
 export const accountsApi = {
@@ -175,7 +181,7 @@ export const accountsApi = {
    *
    * `amountUsd` is a DELTA in dollars, as the administrator typed it ("0.25",
    * "-1.5") - positive adds, negative takes away, and the server stops at
-   * $0.000. Distinct from `update({ balanceUsd })`, which sets an absolute
+   * $0. Distinct from `update({ balanceUsd })`, which sets an absolute
    * amount: "give them ten dollars more" and "make it ten dollars" are
    * different intentions, and making an admin do the arithmetic to express the
    * first is how somebody takes credit away by accident.
@@ -226,7 +232,7 @@ export const accountsApi = {
     patch: {
       role?: UserRole;
       subscription?: AccountSubscriptionId;
-      /** The balance to SET, in dollars as typed ("3.977"); never below $0.000. */
+      /** The balance to SET, in dollars as typed ("3.977"); never below $0. */
       balanceUsd?: string;
       disabled?: boolean;
       name?: string;

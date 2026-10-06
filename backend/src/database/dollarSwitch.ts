@@ -86,7 +86,7 @@ export type DollarSwitchReport = {
   tasksPriced: number;
   /** Pending payments stamped with what they will credit. */
   pendingPayments: Array<{ id: string; reference: string; amountCents: number; credits: number }>;
-  /** Stored models, with the price each had - every one of which now reads as $0.000. */
+  /** Stored models, with the price each had - every one of which now reads as $0. */
   models: Array<{ id: string; name: string; creditsPerResume: unknown }>;
   /** The retired pricing settings, as stored - a credit's price, the purchase bounds, the fees. */
   pricing: Record<string, unknown> | null;
@@ -215,7 +215,7 @@ function resetAccounts(db: Database.Database, timestamp: string, report: DollarS
       reason: 'reset',
       note:
         `Credits became dollars: this account's ${plural(credits, 'credit')} ${credits === 1 ? 'was' : 'were'} ` +
-        `reset to $0.000.${heldNote(held, true)}`,
+        `reset to $0.${heldNote(held, true)}`,
       // Per pass: the marker stops a second one, and a pass run again on
       // purpose (the marker deleted by hand, after a rollback that granted
       // credits again) explains its own reset rather than zeroing silently.
@@ -400,17 +400,17 @@ function describeSwitch(report: DollarSwitchReport): void {
     return;
   }
   const parts = [
-    `${plural(report.resetRows, 'account')} reset to $0.000, with a reset row in each one's history`,
+    `${plural(report.resetRows, 'account')} reset to $0, with a reset row in each one's history`,
     ...(report.reservations.length > 0
       ? [`${plural(report.reservations.length, 'run')} in progress settled on the credits already paid`]
       : []),
     ...(report.tasks.length > 0
-      ? [`${plural(report.tasks.length, 'queued resume')} priced at $0.000, so a failure gives back nothing`]
+      ? [`${plural(report.tasks.length, 'queued resume')} priced at $0, so a failure gives back nothing`]
       : []),
     ...(report.pendingPayments.length > 0
       ? [`${plural(report.pendingPayments.length, 'unpaid checkout')} set to credit exactly what it charges`]
       : []),
-    ...(report.models.length > 0 ? [`${plural(report.models.length, 'model')} now priced at $0.000`] : []),
+    ...(report.models.length > 0 ? [`${plural(report.models.length, 'model')} now priced at $0`] : []),
   ];
   console.log(`[credits] Credits are dollars now: ${parts.join('; ')}.`);
   if (report.models.length > 0) {

@@ -12,8 +12,6 @@ import {
   findOrderForBatch,
   findOrderItem,
   findOrderItemForBatch,
-  getOrder,
-  listOrderItems,
   type Order,
   type OrderItem,
 } from '../../database/orderRepository';
@@ -42,7 +40,16 @@ import {
   type RefundRequestState,
 } from '../../database/refundRequestRepository';
 import { createNotification } from '../../database/notificationRepository';
-import { getReservation, isLedgerKeyUsed, refundRequestedCharge, type Reservation } from '../credits';
+import {
+  getReservation,
+  isLedgerKeyUsed,
+  readPayoutNote,
+  recordReporterPayout,
+  refundRequestedCharge,
+  type LedgerEntry,
+  type PayoutOutcome,
+  type Reservation,
+} from '../credits';
 import { getGenerationQueue, isOrderBatch, taskCostMilli } from '../queue';
 import {
   isUnansweredRefund,
@@ -65,9 +72,17 @@ import type { UserAccount } from '../../types/account';
 import type { Batch, Task } from '../queue/taskQueue';
 
 /**
- * Asking for money back (owner decision M3), and an administrator deciding.
+ * Asking for money back (owner decision M3), asking to be paid out (owner
+ * decision R1), and an administrator deciding.
  *
- * Two kinds of thing can be asked about, in one queue:
+ * WHO ASKS NOW. Only a REPORTER asks, and only for a PAYOUT of their earned
+ * balance (`createPayoutRequest`): purchases and resumes are no longer asked
+ * about by anybody (R1) - POST /api/refund-requests and its /options answer
+ * 410 `refund-requests-closed` - but every request made before stays in the
+ * queue and is decided exactly as below. `createRefundRequest` is kept, not
+ * routed, so the tests can still make one.
+ *
+ * Three kinds of thing are in the one queue:
  *
  * - A PURCHASE gives back its UNSPENT part: what is left of what it credited,
  *   measured exactly as `refundPayment` measures a reversal - the balance,
@@ -88,6 +103,11 @@ import type { Batch, Task } from '../queue/taskQueue';
  *   one `refund-request` ledger row keyed `refund-request:<id>`, refunded
  *   against the run's reservation (so the run's SQL cap still holds), in the
  *   same transaction as the request turning Refunded.
+ * - A PAYOUT records what the administrator SENT a reporter outside the app
+ *   (R2: anything up to the balance at that moment, prefilled with what was
+ *   asked): one `reporter-payout` ledger row keyed by the request
+ *   (`payout:<account>:<request id>`, so a double press records once), in the
+ *   same transaction as the request turning Refunded - shown as "Paid out".
  *
  * WHICH RESUME. Every charged resume has exactly one name here (the
  * `RefundItemType`s): an order's resume is its ORDER ITEM, which outlives its
@@ -112,7 +132,26 @@ import type { Batch, Task } from '../queue/taskQueue';
 export const MAX_REFUND_REASON = 1000;
 
 const REFUND_REQUESTS_PATH = '/credits?tab=refunds';
+/** A reporter's /credits has no tabs: the payout requests are listed on the page itself. */
+const PAYOUT_REQUESTS_PATH = '/credits';
 const ADMIN_REFUND_QUEUE_PATH = '/admin/payments?tab=refunds';
+
+/** What one payout request is for, fixed when asked. */
+export const PAYOUT_LABEL = 'Payout of earnings';
+
+/**
+ * The answer to a page still asking for a refund (POST /api/refund-requests,
+ * GET /options) after asking was removed (owner decision R1): a stale tab, or
+ * a bookmark. It ends in "contact your administrator", so every page draws its
+ * Contact admin link after it.
+ */
+export const REFUND_ASKING_CLOSED_MESSAGE =
+  'Refunds are no longer asked for in the app. If you think a purchase or a resume should be refunded, ' +
+  'contact your administrator.';
+
+export function refundAskingClosedError(): PublicError {
+  return new PublicError(REFUND_ASKING_CLOSED_MESSAGE, { status: 410, code: 'refund-requests-closed' });
+}
 
 /** A refund request refused, in words written for whoever asked. */
 export class RefundRequestError extends PublicError {
@@ -469,6 +508,10 @@ export function resolveRefundItem(itemType: RefundItemType, itemId: string, owne
       if (!reservation) throw notFound('charge');
       return resolveCharge(reservation, ownerId);
     }
+    case 'payout':
+      // A payout is an account's balance, not a charge: asked for through
+      // createPayoutRequest and measured by payoutTarget, never resolved here.
+      throw new RefundRequestError('A payout is asked for from the Credits page.', 400, 'bad-item');
     default:
       throw new RefundRequestError('Choose the purchase or resume to ask about.', 400, 'bad-item');
   }
@@ -571,8 +614,18 @@ export function toRefundRequestView(request: RefundRequest): RefundRequestView {
   };
 }
 
-/** What Refunded would move now, for an open request: re-measured, never above what was asked. */
+/**
+ * What Refunded would move now, for an open request: re-measured, never above
+ * what was asked - except a PAYOUT, whose figure is the reporter's balance
+ * now: the most a payout may record (R2), which the queue's Record payout box
+ * is prefilled from (the smaller of it and what was asked).
+ */
 function refundableNow(request: RefundRequest): { milli: number; reason: string | null } {
+  if (request.unrecognised) return { milli: 0, reason: UNRECOGNISED_REASON };
+  if (request.kind === 'payout') {
+    const payee = payoutTarget(request.accountId);
+    return payee.ok ? { milli: payee.balanceMilli, reason: null } : { milli: 0, reason: payee.reason };
+  }
   if (request.attemptMilli !== null) return { milli: request.attemptMilli, reason: null };
   try {
     if (request.kind === 'resume') {
@@ -586,6 +639,25 @@ function refundableNow(request: RefundRequest): { milli: number; reason: string 
   } catch (error) {
     return { milli: 0, reason: error instanceof PublicError ? error.message : 'It can no longer be measured.' };
   }
+}
+
+/**
+ * Said of a request whose item type this build does not know (a newer build
+ * wrote it, and this one was rolled back to): it can be declined, never
+ * refunded, because what it names cannot be measured here.
+ */
+const UNRECOGNISED_REASON =
+  'This request was made by a newer version of the app, so it cannot be refunded here. Decline it, or ' +
+  'decide it after upgrading again.';
+
+/** Whether a payout can be recorded for this account now, and its balance. */
+function payoutTarget(accountId: string): { ok: true; balanceMilli: number } | { ok: false; reason: string } {
+  const account = getUserById(accountId);
+  if (!account) return { ok: false, reason: 'That account no longer exists, so no payout can be recorded.' };
+  if (account.role !== 'reporter') {
+    return { ok: false, reason: 'That account is no longer a reporter, so its balance is not paid out.' };
+  }
+  return { ok: true, balanceMilli: account.balanceMilli };
 }
 
 export function toAdminRefundRequestView(request: RefundRequest): AdminRefundRequestView {
@@ -606,97 +678,17 @@ export function toAdminRefundRequestView(request: RefundRequest): AdminRefundReq
   };
 }
 
-/** One item a person may ask about, for the dialog: what it is, what it would give back, and any open request. */
-export type RefundOptionView = {
-  kind: RefundRequestKind;
-  itemType: RefundItemType;
-  itemId: string;
-  label: string;
-  chargedMilli: number;
-  refundableMilli: number;
-  available: boolean;
-  unavailableCode: RefundUnavailableCode | null;
-  unavailableReason: string | null;
-  paymentMethod: Payment['method'] | null;
-  openRequest: RefundRequestView | null;
-};
-
-function toOptionView(item: RefundItem): RefundOptionView {
-  const open = findOpenRequestForItem(item.itemKey);
-  return {
-    kind: item.kind,
-    itemType: item.itemType,
-    itemId: item.itemId,
-    label: item.label,
-    chargedMilli: item.chargedMilli,
-    refundableMilli: item.refundableMilli,
-    available: !item.unavailable && !open,
-    unavailableCode: item.unavailable?.code ?? null,
-    unavailableReason: item.unavailable?.message ?? null,
-    paymentMethod: item.paymentMethod ?? null,
-    openRequest: open ? toRefundRequestView(open) : null,
-  };
-}
-
-/**
- * What a person may ask a refund for, from one place they can see a charge:
- * a purchase (`paymentId`), an order's resumes (`orderId`), or a line of
- * their credit history (`chargeId` - the reservation a charge row names:
- * one resume for a synchronous build, every resume of the run for a queued
- * one). Read-only: nothing is asked by looking.
- */
-export function listRefundOptions(
-  account: UserAccount,
-  query: { paymentId?: unknown; orderId?: unknown; chargeId?: unknown }
-): { items: RefundOptionView[]; note: string | null } {
-  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const paymentId = text(query.paymentId);
-  const orderId = text(query.orderId);
-  const chargeId = text(query.chargeId);
-  const named = [paymentId, orderId, chargeId].filter(Boolean).length;
-  if (named !== 1) {
-    throw new RefundRequestError('Name one purchase, order or charge.', 400, 'bad-item');
-  }
-
-  if (paymentId) return { items: [toOptionView(resolvePayment(paymentId, account.id))], note: null };
-
-  if (orderId) {
-    const order = getOrder(orderId);
-    if (!order || order.userId !== account.id) throw notFound('order');
-    return {
-      items: listOrderItems(order.id).map((item) => toOptionView(resolveOrderItem({ order, item }, account.id))),
-      note: null,
-    };
-  }
-
-  const reservation = getReservation(chargeId);
-  if (!reservation || reservation.userId !== account.id) throw notFound('charge');
-  if (reservation.kind === 'request') {
-    return { items: [toOptionView(resolveCharge(reservation, account.id))], note: null };
-  }
-  const order = findOrderForBatch(reservation.id);
-  if (order && order.userId === account.id) {
-    return {
-      items: listOrderItems(order.id).map((item) => toOptionView(resolveOrderItem({ order, item }, account.id))),
-      note: null,
-    };
-  }
-  const batch = getGenerationQueue().getBatch(reservation.id);
-  if (batch) {
-    return {
-      items: batch.tasks.map((task) => toOptionView(resolveTask(batch, task, account.id))),
-      note: null,
-    };
-  }
-  return {
-    items: [],
-    note:
-      "This run's resumes are no longer listed, so they cannot be picked here. " +
-      'Ask your administrator if one of them should be refunded.',
-  };
-}
-
 /* ------------------------------------------------------- notifications */
+
+/** "payout request" or "refund request" - every sentence about a request names it as its asker did. */
+function requestNoun(request: Pick<RefundRequest, 'kind'>): string {
+  return request.kind === 'payout' ? 'payout request' : 'refund request';
+}
+
+/** A state as a sentence says it: a payout that Refunded recorded was paid out, not refunded. */
+function stateWord(request: Pick<RefundRequest, 'kind' | 'state'>): string {
+  return request.kind === 'payout' && request.state === 'refunded' ? 'paid out' : request.state;
+}
 
 function notifyRequester(request: RefundRequest, title: string, body: string): void {
   // An account deleted since asking has nobody left to read it, and a notice
@@ -706,19 +698,24 @@ function notifyRequester(request: RefundRequest, title: string, body: string): v
     recipientId: request.accountId,
     title,
     body: body.slice(0, 4000),
-    link: REFUND_REQUESTS_PATH,
+    // A reporter's /credits is on their allowlist; its ?tab= is a buyer's.
+    link: request.kind === 'payout' ? PAYOUT_REQUESTS_PATH : REFUND_REQUESTS_PATH,
   });
 }
 
 /** One notice per administrator who can act on it - written in the request's own transaction. */
 function notifyAdminsOfNewRequest(request: RefundRequest, requester: UserAccount): void {
   const who = requester.email || requester.name || 'An account';
-  const body = `${who} asks for ${formatMoney(request.amountMilli)} back for ${request.label}: "${request.reason}"`;
+  const body =
+    request.kind === 'payout'
+      ? `${who} asks to be paid out ${formatMoney(request.amountMilli)} of earnings` +
+        (request.reason ? `: "${request.reason}"` : '.')
+      : `${who} asks for ${formatMoney(request.amountMilli)} back for ${request.label}: "${request.reason}"`;
   for (const admin of listUsers()) {
     if (admin.role !== 'admin' || admin.disabled) continue;
     createNotification({
       recipientId: admin.id,
-      title: `New refund request ${request.reference}`,
+      title: `New ${requestNoun(request)} ${request.reference}`,
       body: body.slice(0, 4000),
       link: ADMIN_REFUND_QUEUE_PATH,
     });
@@ -794,12 +791,296 @@ export function createRefundRequest(account: UserAccount, input: CreateRefundReq
 
 export function listMyRefundRequests(
   account: UserAccount,
-  options: { states?: readonly RefundRequestState[]; limit: number; offset: number }
+  options: {
+    states?: readonly RefundRequestState[];
+    kinds?: readonly RefundRequestKind[];
+    limit: number;
+    offset: number;
+  }
 ): { requests: RefundRequestView[]; total: number } {
   return {
     requests: listRefundRequestsForAccount(account.id, options).map(toRefundRequestView),
-    total: countRefundRequestsForAccount(account.id, options.states),
+    total: countRefundRequestsForAccount(account.id, options.states, options.kinds),
   };
+}
+
+/* -------------------------------------------------------------- payouts */
+
+/** Why a reporter cannot ask for a payout now. */
+export type PayoutUnavailableCode = 'not-a-reporter' | 'nothing-to-pay-out' | 'request-open';
+
+/** A reporter's payout standing, as GET /api/refund-requests/payout answers it. */
+export type PayoutStatusView = {
+  /** The earned balance, in thousandths of a dollar: what a request would ask for now. */
+  balanceMilli: number;
+  /** The open payout request, if there is one - at most one, by the open-request index. */
+  openRequest: RefundRequestView | null;
+  available: boolean;
+  unavailableCode: PayoutUnavailableCode | null;
+  unavailableReason: string | null;
+};
+
+function payoutItemKey(accountId: string): string {
+  return refundItemKey('payout', accountId);
+}
+
+const NOT_A_REPORTER_ASKING =
+  "Only a reporter's earned balance is paid out. A payout request is not something this account can make.";
+const NOTHING_TO_PAY_OUT = 'There are no earnings on your balance to pay out yet.';
+const PAYOUT_ALREADY_OPEN =
+  'You already have a payout request open. An administrator will record the payout, or tell you why not.';
+
+/**
+ * What a reporter would be told about asking for a payout now - read-only. The
+ * account is read afresh, so a role changed or a payout recorded since the
+ * page loaded counts.
+ */
+export function describePayoutStatus(account: UserAccount): PayoutStatusView {
+  const current = getUserById(account.id);
+  const balanceMilli = current?.balanceMilli ?? 0;
+  const open = findOpenRequestForItem(payoutItemKey(account.id));
+  const why = ((): { code: PayoutUnavailableCode; message: string } | null => {
+    if (!current || current.role !== 'reporter') return { code: 'not-a-reporter', message: NOT_A_REPORTER_ASKING };
+    if (open) return { code: 'request-open', message: PAYOUT_ALREADY_OPEN };
+    if (balanceMilli <= 0) return { code: 'nothing-to-pay-out', message: NOTHING_TO_PAY_OUT };
+    return null;
+  })();
+  return {
+    balanceMilli,
+    openRequest: open ? toRefundRequestView(open) : null,
+    available: why === null,
+    unavailableCode: why?.code ?? null,
+    unavailableReason: why?.message ?? null,
+  };
+}
+
+/**
+ * A reporter asks an administrator to pay out their earned balance (owner
+ * decision R1). `reason` is optional - a reporter may say how they want to be
+ * paid, or nothing.
+ *
+ * Asks for the WHOLE balance as it stands (`amountMilli`); the administrator
+ * records what they actually sent, up to the balance then (R2). Refused, in
+ * the reporter's words: not a reporter - an administrator included, whom
+ * requireReporter lets through to the route - (409 `not-a-reporter`); a
+ * request already open (409 `request-open`, with its id); nothing to pay out
+ * (409 `nothing-to-pay-out`). The checks, the insert and the notice to every
+ * administrator are ONE IMMEDIATE transaction, so two presses ask once - and
+ * the partial UNIQUE index on the item key says so again.
+ */
+export function createPayoutRequest(account: UserAccount, input: { reason?: unknown }): RefundRequestView {
+  const reason = cleanReason(input.reason) ?? '';
+  if (reason.length > MAX_REFUND_REASON) {
+    throw new RefundRequestError(`Keep the note under ${MAX_REFUND_REASON} characters.`, 400, 'reason-too-long');
+  }
+
+  const db = getDb();
+  return db.transaction((): RefundRequestView => {
+    const current = getUserById(account.id);
+    if (!current || current.role !== 'reporter') {
+      throw new RefundRequestError(NOT_A_REPORTER_ASKING, 409, 'not-a-reporter');
+    }
+    const itemKey = payoutItemKey(current.id);
+    const open = findOpenRequestForItem(itemKey);
+    if (open) throw new RefundRequestError(PAYOUT_ALREADY_OPEN, 409, 'request-open', { requestId: open.id });
+    if (current.balanceMilli <= 0) {
+      throw new RefundRequestError(NOTHING_TO_PAY_OUT, 409, 'nothing-to-pay-out', { balanceMilli: current.balanceMilli });
+    }
+
+    let request: RefundRequest;
+    try {
+      request = insertRefundRequest({
+        accountId: current.id,
+        kind: 'payout',
+        itemType: 'payout',
+        itemId: current.id,
+        label: PAYOUT_LABEL,
+        amountMilli: current.balanceMilli,
+        reason,
+      });
+    } catch (error) {
+      if (error instanceof OpenRefundRequestExists) {
+        throw new RefundRequestError(PAYOUT_ALREADY_OPEN, 409, 'request-open');
+      }
+      throw error;
+    }
+    notifyAdminsOfNewRequest(request, current);
+    return toRefundRequestView(request);
+  }).immediate();
+}
+
+function payoutRefusal(outcome: Extract<PayoutOutcome, { ok: false }>): RefundRequestError {
+  if (outcome.reason === 'no-account') {
+    return new RefundRequestError(
+      'That account no longer exists, so no payout can be recorded. Decline the request instead.',
+      409,
+      'account-missing'
+    );
+  }
+  if (outcome.reason === 'not-a-reporter') {
+    return new RefundRequestError(
+      'That account is no longer a reporter, so no payout can be recorded against its balance. Decline the ' +
+        'request instead.',
+      409,
+      'not-a-reporter'
+    );
+  }
+  return new RefundRequestError(
+    `That is more than this reporter's balance of ${formatMoney(outcome.balance)}. Record what was actually ` +
+      'paid, up to the balance.',
+    409,
+    'insufficient-balance',
+    { balanceMilli: outcome.balance }
+  );
+}
+
+/** The reporter's notice of a payout recorded - after the commit, never undoing it. */
+function notifyPayoutRecorded(
+  request: Pick<RefundRequest, 'accountId' | 'reference'> | null,
+  accountId: string,
+  amountMilli: number,
+  note: string,
+  balanceMilli: number
+): void {
+  try {
+    if (!getUserById(accountId)) return;
+    const closes = request ? ` It answers your payout request ${request.reference}.` : '';
+    createNotification({
+      recipientId: accountId,
+      title: `Payout recorded: ${formatMoney(amountMilli)}`,
+      body: (
+        `An administrator recorded a payout of ${formatMoney(amountMilli)} to you: ${note.replace(/[.!?]+$/, '')}. ` +
+        `Your balance is now ${formatMoney(balanceMilli)}.${closes}`
+      ).slice(0, 4000),
+      link: PAYOUT_REQUESTS_PATH,
+    });
+  } catch (error) {
+    // A notice that could not be written is a missing courtesy, and must not
+    // undo - or report as failed - a record of money that has already left.
+    console.warn(`[refunds] Recorded a payout for account ${accountId} but could not notify them.`, error);
+  }
+}
+
+/**
+ * Refunded, for a PAYOUT request: records what the administrator sent the
+ * reporter outside the app - `amountUsd` (required, more than $0, up to the
+ * reporter's balance NOW, owner decision R2 - not capped at what was asked,
+ * which was the balance then) and `note` (required: how it was paid).
+ *
+ * ONE IMMEDIATE transaction: `recordReporterPayout`, keyed by the REQUEST
+ * (`payout:<account>:<request id>`, nested as a savepoint), then the request
+ * turning Refunded. A refusal - above the balance, no longer a reporter, the
+ * account gone - throws, so nothing moves and the request stays open. A
+ * double press finds the request Refunded and changes nothing, and the key
+ * would record the payout once even if it did not. The reporter's notice
+ * follows the commit.
+ */
+function payOutRequest(id: string, admin: UserAccount, body: { amountUsd?: unknown; note?: unknown }): RefundResult {
+  // The same sentences, in the same order, as Admin -> Accounts' payout - so
+  // the page's one check (lib/reporterPay.ts `payoutProblem`) serves both.
+  const parsed = parseDollars(body.amountUsd);
+  if (!parsed.ok) {
+    throw new RefundRequestError(describeDollarProblem(parsed.problem, 'The payout'), 400, 'bad-amount');
+  }
+  if (parsed.milli <= 0) throw new RefundRequestError('Give the amount paid, in dollars.', 400, 'bad-amount');
+  const note = readPayoutNote(body.note);
+  if (!note.ok) throw new RefundRequestError(note.error, 400, note.code);
+  const amount = parsed.milli;
+
+  const db = getDb();
+  type Paid = { result: RefundResult; notice: { amount: number; balance: number } | null; request: RefundRequest };
+  const paid = db.transaction((): Paid => {
+    const request = loadRequest(id);
+    if (request.state === 'refunded') {
+      return { result: { request: toAdminRefundRequestView(request), changed: false, outcome: null }, notice: null, request };
+    }
+    if (request.state === 'declined') throw finalError(request);
+    if (request.kind !== 'payout') throw new Error(`${request.reference} is not a payout request.`);
+
+    const outcome = recordReporterPayout({
+      userId: request.accountId,
+      amountMilli: amount,
+      actorId: admin.id,
+      note: `Payout request ${request.reference}: ${note.note}`,
+      requestId: request.id,
+    });
+    if (!outcome.ok) throw payoutRefusal(outcome);
+    // Already recorded under this request's key and yet the request open: not
+    // reachable while both commit together, but if it were, the request
+    // closes on the figure that was recorded rather than a second one.
+    const recorded = outcome.applied ? amount : recordedPayoutAmount(outcome.entry, amount);
+    if (!markRefundRequestRefunded(request.id, admin.id, recorded)) throw finalError(loadRequest(request.id));
+    return {
+      result: {
+        request: toAdminRefundRequestView(loadRequest(request.id)),
+        changed: true,
+        outcome: { refundedMilli: recorded, reversedMilli: recorded, shortfallMilli: 0 },
+      },
+      notice: outcome.applied ? { amount: recorded, balance: outcome.balance } : null,
+      request,
+    };
+  }).immediate();
+
+  if (paid.notice) {
+    notifyPayoutRecorded(paid.request, paid.request.accountId, paid.notice.amount, note.note, paid.notice.balance);
+  }
+  return paid.result;
+}
+
+function recordedPayoutAmount(entry: LedgerEntry | null, fallback: number): number {
+  const delta = entry?.deltaMilli;
+  return typeof delta === 'number' && delta < 0 ? -delta : fallback;
+}
+
+export type DirectPayoutResult = {
+  outcome: PayoutOutcome;
+  /** The payout request this payout answered and closed, if one was open. */
+  closedRequest: RefundRequest | null;
+};
+
+/**
+ * Admin -> Accounts' "Record payout": the payout record (`recordReporterPayout`,
+ * keyed by the page's `requestId` when it sends one) AND, in the SAME
+ * transaction, the reporter's open payout request closed as Refunded with that
+ * amount - so a request cannot also be paid from the queue afterwards: the
+ * queue's press finds it Refunded and changes nothing. Whichever of the two
+ * commits first wins; the other sees the request final (owner decision on
+ * payouts: "recording a payout from the Accounts page closes the open
+ * request"). A repeat of the same `requestId` closes nothing - it records
+ * nothing. The notice follows the commit.
+ */
+export function recordDirectPayout(input: {
+  accountId: string;
+  amountMilli: number;
+  admin: UserAccount;
+  note: string;
+  requestId?: string;
+}): DirectPayoutResult {
+  const db = getDb();
+  const result = db.transaction((): DirectPayoutResult => {
+    const outcome = recordReporterPayout({
+      userId: input.accountId,
+      amountMilli: input.amountMilli,
+      actorId: input.admin.id,
+      note: input.note,
+      ...(input.requestId ? { requestId: input.requestId } : {}),
+    });
+    if (!outcome.ok || !outcome.applied) return { outcome, closedRequest: null };
+    const open = findOpenRequestForItem(payoutItemKey(input.accountId));
+    if (!open) return { outcome, closedRequest: null };
+    if (!markRefundRequestRefunded(open.id, input.admin.id, input.amountMilli)) {
+      // The index allows one open request and this transaction holds the
+      // write lock, so the row read above is still open; a false here is a
+      // bug, and taking the payout back with it is the safe way to say so.
+      throw new Error(`${open.reference}: could not close the payout request the payout answers.`);
+    }
+    return { outcome, closedRequest: loadRequest(open.id) };
+  }).immediate();
+
+  if (result.outcome.ok && result.outcome.applied) {
+    notifyPayoutRecorded(result.closedRequest, input.accountId, input.amountMilli, input.note, result.outcome.balance);
+  }
+  return result;
 }
 
 export function listRefundQueue(options: {
@@ -829,8 +1110,9 @@ function loadRequest(id: string): RefundRequest {
 }
 
 function finalError(request: RefundRequest): RefundRequestError {
+  const noun = requestNoun(request);
   return new RefundRequestError(
-    `This refund request was already ${request.state}, and that is final.`,
+    `This ${noun} was already ${stateWord(request)}, and that is final.`,
     409,
     'request-final',
     { state: request.state }
@@ -849,12 +1131,21 @@ export function approveRefund(id: string, admin: UserAccount): DecisionResult {
     if (request.state === 'approved') return { request: toAdminRefundRequestView(request), changed: false };
     if (request.state !== 'requested') throw finalError(request);
     if (!approveRefundRequest(id, admin.id)) throw finalError(loadRequest(id));
-    notifyRequester(
-      request,
-      'Refund request approved',
-      `Your refund request for ${request.label} was approved. The refund itself follows, and you will be told ` +
-        'when it is made.'
-    );
+    if (request.kind === 'payout') {
+      notifyRequester(
+        request,
+        'Payout request approved',
+        `Your payout request ${request.reference} was approved. The payout itself follows, and you will be told ` +
+          'when it is recorded.'
+      );
+    } else {
+      notifyRequester(
+        request,
+        'Refund request approved',
+        `Your refund request for ${request.label} was approved. The refund itself follows, and you will be told ` +
+          'when it is made.'
+      );
+    }
     return { request: toAdminRefundRequestView(loadRequest(id)), changed: true };
   }).immediate();
 }
@@ -874,7 +1165,15 @@ export function declineRefund(id: string, admin: UserAccount, body: { reason?: u
     const refundedPayment = moneyAlreadyMoving(request);
     if (refundedPayment) return { refundedPayment, request };
     if (!declineRefundRequest(id, admin.id, reason)) throw finalError(loadRequest(id));
-    notifyRequester(request, 'Refund request declined', `Your refund request for ${request.label} was declined: ${reason}`);
+    if (request.kind === 'payout') {
+      notifyRequester(
+        request,
+        'Payout request declined',
+        `Your payout request ${request.reference} was declined: ${reason}`
+      );
+    } else {
+      notifyRequester(request, 'Refund request declined', `Your refund request for ${request.label} was declined: ${reason}`);
+    }
     return { request: toAdminRefundRequestView(loadRequest(id)), changed: true };
   }).immediate();
 
@@ -968,14 +1267,18 @@ const purchaseRefundsInFlight = new Map<string, Promise<RefundResult>>();
 export async function refundRequest(
   id: string,
   admin: UserAccount,
-  body: { paidByHand?: unknown; amountUsd?: unknown } = {}
+  body: { paidByHand?: unknown; amountUsd?: unknown; note?: unknown } = {}
 ): Promise<RefundResult> {
   const request = loadRequest(id);
   if (request.state === 'refunded') {
     return { request: toAdminRefundRequestView(request), changed: false, outcome: null };
   }
   if (request.state === 'declined') throw finalError(request);
+  if (request.unrecognised) throw new RefundRequestError(UNRECOGNISED_REASON, 409, 'unrecognised');
 
+  // A payout BEFORE the resume branch: anything that is not a purchase used
+  // to be read as a resume, and a payout's item is an account, not a charge.
+  if (request.kind === 'payout') return payOutRequest(id, admin, { amountUsd: body.amountUsd, note: body.note });
   if (request.kind === 'resume') return refundResume(id, admin);
 
   const running = purchaseRefundsInFlight.get(id);
@@ -1329,7 +1632,7 @@ async function refundPurchaseByHand(
   }
   if (parsed.milli <= 0 || !isWholeCents(parsed.milli) || parsed.milli > request.amountMilli) {
     throw new RefundRequestError(
-      `The amount sent back must be whole cents, more than $0.000 and no more than the ${formatMoney(
+      `The amount sent back must be whole cents, more than $0 and no more than the ${formatMoney(
         request.amountMilli
       )} asked for.`,
       400,

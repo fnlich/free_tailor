@@ -44,7 +44,7 @@ function CreditsPill({ balanceMilli, reporter }: { balanceMilli: number; reporte
       <span className="tl-coin" aria-hidden>
         <IconCredits className="h-5 w-5" />
       </span>
-      {/* Three decimals, like every amount: a $0.023 charge moves the last digit. */}
+      {/* Every significant decimal, like every amount: a $0.023 charge moves the last digit. */}
       <span>{balance}</span>
     </Link>
   );

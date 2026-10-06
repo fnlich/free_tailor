@@ -115,8 +115,10 @@ const MOUNTS = [
     mount: '/api/refund-requests',
     module: 'refundRequests',
     access: 'account',
-    why: 'reading your own requests is anybody\'s; asking is for an account that buys and builds',
-    except: { 'GET /options': 'builder', 'POST /': 'builder' },
+    why:
+      "reading your own requests is anybody's; a payout is asked for by a reporter (R1); the retired refund " +
+      'asks keep the builder guard and answer 410',
+    except: { 'GET /options': 'builder', 'POST /': 'builder', 'GET /payout': 'reporter', 'POST /payout': 'reporter' },
   },
   { mount: '/api/admin/refund-requests', module: 'refundRequests', exportName: 'adminRefundRequestsRouter', access: 'admin' },
   {
@@ -396,6 +398,7 @@ test("a reporter reaches their own account, balance, ledger, bell, sheet, refund
       ['GET', '/api/sheet'],
       ['GET', '/api/contact'],
       ['GET', '/api/refund-requests'],
+      ['GET', '/api/refund-requests/payout'],
       ['GET', '/api/report'],
       ['GET', '/api/report/runs/current'],
     ]) {
@@ -406,10 +409,14 @@ test("a reporter reaches their own account, balance, ledger, bell, sheet, refund
 
     const requests = await server.call('reporter', 'GET', '/api/refund-requests');
     assert.deepEqual(requests.body.requests, []);
+    // Asking for a payout is theirs: refused here only because nothing is earned yet.
+    const payout = await server.call('reporter', 'POST', '/api/refund-requests/payout', {});
+    assert.equal(payout.status, 409);
+    assert.equal(payout.body.code, 'nothing-to-pay-out');
     const ledger = await server.call('reporter', 'GET', '/api/credits/ledger');
     assert.equal(ledger.body.balanceMilli, 0);
 
-    // Asking for a refund, and buying, are not theirs.
+    // Asking for a refund of a purchase or a resume, and buying, are not theirs.
     for (const [method, url] of [
       ['GET', '/api/refund-requests/options?paymentId=probe'],
       ['POST', '/api/refund-requests'],

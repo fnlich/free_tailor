@@ -30,7 +30,7 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../../utils/mo
 
 export const JOB_LAKE_SETTINGS_KEY = 'job-lake';
 
-/** The daily cap's ceiling: $1,000,000.000, so an absurd figure is a typo refused rather than a cap. */
+/** The daily cap's ceiling: $1,000,000, so an absurd figure is a typo refused rather than a cap. */
 export const MAX_DAILY_CAP_MILLI = 1_000_000_000;
 
 const WINDOW_BOUNDS = OPERATIONAL_INT_BOUNDS.JOB_LAKE_DUPLICATE_WINDOW_DAYS;

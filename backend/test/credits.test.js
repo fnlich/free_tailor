@@ -105,7 +105,7 @@ test('two runs racing for the last credits cannot both win', () => {
   credits.reserveCredits(snapshot, 10_000, { kind: 'batch', id: 'bat_1' });
   assert.throws(
     () => credits.reserveCredits(snapshot, 10_000, { kind: 'batch', id: 'bat_2' }),
-    /needs \$10\.000 of credit and the account has none/i
+    /needs \$10 of credit and the account has none/i
   );
 
   assert.equal(users.getUserById(alice.id).balanceMilli, 0);
@@ -282,7 +282,7 @@ test('CREDIT_SIGNUP_GRANT gives new accounts an opening balance in dollars, once
     const entry = credits.getLedger(alice.id)[0];
     assert.equal(entry.reason, 'signup-grant');
     assert.equal(entry.deltaMilli, 2_500);
-    assert.match(entry.note, /\$2\.500/);
+    assert.match(entry.note, /\$2\.5\./);
 
     // Keyed on the account, so a retried sign-in cannot grant twice.
     credits.applySignupGrant(users.getUserById(alice.id));
@@ -435,9 +435,9 @@ test('a charge line names each model and the total in dollars', () => {
       { modelLabel: 'Claude Sonnet', costMilli: 23 },
       { modelLabel: 'Codex', costMilli: 10 },
     ]),
-    '3 resumes: 2 x Claude Sonnet @ $0.023, 1 x Codex @ $0.010 = $0.056'
+    '3 resumes: 2 x Claude Sonnet @ $0.023, 1 x Codex @ $0.01 = $0.056'
   );
-  assert.equal(credits.describeCharge([{ modelLabel: 'Free', costMilli: 0 }]), '1 resume: 1 x Free @ $0.000 = $0.000');
+  assert.equal(credits.describeCharge([{ modelLabel: 'Free', costMilli: 0 }]), '1 resume: 1 x Free @ $0 = $0');
 });
 
 test('CREDIT_SIGNUP_GRANT is dollars to $0.001, and junk grants nothing rather than a guess', () => {

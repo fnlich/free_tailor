@@ -76,17 +76,27 @@ const AMOUNTS_MILLI = [
   1_000_000, 1_234_567, 1_000_000_000, 123_456_789_012, -1, -46, -1000, -1_234_567,
 ];
 
-test('formatMoney prints exactly what the server prints, always to three decimals', () => {
+test('formatMoney prints exactly what the server prints, every significant decimal and no trailing zero', () => {
   const { formatMoney } = load('lib/format.ts');
   for (const milli of AMOUNTS_MILLI) {
     assert.equal(formatMoney(milli), backendMoney.formatMoney(milli), String(milli));
   }
-  // The owner's examples: a price, a balance, a purchase.
+  // The owner's examples: a price, a balance, a purchase - and "$1", never
+  // "$1.000", which reads as a thousand.
   assert.equal(formatMoney(23), '$0.023');
   assert.equal(formatMoney(3977), '$3.977');
-  assert.equal(formatMoney(50_000), '$50.000');
+  assert.equal(formatMoney(50_000), '$50');
+  assert.equal(formatMoney(1000), '$1');
+  assert.equal(formatMoney(4100), '$4.1');
+  assert.equal(formatMoney(0), '$0');
+  assert.equal(formatMoney(10), '$0.01');
+  assert.equal(formatMoney(1_234_500), '$1,234.5');
   assert.equal(formatMoney(1_234_567), '$1,234.567');
   assert.equal(formatMoney(-46), '-$0.046');
+  assert.equal(formatMoney(-1000), '-$1');
+  // Never a bare dot, and never a negative zero.
+  for (const milli of AMOUNTS_MILLI) assert.doesNotMatch(formatMoney(milli), /\.$|^-\$0$/, String(milli));
+  assert.equal(formatMoney(-0), '$0');
   // Display only, so junk does not print "$NaN" - and agrees with the server.
   for (const junk of [NaN, 2.6, undefined]) {
     assert.equal(formatMoney(junk), backendMoney.formatMoney(junk), String(junk));
@@ -134,12 +144,36 @@ test('whole cents, and the text a dollar box is filled with, round-trip exactly'
     // Whatever goes into a box parses back to the very same amount.
     assert.deepEqual(parseDollars(toDollarInput(milli)), { ok: true, milli }, String(milli));
   }
-  // Money reads like money, and a price keeps its third digit.
+  // Money reads like money, and a price keeps its third digit - however
+  // formatMoney happens to print (these do not read its text any more).
   assert.equal(toDollarInput(2500), '2.50');
   assert.equal(toDollarInput(50_000), '50.00');
+  assert.equal(toDollarInput(0), '0.00');
   assert.equal(toDollarInput(23), '0.023');
   assert.equal(toDollarInput(125), '0.125');
   assert.equal(toDollarInput(1_234_567), '1234.567');
+  assert.equal(toDollarInput(1_234_500), '1234.50');
+  assert.equal(toDollarInput(1_000_000_000), '1000000.00');
+});
+
+test("a legacy credit's unit price keeps the two decimals its receipt was printed with", () => {
+  const { formatLegacyUnitPrice } = load('lib/format.ts');
+  assert.equal(formatLegacyUnitPrice(500), '$0.50');
+  assert.equal(formatLegacyUnitPrice(1000), '$1.00');
+  assert.equal(formatLegacyUnitPrice(1_250_000), '$1,250.00');
+  // Not whole cents: every digit, as any other amount.
+  assert.equal(formatLegacyUnitPrice(505), '$0.505');
+  assert.equal(formatLegacyUnitPrice(5), '$0.005');
+});
+
+test('the helpers that need fixed decimals build them from the digits, not from formatMoney\'s text', () => {
+  const source = fs.readFileSync(path.join(SRC, 'lib', 'format.ts'), 'utf8');
+  for (const name of ['toDollarInput', 'formatLegacyUnitPrice']) {
+    const start = source.indexOf(`export function ${name}(`);
+    const body = source.slice(start, source.indexOf('\n}\n', start));
+    assert.match(body, /moneyParts\(/, `${name} reads the digits`);
+    assert.doesNotMatch(body, /formatMoney\([^)]*\)\s*\.(?:slice|replace)/, `${name} slices formatMoney's text`);
+  }
 });
 
 test("a model's price is checked in the box exactly as the server checks it", () => {
@@ -173,9 +207,11 @@ test('the cost line multiplies a single price out, and states a mixed run as its
   assert.equal(describeRunCost({ resumes: 1, costMilli: 23, pricePerResumeMilli: 23 }), '1 resume × $0.023 = $0.023');
   // Profiles on models at different prices: no single price to show.
   assert.equal(describeRunCost({ resumes: 3, costMilli: 71, pricePerResumeMilli: null }), '3 resumes = $0.071');
-  assert.equal(describeRunCost({ resumes: 0, costMilli: 0, pricePerResumeMilli: null }), '0 resumes = $0.000');
+  assert.equal(describeRunCost({ resumes: 0, costMilli: 0, pricePerResumeMilli: null }), '0 resumes = $0');
   // A model nobody has priced yet is free, and says so in figures.
-  assert.equal(describeRunCost({ resumes: 2, costMilli: 0, pricePerResumeMilli: 0 }), '2 resumes × $0.000 = $0.000');
+  assert.equal(describeRunCost({ resumes: 2, costMilli: 0, pricePerResumeMilli: 0 }), '2 resumes × $0 = $0');
+  // Whole dollars read as dollars.
+  assert.equal(describeRunCost({ resumes: 4, costMilli: 2000, pricePerResumeMilli: 500 }), '4 resumes × $0.5 = $2');
 });
 
 // -- the ledger -------------------------------------------------------------- //
@@ -203,7 +239,7 @@ test('a ledger row reads in the unit it was written in', () => {
   assert.equal(describeLedgerChange(refund), '+$0.046');
   assert.equal(ledgerDirection(refund), 1);
 
-  // From before dollars: its credits, never "$0.000" and never converted.
+  // From before dollars: its credits, never "$0" and never converted.
   const bought = row({ legacyCredits: { delta: 40, balanceAfter: 52 } });
   assert.equal(describeLedgerChange(bought), '+40 credits');
   assert.equal(describeLedgerBalance(bought), '52 credits');
@@ -213,7 +249,7 @@ test('a ledger row reads in the unit it was written in', () => {
   assert.equal(describeLedgerBalance(reset), '0 credits');
   assert.equal(ledgerDirection(reset), -1);
   // The reset row of an account whose credits were all held by a run moves
-  // nothing - and still reads in credits, not as a "+$0.000" movement.
+  // nothing - and still reads in credits, not as a "+$0" movement.
   const heldOnly = row({ legacyCredits: { delta: 0, balanceAfter: 0 } });
   assert.equal(describeLedgerChange(heldOnly), '0 credits');
   assert.equal(describeLedgerBalance(heldOnly), '0 credits');
@@ -255,14 +291,14 @@ test('a purchase since dollars reads as its charge, and one from before as the c
   const pd = load('lib/paymentDisplay.ts');
   const card = payment({});
   assert.equal(pd.isLegacyPurchase(card), false);
-  assert.equal(pd.describePurchaseCredit(card), '$25.000');
-  assert.equal(pd.describeCreditReceived(card), '$25.000');
-  assert.equal(pd.describePurchase(card), '$25.000 of credit.');
+  assert.equal(pd.describePurchaseCredit(card), '$25');
+  assert.equal(pd.describeCreditReceived(card), '$25');
+  assert.equal(pd.describePurchase(card), '$25 of credit.');
 
   assert.equal(pd.isLegacyPurchase(LEGACY), true);
   assert.equal(pd.describePurchaseCredit(LEGACY), '195 credits');
   assert.equal(pd.describeCreditReceived(LEGACY), '195 credits');
-  assert.equal(pd.describePurchase(LEGACY), '195 credits for $100.000.');
+  assert.equal(pd.describePurchase(LEGACY), '195 credits for $100.');
   // A very old row has no granted column: what was quoted is what landed.
   const older = { ...LEGACY, legacyCredits: { ...LEGACY.legacyCredits, creditsGranted: 0 } };
   assert.equal(pd.describeCreditReceived(older), '195 credits');
@@ -271,7 +307,7 @@ test('a purchase since dollars reads as its charge, and one from before as the c
   // was credited its charge in dollars, and that is what it says.
   const straddled = payment({ legacyCredits: { credits: 50, creditsGranted: 0, refundedCredits: 0, unitPriceMilli: 500 } });
   assert.equal(pd.isLegacyPurchase(straddled), false);
-  assert.equal(pd.describeCreditReceived(straddled), '$25.000');
+  assert.equal(pd.describeCreditReceived(straddled), '$25');
 });
 
 test("an invoice keeps an old payment's original line, and a new one is one line of credit", () => {
@@ -287,30 +323,30 @@ test("an invoice keeps an old payment's original line, and a new one is one line
   assert.equal(legacy.net, '195 credits');
 
   const card = describeInvoice(payment({}));
-  assert.deepEqual(card.lines, [{ description: '$25.000 of Tailor credit', amountMilli: 25_000 }]);
+  assert.deepEqual(card.lines, [{ description: '$25 of Tailor credit', amountMilli: 25_000 }]);
   assert.equal(card.feeMilli, 0);
-  assert.equal(card.net, '$25.000');
+  assert.equal(card.net, '$25');
 
   assert.equal(card.amountRefundedMilli, 0, 'nothing refunded on a payment that was not');
   // The payments list's Refund returns the whole charge, and reverses what the
   // balance can cover: the rest was spent.
   const refunded = describeInvoice(payment({ state: 'refunded', refundedMilli: 12_400, refundAmountMilli: 25_000 }));
   assert.equal(refunded.amountRefundedMilli, 25_000);
-  assert.equal(refunded.reversal, 'Credit reversed: $12.400 of $25.000 - the other $12.600 had already been spent.');
+  assert.equal(refunded.reversal, 'Credit reversed: $12.4 of $25 - the other $12.6 had already been spent.');
   const whole = describeInvoice(payment({ state: 'refunded', refundedMilli: 25_000, refundAmountMilli: 25_000 }));
-  assert.equal(whole.reversal, 'Credit reversed: $25.000 of $25.000.');
+  assert.equal(whole.reversal, 'Credit reversed: $25 of $25.');
   // A row the server sent without the figure reads as the whole charge, as the
-  // server reads an older refunded row - never as $0.000 refunded.
+  // server reads an older refunded row - never as $0 refunded.
   assert.equal(describeInvoice(payment({ state: 'refunded', refundedMilli: 25_000 })).amountRefundedMilli, 25_000);
 });
 
 test('an invoice says what a partial refund returned, and never calls a balance still there spent', () => {
   const { describeInvoice, describeRefundedNote } = load('lib/paymentDisplay.ts');
 
-  // A refund request on a $10.000 card purchase after 2 x $0.023 was spent:
-  // the unspent $9.954 goes back in whole cents, $9.950, and $0.004 stays on
-  // the balance. "Amount Refunded" is that, not the $10.000 paid, and the
-  // $0.050 not reversed is not all spent.
+  // A refund request on a $10 card purchase after 2 x $0.023 was spent:
+  // the unspent $9.954 goes back in whole cents, $9.95, and $0.004 stays on
+  // the balance. "Amount Refunded" is that, not the $10 paid, and the
+  // $0.05 not reversed is not all spent.
   const request = payment({
     amountMilli: 10_000,
     creditMilli: 10_000,
@@ -323,15 +359,15 @@ test('an invoice says what a partial refund returned, and never calls a balance 
   assert.equal(invoice.amountRefundedMilli, 9_950);
   assert.equal(
     invoice.reversal,
-    'Credit reversed: $9.950 of $10.000 - the other $0.050 was not reversed: it had been spent, or is still on the balance.'
+    'Credit reversed: $9.95 of $10 - the other $0.05 was not reversed: it had been spent, or is still on the balance.'
   );
   assert.equal(
     describeRefundedNote(request),
-    '$9.950 of $10.000 reversed, $9.950 returned - the other $0.050 was not reversed: spent, or still on the balance.'
+    '$9.95 of $10 reversed, $9.95 returned - the other $0.05 was not reversed: spent, or still on the balance.'
   );
 
-  // A crypto purchase refunded by hand: the administrator sent $20.000 of
-  // $50.000, and that much came off the balance.
+  // A crypto purchase refunded by hand: the administrator sent $20 of
+  // $50, and that much came off the balance.
   const byHand = payment({
     method: 'crypto',
     provider: 'cryptomus',
@@ -346,11 +382,11 @@ test('an invoice says what a partial refund returned, and never calls a balance 
   assert.equal(byHandInvoice.amountRefundedMilli, 20_000);
   assert.equal(
     byHandInvoice.reversal,
-    'Credit reversed: $20.000 of $50.000 - the other $30.000 was not reversed: it had been spent, or is still on the balance.'
+    'Credit reversed: $20 of $50 - the other $30 was not reversed: it had been spent, or is still on the balance.'
   );
   assert.equal(
     describeRefundedNote(byHand),
-    '$20.000 of $50.000 reversed, $20.000 returned - the other $30.000 was not reversed: spent, or still on the balance.'
+    '$20 of $50 reversed, $20 returned - the other $30 was not reversed: spent, or still on the balance.'
   );
 });
 
@@ -366,11 +402,11 @@ test('an administrator is told what a refund reversed, in dollars, and why an ol
   const { describeRefundedNote, describeRefundOutcome } = load('lib/paymentDisplay.ts');
   assert.equal(
     describeRefundOutcome('FT-PAY-1', { creditedMilli: 50_000, reversedMilli: 12_400, shortfallMilli: 37_600 }),
-    'FT-PAY-1 refunded in full. Only $12.400 of $50.000 could be reversed - the other $37.600 had already been spent.'
+    'FT-PAY-1 refunded in full. Only $12.4 of $50 could be reversed - the other $37.6 had already been spent.'
   );
   assert.equal(
     describeRefundOutcome('FT-PAY-1', { creditedMilli: 50_000, reversedMilli: 50_000, shortfallMilli: 0 }),
-    'FT-PAY-1 refunded, and all $50.000 of credit reversed.'
+    'FT-PAY-1 refunded, and all $50 of credit reversed.'
   );
   assert.match(
     describeRefundOutcome('FT-PAY-1', { creditedMilli: 0, reversedMilli: 0, shortfallMilli: 0 }),
@@ -379,7 +415,7 @@ test('an administrator is told what a refund reversed, in dollars, and why an ol
 
   assert.equal(
     describeRefundedNote(payment({ state: 'refunded', refundedMilli: 10_000, refundAmountMilli: 25_000 })),
-    '$10.000 of $25.000 reversed - the other $15.000 had been spent.'
+    '$10 of $25 reversed - the other $15 had been spent.'
   );
   assert.match(describeRefundedNote({ ...LEGACY, state: 'refunded' }), /^0 of 195 credits reversed - the other 195/);
 });
@@ -409,7 +445,7 @@ test('a typed purchase is fitted into the bounds, and refused when it is not dol
   assert.deepEqual(readPurchaseAmount('500', CARD), { ok: true, milli: 100_000, fitted: 'max' });
   assert.equal(
     describeFitted(readPurchaseAmount('1', CARD), CARD),
-    'The smallest card purchase is $2.500. $2.500 will be bought.'
+    'The smallest card purchase is $2.5. $2.5 will be bought.'
   );
   // Not an amount a card can be charged: refused, never rounded.
   for (const typed of ['2.505', '0', '-5', 'ten', '', '1e3']) {
@@ -480,7 +516,7 @@ const FRONTEND_MONEY_SOURCES = [
   'components/credits/PayForm.tsx',
   'components/credits/CreditHistory.tsx',
   'components/credits/OrderHistory.tsx',
-  'components/credits/RefundRequestDialog.tsx',
+  'components/credits/PayoutRequestDialog.tsx',
   'components/credits/RefundRequestHistory.tsx',
   'lib/refunds.ts',
   'lib/refundDisplay.ts',
@@ -522,7 +558,7 @@ test('no page that shows or sends money floors, truncates or float-parses it', (
 /**
  * And no box an amount is typed into is `type="number"`. A number box hands
  * the page what the BROWSER made of the keystrokes: in an en-US Chrome "0,023"
- * arrives as "0023", so Admin -> Models saved $23.000 a resume - a thousand
+ * arrives as "0023", so Admin -> Models saved $23 a resume - a thousand
  * times the price typed - where a text box sends "0,023" on, for parseDollars
  * and the server to refuse by name. Every dollar box is
  * `type="text" inputMode="decimal"`.

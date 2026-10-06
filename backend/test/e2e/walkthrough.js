@@ -27,7 +27,7 @@ const { formatMoney } = require(path.join(DIST, 'utils', 'money'));
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const FAKE = process.env.E2E_FAKE || 'http://127.0.0.1:4242';
 
-/** Thousandths as the dollars a request carries: 70000 -> "70.000", -46 -> "-0.046". */
+/** Thousandths as the dollars a request carries: 70000 -> "70", -46 -> "-0.046". */
 const usd = (milli) => formatMoney(milli).replace(/[$,]/g, '');
 
 let failures = 0;
@@ -176,7 +176,7 @@ async function main() {
   const after = await call(buyerToken, `/payments/${checkout.body.paymentId}`);
   check('the payment is now paid', after.body?.payment?.state === 'paid', `state=${after.body?.payment?.state}`);
   const balanceAfter = (await call(buyerToken, '/credits')).body?.balanceMilli ?? 0;
-  check('the $20.000 is on the balance', balanceAfter === startBalance + 20000, `${startBalance} -> ${balanceAfter}`);
+  check('the $20 is on the balance', balanceAfter === startBalance + 20000, `${startBalance} -> ${balanceAfter}`);
 
   const ledger = await call(buyerToken, '/credits/ledger?limit=5');
   const purchase = ledger.body?.entries?.find((e) => e.reason === 'purchase');

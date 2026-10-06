@@ -1489,11 +1489,41 @@ function enforceSkillCategoryLineBreaks(
   });
 }
 
-/** The optional sections and the data each one renders, by the class that marks it in a template. */
+/**
+ * The optional sections, the data each one renders, and how a template marks
+ * one: the class the built-ins and the manual builder put on it, the
+ * `data-section` value the builder also writes, and - for markup that has
+ * neither, like an uploaded template - the words its heading reads.
+ */
 const OPTIONAL_SECTIONS = [
-  { className: 'section-soft-skills', field: 'softSkills', choice: 'softSkills' },
-  { className: 'section-strengths', field: 'strengths', choice: 'strengths' },
+  {
+    className: 'section-soft-skills',
+    field: 'softSkills',
+    choice: 'softSkills',
+    dataSections: ['softSkills', 'soft-skills'],
+    heading: /soft[\s-]*skill/i,
+  },
+  {
+    className: 'section-strengths',
+    field: 'strengths',
+    choice: 'strengths',
+    dataSections: ['strengths'],
+    heading: /strength/i,
+  },
 ] as const;
+
+type OptionalSection = (typeof OPTIONAL_SECTIONS)[number];
+
+/** A stretch of a template's markup: [start, end). */
+type MarkupSpan = { start: number; end: number };
+
+/**
+ * How a compile finds the optional sections: 'all' of `findOptionalSections`;
+ * 'marked', only the class and `data-section` (no section found from its
+ * loop); 'none', no section removed or guarded at all. Anything but 'all' is
+ * `compilableMarkup`'s fallback for a template the finds would stop compiling.
+ */
+type SectionFinds = 'all' | 'marked' | 'none';
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1517,25 +1547,11 @@ function findClosingTag(html: string, tagName: string, from: number): number {
 }
 
 /**
- * The next element at or after `from` whose class list holds `className` as a
- * whole token, from its opening tag to the end of its closing one.
- *
- * Anchored on the tag that CARRIES the class. The version this replaced found
- * the class name anywhere and then took the nearest `<div` before it - which
- * for `<div class="main">...<section class="section-strengths">` was the main
- * column, so stripping Strengths took Experience with it. A class named in a
- * stylesheet is not an opening tag, so a `<style>` is never mistaken for one.
+ * The next element at or after `from` whose opening tag matches `opener` (a
+ * global pattern capturing the tag name first), from its opening tag to the end
+ * of its closing one.
  */
-function nextClassedElement(
-  html: string,
-  className: string,
-  from: number
-): { start: number; end: number } | null {
-  const opener = new RegExp(
-    `<([a-zA-Z][\\w-]*)\\b[^>]*?(?<![\\w-])class\\s*=\\s*(["'])(?:(?!\\2)[\\s\\S])*?` +
-      `(?<![\\w-])${escapeRegExp(className)}(?![\\w-])(?:(?!\\2)[\\s\\S])*?\\2[^>]*>`,
-    'g'
-  );
+function nextElementOpenedBy(html: string, opener: RegExp, from: number): MarkupSpan | null {
   opener.lastIndex = from;
   let match: RegExpExecArray | null;
   while ((match = opener.exec(html)) !== null) {
@@ -1546,54 +1562,425 @@ function nextClassedElement(
 }
 
 /**
+ * The next element at or after `from` whose class list holds `className` as a
+ * whole token, from its opening tag to the end of its closing one.
+ *
+ * Anchored on the tag that CARRIES the class. The version this replaced found
+ * the class name anywhere and then took the nearest `<div` before it - which
+ * for `<div class="main">...<section class="section-strengths">` was the main
+ * column, so stripping Strengths took Experience with it. A class named in a
+ * stylesheet is not an opening tag, so a `<style>` is never mistaken for one.
+ */
+function nextClassedElement(html: string, className: string, from: number): MarkupSpan | null {
+  return nextElementOpenedBy(
+    html,
+    new RegExp(
+      `<([a-zA-Z][\\w-]*)\\b[^>]*?(?<![\\w-])class\\s*=\\s*(["'])(?:(?!\\2)[\\s\\S])*?` +
+        `(?<![\\w-])${escapeRegExp(className)}(?![\\w-])(?:(?!\\2)[\\s\\S])*?\\2[^>]*>`,
+      'g'
+    ),
+    from
+  );
+}
+
+/** The next element at or after `from` carrying `data-section="<one of names>"`. */
+function nextDataSectionElement(html: string, names: readonly string[], from: number): MarkupSpan | null {
+  return nextElementOpenedBy(
+    html,
+    new RegExp(
+      `<([a-zA-Z][\\w-]*)\\b[^>]*?(?<![\\w-])data-section\\s*=\\s*(["'])\\s*` +
+        `(?:${names.map(escapeRegExp).join('|')})\\s*\\2[^>]*>`,
+      'g'
+    ),
+    from
+  );
+}
+
+/** `{{#if field.length}}` or `{{#if field}}` - an empty list is falsy either way. */
+function guardOpenerPattern(field: string): string {
+  return `\\{\\{#if\\s+${escapeRegExp(field)}(?:\\.length)?\\s*\\}\\}`;
+}
+
+/**
  * The `{{#if field.length}} ... {{/if}}` immediately around [start, end), when
  * there is one - both halves, or neither. Taking only the opening half would
  * leave its `{{/if}}` behind and the template would no longer compile.
  */
-function sectionGuardAround(
-  html: string,
-  start: number,
-  end: number,
-  field: string
-): { start: number; end: number } | null {
-  const before = new RegExp(`\\{\\{#if\\s+${field}\\.length\\s*\\}\\}\\s*$`).exec(html.slice(0, start));
+function sectionGuardAround(html: string, start: number, end: number, field: string): MarkupSpan | null {
+  const before = new RegExp(`${guardOpenerPattern(field)}\\s*$`).exec(html.slice(0, start));
   const after = /^\s*\{\{\/if\s*\}\}/.exec(html.slice(end));
   return before && after ? { start: start - before[0].length, end: end + after[0].length } : null;
 }
 
-/** Removes every element marked `className`, with the guard around it if it has one. */
-function stripTemplateSection(html: string, className: string, field: string): string {
-  let output = html;
-  let from = 0;
+/** Whether `pos` falls inside a tag (`<div title="{{join softSkills}}">`) rather than between tags. */
+function insideTag(html: string, pos: number): boolean {
+  return html.lastIndexOf('<', pos) > html.lastIndexOf('>', pos - 1);
+}
+
+/**
+ * Where the markup prints the field's list: every `{{#each field}} ...
+ * {{/each}}` with its own closing tag (nested loops counted), and every
+ * mustache that prints the whole list inline - `{{join softSkills ", "}}`, the
+ * app's own helper, or a bare `{{softSkills}}` - outside those loops and
+ * outside a tag. `inferTemplateCapabilities` offers the switch for both, so
+ * both have to be findable: a `join` section used to keep its heading because
+ * only loops were looked for.
+ */
+function sectionLoops(html: string, field: string): MarkupSpan[] {
+  const loops: MarkupSpan[] = [];
+  const opener = new RegExp(`\\{\\{#each\\s+${escapeRegExp(field)}(?![\\w.])[^}]*\\}\\}`, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(html)) !== null) {
+    const blocks = /\{\{(#each\b|\/each\s*\}\})/g;
+    blocks.lastIndex = opener.lastIndex;
+    let depth = 1;
+    let token: RegExpExecArray | null;
+    while ((token = blocks.exec(html)) !== null) {
+      depth += token[1].startsWith('#') ? 1 : -1;
+      if (depth === 0) break;
+    }
+    if (depth !== 0 || !token) continue;
+    loops.push({ start: match.index, end: blocks.lastIndex });
+    opener.lastIndex = blocks.lastIndex;
+  }
+
+  const inline = new RegExp(
+    `\\{\\{\\{?~?\\s*(?:[a-zA-Z_][\\w-]*\\s+)?${escapeRegExp(field)}(?![\\w.-])[^{}]*\\}\\}\\}?`,
+    'g'
+  );
+  const inLoop = (pos: number) => loops.some((loop) => pos >= loop.start && pos < loop.end);
+  const printed: MarkupSpan[] = [];
+  while ((match = inline.exec(html)) !== null) {
+    if (inLoop(match.index) || insideTag(html, match.index)) continue;
+    printed.push({ start: match.index, end: inline.lastIndex });
+  }
+  return [...loops, ...printed].sort((a, b) => a.start - b.start);
+}
+
+/** Elements that never close: an opening tag of one of these is no ancestor. */
+const VOID_ELEMENTS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr',
+]);
+
+/** The elements open at `pos`, outermost first, each as its own span. */
+function ancestorsAt(html: string, pos: number): MarkupSpan[] {
+  const open: Array<{ name: string; start: number; openEnd: number }> = [];
+  const tags = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z][\w-]*)\b[^>]*>/g;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(html)) !== null && match.index < pos) {
+    if (!match[2]) continue;
+    const name = match[2].toLowerCase();
+    if (match[1]) {
+      const at = open.map((tag) => tag.name).lastIndexOf(name);
+      if (at !== -1) open.length = at;
+      continue;
+    }
+    if (VOID_ELEMENTS.has(name) || match[0].endsWith('/>')) continue;
+    if (name === 'style' || name === 'script') {
+      const close = findClosingTag(html, name, tags.lastIndex);
+      if (close === -1 || close > pos) return [];
+      tags.lastIndex = close;
+      continue;
+    }
+    open.push({ name, start: match.index, openEnd: tags.lastIndex });
+  }
+  const spans: MarkupSpan[] = [];
+  for (const tag of open) {
+    const end = findClosingTag(html, tag.name, tag.openEnd);
+    if (end === -1) return spans;
+    spans.push({ start: tag.start, end });
+  }
+  return spans;
+}
+
+/** What a reader sees of a fragment: no tags, no stylesheet, entities for spaces read as spaces. */
+function visibleText(fragment: string): string {
+  return fragment
+    .replace(/<(style|script)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * A fragment with the section's own loop and guard taken out - what is left
+ * is everything ELSE an element around the loop holds. Null when what is left
+ * still holds template data (another loop, `{{summary}}`, an `{{#if}}` of
+ * something else): an element like that is somebody's column, not this
+ * section, and removing it would take that data with it.
+ *
+ * Also null when the section's guards in the fragment do not pair up INSIDE
+ * it - `<div>{{#if strengths.length}}<h3>..</h3>{{#each}}..</div>{{/if}}`,
+ * valid Handlebars around mis-nested HTML. Counting openers and deleting as
+ * many `{{/if}}` once took the div with its opener and left the `{{/if}}`
+ * outside it dangling, and the template stopped compiling for every profile
+ * with the switch off.
+ */
+function besidesTheLoop(fragment: string, loop: MarkupSpan, offset: number, field: string): string | null {
+  const rest = `${fragment.slice(0, loop.start - offset)}${fragment.slice(loop.end - offset)}`;
+  const guards = new RegExp(`${guardOpenerPattern(field)}|\\{\\{\\/if\\s*\\}\\}`, 'g');
+  let depth = 0;
+  for (const token of rest.match(guards) ?? []) {
+    if (token.startsWith('{{#')) depth += 1;
+    else if (depth === 0) return null;
+    else depth -= 1;
+  }
+  if (depth !== 0) return null;
+  const left = rest.replace(guards, '');
+  return /\{\{/.test(left) ? null : left;
+}
+
+/** The longest text a heading may read - a heading, not a paragraph about the section. */
+const MAX_SECTION_HEADING_TEXT = 60;
+
+function readsAsHeading(text: string, section: OptionalSection): boolean {
+  return text.length > 0 && text.length <= MAX_SECTION_HEADING_TEXT && section.heading.test(text);
+}
+
+/**
+ * Markup that shows something even with no text in it: a picture or other
+ * media, an image drawn by CSS (`style="background:url(...)"`), or a
+ * stylesheet or script, which the rest of the page needs. `visibleText` reads
+ * all of these as nothing, which is how a sidebar's photo once went with the
+ * Strengths heading beside it.
+ */
+function holdsContent(markup: string): boolean {
+  return (
+    /<(?:img|svg|picture|video|audio|canvas|iframe|object|embed|style|script|link)\b/i.test(markup) ||
+    /<[a-zA-Z][^>]*\burl\s*\(/i.test(markup)
+  );
+}
+
+/** Markup that shows nothing of its own: a divider, a line break, an empty box - no text, no content, no data. */
+function showsNothing(markup: string): boolean {
+  return !/\{\{/.test(markup) && !visibleText(markup) && !holdsContent(markup);
+}
+
+/** A fragment's top-level pieces in order: each element whole, each lone tag or comment, each run of text. */
+function topLevelPieces(fragment: string): MarkupSpan[] {
+  const pieces: MarkupSpan[] = [];
+  const tags = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z][\w-]*)\b[^>]*>/g;
+  let at = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(fragment)) !== null) {
+    if (match.index > at) pieces.push({ start: at, end: match.index });
+    let end = tags.lastIndex;
+    const name = match[2]?.toLowerCase();
+    if (name && !match[1] && !VOID_ELEMENTS.has(name) && !match[0].endsWith('/>')) {
+      // An element never closed is a lone tag, and what follows it is a sibling.
+      const close = findClosingTag(fragment, name, tags.lastIndex);
+      if (close !== -1) end = close;
+    }
+    pieces.push({ start: match.index, end });
+    at = end;
+    tags.lastIndex = end;
+  }
+  if (at < fragment.length) pieces.push({ start: at, end: fragment.length });
+  return pieces;
+}
+
+/**
+ * Whether an element's inside, with the section's loop and guard already
+ * taken out, is the section and nothing else: ONE piece - an element or a run
+ * of text - that reads as its heading, and beside it only markup that shows
+ * nothing (`showsNothing`: the loop's emptied list, a divider, whitespace).
+ *
+ * Measuring the whole inside instead - "is all its text short and about
+ * strengths?" - took a grid sidebar holding a photo, the Strengths heading and
+ * "References / Available upon request" whole: the photo read as no text, and
+ * "Strengths References Available upon request" is under 60 characters. A
+ * line of text, a picture or an icon beside the heading now keeps the
+ * element, and only the heading and the list go (`sectionOfLoop`'s second
+ * step).
+ */
+function holdsOnlyTheSection(inner: string, section: OptionalSection): boolean {
+  for (const piece of topLevelPieces(inner)) {
+    if (!readsAsHeading(visibleText(inner.slice(piece.start, piece.end)), section)) continue;
+    if (showsNothing(`${inner.slice(0, piece.start)}${inner.slice(piece.end)}`)) return true;
+  }
+  return false;
+}
+
+/** The element whose closing tag ends exactly at `end`, from its opening tag, or null. */
+function elementEndingAt(html: string, end: number): MarkupSpan | null {
+  const closing = /<\/([a-zA-Z][\w-]*)\s*>$/.exec(html.slice(0, end));
+  if (!closing) return null;
+  const name = closing[1];
+  const tags = new RegExp(`<(/?)${escapeRegExp(name)}(?![\\w-])[^>]*>`, 'gi');
+  const found: Array<{ index: number; closing: boolean; selfClosing: boolean }> = [];
+  let match: RegExpExecArray | null;
+  const head = html.slice(0, closing.index);
+  while ((match = tags.exec(head)) !== null) {
+    found.push({ index: match.index, closing: Boolean(match[1]), selfClosing: match[0].endsWith('/>') });
+  }
+  let depth = 1;
+  for (let i = found.length - 1; i >= 0; i -= 1) {
+    const tag = found[i];
+    if (tag.closing) depth += 1;
+    else if (!tag.selfClosing) depth -= 1;
+    if (depth === 0) return { start: tag.index, end };
+  }
+  return null;
+}
+
+/**
+ * The element before `pos`, past whitespace, comments and anything between
+ * that shows nothing of its own (`showsNothing`) - a divider under a heading
+ * (`<hr>`, `<div class="rule"></div>`), the line break after a label
+ * (`<b>Strengths</b><br>`) - or null. What it steps over lies between the
+ * element and `pos`, so a cut from the element to `pos` takes it too; looking
+ * only at the element right before `pos` found the divider, not the heading,
+ * and left the heading printed.
+ */
+function previousSiblingElement(html: string, pos: number): MarkupSpan | null {
+  let end = pos;
   for (;;) {
-    const found = nextClassedElement(output, className, from);
-    if (!found) return output;
-    const cut = sectionGuardAround(output, found.start, found.end, field) ?? found;
-    output = `${output.slice(0, cut.start)}${output.slice(cut.end)}`;
-    from = cut.start;
+    const trimmed = html.slice(0, end).replace(/\s+$/, '');
+    if (trimmed.endsWith('-->')) {
+      const open = trimmed.lastIndexOf('<!--');
+      if (open === -1) return null;
+      end = open;
+      continue;
+    }
+    end = trimmed.length;
+    const lone = /<([a-zA-Z][\w-]*)\b[^<>]*>$/.exec(trimmed);
+    if (lone && (VOID_ELEMENTS.has(lone[1].toLowerCase()) || lone[0].endsWith('/>'))) {
+      if (!showsNothing(lone[0])) return null;
+      end = lone.index;
+      continue;
+    }
+    const element = elementEndingAt(html, end);
+    if (!element || !showsNothing(html.slice(element.start, element.end))) return element;
+    end = element.start;
   }
 }
 
 /**
- * Wraps every element marked `className` in `{{#if field.length}}`, unless it
- * is already wrapped - so a section switched on but with nothing in it leaves
- * no heading over an empty list. Idempotent.
+ * The section a `{{#each field}}` loop (or an inline `{{join field}}`,
+ * `sectionLoops`) belongs to, in markup that marks it neither by class nor by
+ * `data-section` - an uploaded template, typically, whose heading the class
+ * strip could never see, so a switched-off section left its title over an
+ * emptied list:
+ *
+ * 1. the NEAREST element around the loop that holds the section and nothing
+ *    else (`holdsOnlyTheSection`: its heading, the loop, markup that shows
+ *    nothing - `<div><h3>Strengths</h3>{{#each strengths}}...</div>`);
+ *    climbing stops at the first element that holds anything else - another
+ *    loop, the summary, a line of text, a photo - because that one is a
+ *    column, not the section, and everything further out holds it too;
+ * 2. otherwise the loop's container - the outermost element around it that
+ *    holds nothing but the loop (or the loop itself, written straight into a
+ *    column) - with a guard right around it, plus the heading ELEMENT before
+ *    it, past any divider (`<h3>Strengths</h3>{{#if strengths.length}}<ul>...</ul>{{/if}}`).
+ *
+ * Null when neither is found: the loop then renders nothing once the data is
+ * gated, and no guess removes markup that might be something else.
  */
-function guardTemplateSection(html: string, className: string, field: string): string {
-  const open = `{{#if ${field}.length}}`;
+function sectionOfLoop(html: string, loop: MarkupSpan, section: OptionalSection): MarkupSpan | null {
+  const ancestors = ancestorsAt(html, loop.start).filter((span) => span.end >= loop.end).reverse();
+
+  let container: MarkupSpan = loop;
+  for (const ancestor of ancestors) {
+    const rest = besidesTheLoop(html.slice(ancestor.start, ancestor.end), loop, ancestor.start, section.field);
+    if (rest === null) break;
+    // Its inside: the element's own tags are no part of what it holds.
+    const inner = rest.replace(/^<[^>]*>/, '').replace(/<\/[^>]*>$/, '');
+    if (holdsOnlyTheSection(inner, section)) return ancestor;
+    if (!showsNothing(inner)) break;
+    container = ancestor;
+  }
+
+  const core = sectionGuardAround(html, container.start, container.end, section.field) ?? container;
+  const heading = previousSiblingElement(html, core.start);
+  if (!heading) return null;
+  const headingMarkup = html.slice(heading.start, heading.end);
+  if (/\{\{/.test(headingMarkup) || !readsAsHeading(visibleText(headingMarkup), section)) return null;
+  return { start: heading.start, end: core.end };
+}
+
+/**
+ * Every occurrence of an optional section in a template's markup, each with
+ * the `{{#if field.length}}` guard right around it when it has one - the ONE
+ * answer to "where is this section", used by both the strip (switched off)
+ * and the guard (switched on, so an empty list leaves no heading). In order:
+ *
+ * 1. an element carrying the marker class (`section-strengths`,
+ *    `section-soft-skills`) - every built-in and the manual builder;
+ * 2. an element carrying `data-section="strengths|softSkills"`;
+ * 3. otherwise, from each `{{#each field}}` loop (or inline `{{join field}}`)
+ *    outside those, the element around it that holds the section and
+ *    nothing else, or its container and the heading element before it
+ *    (`sectionOfLoop`). Skipped when `finds` is 'marked'.
+ *
+ * Compile time only: the stored template is never rewritten, and the compile
+ * cache is keyed on the markup plus the choices, so nothing found here is
+ * stored anywhere. Overlapping finds are merged, so a cut never splits one.
+ */
+function findOptionalSections(html: string, section: OptionalSection, finds: SectionFinds = 'all'): MarkupSpan[] {
+  const found: MarkupSpan[] = [];
+  const inside = (pos: number) => found.some((span) => pos >= span.start && pos < span.end);
+
+  for (let from = 0; ; ) {
+    const element = nextClassedElement(html, section.className, from);
+    if (!element) break;
+    found.push(element);
+    from = element.end;
+  }
+  for (let from = 0; ; ) {
+    const element = nextDataSectionElement(html, section.dataSections, from);
+    if (!element) break;
+    if (!inside(element.start)) found.push(element);
+    from = element.end;
+  }
+  for (const loop of finds === 'all' ? sectionLoops(html, section.field) : []) {
+    if (inside(loop.start)) continue;
+    const unit = sectionOfLoop(html, loop, section);
+    if (unit) found.push(unit);
+  }
+
+  const merged: MarkupSpan[] = [];
+  for (const span of found.sort((a, b) => a.start - b.start)) {
+    const last = merged[merged.length - 1];
+    if (last && span.start < last.end) last.end = Math.max(last.end, span.end);
+    else merged.push({ ...span });
+  }
+  // A guard around a span, then any guard around THAT - an outer `{{#if}}`
+  // that a template wrote twice is still one section.
+  return merged.map((span) => {
+    let current = span;
+    for (;;) {
+      const guarded = sectionGuardAround(html, current.start, current.end, section.field);
+      if (!guarded) return current;
+      current = guarded;
+    }
+  });
+}
+
+/** Removes every occurrence of a section (`findOptionalSections`), with the guard around it if it has one. */
+function stripTemplateSection(html: string, section: OptionalSection, finds: SectionFinds): string {
+  let output = html;
+  for (const cut of findOptionalSections(html, section, finds).reverse()) {
+    output = `${output.slice(0, cut.start)}${output.slice(cut.end)}`;
+  }
+  return output;
+}
+
+/**
+ * Wraps every occurrence of a section in `{{#if field.length}}`, unless it is
+ * already wrapped - so a section switched on but with nothing in it leaves no
+ * heading over an empty list. Idempotent.
+ */
+function guardTemplateSection(html: string, section: OptionalSection, finds: SectionFinds): string {
+  const open = `{{#if ${section.field}.length}}`;
   const close = '{{/if}}';
   let output = html;
-  let from = 0;
-  for (;;) {
-    const found = nextClassedElement(output, className, from);
-    if (!found) return output;
-    if (sectionGuardAround(output, found.start, found.end, field)) {
-      from = found.end;
-      continue;
-    }
-    output = `${output.slice(0, found.start)}${open}${output.slice(found.start, found.end)}${close}${output.slice(found.end)}`;
-    from = found.end + open.length + close.length;
+  for (const span of findOptionalSections(html, section, finds).reverse()) {
+    if (new RegExp(`^${guardOpenerPattern(section.field)}`).test(output.slice(span.start))) continue;
+    output = `${output.slice(0, span.start)}${open}${output.slice(span.start, span.end)}${close}${output.slice(span.end)}`;
   }
+  return output;
 }
 
 /**
@@ -1642,12 +2029,16 @@ function rewritePerItemSkillLoops(html: string): string {
  * - Any element around `{{category}}` is guarded, so the flat layout's one
  *   headless group draws no empty heading in either.
  */
-function normalizeTemplateSkillsSections(html: string, choices: ResumeSectionChoices): string {
+function normalizeTemplateSkillsSections(
+  html: string,
+  choices: ResumeSectionChoices,
+  finds: SectionFinds = 'all'
+): string {
   let output = html;
-  for (const section of OPTIONAL_SECTIONS) {
+  for (const section of finds === 'none' ? [] : OPTIONAL_SECTIONS) {
     output = choices[section.choice]
-      ? guardTemplateSection(output, section.className, section.field)
-      : stripTemplateSection(output, section.className, section.field);
+      ? guardTemplateSection(output, section, finds)
+      : stripTemplateSection(output, section, finds);
   }
   output = output.replace(/Hard Skills/g, 'Technical Skills');
   if (choices.layout === 'categorized') {
@@ -1762,6 +2153,57 @@ export type ResumeRenderData = ReturnType<typeof prepareResumeRenderData>;
 const compiledTemplates = new Map<string, HandlebarsTemplateDelegate>();
 const COMPILED_TEMPLATE_CACHE_SIZE = 64;
 
+function parsesAsHandlebars(markup: string): boolean {
+  try {
+    Handlebars.parse(markup);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const warnedSectionFallbacks = new Set<string>();
+
+/**
+ * The markup a template is compiled from: `normalizeTemplateSkillsSections`,
+ * unless finding its sections leaves markup Handlebars cannot parse when the
+ * template itself parses. A cut follows the HTML, a Handlebars block need not
+ * (`<div class="section-strengths">{{#if summary}}...</div>{{/if}}` is valid
+ * Handlebars), and a cut through one used to fail every resume on the
+ * template - with the switch off, which is every profile's default. Then the
+ * sections found from their loops are left out, and if that still does not
+ * parse, no section is removed at all: the render gate still empties a
+ * switched-off list, and only its heading may print. Logged once per template
+ * and fallback. A template that does not parse by itself fails as it always
+ * did, with its own error.
+ *
+ * Handlebars compiles lazily, so this parse is the one place a broken cut can
+ * be caught before a render; it runs only on a compile-cache miss.
+ */
+function compilableMarkup(template: Template, choices: ResumeSectionChoices): string {
+  const markup = normalizeTemplateSkillsSections(template.htmlContent, choices);
+  if (parsesAsHandlebars(markup) || !parsesAsHandlebars(template.htmlContent)) return markup;
+
+  const marked = normalizeTemplateSkillsSections(template.htmlContent, choices, 'marked');
+  const finds: SectionFinds = parsesAsHandlebars(marked) ? 'marked' : 'none';
+  const key = `${template.id}|${finds}`;
+  if (!warnedSectionFallbacks.has(key)) {
+    warnedSectionFallbacks.add(key);
+    console.warn(
+      finds === 'marked'
+        ? `[templates] Template "${template.id}" does not compile with its Strengths / Soft Skills section ` +
+            'found from the list, so only a section marked with its class or data-section is removed or ' +
+            "guarded; a switched-off section's heading may still print. Put section-strengths / " +
+            'section-soft-skills on the element that holds the heading and the list.'
+        : `[templates] Template "${template.id}" does not compile with its Strengths / Soft Skills section ` +
+            'removed, so it is drawn with both sections in place: a switched-off list prints empty, and ' +
+            'its heading may still print. A Handlebars block ({{#if}}, {{#each}}) probably opens inside ' +
+            "the section's element and closes outside it; move it wholly inside or outside."
+    );
+  }
+  return finds === 'marked' ? marked : normalizeTemplateSkillsSections(template.htmlContent, choices, 'none');
+}
+
 function compileTemplate(template: Template, choices: ResumeSectionChoices): HandlebarsTemplateDelegate {
   if (typeof template.htmlContent !== 'string' || !template.htmlContent.trim()) {
     throw new Error(`Template "${template.name || template.id}" is missing htmlContent`);
@@ -1775,7 +2217,7 @@ function compileTemplate(template: Template, choices: ResumeSectionChoices): Han
     return cached;
   }
 
-  const compiled = Handlebars.compile(normalizeTemplateSkillsSections(template.htmlContent, choices));
+  const compiled = Handlebars.compile(compilableMarkup(template, choices));
   compiledTemplates.set(key, compiled);
   if (compiledTemplates.size > COMPILED_TEMPLATE_CACHE_SIZE) {
     const oldest = compiledTemplates.keys().next().value;

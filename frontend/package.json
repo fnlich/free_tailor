@@ -6,6 +6,7 @@
     "dev": "npm run dev:stable",
     "dev:stable": "node scripts/next.mjs build && node scripts/next.mjs start",
     "dev:live": "node scripts/next.mjs dev-webpack",
+    "dev:turbo": "node scripts/next.mjs dev",
     "build": "node scripts/next.mjs build",
     "start": "node scripts/next.mjs start",
     "lint": "eslint"

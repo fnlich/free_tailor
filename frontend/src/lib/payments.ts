@@ -4,7 +4,7 @@ import { apiFetch } from './api';
  * Buying credit.
  *
  * A credit is a dollar. A buyer chooses an amount of money, is charged exactly
- * that and credited exactly that - $50 by card or by crypto is $50.000 of
+ * that and credited exactly that - $50 by card or by crypto is $50 of
  * credit, with nothing taken out - so "what does it cost" and "what do I get"
  * are one number.
  *
@@ -96,7 +96,7 @@ export function describeCard(card: SavedCard): string {
  * a count of credits at a price per credit, possibly less a fee. Its receipt
  * keeps saying "200 Credits at $0.50 each", because a receipt has to say what
  * was sold - and its credits are never converted into dollars: they were
- * reset to $0.000 with every balance.
+ * reset to $0 with every balance.
  */
 export type LegacyPaymentCredits = {
   /** Credits quoted. */
@@ -240,8 +240,8 @@ export const STATE_TONES: Record<PaymentState, 'green' | 'amber' | 'red' | 'grey
 
 /*
  * There was a `formatAmount(cents, currency)` here, through Intl. Money is
- * `formatMoney` from lib/format.ts now, everywhere: thousandths, always three
- * decimals, the same digits the server writes into its own sentences. Two
+ * `formatMoney` from lib/format.ts now, everywhere: thousandths, every
+ * significant decimal, the same digits the server writes into its own sentences. Two
  * formatters were two ways for the order table and the summary above it to
  * disagree about the same purchase.
  */

@@ -90,7 +90,7 @@ test('a checkout session is asked for in elements mode, at a pinned API version'
     assert.equal(body['line_items[0][price_data][currency]'], 'usd');
     assert.equal(body['line_items[0][price_data][unit_amount]'], '2000');
     // What the buyer is buying, as their balance will show it: a credit is a dollar.
-    assert.equal(body['line_items[0][price_data][product_data][name]'], '$20.000 Tailor credit');
+    assert.equal(body['line_items[0][price_data][product_data][name]'], '$20 Tailor credit');
     assert.equal(body['line_items[0][price_data][product_data][description]'], 'FT-PAY-20260921-0001');
     assert.equal(body['metadata[paymentId]'], 'pay_wire');
   } finally {

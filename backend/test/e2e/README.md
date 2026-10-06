@@ -7,19 +7,22 @@ a frontend) that are already running. None of them is part of `npm test`.
 | Script | What it drives | Section |
 |---|---|---|
 | `walkthrough.js`, `browser.js`, `buy-credits.js` | Buying credits, over HTTP and in a browser, against fake payment providers (`fake-providers.js`) | [Running it](#running-it) |
-| `refunds.js` | Refund requests and Contact admin, with no provider at all | [Running it](#running-it), step 5 |
+| `refunds.js` | A reporter's payout request, the refund requests left from before, and Contact admin, with no provider at all | [Running it](#running-it), step 5 |
 | `preview-vibration.js` | The profile preview holding still with real scrollbars | [The profile preview, held still](#the-profile-preview-held-still) |
+| `section-switches.js` | The profile preview with Strengths and Soft Skills unticked, on uploaded-style templates and a built-in | [The profile preview, sections switched off](#the-profile-preview-sections-switched-off) |
 | `immediate-run.js`, `sheet-panel.js` | Generate Immediately, Order and the sheet panel, against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Building resumes, with the seat stubbed](#building-resumes-with-the-seat-stubbed) |
 | `report-run.js` | Report Jobs and Admin -> Job Lake, against a stubbed sheet and seat (`stub-report-sheets.js`) | [Report Jobs and the job lake](#report-jobs-and-the-job-lake-with-google-stubbed) |
 | `providers.js` | Admin -> Models -> Providers, against a stubbed seat | [Providers, with the seat stubbed](#providers-with-the-seat-stubbed) |
 | `shell.js` | Every page as a user, an administrator and a reporter | [The shell, as every role](#the-shell-as-every-role) |
+| `dev-reload.js` | A second tab must not reload the first, in each mode the frontend can be served in | [A second tab, in each dev mode](#a-second-tab-in-each-dev-mode) |
 
 ## Buying credits
 
 A credit is a dollar. Every script here buys an amount of money (`amountUsd`),
 expects exactly that much credit back, and reads every amount the API answers
-with as thousandths of a dollar in a field ending `Milli` - `$20.000` on the
-page, `20000` in the body. A request in the old unit (a count of `credits`) is
+with as thousandths of a dollar in a field ending `Milli` - `$20` on the
+page, `20000` in the body (every significant decimal, no trailing zero:
+`$0.023`, `$4.1`). A request in the old unit (a count of `credits`) is
 expected to be refused as a stale page.
 
 These files prove the purchase is joined up: a real server on a real port,
@@ -89,7 +92,7 @@ npm run start --prefix ../frontend
 node test/e2e/buy-credits.js   # the three-step purchase dialog; puppeteer
 node test/e2e/browser.js       # the OLD buy page; needs playwright, which may not be installed
 
-# 5. Refund requests and Contact admin need NO provider at all: a card refund
+# 5. Payout and refund requests and Contact admin need NO provider at all: a card refund
 #    that fails at Stripe is part of what they check, and the fake providers
 #    would make it succeed. Stop step 2's server and start it bare, with the
 #    Stripe keys blanked - an exported empty value beats the one in .env -
@@ -136,6 +139,32 @@ narrow layout every width tried shook inside its band (1080x1450-1465,
 1000x1360-1375, 900x1242-1257, 760x1382-1397, 600x1203-1218). After it: none of
 84 template/viewport pairs, nor 80 in the narrow band, nor 20 with
 `E2E_NO_GUTTER=1`.
+
+## The profile preview, sections switched off
+
+`section-switches.js` opens the profile editor as an administrator and
+watches its preview frame while it unticks **Print a Strengths section**, then
+**Print a Soft Skills section**, and ticks them back. It saves two
+uploaded-style templates first (headings and loops only, no
+`section-strengths` class) through the admin upload, and checks one built-in
+beside them: a CSS-grid sidebar holding a photo, Strengths and a static
+*References* block with Soft Skills under a divider in the main column, and two
+columns with a bold *Strengths* label and a line break before its loop and
+Soft Skills printed by `{{join}}`. Every state must show the heading and items
+exactly when the switch is on, and Experience, Technical Skills, the photo, the
+sidebar and every static line always. It deletes the templates and the profile
+again at the end. It needs the two servers up and `DB_DIR` naming the
+backend's database:
+
+```bash
+DB_DIR=/path/to/db node test/e2e/section-switches.js
+# E2E_SHOTS=/some/dir saves the preview pane in every state
+```
+
+Against the finder before these templates were covered, 6 of its 15 states
+failed: the sidebar went with its photo and *References*, and the Soft Skills
+heading under its divider, the bold *Strengths* label and the `join`
+section's heading all stayed.
 
 ## Building resumes, with the seat stubbed
 
@@ -228,6 +257,43 @@ written back. At 390px the loaded table scrolls inside its box rather than
 widening the page. The server's log shows the run's analysis calls (`[e2e
 stub] call N: analyze-job-description`): today's run makes none.
 
+## A second tab, in each dev mode
+
+`dev-reload.js` is the owner's report reproduced: with the root `npm run dev`
+running, opening a second tab reloaded the first - and, a Build Resumes tab
+reloading releases its Generate Immediately run, so it also STOPPED that run.
+Nothing in the app reloads a tab: Next 16.1's webpack dev server sends every
+open tab a `SYNC` with the latest build hash when a new tab connects, and a tab
+holding an older one (anything compiled since it opened - the page the new tab
+asked for, say) calls `window.location.reload()`. The script opens Build
+Resumes in tab A and marks it, opens a page nothing has compiled yet in tab B,
+waits `E2E_WAIT_MS` (10 s) and requires tab A to keep its mark and load nothing;
+then the same with a Generate Immediately run going in tab A (tab C opening
+another uncompiled page), which must keep running and finish as built.
+
+Start the frontend FRESH for each mode, so tab B and tab C really ask for
+uncompiled pages (`E2E_ROUTE_B`, `E2E_ROUTE_C`; `/orders` and `/calendar` by
+default), against a backend with the stub seat slow enough that one resume
+outlasts the wait:
+
+```bash
+cd backend && npm run build
+E2E_STUB_DELAY_MS=6000 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js dist/index.js
+npm run dev:live --prefix frontend      # then dev:turbo, then dev (production-style)
+DB_DIR=/tmp/e2e-db E2E_APP=http://localhost:3000 E2E_MODE=dev:live node test/e2e/dev-reload.js
+```
+
+Against a dev server use `localhost` for `E2E_APP`: Next refuses its dev
+resources to any other origin that `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` does not
+name. Measured on Next 16.1.6 (this release): `dev:live` (webpack) failed - tab
+A reloaded each time a tab opened, and its run was cancelled (*Your last run
+ended while this page was away*); `dev:turbo` (Turbopack) passed all 8 claims,
+twice (10 s, then 15 s on `/credits` and `/jobs`); the production-style `dev`
+passed all 8. So the root `npm run dev` runs `dev:turbo`, and `npm run dev:live`
+keeps webpack for whoever asks for it by name - `test/devServer.test.js` holds
+the scripts to that.
+
 ## Report Jobs and the job lake, with Google stubbed
 
 `report-run.js` drives a reporter's run and the administrators' lake in a
@@ -242,7 +308,7 @@ Today's tab: *Acme Corp* (added), *ACME, Inc.* (the same company once
 normalised, so a duplicate), *Globex LLC* (added), *Initech* (its Lake Status
 already *Added*, beside the Analysis cell an earlier run wrote for its
 posting), a row with no company and one with no description and a
-`javascript:` link (both Skipped). The script sets the global rate to $0.050
+`javascript:` link (both Skipped). The script sets the global rate to $0.05
 itself.
 
 ```bash
@@ -259,18 +325,18 @@ Report Jobs opens on today's tab, rows 2-501, with the rate per job; Add to job
 lake waits for a preview; *My notes* is refused in the run's own words before
 anything starts; the preview lists the six rows, *Initech* marked as reported
 before and the `javascript:` link as text; the run shows its bar and ends with
-*2 out of 5 was added, your current credit is $0.100* over every row's outcome,
-the duplicate - only it - red, each added row $0.050; the same rows previewed
+*2 out of 5 was added, your current credit is $0.1* over every row's outcome,
+the duplicate - only it - red, each added row $0.05; the same rows previewed
 again say they were reported (the two Skipped are tried again); the top bar's
 balance moved; no horizontal scrollbar at 390px; in the dark theme the last run
 comes back with its duplicate in the dark red. Then as an administrator: Job
 Lake is a Settings tab and lists the two jobs; *acme inc* finds *Acme Corp*;
 Details shows the reward, the reporter and the history; Delete with *Also
-revoke the reward* takes the job and exactly its $0.050 back off the reporter;
+revoke the reward* takes the job and exactly its $0.05 back off the reporter;
 Settings shows the stored rate, the window *60 (the default)* and the admin
 sheet with every job on it, *Retry now* has nothing to send, and $0.0505 is
 refused under the rate box; Merge has nothing to merge; Admin -> Accounts' rate
-boxes say *Global rate ($0.050)*.
+boxes say *Global rate ($0.05)*.
 
 ## Providers, with the seat stubbed
 
@@ -323,7 +389,9 @@ The reporter half (owner decision A3): their four pages - Report Jobs, Credits,
 Settings -> Profile and Job Sheet - each stay put, under a rail of Report Jobs,
 Credits and Settings, with only those two Settings tabs; Credits is their
 earnings and the payout the administrator just recorded, with no Purchase
-Credits, no order or refund tabs and no Ask for refund; the account menu has
+Credits and no order or refund tabs, but *Ask for Refund* - a payout request -
+in Purchase Credits' place and style, and their *Payout requests* listed; the
+account menu has
 no subscription; and every other address - every route the other two roles
 walk, plus /admin, an order, an invoice and /account - lands on Report Jobs.
 Every API answer the reporter's page gets is watched, and the walk fails on a
@@ -334,6 +402,9 @@ Admin -> Accounts: Reporter in the role select and the invite form (which
 then asks for a rate per job rather than a subscription), a rate typed into a
 reporter's row stored as thousandths, and Record payout refusing more than the
 balance in the server's words, saying what a payout leaves, and recording it.
+Neither a user nor an administrator is offered *Ask for refund* on any page
+they walk (owner decision R1), and the Refund Requests tab says to contact the
+administrator, with the link.
 
 The job analysis, as an administrator sees it (owner decisions J0, J1): Admin
 -> Prompts lists no Filter Google Sheet Job prompt, and Analyze Job
@@ -365,7 +436,7 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 108 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 110 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
 leave behind. Over HTTP: each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
@@ -395,7 +466,8 @@ and the tab row inside itself, its cut edge faded (`data-more`), and nothing
 else leaves the window. On the invoice page: an unpaid
 order says *No invoice yet* and offers no Print button, and the same order once
 paid is an invoice with exactly one, one line of credit at its charge and
-`$0.000` of fees. The top-bar pill follows a payment that lands while the
+`$0` of fees. A purchase's Action(s) are Invoice and Help and nothing else, and
+Credit History has no Action column: nothing asks for a refund. The top-bar pill follows a payment that lands while the
 return page is open, in dollars. It screenshots each step.
 
 `buy-credits.js` also drives a whole crypto payment through the fake Cryptomus:
@@ -414,40 +486,52 @@ could not; the return page waiting for the webhook rather than congratulating
 on arrival; the balance and the ledger afterwards; backing out of a payment;
 and an admin refunding from the UI.
 
-`refunds.js` — 51 claims over asking for a refund, deciding it, and Contact
-admin, with no provider at all (step 5 above - against step 2's server, whose
-fake Stripe accepts every refund, the card checks fail, and the first of them
-says why): its purchases, run charges and order are
-written straight into the database the server reads (so `DB_DIR` must name the
-backend's), paid the way a webhook pays them. As the person asking: *Ask for
-refund* on a crypto purchase showing the unspent amount the server measured, a
-request with no reason refused in the server's words, the request sent with
-its reference, asking again showing the open request instead of a second form,
-Escape closing; a run charge in Credit History whose resumes the queue no
-longer holds saying to ask the administrator, with the link; an order's charge
-listing its resumes with the delivered one picked and the failed one not
-pickable; on the order's page, each resume's charge, *Ask for refund* on the
-delivered one, *Refunded automatically* on the one that did not build (whose
-error offers Contact admin), and the row turning to the request once asked. As
-the administrator: the bell announcing it with a link that lands on the queue
-tab and its open count; every Approve, Decline and Mark refunded inside the
-queue's box at 1440x900, with no sideways scroll; a crypto refund saying to
-send the money back by hand FIRST and refusing to go on until that is
-confirmed; a decline refused without a reason; a resume credited back; a card
-refund that fails at Stripe (there are no Stripe keys here) answering the
-generic sentence with its Ref and a Contact admin link - which opens a dialog
-OVER the refund dialog, closed alone by Escape with the page's scroll still
-locked until the second Escape; the request then still open with nothing
-outstanding and the credit the refund held back on the balance; the same
-dialog-over-dialog Escape on the payments list's own Refund dialog, whose
-typed note survives; and the state filter in the address. Then the person again: Refunded with what came back, Declined with
-the administrator's reason, both in their bell marked *For you* and linked to
-their Refund Requests tab, the order row Refunded and the credit as its own
-row - and nothing in a bystander's feed. Last, Contact admin from the account
-menu (a `mailto:` link, a Discord name to copy) and the editor pinning the
-server's refusal of a bad Telegram name to that row, with nothing saved. The
-person and the administrator browse in separate browser contexts: a sign-in
-is a cookie and a localStorage token, and one context would share them.
+`refunds.js` — 62 claims over a reporter's payout request, the refund requests
+left from before asking was removed, and Contact admin, with no provider at all
+(step 5 above - against step 2's server, whose fake Stripe accepts every
+refund, the card checks fail, and the first of them says why): its purchases,
+run charge and order are written straight into the database the server reads
+(so `DB_DIR` must name the backend's), paid the way a webhook pays them, and
+the four older requests are made through the service the routes used to call
+(`createRefundRequest`, kept unrouted). Nobody but a reporter asks (owner
+decision R1): a stale page's ask is answered 410 in the sentence that says to
+contact the administrator; a user's paid purchase offers Invoice and Help and
+no *Ask for refund*, Credit History has no Action column, an order's page has
+no Refund column (the resume that did not build still offers Contact admin),
+and the Refund Requests tab lists the older request read-only, saying to
+contact the administrator, with the link. The reporter: *Ask for Refund* where
+a user's Purchase Credits sits, in its pill, off at $0 with the server's reason
+under it, on once they have earned $5; the dialog asks for the whole balance
+with no amount to type and an optional note, sends with its reference, and the
+button is off again while the request is open, which is listed under *Payout
+requests*. The administrator: the bell announcing it with a link that lands on
+the queue tab and its open count; the payout row marked *Payout* with *Balance
+now $6.5* once the reporter earned more, and *Record payout*; every Approve,
+Decline, Mark refunded and Record payout inside the queue's box at 1440x900,
+with no sideways scroll; Record payout prefilled with the $5 asked, refusing a
+missing note and more than the balance in the server's words, and recording
+$6.5 - more than was asked, up to the balance (owner decision R2) - as one
+`reporter-payout` row. Then the older requests: a crypto refund saying to send
+the money back by hand FIRST and refusing to go on until that is confirmed; a
+decline refused without a reason; a resume credited back; a card refund that
+fails at Stripe (there are no Stripe keys here) answering the generic sentence
+with its Ref and a Contact admin link - which opens a dialog OVER the refund
+dialog, closed alone by Escape with the page's scroll still locked until the
+second Escape; the request then still open with nothing outstanding and the
+credit the refund held back on the balance; the same dialog-over-dialog Escape
+on the payments list's own Refund dialog, whose typed note survives; and the
+state filter in the address, the payout *Paid out* there. Then the person
+again: Refunded with what came back, Declined with the administrator's reason,
+both in their bell marked *For you* and linked to their Refund Requests tab,
+the credit as its own row - and nothing in a bystander's feed. The reporter
+again: *Paid out*, *$6.5 paid out to you.*, the payout in Earnings and
+Payouts, the button off at $0, and *Payout recorded: $6.5* in their bell
+linking to Credits. Last, Contact admin from the account menu (a `mailto:`
+link, a Discord name to copy) and the editor pinning the server's refusal of a
+bad Telegram name to that row, with nothing saved; and both Credits pages at
+390 with no sideways scroll. The person, the reporter and the administrator
+browse in separate browser contexts: a sign-in is a cookie and a localStorage
+token, and one context would share them.
 
 ## The part a script cannot do
 

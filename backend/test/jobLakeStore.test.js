@@ -314,7 +314,7 @@ test("a reward is the reporter's own rate, else the global one, snapshotted; and
       ['job-report-reward', 50, 'job-lake'],
     ]
   );
-  assert.match(rows[1].note, /Two - Backend \(job #\d+, \$0\.050 per job\)/);
+  assert.match(rows[1].note, /Two - Backend \(job #\d+, \$0\.05 per job\)/);
   assert.equal(users.getUserById(admin.id).balanceMilli, 0);
   assert.equal(users.getUserById(user.id).balanceMilli, 0);
   assert.deepEqual(credits.findInconsistentBalances(), []);

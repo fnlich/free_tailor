@@ -17,8 +17,8 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~55s with the tsc step, 1602 tests)
-npm run dev                    # backend watch + frontend dev server
+npm test                       # backend node:test suite (~55s with the tsc step, 1624 tests)
+npm run dev                    # backend watch + frontend dev server (Turbopack)
 ```
 
 Facts worth knowing before you build:
@@ -61,8 +61,15 @@ Facts worth knowing before you build:
 - **`frontend`'s npm scripts go through `scripts/next.mjs`**, never `next`
   directly. That wrapper loads the root `.env` (Next only reads `.env` inside
   its own directory) and passes the port without POSIX shell syntax, which
-  `cmd.exe` cannot expand. Keep using it. Note `dev` is a production-style
-  build+start; `dev:live` is the webpack dev server.
+  `cmd.exe` cannot expand. Keep using it. Note the frontend's own `dev` is a
+  production-style build+start; `dev:turbo` is the Turbopack dev server, which
+  the ROOT `npm run dev` runs; `dev:live` (root `npm run dev:live`) is webpack's,
+  opt-in only, because Next 16.1's webpack dev server reloads every other open
+  tab when a new one connects after anything compiled - and a reloaded Build
+  Resumes tab releases, so stops, its Generate Immediately run.
+  test/e2e/dev-reload.js measured it (webpack failed; Turbopack and the
+  production-style `dev` passed) and test/devServer.test.js holds the root
+  `dev` to Turbopack.
 - **`better-sqlite3` is native.** Install and run with the same Node major, or
   `npm rebuild better-sqlite3 --prefix backend`. A
   `NODE_MODULE_VERSION 127 ... requires 137` error is this and nothing else.
@@ -160,7 +167,9 @@ backend/src/
                       #   notifications, sheet and refund-requests' GET /.
                       #   `requireReporter` (`canReportJobs`: reporter or
                       #   admin, never a user - 403 `role-not-allowed`) is
-                      #   /api/report's, a level of its own in the table below.
+                      #   /api/report's and refund-requests' /payout (whose
+                      #   service refuses an admin, 409 `not-a-reporter`), a
+                      #   level of its own in the table below.
                       #   requireSubscription refuses a reporter by role first.
                       #   test/routeAccess.test.js is the table of EVERY mount
                       #   in index.ts and every route's effective guard (read
@@ -245,8 +254,12 @@ backend/src/
                       #   sign-in undoes it), takes `reportRateUsd` (only for a resulting
                       #   reporter; '' or null clears), and POST
                       #   /:id/payout { amountUsd, note, requestId? } records
-                      #   a reporter's payout (see "Money" below).
-                      #   refundRequests.ts (asking, and the admin queue) and
+                      #   a reporter's payout and closes their open payout
+                      #   request in the same transaction (`closedRequestId`;
+                      #   see "Money" below).
+                      #   refundRequests.ts (a reporter's payout request, the
+                      #   410 for the retired refund asks, and the admin
+                      #   queue) and
                       #   contact.ts (GET /api/contact is PUBLIC, no session)
                       #   are described under "Money" below. generation.ts is
                       #   the queue's HTTP side - see services/queue/ below for
@@ -390,7 +403,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 133 files; fixtures/cli, codex and gemini
+  test/               # node:test, 136 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -492,18 +505,28 @@ frontend/src/
                       #   carries a `dark:` variant. Also the /credits history
                       #   tables: usePagedList.ts (paging with the race guards),
                       #   TablePager, OrderHistory, CreditHistory,
-                      #   RefundRequestHistory (the Refund Requests tab). A
+                      #   RefundRequestHistory (the Refund Requests tab, read-only
+                      #   and saying to contact the administrator; and, as
+                      #   `variant="payouts"`, a reporter's Payout requests). A
                       #   colour on a .tl-table cell goes on an inner span - the
                       #   unlayered td rule beats a utility on the td itself.
-                      #   RefundRequestDialog is "Ask for refund" from all three
-                      #   places a charge shows (a purchase's Action column, a
-                      #   `generation-reserve` row of Credit History, a resume
-                      #   on /orders/[id]); it reads the server's
-                      #   `/refund-requests/options` and never sends an amount.
+                      #   NOTHING asks for a refund (owner decision R1): no Ask
+                      #   on a purchase, a Credit History row or an order's
+                      #   resume, and frontendRefunds.test.js fails on one. A
+                      #   reporter's Credits (app/credits EarningsCredits) has
+                      #   "Ask for Refund" in Purchase Credits' place and style,
+                      #   off with the server's reason (`payoutBlocker`) at $0 or
+                      #   with a request open, opening PayoutRequestDialog - the
+                      #   whole balance, an optional note, never an amount.
                       #   PayDialog is only an alias of ui/Dialog.tsx.
                       #   The administrators' queue is app/admin/payments/
                       #   RefundQueue.tsx, the `?tab=refunds` of Payments, where
-                      #   every "New refund request" notice links.
+                      #   every "New refund/payout request" notice links: a
+                      #   payout row is marked Payout with its balance now, and
+                      #   its Refunded is "Record payout" - an amount prefilled
+                      #   with the smaller of what was asked and the balance now,
+                      #   and a note, both checked by lib/reporterPay.ts's
+                      #   `payoutProblem`, the one Admin -> Accounts uses.
   bid-assistant/      # the largest single feature directory here, and the only
                       #   JSX: its own App, components and stylesheet. Its
                       #   failures go through lib/apiBase.js's readError /
@@ -598,10 +621,14 @@ frontend/src/
                       #   `link`, a channel's `href` - goes through
                       #   lib/appLinks.ts before it is an href; a page never
                       #   builds one from a value. lib/refunds.ts is the refund
-                      #   API; lib/refundDisplay.ts how a request reads and which
+                      #   and payout API (`refundRequestsApi.list`, read-only;
+                      #   `payoutRequestsApi`; the admin queue);
+                      #   lib/refundDisplay.ts how a request reads (a refunded
+                      #   payout is "Paid out", `refundStateLabel`) and which
                       #   buttons it gets, with no request in it, so
-                      #   test/frontendRefunds.test.js runs it (and the reason
-                      #   and amount rules it copies) against the server's code.
+                      #   test/frontendRefunds.test.js runs it (and the reason,
+                      #   note and amount rules it copies) against the server's
+                      #   code and the real payout routes.
                       #   lib/orderCancel.ts is what Cancel on an order asks AND
                       #   says it did (/orders, an order's page, the builder's
                       #   receipt) - one file, so the two agree that a resume
@@ -684,11 +711,32 @@ the person's own list (trimmed, case-insensitively unique, 50 x 100 chars).
 **The render gate** is `applySkillsLimit` in `generators/pdfGenerator.ts`: every
 path - the live preview, the PDF, the DOCX, the queue - empties a switched-off
 section there, whatever content it was handed, because batch and queued
-content can arrive from the client without being re-parsed. A template's
-`.section-soft-skills` / `.section-strengths` markup is stripped at compile time
-only when the switch is off, and per-item skill loops are rewritten into
-categories only for `categorized` (the compile cache is keyed on the markup plus
-those choices).
+content can arrive from the client without being re-parsed. At compile time
+a switched-off section is stripped WHOLE, heading included, and a switched-on
+one is guarded on its list (`{{#if strengths.length}}`) - both through ONE
+finder, `findOptionalSections`: the `section-strengths` / `section-soft-skills`
+class (every built-in, the manual builder); else `data-section="strengths"` /
+`"softSkills"`; else, from each place the list is printed outside those
+(`sectionLoops`: a `{{#each <field>}}` loop, or an inline `{{join <field> ...}}`
+/ `{{<field>}}` - what `inferTemplateCapabilities` offers the switch for), the
+nearest element around it that holds the section and NOTHING else
+(`holdsOnlyTheSection`: one piece reading as the heading - `/strength/i`,
+`/soft[\s-]*skill/i`, at most 60 characters - and beside it only markup that
+`showsNothing`: no text, no data, no img/svg/media, no CSS `url(`, no
+style/script), or the list's container (plus a guard right around it) and the
+heading element before it, past dividers and line breaks. An element that also
+holds a photo, an icon or a line of static text is never taken whole - a grid
+sidebar once went with its photo and *References* - and one holding other data
+never at all (test/sectionHeadings.test.js; test/e2e/section-switches.js drives
+the editor). A guard is taken only when its `{{#if}}` and `{{/if}}` pair up
+INSIDE what is cut (`besidesTheLoop`), and `compileTemplate` parses the result
+(`compilableMarkup`): markup the finds would leave uncompilable is compiled
+with the marked sections only, then with none, logged once per template - a
+find must never stop a template rendering. The stored file is never
+rewritten. Per-item skill loops are rewritten into categories only for
+`categorized` (the compile cache is keyed on the markup plus those choices).
+The DOCX draws its own sections from the gated lists, so it never needed the
+finder.
 
 **The template decides the switches too.** A switch that the generation's
 template has no section for counts as OFF everywhere: read the profile through
@@ -744,9 +792,17 @@ floors or parses a float: test/money.test.js fails on a `Math.floor`,
 modules it lists. `utils/money.ts` is the ONE text-to-money parser
 (`parseDollars`: at most three decimals, refused rather than rounded, a JSON
 number read through its shortest spelling) and the ONE formatter (`formatMoney`:
-always three decimals, `$0.023`), plus `parseProviderCents` for an amount a
+every significant digit and no trailing zero or bare dot - `$1`, `$4.1`,
+`$0.023`, `$0`, `$1,234.5`, `-$0.046` - integer-built, never rounded; it used
+to pad to three decimals, and `$1.000` read as a thousand. Text already STORED
+- a ledger note, a request's label - keeps the figure it was written with; the
+docs spell amounts its way too, and money.test.js reads them for a padded
+amount outside the README's release history),
+plus `parseProviderCents` for an amount a
 provider reports (exact; `12.505` is not a match for 1250 cents). The frontend's
-`lib/format.ts` mirrors both, and test/frontendMoney.test.js runs each pair over
+`lib/format.ts` mirrors both - its fixed-decimal helpers (`toDollarInput`'s
+`2.50`, `formatLegacyUnitPrice`'s `$0.50`) build from a private `moneyParts`,
+never by slicing `formatMoney`'s text - and test/frontendMoney.test.js runs each pair over
 the same inputs (and the Admin -> Models price box against
 `parsePricePerResume`) and fails on any difference - and on a `Math.floor`,
 `parseInt`, `parseFloat`, `Number.isInteger` or `toFixed` in the frontend money
@@ -792,7 +848,7 @@ saying its run stops refunding), `users.credits` zeroed, open reservations
 closed, every task given
 `payload.costMilli: 0` (it finishes on the credits it was paid with and refunds
 nothing), pending payments stamped `credit_milli = amount_cents * 10`. Model
-prices go to $0.000 BY RULE (an absent `pricePerResumeMilli` reads as 0) - the
+prices go to $0 BY RULE (an absent `pricePerResumeMilli` reads as 0) - the
 settings row is deliberately NOT rewritten, because that would change what
 migration 001 snapshots for `ai:rollback`. It is safe to have not run: every
 dollar column starts at 0, so old data already reads as reset. A ROLLBACK
@@ -816,20 +872,56 @@ and it is refused, never clamped like `applyAdjustment`'s revoke (409
 `not-a-reporter` / `insufficient-balance` with `balanceMilli`): a record that
 says less was paid than was is wrong. Keyed `payout:<account>:<requestId>`, so
 a repeated `requestId` answers `recorded: false` with the first row. The
-reporter gets a notice (link `/credits`). Reporters cannot buy: /api/payments
-is `requireUser`, and so are refund-requests' /options and POST - a purchase
-refund gives back the UNSPENT balance, which for a reporter is earnings.
+reporter gets a notice (link `/credits`). Accounts' payout goes through
+services/refunds `recordDirectPayout`: the payout AND, in the same
+`.immediate()` transaction, the reporter's open payout request (if any) marked
+Refunded with that amount (`closedRequestId`), so the queue cannot pay it
+again. `MAX_PAYOUT_NOTE`, `PAYOUT_REQUEST_ID` and `readPayoutNote` live in
+services/credits, shared by both places that record one. Reporters cannot buy:
+/api/payments is `requireUser`, and so are refund-requests' retired /options
+and POST (a user or admin gets their 410) - a purchase refund gives back the
+UNSPENT balance, which for a reporter is earnings.
+
+**Payout requests** (owner decisions R1, R2). The ONE thing still asked for:
+`POST /api/refund-requests/payout { reason? }` (`requireReporter`; an admin is
+refused 409 `not-a-reporter` by `createPayoutRequest`, also `request-open` with
+`requestId`, `nothing-to-pay-out` at $0) asks for the WHOLE balance - kind and
+item type `payout`, item key `payout:<accountId>`, so the open-request index
+allows one open per reporter, label `Payout of earnings` - and notifies every
+admin, all in one `.immediate()` transaction; `GET /payout` is
+`describePayoutStatus` (`{ balanceMilli, openRequest, available,
+unavailableCode, unavailableReason }`). In the queue its `refundableNowMilli`
+is the reporter's balance NOW (0 with a reason when no longer a reporter or
+deleted). `refundRequest()` dispatches a payout BEFORE the resume branch to
+`payOutRequest(id, admin, { amountUsd, note })` - both required; any amount up
+to the balance then (R2); ONE `.immediate()` transaction of
+`recordReporterPayout` keyed by the REQUEST (`payout:<account>:<rfr id>`, a
+savepoint) and `markRefundRequestRefunded`; a refusal (409
+`insufficient-balance` with `balanceMilli`, `not-a-reporter`,
+`account-missing`) throws and moves nothing; the reporter's notice follows the
+commit. Its wording is kind-aware (*Payout request approved/declined*, *Payout
+recorded: $X*, link `/credits`); a refunded payout reads *Paid out*.
+`toRequest` derives the kind from the ITEM KEY (`kindOfItemType`) - it used to
+read any unknown kind as a resume and any unknown item type as a payment - and
+marks an item type this build does not know `unrecognised` (refundable never,
+409 `unrecognised`; declinable). `GET /api/refund-requests?kind=` filters by
+kind. Asking for a purchase or resume refund is CLOSED (R1): `POST /` and
+`GET /options` answer 410 `refund-requests-closed` with
+`REFUND_ASKING_CLOSED_MESSAGE`, which ends "contact your administrator";
+`createRefundRequest` stays, unrouted, for tests and e2e seeding, and every
+request made before is decided as below.
 
 **Refund requests** (owner decision M3; `services/refunds`,
-`database/refundRequestRepository.ts`, `routes/refundRequests.ts`). Anybody asks
-about their OWN purchase or resume, with a reason; an administrator moves it
+`database/refundRequestRepository.ts`, `routes/refundRequests.ts`). Somebody
+asked about their OWN purchase or resume, with a reason (before R1 closed
+asking; such requests are still in the queue); an administrator moves it
 Requested -> Approved (no money), Requested|Approved -> Declined (reason
 required, final) or -> Refunded (the money moves in the same step, final). The
 state machine is in the WHERE clauses; a repeat of the same action answers 200
 `changed: false` and moves nothing. ONE OPEN REQUEST PER ITEM is a partial
 UNIQUE index on `refund_requests(item_key) WHERE state IN ('requested',
-'approved')`, not a route check. An item is one of four names, and a resume has
-exactly one: `payment:<id>`; `order-item:<id>` (durable - `order_items.cost_milli`
+'approved')`, not a route check. An item is one of five names (`payout:<account>`
+above, and four for a charge), and a resume has exactly one: `payment:<id>`; `order-item:<id>` (durable - `order_items.cost_milli`
 is copied from the task's `costMilli` at `createOrder`, because the task is
 evicted); `charge:<reservation id>` for a `/resume/generate` build (a
 `kind: 'request'` reservation is that one resume); `task:<id>` for a queued
@@ -953,7 +1045,7 @@ stale falls back to the default with a warning once. The bare-provider and
 `provider:modelName` request forms are admin-only.
 
 **Price per resume.** `pricePerResumeMilli` is thousandths of a dollar,
-0..1,000,000 ($0.000-$1000.000), 0 = free (`config/pricePerResume.ts`). There is
+0..1,000,000 ($0-$1,000), 0 = free (`config/pricePerResume.ts`). There is
 NO default: an admin create without `pricePerResumeUsd` is refused, and a stored
 record without the field - a seed a migration adds, or one priced in credits
 before dollars (its `creditsPerResume` is never read as a price) - reads as 0
@@ -1534,7 +1626,7 @@ version's reward back once (`job-lake-revoke:<id>:<updated_at>`,
 notice to the reporter); a replaced version's reward stays paid.
 
 **Settings** (`services/jobLake/settings.ts`, `app_settings['job-lake']`):
-`reportRateMilli` (global, unset = $0.000 - nobody paid until set),
+`reportRateMilli` (global, unset = $0 - nobody paid until set),
 `duplicateWindowDays` (WINS over `JOB_LAKE_DUPLICATE_WINDOW_DAYS`, an
 operational setting, default 60, 1-3650; `resolveDuplicateWindow` says
 `admin | env | default`), `dailyCapMilli` (unset = no cap). PUT takes
