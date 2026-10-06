@@ -78,9 +78,40 @@ export type InvoiceView = {
   feeMilli: number;
   /** The last figure: what the balance received, in the payment's own unit. */
   net: string;
+  /** For a refunded payment, the money it returned (`refundedMoneyMilli`); 0 for any other. */
+  amountRefundedMilli: number;
   /** For a refunded payment, what came back off the balance - and why not all of it. */
   reversal: string;
 };
+
+/**
+ * The money a refunded payment RETURNED: the whole charge from the payments
+ * list's Refund, but only the unspent part, in whole cents, from a refund
+ * request - and whatever an administrator sent by hand for crypto. The server
+ * sends it as `refundAmountMilli` and already reads an older refunded row as
+ * its whole charge; the fallback here only keeps a row without the field from
+ * reading as $0.000 refunded.
+ */
+export function refundedMoneyMilli(payment: Payment): number {
+  if (payment.state !== 'refunded') return 0;
+  return payment.refundAmountMilli > 0 ? payment.refundAmountMilli : payment.amountMilli;
+}
+
+/**
+ * True when a refund returned only part of the charge - which changes why it
+ * reversed less credit than the payment put on the balance.
+ *
+ * A refund of the whole charge reverses all the balance can cover, so what it
+ * could not was spent. A PARTIAL one returns only part of the charge and
+ * reverses what it returned - and the rest is not all spent: a refund request
+ * gives back the unspent part in whole cents, so a fraction of a cent stays on
+ * the balance, and a by-hand crypto refund returns whatever was sent. The
+ * payment alone cannot tell spent from kept, so it says both rather than call
+ * a balance that is still there spent.
+ */
+function isPartialRefund(payment: Payment): boolean {
+  return refundedMoneyMilli(payment) < payment.amountMilli;
+}
 
 /**
  * What an invoice says about a settled payment.
@@ -108,6 +139,7 @@ export function describeInvoice(payment: Payment): InvoiceView {
       lines,
       feeMilli: payment.feeMilli,
       net: credits(net),
+      amountRefundedMilli: refundedMoneyMilli(payment),
       /*
        * "spent, or reset": a payment from before dollars that is refunded now
        * reverses nothing, because its credits went with the reset - and one
@@ -126,9 +158,15 @@ export function describeInvoice(payment: Payment): InvoiceView {
     lines: [{ description: `${formatMoney(credited)} of Tailor credit`, amountMilli: payment.amountMilli }],
     feeMilli: 0,
     net: formatMoney(credited),
+    amountRefundedMilli: refundedMoneyMilli(payment),
     reversal:
       `Credit reversed: ${formatMoney(payment.refundedMilli)} of ${formatMoney(credited)}` +
-      (kept > 0 ? ` - the other ${formatMoney(kept)} had already been spent.` : '.'),
+      (kept > 0
+        ? ` - the other ${formatMoney(kept)} ` +
+          (isPartialRefund(payment)
+            ? 'was not reversed: it had been spent, or is still on the balance.'
+            : 'had already been spent.')
+        : '.'),
   };
 }
 
@@ -148,9 +186,16 @@ export function describeRefundedNote(payment: Payment): string {
     );
   }
   const shortfall = payment.creditedMilli - payment.refundedMilli;
+  const returned = refundedMoneyMilli(payment);
   return (
     `${formatMoney(payment.refundedMilli)} of ${formatMoney(payment.creditedMilli)} reversed` +
-    (shortfall > 0 ? ` - the other ${formatMoney(shortfall)} had been spent.` : '.')
+    // A partial refund names the money it returned: the row's Amount column
+    // shows the whole charge.
+    (isPartialRefund(payment) ? `, ${formatMoney(returned)} returned` : '') +
+    (shortfall > 0
+      ? ` - the other ${formatMoney(shortfall)} ` +
+        (isPartialRefund(payment) ? 'was not reversed: spent, or still on the balance.' : 'had been spent.')
+      : '.')
   );
 }
 

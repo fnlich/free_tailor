@@ -52,6 +52,20 @@ const CONFIRM_SENTENCE =
 const POSTING =
   'Senior engineer wanted to ship TypeScript services packaged with Docker, for a small platform team.';
 
+/*
+ * Every queued job gets a posting of its own. The stored analysis and the
+ * tailoring cache answer a repeat of the same posting and profile with no
+ * model call, so a run of repeats finishes in PDF time - before this script
+ * can Stop it, leave it or cancel it - and the stub's delay, which those
+ * checks need, never applies. Per JOB, not per submission: jobs 2..N of a run
+ * would otherwise hit the cache the moment the first one is tailored.
+ */
+let submissions = 0;
+const postingsFor = (count) => {
+  submissions += 1;
+  return Array.from({ length: count }, (_, index) => `${POSTING} Ref ${submissions}-${index + 1}.`);
+};
+
 let failures = 0;
 /** The detail is the reason it FAILED, so printing it on a pass reads as one. */
 function check(name, ok, detail = '') {
@@ -198,9 +212,9 @@ async function main() {
         mode: 'immediate',
         tabId,
         profileIds: [profileId],
-        jobs: Array.from({ length: jobs }, (_, index) => ({
+        jobs: postingsFor(jobs).map((jobDescription, index) => ({
           companyName: `Queued ${index + 1}`,
-          jobDescription: POSTING,
+          jobDescription,
         })),
       }),
     });
@@ -392,7 +406,7 @@ async function main() {
       body: JSON.stringify({
         mode: 'order',
         profileIds: [profileId],
-        jobs: Array.from({ length: 8 }, (_, index) => ({ companyName: `Ordered ${index + 1}`, jobDescription: POSTING })),
+        jobs: postingsFor(8).map((jobDescription, index) => ({ companyName: `Ordered ${index + 1}`, jobDescription })),
       }),
     });
     const orderNumber = placed.body?.orderNumber;

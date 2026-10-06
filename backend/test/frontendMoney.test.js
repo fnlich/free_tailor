@@ -234,6 +234,7 @@ function payment(fields) {
     creditMilli: 25_000,
     creditedMilli: 25_000,
     refundedMilli: 0,
+    refundAmountMilli: 0,
     legacyCredits: null,
     ...fields,
   };
@@ -290,10 +291,75 @@ test("an invoice keeps an old payment's original line, and a new one is one line
   assert.equal(card.feeMilli, 0);
   assert.equal(card.net, '$25.000');
 
-  const refunded = describeInvoice(payment({ state: 'refunded', refundedMilli: 12_400 }));
+  assert.equal(card.amountRefundedMilli, 0, 'nothing refunded on a payment that was not');
+  // The payments list's Refund returns the whole charge, and reverses what the
+  // balance can cover: the rest was spent.
+  const refunded = describeInvoice(payment({ state: 'refunded', refundedMilli: 12_400, refundAmountMilli: 25_000 }));
+  assert.equal(refunded.amountRefundedMilli, 25_000);
   assert.equal(refunded.reversal, 'Credit reversed: $12.400 of $25.000 - the other $12.600 had already been spent.');
-  const whole = describeInvoice(payment({ state: 'refunded', refundedMilli: 25_000 }));
+  const whole = describeInvoice(payment({ state: 'refunded', refundedMilli: 25_000, refundAmountMilli: 25_000 }));
   assert.equal(whole.reversal, 'Credit reversed: $25.000 of $25.000.');
+  // A row the server sent without the figure reads as the whole charge, as the
+  // server reads an older refunded row - never as $0.000 refunded.
+  assert.equal(describeInvoice(payment({ state: 'refunded', refundedMilli: 25_000 })).amountRefundedMilli, 25_000);
+});
+
+test('an invoice says what a partial refund returned, and never calls a balance still there spent', () => {
+  const { describeInvoice, describeRefundedNote } = load('lib/paymentDisplay.ts');
+
+  // A refund request on a $10.000 card purchase after 2 x $0.023 was spent:
+  // the unspent $9.954 goes back in whole cents, $9.950, and $0.004 stays on
+  // the balance. "Amount Refunded" is that, not the $10.000 paid, and the
+  // $0.050 not reversed is not all spent.
+  const request = payment({
+    amountMilli: 10_000,
+    creditMilli: 10_000,
+    creditedMilli: 10_000,
+    state: 'refunded',
+    refundedMilli: 9_950,
+    refundAmountMilli: 9_950,
+  });
+  const invoice = describeInvoice(request);
+  assert.equal(invoice.amountRefundedMilli, 9_950);
+  assert.equal(
+    invoice.reversal,
+    'Credit reversed: $9.950 of $10.000 - the other $0.050 was not reversed: it had been spent, or is still on the balance.'
+  );
+  assert.equal(
+    describeRefundedNote(request),
+    '$9.950 of $10.000 reversed, $9.950 returned - the other $0.050 was not reversed: spent, or still on the balance.'
+  );
+
+  // A crypto purchase refunded by hand: the administrator sent $20.000 of
+  // $50.000, and that much came off the balance.
+  const byHand = payment({
+    method: 'crypto',
+    provider: 'cryptomus',
+    amountMilli: 50_000,
+    creditMilli: 50_000,
+    creditedMilli: 50_000,
+    state: 'refunded',
+    refundedMilli: 20_000,
+    refundAmountMilli: 20_000,
+  });
+  const byHandInvoice = describeInvoice(byHand);
+  assert.equal(byHandInvoice.amountRefundedMilli, 20_000);
+  assert.equal(
+    byHandInvoice.reversal,
+    'Credit reversed: $20.000 of $50.000 - the other $30.000 was not reversed: it had been spent, or is still on the balance.'
+  );
+  assert.equal(
+    describeRefundedNote(byHand),
+    '$20.000 of $50.000 reversed, $20.000 returned - the other $30.000 was not reversed: spent, or still on the balance.'
+  );
+});
+
+test('the invoice page draws Amount Refunded from the money returned, not the charge', () => {
+  const source = fs.readFileSync(path.join(SRC, 'app/credits/invoice/page.tsx'), 'utf8');
+  const block = source.slice(source.indexOf('Amount Refunded'));
+  const figure = block.slice(0, block.indexOf('</dd>'));
+  assert.match(figure, /formatMoney\(invoice\.amountRefundedMilli\)/);
+  assert.doesNotMatch(figure, /payment\.amountMilli/);
 });
 
 test('an administrator is told what a refund reversed, in dollars, and why an old one reversed nothing', () => {
@@ -312,7 +378,7 @@ test('an administrator is told what a refund reversed, in dollars, and why an ol
   );
 
   assert.equal(
-    describeRefundedNote(payment({ state: 'refunded', refundedMilli: 10_000 })),
+    describeRefundedNote(payment({ state: 'refunded', refundedMilli: 10_000, refundAmountMilli: 25_000 })),
     '$10.000 of $25.000 reversed - the other $15.000 had been spent.'
   );
   assert.match(describeRefundedNote({ ...LEGACY, state: 'refunded' }), /^0 of 195 credits reversed - the other 195/);

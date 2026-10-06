@@ -139,8 +139,9 @@ export type Payment = {
   refundedMilli: number;
   /**
    * The money a refund RETURNED, in thousandths of a dollar: the whole charge
-   * from the payments list's Refund, the unspent part from a refund request -
-   * so it can be less than `amountMilli`. 0 until refunded.
+   * from the payments list's Refund, the unspent part (in whole cents) from a
+   * refund request, what an administrator sent by hand for crypto - so it can
+   * be less than `amountMilli`. 0 until refunded.
    */
   refundAmountMilli: number;
   /** Non-null on a payment made before credits became dollars. */

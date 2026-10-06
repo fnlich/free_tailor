@@ -1007,10 +1007,11 @@ async function main() {
     await wait(900);
 
     /*
-     * The page after the reference design: Card, Crypto and Credit History as
-     * tabs over one table at a time, ten rows a page, First / previous / next /
-     * Last. It used to show two histories side by side with a page-size select,
-     * and these checks used to say so.
+     * The page after the reference design: Card, Crypto, Credit History and
+     * Refund Requests (refunds.js checks that one) as tabs over one table at a
+     * time, ten rows a page, First / previous / next / Last. It used to show
+     * two histories side by side with a page-size select, and these checks
+     * used to say so.
      */
     const tabs = await page.evaluate(() =>
       Array.from(document.querySelectorAll('main [role="tab"]')).map((tab) => ({
@@ -1019,8 +1020,8 @@ async function main() {
       }))
     );
     check(
-      'the histories are tabs - Card, Crypto, Credit History - with Card chosen',
-      tabs.map((tab) => tab.text).join(' / ') === 'Card / Crypto / Credit History' &&
+      'the histories are tabs - Card, Crypto, Credit History, Refund Requests - with Card chosen',
+      tabs.map((tab) => tab.text).join(' / ') === 'Card / Crypto / Credit History / Refund Requests' &&
         tabs[0]?.selected === true,
       JSON.stringify(tabs)
     );
@@ -1164,6 +1165,11 @@ async function main() {
      * The table is allowed to be wider than the screen - it scrolls sideways
      * inside its own box, as the reference's does - so its cells are left out
      * of the overflow sum and the box itself is held to the window instead.
+     * The tab row is the same: four tabs are wider than a phone, and
+     * `.tl-tabs` scrolls sideways rather than wrapping, its cut edge faded
+     * (useTabRow's `data-more`) so there is visibly more to swipe to - so its
+     * tabs are left out too, the row is held to the window, and the fade is
+     * checked rather than assumed.
      * Measured against the WINDOW as well as the document: `.tl-topbar` is
      * `position: fixed`, so `documentElement.scrollWidth` cannot see anything
      * that escapes through it.
@@ -1177,12 +1183,26 @@ async function main() {
     });
     check('at 390 the order table keeps to the window and scrolls inside its box', box !== null && box <= 1,
       String(box));
+    const tabRow = await page.evaluate(() => {
+      const row = document.querySelector('main [role="tablist"]');
+      if (!row) return null;
+      return {
+        past: Math.round(row.getBoundingClientRect().right) - window.innerWidth,
+        scrolls: row.scrollWidth > row.clientWidth,
+        more: row.dataset.more ?? null,
+      };
+    });
+    check(
+      'at 390 the tab row keeps to the window, scrolls inside itself, and fades where there is more',
+      tabRow !== null && tabRow.past <= 1 && (!tabRow.scrolls || tabRow.more === 'end'),
+      JSON.stringify(tabRow)
+    );
     const narrowOverflow = await page.evaluate(() => ({
       past: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
       widest: Math.max(
         0,
         ...Array.from(document.querySelectorAll('main *'))
-          .filter((node) => !node.closest('.tl-table-box'))
+          .filter((node) => !node.closest('.tl-table-box, .tl-tabs'))
           .map((node) => Math.round(node.getBoundingClientRect().right) - window.innerWidth)
       ),
       viewport: window.innerWidth,

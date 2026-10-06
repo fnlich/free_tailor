@@ -11,7 +11,12 @@
  *
  *   E2E_STUB_DELAY_MS   how long each model call takes (default 2500) - long
  *                       enough to press Stop, close a tab or leave the page
- *                       while a run is going
+ *                       while a run is going. Only a call that reaches this
+ *                       seat waits: a posting already analysed, or a
+ *                       tailoring the cache holds for the same profile and
+ *                       model, never gets here, so a script that needs a run
+ *                       still going gives every job a posting of its own
+ *                       (immediate-run.js's `postingsFor`)
  *   E2E_OUTPUT_DIR      where the run's files go (the admin Output folder
  *                       setting, written at boot) - keep them out of the
  *                       repository's generated/ folder

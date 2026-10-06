@@ -203,9 +203,14 @@ function InvoiceBody() {
           </div>
           {payment.state === 'refunded' && (
             <div>
-              {/* A refund returns the whole charge - the fee included. */}
+              {/*
+                The money the refund returned: the whole charge (fee included)
+                from the payments list, but only the unspent part from a refund
+                request, or what was sent by hand for crypto - so not
+                necessarily "Amount Paid".
+              */}
               <dt className="text-muted">Amount Refunded</dt>
-              <dd className="text-ink">{formatMoney(payment.amountMilli)}</dd>
+              <dd className="text-ink">{formatMoney(invoice.amountRefundedMilli)}</dd>
             </div>
           )}
           <div className={styles.strong}>
@@ -215,10 +220,11 @@ function InvoiceBody() {
         </dl>
 
         {/*
-          The money and the credit are two figures, and only the money is always
-          whole: credit already spent on a resume cannot be taken back, so the
-          reversal can be short of what was granted. It said "Refunded: 40
-          credits" before, which read as the refund itself being 40 credits.
+          The money and the credit are two figures: credit already spent on a
+          resume cannot be taken back, so the reversal can be short of what was
+          granted - and a partial refund reverses only what it returned. It
+          said "Refunded: 40 credits" before, which read as the refund itself
+          being 40 credits.
         */}
         {payment.state === 'refunded' && (
           <p className="mt-8 text-sm text-ink">
