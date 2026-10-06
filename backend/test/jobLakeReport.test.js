@@ -721,6 +721,29 @@ test('who reaches what: a user is refused Report Jobs, a reporter the admin lake
   assert.equal(tabs.body.spreadsheetId, h.sheets.reporter);
 });
 
+test("with no Google credential Report Jobs says so in its own words, and the README's row quotes them", async (t) => {
+  const h = await serve('unconfigured');
+  t.after(() => {
+    accountSheet.setSheetsClientForTests(accountSheetClient());
+    h.close();
+  });
+  accountSheet.setSheetsClientForTests({ ...accountSheetClient(), isConfigured: async () => false });
+  const overview = await h.call('reporter', 'GET', '/report');
+  assert.equal(overview.status, 200);
+  assert.equal(overview.body.sheet.configured, false);
+  const message = overview.body.sheet.message;
+  assert.match(message, /before jobs can be reported\.$/);
+
+  // The Troubleshooting row a reporter finds this under quotes what THIS page
+  // shows - not Settings -> Job Sheet's sentence, which ends otherwise.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const readme = fs.readFileSync(path.join(__dirname, '..', '..', 'README.md'), 'utf8');
+  const row = readme.split('\n').find((line) => line.startsWith("| A reporter's account menu has no **Your job sheet**"));
+  assert.ok(row, 'the Troubleshooting row for a reporter with no sheet');
+  assert.ok(row.includes(`**Report Jobs** says *${message}*`), row);
+});
+
 test('the admin merge offers analysed, unmerged build jobs with a field and a company, and pays nobody', async (t) => {
   const h = await serve('merge');
   t.after(() => h.close());
@@ -905,6 +928,23 @@ test('a Build Resumes run names the company on the analysis it was handed, and t
   const named = await h.post('/resume/analyze', { jobDescription: posting(51), companyName: 'Analyze Co' });
   assert.equal(analyses.getJobAnalysisById(named.body.analysisId).companyName, 'Analyze Co');
   assert.equal(h.seats.analyses().length, 2, 'naming a company asks no model');
+
+  // The builder's own call is the first one above: description and link, no
+  // company - which is why a posting it only previewed is not offered yet.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const api = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'lib', 'api.ts'), 'utf8');
+  const analyze = /\n  analyze: \(([^)]*)\) =>[\s\S]*?\}\),\n/.exec(api);
+  assert.ok(analyze, "lib/api.ts's resumeApi.analyze");
+  assert.doesNotMatch(analyze[0], /company/i, 'the builder sends /resume/analyze no company');
+  // So the README's row says that, and not that such a posting predates
+  // recorded companies: job_analyses is new to an install upgraded from the
+  // release before (commit 90adbaf has no such table), so none does.
+  const readme = fs.readFileSync(path.join(__dirname, '..', '..', 'README.md'), 'utf8');
+  const row = readme.split('\n').find((line) => line.startsWith('| The **Merge** tab does not offer a job a build analysed'));
+  assert.ok(row, 'the Troubleshooting row for a job the Merge tab does not offer');
+  assert.match(row, /the builder's analysis names none, so a posting that was only previewed has none/);
+  assert.doesNotMatch(readme, /analysed before the analysis recorded\s+companies|gains `company_name`/);
 });
 
 test('the Job Filter names the company on the analysis, found by its link or made now, on the app\'s own sheet', async (t) => {

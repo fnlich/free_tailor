@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~55s with the tsc step, 1593 tests)
+npm test                       # backend node:test suite (~55s with the tsc step, 1602 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -183,7 +183,10 @@ backend/src/
                       #   forward again; check and ALTER in one BEGIN
                       #   IMMEDIATE, so a second opener of the file waits and
                       #   finds it done; fatal on failure), then SCHEMA, then
-                      #   addMissingColumns (never fatal), then the one-time
+                      #   addMissingColumns (never fatal), then
+                      #   addIndexesAfterColumns (INDEXES_AFTER_COLUMNS: every
+                      #   index naming an added column - in SCHEMA it would
+                      #   fail every upgraded boot), then the one-time
                       #   move of `templates` rows to files
                       #   (templateFileMove.ts, schema_meta
                       #   `templates_moved_to_files`, never fatal; recorded
@@ -193,8 +196,12 @@ backend/src/
                       #   `credit_unit`, never fatal - see "Money" below),
                       #   then the migrations.
                       #   An older build reads users.plan: rolling back means
-                      #   renaming it back first (README, "Plans are now subscriptions").
-                      #   Saved templates are NOT a table any more:
+                      #   renaming it back first (README, "Rolling back this
+                      #   release", which gathers every step a rollback needs;
+                      #   test/rollbackDocs.test.js runs its statements against
+                      #   this build's schema, so a column renamed or a notice
+                      #   stored differently fails it until the README follows).
+                      #   Saved templates are NOT a table:
                       #   templateFiles.ts is their store, `<id>.json` in
                       #   static/templates (see the note under this block);
                       #   templateRepository.ts keeps the four signatures it
@@ -252,6 +259,19 @@ backend/src/
                       #   /resume/generate (synchronous, admin output
                       #   template, refundable as `charge:`) is KEPT for any
                       #   caller, but the builder queues every build now.
+                      #   generatedFiles.ts is the one owner check of the two
+                      #   path-taking downloads, GET /api/generated/* (its
+                      #   handler, mounted inline by index.ts) and
+                      #   /api/resume/download/* (`generatedFileFor`): asked of
+                      #   the path as the server OPENS it - utils/generatedPath's
+                      #   `resolveGeneratedFile` spellings, empty and dot
+                      #   segments resolved, then through the native realpath -
+                      #   never the raw parameter, which let `a//b` and `./a/b`
+                      #   read another account's run. `ownersOfGeneratedFile`
+                      #   (orderRepository) folds case, and also claims a whole
+                      #   run's folder by its order-number segment, so a file is
+                      #   the run's before (or without) its item recording it;
+                      #   test/orderFileAccess.test.js sends the spellings raw.
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor, migrate:legacy,
                       #   ai:rollback. The doctors share one shape -
@@ -299,8 +319,8 @@ backend/src/
                       #   added column; immediate rows number `FT-RUN-...`, are
                       #   hidden from listOrdersForUser and the order routes'
                       #   `mine()`, and are filed under ORDER_OUTPUT_PATH_TEMPLATE
-                      #   like an order - the admin's output template no longer
-                      #   files any queued build). An immediate run is LEASED to
+                      #   like an order - the admin's output template files
+                      #   only POST /resume/generate's builds). An immediate run is LEASED to
                       #   its tab (tabLease.ts, `getTabLeases()`): the owner's
                       #   stream with `?tab=` = `shared.tabId` holds it; when the
                       #   last such reader closes, IMMEDIATE_TAB_GRACE_MS starts
@@ -337,7 +357,7 @@ backend/src/
                       #   `jobMeta.title` (`resolveTaskRole`, which
                       #   routes/resume.ts uses too) - cover letter, path,
                       #   files and result alike; the builder has no
-                      #   Fallback Role any more.
+                      #   Fallback Role.
   services/tailorCache.ts # the tailoring cache (owner decision P6): the model's
                       #   answer to a tailoring or a cover-letter call, reused
                       #   for the same unchanged profile, posting, model and
@@ -370,17 +390,21 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 132 files; fixtures/cli, codex and gemini
+  test/               # node:test, 133 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
                       #   /orders, /credits (+ /credits/invoice, drawn with no
-                      #   shell - navModel's isBareRoute). /account redirects,
-                      #   and so does /settings/plan, to /settings/subscription
-                      #   (a static redirect() the client follows on hydration;
-                      #   the root layout's shell streams first, so it is
-                      #   never an HTTP 307).
+                      #   shell - navModel's isBareRoute). /account redirects
+                      #   in a client effect (router.replace), by its hash,
+                      #   which never reaches the server: #subscription ->
+                      #   /settings/subscription, #credits -> /credits, #sheet
+                      #   -> /settings/job-sheet, else /settings - so it cannot
+                      #   be a redirect(). /settings/plan goes to
+                      #   /settings/subscription by a static redirect() the
+                      #   client follows on hydration (the root layout's shell
+                      #   streams first, so it is never an HTTP 307).
                       #   /admin/profiles, /admin/profiles/new and
                       #   /admin/profiles/[id] are EVERY builder's own profiles
                       #   and their editor, whatever the path says. /report
@@ -476,7 +500,7 @@ frontend/src/
                       #   `generation-reserve` row of Credit History, a resume
                       #   on /orders/[id]); it reads the server's
                       #   `/refund-requests/options` and never sends an amount.
-                      #   PayDialog is now only an alias of ui/Dialog.tsx.
+                      #   PayDialog is only an alias of ui/Dialog.tsx.
                       #   The administrators' queue is app/admin/payments/
                       #   RefundQueue.tsx, the `?tab=refunds` of Payments, where
                       #   every "New refund request" notice links.
@@ -639,8 +663,9 @@ filed under its folded id if free, else a `u-` id derived from the old one
 (so a re-run finds it), never a built-in's or another row's, and the profiles
 naming it are repointed in the same transaction; the renames stay as aliases.
 It is recorded row by row - a row that failed to write is retried alone, a
-moved one is never looked at again - and the README's "Saved templates are
-files" says how to roll back and run it again. Saved files are not
+moved one is never looked at again - and the README's "Rolling back this
+release" (step 5, and *Upgrading again*) says how to roll back and run it
+again. Saved files are not
 gitignored, so they show in `git status` and can be committed to ship them.
 Startup prints whether the directory is writable, and names any `.json` there
 no id can have (not offered), under `Database:`.
@@ -771,11 +796,16 @@ prices go to $0.000 BY RULE (an absent `pricePerResumeMilli` reads as 0) - the
 settings row is deliberately NOT rewritten, because that would change what
 migration 001 snapshots for `ai:rollback`. It is safe to have not run: every
 dollar column starts at 0, so old data already reads as reset. A ROLLBACK
-across it is not lossless (README, "Credits are dollars"): dollars held by a
-run in flight are never refunded (the older build sees `units = 0`, then
-closes the reservation, and a closed one takes no refund here), and the first
+across it is not lossless (README, "Rolling back this release"): dollars held
+by a run in flight are never refunded (the older build sees `units = 0`, then
+closes the reservation, and a closed one takes no refund here), the first
 settings save of any kind rewrites every model without `creditsPerResume`, so
-an older build prices them all at 1 credit.
+an older build prices them all at 1 credit - and the OLDER build's first save
+drops every `pricePerResumeMilli` (its normaliser builds the row field by
+field, as it drops `aiProviders` and `analysisModelId`), so after upgrading
+back every model reads free again. Its refund of a purchase made here
+reverses nothing (`credits_granted` and `credits` are 0) while returning the
+money.
 
 **Reporter payouts** (owner decision A4). A reporter's earnings are paid
 OUTSIDE the app; an administrator records each one with POST
@@ -839,14 +869,18 @@ amount the administrator SENT, required, never measured again (409
 `refundPayment(..., { amountMilli, refundedByHand: true })`, a balance spent
 since reported as the shortfall. `payments.refund_cents` records the money
 returned (0 on an older refunded row reads as `amount_cents`), served as
-`refundAmountMilli`. A refund from the payments list closes the payment's open
+`refundAmountMilli` - the invoice's *Amount Refunded* and the payments list's
+note read it (lib/paymentDisplay.ts `refundedMoneyMilli`), never `amountMilli`,
+and after a partial refund call the credit not reversed "spent, or still on
+the balance" (a request leaves its sub-cent remainder there), never all spent.
+A refund from the payments list closes the payment's open
 requests (`closeRequestsForRefundedPayment`). The frontend's `lib/credits.ts`
 knows the new ledger reasons, `refund-request` and `purchase-refund-failed`,
 and the lake's `job-report-reward` and `job-report-reward-revoked` (see "The Job
 Data Lake" below; drift-checked by test/frontendMoney.test.js, which also lists
 the lake's money modules among those that may not floor or float-parse).
 
-**Notifications are no longer broadcast-only.** `notifications.recipient_id`
+**Notifications are for everybody or for one account.** `notifications.recipient_id`
 NULL is an announcement (every row an older build wrote), set is a notice for
 that account alone; every reader query is `recipient_id IS NULL OR
 recipient_id = me` (list AND unread count), through
@@ -858,8 +892,8 @@ announcement editor lists, edits and deletes announcements only, and
 `link` only through lib/appLinks.ts's `safeAppPath` (a copy of the server's,
 run against it by test/frontendRefunds.test.js) and marks a notice "For you".
 An older build has no recipient filter and reads EVERY row as an announcement,
-so a rollback deletes `WHERE recipient_id IS NOT NULL` first (README, "Asking
-for a refund") - or every bell shows other people's refund notices, emails and
+so a rollback deletes `WHERE recipient_id IS NOT NULL` first (README,
+"Rolling back this release") - or every bell shows other people's refund notices, emails and
 reasons included.
 
 **Contact** (owner decision A2): `app_settings['contact'] = { channels: [{ type,
@@ -1181,7 +1215,7 @@ readiness); it serves a TASK when also `policy.ready(lane, policy.modelOf(task))
 `choice.modelName` - asked once per lane and model per dispatch pass
 (`readyMemo`). `place`: a task goes to the lane of its pool that serves it
 with the lowest (running + waiting) / width, ties to reading order, urgent
-tasks spliced before the first ordinary one IN THAT LANE (Phase 4's priority
+tasks spliced before the first ordinary one IN THAT LANE (an immediate run's priority
 is per lane), and a RETRY not to the lane it just failed on while another
 serves it (`Task.avoidLane`, set by `retryTask`, cleared at start, not
 persisted) - a provider that fails fast is always the least loaded, so by
@@ -1444,7 +1478,7 @@ test/frontendAnalysis.test.js runs every copy here against the server's code.
 
 ## The Job Data Lake
 
-Phase 7, owner decisions J2-J10. One row per JOB - a company hiring in a job
+Owner decisions J2-J10. One row per JOB - a company hiring in a job
 field - in `job_lake` (database/sqlite.ts; `database/jobLakeRepository.ts`
 is its only writer), not per posting. The doc block there and in
 `services/jobLake/` is the detail; what to know before touching it:
@@ -1515,7 +1549,7 @@ Lake Status is Added/Replaced/Duplicate/Unclassified (`Skipped` is retried)
 beside an Analysis cell for the posting in the row NOW (`lakeStatusIsRowsOwn`;
 the protected cells outlive a posting replaced in place, so a status left by
 the one before is ignored, and routes/report.ts's `reported` says the same),
-then Phase 6's `resolveAnalysesAtSubmit` (sheet first, no model) and the gate
+then the submission step's `resolveAnalysesAtSubmit` (sheet first, no model) and the gate
 for the rest (three at a time, written back like a queued task's first
 analysis), merges in ROW ORDER, `flushAnalysisWriteBacks()` FIRST (a stale
 program cell's replacement empties M and O), then `writeLakeStatuses` - one RAW
@@ -1590,10 +1624,15 @@ stub-seat.js.
 
 ## Conventions from the history
 
-Some 190 commits, no tags; releases are `vN.0` merge PRs (v2.0, v3.0, v4.0 so far).
-The pattern in nearly every feature arc is a feature commit followed by one or
-more "fix what the adversarial review found" commits, so expect review passes
-to be part of the work rather than an afterthought.
+Some 200 commits, no tags; releases are merge PRs named for their branch (v2.0,
+v3.0, v4.0, and v4.1, built one commit per phase plus a review-fix commit where
+one was needed - Phase 9's 4b43c01). The README's
+"What changed in this release" and "Rolling back this release" are rewritten
+for each release from the commits since the last one: what an operator must DO
+after upgrading, in order, and every step a rollback needs, checked against the
+older build's code. The pattern in nearly every feature arc is a feature commit
+followed by one or more "fix what the adversarial review found" commits, so
+expect review passes to be part of the work rather than an afterthought.
 
 Commit subjects are written as sentences saying what changed and why it
 matters — "Stop link-sharing every new spreadsheet, and let an operator ask for

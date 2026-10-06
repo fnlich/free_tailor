@@ -1,4 +1,20 @@
-# Buying credits, end to end
+# End to end, against running servers
+
+The unit tests in `backend/test/*.test.js` prove each piece; the scripts here
+prove the pieces are joined up, against a backend (and, for the browser ones,
+a frontend) that are already running. None of them is part of `npm test`.
+
+| Script | What it drives | Section |
+|---|---|---|
+| `walkthrough.js`, `browser.js`, `buy-credits.js` | Buying credits, over HTTP and in a browser, against fake payment providers (`fake-providers.js`) | [Running it](#running-it) |
+| `refunds.js` | Refund requests and Contact admin, with no provider at all | [Running it](#running-it), step 5 |
+| `preview-vibration.js` | The profile preview holding still with real scrollbars | [The profile preview, held still](#the-profile-preview-held-still) |
+| `immediate-run.js`, `sheet-panel.js` | Generate Immediately, Order and the sheet panel, against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Building resumes, with the seat stubbed](#building-resumes-with-the-seat-stubbed) |
+| `report-run.js` | Report Jobs and Admin -> Job Lake, against a stubbed sheet and seat (`stub-report-sheets.js`) | [Report Jobs and the job lake](#report-jobs-and-the-job-lake-with-google-stubbed) |
+| `providers.js` | Admin -> Models -> Providers, against a stubbed seat | [Providers, with the seat stubbed](#providers-with-the-seat-stubbed) |
+| `shell.js` | Every page as a user, an administrator and a reporter | [The shell, as every role](#the-shell-as-every-role) |
+
+## Buying credits
 
 A credit is a dollar. Every script here buys an amount of money (`amountUsd`),
 expects exactly that much credit back, and reads every amount the API answers
@@ -6,10 +22,9 @@ with as thousandths of a dollar in a field ending `Milli` - `$20.000` on the
 page, `20000` in the body. A request in the old unit (a count of `credits`) is
 expected to be refused as a stale page.
 
-The unit tests in `backend/test/*.test.js` prove each piece. These files
-prove the pieces are joined up: a real server on a real port, the real routers,
-the real database, the real webhook mount, and a browser clicking the real
-pages.
+These files prove the purchase is joined up: a real server on a real port,
+the real routers, the real database, the real webhook mount, and a browser
+clicking the real pages.
 
 The only thing faked is the company at the other end of the wire. There is no
 way around that — a real end-to-end run needs live provider keys and a webhook
@@ -159,6 +174,16 @@ DB_DIR=/tmp/e2e-db node test/e2e/sheet-panel.js
 Leave `IMMEDIATE_TAB_GRACE_MS` at its default: `immediate-run.js` tells the
 page's own release from the server's 30-second grace by how soon the run
 stops.
+
+The stub's delay applies only to a call that reaches it. A posting analysed
+once is never analysed again, and the tailoring cache answers the same posting,
+profile and model with no call at all, so a repeat build is near-instant - it
+finishes in PDF time, before anything can be stopped. The timing checks
+therefore give every queued JOB a posting of its own (`immediate-run.js`'s
+`postingsFor`, `... Ref <submission>-<job>.`); a script written later that
+needs a run still going when it acts has to do the same, per job and not per
+submission, or jobs 2..N of a run hit the cache the moment the first is
+tailored.
 
 `immediate-run.js` — 29 claims, on the Default subscription. The first
 Generate Immediately asks first, in the owner's sentence, with *Don't show
@@ -340,7 +365,7 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 107 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 108 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
 leave behind. Over HTTP: each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
@@ -360,11 +385,14 @@ saying plainly that it could not; Escape closing; and nothing hanging off the
 side at 1440 or 390, in either theme. A method that is switched off is shown
 twice: to an administrator with its reason, wrapped rather than clipped (the
 `buy-1-unavailable-*.png` screenshots), and to the buyer as *Not available
-right now. Please contact your administrator.* with no setting named. On the credits page: two columns wide and
-stacked narrow, both histories opening on five rows and saying how many there
-are, Older and Newer moving between real pages, and a page whose request FAILS
-keeping its rows while the count sentence still describes them - a failed press
-used to leave rows 1-5 under "6-10 of 12". On the invoice page: an unpaid
+right now. Please contact your administrator.* with no setting named. On the credits page: four tabs - Card,
+Crypto, Credit History and Refund Requests - over one table at a time, the card
+list opening on ten rows and saying how many there are, Next, Previous, Last
+and First moving between real pages, and a page whose request FAILS keeping
+its rows while the count sentence still describes them - a failed press used
+to leave rows 1-5 under "6-10 of 12". At 390 the table scrolls inside its box
+and the tab row inside itself, its cut edge faded (`data-more`), and nothing
+else leaves the window. On the invoice page: an unpaid
 order says *No invoice yet* and offers no Print button, and the same order once
 paid is an invoice with exactly one, one line of credit at its charge and
 `$0.000` of fees. The top-bar pill follows a payment that lands while the

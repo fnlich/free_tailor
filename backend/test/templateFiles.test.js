@@ -675,7 +675,7 @@ test('with its record deleted the move runs again: a row changed since replaces 
   const before = files();
 
   // An older build, run in between, changed a row: the operator deletes the
-  // record so this build moves it forward (README, "Saved templates are files").
+  // record so this build moves it forward (README, "Rolling back this release").
   const db = new Database(path.join(dbDir, 'free_tailor.db'));
   try {
     const row = JSON.parse(db.prepare("SELECT data FROM templates WHERE id = 'm-0000aaaa'").get().data);

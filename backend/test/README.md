@@ -47,11 +47,14 @@ Coverage currently focuses on:
   overrides, the admin payload that serves them, create and edit validation,
   Set Default refusing a model that cannot run, and prompt overrides checked
   against the same lists (`modelAdministration.test.js`)
-- the price per resume: the `creditsPerResume` field on every record (seeded,
-  read as the default without a write-back, clamped on read, refused by name on
-  a save, kept by a partial edit), the credit primitives taking an amount, and
-  the queue refunding each task's snapshotted price - restored tasks included
-  (`modelPricing.test.js`); and through the routes, the quote, a mixed-price
+- the price per resume: `pricePerResumeMilli` on every record, in thousandths
+  of a dollar (every seed free until priced and named in the admin payload; a
+  record priced in credits, or with no price, read as free without a
+  write-back; junk or out of range clamped or free on read, warned once; a
+  dollar price refused by name on a save when missing or bad; kept by a
+  partial edit and by every settings save), the credit primitives taking an
+  amount, and the queue refunding each task's snapshotted `costMilli` -
+  restored tasks included (`modelPricing.test.js`); and through the routes, the quote, a mixed-price
   batch charged the sum and refunded per task, the 402, free models, the
   exempt administrator and `/resume/generate` resolving before it charges
   (`generationPricing.test.js`)
@@ -197,6 +200,50 @@ Coverage currently focuses on:
   is in `sectionPermissions.test.js`, the admin payloads in
   `accountRoutes.test.js`, and the frontend's copy of the tier order is held
   to the backend's in `frontendHelpers.test.js`
+- money in thousandths of a dollar: the one parser and formatter (`"0.023"`
+  is 23, `"0.0235"` refused, always three decimals, whole cents only where a
+  card is charged or refunded) and a guard that no money module floors,
+  truncates or float-parses an amount (`money.test.js`); the switch from
+  credits, on a database the build before dollars left - balances and prices
+  reset with a `reset` row each, a run in progress settled, nothing free and
+  nothing charged twice, a second start a no-op (`dollarSwitch.test.js`); a
+  purchase crediting exactly what it charges, with no fee, and the payment
+  limits in dollars (`paymentFees.test.js`); and the frontend's copies of all
+  of it run against the server's (`frontendMoney.test.js`)
+- refund requests and Contact admin: every allowed and refused state change,
+  a double-pressed *Refunded* moving money once, a card's partial refund with
+  its credit held while Stripe answers, crypto at the amount sent by hand, one
+  open request per item in SQL (`refundRequests.test.js`); a notice reaching
+  only the account it is for, in its feed and its unread count, by an index
+  seek (`notificationRecipients.test.js`); the contact channels' rules and
+  the links the server builds (`contact.test.js`); and the pages' refund
+  decisions against the server's, plus every sentence that asks for an
+  administrator followed by a Contact admin link (`frontendRefunds.test.js`)
+- Generate Immediately and Order: the two kinds, the tab lease through the
+  stream, the release, the owner-checked per-file download and the deletion
+  after the run (`immediateRuns.test.js`); the grace on a mock clock
+  (`tabLease.test.js`); immediate work before orders on one lane
+  (`queuePriority.test.js`); one profile on every subscription, several only
+  from Premium, administrators exempt (`subscriptionGates.test.js`); the Tab
+  select's listing (`sheetTabs.test.js`); the builder's reattach seeing only
+  the caller's own runs (`builderRunListing.test.js`); a restored run keeping
+  its reservation (`restoreReconcile.test.js`); an untitled row built for its
+  analysis's title (`queuedRole.test.js`); and the page's own decisions - a
+  tab's id, the downloads, the release request, how a run ended, the sheet
+  rows (`immediateRunHelpers.test.js`)
+- saved templates as files (`templateFiles.test.js`): import, extraction and
+  the manual builder each writing `<id>.json` with its source, an edit
+  rewriting it and a delete removing it while a built-in stays as shipped, ids
+  checked before any path is built, a directory that cannot be written giving
+  the generic error and leaving no `.tmp`, the one-time move of an older
+  database's rows - renames, retries of only what failed, and running again
+  once its record is deleted
+- the profile preview's sample person (`sampleDefaults.test.js`): an empty
+  draft filled field by field and section by section, typed values winning,
+  and the sample reaching nothing but the preview route - never a save, a PDF
+  or a prompt; and the editor's helpers - the pane width that stops the
+  preview shaking, the "N kept" line, the sample-text notice and placeholders
+  (`frontendEditorHelpers.test.js`)
 - a profile's two section switches and its own soft skills
   (`resumeSections.test.js`): off unless stored `true`, kept by a save that
   omits them; the soft-skill list cleaned, bounded and kept; the preview's
@@ -306,6 +353,13 @@ Coverage currently focuses on:
   and range, and tagged with when it is read - and its README row showing the
   same default, range and tag; plus the CLI budgets shipped commented out
   (`envExample.test.js`)
+- the README's rollback procedure (`rollbackDocs.test.js`): the statements of
+  "Rolling back this release", taken from the README itself (its sqlite3 and
+  node spellings agreeing), run against a database this build made - every
+  column the previous release selects there under its old name, only
+  announcements left in `notifications`, no enabled account in a role it does
+  not know - and the record and settings log the section names being the ones
+  this build writes
 
 ## Testing the CLI providers
 

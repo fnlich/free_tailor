@@ -180,7 +180,7 @@ test('a database renamed back for a rollback is renamed forward again on the nex
   writePreRenameDatabase(dbDir);
   boot().db.close();
 
-  // The documented way down (README, "Plans are now subscriptions"), and the older
+  // The documented way down (README, "Rolling back this release"), and the older
   // build then writing under the old name.
   const raw = new Database(path.join(dbDir, 'free_tailor.db'));
   raw.exec('ALTER TABLE users RENAME COLUMN subscription TO plan');
@@ -354,9 +354,17 @@ test('Settings > Subscription is a tab, and the old Settings > Plan address redi
   assert.match(old, /redirect\('\/settings\/subscription'\)/);
   assert.doesNotMatch(old, /<\w/, 'renders no markup');
 
-  // And the old account page's #subscription anchor goes straight there.
-  const account = fs.readFileSync(path.join(FRONTEND_SRC, 'app/account/page.tsx'), 'utf8');
+  // And the old account page's #subscription anchor goes straight there. The
+  // rest of that page goes elsewhere, by a hash the server never sees - so it
+  // is a client effect, never a redirect() like the one above (CLAUDE.md's
+  // app/ note says which is which).
+  const account = codeOnly(fs.readFileSync(path.join(FRONTEND_SRC, 'app/account/page.tsx'), 'utf8'));
   assert.match(account, /'#subscription'\) return '\/settings\/subscription'/);
+  assert.match(account, /'#credits'\) return '\/credits'/);
+  assert.match(account, /includes\('sheet'\)\) return '\/settings\/job-sheet'/);
+  assert.match(account, /return '\/settings';/);
+  assert.match(account, /router\.replace\(destination\(window\.location\.hash/);
+  assert.doesNotMatch(account, /\bredirect\(/);
 });
 
 /**
