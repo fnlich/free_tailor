@@ -336,8 +336,8 @@ function SheetRows({
       <p className="text-sm text-muted">
         Each row&apos;s Company, Job Title, Job Link and Job Description are read from columns {layout.company} to{' '}
         {layout.jobDescription}. Job Field, Salary and Analysis ({layout.jobField}, {layout.salary} and {layout.analysis})
-        are written only by this program; a row whose Analysis cell is filled is built on it without being analysed
-        again.
+        are written only by this program; a row whose Analysis cell names its posting&apos;s stored analysis is built
+        on it without being analysed again.
       </p>
 
       <ErrorNotice error={error} onDismiss={() => setError('')} />

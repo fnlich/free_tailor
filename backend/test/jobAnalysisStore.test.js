@@ -282,10 +282,9 @@ test("the industries are the owner's closed list with stable ids; an unknown wor
   assert.deepEqual(industries.listIndustriesForClient().at(-1), { id: 'not_specified', label: 'Not specified' });
 });
 
-test('an analysis has an industry only when its answer had one: an older analysis, row or sheet cell stays without', () => {
+test('an analysis has an industry only when its answer had one: an older analysis or row stays without', () => {
   useTempStorage('job-analyses-industry');
   const { normalizeJobAnalysisResponse } = require('../dist/services/resumeService');
-  const { normalizeSheetAnalysis } = require('../dist/services/jobAnalysis/gate');
   const answer = analysis();
   delete answer.sourceJobDescription;
 
@@ -294,7 +293,6 @@ test('an analysis has an industry only when its answer had one: an older analysi
   assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: 'Insurance' }, 'A posting.').industry, 'insurance');
   assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: null }, 'A posting.').industry, 'not_specified');
   assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: 'Asteroid farming' }, 'A posting.').industry, 'other');
-  assert.equal('industry' in normalizeSheetAnalysis(answer, 'A posting.'), false, 'nor does a sheet cell written before it');
 
   // Stored and read back, each as it was.
   const without = insert('A posting stored before industries.', undefined);

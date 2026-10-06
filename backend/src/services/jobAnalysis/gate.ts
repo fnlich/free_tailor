@@ -12,14 +12,9 @@ import {
   insertJobAnalysisIfAbsent,
   type StoredJobAnalysis,
 } from '../../database/jobAnalysisRepository';
-import type { JobAnalysis, RawNestedJobAnalysis } from '../../types/template';
 import { createPromptCompletion } from '../ai';
 import { resolvePromptByExactId } from '../promptService';
-import {
-  buildAnalyzeJobDescriptionPromptValues,
-  normalizeJobAnalysisResponse,
-  parseJobAnalysisContent,
-} from '../resumeService';
+import { buildAnalyzeJobDescriptionPromptValues, parseJobAnalysisContent } from '../resumeService';
 import { SENIORITY_VALUES } from './facts';
 import { normalizeJobDescriptionText, postingKeysOf, samePosting, type PostingKeys } from './identity';
 
@@ -38,9 +33,10 @@ export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
  *
  *   0. a Google Sheet row's own analysis, read by the SERVER from the row's
  *      protected Analysis cell (services/sheets/analysisColumns.ts) - the
- *      stored row it names, or, when the store has none for this posting yet,
- *      the sheet's content registered without a model call, so the database
- *      and the sheet hold the same analysis;
+ *      STORED analysis the cell names, and only when that stored analysis is
+ *      this posting's. The cell's own content is never used and never
+ *      stored: a cell naming nothing in the store is ignored, and the steps
+ *      below answer;
  *   1. the stored analysis of this posting - by its normalised link, then by
  *      its whitespace-normalised text (identity.ts), one index seek each;
  *   2. the analysis of this posting already in flight in this process, which
@@ -69,22 +65,20 @@ export const JOB_ANALYSIS_MIN_LENGTH = 50;
 
 /**
  * A Google Sheet row's own analysis, as the server read it from the row's
- * protected Analysis cell - never from a request body. `analysisId` is the
- * stored row the cell names; `analysis` is the cell's content, already
- * normalised. Either may be missing: a cell cut at Google's limit still names
- * its row, and a cell from another install names a row this store lacks.
+ * protected Analysis cell - never from a request body: the stored analysis
+ * the cell names (`analysisId`, read off the cell's start, which survives the
+ * cell being cut at Google's limit).
+ *
+ * Only an id, on purpose. The cell's content was once registered as the
+ * posting's analysis when the store had none - and so a cell nobody can tell
+ * from the program's (a formula spilled into the column from an unprotected
+ * one, a row pasted from another install's sheet) became that posting's only
+ * analysis, for ever, under the one-analysis rule. Now nothing in a sheet
+ * reaches the store: a cell is worth exactly the stored analysis it names,
+ * when that one is the posting's.
  */
 export type SheetRowAnalysis = {
   analysisId?: string;
-  analysis?: JobAnalysis;
-  /**
-   * The keys of the posting the cell says it was written for. A sheet row's
-   * posting can be replaced, or rows sorted under the protected columns, so
-   * neither the stored row a cell names nor its content is used for a posting
-   * it was not written for - and content that names no posting is not
-   * registered for any.
-   */
-  posting?: Partial<PostingKeys>;
   /** For the log line when the cell is used or cannot be. */
   row?: number;
 };
@@ -258,9 +252,9 @@ async function resolveAnalysis(input: AnalysisRequest): Promise<StoredJobAnalysi
   const link = typeof input.link === 'string' ? input.link.trim() : '';
   const keys = postingKeys({ jd, link });
 
-  // 0. The sheet row's own analysis.
+  // 0. The sheet row's own analysis: the stored one its cell names.
   if (input.sheetRow) {
-    const fromSheet = useSheetAnalysis(input.sheetRow, { jd, link, keys }, input.requestedBy ?? null, input.company ?? '');
+    const fromSheet = useSheetAnalysis(input.sheetRow, { jd, link });
     if (fromSheet) return fromSheet;
   }
 
@@ -305,62 +299,31 @@ async function resolveAnalysis(input: AnalysisRequest): Promise<StoredJobAnalysi
 }
 
 /**
- * Step 0: the sheet's content, or the stored row it names - for THIS posting.
+ * Step 0: the stored analysis a sheet row's Analysis cell names - for THIS
+ * posting, by link or by text - else null, and the store (step 1) answers.
  *
- * The stored row wins when the cell names one: the program wrote both, and
- * the store is the source of truth. Otherwise the cell's content is
- * registered for this posting (source `sheet`), unless the store already has
- * an analysis of the posting - then that one is the posting's analysis, and
- * the sheet's is logged as disagreeing rather than stored beside it.
- *
- * Either only when the cell was written for this posting. A row's posting can
- * be replaced, and rows sorted under the protected columns; a cell left from
- * the posting that sat there before is not this one's analysis, so the store
- * (or one analysis) answers instead, and the write-back puts the right one in.
+ * A row's posting can be replaced, and rows sorted under the protected
+ * columns, so a cell can name the analysis of the posting that sat in the
+ * row before: not this one's, and not used. And a cell can name an analysis
+ * this store never held - another install's, a backup's, or text that only
+ * looks like the program's: it is ignored, logged, and NEVER registered; the
+ * posting is found in the store or analysed once, and the write-back puts
+ * the real cell in.
  */
-function useSheetAnalysis(
-  sheetRow: SheetRowAnalysis,
-  posting: { jd: string; link: string; keys: PostingKeys },
-  requestedBy: string | null,
-  company: string
-): StoredJobAnalysis | null {
+function useSheetAnalysis(sheetRow: SheetRowAnalysis, posting: { jd: string; link: string }): StoredJobAnalysis | null {
   const where = sheetRow.row ? `sheet row ${sheetRow.row}` : 'a sheet row';
-  const named = sheetRow.analysisId ? getJobAnalysisById(sheetRow.analysisId) : null;
-  if (named) {
-    if (analysisMatchesPosting(named, posting)) return named;
-    console.warn(`[analysis] ${where} holds the analysis of another posting (${named.id}); it is not used.`);
-    return null;
-  }
-  if (!sheetRow.analysis || !posting.keys.hash) return null;
-  if (!sheetRow.posting || !samePosting(sheetRow.posting, posting.keys)) {
+  if (!sheetRow.analysisId) return null;
+  const named = getJobAnalysisById(sheetRow.analysisId);
+  if (!named) {
     console.warn(
-      `[analysis] ${where} holds an analysis that was not written for its posting; it is not registered or used.`
+      `[analysis] ${where}'s Analysis cell names an analysis this store does not have (${sheetRow.analysisId}); ` +
+        'it is ignored - nothing in a sheet is stored as an analysis - and the store answers for the posting instead.'
     );
     return null;
   }
-
-  const existing = findStoredAnalysis({ jd: posting.jd, link: posting.link });
-  if (existing) {
-    console.warn(
-      `[analysis] ${where} holds an analysis the store does not know, but the store already has one for ` +
-        `this posting (${existing.id}); the stored one is used.`
-    );
-    return existing;
-  }
-
-  const { row, inserted } = insertJobAnalysisIfAbsent({
-    contentHash: posting.keys.hash,
-    linkKey: posting.keys.link,
-    jobLink: posting.link,
-    analysis: { ...sheetRow.analysis, sourceJobDescription: posting.jd },
-    modelId: '',
-    promptHash: '',
-    source: 'sheet',
-    createdBy: requestedBy,
-    companyName: company,
-  });
-  if (inserted) console.log(`[analysis] Registered the analysis read from ${where} (${row.id}); no model was asked.`);
-  return row;
+  if (analysisMatchesPosting(named, posting)) return named;
+  console.warn(`[analysis] ${where} holds the analysis of another posting (${named.id}); it is not used.`);
+  return null;
 }
 
 /**
@@ -500,19 +463,4 @@ async function analyseAndStore(
       : `[analysis] Another process stored this posting first (${row.id}); its analysis is used`
   );
   return row;
-}
-
-/**
- * An Analysis cell's content as a JobAnalysis, checked exactly as a model's
- * answer is - the job field against the list, the salary and the filter facts
- * against their words. The cell is protected, but what reaches the store from
- * it is never trusted further than a model's answer would be.
- */
-export function normalizeSheetAnalysis(raw: unknown, jobDescription: string): JobAnalysis | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  try {
-    return normalizeJobAnalysisResponse(raw as RawNestedJobAnalysis, jobDescription);
-  } catch {
-    return null;
-  }
 }

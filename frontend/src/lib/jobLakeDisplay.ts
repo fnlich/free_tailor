@@ -8,6 +8,7 @@ import type {
   LakeEntry,
   LakeFacts,
   LakeFilterOption,
+  LakePushResult,
   LakeReward,
   LakeSettings,
   LakeSettingsUpdate,
@@ -28,15 +29,17 @@ import type {
  * (/report) - the range a run is asked for, which previewed rows it will
  * skip and what became of them the first time, how a row's outcome reads and
  * which are red, and the owner's summary line - and Admin -> Job Lake
- * (/admin/job-lake) - the query a filter form sends, how a job's facts, a
- * reward, a revoke, the duplicate window, the sync and a merge read, and
- * which settings a save sends.
+ * (/admin/job-lake) - the order of the filter form's boxes and the query
+ * (or push body) it sends, what Push to Google Sheet asks first and says it
+ * did, how a job's facts, a reward, a revoke, the duplicate window, the sync
+ * and a merge read, and which settings a save sends.
  *
  * Imports only frontend leaves (lib/format.ts, lib/reporterPay.ts) at runtime
  * - the API shapes come in as types - so backend/test/frontendJobLake.test.js
  * loads it and runs the copies of the server's rules here against the server's
  * own: the range a run takes (`readRunRange`), the settings it stores
- * (`updateLakeSettings`), the filters the lake route accepts.
+ * (`updateLakeSettings`), the filters the lake route and its push accept
+ * (`readLakeFilters`), and a push's answer.
  */
 
 const plural = (count: number, noun: string, many = `${noun}s`): string => `${count} ${count === 1 ? noun : many}`;
@@ -378,18 +381,57 @@ export const EMPTY_LAKE_FILTERS: LakeFilters = {
   industry: '',
 };
 
-const FILTER_ORDER: ReadonlyArray<keyof LakeFilters> = [
-  'q',
-  'company',
-  'field',
-  'salaryMin',
-  'salaryMax',
-  'requestedBy',
+/**
+ * The filter form's boxes in the order the page draws them - the owner's
+ * order: when, who, what kind of job, which company, what it pays, then the
+ * words - and the order a query string and a push body name them in.
+ */
+export const LAKE_FILTER_ORDER: ReadonlyArray<keyof LakeFilters> = [
   'updatedFrom',
   'updatedTo',
+  'requestedBy',
+  'field',
   'jobType',
   'clearance',
   'industry',
+  'company',
+  'salaryMin',
+  'salaryMax',
+  'q',
+];
+
+/** Each box's label, as the form shows it. */
+export const LAKE_FILTER_LABELS: Readonly<Record<keyof LakeFilters, string>> = {
+  updatedFrom: 'Updated from',
+  updatedTo: 'Updated to',
+  requestedBy: 'Requested by',
+  field: 'Job field',
+  jobType: 'Job type',
+  clearance: 'Clearance',
+  industry: 'Industry',
+  company: 'Company',
+  salaryMin: 'Salary from',
+  salaryMax: 'Salary to',
+  q: 'Full text',
+};
+
+/**
+ * What the Job type box offers besides Any: the three a posting can state, in
+ * the server's ids and words (services/jobAnalysis/facts.ts
+ * `listJobTypesForClient`, which backend/test/frontendJobLake.test.js holds
+ * this copy to) - a copy so the box is whole before the first page answers.
+ * The server also takes `not_specified`; the owner's box does not offer it.
+ */
+export const LAKE_JOB_TYPE_CHOICES: readonly LakeFilterOption[] = [
+  { id: 'remote', label: 'Remote' },
+  { id: 'hybrid', label: 'Hybrid' },
+  { id: 'on_site', label: 'Onsite' },
+];
+
+/** What the Clearance box offers besides Any: the route's 'true' and 'false', in the table's own words. */
+export const LAKE_CLEARANCE_CHOICES: readonly LakeFilterOption[] = [
+  { id: 'true', label: 'Required' },
+  { id: 'false', label: 'Not required' },
 ];
 
 /** The lists the job type and industry filters choose from, as the lake route serves them. */
@@ -431,13 +473,26 @@ export function lakeFilterProblem(filters: LakeFilters, options?: LakeFilterOpti
   return '';
 }
 
+/**
+ * The filters as sent: each one set, trimmed, in the form's order - the query
+ * string's parameters, and Push to Google Sheet's JSON body, which the route
+ * reads with the same rules (routes/jobLake.ts `readLakeFilters`), so a push
+ * holds exactly the rows Search showed.
+ */
+export type LakeFilterBody = Partial<Record<keyof LakeFilters, string>>;
+
+export function lakeFilterBody(filters: LakeFilters): LakeFilterBody {
+  const body: LakeFilterBody = {};
+  for (const key of LAKE_FILTER_ORDER) {
+    const value = filters[key].trim();
+    if (value) body[key] = value;
+  }
+  return body;
+}
+
 /** The query string GET /api/admin/job-lake is asked with: what was typed, trimmed, then the page. */
 export function lakeQueryString(filters: LakeFilters, offset = 0, limit?: number): string {
-  const params = new URLSearchParams();
-  for (const key of FILTER_ORDER) {
-    const value = filters[key].trim();
-    if (value) params.set(key, value);
-  }
+  const params = new URLSearchParams(lakeFilterBody(filters) as Record<string, string>);
   if (typeof limit === 'number') params.set('limit', String(limit));
   if (offset > 0) params.set('offset', String(offset));
   return params.toString();
@@ -445,7 +500,92 @@ export function lakeQueryString(filters: LakeFilters, offset = 0, limit?: number
 
 /** Whether any filter is set - "No jobs match" and "The lake is empty" are different sentences. */
 export function hasLakeFilters(filters: LakeFilters): boolean {
-  return FILTER_ORDER.some((key) => filters[key].trim() !== '');
+  return Object.keys(lakeFilterBody(filters)).length > 0;
+}
+
+/** Whether two forms ask the server the same question: the same filters set, to the same trimmed values. */
+export function sameLakeFilters(a: LakeFilters, b: LakeFilters): boolean {
+  return lakeQueryString(a) === lakeQueryString(b);
+}
+
+/* ------------------------------------------------- Push to Google Sheet */
+
+/** The tab a push replaces (services/sheets/accountSheet.ts `TEMP_TAB`). */
+export const PUSH_TAB = 'Temp For AI';
+
+/** The setting that caps a push, named where its cap is said. */
+const PUSH_CAP_VARIABLE = 'JOB_LAKE_PUSH_MAX_ROWS';
+
+/** A count as a sentence shows it: 1,234. Digits only - never a locale's. */
+function grouped(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+const jobCount = (value: number): string => `${grouped(value)} ${value === 1 ? 'job' : 'jobs'}`;
+
+/**
+ * Why Push to Google Sheet cannot be pressed now, or '' when it can: it pushes
+ * the filters of the search on the page, so it waits for that search's
+ * answer - the count its confirm names - and one push at a time.
+ */
+export function pushBlocker(input: { loaded: boolean; failed: boolean; pushing: boolean }): string {
+  if (input.pushing) return 'A push is going. Wait for it to finish first.';
+  if (input.failed) return 'The lake could not be read, so there is no search to push.';
+  if (!input.loaded) return 'Wait for the search to finish first.';
+  return '';
+}
+
+/**
+ * What the confirm asks: how many jobs go - the count the search on the page
+ * found, the newest `maxRows` of it when it is more than a push takes - and
+ * that they REPLACE what the Temp For AI tab of the administrator's own sheet
+ * holds. A search that found nothing empties the tab, said as such.
+ * `maxRows` is null while the server has not said its cap (an older server).
+ */
+export function describePushConfirm(input: { matched: number; maxRows: number | null }): string {
+  const { matched, maxRows } = input;
+  const untouched = 'Your other tabs, and any column past L, are left as they are.';
+  if (matched === 0) {
+    return (
+      `No job matches these filters, so a push empties the ${PUSH_TAB} tab of your own job sheet: every row under ` +
+      `its header, columns A to L. ${untouched}`
+    );
+  }
+  const what =
+    maxRows !== null && matched > maxRows
+      ? `the newest ${grouped(maxRows)} of the ${jobCount(matched)} these filters match - a push takes at most ` +
+        `${grouped(maxRows)} (${PUSH_CAP_VARIABLE}) -`
+      : `the ${jobCount(matched)} these filters match`;
+  return (
+    `Push ${what} into the ${PUSH_TAB} tab of your own job sheet, newest first? It replaces what that tab holds: ` +
+    `every row under its header is emptied, columns A to L, before the jobs are written. ${untouched} Each row ` +
+    'carries the analysis the lake has for it, so a build from the tab asks no model to analyse those postings again.'
+  );
+}
+
+/** Said in the confirm when the boxes were changed after the search the push uses. */
+export const PUSH_USES_SEARCHED_FILTERS =
+  'You changed the filters since the last Search. The push uses the filters of the search on the page, not the ' +
+  'boxes as they are now: press Search first to push those instead.';
+
+/**
+ * What a push did, from its answer: how many jobs went into which tab and
+ * that they replaced what it held - and, when the cap cut them (`capped`),
+ * how many of the matches were left out and why, naming the setting.
+ */
+export function describePushResult(result: Pick<LakePushResult, 'pushed' | 'matched' | 'capped' | 'maxRows' | 'tabName'>): string {
+  const tab = result.tabName || PUSH_TAB;
+  if (result.pushed === 0) return `No job matched these filters, so ${tab} is now empty under its header.`;
+  if (result.capped) {
+    const left = result.matched - result.pushed;
+    return (
+      `Pushed the newest ${grouped(result.pushed)} of the ${jobCount(result.matched)} these filters match into ${tab}, ` +
+      `replacing what it held. A push writes at most ${grouped(result.maxRows)} (${PUSH_CAP_VARIABLE}), so ` +
+      `${left === 1 ? 'the oldest was' : `the older ${grouped(left)} were`} left out: narrow the filters - by date, ` +
+      'for one - to choose which go.'
+    );
+  }
+  return `Pushed ${jobCount(result.pushed)} into ${tab}, newest first, replacing what it held.`;
 }
 
 /** A reward as one cell: what was paid and at what rate, what was taken back, or nothing paid. */

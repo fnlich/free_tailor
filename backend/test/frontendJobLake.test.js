@@ -649,8 +649,25 @@ test("the lake's filters are refused by the page exactly when, and in the words,
     }
   }
 
-  // The query string: what was typed, trimmed, then the page.
-  assert.equal(lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, company: '  Acme ', field: 'backend' }, 50, 25), 'company=Acme&field=backend&limit=25&offset=50');
+  // The query string: what was typed, trimmed, in the form's order, then the page.
+  assert.equal(lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, company: '  Acme ', field: 'backend' }, 50, 25), 'field=backend&company=Acme&limit=25&offset=50');
+  assert.equal(
+    lake.lakeQueryString({
+      q: 'rust',
+      company: 'Acme',
+      field: 'backend',
+      salaryMin: '100000',
+      salaryMax: '200000',
+      requestedBy: 'acct-1',
+      updatedFrom: '2026-10-01',
+      updatedTo: '2026-10-05',
+      jobType: 'remote',
+      clearance: 'false',
+      industry: 'finance',
+    }),
+    'updatedFrom=2026-10-01&updatedTo=2026-10-05&requestedBy=acct-1&field=backend&jobType=remote&clearance=false&' +
+      'industry=finance&company=Acme&salaryMin=100000&salaryMax=200000&q=rust'
+  );
   assert.equal(lake.lakeQueryString(lake.EMPTY_LAKE_FILTERS), '');
   assert.equal(lake.hasLakeFilters(lake.EMPTY_LAKE_FILTERS), false);
   assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, q: ' x ' }), true);
@@ -658,6 +675,218 @@ test("the lake's filters are refused by the page exactly when, and in the words,
   // Without the lists the page leaves a job type or an industry to the server's answer.
   assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, jobType: 'onsite', industry: 'Healthcare' }), '');
   assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, clearance: 'yes' }), 'Clearance must be true or false.');
+});
+
+test("the filter form's boxes come in the owner's order, and its job type and clearance boxes offer the server's own choices", () => {
+  const lake = display();
+  // The owner's order: when and who, what kind of job, which company and its pay, then the words.
+  assert.deepEqual(
+    lake.LAKE_FILTER_ORDER.map((key) => lake.LAKE_FILTER_LABELS[key]),
+    ['Updated from', 'Updated to', 'Requested by', 'Job field', 'Job type', 'Clearance', 'Industry', 'Company', 'Salary from', 'Salary to', 'Full text']
+  );
+  assert.deepEqual([...lake.LAKE_FILTER_ORDER].sort(), Object.keys(lake.EMPTY_LAKE_FILTERS).sort(), 'every filter has its box, once');
+
+  // The page draws its boxes FROM that order and those labels - none typed in a second place - with an input for each.
+  const source = fs.readFileSync(path.join(SRC, 'app', 'admin', 'job-lake', 'LakeTab.tsx'), 'utf8');
+  assert.match(source, /\{LAKE_FILTER_ORDER\.map\(\(key\) => \(/);
+  assert.match(source, /\{LAKE_FILTER_LABELS\[key\]\}/);
+  const ids = /const FILTER_INPUT_IDS: [^=]+= \{([\s\S]*?)\};/.exec(source);
+  assert.ok(ids, 'LakeTab.tsx names an input id per filter');
+  assert.deepEqual([...ids[1].matchAll(/^\s*(\w+):/gm)].map((found) => found[1]), [...lake.LAKE_FILTER_ORDER]);
+
+  // Job type: the server's own ids and words, less the "not specified" the owner's box does not offer.
+  const { listJobTypesForClient } = require('../dist/services/jobAnalysis/facts');
+  assert.deepEqual(
+    lake.LAKE_JOB_TYPE_CHOICES,
+    listJobTypesForClient().filter((option) => option.id !== 'not_specified')
+  );
+  assert.deepEqual(lake.LAKE_JOB_TYPE_CHOICES.map((choice) => choice.label), ['Remote', 'Hybrid', 'Onsite']);
+  // Clearance: the route's true and false, in the words the table's column shows them in.
+  const cell = (clearance) => lake.lakeFactCells({ jobTypeLabel: '', clearance, industryLabel: '' }).clearance;
+  assert.deepEqual(lake.LAKE_CLEARANCE_CHOICES, [
+    { id: 'true', label: cell(true) },
+    { id: 'false', label: cell(false) },
+  ]);
+  assert.deepEqual(lake.LAKE_CLEARANCE_CHOICES.map((choice) => choice.label), ['Required', 'Not required']);
+
+  // A push body is the query string's parameters, no more: never a sheet, a tab or a page.
+  const form = { ...lake.EMPTY_LAKE_FILTERS, company: ' Acme ', clearance: 'true', q: '  ', industry: 'finance' };
+  assert.deepEqual(lake.lakeFilterBody(form), { clearance: 'true', industry: 'finance', company: 'Acme' });
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(lake.lakeQueryString(form, 50, 25))), {
+    ...lake.lakeFilterBody(form),
+    limit: '25',
+    offset: '50',
+  });
+  assert.deepEqual(Object.keys(lake.lakeFilterBody(form)), ['clearance', 'industry', 'company'], 'in the form order');
+  assert.equal(lake.sameLakeFilters(form, { ...form, company: 'Acme', q: '' }), true);
+  assert.equal(lake.sameLakeFilters(form, { ...form, company: 'Acme Corp' }), false);
+});
+
+test('Push to Google Sheet asks first, naming how many go and that it replaces Temp For AI, and waits for the search it pushes', () => {
+  const lake = display();
+  assert.equal(lake.PUSH_TAB, require('../dist/services/sheets/accountSheet').TEMP_TAB);
+
+  const one = lake.describePushConfirm({ matched: 1, maxRows: 1000 });
+  assert.match(one, /^Push the 1 job these filters match into the Temp For AI tab of your own job sheet, newest first\? /);
+  assert.match(one, /It replaces what that tab holds: every row under its header is emptied, columns A to L/);
+  assert.match(one, /Your other tabs, and any column past L, are left as they are\./);
+  assert.match(lake.describePushConfirm({ matched: 12, maxRows: null }), /^Push the 12 jobs these filters match into/);
+  assert.match(
+    lake.describePushConfirm({ matched: 1234, maxRows: 1000 }),
+    /^Push the newest 1,000 of the 1,234 jobs these filters match - a push takes at most 1,000 \(JOB_LAKE_PUSH_MAX_ROWS\) - into the Temp For AI tab of your own job sheet/
+  );
+  // Exactly at the cap nothing is left out, so nothing is said about it.
+  assert.doesNotMatch(lake.describePushConfirm({ matched: 1000, maxRows: 1000 }), /JOB_LAKE_PUSH_MAX_ROWS/);
+  assert.equal(
+    lake.describePushConfirm({ matched: 0, maxRows: 1000 }),
+    'No job matches these filters, so a push empties the Temp For AI tab of your own job sheet: every row under its ' +
+      'header, columns A to L. Your other tabs, and any column past L, are left as they are.'
+  );
+
+  assert.equal(lake.pushBlocker({ loaded: true, failed: false, pushing: false }), '');
+  assert.equal(lake.pushBlocker({ loaded: false, failed: false, pushing: false }), 'Wait for the search to finish first.');
+  assert.match(lake.pushBlocker({ loaded: true, failed: true, pushing: false }), /could not be read/);
+  assert.match(lake.pushBlocker({ loaded: true, failed: false, pushing: true }), /^A push is going/);
+});
+
+test('a push sends the filters Search applied: the same jobs in the same order, refused in the same words, and its answer read back to the page', async (t) => {
+  const h = await serve('frontend-lake-push');
+  const push = require('../dist/services/jobLake/push');
+  const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
+  // The administrator's own sheet, its Temp For AI a job tab; the rows each push writes, in order.
+  const written = [];
+  push.resetLakePushForTests();
+  push.setLakePushSheetsClientForTests({
+    async inspectTab(_id, tab) {
+      return { gid: 9, title: tab, columnCount: 12, rowCount: 1000, headerRow: [...JOB_SHEET_HEADERS], protectedRanges: [] };
+    },
+    async verifyTab() {
+      return { gid: 9, protection: 'intact', grewColumns: false, wroteHeader: false, jobTab: true };
+    },
+    async batchUpdate() {},
+    async writeRaw(_id, data) {
+      for (const { values } of data) written.push(...values);
+    },
+  });
+  t.after(() => {
+    delete process.env.JOB_LAKE_PUSH_MAX_ROWS;
+    push.setLakePushSheetsClientForTests();
+    push.resetLakePushForTests();
+    h.close();
+  });
+  const lake = display();
+  const lakeService = require('../dist/services/jobLake/index');
+  const { getJobAnalysisById } = require('../dist/database/jobAnalysisRepository');
+
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const filter = (changes) => ({
+    jobType: 'not_specified',
+    onsiteInterview: 'not_specified',
+    companyCategory: 'other',
+    clearanceRequired: 'none',
+    region: 'not_specified',
+    usState: '',
+    ...changes,
+  });
+  const merge = (company, daysAgo, analysis) => {
+    const id = storeJobAnalysis({ jobField: 'backend', ...analysis });
+    const merged = lakeService.mergeIntoLake(lakeService.lakeJobFromAnalysis(getJobAnalysisById(id), 'merge', { company }), null, {
+      reward: false,
+      now: now - daysAgo * DAY,
+    });
+    assert.equal(merged.status, 'added', company);
+  };
+  merge('Alpha Co', 4, {
+    industry: 'technology',
+    salary: { min: 100000, max: 120000, currency: 'USD', period: 'annual', raw: null },
+    filter: filter({ jobType: 'remote' }),
+  });
+  merge('Beta LLC', 3, { jobField: 'devops', industry: 'finance', filter: filter({ jobType: 'hybrid', clearanceRequired: 'secret' }) });
+  merge('Gamma Inc', 2, { filter: filter({ jobType: 'on_site', companyCategory: 'healthcare' }) });
+  merge('Delta Ltd', 1, { industry: 'not_specified', filter: filter({}) });
+
+  const pushAs = async (form) => {
+    written.length = 0;
+    return h.call('owner', 'POST', '/admin/job-lake/push', lake.lakeFilterBody(form));
+  };
+  const { options } = (await h.call('owner', 'GET', '/admin/job-lake')).body;
+  const since = new Date(now - 2.5 * DAY).toISOString().slice(0, 10);
+  const cases = [
+    {},
+    { jobType: 'remote' },
+    { jobType: 'on_site' },
+    { jobType: 'not_specified' },
+    { clearance: 'true' },
+    { clearance: 'false' },
+    { industry: 'finance' },
+    { industry: 'healthcare' },
+    { field: 'backend' },
+    { field: 'devops', clearance: 'true' },
+    { company: 'alpha co.' },
+    { salaryMin: '110000' },
+    { updatedFrom: since },
+    { requestedBy: 'nobody' },
+    { q: 'nothing-matches-this' },
+    // Refused, before anything is written - in Search's words.
+    { jobType: 'onsite' },
+    { clearance: 'yes' },
+    { industry: 'Healthcare' },
+    { salaryMin: 'lots' },
+    { updatedTo: '2026-13-45' },
+  ];
+  for (const filters of cases) {
+    const form = { ...lake.EMPTY_LAKE_FILTERS, ...filters };
+    const label = JSON.stringify(filters);
+    const problem = lake.lakeFilterProblem(form, options);
+    const pushed = await pushAs(form);
+    if (problem) {
+      assert.equal(pushed.status, 400, label);
+      assert.equal(pushed.body.error, problem, label);
+      assert.equal(written.length, 0, `${label}: nothing written`);
+      continue;
+    }
+    assert.equal(pushed.status, 200, `${label}: ${JSON.stringify(pushed.body)}`);
+    const searched = (await h.call('owner', 'GET', `/admin/job-lake?${lake.lakeQueryString(form, 0, 200)}`)).body;
+    assert.equal(pushed.body.matched, searched.total, `${label}: the push matched what Search found`);
+    assert.deepEqual(
+      written.map((row) => row[2]),
+      searched.rows.map((row) => row.company),
+      `${label}: the same jobs, in the table's order - newest first`
+    );
+  }
+
+  // What the page says it did, from the push's own answer - and the tab it links to.
+  const all = await pushAs(lake.EMPTY_LAKE_FILTERS);
+  assert.deepEqual(written.map((row) => row[2]), ['Delta Ltd', 'Gamma Inc', 'Beta LLC', 'Alpha Co']);
+  assert.equal(all.body.tabName, lake.PUSH_TAB);
+  assert.equal(lake.describePushResult(all.body), 'Pushed 4 jobs into Temp For AI, newest first, replacing what it held.');
+  assert.equal(lake.safeWebLink(all.body.tabUrl), all.body.tabUrl, 'the link to the tab reaches an anchor');
+  assert.match(all.body.tabUrl, /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[^/]+\/edit#gid=9$/);
+  const none = await pushAs({ ...lake.EMPTY_LAKE_FILTERS, company: 'Nobody Here' });
+  assert.equal(none.body.pushed, 0);
+  assert.equal(lake.describePushResult(none.body), 'No job matched these filters, so Temp For AI is now empty under its header.');
+
+  // Past the cap: the confirm says only the newest go, and the result how many were left out and why.
+  process.env.JOB_LAKE_PUSH_MAX_ROWS = '3';
+  const page = (await h.call('owner', 'GET', '/admin/job-lake')).body;
+  assert.equal(page.pushMaxRows, 3);
+  assert.match(
+    lake.describePushConfirm({ matched: page.total, maxRows: page.pushMaxRows }),
+    /^Push the newest 3 of the 4 jobs these filters match - a push takes at most 3 \(JOB_LAKE_PUSH_MAX_ROWS\) - into the Temp For AI tab/
+  );
+  const capped = await pushAs(lake.EMPTY_LAKE_FILTERS);
+  assert.deepEqual({ pushed: capped.body.pushed, matched: capped.body.matched, capped: capped.body.capped }, { pushed: 3, matched: 4, capped: true });
+  assert.deepEqual(written.map((row) => row[2]), ['Delta Ltd', 'Gamma Inc', 'Beta LLC']);
+  assert.equal(
+    lake.describePushResult(capped.body),
+    'Pushed the newest 3 of the 4 jobs these filters match into Temp For AI, replacing what it held. A push writes at ' +
+      'most 3 (JOB_LAKE_PUSH_MAX_ROWS), so the oldest was left out: narrow the filters - by date, for one - to choose which go.'
+  );
+  assert.match(
+    lake.describePushResult({ pushed: 1000, matched: 1234, capped: true, maxRows: 1000, tabName: 'Temp For AI' }),
+    /^Pushed the newest 1,000 of the 1,234 jobs .* so the older 234 were left out:/
+  );
 });
 
 test("a lake job's type, clearance and industry read in the server's words, and a row not filled in yet says so", async (t) => {

@@ -12,11 +12,10 @@ import {
   findStoredAnalysis,
   getOrCreateAnalysis,
   loadAnalysis,
-  normalizeSheetAnalysis,
   type StoredJobAnalysis,
 } from './gate';
 import { postingKeysOf } from './identity';
-import { attachCompanyName } from '../../database/jobAnalysisRepository';
+import { attachCompanyName, getJobAnalysisById } from '../../database/jobAnalysisRepository';
 
 /**
  * A batch's analyses, resolved ONCE PER JOB at submission - before the jobs
@@ -24,10 +23,16 @@ import { attachCompanyName } from '../../database/jobAnalysisRepository';
  * the same `analysisId` (PLAN check 1, rows 2 and 7).
  *
  * Nothing here asks a model: a submission answers at once. A job is given the
- * analysis it already has - its sheet row's own (sheet first, P7), the one
- * the page named, or the stored one of its posting - and a job with none is
- * analysed by its first task through the same gate, the other profiles'
- * tasks waiting for that one call (services/queue/resumeTask.ts).
+ * analysis it already has - the stored analysis its sheet row's Analysis cell
+ * names, when that one is this posting's (sheet first, P7), the one the page
+ * named, or the stored one of its posting - and a job with none is analysed
+ * by its first task through the same gate, the other profiles' tasks waiting
+ * for that one call (services/queue/resumeTask.ts).
+ *
+ * A cell is trusted for nothing but the id it names: a cell naming no stored
+ * analysis - another install's, or text that only looks like the program's -
+ * is ignored and its row found in the store or analysed like any other, and
+ * its cells are written over once the posting has its analysis.
  */
 
 /** Where a job came from in an app sheet, carried on the job so its first analysis can be written back there. */
@@ -60,7 +65,7 @@ export type SheetSource = { spreadsheetId: string; tabName: string };
 export type SubmitAnalysisReport = {
   /** Jobs that start with an analysis. */
   resolved: number;
-  /** Of those, the ones whose analysis came from their sheet row's own cell. */
+  /** Of those, the ones whose sheet row's Analysis cell named their stored analysis. */
   fromSheet: number;
   /** Batched reads of the sheet: one per run, or none. */
   sheetReads: number;
@@ -122,12 +127,16 @@ export async function resolveAnalysesAtSubmit(
       if (!job.jobLink && cells.link.trim()) job.jobLink = cells.link.trim();
       const cell = parseAnalysisCell(cells.analysisCell);
       const posting = postingKeysOf({ jd: job.jobDescription, link: job.jobLink });
-      // Written for the posting in the row now - or left by the one before it.
+      // Names the stored analysis of the posting in the row now - or one left
+      // by the posting before it, or one this store never held.
       const forPosting = cellIsForPosting(cell, posting);
       job.sheetRow = {
         spreadsheetId: sheet.spreadsheetId,
         tabName: sheet.tabName,
         row,
+        // Empty, or a cell in the program's shape that is not this posting's
+        // stored analysis: put right once the posting has one. A cell with no
+        // id is not the program's at all, and is left as it is.
         writeBack: cell.state === 'empty' || (Boolean(cell.analysisId) && !forPosting),
       };
       if (cell.state === 'empty') continue;
@@ -146,12 +155,21 @@ export async function resolveAnalysesAtSubmit(
         );
       }
       if (!forPosting) {
-        if (cell.state === 'ok') {
+        if (cell.analysisId && !getJobAnalysisById(cell.analysisId)) {
+          // Never registered: whatever it says, it is not an analysis this
+          // install made, and the posting's own is found or made instead.
+          console.warn(
+            `[analysis] Sheet row ${row}'s Analysis cell names an analysis this store does not have ` +
+              `(${cell.analysisId}); it is ignored, the posting is found in the store or analysed once, and the ` +
+              'cell is replaced.'
+          );
+        } else if (cell.state === 'ok') {
           console.warn(
             `[analysis] Sheet row ${row}'s Analysis cell was not written for the posting in the row now${
               cell.analysisId ? ` (it names ${cell.analysisId})` : ''
-            } - the row's posting was replaced, or rows were sorted; it is not used, and is replaced once the ` +
-              "row's own posting is analysed."
+            } - the row's posting was replaced, or rows were sorted; it is not used${
+              cell.analysisId ? ", and is replaced once the row's own posting is analysed" : ''
+            }.`
           );
         }
         continue;
@@ -159,21 +177,14 @@ export async function resolveAnalysesAtSubmit(
       const stored = await getOrCreateAnalysis({
         jd: job.jobDescription,
         link: job.jobLink,
-        sheetRow: {
-          row,
-          ...(cell.analysisId ? { analysisId: cell.analysisId } : {}),
-          ...(cell.state === 'ok' && cell.posting ? { posting: cell.posting } : {}),
-          ...(cell.state === 'ok'
-            ? { analysis: normalizeSheetAnalysis(cell.analysis, job.jobDescription) ?? undefined }
-            : {}),
-        },
+        sheetRow: { row, ...(cell.analysisId ? { analysisId: cell.analysisId } : {}) },
         requestedBy,
         company: job.companyName,
         storedOnly: true,
       });
       if (stored) {
         job.analysisId = stored.id;
-        if (cell.state === 'ok') report.fromSheet += 1;
+        report.fromSheet += 1;
       }
     }
   }

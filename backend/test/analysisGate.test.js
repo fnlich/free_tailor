@@ -179,3 +179,42 @@ test("an administrator's analysis prompt from after job fields but before indust
   assert.equal(gate.analysisOverrideFor('[[jobDescription]]'), gate.buildAnalysisFactsOverride());
   assert.equal(gate.analysisOverrideFor(undefined), null);
 });
+
+test("a sheet row's cell is worth only the stored analysis it names, for this posting - and nothing in a sheet is ever stored", async () => {
+  freshInstall('sheet-row');
+  config.invalidateSettingsCache();
+  gate.resetAnalysisGateForTests();
+  const seats = countingSeats(ai);
+  const { storeJobAnalysis } = require('./helpers');
+  const { getDb } = require('../dist/database/sqlite');
+  const link = (n) => `https://jobs.example.com/${n}`;
+  const one = storeJobAnalysis({ jobField: 'devops' }, { jobDescription: posting(1), jobLink: link(1) });
+  const two = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: posting(2), jobLink: link(2) });
+
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    // Its own stored analysis: answered from the store, no call.
+    assert.equal((await gate.getOrCreateAnalysis({ jd: posting(1), link: link(1), sheetRow: { analysisId: one, row: 2 }, storedOnly: true })).id, one);
+    // Another posting's: not used - the store answers for this one.
+    assert.equal((await gate.getOrCreateAnalysis({ jd: posting(1), link: link(1), sheetRow: { analysisId: two, row: 3 }, storedOnly: true })).id, one);
+    // An id the store never held, for a posting it has none of: nothing - not
+    // registered, whatever the cell said - and then ONE analysis, through the gate.
+    const forged = '11111111-2222-4333-8444-555555555555';
+    assert.equal(await gate.getOrCreateAnalysis({ jd: posting(3), link: link(3), sheetRow: { analysisId: forged, row: 4 }, storedOnly: true }), null);
+    assert.equal(seats.analyses().length, 0);
+    const made = await gate.getOrCreateAnalysis({ jd: posting(3), link: link(3), sheetRow: { analysisId: forged, row: 4 } });
+    assert.notEqual(made.id, forged);
+    assert.equal(seats.analyses().length, 1, 'analysed once');
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.ok(warnings.some((line) => /sheet row 3 holds the analysis of another posting/.test(line)));
+  assert.ok(warnings.some((line) => /sheet row 4's Analysis cell names an analysis this store does not have \(11111111-/.test(line)));
+  assert.deepEqual(getDb().prepare('SELECT source, COUNT(*) AS n FROM job_analyses GROUP BY source').all(), [{ source: 'ai', n: 3 }]);
+
+  // And nothing in the code writes a row from a sheet any more.
+  const writers = sources().filter((file) => /source:\s*'sheet'/.test(fs.readFileSync(file, 'utf8')));
+  assert.deepEqual(writers.map((file) => path.relative(SRC, file)), [], "no analysis is stored with source 'sheet'");
+});

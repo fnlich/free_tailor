@@ -342,17 +342,21 @@ function stateOf(row: UserAccount | null, spreadsheetId: string, spreadsheetUrl:
   };
 }
 
-/** What the Job Sheet page says about a name clash. */
-function describeConflict(tabs: string[]): SheetTabConflict {
+/**
+ * What the Job Sheet page says about a name clash - and, with `retry` ("push
+ * again"), what an action refused over one says: the same sentence, ending in
+ * what the reader does next there.
+ */
+export function describeConflict(tabs: string[], retry?: string): SheetTabConflict {
   const named = tabs.map((tab) => `"${tab}"`).join(' and ');
   const plural = tabs.length > 1;
+  const then = retry ?? `reload this page to get ${plural ? 'the job tabs' : 'the job tab'} added`;
   return {
     tabs,
     message:
       `Your job sheet already has ${plural ? 'tabs' : 'a tab'} named ${named} that ${plural ? 'are' : 'is'} not laid ` +
       `out as a job tab, so ${plural ? 'they were' : 'it was'} left exactly as ${plural ? 'they are' : 'it is'}. ` +
-      `Rename or delete ${plural ? 'them' : 'it'} in Google Sheets, then reload this page to get ` +
-      `${plural ? 'the job tabs' : 'the job tab'} added.`,
+      `Rename or delete ${plural ? 'them' : 'it'} in Google Sheets, then ${then}.`,
   };
 }
 

@@ -17,10 +17,11 @@ const identity = require('../dist/services/jobAnalysis/identity');
  * and how.
  *
  * Two halves. Through the routes, against a fake spreadsheet held in memory: a
- * row already analysed skips analysis and is tailored on exactly the analysis
- * READ FROM THE SHEET, a row not analysed is analysed once and written back,
- * once, and the rows are read in one batched call per run - never taken from
- * the request. Then the integration itself against a stubbed `fetch`: the
+ * row whose Analysis cell names its posting's stored analysis skips analysis
+ * and is tailored on exactly that analysis, a cell naming anything else - an
+ * analysis this store never held, another posting's - is never used or
+ * stored, a row not analysed is analysed once and written back, once, and the
+ * rows are read in one batched call per run - never taken from the request. Then the integration itself against a stubbed `fetch`: the
  * protection's request shape and its repair, the grid grown to twelve
  * columns, which tabs are job tabs (and every other is never touched), RAW
  * writes, and the backoff on Google's 429.
@@ -181,37 +182,106 @@ async function order(h, jobs, extra = {}) {
   return untilFinished(response.body.batchId);
 }
 
-test('rows whose Analysis cell is filled make no analysis call, and tailoring gets exactly the sheet\'s analysis', async (t) => {
-  const rows = {
-    2: sheetRow(2, { L: analysisCell('Sheet Title Two', undefined, 2) }),
-    3: sheetRow(3, { L: analysisCell('Sheet Title Three', '5b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d', 3) }),
-  };
+/** Lines a call logs, captured while it runs. */
+async function capturing(stream, action) {
+  const lines = [];
+  const real = console[stream];
+  console[stream] = (...args) => lines.push(args.map(String).join(' '));
+  try {
+    await action();
+  } finally {
+    console[stream] = real;
+  }
+  return lines;
+}
+
+/** Stores posting n's analysis, with a title naming it, and answers the stored row. */
+function storedFor(n, title) {
+  const analyses = require('../dist/database/jobAnalysisRepository');
+  const id = storeJobAnalysis(
+    { jobField: 'devops', jobMeta: { title, seniority: 'senior', industry: '', department: '' } },
+    { jobDescription: posting(n), jobLink: `https://jobs.example.com/${n}` }
+  );
+  return analyses.getJobAnalysisById(id);
+}
+
+test("rows whose Analysis cell names their posting's stored analysis make no analysis call, and tailoring gets exactly that analysis", async (t) => {
+  const rows = { 2: sheetRow(2), 3: sheetRow(3) };
   const h = await serveWithSheet('sheet-filled', rows);
   t.after(h.close);
+  // What the program wrote into these rows: the cells of their stored analyses.
+  rows[2].L = h.columns.analysisCellText(storedFor(2, 'Stored Title Two'));
+  rows[3].L = h.columns.analysisCellText(storedFor(3, 'Stored Title Three'));
 
   // Even a forged analysis in the body changes nothing: the cells are read by the server.
-  const snapshot = await order(h, [
-    submittedJob(2, { jobAnalysis: { jobMeta: { title: 'Forged' } } }),
-    submittedJob(3),
-  ]);
+  let snapshot;
+  const logged = await capturing('log', async () => {
+    snapshot = await order(h, [submittedJob(2, { jobAnalysis: { jobMeta: { title: 'Forged' } } }), submittedJob(3)]);
+  });
   assert.equal(snapshot.completed, 4);
   assert.equal(h.seats.analyses().length, 0, 'zero analysis calls');
   assert.equal(h.sheet.calls.reads.length, 1, 'one batched read of the submitted rows');
   assert.equal(h.sheet.calls.reads[0].length, 2, 'one run of rows: identity and Analysis, two ranges');
+  assert.ok(
+    logged.some((line) => /Sheet run on "All": 2 job\(s\) analysed in the sheet, 0 from the store, 0 to analyse/.test(line)),
+    'both taken from their row\'s cell'
+  );
 
-  const tailored = h.seats.tailorings().map((call) => /"title":"(Sheet Title \w+)"/.exec(call.userBody)?.[1]);
-  assert.deepEqual(tailored.sort(), ['Sheet Title Three', 'Sheet Title Three', 'Sheet Title Two', 'Sheet Title Two']);
+  const tailored = h.seats.tailorings().map((call) => /"title":"(Stored Title \w+)"/.exec(call.userBody)?.[1]);
+  assert.deepEqual(tailored.sort(), ['Stored Title Three', 'Stored Title Three', 'Stored Title Two', 'Stored Title Two']);
   assert.equal(h.seats.tailorings().some((call) => call.userBody.includes('Forged')), false);
 
-  // Registered without a call, so the database and the sheet hold the same analysis.
+  // Nothing was stored from the sheet: the two analyses are the two there were.
   const { getDb } = require('../dist/database/sqlite');
-  const stored = getDb().prepare('SELECT source, job_field_id FROM job_analyses ORDER BY created_at').all();
-  assert.deepEqual(stored, [
-    { source: 'sheet', job_field_id: 'devops' },
-    { source: 'sheet', job_field_id: 'devops' },
-  ]);
+  assert.deepEqual(getDb().prepare('SELECT source, COUNT(*) AS n FROM job_analyses GROUP BY source').all(), [{ source: 'ai', n: 2 }]);
   await h.columns.flushAnalysisWriteBacks();
-  assert.equal(h.sheet.calls.writes.length, 0, 'nothing written over cells that were filled');
+  assert.equal(h.sheet.calls.writes.length, 0, 'nothing written over cells that hold their posting\'s analysis');
+});
+
+test("a cell naming no stored analysis is never registered or used, whatever posting it claims: analysed once, and the cell replaced", async (t) => {
+  const rows = { 2: sheetRow(2), 3: sheetRow(3) };
+  const h = await serveWithSheet('sheet-forged-cells', rows, { answer: titledAnswer });
+  t.after(h.close);
+  // Row 2: the program's shape, the row's own posting keys, an id this store
+  // never held - another install's cell, or a formula spilled into L from an
+  // unprotected column. Row 3: a stored id, but posting 9's, under keys that
+  // claim posting 3.
+  rows[2].L = analysisCell('FORGED TWO', '11111111-2222-4333-8444-555555555555', 2);
+  const nine = storedFor(9, 'Title of posting 9');
+  rows[3].L = analysisCell('FORGED THREE', nine.id, 3);
+
+  const warned = await capturing('warn', () => order(h, [submittedJob(2), submittedJob(3)]));
+  assert.equal(h.seats.analyses().length, 2, 'each posting analysed once, through the gate');
+  assert.deepEqual(tailoredTitles(h).sort(), ['Title of posting 2', 'Title of posting 2', 'Title of posting 3', 'Title of posting 3']);
+  assert.equal(h.seats.tailorings().some((call) => call.userBody.includes('FORGED')), false, 'nobody is built on either cell');
+  assert.ok(
+    warned.some((line) => /Sheet row 2's Analysis cell names an analysis this store does not have \(11111111-/.test(line)),
+    warned.join('\n')
+  );
+  assert.ok(warned.some((line) => /Sheet row 3's Analysis cell was not written for the posting in the row now/.test(line)));
+  const { getDb } = require('../dist/database/sqlite');
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM job_analyses WHERE source = 'sheet'").get().n, 0, 'nor is either stored');
+  assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM job_analyses WHERE id = '11111111-2222-4333-8444-555555555555'").get().n, 0);
+
+  // The program is the only writer of those cells: both are put right.
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 2, skipped: 0, failed: 0, failedSpreadsheets: [] });
+  const { findStoredAnalysis } = require('../dist/services/jobAnalysis/gate');
+  for (const n of [2, 3]) {
+    const cell = JSON.parse(rows[n].L);
+    assert.equal(cell.id, findStoredAnalysis({ jd: posting(n) }).id, `row ${n} names its posting's stored analysis`);
+    assert.equal(cell.analysis.jobMeta.title, `Title of posting ${n}`);
+  }
+
+  // From then on the rows are read from the sheet: no call, nothing written.
+  const logged = await capturing('log', () => order(h, [submittedJob(2), submittedJob(3)]));
+  assert.equal(h.seats.analyses().length, 2);
+  assert.ok(logged.some((line) => /2 job\(s\) analysed in the sheet/.test(line)));
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 0, skipped: 0, failed: 0, failedSpreadsheets: [] });
+  // And asking for the posting's analysis anywhere else answers the real one.
+  const asked = await h.post('/resume/analyze', { jobDescription: posting(2) });
+  assert.equal(asked.status, 200);
+  assert.equal(asked.body.jobMeta?.title, 'Title of posting 2');
+  assert.equal(h.seats.analyses().length, 2);
 });
 
 test('rows without it are analysed once and written back, RAW, once - and the next order makes no call', async (t) => {
@@ -283,22 +353,24 @@ test('a cut or unreadable cell falls back to the store, then to one analysis - l
 });
 
 test('a tab whose protection was not found intact has its cells ignored; a row that moved is neither read nor written', async (t) => {
-  const rows = {
-    9: sheetRow(9, { L: analysisCell('Untrusted Title', undefined, 9) }),
-    10: sheetRow(10, { C: 'Somebody Else Entirely' }),
-  };
-  const h = await serveWithSheet('sheet-untrusted', rows, { protection: 'altered' });
+  const rows = { 9: sheetRow(9), 10: sheetRow(10, { C: 'Somebody Else Entirely' }) };
+  const h = await serveWithSheet('sheet-untrusted', rows, { protection: 'altered', answer: titledAnswer });
   t.after(h.close);
+  // A cell naming posting 9's own stored analysis - which, in a tab whose
+  // protection was not found intact, is not read at all.
+  const nine = storedFor(9, 'Untrusted Title');
+  rows[9].L = h.columns.analysisCellText(nine);
+  const logged = await capturing('log', () => capturing('warn', () => order(h, [submittedJob(9), submittedJob(10)])));
 
-  await order(h, [submittedJob(9), submittedJob(10)]);
-  // Neither cell could be used: the store had nothing, so each posting was analysed once.
-  assert.equal(h.seats.analyses().length, 2);
-  assert.equal(h.seats.tailorings().some((call) => call.userBody.includes('Untrusted Title')), false);
+  // Neither cell was used: posting 9 came from the store, and posting 10 - its
+  // row now another company's - was analysed once.
+  assert.ok(logged.some((line) => /0 job\(s\) analysed in the sheet, 1 from the store, 1 to analyse/.test(line)), logged.join('\n'));
+  assert.equal(h.seats.analyses().length, 1);
 
   await h.columns.flushAnalysisWriteBacks();
-  // Row 9 has content (not overwritten); row 10 is another company's now.
+  // Row 9 already holds its posting's analysis; row 10 is another company's now.
   assert.equal(h.sheet.calls.writes.length, 0);
-  assert.equal(rows[9].L, analysisCell('Untrusted Title', undefined, 9));
+  assert.equal(rows[9].L, h.columns.analysisCellText(nine));
 });
 
 test('a write-back re-reads the row first: moved, already written or occupied, it is skipped; a failed write is retried later', async () => {
@@ -482,15 +554,23 @@ test('rows sorted under the protected columns: each task gets its own posting\'s
   assert.deepEqual(JSON.parse(rows[3].L).posting, postingOf(2));
 });
 
-test('a cell that names no posting is not registered for the row\'s, even in an intact tab', async (t) => {
-  const rows = { 4: sheetRow(4, { L: analysisCell('Unattached Title') }) };
+test('a cell that names no posting is not registered for the row\'s, even in an intact tab - and one with no id is left alone', async (t) => {
+  const rows = {
+    4: sheetRow(4, { L: analysisCell('Unattached Title') }),
+    // Valid JSON with an analysis and the row's posting keys, but no id: not
+    // the program's shape at all, so somebody's own - never used, never written over.
+    5: sheetRow(5, { L: JSON.stringify({ v: 1, posting: postingOf(5), analysis: { jobMeta: { title: 'No Id Title' } } }) }),
+  };
   const h = await serveWithSheet('sheet-unattached', rows);
   t.after(h.close);
-  await order(h, [submittedJob(4)]);
-  assert.equal(h.seats.analyses().length, 1, 'analysed instead');
-  assert.equal(h.seats.tailorings().some((call) => call.userBody.includes('Unattached Title')), false);
+  await capturing('warn', () => order(h, [submittedJob(4), submittedJob(5)]));
+  assert.equal(h.seats.analyses().length, 2, 'analysed instead');
+  assert.equal(h.seats.tailorings().some((call) => /Unattached Title|No Id Title/.test(call.userBody)), false);
   const { getDb } = require('../dist/database/sqlite');
   assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM job_analyses WHERE source = 'sheet'").get().n, 0);
+  await h.columns.flushAnalysisWriteBacks();
+  assert.notEqual(JSON.parse(rows[4].L).analysis.jobMeta.title, 'Unattached Title', 'the program-shaped cell is put right');
+  assert.equal(JSON.parse(rows[5].L).analysis.jobMeta.title, 'No Id Title', 'the one with no id is left as it is');
 });
 
 test("a tab the person laid out for themselves is not read for analyses or written into", async (t) => {

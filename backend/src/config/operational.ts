@@ -78,6 +78,7 @@ export const OPERATIONAL_INT_BOUNDS = {
   APIFY_RUN_TIMEOUT_S: { fallback: 300, min: 30, max: 3_600, unit: 's' },
   CRYPTOMUS_INVOICE_LIFETIME_S: { fallback: 3_600, min: 300, max: 43_200, unit: 's' },
   JOB_LAKE_DUPLICATE_WINDOW_DAYS: { fallback: 60, min: 1, max: 3_650, unit: 'day(s)' },
+  JOB_LAKE_PUSH_MAX_ROWS: { fallback: 1_000, min: 1, max: 5_000, unit: 'row(s)' },
   TAILOR_CACHE_DAYS: { fallback: 30, min: 1, max: 3_650, unit: 'day(s)' },
   // Frontend, server-only (read by the Next route handlers; listed for the record).
   CALENDAR_API_TIMEOUT_MS: { fallback: 12_000, min: 1_000, max: 120_000, unit: 'ms' },
@@ -556,6 +557,19 @@ export function jobLakeDuplicateWindowDays(env: EnvSource = process.env): number
   return readInt('JOB_LAKE_DUPLICATE_WINDOW_DAYS', env);
 }
 
+/**
+ * The most lake jobs one Push to Google Sheet writes into an administrator's
+ * Temp For AI tab (services/jobLake/push.ts), newest first; a filter matching
+ * more is cut there and the answer says so (`capped`). 1000 by default, at
+ * most 5000: every row can carry a 50,000-character description and an
+ * Analysis cell as long, and Google holds ten million cells a spreadsheet, so
+ * the cap keeps one push to a few calls and well inside the sheet. Read at
+ * every push.
+ */
+export function jobLakePushMaxRows(env: EnvSource = process.env): number {
+  return readInt('JOB_LAKE_PUSH_MAX_ROWS', env);
+}
+
 /* ======================================================= tailoring cache */
 
 /**
@@ -786,6 +800,7 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     'services/jobLake/settings.ts (an administrator\'s value on /admin/job-lake wins)',
     jobLakeDuplicateWindowDays
   ),
+  intEntry('JOB_LAKE_PUSH_MAX_ROWS', 'per-call', 'services/jobLake/push.ts (Push to Google Sheet)', jobLakePushMaxRows),
 
   // Tailoring cache
   intEntry('TAILOR_CACHE_DAYS', 'per-call', 'services/tailorCache.ts (the boot and daily prune)', tailorCacheDays),

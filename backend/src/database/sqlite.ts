@@ -736,8 +736,9 @@ const SCHEMA = `
    * id or 'unclassified'; the salary columns are only what the posting
    * stated (NULL otherwise). model_id and prompt_hash record which model and
    * which prompt text produced it - an audit, never part of its identity.
-   * source is 'ai' (one model call) or 'sheet' (read from a protected Analysis
-   * cell of an app sheet, registered with no call). merged_at is the Job Data
+   * source is 'ai' (one model call), or 'sheet' on a row an older build
+   * registered from a sheet's Analysis cell with no call - nothing writes
+   * one now: a cell is trusted only for the stored row it names. merged_at is the Job Data
    * Lake's (Phase 7): NULL until an administrator merges the row.
    *
    * The indexes are created after addMissingColumns (INDEXES_AFTER_COLUMNS),

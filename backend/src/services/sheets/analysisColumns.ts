@@ -29,14 +29,15 @@ import { linkKey, postingKeysOf, samePosting, type PostingKeys } from '../jobAna
  *
  *  - READ, at a batch's submission (`readAnalysisRows`): one batched read of
  *    the submitted rows' identity and analysis cells, after the tab's
- *    protection is verified. A row whose Analysis cell is filled skips the
- *    analysis altogether (P7), and what the next stage uses is the analysis
- *    READ FROM THE SHEET - but only when the protection was found intact in
- *    this run (a protection that had to be put back is restored with the
- *    Analysis column cleared, see `verifyJobSheetTab`), and only when the cell
- *    was written for the posting the row holds NOW: a row's posting can be
- *    replaced, or rows sorted under the protected columns, and the cell left
- *    behind is another posting's analysis (`cellIsForPosting`).
+ *    protection is verified. A row whose Analysis cell names the stored
+ *    analysis of the posting the row holds NOW skips the analysis altogether
+ *    (P7), and the next stage uses that stored analysis - but only when the
+ *    protection was found intact in this run (a protection that had to be put
+ *    back is restored with the Analysis column cleared, see
+ *    `verifyJobSheetTab`). A row's posting can be replaced, or rows sorted
+ *    under the protected columns, and the cell left behind names another
+ *    posting's analysis; a cell can name one this store never held. Neither
+ *    is used (`cellIsForPosting`), and the cell's own content never is.
  *  - WRITE, once per row and posting (`queueAnalysisWriteBack`): when a row's
  *    posting is analysed - or found already analysed in the store - its cells
  *    are filled, batched with the other rows due in the same spreadsheet,
@@ -98,11 +99,11 @@ export function isAppOwnedSheet(spreadsheetId: unknown): boolean {
 /* ------------------------------------------------------------- the cells -- */
 
 /**
- * The Analysis cell: the stored analysis as JSON, naming its stored row so a
- * later read can find the row even when the cell had to be cut, and the keys
- * of the posting it was made for (its text hash and link key), so a read can
- * tell it from a cell left by the posting that sat in the row before - even
- * on an install whose store never saw the row it names. Without the posting's
+ * The Analysis cell: the stored analysis as JSON, naming its stored row - the
+ * one thing a later read trusts it for (`cellIsForPosting`), and readable even
+ * when the cell had to be cut - and the keys of the posting it was made for
+ * (its text hash and link key), for a person, or a page, telling it from a
+ * cell left by the posting that sat in the row before. Without the posting's
  * text, which is the row's own Job Description cell. The analysis goes last,
  * so a cut takes only the end of it.
  */
@@ -188,24 +189,22 @@ export function parseAnalysisCell(text: unknown): ParsedAnalysisCell {
 }
 
 /**
- * Whether an Analysis cell was written for one of these postings (their keys,
- * `postingKeysOf`): the stored analysis it names is theirs, by link or by
- * text - or, for a cell naming a row this store lacks, the posting keys it
- * records are. A cell that can be tied to no posting is nobody's.
+ * Whether an Analysis cell names the STORED analysis of one of these postings
+ * (their keys, `postingKeysOf`), by link or by text. Nothing else makes a
+ * cell any posting's: a cell naming an analysis this store does not have -
+ * another install's, a backup's, or text that only looks like the program's
+ * (a formula spilled into the column, a row pasted in) - is nobody's, whatever
+ * posting keys it records. Those keys are for a person reading the cell.
  *
  * What stops a row from being built on the analysis of the posting that sat
  * in it before: the protected columns cannot be cleared by the person, and a
  * replaced or re-sorted row keeps them.
  */
 export function cellIsForPosting(cell: ParsedAnalysisCell, ...postings: Array<Partial<PostingKeys>>): boolean {
-  if (cell.state === 'empty') return false;
-  if (cell.analysisId) {
-    const named = getJobAnalysisById(cell.analysisId);
-    if (named) return postings.some((posting) => samePosting({ hash: named.contentHash, link: named.linkKey }, posting));
-  }
-  if (cell.state !== 'ok' || !cell.posting) return false;
-  const recorded = cell.posting;
-  return postings.some((posting) => samePosting(recorded, posting));
+  if (cell.state === 'empty' || !cell.analysisId) return false;
+  const named = getJobAnalysisById(cell.analysisId);
+  if (!named) return false;
+  return postings.some((posting) => samePosting({ hash: named.contentHash, link: named.linkKey }, posting));
 }
 
 /** Company names compared as a person would: case and spacing forgiven. */
@@ -394,6 +393,18 @@ function forgetClearedTab(spreadsheetId: string, tabName: string, verified: Pick
 }
 
 /**
+ * Forgets every row of a tab this process settled, and drops the write-backs
+ * waiting for it: the tab's rows were replaced wholesale (Push to Google
+ * Sheet), so what was settled there describes rows that are gone, and a row
+ * that later holds the same posting again must still be written.
+ */
+export function forgetTabWriteBacks(spreadsheetId: string, tabName: string): void {
+  const prefix = tabKey({ spreadsheetId, tabName });
+  for (const key of settled) if (key.startsWith(prefix)) settled.delete(key);
+  for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
+}
+
+/**
  * Asks for a row's analysis cells to be filled, once. Returns whether it was
  * queued: false for a sheet the app does not own, a row already waiting for a
  * write, or a row already settled with this analysis in this process (the
@@ -573,11 +584,14 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
       done.push(entry);
       continue;
     } else {
-      // The program's cells for the posting that sat in this row before:
-      // replaced whole.
+      // The program's cells for the posting that sat in this row before - or
+      // cells in its shape naming an analysis this store never held: replaced
+      // whole, by the analysis the store has for the row's posting.
+      const known = getJobAnalysisById(now.cell.analysisId) !== null;
       console.log(
-        `[sheets] Row ${entry.row} of "${tabName}" in ${spreadsheetId} held the analysis of another posting ` +
-          `(${now.cell.analysisId}); writing ${entry.companyName}'s over it.`
+        `[sheets] Row ${entry.row} of "${tabName}" in ${spreadsheetId} held ${
+          known ? 'the analysis of another posting' : 'an analysis this store does not have'
+        } (${now.cell.analysisId}); writing ${entry.companyName}'s over it.`
       );
     }
     writing.add(entry.row);

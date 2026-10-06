@@ -847,6 +847,55 @@ export function queryLake(query: LakeQuery): { rows: LakeEntry[]; total: number 
   return { rows: rows.map(toEntry), total };
 }
 
+/** What a query filters on, without its page: what Push to Google Sheet takes. */
+export type LakeFilters = Omit<LakeQuery, 'limit' | 'offset'>;
+
+/**
+ * Push to Google Sheet's read with no filter: newest first, read off
+ * idx_job_lake_updated in its order like the page's default view, one row
+ * past the cap so the push can tell the cap was reached. Every column, the
+ * description included - the push writes it. Exported for the plan test.
+ */
+export const PUSH_DEFAULT_SQL = `SELECT ${LIST_COLUMNS}, job_description FROM job_lake ORDER BY updated_at DESC, id DESC LIMIT ?`;
+
+export type LakePushRows = {
+  /** At most `cap` rows, newest first (`updated_at`, then id), each with its description. */
+  rows: LakeEntry[];
+  /** Every row the filters match, the cap or not. */
+  matched: number;
+  /** True when more rows matched than `cap`: `rows` holds the newest `cap` of them. */
+  capped: boolean;
+};
+
+/**
+ * The rows Push to Google Sheet writes: the same filters as the admin page's
+ * list (`whereOf`, so a push holds exactly what Search showed), newest first,
+ * at most `cap`. Read as `cap + 1` - the extra row only says the cap was
+ * reached - with the count in the same read transaction, so the two agree.
+ */
+export function listLakeForPush(filters: LakeFilters, cap: number): LakePushRows {
+  // A whole count from the caller (the operational setting); anything else reads as one row.
+  const limit = Number.isSafeInteger(cap) && cap > 0 ? cap : 1;
+  let companyKey: string | null = null;
+  if (filters.company !== undefined && filters.company.trim()) {
+    companyKey = normaliseCompany(filters.company);
+    if (!companyKey) return { rows: [], matched: 0, capped: false };
+  }
+  const where = whereOf({ ...filters, limit, offset: 0 }, companyKey);
+  const db = getDb();
+  return db.transaction((): LakePushRows => {
+    const read = (where.sql
+      ? db
+          .prepare(`SELECT ${LIST_COLUMNS}, job_description FROM job_lake ${where.sql} ORDER BY updated_at DESC, id DESC LIMIT ?`)
+          .all(...where.params, limit + 1)
+      : db.prepare(PUSH_DEFAULT_SQL).all(limit + 1)) as LakeRow[];
+    const matched = (
+      db.prepare(`SELECT COUNT(*) AS total FROM job_lake ${where.sql}`).get(...where.params) as { total: number }
+    ).total;
+    return { rows: read.slice(0, limit).map(toEntry), matched, capped: read.length > limit };
+  })();
+}
+
 /** How many jobs an account has in the lake now (rows whose current version it reported or produced). */
 export function countLakeEntriesBy(accountId: string): number {
   return (

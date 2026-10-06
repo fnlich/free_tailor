@@ -23,7 +23,8 @@
  * Type, Clearance, Industry, Analysis - then an older build's daily tab in ITS
  * layout (NO(DATE) in A, Company in B, sixteen columns: listed, never read),
  * and "Notes", a job tab of the person's own in the new layout. All's first
- * row already holds its analysis; Temp For AI has only its header.
+ * row already holds its analysis - one stored in the server's own database,
+ * which is the only kind a build trusts; Temp For AI has only its header.
  */
 
 const path = require('path');
@@ -42,48 +43,61 @@ const OLD_HEADER = [
   'Filter Result', 'Filter Reason', 'Job Field', 'Salary', 'Job Hash', 'Analyzed At', 'Lake Status', 'Analysis',
 ];
 
+const TODAY_LINK = 'https://today.example/jobs/1';
+
+/** The analysis All's first row was built on: what the stub seat would have answered for its posting. */
+const ANALYSIS = {
+  jobMeta: { title: 'Backend Engineer', seniority: 'senior', industry: 'SaaS', department: 'Platform' },
+  skills: { technical: ['TypeScript', 'Docker'], required: [], preferred: [], tools: [], soft: [], technologies: [] },
+  technologies: [],
+  protocols: [],
+  methodologies: [],
+  architecturePatterns: [],
+  responsibilities: ['ship services'],
+  domainKnowledge: [],
+  softSkills: [],
+  keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
+  jobField: 'backend',
+  industry: 'technology',
+  salary: { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null },
+  filter: {
+    jobType: 'remote',
+    onsiteInterview: 'not_specified',
+    companyCategory: 'saas',
+    clearanceRequired: 'none',
+    region: 'us',
+    usState: '',
+  },
+  sourceJobDescription: POSTING,
+};
+
 /**
- * All's first row, as a build would have written it: the six analysis cells,
- * G to L, read back as Google shows them (the Clearance boolean as FALSE). The
- * Analysis cell records the posting it was made for, which is what lets the
- * server use it although its store never saw the row it names.
+ * All's first row's six analysis cells, G to L, as a build writes them
+ * (`analysisColumnValues`) and as Google shows them back (the Clearance
+ * boolean as FALSE). A build trusts an Analysis cell only when it names an
+ * analysis THIS install stored for the row's posting - what the cell itself
+ * says, its recorded posting keys included, decides nothing - so the analysis
+ * is stored in the server's database the first time the tab is read (after
+ * the server has opened it), as an earlier build here would have, and the
+ * cell names that row.
  */
-const ANALYSED = [
-  'Backend',
-  'USD 120,000 - 140,000 / annual',
-  'Remote',
-  'FALSE',
-  'Technology',
-  JSON.stringify({
-    v: 1,
-    id: '5d0c6a52-1f3e-4b7a-9c2d-8e4f6a1b3c5d',
-    posting: { hash: identity.contentHash(POSTING), link: identity.linkKey('https://today.example/jobs/1') },
-    jobField: 'backend',
-    analysis: {
-      jobMeta: { title: 'Backend Engineer', seniority: 'senior', industry: 'SaaS', department: 'Platform' },
-      skills: { technical: ['TypeScript', 'Docker'], required: [], preferred: [], tools: [], soft: [], technologies: [] },
-      technologies: [],
-      protocols: [],
-      methodologies: [],
-      architecturePatterns: [],
-      responsibilities: ['ship services'],
-      domainKnowledge: [],
-      softSkills: [],
-      keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
-      jobField: 'backend',
-      industry: 'technology',
-      salary: { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null },
-      filter: {
-        jobType: 'remote',
-        onsiteInterview: 'not_specified',
-        companyCategory: 'saas',
-        clearanceRequired: 'none',
-        region: 'us',
-        usState: '',
-      },
-    },
-  }),
-];
+function analysedCells() {
+  const repository = require(path.join(DIST, 'database', 'jobAnalysisRepository'));
+  const { row } = repository.insertJobAnalysisIfAbsent({
+    contentHash: identity.contentHash(POSTING),
+    linkKey: identity.linkKey(TODAY_LINK),
+    jobLink: TODAY_LINK,
+    analysis: ANALYSIS,
+    modelId: '',
+    promptHash: '',
+    source: 'ai',
+    createdBy: null,
+    companyName: 'Today Inc',
+  });
+  return analysisColumns
+    .analysisColumnValues(row)
+    .map((value) => (typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : String(value)));
+}
 
 const TODAY = accountSheet.sheetDateText();
 
@@ -93,7 +107,7 @@ function rowsFor(tab) {
   if (!sheet.has(tab)) {
     if (tab === 'All') {
       sheet.set(tab, [
-        [TODAY, '1', 'Today Inc', 'Backend Engineer', 'https://today.example/jobs/1', POSTING, ...ANALYSED],
+        [TODAY, '1', 'Today Inc', 'Backend Engineer', TODAY_LINK, POSTING, ...analysedCells()],
         [TODAY, '2', 'Now LLC', 'Site Reliability Engineer', 'javascript:alert(1)', POSTING],
         [TODAY, '3', '', 'No company here', '', POSTING],
         [TODAY, '4', 'Current Co', '', '', POSTING],

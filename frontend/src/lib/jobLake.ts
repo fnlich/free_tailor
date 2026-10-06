@@ -1,5 +1,6 @@
 import { apiFetch } from './api';
 import type { JobSalary } from './jobAnalysis';
+import type { LakeFilterBody } from './jobLakeDisplay';
 import type { SheetTabConflict } from './sheet';
 import type { SheetTabListing } from './sheetTabs';
 
@@ -364,10 +365,28 @@ export type LakeFilterOption = { id: string; label: string };
 
 /**
  * GET /api/admin/job-lake's page, with what the job type and industry filters
- * may be - the server's own lists, `not_specified` ("Not specified") last.
+ * may be - the server's own lists, `not_specified` ("Not specified") last -
+ * and the most rows one Push to Google Sheet writes (JOB_LAKE_PUSH_MAX_ROWS),
+ * so the push's confirm can say when only the newest of the matches would go.
  */
 export type LakePage = Paged<LakeEntry> & {
   options?: { jobTypes: LakeFilterOption[]; industries: LakeFilterOption[] };
+  pushMaxRows?: number;
+};
+
+/**
+ * What Push to Google Sheet did: the rows written into the pushing
+ * administrator's own Temp For AI tab - which they replaced - out of the lake
+ * jobs the filters matched, the newest `maxRows` when more matched (`capped`),
+ * and a link that opens the tab.
+ */
+export type LakePushResult = {
+  pushed: number;
+  matched: number;
+  capped: boolean;
+  maxRows: number;
+  tabName: string;
+  tabUrl: string;
 };
 
 export const adminJobLakeApi = {
@@ -402,4 +421,12 @@ export const adminJobLakeApi = {
   merge: (body: { analysisIds: string[] } | { all: true }) =>
     apiFetch<MergeReport>('/admin/job-lake/merge', { method: 'POST', body: JSON.stringify(body) }),
   jobFields: () => apiFetch<JobFieldCatalog>('/resume/job-fields'),
+  /**
+   * Push to Google Sheet: `filters` is lib/jobLakeDisplay.ts's
+   * `lakeFilterBody` of the filters the table shows - the list's own, as a
+   * JSON body. 409 `push-in-progress`, `tab-name-clash` or `not-job-tab`, and
+   * Search's own 400s, each in a sentence for the page.
+   */
+  push: (filters: LakeFilterBody) =>
+    apiFetch<LakePushResult>('/admin/job-lake/push', { method: 'POST', body: JSON.stringify(filters) }),
 };

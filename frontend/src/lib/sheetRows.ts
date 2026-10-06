@@ -13,11 +13,15 @@
 
 /**
  * What a row's Analysis cell holds, in the server's words
- * (services/sheets/analysisColumns.ts `parseAnalysisCell`): nothing; an
- * analysis the build uses instead of analysing the posting; or something that
- * cannot be used as one - cut at Google's 50,000-character limit, or not this
- * program's JSON - which the server replaces with the stored analysis, else
- * one made when the row is built.
+ * (services/sheets/analysisColumns.ts `parseAnalysisCell`): nothing; the
+ * program's cell, naming the stored analysis the build uses instead of
+ * analysing the posting; or something that cannot be used as one - cut at
+ * Google's 50,000-character limit, or not this program's JSON - which the
+ * server replaces with the stored analysis, else one made when the row is
+ * built. The page reads the cell's shape only: whether the analysis it names
+ * is this posting's, in this install's store, is the server's to decide (a
+ * cell naming one it does not have - written by another install, or before a
+ * restore from an older backup - is analysed once, and the cell replaced).
  */
 export type SheetAnalysisState = 'empty' | 'ok' | 'truncated' | 'unparseable';
 
@@ -136,7 +140,7 @@ export function describeRowAnalysis(state: SheetAnalysisState | null): RowAnalys
     return {
       label: 'Skips analysis',
       tone: 'green',
-      detail: "Already analysed: the build uses this row's Analysis cell and asks no model.",
+      detail: "Already analysed: the build uses the stored analysis this row's Analysis cell names, and asks no model.",
       skipsAnalysis: true,
     };
   }

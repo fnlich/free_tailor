@@ -14,6 +14,11 @@ import { UNCLASSIFIED_JOB_FIELD_ID } from '../config/jobFields';
  * UNIQUE index (test/jobAnalysisStore.test.js pins the query plans).
  */
 
+/**
+ * 'ai': one model call. 'sheet': registered from a sheet's Analysis cell with
+ * no call, by an older build - read as it was, never written now (a cell is
+ * trusted only for the stored analysis it names, services/jobAnalysis/gate.ts).
+ */
 export type JobAnalysisSource = 'ai' | 'sheet';
 
 export type StoredJobAnalysis = {

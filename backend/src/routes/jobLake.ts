@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 
 import { isIndustryId, listIndustriesForClient } from '../config/industries';
 import { isJobFieldId } from '../config/jobFields';
+import { jobLakePushMaxRows } from '../config/operational';
 import {
   deleteLakeEntry,
   getLakeEntry,
@@ -9,6 +10,7 @@ import {
   queryLake,
   revokeLakeReward,
   type LakeEntry,
+  type LakeFilters,
   type LakeQuery,
   type RevokeOutcome,
 } from '../database/jobLakeRepository';
@@ -25,6 +27,7 @@ import {
 } from '../services/jobLake/adminSheet';
 import { listJobTypesForClient, type JobTypeId } from '../services/jobAnalysis/facts';
 import { listMergeCandidates, mergeAnalyses } from '../services/jobLake/merge';
+import { pushLakeToSheet } from '../services/jobLake/push';
 import { readLakeSettings, updateLakeSettings } from '../services/jobLake/settings';
 import { formatMoney } from '../utils/money';
 import { readPage } from './paging';
@@ -38,10 +41,13 @@ import { readPage } from './paging';
  *
  *   GET    /                 ?q=&company=&field=&salaryMin=&salaryMax=&requestedBy=&updatedFrom=&updatedTo=
  *                             &jobType=&clearance=&industry=&limit=&offset=
+ *                             -> { rows, total, limit, offset, options: { jobTypes, industries }, pushMaxRows }
  *   GET    /settings         PUT /settings { reportRateUsd?, duplicateWindowDays?, dailyCapUsd? }
  *   GET    /sync             POST /sync - "Retry now"
  *   POST   /sheet            { recreate? } - create (or replace) and share the admin sheet now
  *   GET    /merge            ?limit=&offset=     POST /merge { analysisIds } | { all: true }
+ *   POST   /push             { q?, company?, field?, ... } - the list's filters, as a JSON body: the
+ *                             matching jobs, newest first, into the caller's OWN Temp For AI tab
  *   GET    /:id              DELETE /:id ?revokeReward=1     POST /:id/revoke-reward
  *
  * Every amount served is thousandths of a dollar in a field ending `Milli`;
@@ -70,64 +76,85 @@ function withRequester(entry: LakeEntry, lookup: (id: string | null) => Requeste
   return { ...entry, requester: lookup(entry.requestedBy) };
 }
 
-/** A query-string number, or undefined when absent; a 400 for anything else. */
-function readNumber(value: unknown, label: string): number | undefined {
-  if (value === undefined || value === '') return undefined;
-  const number = typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
+/**
+ * A filter's value as text: a string trimmed, and - for a JSON body - a
+ * finite number or a boolean as the text the query string would carry for
+ * it. Anything else is absent.
+ */
+function filterText(source: Record<string, unknown>, name: string): string {
+  const value = source[name];
+  if (typeof value === 'string') return value.trim();
+  if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+/** A filter's number, or undefined when absent; a 400 for anything else. */
+function readNumber(value: string, label: string): number | undefined {
+  if (value === '') return undefined;
+  const number = /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN;
   if (!Number.isFinite(number)) throw new PublicError(`${label} must be a number.`, { status: 400 });
   return number;
 }
 
 /** A date or a time; a bare date is the start of that day (UTC) for `from`, its end for `to`. */
-function readTime(value: unknown, label: string, end: boolean): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined;
-  const text = value.trim();
+function readTime(text: string, label: string, end: boolean): string | undefined {
+  if (!text) return undefined;
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(text);
   const at = Date.parse(dateOnly ? `${text}T${end ? '23:59:59.999' : '00:00:00.000'}Z` : text);
   if (!Number.isFinite(at)) throw new PublicError(`${label} must be a date, like 2026-10-05.`, { status: 400 });
   return new Date(at).toISOString();
 }
 
-function readLakeQuery(req: Request): LakeQuery {
-  const page = readPage(req, 50, 200);
-  const text = (name: string) => (typeof req.query[name] === 'string' ? (req.query[name] as string).trim() : '');
+/**
+ * The lake's filters, read and checked the one way for the list's query
+ * string (GET /) and Push to Google Sheet's JSON body (POST /push), so a push
+ * holds exactly the rows Search showed - and a value Search refuses, the push
+ * refuses in the same words.
+ */
+export function readLakeFilters(source: Record<string, unknown>): LakeFilters {
+  const text = (name: string) => filterText(source, name);
   const field = text('field');
   if (field && field !== 'unclassified' && !isJobFieldId(field)) {
     throw new PublicError('That job field is not one of the list.', { status: 400 });
   }
-  const query: LakeQuery = { limit: page.limit, offset: page.offset };
-  if (text('q')) query.text = text('q');
-  if (text('company')) query.company = text('company');
-  if (field) query.jobFieldId = field;
-  if (text('requestedBy')) query.requestedBy = text('requestedBy');
-  const salaryMin = readNumber(req.query.salaryMin, 'The lowest salary');
-  const salaryMax = readNumber(req.query.salaryMax, 'The highest salary');
-  if (salaryMin !== undefined) query.salaryMin = salaryMin;
-  if (salaryMax !== undefined) query.salaryMax = salaryMax;
-  const from = readTime(req.query.updatedFrom, 'Updated from', false);
-  const to = readTime(req.query.updatedTo, 'Updated to', true);
-  if (from) query.updatedFrom = from;
-  if (to) query.updatedTo = to;
+  const filters: LakeFilters = {};
+  if (text('q')) filters.text = text('q');
+  if (text('company')) filters.company = text('company');
+  if (field) filters.jobFieldId = field;
+  if (text('requestedBy')) filters.requestedBy = text('requestedBy');
+  const salaryMin = readNumber(text('salaryMin'), 'The lowest salary');
+  const salaryMax = readNumber(text('salaryMax'), 'The highest salary');
+  if (salaryMin !== undefined) filters.salaryMin = salaryMin;
+  if (salaryMax !== undefined) filters.salaryMax = salaryMax;
+  const from = readTime(text('updatedFrom'), 'Updated from', false);
+  const to = readTime(text('updatedTo'), 'Updated to', true);
+  if (from) filters.updatedFrom = from;
+  if (to) filters.updatedTo = to;
   // The three facts: a job type (`not_specified` for a posting that does not
   // say), a clearance as true or false, an industry id (`not_specified` too).
   const jobType = text('jobType');
   if (jobType) {
     if (!JOB_TYPE_FILTERS.has(jobType)) throw new PublicError('That job type is not one of the list.', { status: 400 });
-    query.jobType = (jobType === 'not_specified' ? '' : jobType) as JobTypeId;
+    filters.jobType = (jobType === 'not_specified' ? '' : jobType) as JobTypeId;
   }
   const clearance = text('clearance');
   if (clearance) {
     if (clearance !== 'true' && clearance !== 'false') {
       throw new PublicError('Clearance must be true or false.', { status: 400 });
     }
-    query.clearance = clearance === 'true';
+    filters.clearance = clearance === 'true';
   }
   const industry = text('industry');
   if (industry) {
     if (!isIndustryId(industry)) throw new PublicError('That industry is not one of the list.', { status: 400 });
-    query.industry = industry;
+    filters.industry = industry;
   }
-  return query;
+  return filters;
+}
+
+function readLakeQuery(req: Request): LakeQuery {
+  const page = readPage(req, 50, 200);
+  return { ...readLakeFilters(req.query as Record<string, unknown>), limit: page.limit, offset: page.offset };
 }
 
 const JOB_TYPE_FILTERS = new Set(listJobTypesForClient().map((option) => option.id));
@@ -171,6 +198,9 @@ router.get('/', (req: Request, res: Response) => {
       offset: query.offset,
       // What the job type and industry filters may be, in the server's words.
       options: { jobTypes: listJobTypesForClient(), industries: listIndustriesForClient() },
+      // The most rows one Push to Google Sheet writes (JOB_LAKE_PUSH_MAX_ROWS),
+      // so its confirm can say when only the newest of `total` would go.
+      pushMaxRows: jobLakePushMaxRows(),
     });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to read the job lake');
@@ -240,6 +270,22 @@ router.post('/merge', (req: Request, res: Response) => {
     res.json(mergeAnalyses(all ? { all: true } : { analysisIds: ids }));
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to merge the jobs');
+  }
+});
+
+/**
+ * Push to Google Sheet: the jobs the filters match (the list's own, in the
+ * body) into the CALLER's own Temp For AI tab, replacing what it held -
+ * answered `{ pushed, matched, capped, maxRows, tabName, tabUrl }` once the
+ * rows are written. Declared before the `/:id` routes, which would otherwise
+ * take `push` for an id.
+ */
+router.post('/push', async (req: Request, res: Response) => {
+  try {
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+    res.json(await pushLakeToSheet(req.user!, readLakeFilters(body)));
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to push the jobs to your sheet');
   }
 });
 
