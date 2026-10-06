@@ -61,8 +61,15 @@ export async function checkClaudeCliHealth(options: {
   /** The CHILD's environment, which is what the binary runs with. */
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /**
+   * The sign-in command this provider's advice names. An added provider's
+   * carries its own CLAUDE_CONFIG_DIR: the bare `claude auth login` signs in
+   * the server's default folder, which is another provider's.
+   */
+  signInCommand?: string;
 }): Promise<ClaudeCliHealth> {
   const checkedAt = new Date().toISOString();
+  const signIn = options.signInCommand ?? 'claude auth login';
   // AI_CLI_HEALTH_TIMEOUT_MS, applied to each of the two commands, so the
   // whole check can take up to twice it. Configurable because spawn time is
   // the machine's, not the code's: a Windows `.cmd` shim, an antivirus scan of
@@ -84,7 +91,7 @@ export async function checkClaudeCliHealth(options: {
         ? `No "${options.binary}" on the server PATH.`
         : `Could not run "${options.binary}": ${version.stderr.trim() || version.code || 'unknown error'}`,
       warning: missing
-        ? 'Install Claude Code (npm i -g @anthropic-ai/claude-code) and run `claude auth login` as the user this server runs as, or set AI_CLI_BIN to its path.'
+        ? `Install Claude Code (npm i -g @anthropic-ai/claude-code) and run \`${signIn}\` as the user this server runs as, or set AI_CLI_BIN to its path.`
         : undefined,
     };
   }
@@ -110,7 +117,7 @@ export async function checkClaudeCliHealth(options: {
       authMethod,
       checkedAt,
       detail: 'The Claude CLI is installed but not signed in.',
-      warning: 'Run `claude auth login` as the user this server runs as.',
+      warning: `Run \`${signIn}\` as the user this server runs as.`,
       meta: parsed,
     };
   }
@@ -135,7 +142,7 @@ export async function checkClaudeCliHealth(options: {
     warning: onSubscription
       ? undefined
       : 'This may not be a subscription sign-in. A call the CLI starts on an API key is stopped at its first ' +
-        'event, before the model answers, and the seat is held for every call after it; run `claude auth login` ' +
+        `event, before the model answers, and the seat is held for every call after it; run \`${signIn}\` ` +
         'as the user this server runs as to use the subscription.',
     meta: parsed,
   };

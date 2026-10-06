@@ -2,7 +2,7 @@ import type { AiChoice } from '../config/aiPreferences';
 import { describeAiChoice } from '../config/aiPreferences';
 import { Profile } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, TailoredContent } from '../types/template';
-import { createPromptCompletion, DEFAULT_PROVIDER } from './ai';
+import { createPromptCompletion, createPromptCompletionResult, DEFAULT_PROVIDER } from './ai';
 import { normalizeJobFieldId, renderJobFieldListForPrompt } from '../config/jobFields';
 import { normalizeFilterFacts, normalizeSalary, normalizeSeniority } from './jobAnalysis/facts';
 import {
@@ -2338,6 +2338,12 @@ function getProfileCoverLetterPromptId(profile: Profile): string {
  * when there is nothing to key on: no context from the caller, or a prompt
  * record that cannot be read - an answer cached against a prompt nobody can
  * name could never be told apart from a later edit of it.
+ *
+ * `inputs` is what the call is about to send: the rendered prompt values and
+ * the text appended to the user turn. Keyed as they are, not only through the
+ * profile and the analysis they come from, because they also read the shared
+ * skill library - a skill added or confirmed since changes the checklist the
+ * model writes the summary against, and that is another question.
  */
 async function cacheKeyFor(
   kind: 'resume' | 'cover-letter',
@@ -2345,12 +2351,20 @@ async function cacheKeyFor(
   choice: AiChoice,
   promptId: string,
   context: TailorCacheContext | undefined,
-  extra?: Record<string, string>
+  inputs: { promptValues: Record<string, string>; appendToUserBody?: string; extra?: Record<string, string> }
 ): Promise<string | null> {
   if (!context) return null;
   const record = await resolvePromptByExactId(promptId).catch(() => null);
   if (!record) return null;
-  return tailorCacheKey({ kind, profile, context, choice, promptId, promptText: record.content, extra });
+  return tailorCacheKey({ kind, profile, context, choice, promptId, promptText: record.content, ...inputs });
+}
+
+/** Said when an answer is used but not kept: another model than the one asked for wrote it. */
+function noteFallbackNotKept(what: string, choice: AiChoice, answeredBy: string): void {
+  console.log(
+    `[tailor-cache] Not keeping this ${what}: it was written by ${answeredBy}, a fallback for ` +
+      `${describeAiChoice(choice)}. The next build asks again.`
+  );
 }
 
 export async function tailorResume(
@@ -2368,7 +2382,12 @@ export async function tailorResume(
 ): Promise<TailoredContent> {
   const { provider, modelName } = choice;
   const promptId = getProfileResumePromptId(profile);
-  const cacheKey = cache?.analysisId ? await cacheKeyFor('resume', profile, choice, promptId, cache) : null;
+  // Built before the lookup: they are part of the key (see cacheKeyFor).
+  const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
+  const appendToUserBody = buildFinalSkillOverride(profile);
+  const cacheKey = cache?.analysisId
+    ? await cacheKeyFor('resume', profile, choice, promptId, cache, { promptValues, appendToUserBody })
+    : null;
   if (cacheKey) {
     const cached = readTailorCache(cacheKey);
     if (cached !== null) {
@@ -2381,10 +2400,9 @@ export async function tailorResume(
       }
     }
   }
-  const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
   const secondCallStartedAt = process.hrtime.bigint();
   console.log(`[Resume timing] Second LLM call started: tailor resume (${describeAiChoice(choice)})`);
-  const content = await createPromptCompletion({
+  const result = await createPromptCompletionResult({
     promptId,
     // The prompt record can be a per-profile custom one; the timeout and the
     // usage bucket belong to the FEATURE, which is always this.
@@ -2401,11 +2419,12 @@ export async function tailorResume(
     // providers taking a single flat string, so the instruction was silently
     // absent on the structured path - and the code below assumes the model
     // obeyed it, because skills are decided here, not by the model.
-    appendToUserBody: buildFinalSkillOverride(profile),
+    appendToUserBody,
     // A resume's work runs on the model it is charged at (see runChoiceWins).
     runChoiceWins: true,
     signal,
   });
+  const content = result.text;
   const secondCallEndedAt = process.hrtime.bigint();
   console.log(`[Resume timing] Second LLM call finished in ${formatDuration(secondCallStartedAt, secondCallEndedAt)}`);
 
@@ -2417,8 +2436,12 @@ export async function tailorResume(
     throw new Error('Failed to parse tailored resume response');
   }
   // Kept only once it parsed: an answer that could not be read is never
-  // handed to the next generation as if it could.
-  if (cacheKey) {
+  // handed to the next generation as if it could. Nor one a fallback model
+  // wrote: it is this call's answer, not the asked-for model's, and kept it
+  // would be every repeat's for TAILOR_CACHE_DAYS.
+  if (cacheKey && result.fellBack) {
+    noteFallbackNotKept('tailoring', choice, result.resolvedModel);
+  } else if (cacheKey) {
     writeTailorCache({
       key: cacheKey,
       kind: 'resume',
@@ -2465,7 +2488,11 @@ export async function generateCoverLetter(
   cache?: TailorCacheContext
 ): Promise<string> {
   const promptId = getProfileCoverLetterPromptId(profile);
-  const cacheKey = await cacheKeyFor('cover-letter', profile, choice, promptId, cache, { companyName, role });
+  const promptValues = buildCoverLetterPromptValues(profile, companyName, role);
+  const cacheKey = await cacheKeyFor('cover-letter', profile, choice, promptId, cache, {
+    promptValues,
+    extra: { companyName, role },
+  });
   if (cacheKey) {
     const cached = readTailorCache(cacheKey);
     if (cached !== null && cached.trim()) {
@@ -2473,8 +2500,7 @@ export async function generateCoverLetter(
       return cached.trim();
     }
   }
-  const promptValues = buildCoverLetterPromptValues(profile, companyName, role);
-  const content = await createPromptCompletion({
+  const result = await createPromptCompletionResult({
     promptId,
     callSite: DEFAULT_COVER_LETTER_PROMPT_ID,
     promptValues,
@@ -2490,8 +2516,10 @@ export async function generateCoverLetter(
     runChoiceWins: true,
     signal,
   });
-  const letter = content.trim();
-  if (cacheKey && letter) {
+  const letter = result.text.trim();
+  if (cacheKey && letter && result.fellBack) {
+    noteFallbackNotKept('cover letter', choice, result.resolvedModel);
+  } else if (cacheKey && letter) {
     writeTailorCache({
       key: cacheKey,
       kind: 'cover-letter',

@@ -13,7 +13,7 @@ export type SeatHold = { scope: string; reason: string; expiresAt: string };
  * was turned away. Two Claude providers are two sign-ins, so each card reads
  * its own. `subscription.outages` is the built-in Claude provider's alone, so
  * it stands in only for that one, and only when a server too old to send the
- * map answered. Codex keeps no holds, so its list is empty.
+ * map answered. Codex holds itself only at a usage limit, on the whole seat.
  *
  * Imports nothing at runtime, so the backend suite can load it.
  */

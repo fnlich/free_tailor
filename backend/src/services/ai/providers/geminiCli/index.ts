@@ -39,13 +39,13 @@ import {
 } from './events';
 import {
   checkGeminiCliHealth,
-  GEMINI_INSTALL_ACTION,
+  geminiInstallAction,
   GEMINI_SIGN_IN_ACTION,
   hasStoredGeminiSignIn,
   type GeminiCliHealth,
 } from './health';
 import { GEMINI_CLI_BINARY_HINTS } from './hints';
-import { readGeminiCliConfig, resolveGeminiTimeoutMs, type GeminiCliConfig } from './options';
+import { geminiAnsweredByFallback, isGeminiModelName, readGeminiCliConfig, resolveGeminiTimeoutMs, type GeminiCliConfig } from './options';
 import {
   closeGeminiTurn,
   GeminiWorkspaceError,
@@ -74,7 +74,7 @@ export type GeminiCliAdapterOptions = {
   config?: Partial<GeminiCliConfig>;
   now?: () => number;
   /** Injected in tests so `gemini --version` is never executed. */
-  healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv }) => Promise<GeminiCliHealth>;
+  healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv; signInAction?: string }) => Promise<GeminiCliHealth>;
   /**
    * Which Gemini PROVIDER this adapter is (config/aiProviders.ts): its
    * GEMINI_CLI_HOME, binary and limit, and - for one an administrator added -
@@ -177,7 +177,7 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     if (!healthOptions.fresh && cachedHealth && now() - cachedHealth.at < 60_000) return cachedHealth.value;
     const check = options.healthCheck ?? checkGeminiCliHealth;
     try {
-      const value = await check({ binary: config.binary, env: baseEnv() });
+      const value = await check({ binary: config.binary, env: baseEnv(), signInAction });
       cachedHealth = { value, at: now() };
       // A sign-in hold turns away the success that would clear it, so a sign-in
       // written after the hold lifts it instead. By the file's time, not by
@@ -330,7 +330,7 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
       if (outcome.spawnError) {
         if (outcome.spawnError.code === 'ENOENT') {
           throw fail('binaryMissing', `spawn ${config.binary}: ${outcome.spawnError.message}`, {
-            adminAction: GEMINI_INSTALL_ACTION,
+            adminAction: geminiInstallAction(signInAction),
           });
         }
         // The shared runner's overflow message names the Claude CLI; the
@@ -465,6 +465,9 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
       return {
         text,
         resolvedModel: state.resolvedModel ?? model,
+        // Another family answered (Pro switched to Flash): used, never kept
+        // as the asked-for model's answer (CompletionResult.fellBack).
+        fellBack: geminiAnsweredByFallback(model, state.resolvedModel),
         providerId: PROVIDER_ID,
         providerInstanceId: providerId,
         ...(state.usage
@@ -495,8 +498,19 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     }
   }
 
-  function readiness(): ProviderReadiness {
-    const held = outages.seatHold();
+  /**
+   * Asked about a model, its hold counts too, keyed as `complete` keys it -
+   * `resolveGeminiModel`'s answer without its warning, since this is read on
+   * every dispatch.
+   */
+  function readiness(modelName?: string): ProviderReadiness {
+    let held: { until: number; reason: string; kind: string } | null;
+    if (modelName === undefined) {
+      held = outages.seatHold();
+    } else {
+      const name = modelName.trim();
+      held = outages.holdFor(name && isGeminiModelName(name) ? name : config.model);
+    }
     return {
       // A sign-in kept in encrypted storage reads as ok with loggedIn null:
       // the check cannot see it, and "cannot tell" must not bench a provider.

@@ -230,9 +230,11 @@ async function runAssembled(
   // Which provider of the type answers (owner decision P4): the one a queued
   // task holds a lane slot on, else the readiest with the most free capacity.
   // The model and its price are the type's; only where it runs is chosen here.
-  const adapter = getAdapter(pickProvider(provider)?.id ?? provider);
-  const modelName =
-    (config.explicit && config.modelName) || reroutedModelName || adapter.defaultModelName();
+  // Picked for the model the call names, when it names one ('' is the type's
+  // default), so a provider held for that model alone is passed over.
+  const namedModel = (config.explicit && config.modelName) || reroutedModelName || '';
+  const adapter = getAdapter(pickProvider(provider, namedModel)?.id ?? provider);
+  const modelName = namedModel || adapter.defaultModelName();
 
   // A provider with no system channel gets everything in one turn, so no
   // instruction is silently dropped for it. The previous flat Anthropic path
@@ -298,6 +300,15 @@ async function runAssembled(
  * Renders a stored prompt and runs it on the resolved provider.
  */
 export async function createPromptCompletion(input: CreatePromptCompletionInput): Promise<string> {
+  return (await createPromptCompletionResult(input)).text;
+}
+
+/**
+ * The same call, answering the whole result - for a caller that must know more
+ * than the text: the tailoring cache keeps an answer only when the model it
+ * asked for wrote it (`fellBack`).
+ */
+export async function createPromptCompletionResult(input: CreatePromptCompletionInput): Promise<CompletionResult> {
   const ref: PromptRef = {
     id: input.promptId,
     mode: input.useExactPromptId ? 'exact' : 'runtime',
@@ -328,7 +339,7 @@ export async function createPromptCompletion(input: CreatePromptCompletionInput)
     appendToUserBody: input.appendToUserBody,
   });
 
-  return result.text;
+  return result;
 }
 
 export type CreateRawCompletionInput = {

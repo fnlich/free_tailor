@@ -124,29 +124,49 @@ Coverage currently focuses on:
   provider taking a busier one's head; urgent work per lane; the real queue's
   reading of the providers resized live; a restored task naming a removed
   provider landing in its type's pool; and the provider recorded on the order
-  item and shown to an administrator alone. Each provider's own seat
+  item and shown to an administrator alone. Through the REAL queue and real
+  provider state, too: an adapter's seat-wide hold moving the waiting work
+  (and the stored rows with it), a signed-out provider asked again by the
+  queue's reading and serving once it answers, a type switched off stopping
+  every lane of it, a queued resume's model calls pinned to the provider whose
+  lane it holds, the blocked re-check on fake timers, an urgent task stolen
+  before a busier lane's ordinary one, a restored finished task keeping its
+  `ranOn`, and a started task writing it to its row and its order item. Each
+  provider's own seat
   (`providerSeats.test.js`): its child's folder and binary with every key still
   stripped or pinned, for the three types; holds and health per provider; a
   semaphore resized live; the registry's adapter per provider and a type's stub
   standing in for its others; the pool's pick, the queue's pin, and the
-  analysis model pooled the same way. The providers' settings
+  analysis model pooled the same way; two providers of one type keeping two
+  semaphores, an added one's own working directory, Codex's and Gemini's
+  readiness, a new binary rebuilding the adapter, a removed provider's type
+  remembered, every enabled provider in the startup check, and a signed-out
+  added provider's advice naming its own folder. The providers' settings
   (`aiProviders.test.js`): the built-ins first, `.env`'s values and an
-  administrator's override with where each came from, every path check, a
-  folder shared within a type refused, the settings row and the routes over
-  HTTP, a busy provider refused removal. The pages' half
+  administrator's override with where each came from, every path check - on
+  an add and on an edit, against the app's REAL directories - a folder shared
+  within a type refused, the settings row (kept, and never written, by a
+  General settings save) and the routes over HTTP, a busy provider refused
+  removal. The pages' half
   (`frontendProviders.test.js`): the type list, sign-in variables, `.env`
   names, limit range and hold kinds copied from the server and checked
   against it; every problem the Add and Edit forms find being the server's
   own refusal, in its words and on its field; an edit sending only what
   changed, so a built-in's `.env` value stays `.env`'s; a refusal pinned to
   its box; where each value came from and how a provider's state reads; the
-  type offered exactly when the server would run it; every field the routes
+  type offered exactly when the server would run it, by lib/api.ts's own
+  `isProviderOffered`; every field the routes
   send read back whole; and no page outside the admin ones reaching the
   routes
 - the tailoring cache (`tailorCache.test.js`): a second identical build making
   no tailoring call and charged again, a one-character profile change, another
-  model and an edited prompt each a miss, the key's parts, a cover letter's own
-  key, an unreadable stored answer a miss, the one-seek lookup and the prune
+  model, an edited prompt, another template and a library skill the posting
+  names each a miss, the key's parts, a cover letter's own key, every caller
+  passing its context (/resume/preview, /resume/generate and the queue's
+  tailoring and cover letter), nothing cached without an analysis id, an
+  answer that does not parse or that a fallback model wrote never stored, an
+  unreadable stored answer a miss, the one-seek lookup and the prune; the
+  seats' `fellBack` is in `claudeCli.test.js` and `geminiCli.test.js`
 - what anybody but an administrator is told when something fails
   (`publicErrors.test.js`): public refusals in their own words, everything
   else as a generic sentence and a ref with the cause logged under it, and the

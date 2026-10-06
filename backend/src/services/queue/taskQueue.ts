@@ -42,12 +42,23 @@ import { publicTaskError } from '../../middleware/publicError';
  *
  * A lane belongs to a POOL - its provider's type - and a task names its pool
  * (the type its model runs on, owner decision P4). The queue puts each task in
- * the lane of a SERVING provider of its pool - enabled, ready, not held - with
- * the most free capacity: tasks running plus waiting, relative to the lane's
- * width, ties to the reading's order (`place`). A lane that stops serving -
- * held, signed out, switched off, removed - has its WAITING tasks moved to one
- * that serves (`rebalance`); a slot left idle takes the head of a busier
- * lane of its pool (`steal`). With no lane of a pool serving, its tasks wait.
+ * the lane of a provider of its pool that SERVES IT - enabled, ready, not held
+ * on the seat nor on the task's model (`LanePolicy.modelOf`) - with the most
+ * free capacity: tasks running plus waiting, relative to the lane's width, ties
+ * to the reading's order (`place`). A lane that stops serving - held, signed
+ * out, switched off, removed - has its WAITING tasks moved to one that serves,
+ * and so does a task whose model its lane is held for (`rebalance`); a slot
+ * left idle takes the first task it may run from a busier lane of its pool
+ * (`steal`). With no lane of a pool serving a task, it waits.
+ *
+ * Two rules keep a provider that fails fast from swallowing its type's work.
+ * Such a provider is always the least loaded, so it would win every placement,
+ * every steal and every retry: a retry is placed away from the lane it just
+ * failed on whenever another of its pool serves it (`Task.avoidLane`), and a
+ * hold - on the seat or on one model - takes the lane out of placement
+ * altogether. And no lane runs more than its width, counted by what runs
+ * there rather than by which slot ids are free, so a provider whose limit was
+ * lowered while busy takes nothing new until it is back under it.
  *
  * Lane names are whatever the capacity reading names: provider ids in the
  * real queue (`claude-cli` for the built-in Claude provider, `prv-...` for an
@@ -90,12 +101,22 @@ export type CapacityReading = Capacity | { lanes: LaneReading[] };
 /**
  * What the dispatcher asks about a lane between readings, synchronously:
  * whether its provider can take work NOW (no hold on the seat, not signed
- * out), and which pool a lane the last reading did not name belongs to - a
- * removed provider's, or one an older build wrote. Every method optional; the
- * default is a lane that is always ready and a pool nobody knows.
+ * out) - and, asked with a model, work on THAT model, which a hold on the
+ * model alone (a weekly Opus cap) rules out while the seat serves the rest -
+ * and which pool a lane the last reading did not name belongs to - a removed
+ * provider's, or one an older build wrote. Every method optional; the default
+ * is a lane that is always ready, tasks that name no model, and a pool nobody
+ * knows.
  */
 export type LanePolicy = {
-  ready?(lane: QueueName): boolean;
+  ready?(lane: QueueName, model?: string): boolean;
+  /**
+   * The model a task's calls run on, as its provider is asked for it ('' for
+   * the provider's default), or undefined for a task that names none - which
+   * is then asked about the seat only. A plain string to the queue: it only
+   * ever hands it back to `ready`.
+   */
+  modelOf?(task: Task): string | undefined;
   poolOf?(lane: QueueName): string | null;
 };
 
@@ -181,6 +202,13 @@ export type Task<T = unknown> = TaskDescriptor<T> & {
    * knows its type. Not persisted: the restore works it out again.
    */
   pool?: string;
+  /**
+   * The lane its last attempt failed on, while it waits for the next: placed
+   * and stolen elsewhere when another lane of its pool serves it (see the
+   * note at the top). Cleared when it starts. Not persisted, deliberately -
+   * a restart re-places everything from scratch anyway.
+   */
+  avoidLane?: string;
   value?: T;
   error?: string;
   /**
@@ -389,6 +417,14 @@ export class TaskQueue {
   private blockedTimer: NodeJS.Timeout | null = null;
   /** The pools whose work is waiting with no lane to serve it, as last said in the log. */
   private blockedPools = new Set<string>();
+  /**
+   * Readiness asked within one dispatch pass (or one placement run), by lane
+   * and model, so a three-hundred-task line asks each provider about each
+   * model once rather than once per task per step. Null outside one: a
+   * reading is never carried from one pass to the next, because a hold ends
+   * by itself.
+   */
+  private readyMemo: Map<string, boolean> | null = null;
 
   /**
    * Re-entrancy guard. `dispatch` can settle a task synchronously (a task that
@@ -741,6 +777,7 @@ export class TaskQueue {
     if (this.blockedTimer) clearTimeout(this.blockedTimer);
     this.blockedTimer = null;
     this.blockedPools = new Set();
+    this.readyMemo = null;
   }
 
   private waitingIn(lane: QueueName): Task[] {
@@ -758,11 +795,40 @@ export class TaskQueue {
     return count;
   }
 
-  /** A lane that may take work now: in the reading, switched on, with slots, and ready. */
-  private isServing(lane: QueueName): boolean {
+  /**
+   * A lane that may take work now: in the reading, switched on, with slots,
+   * and ready - and, given a task, ready for that task's model.
+   */
+  private isServing(lane: QueueName, task?: Task): boolean {
     const reading = this.laneById.get(lane);
     if (!reading || !reading.enabled || reading.slots.length === 0) return false;
-    return this.policy.ready ? this.policy.ready(lane) : true;
+    if (!this.policy.ready) return true;
+    const model = task ? this.policy.modelOf?.(task) : undefined;
+    const key = model === undefined ? `${lane}\u0000` : `${lane}\u0000=${model}`;
+    const known = this.readyMemo?.get(key);
+    if (known !== undefined) return known;
+    const ready = this.policy.ready(lane, model);
+    this.readyMemo?.set(key, ready);
+    return ready;
+  }
+
+  /** Runs `action` with readiness asked once per lane and model (`readyMemo`). */
+  private withReadiness(action: () => void): void {
+    if (this.readyMemo) {
+      action();
+      return;
+    }
+    this.readyMemo = new Map();
+    try {
+      action();
+    } finally {
+      this.readyMemo = null;
+    }
+  }
+
+  /** Whether the lane is running as many tasks as it is wide - or more, after a shrink. */
+  private isFull(lane: LaneReading): boolean {
+    return this.runningIn(lane.id) >= lane.slots.length;
   }
 
   /** How full a lane is: running plus waiting, over its width. */
@@ -792,20 +858,24 @@ export class TaskQueue {
   }
 
   /**
-   * The lane a task should wait in: of its pool's lanes that serve, the one
-   * with the most free capacity, ties to the reading's order. With none
-   * serving, it stays where it is if that lane is its pool's and still in the
-   * reading, else it goes to its pool's first lane - and waits there, because
-   * nothing of its type can take it now.
+   * The lane a task should wait in: of its pool's lanes that serve it, the
+   * one with the most free capacity, ties to the reading's order - and not
+   * the one a retry just failed on, while another serves it. With none
+   * serving it, it stays where it is if that lane is its pool's and still in
+   * the reading, else it goes to its pool's first lane - and waits there,
+   * because nothing of its type can take it now.
    */
   private chooseLane(task: Task): QueueName {
     const pool = this.poolOf(task);
     if (!pool) return task.queue;
     const ofPool = this.lanes.filter((lane) => lane.pool === pool);
+    let serving = ofPool.filter((lane) => this.isServing(lane.id, task));
+    if (task.avoidLane && serving.some((lane) => lane.id !== task.avoidLane)) {
+      serving = serving.filter((lane) => lane.id !== task.avoidLane);
+    }
     let best: QueueName | null = null;
     let bestLoad = Infinity;
-    for (const lane of ofPool) {
-      if (!this.isServing(lane.id)) continue;
+    for (const lane of serving) {
       const load = this.load(lane.id);
       if (load < bestLoad) {
         best = lane.id;
@@ -834,7 +904,9 @@ export class TaskQueue {
    * added: six tasks for two providers of widths 1 and 2 land two and four.
    */
   private enqueue(tasks: Task[]): void {
-    for (const task of tasks) this.place(task);
+    this.withReadiness(() => {
+      for (const task of tasks) this.place(task);
+    });
   }
 
   private place(task: Task): void {
@@ -851,9 +923,11 @@ export class TaskQueue {
 
   /**
    * Moves the WAITING work off every lane that does not serve - its provider
-   * held, signed out, switched off or removed - to one of its pool that does.
-   * What is running there finishes or fails as it would have. Nothing moves
-   * while no lane of the pool serves: the work waits where it is.
+   * held, signed out, switched off or removed - to one of its pool that does,
+   * and off a lane that serves but is held for a task's model, to one that
+   * serves that task. What is running there finishes or fails as it would
+   * have. Nothing moves while no lane of the pool serves it: the work waits
+   * where it is.
    *
    * Written back when it moves, so a restart finds each task in the lane it
    * was moved to.
@@ -861,7 +935,11 @@ export class TaskQueue {
   private rebalance(): void {
     for (const lane of [...this.queues.keys()]) {
       const waiting = this.queues.get(lane)!;
-      if (waiting.length === 0 || this.isServing(lane)) continue;
+      if (waiting.length === 0) continue;
+      if (this.isServing(lane)) {
+        this.moveUnserved(lane, waiting);
+        continue;
+      }
       const pools = new Set(waiting.map((task) => this.poolOf(task)));
       const anyServing = [...pools].some(
         (pool) => pool !== null && this.lanes.some((entry) => entry.pool === pool && this.isServing(entry.id))
@@ -877,6 +955,29 @@ export class TaskQueue {
       // A lane no reading names and nothing waits in is gone: forgotten, so
       // the stats stop listing a provider removed or a name an older build had.
       if (!inReading && this.queues.get(lane)?.length === 0) this.queues.delete(lane);
+    }
+  }
+
+  /**
+   * A serving lane's waiting tasks that it is held for - their model is out
+   * on this provider - go to a lane of their pool that serves them, if one
+   * does; the rest keep their order.
+   */
+  private moveUnserved(lane: QueueName, waiting: Task[]): void {
+    const moving = waiting.filter(
+      (task) =>
+        !this.isServing(lane, task) &&
+        this.lanes.some((other) => other.id !== lane && other.pool === this.poolOf(task) && this.isServing(other.id, task))
+    );
+    if (moving.length === 0) return;
+    const leaving = new Set(moving);
+    this.queues.set(
+      lane,
+      waiting.filter((task) => !leaving.has(task))
+    );
+    for (const task of moving) {
+      this.place(task);
+      if (task.queue !== lane) this.persist((store) => store.saveTask(task));
     }
   }
 
@@ -907,6 +1008,8 @@ export class TaskQueue {
     try {
       do {
         this.dispatchAgain = false;
+        // Asked afresh on each pass: a pass is synchronous, a hold is not.
+        this.readyMemo = new Map();
         // Not before the first reading: until then no lane is known to serve,
         // and moving work about on no information would only scramble it.
         if (this.capacityReadAt > 0) this.rebalance();
@@ -920,13 +1023,14 @@ export class TaskQueue {
       } while (this.dispatchAgain);
     } finally {
       this.dispatching = false;
+      this.readyMemo = null;
     }
 
     // Outside the loop, and never awaited from inside it.
     if (Date.now() - this.capacityReadAt > CAPACITY_TTL_MS && this.pending() > 0) {
       void this.refreshCapacity();
     }
-    this.watchBlocked();
+    this.withReadiness(() => this.watchBlocked());
   }
 
   /**
@@ -940,8 +1044,15 @@ export class TaskQueue {
     // After `rebalance`, work still waiting on a lane that does not serve is
     // work no lane of its pool can serve.
     const blocked = new Set<string>();
+    // Work a provider is held for on one model only, with no other lane of
+    // its pool serving it either. Not said here - the seat already logged
+    // `Holding off model ...` - but it needs the re-check as much: nothing
+    // else notices a model's hold ending.
+    let modelHeld = false;
     for (const [lane, waiting] of this.queues) {
-      if (waiting.length > 0 && !this.isServing(lane)) blocked.add(this.poolOf(waiting[0]) ?? lane);
+      if (waiting.length === 0) continue;
+      if (!this.isServing(lane)) blocked.add(this.poolOf(waiting[0]) ?? lane);
+      else if (!modelHeld && waiting.some((task) => !this.isServing(lane, task))) modelHeld = true;
     }
     // Said once when it starts and once when it ends, not once per dispatch:
     // an operator who finds resumes sitting queued needs to know why.
@@ -957,7 +1068,7 @@ export class TaskQueue {
       if (!blocked.has(pool)) console.log(`[queue] A ${pool} provider can take work again; what was waiting carries on.`);
     }
     this.blockedPools = blocked;
-    if (this.blockedTimer || blocked.size === 0) return;
+    if (this.blockedTimer || (blocked.size === 0 && !modelHeld)) return;
     this.blockedTimer = setTimeout(() => {
       this.blockedTimer = null;
       void this.refreshCapacity();
@@ -982,40 +1093,71 @@ export class TaskQueue {
   private fill(lane: LaneReading): void {
     const waiting = this.waitingIn(lane.id);
     for (const slot of lane.slots) {
+      // By what RUNS here, not by which slot ids are free: after the limit
+      // was lowered while busy, tasks still run on slots the reading no
+      // longer lists, and a freed low slot starting another beside them
+      // would put it at the provider's resized semaphore with its clock
+      // already running - the one thing this queue exists to prevent.
+      if (this.isFull(lane)) return;
       if (this.busy.has(slot.id)) continue;
-      // The head of the slot's own lane. Slots are interchangeable WITHIN a
-      // lane, so the first task waiting is the one this slot may run; the lane
-      // is what keeps two providers' pools apart.
-      const task = waiting.shift();
-      if (!task) return;
+      // The first task waiting that this provider may run. Slots are
+      // interchangeable WITHIN a lane, so that is the head - unless the
+      // provider is held for the head's model, which then waits for one that
+      // is not (`rebalance`) without holding up the work behind it.
+      const index = waiting.findIndex((task) => this.isServing(lane.id, task));
+      if (index === -1) return;
+      const [task] = waiting.splice(index, 1);
       this.start(task, slot);
     }
   }
 
   /**
-   * A free slot on a serving lane whose own line is empty takes the head of
-   * another lane OF ITS POOL - an urgent head first, then the busiest lane's.
-   * Placement guesses how long work will take; this is what keeps a provider
-   * that finished early from idling while its type's work waits elsewhere.
-   * Never across pools: a Claude slot never runs a Codex task.
+   * A free slot on a serving lane with nothing of its own it may run takes
+   * the first task it may run from another lane OF ITS POOL - an urgent one
+   * first, then the busiest lane's. Placement guesses how long work will
+   * take; this is what keeps a provider that finished early from idling while
+   * its type's work waits elsewhere. Never across pools (a Claude slot never
+   * runs a Codex task), never past its width, never a task on a model it is
+   * held for, and never a retry back from the lane it failed on.
    */
   private steal(): void {
     for (const lane of this.lanes) {
-      if (!this.isServing(lane.id) || this.waitingIn(lane.id).length > 0) continue;
+      if (!this.isServing(lane.id)) continue;
+      if (this.waitingIn(lane.id).some((task) => this.isServing(lane.id, task))) continue;
       for (const slot of lane.slots) {
+        if (this.isFull(lane)) break;
         if (this.busy.has(slot.id)) continue;
-        const donor = this.lanes
-          .filter((other) => other.id !== lane.id && other.pool === lane.pool && this.waitingIn(other.id).length > 0)
-          .sort((a, b) => {
-            const urgent = Number(this.isUrgent(this.waitingIn(b.id)[0])) - Number(this.isUrgent(this.waitingIn(a.id)[0]));
-            return urgent || this.load(b.id) - this.load(a.id);
-          })[0];
-        if (!donor) return;
-        const task = this.waitingIn(donor.id).shift()!;
-        task.queue = lane.id;
-        this.start(task, slot);
+        const offer = this.stealFor(lane);
+        // Nothing of its pool it may take, for this slot or any other of the
+        // lane - but a later lane, of another pool, may still have some: on
+        // to it, not out of the whole pass (a `return` here once left every
+        // Codex and Gemini slot idle while the Claude lane, read first, had
+        // nothing to take).
+        if (!offer) break;
+        this.waitingIn(offer.lane).splice(offer.index, 1);
+        offer.task.queue = lane.id;
+        this.start(offer.task, slot);
       }
     }
+  }
+
+  /** The task an idle slot on `lane` would take from another lane of its pool, or null. */
+  private stealFor(lane: LaneReading): { lane: QueueName; index: number; task: Task } | null {
+    let best: { lane: QueueName; index: number; task: Task } | null = null;
+    for (const other of this.lanes) {
+      if (other.id === lane.id || other.pool !== lane.pool) continue;
+      const waiting = this.waitingIn(other.id);
+      const index = waiting.findIndex((task) => task.avoidLane !== lane.id && this.isServing(lane.id, task));
+      if (index === -1) continue;
+      const offer = { lane: other.id, index, task: waiting[index] };
+      if (!best) {
+        best = offer;
+        continue;
+      }
+      const urgent = Number(this.isUrgent(offer.task)) - Number(this.isUrgent(best.task));
+      if (urgent > 0 || (urgent === 0 && this.load(other.id) > this.load(best.lane))) best = offer;
+    }
+    return best;
   }
 
   private start(task: Task, slot: Slot): void {
@@ -1026,6 +1168,7 @@ export class TaskQueue {
     }
 
     task.state = 'running';
+    task.avoidLane = undefined;
     // Counted on the way in, so a task that is running has always been started
     // at least once and the snapshot can say "attempt 2 of 3" honestly.
     task.attempts = task.attempts ?? 1;
@@ -1163,6 +1306,12 @@ export class TaskQueue {
    * otherwise spin through its attempts while everything behind it waited -
    * but an urgent run's retry still goes ahead of the orders, or a single
    * failed attempt would drop a Generate Immediately behind all of them.
+   *
+   * And on another provider of its type when one serves it (`avoidLane`). A
+   * provider that fails every call at once - at a usage limit its adapter has
+   * not recognised, say - is always the least loaded lane, so by load alone
+   * every retry went straight back to it and a resume another provider could
+   * have built failed on its last attempt there.
    */
   private retryTask(task: Task, error: string): boolean {
     const attempts = task.attempts ?? 1;
@@ -1171,6 +1320,7 @@ export class TaskQueue {
     task.attempts = attempts + 1;
     task.state = 'queued';
     task.runningOn = undefined;
+    task.avoidLane = task.ranOn;
     // Kept, so a task waiting on its second go still says what went wrong the
     // first time rather than looking like it was never tried.
     task.error = error;

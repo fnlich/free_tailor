@@ -1390,7 +1390,7 @@ export interface ProviderHealthReport {
   };
   /**
    * Every provider's holds, keyed by PROVIDER id (a type id is its built-in
-   * one). Codex keeps none. Optional, so a card reading an older server falls
+   * one). Codex's is only ever a usage limit. Optional, so a card reading an older server falls
    * back to `subscription.outages`.
    */
   outagesByProvider?: Partial<Record<string, ProviderOutage[]>>;

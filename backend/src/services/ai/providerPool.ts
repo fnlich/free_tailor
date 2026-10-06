@@ -48,11 +48,12 @@ export function pinnedProviderId(): string | undefined {
 
 /**
  * Whether a provider can take work now: switched on, its type not locked, its
- * last health check not against it, and no hold on the whole seat.
+ * last health check not against it, and no hold on the whole seat - nor, for
+ * a call on `modelName`, on that model ('' is the provider's default).
  */
-export function isProviderReady(provider: ResolvedAIProvider): boolean {
+export function isProviderReady(provider: ResolvedAIProvider, modelName?: string): boolean {
   if (!provider.enabled || isProviderLocked(provider.type)) return false;
-  const readiness = providerReadiness(provider.id);
+  const readiness = providerReadiness(provider.id, modelName);
   return readiness.ready !== false && !readiness.held;
 }
 
@@ -64,19 +65,32 @@ export function providerLoad(provider: ResolvedAIProvider): number {
 }
 
 /**
- * The provider a call of `type` runs on, or null when the type has none
- * switched on (the caller's own "is this type enabled" check refuses it
- * first, by name).
+ * The provider a call of `type` on `modelName` runs on ('' for the type's
+ * default model; absent, only seat-wide holds are weighed), or null when the
+ * type has none switched on (the caller's own "is this type enabled" check
+ * refuses it first, by name).
+ *
+ * The pin is honoured whether or not its provider is still switched on. A
+ * task keeps the lane slot it started in until it ends, and an administrator
+ * switching a provider off lets what it is building "finish or fail as
+ * today" - sending the task's next call to another provider instead put that
+ * call on a semaphore whose lane never counted it, and left the order naming a
+ * provider that did not build it. A provider REMOVED since is not in the list,
+ * so its task's calls are picked afresh, the only place they can go.
  */
-export function pickProvider(type: AIProvider): ResolvedAIProvider | null {
-  const candidates = providersNow().filter((entry) => entry.type === type && entry.enabled);
-  if (candidates.length === 0) return null;
-
+export function pickProvider(type: AIProvider, modelName?: string): ResolvedAIProvider | null {
+  const ofType = providersNow().filter((entry) => entry.type === type);
   const pin = pinnedProviderId();
-  const pinnedOne = pin ? candidates.find((entry) => entry.id === pin) : undefined;
+  const pinnedOne = pin ? ofType.find((entry) => entry.id === pin) : undefined;
   if (pinnedOne) return pinnedOne;
 
-  const ready = candidates.filter(isProviderReady);
+  const candidates = ofType.filter((entry) => entry.enabled);
+  if (candidates.length === 0) return null;
+
+  // Ready for THIS model: a provider under a weekly Opus cap fails every Opus
+  // call at once, so it reads as the least loaded - and without the model
+  // here every unpinned Opus call (a preview, an analysis) went to it.
+  const ready = candidates.filter((entry) => isProviderReady(entry, modelName));
   if (ready.length === 0) return candidates[0];
   let best = ready[0];
   let bestLoad = providerLoad(best);

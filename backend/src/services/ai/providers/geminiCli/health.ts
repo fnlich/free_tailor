@@ -156,18 +156,31 @@ export const GEMINI_SIGN_IN_ACTION =
   'Google", open the URL it prints in any browser and paste the code back. No display is needed on ' +
   'the server.';
 
-export const GEMINI_INSTALL_ACTION =
-  'Install the Gemini CLI (npm i -g @google/gemini-cli; it needs Node 20 or later), then sign in. ' +
-  GEMINI_SIGN_IN_ACTION +
-  ' If it IS installed, this process has a different PATH than your shell - set AI_GEMINI_BIN to the full path.';
+/** Install, then sign in - the way `signInAction` says, which an added provider gives with its own folder. */
+export function geminiInstallAction(signInAction: string = GEMINI_SIGN_IN_ACTION): string {
+  return (
+    'Install the Gemini CLI (npm i -g @google/gemini-cli; it needs Node 20 or later), then sign in. ' +
+    signInAction +
+    ' If it IS installed, this process has a different PATH than your shell - set AI_GEMINI_BIN to the full path.'
+  );
+}
+
+export const GEMINI_INSTALL_ACTION = geminiInstallAction();
 
 export async function checkGeminiCliHealth(options: {
   binary: string;
   /** The CHILD's environment, which is what the binary runs with. */
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /**
+   * How this provider signs in. An added provider's names its own
+   * GEMINI_CLI_HOME: the bare advice signs in the server's default folder,
+   * which is another provider's.
+   */
+  signInAction?: string;
 }): Promise<GeminiCliHealth> {
   const checkedAt = new Date().toISOString();
+  const signInAction = options.signInAction ?? GEMINI_SIGN_IN_ACTION;
   // AI_GEMINI_HEALTH_TIMEOUT_MS, read from the SERVER's environment, not
   // `options.env`, which is the child's.
   const timeoutMs = options.timeoutMs ?? geminiCliHealthTimeoutMs();
@@ -184,7 +197,7 @@ export async function checkGeminiCliHealth(options: {
       detail: missing
         ? `No "${options.binary}" on the server PATH.`
         : `Could not run "${options.binary} --version": ${version.stderr.trim() || version.code || 'unknown error'}`,
-      warning: missing ? GEMINI_INSTALL_ACTION : undefined,
+      warning: missing ? geminiInstallAction(signInAction) : undefined,
     };
   }
   const versionText = version.stdout.trim().split('\n')[0] || null;
@@ -248,7 +261,7 @@ export async function checkGeminiCliHealth(options: {
     detail: credentials
       ? `The Google sign-in at ${credentialsFile} has no refresh token, so it stops working within the hour.`
       : `Not signed in: there is no Google sign-in at ${credentialsFile}.`,
-    warning: GEMINI_SIGN_IN_ACTION,
+    warning: signInAction,
     meta,
   };
 }

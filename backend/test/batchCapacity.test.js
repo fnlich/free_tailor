@@ -157,3 +157,33 @@ test('the Gemini seat runs at its own process limit, read by the one reader its 
   }
   assert.equal(geminiCliConcurrency({}), 2, 'its own default, not the other seats\' 4');
 });
+
+test('a batch is as wide as every enabled provider of its type, an administrator\'s limits included', async () => {
+  // AI_CLI_CONCURRENCY is only the built-in provider's width now: an added
+  // provider brings its own, and a limit set on the page replaces the .env one.
+  const { resolveBatchCapacity } = loadCapacity();
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const config = require('../dist/config/aiModelConfig');
+  const providers = require('../dist/config/aiProviders');
+  config.invalidateSettingsCache();
+  providers.resetProviderSnapshotForTests();
+  const env = { ...process.env, AI_CLI_CONCURRENCY: '4' };
+  delete env.AI_BATCH_CONCURRENCY;
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-capacity-home-'));
+  const { provider } = await config.createAIProvider({ type: 'claude-cli', label: 'Claude two', homeDir: home, concurrency_max_requests: 5 });
+  let capacity = await resolveBatchCapacity({ provider: 'claude-cli' }, env);
+  assert.equal(capacity.limit, 9);
+  assert.match(capacity.reason, /9 Claude CLI slots across 2 providers/);
+
+  await config.updateAIProvider('claude-cli', { concurrency_max_requests: 2 });
+  assert.equal((await resolveBatchCapacity({ provider: 'claude-cli' }, env)).limit, 7, 'the page wins over .env');
+
+  await config.updateAIProvider(provider.id, { enabled: false });
+  capacity = await resolveBatchCapacity({ provider: 'claude-cli' }, env);
+  assert.equal(capacity.limit, 2, 'a provider switched off takes nothing');
+  assert.doesNotMatch(capacity.reason, /across/);
+  assert.equal((await resolveBatchCapacity({ provider: 'claude-cli' }, { ...env, AI_BATCH_CONCURRENCY: '3' })).limit, 3, 'and the override still beats all of it');
+});

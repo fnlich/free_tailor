@@ -122,13 +122,14 @@ export function getAdapter(id: string): AIProviderAdapter {
 }
 
 /**
- * What the adapter knows about taking a call now. A stub with no `readiness`
- * is always ready; so is a provider nothing has built an adapter for yet,
- * which says nothing against it.
+ * What the adapter knows about taking a call now - on `modelName`, when one is
+ * given, so a hold on that model alone counts (see ProviderReadiness.held). A
+ * stub with no `readiness` is always ready; so is a provider nothing has built
+ * an adapter for yet, which says nothing against it.
  */
-export function providerReadiness(id: string): ProviderReadiness {
+export function providerReadiness(id: string, modelName?: string): ProviderReadiness {
   try {
-    return getAdapter(id).readiness?.() ?? { ready: null, held: null };
+    return getAdapter(id).readiness?.(modelName) ?? { ready: null, held: null };
   } catch {
     return { ready: false, held: null };
   }

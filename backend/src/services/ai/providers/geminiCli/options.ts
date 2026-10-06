@@ -54,6 +54,28 @@ export function isGeminiModelName(name: string): boolean {
   return GEMINI_MODEL_NAME.test(name);
 }
 
+/** `pro`, `flash` or `flash-lite` for an alias or a concrete id; null for `auto`, gemma and the unknown. */
+export function geminiModelFamily(name: string | null | undefined): 'pro' | 'flash' | 'flash-lite' | null {
+  const lower = (name ?? '').trim().toLowerCase();
+  if (!lower || lower === 'auto' || lower.startsWith('gemma-')) return null;
+  if (/(?:^|-)flash-lite(?:-|$)/.test(lower)) return 'flash-lite';
+  if (/(?:^|-)flash(?:-|$)/.test(lower)) return 'flash';
+  if (/(?:^|-)pro(?:-|$)/.test(lower)) return 'pro';
+  return null;
+}
+
+/**
+ * True when the CLI answered a turn with another family than the one asked
+ * for - Pro switched to Flash. Compared by family: a concrete id and its alias
+ * are the same model. `auto` asks the CLI to choose, so whatever answered is
+ * what was asked for; an unknown name on either side is not a fallback.
+ */
+export function geminiAnsweredByFallback(requested: string, answered: string | null | undefined): boolean {
+  const asked = geminiModelFamily(requested);
+  const got = geminiModelFamily(answered);
+  return Boolean(asked && got && asked !== got);
+}
+
 /**
  * Every whole-number setting's default and bounds, in the shape of
  * `OPERATIONAL_INT_BOUNDS`, so the operational table can take these as they are.

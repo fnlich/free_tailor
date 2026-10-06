@@ -433,3 +433,309 @@ test('the analysis model pools the same way: its calls are spread over its type'
   assert.deepEqual(answered, [provider.id]);
   ai.resetRegistryForTests();
 });
+
+test("a Claude provider under a weekly Opus cap reads as held for Opus, and only for Opus", async () => {
+  const { rootDir } = useTempStorage('provider-seat-opus-cap');
+  // The recorded rejection, as the weekly Opus window rather than the
+  // five-hour one: the hold is the model's, not the seat's.
+  const lines = readCliFixture('rate-limited').map((line) =>
+    line.includes('rate_limit_event')
+      ? line
+          .replace('"rateLimitType":"five_hour"', '"rateLimitType":"seven_day_opus"')
+          .replace('"five_hour":{"utilization":1.0', '"five_hour":{"utilization":0.4')
+      : line
+  );
+  const runner = makeFakeCliRunner({ lines });
+  const capped = createClaudeCliAdapter({
+    runner,
+    instance: instance('prv-dddd0004', '/srv/capped', '/opt/claude'),
+    config: { workdir: path.join(rootDir, 'work'), firstEventMs: 1_000, queueWaitMs: 1_000, model: 'sonnet' },
+    healthCheck: async () => ({ ok: true, loggedIn: true, authMethod: 'oauth_token', checkedAt: '', detail: 'ok' }),
+  });
+  await assert.rejects(() => capped.complete(request({ modelName: 'opus' })), (error) => error.kind === 'rateLimited');
+
+  assert.equal(capped.readiness('opus').held.kind, 'rateLimited', 'asked about Opus: held');
+  assert.ok(Date.parse(capped.readiness('opus').held.until) > Date.now());
+  assert.equal(capped.readiness('sonnet').held, null, 'Sonnet still runs here');
+  assert.equal(capped.readiness('').held, null, 'and so does the default model, which is Sonnet');
+  assert.equal(capped.readiness().held, null, 'the seat itself is not held - the admin card says so');
+
+  // The queue and the pool now agree with what a call would meet.
+  await assert.rejects(() => capped.complete(request({ modelName: 'opus' })), (error) => error.kind === 'rateLimited');
+  assert.equal(runner.calls.length, 1, 'the second Opus call was turned away without spawning');
+});
+
+test('a call on a model one provider is held for goes to another of its type, and an unheld model is placed as usual', async () => {
+  useTempStorage('provider-seat-model-pick');
+  process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
+  const config = require('../dist/config/aiModelConfig');
+  const providers = require('../dist/config/aiProviders');
+  config.invalidateSettingsCache();
+  providers.resetProviderSnapshotForTests();
+  const ai = require('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'model-pick-home-'));
+  const { provider } = await config.createAIProvider({ type: 'claude-cli', label: 'Claude two', homeDir: home, concurrency_max_requests: 2 });
+  const answered = [];
+  const stub = (id, heldModel) => () => ({
+    id: 'claude-cli',
+    instanceId: id,
+    capabilities: { id: 'claude-cli', label: 'stub', temperature: false, maxOutputTokens: false, nativeJsonMode: 'json-schema', systemBlocks: true, maxConcurrency: 2 },
+    defaultModelName: () => 'sonnet',
+    health: async () => ({ ok: true, detail: 'stub', checkedAt: '' }),
+    readiness: (model) => ({ ready: true, held: model === heldModel ? { kind: 'rateLimited', reason: 'weekly cap', until: '' } : null }),
+    complete: async (req) => {
+      answered.push(`${req.modelName}@${id}`);
+      return { text: 'ok', resolvedModel: req.modelName, providerId: 'claude-cli', providerInstanceId: id, droppedParams: [], latencyMs: 1 };
+    },
+  });
+  ai.registerAdapter('claude-cli', stub('claude-cli', 'opus'));
+  ai.registerAdapter(provider.id, stub(provider.id, null));
+
+  assert.equal(ai.pickProvider('claude-cli', 'opus').id, provider.id, 'the provider held for Opus is passed over for Opus');
+  assert.equal(ai.pickProvider('claude-cli', 'sonnet').id, 'claude-cli', 'and is still first for Sonnet');
+  assert.equal(ai.pickProvider('claude-cli').id, 'claude-cli', 'asked about no model: the seat is not held');
+
+  // An unpinned call - a preview, an analysis - lands where it was picked.
+  for (const modelName of ['opus', 'sonnet']) {
+    await ai.createRawCompletion({ callSite: 'pool', system: 's', user: 'u', provider: 'claude-cli', modelName, responseFormat: 'text' });
+  }
+  assert.deepEqual(answered, [`opus@${provider.id}`, 'sonnet@claude-cli']);
+  ai.resetRegistryForTests();
+});
+
+test('a task pinned to a provider switched off mid-task finishes its calls there', async () => {
+  // "Running ones finish or fail as today": its lane slot is still the
+  // switched-off provider's, so its next call going to another provider
+  // landed on a semaphore its lane never counted, and the order named a
+  // provider that had not built it.
+  useTempStorage('provider-seat-pin-off');
+  process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
+  const config = require('../dist/config/aiModelConfig');
+  const providers = require('../dist/config/aiProviders');
+  config.invalidateSettingsCache();
+  providers.resetProviderSnapshotForTests();
+  const ai = require('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pin-off-home-'));
+  const { provider } = await config.createAIProvider({ type: 'claude-cli', label: 'Claude B', homeDir: home, concurrency_max_requests: 2 });
+  const answered = [];
+  const stub = (id) => () => ({
+    id: 'claude-cli',
+    instanceId: id,
+    capabilities: { id: 'claude-cli', label: 'stub', temperature: false, maxOutputTokens: false, nativeJsonMode: 'json-schema', systemBlocks: true, maxConcurrency: 2 },
+    defaultModelName: () => 'sonnet',
+    health: async () => ({ ok: true, detail: 'stub', checkedAt: '' }),
+    readiness: () => ({ ready: true, held: null }),
+    complete: async (req) => {
+      answered.push(id);
+      return { text: 'ok', resolvedModel: req.modelName, providerId: 'claude-cli', providerInstanceId: id, droppedParams: [], latencyMs: 1 };
+    },
+  });
+  ai.registerAdapter('claude-cli', stub('claude-cli'));
+  ai.registerAdapter(provider.id, stub(provider.id));
+
+  const call = () =>
+    ai.createRawCompletion({ callSite: 'pin', system: 's', user: 'u', provider: 'claude-cli', modelName: 'sonnet', responseFormat: 'text' });
+  await ai.runPinnedToProvider(provider.id, async () => {
+    await call();
+    await config.updateAIProvider(provider.id, { enabled: false });
+    assert.equal(ai.pickProvider('claude-cli').id, provider.id, 'the pin holds though the provider is switched off');
+    await call();
+  });
+  assert.deepEqual(answered, [provider.id, provider.id]);
+
+  // Nothing unpinned goes to it once it is off.
+  answered.length = 0;
+  await call();
+  assert.deepEqual(answered, ['claude-cli']);
+  ai.resetRegistryForTests();
+});
+
+/* ------------------------------------------- per provider, seat by seat */
+
+test('two Claude providers, and two Gemini ones, keep two semaphores, each at its own limit', () => {
+  // Owner decision P2: two CLIs of a type have two separate limits - for a
+  // direct call (a preview, the Bid Assistant) as well as for the queue's lanes.
+  const { rootDir } = useTempStorage('provider-seat-semaphores');
+  const { getSemaphoreStats } = require('../dist/services/ai/concurrency');
+  const quiet = () => makeFakeCliRunner({ lines: [] });
+  createClaudeCliAdapter({ runner: quiet(), instance: instance('prv-5e5e0001', '/srv/a', '/opt/a', { concurrency: 1 }), config: { workdir: path.join(rootDir, 'claude') } });
+  createClaudeCliAdapter({ runner: quiet(), instance: instance('prv-5e5e0002', '/srv/b', '/opt/b', { concurrency: 3 }), config: { workdir: path.join(rootDir, 'claude') } });
+  const gemini = (id, concurrency) =>
+    createGeminiCliAdapter({
+      runner: quiet(),
+      instance: instance(id, path.join(rootDir, `${id}-home`), '/opt/gemini', { concurrency }),
+      config: { workdir: path.join(rootDir, `${id}-work`), stateDir: path.join(rootDir, `${id}-state`) },
+    });
+  gemini('prv-5e5e0003', 1);
+  gemini('prv-5e5e0004', 3);
+  const stats = getSemaphoreStats();
+  assert.deepEqual(
+    ['prv-5e5e0001', 'prv-5e5e0002', 'prv-5e5e0003', 'prv-5e5e0004'].map((id) => stats[id]?.limit),
+    [1, 3, 1, 3],
+    'keyed by the provider, never by the type - one shared semaphore would be sized by whichever was built first'
+  );
+});
+
+test('an added Claude provider runs in a working directory of its own beside the seat\'s', async () => {
+  const { rootDir } = useTempStorage('provider-seat-claude-workdir');
+  const saved = process.env.AI_CLI_WORKDIR;
+  process.env.AI_CLI_WORKDIR = path.join(rootDir, 'claude-work');
+  try {
+    const runner = makeFakeCliRunner({ lines: readCliFixture('success-text') });
+    const adapter = createClaudeCliAdapter({
+      runner,
+      instance: instance('prv-5e5e0005', '/srv/c', '/opt/c'),
+      config: { firstEventMs: 1_000, queueWaitMs: 1_000 },
+    });
+    await adapter.complete(request());
+    assert.equal(runner.calls[0].cwd, path.join(rootDir, 'claude-work-prv-5e5e0005'));
+  } finally {
+    if (saved === undefined) delete process.env.AI_CLI_WORKDIR;
+    else process.env.AI_CLI_WORKDIR = saved;
+  }
+});
+
+test("a Codex provider's readiness: a status that said nothing benches nothing, a sign-in with an API key benches it", async () => {
+  useTempStorage('provider-seat-codex-readiness');
+  let answer = { ok: false, loggedIn: false, binary: 'codex', detail: 'said nothing', unknown: true, checkedAt: '' };
+  const adapter = createCodexCliAdapter({
+    runner: { run: async () => { throw new Error('not spawned'); } },
+    readAnswerFile: () => '',
+    instance: instance('prv-5e5e0006', '/srv/codex', '/opt/codex'),
+    healthCheck: async () => answer,
+  });
+  assert.equal(adapter.readiness().ready, null, 'not checked yet');
+  await adapter.health({ fresh: true });
+  assert.equal(adapter.readiness().ready, null, 'unknown is not signed out: the queue keeps sending it work');
+  answer = { ok: true, loggedIn: true, binary: 'codex', detail: 'Logged in using an API key', apiKey: true, checkedAt: '' };
+  await adapter.health({ fresh: true });
+  assert.equal(adapter.readiness().ready, false, 'every turn would be refused: no work goes to it');
+  answer = { ok: true, loggedIn: true, binary: 'codex', detail: 'Logged in using ChatGPT', checkedAt: '' };
+  await adapter.health({ fresh: true });
+  assert.equal(adapter.readiness().ready, true);
+});
+
+test("a Gemini provider's seat-wide hold is in its readiness, which is what the queue and the pool read", async () => {
+  const { rootDir } = useTempStorage('provider-seat-gemini-held');
+  const signedOut = fs
+    .readFileSync(path.join(__dirname, 'fixtures', 'gemini', 'recorded-signed-out.stderr.txt'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1);
+  const adapter = createGeminiCliAdapter({
+    runner: makeFakeCliRunner({ lines: [], exitCode: 41, stderr: signedOut }),
+    instance: instance('prv-5e5e0007', path.join(rootDir, 'home'), '/opt/gemini'),
+    config: { model: 'auto', workdir: path.join(rootDir, 'work'), stateDir: path.join(rootDir, 'state'), firstEventMs: 1_000, queueWaitMs: 1_000 },
+  });
+  assert.equal(adapter.readiness().held, null);
+  await adapter.complete(request({ modelName: 'auto', responseFormat: 'json' })).catch(() => undefined);
+  assert.equal(adapter.readiness().held?.kind, 'auth', 'held as signed out - not only refused at its next call');
+});
+
+test('another binary for a provider is another adapter; the registry rebuilds it', async () => {
+  useTempStorage('provider-seat-rebuild');
+  process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
+  const config = require('../dist/config/aiModelConfig');
+  const providers = require('../dist/config/aiProviders');
+  config.invalidateSettingsCache();
+  providers.resetProviderSnapshotForTests();
+  const ai = require('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+  try {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rebuild-home-'));
+    const binary = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rebuild-bin-')), 'codex');
+    fs.writeFileSync(binary, '#!/bin/sh\n');
+    fs.chmodSync(binary, 0o755);
+    const { provider } = await config.createAIProvider({ type: 'codex-cli', label: 'Codex two', homeDir: home, concurrency_max_requests: 3 });
+    const adapter = ai.getAdapter(provider.id);
+    await config.updateAIProvider(provider.id, { binaryPath: binary });
+    assert.notEqual(ai.getAdapter(provider.id), adapter, 'the old adapter would keep spawning the old binary');
+  } finally {
+    ai.resetRegistryForTests();
+  }
+});
+
+test('a removed provider\'s id still names its type, and every enabled provider is in the startup check', async (t) => {
+  useTempStorage('provider-seat-removed-type');
+  process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
+  const config = require('../dist/config/aiModelConfig');
+  const providers = require('../dist/config/aiProviders');
+  config.invalidateSettingsCache();
+  providers.resetProviderSnapshotForTests();
+  const ai = require('../dist/services/ai/index');
+  ai.resetRegistryForTests();
+  t.after(() => ai.resetRegistryForTests());
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'removed-type-home-'));
+  const { provider } = await config.createAIProvider({ type: 'gemini-cli', label: 'Gemini two', homeDir: home, concurrency_max_requests: 1 });
+
+  // The boot check names the added provider, by id and label.
+  for (const type of ['claude-cli', 'codex-cli', 'gemini-cli']) {
+    ai.registerAdapter(type, () => ({
+      id: type,
+      capabilities: { id: type, label: 'stub', maxConcurrency: 1 },
+      health: async () => ({ ok: true, detail: 'stub ready', checkedAt: '' }),
+    }));
+  }
+  const lines = [];
+  const log = t.mock.method(console, 'log', (line) => lines.push(String(line)));
+  const reports = await ai.preflightAllProviders();
+  log.mock.restore();
+  assert.ok(reports.some((report) => report.providerId === provider.id), JSON.stringify(reports));
+  assert.ok(lines.some((line) => line.includes(provider.id) && line.includes('Gemini two')), JSON.stringify(lines));
+
+  // Removed, its waiting work still has to find its type's pool.
+  await config.deleteAIProvider(provider.id);
+  await config.getAdminAppSettings();
+  assert.equal(providers.providerTypeOf(provider.id), 'gemini-cli');
+});
+
+test("a signed-out added provider's card says how to sign in at ITS folder; the built-in's says the bare command", async () => {
+  // The bare `claude auth login` signs in the server's default folder - the
+  // built-in provider's - so an operator following the card for an added one
+  // signed in the wrong account and the card stayed red.
+  const { rootDir } = useTempStorage('provider-seat-sign-in-advice');
+  const childProcess = require('node:child_process');
+  const real = childProcess.execFile;
+  childProcess.execFile = (_command, args, _options, callback) => {
+    const said =
+      args[0] === '--version' ? '2.0.0\n' : args.join(' ') === 'auth status' ? '{"loggedIn":false}' : 'Not logged in\n';
+    process.nextTick(() => callback(null, said, ''));
+    return { pid: 0 };
+  };
+  try {
+    const advice = (health) => `${health.detail} ${health.warning ?? ''}`;
+    const claudeB = createClaudeCliAdapter({ runner: makeFakeCliRunner({ lines: [] }), instance: instance('prv-5e5e0008', '/srv/claude-b', 'claude') });
+    assert.match(advice(await claudeB.health({ fresh: true })), /`CLAUDE_CONFIG_DIR=\/srv\/claude-b claude auth login`/);
+    const claude = createClaudeCliAdapter({ runner: makeFakeCliRunner({ lines: [] }), config: { binary: 'claude' } });
+    const bare = advice(await claude.health({ fresh: true }));
+    assert.match(bare, /`claude auth login`/);
+    assert.doesNotMatch(bare, /CLAUDE_CONFIG_DIR=/);
+
+    const codexB = createCodexCliAdapter({
+      runner: { run: async () => { throw new Error('not spawned'); } },
+      readAnswerFile: () => '',
+      instance: instance('prv-5e5e0009', '/srv/codex-b', 'codex'),
+    });
+    assert.match(advice(await codexB.health({ fresh: true })), /`CODEX_HOME=\/srv\/codex-b codex login --device-auth`/);
+
+    const geminiHome = path.join(rootDir, 'gemini-b');
+    fs.mkdirSync(geminiHome);
+    const geminiB = createGeminiCliAdapter({
+      runner: makeFakeCliRunner({ lines: [] }),
+      instance: instance('prv-5e5e000a', geminiHome, 'gemini'),
+      config: { workdir: path.join(rootDir, 'gemini-work'), stateDir: path.join(rootDir, 'gemini-state') },
+    });
+    assert.ok(
+      advice(await geminiB.health({ fresh: true })).includes(`\`GEMINI_CLI_HOME=${geminiHome} NO_BROWSER=true gemini\``),
+      'the Gemini card names the folder too'
+    );
+  } finally {
+    childProcess.execFile = real;
+  }
+});

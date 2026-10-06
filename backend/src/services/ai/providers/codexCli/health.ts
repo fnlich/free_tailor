@@ -94,8 +94,17 @@ export async function checkCodexCliHealth(options: {
   /** The CHILD's environment, which is what the binary runs with. */
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /**
+   * The sign-in and sign-out commands this provider's advice names. An added
+   * provider's carry its own CODEX_HOME: the bare commands act on the
+   * server's default folder, which is another provider's.
+   */
+  signInCommand?: string;
+  signOutCommand?: string;
 }): Promise<CodexCliHealth> {
   const checkedAt = new Date().toISOString();
+  const signIn = options.signInCommand ?? 'codex login --device-auth';
+  const signOut = options.signOutCommand ?? 'codex logout';
   // AI_CODEX_HEALTH_TIMEOUT_MS, the mirror of the Claude side's
   // AI_CLI_HEALTH_TIMEOUT_MS and configurable for the same reason: how long a
   // spawn takes is the machine's business (a Windows `.cmd` shim, antivirus, a
@@ -111,7 +120,7 @@ export async function checkCodexCliHealth(options: {
       binary: null,
       detail:
         `The \`${options.binary}\` CLI was not found. Install it with ` +
-        '`npm i -g @openai/codex`, then sign in with `codex login --device-auth` as the user this ' +
+        `\`npm i -g @openai/codex\`, then sign in with \`${signIn}\` as the user this ` +
         'server runs as. If it IS installed, this process has a different PATH than your shell - ' +
         'set AI_CODEX_BIN to the full path.',
       checkedAt,
@@ -141,7 +150,7 @@ export async function checkCodexCliHealth(options: {
       binary: options.binary,
       detail:
         `Not signed in (\`codex login status\` said: ${firstLine}). Run ` +
-        '`codex login --device-auth` as the user this server runs as - it prints a code you ' +
+        `\`${signIn}\` as the user this server runs as - it prints a code you ` +
         'approve from any other browser, so no display is needed on the server.',
       checkedAt,
     };
@@ -158,7 +167,7 @@ export async function checkCodexCliHealth(options: {
       binary: options.binary,
       detail:
         `Signed in with an API key, not a ChatGPT subscription (\`codex login status\` said: ${how}). ` +
-        'This app runs Codex on a subscription only. Run `codex logout`, then `codex login --device-auth` ' +
+        `This app runs Codex on a subscription only. Run \`${signOut}\`, then \`${signIn}\` ` +
         'as the user this server runs as and sign in with ChatGPT.',
       checkedAt,
     };

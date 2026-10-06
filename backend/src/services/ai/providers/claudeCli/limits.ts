@@ -164,12 +164,26 @@ export class OutageTable {
 
   /**
    * The hold on the whole seat, while it lasts - not one model's. What the
-   * queue and the pool read to send a type's work to another provider of it.
+   * admin card reads, and the queue and the pool for work that names no model.
    */
   seatHold(): { until: number; reason: string; kind: OutageKind } | null {
     const entry = this.entries.get('*');
     if (!entry || entry.until <= this.now()) return null;
     return { until: entry.until, reason: entry.reason, kind: entry.kind };
+  }
+
+  /**
+   * The hold a call on `model` would meet - the seat's or that model's,
+   * whichever lasts longer - exactly as `check` turns it away. What the queue
+   * and the pool read to send a model's work to another provider of its type:
+   * a provider under a weekly Opus cap fails every Opus call in microseconds,
+   * so reading only the seat's hold made it the LEAST loaded lane, and it
+   * took (and failed) Opus work a healthy provider of the type could build.
+   */
+  holdFor(model: string): { until: number; reason: string; kind: OutageKind } | null {
+    const found = this.check(model);
+    if (found.waitMs <= 0 || !found.kind) return null;
+    return { until: this.now() + found.waitMs, reason: found.reason, kind: found.kind };
   }
 
   /** Milliseconds this model is known to be out, why, and as what. 0 when it is not. */

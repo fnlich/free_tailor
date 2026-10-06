@@ -96,8 +96,12 @@ export function createCodexEventReducer(state: CodexTurnState): (line: string) =
 
     if (type === 'turn.failed' || type === 'thread.failed') {
       // An event that explicitly ends the turn. Unlike the line above, this one
-      // IS the outcome.
-      state.fatal = readText(event) || 'the turn failed';
+      // IS the outcome. Its words are on the event or, in the shape the CLI's
+      // own event types declare (`{"type":"turn.failed","error":{"message"}}`),
+      // one level down - read there too, or a usage limit reads as "the turn
+      // failed" and is retried into the same limit instead of holding the seat.
+      const nested = asRecord(event.error);
+      state.fatal = readText(event) || (nested ? readText(nested) : '') || 'the turn failed';
       return;
     }
 

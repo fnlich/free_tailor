@@ -1000,6 +1000,34 @@ test('the model reported is the one that answered, not the one that was asked fo
   const runner = makeFakeCliRunner({ lines: readCliFixture('fallback-model') });
   const result = await makeAdapter(runner).complete(makeRequest({ modelName: 'opus' }));
   assert.equal(result.resolvedModel, 'claude-haiku-4-5-20251001');
+  // And it says so: the answer is used, but the tailoring cache must not keep
+  // it as Opus's (services/tailorCache.ts).
+  assert.equal(result.fellBack, true);
+
+  const asked = await makeAdapter(makeFakeCliRunner({ lines: readCliFixture('success-text') })).complete(makeRequest());
+  assert.equal(asked.resolvedModel, 'claude-sonnet-5');
+  assert.equal(asked.fellBack, false, 'Sonnet asked, a full Sonnet id answered: the model asked for');
+});
+
+test('a fallback is told by model family, never by comparing names as strings', () => {
+  const { answeredByFallback, claudeModelFamily } = load('../dist/services/ai/providers/claudeCli/modelNames');
+  assert.equal(claudeModelFamily('claude-haiku-4-5-20251001'), 'haiku');
+  assert.equal(claudeModelFamily('claude-3-5-sonnet-20241022'), 'sonnet');
+  assert.equal(claudeModelFamily('sonnet[1m]'), 'sonnet');
+  assert.equal(claudeModelFamily('default'), null);
+  assert.equal(claudeModelFamily('claude-newfamily-1'), null);
+
+  // An alias answered by its own family's full id is the model asked for.
+  assert.equal(answeredByFallback('opus', 'claude-opus-4-1-20250805', ['haiku']), false);
+  assert.equal(answeredByFallback('claude-opus-4-1', 'claude-opus-4-1-20250805', ['haiku']), false);
+  assert.equal(answeredByFallback('opus', 'claude-haiku-4-5-20251001', ['haiku']), true);
+  assert.equal(answeredByFallback('sonnet[1m]', 'claude-haiku-4-5', []), true, 'another family is another model');
+  // `default` lets the account choose: only a family named as the fallback reads as one.
+  assert.equal(answeredByFallback('default', 'claude-opus-4-1', ['haiku']), false);
+  assert.equal(answeredByFallback('default', 'claude-haiku-4-5', ['haiku']), true);
+  // Cannot tell: not a fallback.
+  assert.equal(answeredByFallback('opus', null, ['haiku']), false);
+  assert.equal(answeredByFallback('opus', 'claude-newfamily-1', ['haiku']), false);
 });
 
 test('a queued call waits for the caller deadline, not a short fixed cap', async () => {

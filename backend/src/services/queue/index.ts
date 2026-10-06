@@ -143,16 +143,30 @@ function legacyLanePool(lane: unknown): string | null {
 
 /**
  * What the dispatcher asks between readings. A provider is ready when its
- * adapter has no hold on the whole seat and its last health check was not
- * against it - both synchronous, so the dispatch loop stays free of awaits.
+ * adapter has no hold on the whole seat - nor, for a task, on the task's
+ * model - and its last health check was not against it, all synchronous, so
+ * the dispatch loop stays free of awaits.
  */
 const lanePolicy: LanePolicy = {
-  ready: (lane) => {
-    const readiness = providerReadiness(lane);
+  ready: (lane, model) => {
+    const readiness = providerReadiness(lane, model);
     return readiness.ready !== false && !readiness.held;
   },
+  modelOf: (task) => taskModelName(task.payload),
   poolOf: (lane) => providerTypeOf(lane) ?? legacyLanePool(lane),
 };
+
+/**
+ * The model a resume task's tailoring runs on - its run's choice, which wins
+ * over any prompt override (`runChoiceWins`) - as the provider is asked for
+ * it: '' for a choice that leaves it to the provider's default. Undefined for
+ * a payload with no choice at all, which is asked about the seat only.
+ */
+export function taskModelName(payload: unknown): string | undefined {
+  const choice = (payload as { choice?: { modelName?: unknown } } | null | undefined)?.choice;
+  if (!choice || typeof choice !== 'object') return undefined;
+  return typeof choice.modelName === 'string' ? choice.modelName : '';
+}
 
 /** A provider's name for the log: the type id for a built-in, label and id for an added one. */
 function describeProvider(id: string): string {

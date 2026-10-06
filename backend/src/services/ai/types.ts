@@ -94,6 +94,15 @@ export type CompletionResult = {
    */
   readonly text: string;
   readonly resolvedModel: string;
+  /**
+   * True when the seat says a model other than the one asked for answered:
+   * Claude's `--fallback-model` taking an overloaded model's turn, Gemini
+   * switching Pro to Flash. The answer is used as it is; what it must not be
+   * is KEPT as the asked-for model's - the tailoring cache would otherwise
+   * hand a fallback's answer to every repeat, at the asked-for model's price.
+   * Absent means no seat said so.
+   */
+  readonly fellBack?: boolean;
   /** The provider TYPE (the seat's kind), which is what a price and a model name belong to. */
   readonly providerId: AIProvider;
   /**
@@ -170,7 +179,12 @@ export type ProviderReadiness = {
    * counts as ready, so a provider is never benched on a guess.
    */
   readonly ready: boolean | null;
-  /** A hold on the whole seat (not one model), while it lasts. */
+  /**
+   * A hold that would turn the call away, while it lasts: on the whole seat,
+   * or - when `readiness` was asked about a model - on that model. A weekly
+   * Opus cap holds Opus only, so a provider under one still takes Sonnet
+   * work, and asked about no model (the admin card) it reads as not held.
+   */
   readonly held: { readonly kind: string; readonly reason: string; readonly until: string } | null;
 };
 
@@ -199,8 +213,11 @@ export interface AIProviderAdapter {
   /** Rejects with AIProviderError - never a bare Error. Honours the deadline. */
   complete(request: CompletionRequest): Promise<CompletionResult>;
   /**
-   * Cheap and synchronous: the last health verdict and any seat-wide hold.
-   * Optional, so a stub without one reads as always ready.
+   * Cheap and synchronous: the last health verdict and any hold on the seat -
+   * and, given a model name (as a caller would send it; '' for the default),
+   * any hold on that model too, so the queue and the pool never place a
+   * model's work on a provider that would turn it away unasked. Optional, so
+   * a stub without one reads as always ready.
    */
-  readiness?(): ProviderReadiness;
+  readiness?(modelName?: string): ProviderReadiness;
 }

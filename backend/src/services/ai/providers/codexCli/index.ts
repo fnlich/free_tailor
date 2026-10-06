@@ -28,6 +28,7 @@ import {
   readCodexTurnText,
 } from './events';
 import { checkCodexCliHealth, type CodexCliHealth } from './health';
+import { codexLimitHoldMs, codexRetryAfterSeconds, isCodexUsageLimit, type CodexHoldKind } from './limits';
 import { readCodexCliConfig, resolveCodexTimeoutMs, type CodexCliConfig } from './options';
 
 const PROVIDER_ID = 'codex-cli' as const;
@@ -38,7 +39,12 @@ export type CodexCliAdapterOptions = {
   config?: Partial<CodexCliConfig>;
   now?: () => number;
   /** Injected in tests so `codex login status` is never executed. */
-  healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv }) => Promise<CodexCliHealth>;
+  healthCheck?: (options: {
+    binary: string;
+    env: NodeJS.ProcessEnv;
+    signInCommand?: string;
+    signOutCommand?: string;
+  }) => Promise<CodexCliHealth>;
   /** Injected in tests, which have no real CLI to write the answer file. */
   readAnswerFile?: (file: string) => string;
   /**
@@ -49,7 +55,10 @@ export type CodexCliAdapterOptions = {
   instance?: ProviderInstanceSpec;
 };
 
-export type CodexCliAdapter = AIProviderAdapter;
+export type CodexCliAdapter = AIProviderAdapter & {
+  /** The provider's live hold, if any, for the admin health card - the Claude and Gemini seats' shape. */
+  outages(): Array<{ scope: string; reason: string; expiresAt: string }>;
+};
 
 /**
  * Runs completions through the locally installed `codex` binary, on the
@@ -61,10 +70,11 @@ export type CodexCliAdapter = AIProviderAdapter;
  * the final message here" is a stable contract. Events supply metadata and, for
  * a turn that produced nothing, the reason.
  *
- * There is no equivalent of the Claude provider's outage table. Modelling quota
- * would mean inventing the shape of a refusal nobody here has seen, and a
- * confidently wrong message at the moment somebody hits a limit is worse than a
- * plain one.
+ * One hold, on the whole seat: a usage limit the turn names in words
+ * (limits.ts), so a provider out of its window stops taking work and the
+ * queue moves what waits for it to another Codex provider. A sign-in that a
+ * turn finds gone is not a hold but the health reading, set to signed out at
+ * once rather than when the minute's status cache next lapses.
  */
 export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): CodexCliAdapter {
   const instance = options.instance;
@@ -90,6 +100,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
   // Keyed by PROVIDER: two Codex providers are two limits (owner decision P2).
   const semaphore = getProviderSemaphore(providerId, config.concurrency);
   const loginCommand = home ? `CODEX_HOME=${home} codex login --device-auth` : 'codex login --device-auth';
+  const logoutCommand = home ? `CODEX_HOME=${home} codex logout` : 'codex logout';
   const descriptor = getProviderDescriptor(PROVIDER_ID);
   const readAnswerFile =
     options.readAnswerFile ??
@@ -105,6 +116,19 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
 
   let workdirReady = false;
   let cachedHealth: { value: CodexCliHealth; at: number } | null = null;
+  // When a turn last found the seat signed out: only a status check that
+  // STARTED after it may say otherwise (one already running when the turn
+  // failed read the sign-in before it went).
+  let signedOutAt = -Infinity;
+  // A usage limit, on the whole seat (limits.ts).
+  let hold: { kind: CodexHoldKind; reason: string; until: number } | null = null;
+  const seatName = instance && !instance.builtIn ? `the Codex provider "${instance.label}"` : 'the Codex subscription';
+
+  /** The hold while it lasts; an expired one is forgotten here. */
+  function currentHold(): { kind: CodexHoldKind; reason: string; until: number } | null {
+    if (hold && hold.until <= now()) hold = null;
+    return hold;
+  }
   // One check at a time: when the cache lapses under load, every call waiting
   // on it shares the one `codex login status` rather than each spawning its own.
   let pendingHealth: Promise<ProviderHealth> | null = null;
@@ -134,12 +158,15 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
 
   async function checkHealth(): Promise<ProviderHealth> {
     const check = options.healthCheck ?? checkCodexCliHealth;
+    const startedAt = now();
     try {
       const value = await check({
         binary: config.binary,
         env: childEnv(),
+        signInCommand: loginCommand,
+        signOutCommand: logoutCommand,
       });
-      cachedHealth = { value, at: now() };
+      if (startedAt > signedOutAt) cachedHealth = { value, at: now() };
       return value;
     } catch (error) {
       return {
@@ -181,6 +208,17 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
       );
     }
 
+    // Known to be out of its usage window: turned away in microseconds, not
+    // spawned to rediscover it. The queue reads the same hold (`readiness`)
+    // and sends this provider's work elsewhere meanwhile.
+    const held = currentHold();
+    if (held) {
+      const seconds = Math.max(1, Math.ceil((held.until - now()) / 1000));
+      throw fail('rateLimited', `${held.reason}; holding off for about ${Math.ceil(seconds / 60)} minute(s)`, {
+        retryAfterSeconds: seconds,
+      });
+    }
+
     // A key stored in CODEX_HOME (`codex login --with-api-key`, a Bedrock key)
     // is out of the environment strip's reach, and every turn on it bills per
     // token - so asked BEFORE spawning, not discovered after. Cached for a
@@ -195,7 +233,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
         'the Codex CLI is signed in with an API key, so this call would be billed per token; it was refused without running',
         {
           adminAction:
-            `Run \`codex logout\`, then \`${loginCommand}\` as the user this server runs as and sign in ` +
+            `Run \`${logoutCommand}\`, then \`${loginCommand}\` as the user this server runs as and sign in ` +
             'with ChatGPT. Calls are refused until the seat is signed in to a subscription again.',
         }
       );
@@ -266,7 +304,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
           throw fail('binaryMissing', `spawn ${config.binary}: ${outcome.spawnError.message}`, {
             adminAction:
               'Install the Codex CLI (npm i -g @openai/codex) and sign in with ' +
-              '`codex login --device-auth` as the user this server runs as - it prints a code you ' +
+              `\`${loginCommand}\` as the user this server runs as - it prints a code you ` +
               'approve from any other browser, so the server needs no display. If it IS installed, ' +
               'this process has a different PATH than your shell: set AI_CODEX_BIN to the full path.',
           });
@@ -288,10 +326,43 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
 
       if (!text) {
         const reason = describeCodexFailure(state);
+        // A usage limit first: its sentence can say "sign in" too ("...or sign
+        // in with a Pro account"), and it is a wait, not a sign-in to fix. Read
+        // from every line the turn wrote, since the one that ends it may only
+        // say that it failed.
+        const said = [reason, state.fatal ?? '', ...state.errors].join('\n');
+        if (isCodexUsageLimit(said)) {
+          const holdMs = codexLimitHoldMs(codexRetryAfterSeconds(said));
+          const fresh = !currentHold();
+          hold = { kind: 'rateLimited', reason, until: now() + holdMs };
+          if (fresh) {
+            console.warn(
+              `[ai] Holding off ${seatName} for about ${Math.max(1, Math.round(holdMs / 60_000))} minute(s): ${reason}`
+            );
+          }
+          throw fail('rateLimited', reason, { retryAfterSeconds: Math.ceil(holdMs / 1000) });
+        }
         // Signed out is worth naming as such: it is the one failure an operator
         // fixes rather than retries, and the CLI's own wording for it is not
         // obviously about authentication.
         const signedOut = /not\s+logged\s+in|unauthor|401|sign\s*in/i.test(reason);
+        if (signedOut) {
+          // Benched at once: the minute's cached "signed in" would otherwise
+          // keep this provider taking - and failing - work until it lapsed. A
+          // status check started after this (the queue's, or Admin ->
+          // Settings') puts it back if the sign-in is in fact there.
+          signedOutAt = now();
+          cachedHealth = {
+            value: {
+              ok: false,
+              loggedIn: false,
+              binary: config.binary,
+              detail: `A turn found it signed out: ${reason}`,
+              checkedAt: new Date(signedOutAt).toISOString(),
+            },
+            at: signedOutAt,
+          };
+        }
         throw fail(signedOut ? 'auth' : 'failed', reason, {
           ...(signedOut
             ? {
@@ -303,6 +374,8 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
         });
       }
 
+      // A turn that answered is the window open again.
+      hold = null;
       return {
         text,
         resolvedModel: model,
@@ -338,17 +411,24 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
   }
 
   /**
-   * Codex keeps no holds, so readiness is the last sign-in check alone: a
-   * seat signed out, missing, or signed in with a key it refuses to bill takes
-   * no work. A check that could not tell (`unknown`) benches nothing - the
-   * same rule the key refusal above keeps.
+   * The last sign-in check - a seat signed out (by the check or by a turn),
+   * missing, or signed in with a key it refuses to bill takes no work - and
+   * the usage-limit hold, which is the whole seat's whatever model is asked
+   * about. A check that could not tell (`unknown`) benches nothing - the same
+   * rule the key refusal above keeps.
    */
   function readiness(): ProviderReadiness {
     const value = cachedHealth?.value;
+    const held = currentHold();
     return {
       ready: !value || value.unknown ? null : value.ok && value.apiKey !== true,
-      held: null,
+      held: held ? { kind: held.kind, reason: held.reason, until: new Date(held.until).toISOString() } : null,
     };
+  }
+
+  function outages(): Array<{ scope: string; reason: string; expiresAt: string }> {
+    const held = currentHold();
+    return held ? [{ scope: '*', reason: held.reason, expiresAt: new Date(held.until).toISOString() }] : [];
   }
 
   return {
@@ -359,5 +439,6 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     health,
     complete,
     readiness,
+    outages,
   };
 }

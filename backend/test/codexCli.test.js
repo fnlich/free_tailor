@@ -407,3 +407,136 @@ test('sampling hints the CLI has no flag for are reported, not silently dropped'
   );
   assert.deepEqual([...result.droppedParams].sort(), ['maxOutputTokens', 'temperature']);
 });
+
+// -- usage limits and sign-outs, per provider ------------------------------- //
+
+const USAGE_LIMIT_LINES = [
+  '{"type":"thread.started","thread_id":"01a0e65e-0000-0000-0000-000000000000"}',
+  '{"type":"turn.started"}',
+  '{"type":"error","message":"You\'ve hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 2 hours 5 minutes."}',
+  '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 2 hours 5 minutes."}}',
+];
+
+test('a turn that failed reports its own words, read one level down as the CLI nests them', () => {
+  const { createCodexEventReducer, createCodexTurnState, describeCodexFailure } = loadFresh(
+    '../dist/services/ai/providers/codexCli/events'
+  );
+  const state = createCodexTurnState();
+  const reduce = createCodexEventReducer(state);
+  reduce('{"type":"turn.failed","error":{"message":"stream error: 500 Internal Server Error"}}');
+  assert.equal(describeCodexFailure(state), 'stream error: 500 Internal Server Error');
+});
+
+test('the usage-limit words and the wait they name are read, and nothing else is taken for one', () => {
+  const limits = loadFresh('../dist/services/ai/providers/codexCli/limits');
+  assert.equal(limits.isCodexUsageLimit("You've hit your usage limit. Try again in 5 hours."), true);
+  assert.equal(limits.isCodexUsageLimit('unexpected status 429 Too Many Requests'), true);
+  assert.equal(limits.isCodexUsageLimit('Rate limit reached for requests'), true);
+  for (const line of fixture('recorded-network-failure.ndjson')) {
+    assert.equal(limits.isCodexUsageLimit(line), false, `a network failure is not a limit: ${line.slice(0, 60)}`);
+  }
+  assert.equal(limits.isCodexUsageLimit('Not logged in. Run codex login.'), false);
+
+  assert.equal(limits.codexRetryAfterSeconds('try again in 4 days 2 hours 3 minutes.'), 4 * 86_400 + 2 * 3_600 + 180);
+  assert.equal(limits.codexRetryAfterSeconds('Please try again in 45 seconds'), 45);
+  assert.equal(limits.codexRetryAfterSeconds('or try again at 3:45 PM.'), null, 'a clock time is not guessed at');
+  assert.equal(limits.codexRetryAfterSeconds('try again later.'), null);
+
+  assert.equal(limits.codexLimitHoldMs(null), limits.DEFAULT_CODEX_LIMIT_HOLD_MS);
+  assert.equal(limits.codexLimitHoldMs(10), limits.MIN_CODEX_LIMIT_HOLD_MS, 'never a hold too short to matter');
+  assert.equal(limits.codexLimitHoldMs(4 * 86_400), limits.MAX_CODEX_LIMIT_HOLD_MS, 'a weekly limit is re-probed in half an hour');
+  assert.equal(limits.codexLimitHoldMs(20 * 60), 20 * 60_000);
+});
+
+test('a Codex provider at its usage limit is held: turned away without spawning, read as held, until the hold ends', async () => {
+  useTempStorage('codex-usage-limit');
+  const { createCodexCliAdapter } = loadFresh('../dist/services/ai/providers/codexCli/index');
+  let now = 1_000_000;
+  let calls = 0;
+  let answer = '';
+  const runner = {
+    run: async (spec) => {
+      calls += 1;
+      if (!answer) for (const line of USAGE_LIMIT_LINES) spec.onLine(line);
+      return { exitCode: answer ? 0 : 1, signal: null, stderrTail: '', timedOut: false, stalled: false, aborted: false, spawnError: null, bytesRead: 0 };
+    },
+  };
+  const adapter = createCodexCliAdapter({
+    runner,
+    now: () => now,
+    readAnswerFile: () => answer,
+    config: { binary: BINARY },
+    healthCheck: SIGNED_IN_WITH_CHATGPT,
+    instance: { id: 'prv-cccc0009', label: 'Codex B', builtIn: false, homeDir: '/srv/codex-b', binaryPath: BINARY, concurrency: 1 },
+  });
+
+  await assert.rejects(
+    () => adapter.complete(request()),
+    (error) => {
+      assert.equal(error.kind, 'rateLimited', 'a wait, not a failure to retry into');
+      assert.equal(error.retryable, true);
+      assert.equal(error.retryAfterSeconds, 30 * 60, 'two hours named, half an hour held: then one turn probes it');
+      assert.match(error.detail, /usage limit/);
+      assert.match(error.detail, /Codex B/, 'it says which provider');
+      return true;
+    }
+  );
+  assert.equal(adapter.readiness().held.kind, 'rateLimited', 'the queue reads it: this provider takes no work');
+  assert.equal(adapter.readiness('gpt-5-codex').held.kind, 'rateLimited', 'whatever model is asked about');
+  assert.deepEqual(adapter.outages().map((entry) => entry.scope), ['*'], 'and the admin card shows it');
+
+  await assert.rejects(() => adapter.complete(request()), (error) => error.kind === 'rateLimited');
+  assert.equal(calls, 1, 'the second turn was refused without spawning');
+
+  now += 31 * 60_000;
+  assert.equal(adapter.readiness().held, null, 'the hold ends by itself');
+  answer = 'the tailored resume';
+  assert.equal((await adapter.complete(request())).text, 'the tailored resume');
+  assert.equal(calls, 2);
+  assert.deepEqual(adapter.outages(), []);
+});
+
+test('a turn that finds the Codex seat signed out benches it at once, until a later sign-in check says otherwise', async () => {
+  useTempStorage('codex-signed-out-turn');
+  const { createCodexCliAdapter } = loadFresh('../dist/services/ai/providers/codexCli/index');
+  let tick = 0;
+  let signedOut = false;
+  let releaseSlowCheck = null;
+  let slow = false;
+  const runner = {
+    run: async (spec) => {
+      if (signedOut) spec.onLine('{"type":"turn.failed","error":{"message":"401 Unauthorized: your session has expired"}}');
+      return { exitCode: signedOut ? 1 : 0, signal: null, stderrTail: '', timedOut: false, stalled: false, aborted: false, spawnError: null, bytesRead: 0 };
+    },
+  };
+  const adapter = createCodexCliAdapter({
+    runner,
+    now: () => (tick += 1),
+    readAnswerFile: () => (signedOut ? '' : 'an answer'),
+    config: { binary: BINARY },
+    healthCheck: async () => {
+      if (slow) await new Promise((resolve) => (releaseSlowCheck = resolve));
+      return SIGNED_IN_WITH_CHATGPT();
+    },
+  });
+
+  await adapter.complete(request());
+  assert.equal(adapter.readiness().ready, true);
+
+  // A sign-in check already running when the turn fails read the sign-in
+  // BEFORE it went: its "signed in" must not put the seat back.
+  slow = true;
+  const inFlight = adapter.health({ fresh: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  slow = false;
+  signedOut = true;
+  await assert.rejects(() => adapter.complete(request()), (error) => error.kind === 'auth');
+  assert.equal(adapter.readiness().ready, false, 'benched at once, not when the minute cache lapses');
+  releaseSlowCheck();
+  await inFlight;
+  assert.equal(adapter.readiness().ready, false, 'a check that started before the failure does not undo it');
+
+  // One that starts after it does: signed back in, the provider serves again.
+  await adapter.health({ fresh: true });
+  assert.equal(adapter.readiness().ready, true);
+});

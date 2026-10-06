@@ -412,3 +412,88 @@ test('a provider building a resume cannot be removed; switched off, its waiting 
   assert.equal(running.get('d').on, 'claude-cli');
   running.get('d').resolve({});
 });
+
+test('a settings save keeps every added provider, and ignores a provider list it is sent', async () => {
+  fresh('settings-save');
+  const { readSettingRaw } = require('./helpers');
+  const { provider } = await config.createAIProvider({ type: 'claude-cli', label: 'Two', homeDir: tempDir('kept') });
+
+  // Admin -> Settings -> General saves the whole row; the providers are not
+  // on that page, and a save must not take them with it.
+  await config.updateAppSettings({ requireThreeDSecure: true });
+  assert.ok((await config.getAdminAppSettings()).aiProviders.some((entry) => entry.id === provider.id), 'still listed');
+  const stored = () => JSON.parse(readSettingRaw(process.env.DB_DIR, 'app-settings')).aiProviders;
+  assert.deepEqual(stored().map((entry) => entry.id), [provider.id], 'and still stored');
+
+  // Nor may a settings save ADD one: a list there would skip every path,
+  // folder and limit check the provider routes make.
+  await config.updateAppSettings({
+    requireThreeDSecure: false,
+    aiProviders: [{ id: 'prv-00000001', type: 'claude-cli', label: 'Root', homeDir: '/', concurrency_max_requests: 32 }],
+  });
+  assert.deepEqual(stored().map((entry) => entry.id), [provider.id], 'the list sent is not read');
+  assert.deepEqual(
+    (await config.getAdminAppSettings()).aiProviders.map((entry) => entry.id),
+    ['claude-cli', provider.id, 'codex-cli', 'gemini-cli']
+  );
+});
+
+test('an edit is checked like an add: the binary, the folder, and a folder another provider signs in at', async () => {
+  const storage = fresh('edit-checks');
+  const outside = tempDir('edit');
+  const first = path.join(outside, 'first');
+  const second = path.join(outside, 'second');
+  fs.mkdirSync(first);
+  fs.mkdirSync(second);
+  await config.createAIProvider({ type: 'claude-cli', label: 'One', homeDir: first });
+  const { provider } = await config.createAIProvider({ type: 'claude-cli', label: 'Two', homeDir: second });
+  const plain = path.join(outside, 'plain');
+  fs.writeFileSync(plain, 'x');
+  fs.chmodSync(plain, 0o644);
+  const inDb = path.join(storage.dbDir, 'claude-home');
+  fs.mkdirSync(inDb);
+  const refused = (body, code) =>
+    assert.rejects(() => config.updateAIProvider(provider.id, body), (error) => error.code === code, code);
+
+  await refused({ binaryPath: 'claude' }, 'path-not-absolute');
+  await refused({ binaryPath: plain }, 'not-executable');
+  await refused({ homeDir: 'relative/home' }, 'path-not-absolute');
+  await refused({ homeDir: inDb }, 'path-inside-app');
+  await refused({ homeDir: `${first}/` }, 'home-in-use');
+  // The built-in's folder, set by an administrator, is as taken as an added one's.
+  const builtInHome = path.join(outside, 'built-in');
+  fs.mkdirSync(builtInHome);
+  await config.updateAIProvider('claude-cli', { homeDir: builtInHome });
+  await refused({ homeDir: builtInHome }, 'home-in-use');
+
+  const binary = executable(outside);
+  const edited = await config.updateAIProvider(provider.id, { binaryPath: binary });
+  assert.equal(edited.provider.binaryPath, binary, 'a good binary is taken');
+});
+
+test("the app's own directories are the real ones: the checkout, DB_DIR, the static and output directories, Gemini's work and state", async () => {
+  const storage = fresh('app-directories');
+  const output = tempDir('output');
+  const { geminiCliStateDir, geminiCliWorkdir } = require('../dist/services/ai/providers/geminiCli/options');
+  const directories = config.listAppDirectories({ outputBaseDir: output });
+  for (const [what, dir] of [
+    ['the checkout', path.resolve(__dirname, '..', '..')],
+    ['DB_DIR', storage.dbDir],
+    ['the static directory', require('../dist/config/staticPaths').getStaticDir()],
+    ['the output directory', output],
+    ["Gemini's work directory", geminiCliWorkdir(process.env)],
+    ["Gemini's state directory", geminiCliStateDir(process.env)],
+  ]) {
+    assert.ok(directories.includes(path.resolve(dir)), `${what} (${dir}) is one: ${JSON.stringify(directories)}`);
+  }
+
+  // And an add is refused under each of them - not only under a list a test made up.
+  for (const base of [storage.dbDir, storage.staticDir]) {
+    const home = path.join(base, 'claude-home');
+    fs.mkdirSync(home);
+    await assert.rejects(
+      () => config.createAIProvider({ type: 'claude-cli', label: `Inside ${path.basename(base)}`, homeDir: home }),
+      (error) => error.code === 'path-inside-app'
+    );
+  }
+});

@@ -284,6 +284,18 @@ export class GeminiOutageTable {
     return { until: hold.until, reason: hold.reason, kind: hold.kind };
   }
 
+  /**
+   * The hold a call on `model` would meet - the account's or that model's,
+   * whichever lasts longer - exactly as `check` turns it away: what the queue
+   * and the pool read, so a model this account cannot use goes to another
+   * provider of the type instead of failing here in microseconds.
+   */
+  holdFor(model: string): { until: number; reason: string; kind: GeminiHoldKind } | null {
+    const found = this.check(model);
+    if (found.waitMs <= 0 || !found.kind) return null;
+    return { until: this.now() + found.waitMs, reason: found.reason, kind: found.kind };
+  }
+
   /** How long `model` is known to be out, why, and as what kind. */
   check(model: string): { waitMs: number; reason: string; kind: GeminiHoldKind | null } {
     const now = this.now();

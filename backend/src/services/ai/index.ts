@@ -18,6 +18,7 @@ export type { AIErrorKind, PublicAiFailure } from './errors';
 
 export {
   createPromptCompletion,
+  createPromptCompletionResult,
   createRawCompletion,
   resolvePromptExecutionConfig,
   DEFAULT_PROVIDER,

@@ -514,6 +514,7 @@ test('a healthy turn answers from the deltas, with its system prompt in a file o
   assert.equal(result.text, '{"capital": "Paris"}');
   assert.equal(result.providerId, 'gemini-cli');
   assert.equal(result.resolvedModel, 'gemini-2.5-flash');
+  assert.equal(result.fellBack, false, '`auto` lets the CLI choose: whatever answered was asked for');
   assert.deepEqual(result.usage, { inputTokens: 294, outputTokens: 14, cacheReadTokens: 0, cacheWriteTokens: 0 });
 
   // The instructions travel as the system prompt, volatile part first.
@@ -611,6 +612,26 @@ test('a response cut off by the output limit is NOT detectable by the envelope, 
   const runner = makeFakeCliRunner({ lines: lines('constructed-max-tokens-truncated.ndjson') });
   const result = await makeAdapter(runner).adapter.complete(makeRequest());
   assert.equal(result.text, '{"capital": "Par');
+});
+
+test('Pro answered by Flash is a fallback, said on the result; Flash answered by Flash is not', async () => {
+  // The tailoring cache keeps an answer only when the model asked for wrote it.
+  const pro = await makeAdapter(makeFakeCliRunner({ lines: lines('constructed-success.ndjson') }))
+    .adapter.complete(makeRequest({ modelName: 'pro' }));
+  assert.equal(pro.resolvedModel, 'gemini-2.5-flash');
+  assert.equal(pro.fellBack, true);
+  const flash = await makeAdapter(makeFakeCliRunner({ lines: lines('constructed-success.ndjson') }))
+    .adapter.complete(makeRequest({ modelName: 'flash' }));
+  assert.equal(flash.fellBack, false);
+
+  const { geminiAnsweredByFallback, geminiModelFamily } = require('../dist/services/ai/providers/geminiCli/options');
+  assert.equal(geminiModelFamily('gemini-3.1-flash-lite'), 'flash-lite');
+  assert.equal(geminiModelFamily('gemini-3.1-pro-preview'), 'pro');
+  assert.equal(geminiModelFamily('auto'), null);
+  assert.equal(geminiAnsweredByFallback('gemini-2.5-pro', 'gemini-2.5-pro'), false);
+  assert.equal(geminiAnsweredByFallback('gemini-3.1-pro-preview', 'gemini-2.5-flash'), true);
+  assert.equal(geminiAnsweredByFallback('flash', 'gemini-2.5-flash-lite'), true);
+  assert.equal(geminiAnsweredByFallback('pro', null), false, 'cannot tell: not a fallback');
 });
 
 /**

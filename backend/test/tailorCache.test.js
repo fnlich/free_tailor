@@ -6,7 +6,17 @@ process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
 process.env.GENERATION_MAX_ATTEMPTS = '1';
 
 const express = require('express');
-const { countingSeats, freshInstall, posting, stubOutputs, untilFinished } = require('./analysisHarness');
+const fs = require('node:fs');
+const path = require('node:path');
+const {
+  analysisAnswer,
+  countingSeats,
+  freshInstall,
+  posting,
+  serveInstall,
+  stubOutputs,
+  untilFinished,
+} = require('./analysisHarness');
 const { useAdminEmails } = require('./helpers');
 
 /**
@@ -170,6 +180,8 @@ test('the key covers everything the answer was made from, and nothing a save mov
     choice: { provider: 'claude-cli', modelId: 'claude-cli-sonnet', modelName: 'sonnet' },
     promptId: 'tailor-resume',
     promptText: 'Tailor [[profileJson]]',
+    promptValues: { profileJson: '{"name":"Ada"}', skillsJSON: '["TypeScript"]' },
+    appendToUserBody: 'Strengths: no.',
   };
   const key = cache.tailorCacheKey(base);
   assert.match(key, /^[0-9a-f]{64}$/);
@@ -189,6 +201,9 @@ test('the key covers everything the answer was made from, and nothing a save mov
     'the model name': { choice: { ...base.choice, modelName: 'opus' } },
     'the provider type': { choice: { ...base.choice, provider: 'codex-cli' } },
     'the prompt text': { promptText: 'Tailor [[profileJson]] briefly' },
+    // What carries the shared skill library: the posting's checklist.
+    'a rendered prompt value': { promptValues: { ...base.promptValues, skillsJSON: '["TypeScript","Temporalio"]' } },
+    'the text appended to the user turn': { appendToUserBody: 'Strengths: yes.' },
     'the kind': { kind: 'cover-letter' },
     'a cover letter\'s role': { extra: { role: 'Lead' } },
   };
@@ -284,4 +299,185 @@ test('rows older than TAILOR_CACHE_DAYS are pruned; newer ones stay', () => {
   assert.equal(tailorCacheDays({}), 30);
   assert.equal(tailorCacheDays({ TAILOR_CACHE_DAYS: '0' }), 1, 'clamped, never zero');
   assert.equal(tailorCacheDays({ TAILOR_CACHE_DAYS: 'soon' }), 30, 'junk is the default');
+});
+
+/**
+ * The claude-cli stub, wrapped: `transform(request, result)` answers instead
+ * of the counting stub's result. The counting stub still records every call.
+ */
+function wrapClaude(transform) {
+  const inner = ai.getAdapter('claude-cli');
+  ai.registerAdapter('claude-cli', () => ({
+    ...inner,
+    async complete(request) {
+      return transform(request, await inner.complete(request));
+    },
+  }));
+}
+
+/** A tailoring answer with no cover letter in it, so a cover-letter call is made. */
+function withoutLetter(request, result) {
+  if (request.callSite !== 'tailor-resume') return result;
+  const { coverLetter: _letter, ...rest } = JSON.parse(result.text);
+  return { ...result, text: JSON.stringify(rest) };
+}
+
+const letters = (seats) => seats.calls.filter((call) => call.callSite === 'generate-cover-letter');
+
+test('an answer a fallback model wrote is used for its build, never kept, and the next build asks again', async (t) => {
+  const h = await serve('fallback');
+  t.after(h.close);
+  // What the Claude seat says when `--fallback-model` took the turn: Haiku
+  // answered a call that asked for Sonnet.
+  let fallBackNext = true;
+  wrapClaude((request, result) => {
+    if (request.callSite !== 'tailor-resume' || !fallBackNext) return result;
+    fallBackNext = false;
+    return { ...result, resolvedModel: 'claude-haiku-4-5-20251001', fellBack: true };
+  });
+
+  await h.build();
+  assert.equal(h.seats.tailorings().length, 1);
+  assert.equal(repository.countTailorCacheRows(), 0, 'the fallback answer is not kept as Sonnet\'s');
+  await h.build();
+  assert.equal(h.seats.tailorings().length, 2, 'so the same resume asks Sonnet again');
+  assert.equal(repository.countTailorCacheRows(), 1, 'and Sonnet\'s own answer is kept');
+  await h.build();
+  assert.equal(h.seats.tailorings().length, 2, 'which the third build reuses');
+  assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10, -10], 'charged as usual each time');
+
+  // A cover letter is held to the same rule.
+  const { generateCoverLetter } = require('../dist/services/resumeService');
+  const profile = profiles.getProfile('p-ada');
+  const choice = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'claude-cli-sonnet', modelLabel: 'Sonnet' };
+  const context = { analysisId: null, templateId: 'default' };
+  let letterFallsBack = true;
+  wrapClaude((request, result) => {
+    if (request.callSite !== 'generate-cover-letter' || !letterFallsBack) return result;
+    letterFallsBack = false;
+    return { ...result, fellBack: true };
+  });
+  await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
+  await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
+  await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
+  assert.equal(letters(h.seats).length, 2, 'a fallback letter is written once more, then the kept one is reused');
+});
+
+test('a skill added to the library that changes the posting\'s checklist is a miss; one that does not is a hit', async (t) => {
+  const h = await serve('library');
+  t.after(h.close);
+  const skills = require('../dist/database/skillsDatabase');
+  const resumeService = require('../dist/services/resumeService');
+  resumeService.refreshSkillCaches();
+  const job = { companyName: 'Acme', role: 'Engineer', jobDescription: posting(9, 'Workflows run on Temporalio.') };
+  assert.equal(skills.readSkills('hard').includes('Temporalio'), false, 'not in the shipped library');
+
+  await h.build({ jobs: [job] });
+  assert.equal(h.seats.tailorings().length, 1);
+
+  // What an administrator's add, or anybody's POST /skills/confirm, does.
+  skills.addSkill('hard', 'Temporalio', { priority: 3, category: 'Frameworks and Libraries' });
+  resumeService.refreshSkillCaches();
+  await h.build({ jobs: [job] });
+  assert.equal(h.seats.tailorings().length, 2, 'the model is now told to cover Temporalio: another question');
+  assert.match(JSON.stringify(h.seats.tailorings()[1]), /Temporalio/);
+
+  skills.addSkill('hard', 'Quuxlang', { priority: 3, category: 'Frameworks and Libraries' });
+  resumeService.refreshSkillCaches();
+  await h.build({ jobs: [job] });
+  assert.equal(h.seats.tailorings().length, 2, 'a skill this posting does not name asks it nothing new');
+  assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10, -10]);
+});
+
+test('the same resume built again reuses its tailoring from /resume/preview and /resume/generate too', async (t) => {
+  // The queue is not the only caller with an analysis: each route passes the
+  // cache its context (CLAUDE.md, "The tailoring cache").
+  const h = await serveInstall('tailor-cache-routes');
+  t.after(h.close);
+  wrapClaude(withoutLetter);
+
+  const preview = { profileId: 'p-claude', jobDescription: posting(41) };
+  assert.equal((await h.post('/resume/preview', preview)).status, 200);
+  assert.equal((await h.post('/resume/preview', preview)).status, 200);
+  assert.equal(h.seats.tailorings().length, 1, '/resume/preview asked once');
+
+  const generate = {
+    profileId: 'p-claude',
+    companyName: 'Acme',
+    role: 'Engineer',
+    format: 'pdf',
+    includeCoverLetterDocx: true,
+    jobDescription: posting(42),
+  };
+  const first = await h.post('/resume/generate', generate);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal((await h.post('/resume/generate', generate)).status, 200);
+  assert.equal(h.seats.tailorings().length, 2, '/resume/generate tailored its posting once');
+  assert.equal(letters(h.seats).length, 1, 'and wrote its cover letter once');
+});
+
+test('a queued build reuses its cover letter as well, and another template is a miss', async (t) => {
+  const h = await serveInstall('tailor-cache-queue-letter');
+  t.after(h.close);
+  fs.copyFileSync(
+    path.join(__dirname, '..', 'static', 'templates', 'navy-rule.json'),
+    path.join(h.staticDir, 'templates', 'navy-rule.json')
+  );
+  wrapClaude(withoutLetter);
+  const build = async (extra = {}) => {
+    const response = await h.post('/generation/batches', {
+      mode: 'order',
+      format: 'pdf',
+      includeCoverLetterDocx: true,
+      profileIds: ['p-claude'],
+      jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(43) }],
+      ...extra,
+    });
+    assert.equal(response.status, 202, JSON.stringify(response.body));
+    const snapshot = await untilFinished(response.body.batchId);
+    assert.equal(snapshot.completed, 1, JSON.stringify(snapshot.tasks.map((task) => task.error)));
+  };
+
+  await build();
+  await build();
+  assert.equal(h.seats.tailorings().length, 1, 'one tailoring');
+  assert.equal(letters(h.seats).length, 1, 'one cover letter, reused by the second build');
+
+  // The same profile, posting and model, drawn with another template.
+  await build({ templateId: 'navy-rule' });
+  assert.equal(h.seats.tailorings().length, 2, 'the template is part of the key');
+});
+
+test('nothing is cached without an analysis id, and an answer that does not parse is never stored', async () => {
+  freshInstall('tailor-cache-direct');
+  config.invalidateSettingsCache();
+  const seats = countingSeats(ai);
+  let junk = 1;
+  wrapClaude((request, result) => {
+    if (request.callSite !== 'tailor-resume' || junk === 0) return result;
+    junk -= 1;
+    return { ...result, text: 'not json' };
+  });
+  const { tailorResume } = require('../dist/services/resumeService');
+  try {
+    const profile = buildNewProfile(profileInput('Ada'), 'p-direct');
+    const analysis = JSON.parse(analysisAnswer());
+    const choice = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'claude-cli-sonnet', modelLabel: 'Sonnet' };
+    const keyed = { analysisId: 'an-direct', templateId: 'default' };
+
+    await assert.rejects(tailorResume(profile, analysis, choice, undefined, keyed), /Failed to parse/);
+    assert.equal(repository.countTailorCacheRows(), 0, 'an unreadable answer is not kept - it would hold its key');
+    await tailorResume(profile, analysis, choice, undefined, keyed);
+    assert.equal(repository.countTailorCacheRows(), 1, 'the next, readable, answer is');
+    await tailorResume(profile, analysis, choice, undefined, keyed);
+    assert.equal(seats.tailorings().length, 2, 'and reused');
+
+    const unkeyed = { analysisId: null, templateId: 'default' };
+    await tailorResume(profile, analysis, choice, undefined, unkeyed);
+    await tailorResume(profile, analysis, choice, undefined, unkeyed);
+    assert.equal(seats.tailorings().length, 4, 'no analysis id: asked every time');
+    assert.equal(repository.countTailorCacheRows(), 1, 'and nothing stored');
+  } finally {
+    ai.resetRegistryForTests();
+  }
 });

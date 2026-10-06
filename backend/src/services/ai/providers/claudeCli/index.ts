@@ -25,6 +25,7 @@ import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './o
 import { createSpawnRunner, ensureCliWorkdir, type CliRunner, type CliRunOutcome } from '../cli/runner';
 import { instanceWorkdir, describeInstance } from '../cli/instance';
 import { CLAUDE_CLI_BINARY_HINTS } from './hints';
+import { answeredByFallback, isClaudeCliModelName } from './modelNames';
 
 const PROVIDER_ID = 'claude-cli' as const;
 
@@ -39,7 +40,7 @@ export type ClaudeCliAdapterOptions = {
   config?: Partial<ClaudeCliConfig>;
   now?: () => number;
   /** Injected in tests so `claude auth status` is never executed. */
-  healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv }) => Promise<ClaudeCliHealth>;
+  healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv; signInCommand?: string }) => Promise<ClaudeCliHealth>;
   /**
    * Which Claude PROVIDER this adapter is (config/aiProviders.ts): its sign-in
    * folder, binary and limit. Absent, it is the built-in one as `.env`
@@ -132,6 +133,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       const value = await check({
         binary: config.binary,
         env: childEnv(),
+        signInCommand,
       });
       cachedHealth = { value, at: now() };
       // The only thing that lifts a sign-in hold early. A success would clear
@@ -302,7 +304,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         if (outcome.spawnError.code === 'ENOENT') {
           throw fail('binaryMissing', `spawn ${config.binary}: ${outcome.spawnError.message}`, {
             adminAction:
-              'Install Claude Code (npm i -g @anthropic-ai/claude-code) and run `claude auth login` as the ' +
+              `Install Claude Code (npm i -g @anthropic-ai/claude-code) and run \`${signInCommand}\` as the ` +
               'user this server runs as. If it IS installed, the server process has a different PATH than ' +
               'your shell - set AI_CLI_BIN to the full path from `which claude` (`where claude` on Windows).',
           });
@@ -430,6 +432,10 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       return {
         text,
         resolvedModel: state.model ?? model,
+        // `--fallback-model` answered rather than the model asked for: a fine
+        // answer for this call, but not one to keep as that model's (the
+        // tailoring cache reads this).
+        fellBack: answeredByFallback(model, state.model, config.fallbackModels ?? []),
         providerId: PROVIDER_ID,
         providerInstanceId: providerId,
         usage: state.usage,
@@ -442,8 +448,19 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     }
   }
 
-  function readiness(): ProviderReadiness {
-    const held = outages.seatHold();
+  /**
+   * Asked about a model, its hold counts too, keyed exactly as `complete`
+   * keys it: `resolveCliModel`'s answer, without its warning - this is read
+   * on every dispatch, and the call itself warns once if it gets that far.
+   */
+  function readiness(modelName?: string): ProviderReadiness {
+    let held: { until: number; reason: string; kind: OutageKind } | null;
+    if (modelName === undefined) {
+      held = outages.seatHold();
+    } else {
+      const name = modelName.trim();
+      held = outages.holdFor(name && isClaudeCliModelName(name) ? name : config.model);
+    }
     return {
       ready: cachedHealth ? cachedHealth.value.ok : null,
       held: held ? { kind: held.kind, reason: held.reason, until: new Date(held.until).toISOString() } : null,

@@ -35,6 +35,12 @@ import type { Profile } from '../types/profile';
  *   - the model record's id AND the model name it runs (a record re-pointed at
  *     another model is another key), and the provider type;
  *   - the prompt's text, hashed - an administrator's edit is a miss;
+ *   - the values the prompt is rendered with and the text appended to its
+ *     user turn, hashed as the call would send them - which is what carries
+ *     the shared skill library: the posting's skills are matched against it,
+ *     so a skill an administrator adds, or anybody confirms, that changes
+ *     this posting's checklist is a miss (one that changes nothing for it is
+ *     still a hit);
  *   - for a cover letter, the company and the role it is addressed to;
  *   - and `TAILOR_CACHE_VERSION`, bumped when the code around the prompt
  *     changes what an answer means.
@@ -42,14 +48,22 @@ import type { Profile } from '../types/profile';
  * What is stored is the model's ANSWER, as it came; every step after it - the
  * parse, the section switches, the skills - runs again on a hit, against the
  * profile as it is, exactly as on a fresh answer. A stored answer that no
- * longer parses is a miss, never a failure.
+ * longer parses is a miss, never a failure. Only an answer the asked-for
+ * model wrote is stored: one the seat says a FALLBACK wrote (Claude's
+ * `--fallback-model`, Gemini switching Pro to Flash - `CompletionResult.
+ * fellBack`) is used for that build and asked again by the next, never kept
+ * as the asked-for model's for TAILOR_CACHE_DAYS.
  *
  * Rows older than TAILOR_CACHE_DAYS (30 by default) are pruned at boot and
  * once a day. The cache never fails a resume: a read or a write that cannot
  * reach the table is a miss, said once in the log.
  */
 
-/** Bumped when what an answer means changes in code; every older row is then a miss. */
+/**
+ * Bumped when what an answer means changes in code; every older row is then a
+ * miss. A change to what the prompt is SENT needs no bump - the rendered
+ * values are part of the key.
+ */
 export const TAILOR_CACHE_VERSION = 1;
 
 /** What a caller knows about the generation beyond the profile and the model. */
@@ -98,6 +112,16 @@ export function tailorCacheKey(input: {
   choice: { provider: string; modelId: string; modelName: string };
   promptId: string;
   promptText: string;
+  /**
+   * The values the prompt is rendered with, as the call is about to send them,
+   * and the text appended to its user turn. Most of what they say is in the
+   * key already (the profile, the analysis); what is not is the shared skill
+   * library they are matched against - a skill added or confirmed since makes
+   * the checklist the model writes to another one - and whatever code builds
+   * them, which may change without anybody remembering TAILOR_CACHE_VERSION.
+   */
+  promptValues: Record<string, string>;
+  appendToUserBody?: string;
   /** What else the answer was made from: a cover letter's company and role. */
   extra?: Record<string, string>;
 }): string {
@@ -113,6 +137,7 @@ export function tailorCacheKey(input: {
       modelName: input.choice.modelName,
       promptId: input.promptId,
       prompt: sha256(input.promptText),
+      inputs: sha256(canonicalJson({ values: input.promptValues, appended: input.appendToUserBody ?? '' })),
       extra: input.extra ?? {},
     })
   );

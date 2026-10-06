@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~55s with the tsc step, 1553 tests)
+npm test                       # backend node:test suite (~55s with the tsc step, 1593 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -1051,8 +1051,9 @@ assistant deltas of `--output-format stream-json`, taken ONLY when the `result`
 event says `status: 'success'` - exit 0 alone is not success. Its child env
 pins every API-key, Vertex and gateway variable to "" and sets `NO_BROWSER`,
 `NO_COLOR` and `GEMINI_CLI_NO_RELAUNCH` (without it the CLI relaunches itself
-and SIGTERM never reaches the real process). Every turn runs in one fixed empty
-workdir whose `.gemini/settings.json` enforces the Google sign-in, registers no
+and SIGTERM never reaches the real process). Every turn runs in its provider's
+fixed empty workdir (an added provider's is `<seat dir>-<id>`, its state dir
+likewise) whose `.gemini/settings.json` enforces the Google sign-in, registers no
 tools, turns hooks and telemetry off and sets `billing.overageStrategy:
 'never'`, under a deny-all policy. MCP servers and extensions are kept out by
 FLAGS (`--allowed-mcp-server-names __tailor_none__ --extensions none`): 0.62.0
@@ -1081,7 +1082,13 @@ after the hold was set. Every hold, health reading and minute's status cache
 is the PROVIDER's (its adapter's), not the type's. The admin Settings page's
 seat check (`GET /api/admin/ai/health`) asks every enabled PROVIDER with
 `health({ fresh: true })`, one card each, skipping the minute's cache, which is
-what makes it the place to lift a hold; Codex keeps no holds. Its health check
+what makes it the place to lift a hold. Codex holds itself only for a usage
+limit, read from the turn's words (codexCli/limits.ts `isCodexUsageLimit`,
+also `429` / `rate limit`; `turn.failed`'s nested `error.message` is read),
+seat-wide, for the wait it names clamped to 5-30 minutes (15 when it names
+none), refused before spawning and lifted by an answer; a turn that finds it
+signed out sets its cached health to signed out at once, and only a status
+check that STARTED after that may put it back. Gemini's health check
 sends no prompt: `gemini --version`, then the sign-in files under the CLI's home.
 
 Tests never spawn a browser, a subprocess or a network call: each CLI provider
@@ -1130,25 +1137,37 @@ by the provider id, and sets the folder in the child env AFTER the usual strip
 (`buildChildEnv(parent, { configDir })`, `buildCodexChildEnv(parent, { home })`,
 Gemini's `home`) - a null folder (an unset built-in) keeps the inherited one.
 `claude auth status`, `codex login status` and Gemini's `clearAuth` read that
-env. A changed folder or binary rebuilds the adapter (holds and health go with
+env, and every piece of sign-in advice the seat gives - the health check's
+`warning` / `detail` (each `check*Health` takes the command: `signInCommand`,
+Codex's `signOutCommand` too, Gemini's `signInAction`), an `auth` failure's
+`adminAction`, the missing-binary advice - names the provider's own folder
+(`CLAUDE_CONFIG_DIR=<folder> claude auth login`, ...), because the bare
+command signs in the server's default folder, the built-in provider's. A
+changed folder or binary rebuilds the adapter (holds and health go with
 the old one); a changed limit resizes its semaphore IN PLACE
 (`AsyncSemaphore.resize`, `getProviderSemaphore` never replaces one now). A
 stub `registerAdapter`ed under a TYPE id stands in for every provider of that
 type without one of its own, so a suite stubbing the three seats never reaches
-a real CLI. Every adapter has a synchronous `readiness()` - the last health
-verdict (`ready: null` until checked, and Codex's `unknown` status, never
-bench a provider) and any SEAT-wide hold (`seatHold()`); a stub without one is
-always ready. A failure's detail names an added provider.
+a real CLI. Every adapter has a synchronous `readiness(modelName?)` - the last
+health verdict (`ready: null` until checked, and Codex's `unknown` status, never
+bench a provider) and any hold that would turn the call away: the seat's
+(`seatHold()`) and, asked about a model ('' = the seat's default), that
+model's too (`holdFor`, keyed exactly as `complete` keys it), so a weekly Opus
+cap or a model the account cannot use benches a provider for that model's
+work only. Asked about no model (the admin card) only the seat counts. A stub
+without one is always ready. A failure's detail names an added provider.
 
 **Which provider a call runs on** (`services/ai/providerPool.ts`
-`pickProvider`, called by promptExecution's `runAssembled` after the type's
-enabled check): the provider a queued task is PINNED to (`runPinnedToProvider`,
-AsyncLocalStorage, wrapped around every resume task by `makeResumeRunner`) when
-it is of the call's type; else, among the type's enabled providers that are
-ready and not held, the least loaded (in flight + waiting at its semaphore,
-over its limit), ties to list order; with none ready, the first enabled one, so
-a direct call meets its hold and fails with the hold's error. The analysis
-model pools the same way.
+`pickProvider(type, modelName)`, called by promptExecution's `runAssembled`
+after the type's enabled check, with the model the call names): the provider a
+queued task is PINNED to (`runPinnedToProvider`, AsyncLocalStorage, wrapped
+around every resume task by `makeResumeRunner`) when it is of the call's type
+- switched off since or not, so a running task finishes where its lane slot
+is; only a REMOVED one is picked afresh; else, among the type's enabled
+providers that are ready and not held for that model, the least loaded (in
+flight + waiting at its semaphore, over its limit), ties to list order; with
+none ready, the first enabled one, so a direct call meets its hold and fails
+with the hold's error. The analysis model pools the same way.
 
 **The queue** (taskQueue.ts, generic over lane names): the capacity reading is
 either the plain `{ lane: slots }` (tests; each lane its own pool, always
@@ -1157,15 +1176,30 @@ serving) or `{ lanes: [{ id, pool, enabled, slots }] }` (queue/index.ts
 re-read every 15 s while work waits and at once after an admin change - the
 provider routes call `refreshCapacity`). A lane SERVES when it is in the
 reading, enabled (its type too), has slots and `policy.ready(lane)` (adapter
-readiness). `place`: a task goes to the serving lane of its pool with the
-lowest (running + waiting) / width, ties to reading order, urgent tasks spliced
-before the first ordinary one IN THAT LANE (Phase 4's priority is per lane);
-with none serving it stays (or goes to its pool's first lane) and WAITS.
-`rebalance` (every dispatch) moves the waiting work of a lane that stopped
-serving to one that serves, persisted; `steal` lets an idle serving slot take
-the head (urgent first, then the busiest) of another lane OF ITS POOL, never
-across pools; `watchBlocked` logs a pool with no serving lane once (`[queue]
-Work for <type> is waiting ...`) and re-reads every 10 s until one serves.
+readiness); it serves a TASK when also `policy.ready(lane, policy.modelOf(task))`
+- the real `modelOf` is queue/index.ts `taskModelName`, the payload's
+`choice.modelName` - asked once per lane and model per dispatch pass
+(`readyMemo`). `place`: a task goes to the lane of its pool that serves it
+with the lowest (running + waiting) / width, ties to reading order, urgent
+tasks spliced before the first ordinary one IN THAT LANE (Phase 4's priority
+is per lane), and a RETRY not to the lane it just failed on while another
+serves it (`Task.avoidLane`, set by `retryTask`, cleared at start, not
+persisted) - a provider that fails fast is always the least loaded, so by
+load alone it took every retry back; with none serving it stays (or goes to
+its pool's first lane) and WAITS. `rebalance` (every dispatch) moves the
+waiting work of a lane that stopped serving, and a serving lane's tasks it is
+held for by model (`moveUnserved`), to one that serves, persisted. `fill` and
+`steal` never start more than a lane's width, counted by what RUNS there
+(`isFull`), not by free slot ids: a limit lowered while busy leaves tasks on
+slots the reading no longer lists. `fill` takes the first waiting task the
+lane serves (a held model's task does not block the work behind it); `steal`
+lets an idle serving slot with nothing of its own it may run take the first
+task it may run (urgent first, then the busiest lane's, never a retry back to
+the lane it failed on) from another lane OF ITS POOL, never across pools, and
+a lane with no donor moves on to the next lane (`break`, not `return`);
+`watchBlocked` logs a pool with no serving lane once (`[queue] Work for <type>
+is waiting ...`) and re-reads every 10 s until one serves - and re-reads,
+without a line of its own, while work waits on a model every lane is held for.
 Before the first reading a task waits under its own name. `runningOn` and the
 persisted `ranOn` are the lane = provider id (stripped for non-admins by
 generation.ts's `readerSnapshot`); `taskStarted` logs it and
@@ -1226,12 +1260,24 @@ analysis passes one (the queue task, /resume/preview, /preview-all,
 kind, the profile as the call sees it (after `profileForTemplate`) minus
 `createdAt`/`updatedAt`, canonical JSON, the template id, the analysis id, the
 provider type, model record id and model name, the prompt record's id and the
-SHA-256 of its text, and (cover letter) the company and role. No tailoring is
-cached without an analysis id. What is stored is the model's RAW answer, kept
-only once it parsed; a hit runs `parseTailoredResumeContent` against the
-profile again, and an answer that no longer parses is a miss. The charge never
-depends on it: a resume is priced at submission. Read and write failures are a
-miss, warned once. `TAILOR_CACHE_DAYS` (operational.ts, default 30, 1-3650)
+SHA-256 of its text, the SHA-256 of the rendered `promptValues` plus the
+`appendToUserBody` text (built BEFORE the lookup - they read the shared skill
+library, `buildLibraryAugmentedPromptLists`, so a library add or confirm that
+changes a posting's checklist is a miss, and so is any change to the code that
+builds them, with no TAILOR_CACHE_VERSION bump), and (cover letter) the company
+and role. No tailoring is cached without an analysis id. What is stored is the
+model's RAW answer, kept only once it parsed AND only when the asked-for model
+wrote it: `CompletionResult.fellBack` (types.ts; set by the Claude seat when
+`--fallback-model` answered - `answeredByFallback`, by model FAMILY, never a
+string compare, since an alias comes back as a full id - and by Gemini when
+another family answered, `geminiAnsweredByFallback`, `auto` never) makes
+`tailorResume` / `generateCoverLetter` use the answer and skip the write
+(`[tailor-cache] Not keeping this ...`); they call `createPromptCompletionResult`,
+the variant of `createPromptCompletion` that answers the whole result. A hit
+runs `parseTailoredResumeContent` against the profile again, and an answer that
+no longer parses is a miss. The charge never depends on it: a resume is priced
+at submission. Read and write failures are a miss, warned once. Every caller and
+both rules are pinned by test/tailorCache.test.js through the real routes. `TAILOR_CACHE_DAYS` (operational.ts, default 30, 1-3650)
 prunes on `created_at` at boot and daily (`startTailorCachePrune` from
 index.ts, unref'd).
 

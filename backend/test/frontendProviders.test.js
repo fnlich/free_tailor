@@ -51,6 +51,37 @@ function loadFrontendModule(relative) {
 }
 
 const display = loadFrontendModule('lib/providerDisplay.ts');
+
+/**
+ * lib/api.ts itself, for the one rule of it this suite holds to the server
+ * (`isProviderOffered`). It imports other frontend modules at runtime, so it
+ * gets a loader that follows relative imports - and nothing else - the way
+ * frontendRoles.test.js loads it. Run, not copied: a copy of the rule in the
+ * test passed however the page's own function drifted.
+ */
+function loadFrontendWithImports(relative, seen = new Map()) {
+  const file = path.join(SRC, relative);
+  if (seen.has(file)) return seen.get(file).exports;
+  const { outputText } = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    fileName: file,
+  });
+  const module = { exports: {} };
+  seen.set(file, module);
+  const resolve = (specifier) => {
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+      throw new Error(`${relative} imports ${specifier} at runtime; only frontend modules are followed`);
+    }
+    const base = path.relative(SRC, path.join(path.dirname(file), specifier));
+    const candidate = ['.ts', '.tsx'].map((ext) => `${base}${ext}`).find((name) => fs.existsSync(path.join(SRC, name)));
+    if (!candidate) throw new Error(`${relative}: cannot resolve ${specifier}`);
+    return loadFrontendWithImports(candidate, seen);
+  };
+  new Function('module', 'exports', 'require', outputText)(module, module.exports, resolve);
+  return module.exports;
+}
+
+const api = loadFrontendWithImports('lib/api.ts');
 const server = require('../dist/config/aiProviders');
 const config = require('../dist/config/aiModelConfig');
 const catalog = require('../dist/config/providerCatalog');
@@ -110,6 +141,7 @@ test('every hold kind a seat records has a name on the page', () => {
   for (const [file, name] of [
     ['src/services/ai/providers/claudeCli/limits.ts', 'OutageKind'],
     ['src/services/ai/providers/geminiCli/classify.ts', 'GeminiHoldKind'],
+    ['src/services/ai/providers/codexCli/limits.ts', 'CodexHoldKind'],
   ]) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     const union = source.match(new RegExp(`export type ${name} = ([^;]+);`));
@@ -457,11 +489,12 @@ test('the page offers a type exactly when the server can run it - a type whose e
     const settings = await config.getAIModelSettings();
     const providers = display.normalizeAdminProviders(admin.aiProviders);
     for (const type of catalog.AI_PROVIDER_IDS) {
-      // lib/api.ts `isProviderOffered`, clause for clause.
-      const offered =
-        !catalog.isProviderLocked(type) &&
-        display.hasEnabledProviderOfType(providers, type) &&
-        admin.providersEnabled[type] === true;
+      // The page's own function, over what the admin payload carries.
+      const offered = api.isProviderOffered(
+        { providerLocks: admin.providerLocks, aiProviders: providers },
+        type,
+        admin.providersEnabled
+      );
       assert.equal(offered, config.isProviderEnabled(type, settings), `${when}: ${type}`);
     }
   };
