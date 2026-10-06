@@ -188,17 +188,20 @@ function PromptsPageBody() {
     () => ({}) as Record<AIProvider, boolean>
   );
   /*
-   * The locks, kept so the disabled check below can be the SHARED rule rather
-   * than a private copy of half of it.
+   * The locks and the providers, kept so the disabled check below can be the
+   * SHARED rule rather than a private copy of part of it.
    *
    * This page was safe only by accident: the option list arrives already
    * filtered server-side, so its own predicate never had to be right. That is a
    * fragile reason to be correct, and it is one release from being wrong.
    */
   const [offerSettings, setOfferSettings] = useState<
-    Pick<AdminAppSettings, 'providerLocks'>
+    Pick<AdminAppSettings, 'providerLocks' | 'aiProviders'>
   >(() => ({
     providerLocks: [],
+    // Empty says nothing until the settings arrive; with them, a type whose
+    // every provider is switched off reads as off, as the server's rule does.
+    aiProviders: [],
   }));
   const providerOffered = (provider: AIProvider): boolean =>
     isProviderOffered(offerSettings, provider, enabledProviders);
@@ -386,7 +389,7 @@ function PromptsPageBody() {
 
         setProviderModelOptions(settings.providerModelOptions);
         setEnabledProviders(settings.providersEnabled);
-        setOfferSettings({ providerLocks: settings.providerLocks });
+        setOfferSettings({ providerLocks: settings.providerLocks, aiProviders: settings.aiProviders });
       } catch (err) {
         if (!isMounted) return;
         setError(messageWithDetail(err, 'Failed to load prompt model options'));

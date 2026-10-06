@@ -36,8 +36,13 @@ export type BatchTask = {
   companyName: string;
   role: string;
   sourceRowNumber?: number;
-  /** Which seat's lane is building it right now. */
+  /**
+   * Which PROVIDER's lane is building it right now, and which it last ran on -
+   * provider ids, sent to an administrator only (the server strips both for
+   * everybody else, as it does every other detail of the seats).
+   */
   runningOn?: string;
+  ranOn?: string;
   /**
    * Which go this is, present only from the SECOND on.
    *

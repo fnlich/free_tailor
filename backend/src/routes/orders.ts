@@ -20,6 +20,8 @@ import {
   type OrderItem,
 } from '../database/orderRepository';
 import { getGenerationQueue } from '../services/queue';
+import { providersNow } from '../services/ai';
+import { providerTypeOf } from '../config/aiProviders';
 import { getGeneratedFilePath } from '../utils/generatedPath';
 import { sanitizePathSegment } from '../utils/outputStorage';
 
@@ -101,6 +103,16 @@ router.get('/', (req: Request, res: Response) => {
   });
 });
 
+/**
+ * Which provider built an item, for an administrator: its id, the name it has
+ * now and its type. A provider removed since keeps its id as its name.
+ */
+function describeRanOn(id: string | null): { id: string; label: string; type: string | null } | null {
+  if (!id) return null;
+  const provider = providersNow().find((entry) => entry.id === id);
+  return { id, label: provider?.label ?? id, type: provider?.type ?? providerTypeOf(id) };
+}
+
 router.get('/:id', (req: Request, res: Response) => {
   const found = mine(req);
   if (!found) {
@@ -113,15 +125,18 @@ router.get('/:id', (req: Request, res: Response) => {
   const admin = isAdmin(req);
   res.json({
     ...view(order, countsForOrder(order.id), items.some((item) => item.files.length > 0)),
-    items: items.map((item) => ({
+    items: items.map(({ ranOn, ...item }) => ({
       ...item,
+      // Which provider built it - which account, at which sign-in folder - is
+      // an administrator's business only, like everything else about seats.
+      ...(admin ? { ranOn: describeRanOn(ranOn) } : {}),
       // Written safe since failures were stored as a public sentence and a
       // ref; an item from before then can hold the raw cause, so it is read
       // through the same filter the generation routes use.
       ...(item.error && !admin ? { error: publicStoredError(item.error, 'This resume could not be built') } : {}),
       // What the page may offer a link for. The full list stays on `files` so
       // an expired order can still show what it built.
-      available: availableFiles(item).map((file) => file.kind),
+      available: availableFiles({ ...item, ranOn }).map((file) => file.kind),
     })),
   });
 });

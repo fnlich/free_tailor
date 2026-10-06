@@ -94,7 +94,14 @@ export type CompletionResult = {
    */
   readonly text: string;
   readonly resolvedModel: string;
+  /** The provider TYPE (the seat's kind), which is what a price and a model name belong to. */
   readonly providerId: AIProvider;
+  /**
+   * Which provider of that type answered (config/aiProviders.ts): its type id
+   * for the built-in one, `prv-...` for one an administrator added. For the
+   * log and the admin pages; nothing about a run's price depends on it.
+   */
+  readonly providerInstanceId?: string;
   readonly usage?: CompletionUsage;
   /** Notional on a subscription seat: a measure of work, not an invoice. */
   readonly costUsd?: number;
@@ -125,13 +132,61 @@ export type ProviderHealth = {
   readonly meta?: Readonly<Record<string, unknown>>;
 };
 
+/**
+ * One provider of a type, as its adapter is built (owner decision P1): where
+ * its sign-in lives, which binary it runs and how many calls it takes at once.
+ *
+ * The built-in provider of each type has the type's id and reads `.env` for
+ * whatever an administrator has not set; every other one was added on
+ * Admin -> Models with a folder of its own. Resolved by config/aiProviders.ts;
+ * declared here so the adapters take it without importing configuration.
+ */
+export type ProviderInstanceSpec = {
+  /** The provider's id: the type id for the built-in one, `prv-<8 hex>` for an added one. */
+  readonly id: string;
+  readonly label: string;
+  readonly builtIn: boolean;
+  /**
+   * The sign-in/config folder the child is given (CLAUDE_CONFIG_DIR, CODEX_HOME
+   * or GEMINI_CLI_HOME). Null leaves the CLI's own default - the service
+   * user's home, or whatever the server's environment already says.
+   */
+  readonly homeDir: string | null;
+  readonly binaryPath: string;
+  /** concurrency_max_requests: the provider's own limit, its semaphore and its queue lane. */
+  readonly concurrency: number;
+};
+
+/**
+ * What a provider's adapter knows, synchronously, about whether it can take a
+ * call now - read by the queue's dispatcher and by the pool that spreads a
+ * type's calls over its providers (owner decision P4), neither of which may
+ * wait on a health check.
+ */
+export type ProviderReadiness = {
+  /**
+   * The last health check's verdict: true signed in and runnable, false
+   * signed out or missing, null when nothing has been checked yet - which
+   * counts as ready, so a provider is never benched on a guess.
+   */
+  readonly ready: boolean | null;
+  /** A hold on the whole seat (not one model), while it lasts. */
+  readonly held: { readonly kind: string; readonly reason: string; readonly until: string } | null;
+};
+
 export type HealthOptions = {
   /** Ask the CLI again even when a check from the last minute is cached. */
   readonly fresh?: boolean;
 };
 
 export interface AIProviderAdapter {
+  /** The provider TYPE. Two Claude providers are both `claude-cli`. */
   readonly id: AIProvider;
+  /**
+   * Which provider of the type this adapter is: absent on a test's stub,
+   * which stands in for every provider of its type.
+   */
+  readonly instanceId?: string;
   readonly capabilities: ProviderCapabilities;
   /** The model used when neither the prompt nor the caller names one. */
   defaultModelName(): string;
@@ -143,4 +198,9 @@ export interface AIProviderAdapter {
   health(options?: HealthOptions): Promise<ProviderHealth>;
   /** Rejects with AIProviderError - never a bare Error. Honours the deadline. */
   complete(request: CompletionRequest): Promise<CompletionResult>;
+  /**
+   * Cheap and synchronous: the last health verdict and any seat-wide hold.
+   * Optional, so a stub without one reads as always ready.
+   */
+  readiness?(): ProviderReadiness;
 }

@@ -157,8 +157,20 @@ export class OutageTable {
 
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly recoveryMs: number = 10 * 60_000
+    private readonly recoveryMs: number = 10 * 60_000,
+    /** How the log names the seat: one of several Claude providers says which. */
+    private readonly seatName: string = 'the Claude subscription'
   ) {}
+
+  /**
+   * The hold on the whole seat, while it lasts - not one model's. What the
+   * queue and the pool read to send a type's work to another provider of it.
+   */
+  seatHold(): { until: number; reason: string; kind: OutageKind } | null {
+    const entry = this.entries.get('*');
+    if (!entry || entry.until <= this.now()) return null;
+    return { until: entry.until, reason: entry.reason, kind: entry.kind };
+  }
 
   /** Milliseconds this model is known to be out, why, and as what. 0 when it is not. */
   check(model: string): { waitMs: number; reason: string; kind: OutageKind | null } {
@@ -192,7 +204,7 @@ export class OutageTable {
     this.entries.set(key, { until, reason, kind, since: this.now() });
     if (isNew) {
       const minutes = Math.max(1, Math.round((until - this.now()) / 60_000));
-      const what = key === '*' ? 'the Claude subscription' : `model "${key}"`;
+      const what = key === '*' ? this.seatName : `model "${key}"`;
       console.warn(`[ai] Holding off ${what} for about ${minutes} minute(s): ${reason}`);
     }
   }
@@ -214,7 +226,7 @@ export class OutageTable {
     this.entries.delete('*');
     // An expired one is only tidied away; there was nothing left to lift.
     if (entry.until <= this.now()) return false;
-    console.warn('[ai] Lifting the hold on the Claude subscription: a sign-in check found it signed in');
+    console.warn(`[ai] Lifting the hold on ${this.seatName}: a sign-in check found it signed in`);
     return true;
   }
 

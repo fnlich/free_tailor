@@ -14,8 +14,11 @@ import type {
   HealthOptions,
   ProviderCapabilities,
   ProviderHealth,
+  ProviderInstanceSpec,
+  ProviderReadiness,
 } from '../../types';
 import { createSpawnRunner, ensureCliWorkdir, type CliRunner } from '../cli/runner';
+import { describeInstance, instanceWorkdir } from '../cli/instance';
 import { buildCodexArgv, CODEX_CLI_BINARY_HINTS } from './argv';
 import { buildCodexChildEnv } from './env';
 import {
@@ -38,6 +41,12 @@ export type CodexCliAdapterOptions = {
   healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv }) => Promise<CodexCliHealth>;
   /** Injected in tests, which have no real CLI to write the answer file. */
   readAnswerFile?: (file: string) => string;
+  /**
+   * Which Codex PROVIDER this adapter is (config/aiProviders.ts): its
+   * CODEX_HOME, binary and limit. Absent, it is the built-in one as `.env`
+   * configures it. `config` still wins over it, for the tests.
+   */
+  instance?: ProviderInstanceSpec;
 };
 
 export type CodexCliAdapter = AIProviderAdapter;
@@ -58,10 +67,29 @@ export type CodexCliAdapter = AIProviderAdapter;
  * plain one.
  */
 export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): CodexCliAdapter {
-  const config: CodexCliConfig = { ...readCodexCliConfig(), ...options.config };
+  const instance = options.instance;
+  const base = readCodexCliConfig();
+  const config: CodexCliConfig = {
+    ...base,
+    ...(instance
+      ? {
+          binary: instance.binaryPath,
+          concurrency: instance.concurrency,
+          workdir: instanceWorkdir(base.workdir, instance),
+        }
+      : {}),
+    ...options.config,
+  };
+  const providerId = instance?.id ?? PROVIDER_ID;
+  // The provider's own CODEX_HOME, which is where `codex login` keeps the
+  // account - and so where `codex login status` reads it from.
+  const home = instance?.homeDir ?? null;
+  const childEnv = (): NodeJS.ProcessEnv => buildCodexChildEnv(process.env, { home });
   const now = options.now ?? Date.now;
   const runner = options.runner ?? createSpawnRunner();
-  const semaphore = getProviderSemaphore(PROVIDER_ID, config.concurrency);
+  // Keyed by PROVIDER: two Codex providers are two limits (owner decision P2).
+  const semaphore = getProviderSemaphore(providerId, config.concurrency);
+  const loginCommand = home ? `CODEX_HOME=${home} codex login --device-auth` : 'codex login --device-auth';
   const descriptor = getProviderDescriptor(PROVIDER_ID);
   const readAnswerFile =
     options.readAnswerFile ??
@@ -101,7 +129,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     detail: string,
     extra: Partial<{ retryAfterSeconds: number; adminAction: string }> = {}
   ): AIProviderError {
-    return new AIProviderError({ provider: PROVIDER_ID, kind, detail, ...extra });
+    return new AIProviderError({ provider: PROVIDER_ID, kind, detail: describeInstance(instance, detail), ...extra });
   }
 
   async function checkHealth(): Promise<ProviderHealth> {
@@ -109,7 +137,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     try {
       const value = await check({
         binary: config.binary,
-        env: buildCodexChildEnv(process.env),
+        env: childEnv(),
       });
       cachedHealth = { value, at: now() };
       return value;
@@ -167,7 +195,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
         'the Codex CLI is signed in with an API key, so this call would be billed per token; it was refused without running',
         {
           adminAction:
-            'Run `codex logout`, then `codex login --device-auth` as the user this server runs as and sign in ' +
+            `Run \`codex logout\`, then \`${loginCommand}\` as the user this server runs as and sign in ` +
             'with ChatGPT. Calls are refused until the seat is signed in to a subscription again.',
         }
       );
@@ -217,7 +245,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
       const outcome = await runner.run({
         binary: config.binary,
         argv,
-        env: buildCodexChildEnv(process.env),
+        env: childEnv(),
         cwd: config.workdir,
         stdin,
         deadlineMs: Math.max(
@@ -268,7 +296,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
           ...(signedOut
             ? {
                 adminAction:
-                  'Run `codex login --device-auth` as the user this server runs as, then check ' +
+                  `Run \`${loginCommand}\` as the user this server runs as, then check ` +
                   'Admin -> Settings.',
               }
             : {}),
@@ -279,6 +307,7 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
         text,
         resolvedModel: model,
         providerId: PROVIDER_ID,
+        providerInstanceId: providerId,
         ...(state.usage
           ? {
               usage: {
@@ -308,11 +337,27 @@ export function createCodexCliAdapter(options: CodexCliAdapterOptions = {}): Cod
     }
   }
 
+  /**
+   * Codex keeps no holds, so readiness is the last sign-in check alone: a
+   * seat signed out, missing, or signed in with a key it refuses to bill takes
+   * no work. A check that could not tell (`unknown`) benches nothing - the
+   * same rule the key refusal above keeps.
+   */
+  function readiness(): ProviderReadiness {
+    const value = cachedHealth?.value;
+    return {
+      ready: !value || value.unknown ? null : value.ok && value.apiKey !== true,
+      held: null,
+    };
+  }
+
   return {
     id: PROVIDER_ID,
+    instanceId: providerId,
     capabilities,
     defaultModelName: () => config.model,
     health,
     complete,
+    readiness,
   };
 }

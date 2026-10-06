@@ -115,6 +115,38 @@ Coverage currently focuses on:
   a duplicate red; when Add to job lake may be pressed; a sheet's
   `javascript:` link never an href; and the owner's line drawn from a real
   run's summary, with a tab of the reporter's own refused in the run's words
+- providers of one type and their queues (`providerQueues.test.js`): two
+  Claude providers with limits 1 and 2 running six tasks at most three at once,
+  each at its own limit, placed two and four; a held provider's waiting work,
+  a retry included, moving to the other; a switched-off provider taking nothing
+  and its waiting work moving; a type with no provider serving waiting rather
+  than failing, then running; no slot running another type's work; an idle
+  provider taking a busier one's head; urgent work per lane; the real queue's
+  reading of the providers resized live; a restored task naming a removed
+  provider landing in its type's pool; and the provider recorded on the order
+  item and shown to an administrator alone. Each provider's own seat
+  (`providerSeats.test.js`): its child's folder and binary with every key still
+  stripped or pinned, for the three types; holds and health per provider; a
+  semaphore resized live; the registry's adapter per provider and a type's stub
+  standing in for its others; the pool's pick, the queue's pin, and the
+  analysis model pooled the same way. The providers' settings
+  (`aiProviders.test.js`): the built-ins first, `.env`'s values and an
+  administrator's override with where each came from, every path check, a
+  folder shared within a type refused, the settings row and the routes over
+  HTTP, a busy provider refused removal. The pages' half
+  (`frontendProviders.test.js`): the type list, sign-in variables, `.env`
+  names, limit range and hold kinds copied from the server and checked
+  against it; every problem the Add and Edit forms find being the server's
+  own refusal, in its words and on its field; an edit sending only what
+  changed, so a built-in's `.env` value stays `.env`'s; a refusal pinned to
+  its box; where each value came from and how a provider's state reads; the
+  type offered exactly when the server would run it; every field the routes
+  send read back whole; and no page outside the admin ones reaching the
+  routes
+- the tailoring cache (`tailorCache.test.js`): a second identical build making
+  no tailoring call and charged again, a one-character profile change, another
+  model and an edited prompt each a miss, the key's parts, a cover letter's own
+  key, an unreadable stored answer a miss, the one-seek lookup and the prune
 - what anybody but an administrator is told when something fails
   (`publicErrors.test.js`): public refusals in their own words, everything
   else as a generic sentence and a ref with the cause logged under it, and the

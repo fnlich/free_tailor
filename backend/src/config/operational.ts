@@ -78,6 +78,7 @@ export const OPERATIONAL_INT_BOUNDS = {
   APIFY_RUN_TIMEOUT_S: { fallback: 300, min: 30, max: 3_600, unit: 's' },
   CRYPTOMUS_INVOICE_LIFETIME_S: { fallback: 3_600, min: 300, max: 43_200, unit: 's' },
   JOB_LAKE_DUPLICATE_WINDOW_DAYS: { fallback: 60, min: 1, max: 3_650, unit: 'day(s)' },
+  TAILOR_CACHE_DAYS: { fallback: 30, min: 1, max: 3_650, unit: 'day(s)' },
   // Frontend, server-only (read by the Next route handlers; listed for the record).
   CALENDAR_API_TIMEOUT_MS: { fallback: 12_000, min: 1_000, max: 120_000, unit: 'ms' },
   CALENDAR_DETAIL_CONCURRENCY: { fallback: 12, min: 1, max: 32, unit: 'request(s)' },
@@ -555,6 +556,19 @@ export function jobLakeDuplicateWindowDays(env: EnvSource = process.env): number
   return readInt('JOB_LAKE_DUPLICATE_WINDOW_DAYS', env);
 }
 
+/* ======================================================= tailoring cache */
+
+/**
+ * How long a tailored resume or cover letter is kept for reuse, in days
+ * (owner decision P6, services/tailorCache.ts): generating again for the same
+ * unchanged profile, posting, model and prompt reuses the stored answer with no
+ * model call - charged as usual. Older rows are pruned at boot and once a day.
+ * 30 by default. Read at every prune.
+ */
+export function tailorCacheDays(env: EnvSource = process.env): number {
+  return readInt('TAILOR_CACHE_DAYS', env);
+}
+
 /* ================================================================== table */
 
 export type OperationalVariable = {
@@ -772,6 +786,9 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     'services/jobLake/settings.ts (an administrator\'s value on /admin/job-lake wins)',
     jobLakeDuplicateWindowDays
   ),
+
+  // Tailoring cache
+  intEntry('TAILOR_CACHE_DAYS', 'per-call', 'services/tailorCache.ts (the boot and daily prune)', tailorCacheDays),
 ];
 
 /** `NAME=value`, quoted when the value has a space or a comma in it so the line still splits. */

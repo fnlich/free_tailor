@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import nodePath from 'path';
 
 import { getSetting, getSettingFamilyRaw, getSettingRaw, setSetting } from '../database/settingsRepository';
 import {
@@ -40,6 +41,22 @@ import {
 import { parsePricePerResume, readPricePerResumeMilli } from './pricePerResume';
 import { centsToMilli, describeDollarProblem, isWholeCents, milliToCents, parseDollars } from '../utils/money';
 import { AiUnavailableError, ModelUnavailableError } from './modelErrors';
+import {
+  AIProviderInputError,
+  applyProviderEdit,
+  buildNewProvider,
+  isBuiltInProviderId,
+  noteStoredProviders,
+  normalizeStoredProviders,
+  resolveProviders,
+  storableProviders,
+  toAdminProvider,
+  type AdminAIProvider,
+  type ResolvedAIProvider,
+  type StoredAIProvider,
+} from './aiProviders';
+import { getStaticDir } from './staticPaths';
+import { geminiCliStateDir, geminiCliWorkdir } from '../services/ai/providers/geminiCli/options';
 import {
   buildOutputPathPreview,
   DEFAULT_OUTPUT_PATH_TEMPLATE,
@@ -153,6 +170,14 @@ type AppSettings = {
    */
   requireThreeDSecure: boolean;
   aiModels: AIModelRecord[];
+  /**
+   * The model PROVIDERS (config/aiProviders.ts): every place a type can run,
+   * each with its own sign-in folder and limit. Always the three built-ins
+   * first among their types, plus whatever an administrator added; stored
+   * with only what an administrator set (`storableProviders`), so an
+   * untouched install stores none and reads `.env` as it always did.
+   */
+  aiProviders: StoredAIProvider[];
   googleSheetsSources: GoogleSheetSource[];
 };
 
@@ -164,7 +189,14 @@ type AppSettings = {
  * can run at all is the lock's question, and the lock is answered from the
  * environment rather than from this row - see `isProviderEnabled`.
  */
-export type AIModelSettings = Pick<AppSettings, 'providersEnabled'>;
+export type AIModelSettings = Pick<AppSettings, 'providersEnabled'> & {
+  /**
+   * The providers, when the caller has them. A type runs only while at least
+   * one provider of it is enabled; a settings slice without the list (an
+   * older caller, a test) reads as the three built-ins, all enabled.
+   */
+  aiProviders?: StoredAIProvider[];
+};
 
 /**
  * The flat per-provider boolean older clients read. Derived from
@@ -249,9 +281,15 @@ type BaseAppSettingsWithDerived = BaseAppSettings & {
   providerLocks: ProviderLock[];
 };
 
-export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels'> & {
+export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'aiProviders'> & {
   /** Every record, runnable or not, each with its `pricePerResumeMilli`. */
   aiModels: AIModelRecord[];
+  /**
+   * Every provider (config/aiProviders.ts), built-ins first among their type,
+   * with each value in effect and where it came from. Administrators only:
+   * folders and binaries are this server's business.
+   */
+  aiProviders: AdminAIProvider[];
   /**
    * The ids of every enabled model priced $0.000, in stored order: free to
    * everybody who picks it. Admin -> Models lists them in red. After the
@@ -525,6 +563,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   paymentLimits: DEFAULT_PAYMENT_LIMITS,
   requireThreeDSecure: false,
   aiModels: DEFAULT_MODEL_RECORDS,
+  aiProviders: normalizeStoredProviders([]),
   googleSheetsSources: [],
 };
 
@@ -533,6 +572,7 @@ function cloneDefaultSettings(): AppSettings {
     ...DEFAULT_SETTINGS,
     providersEnabled: { ...DEFAULT_SETTINGS.providersEnabled },
     aiModels: DEFAULT_SETTINGS.aiModels.map((model) => ({ ...model })),
+    aiProviders: DEFAULT_SETTINGS.aiProviders.map((entry) => ({ ...entry })),
     googleSheetsSources: [...DEFAULT_SETTINGS.googleSheetsSources],
   };
 }
@@ -1559,6 +1599,12 @@ function normalizeSettings(
       source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
     ),
     aiModels,
+    // Read leniently even from a strict caller: a provider this build cannot
+    // use is dropped with a warning (normalizeStoredProviders), and the
+    // admin's mutations - the only writer - check every field by name first.
+    aiProviders: normalizeStoredProviders(
+      Array.isArray(source.aiProviders) ? source.aiProviders : fallback.aiProviders
+    ),
     googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
 }
@@ -1682,6 +1728,7 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
   return {
     ...toBaseSettingsWithDerived(settings),
     aiModels: settings.aiModels.map((model) => ({ ...model })),
+    aiProviders: resolveProviders(settings.aiProviders).map(toAdminProvider),
     providerModelOptions: listSeatModelOptions(),
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
@@ -1801,6 +1848,7 @@ async function readSettings(): Promise<AppSettings> {
   const path = getDatabasePath();
   const cached = settingsCache;
   if (cached && cached.path === path && Date.now() - cached.at < SETTINGS_CACHE_TTL_MS) {
+    noteStoredProviders(path, cached.value.aiProviders);
     return cached.value;
   }
 
@@ -1811,6 +1859,7 @@ async function readSettings(): Promise<AppSettings> {
   if (stored === null) {
     const defaults = cloneDefaultSettings();
     settingsCache = { path, value: defaults, at: Date.now() };
+    noteStoredProviders(path, defaults.aiProviders);
     return defaults;
   }
 
@@ -1840,6 +1889,9 @@ async function readSettings(): Promise<AppSettings> {
     assertAtLeastOneRunnableModel(settings);
   }
   settingsCache = { path, value: settings, at: Date.now() };
+  // The providers, held synchronously for the queue's dispatcher and the pool
+  // that spreads a type's calls (config/aiProviders.ts `currentProviders`).
+  noteStoredProviders(path, settings.aiProviders);
   return settings;
 }
 
@@ -1852,8 +1904,12 @@ async function writeSettings(settings: AppSettings): Promise<AppSettings> {
   const normalized = normalizeSettings(settings, cloneDefaultSettings(), true);
   assertAtLeastOneProviderEnabled(normalized);
   assertAtLeastOneRunnableModel(normalized);
-  setSetting(APP_SETTINGS_KEY, normalized);
-  settingsCache = { path: getDatabasePath(), value: normalized, at: Date.now() };
+  // Built-ins only where an administrator set something: an untouched one is
+  // not stored, so it keeps reading `.env` and a later `.env` edit reaches it.
+  setSetting(APP_SETTINGS_KEY, { ...normalized, aiProviders: storableProviders(normalized.aiProviders) });
+  const path = getDatabasePath();
+  settingsCache = { path, value: normalized, at: Date.now() };
+  noteStoredProviders(path, normalized.aiProviders);
   return normalized;
 }
 
@@ -2009,8 +2065,16 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
    * save succeeded while the limit they just typed was thrown away. So a bad
    * amount or an inverted band is reported by name.
    */
-  const { aiModels: _models, paymentLimits: limitsInput, ...changes } = input as AppSettingsUpdate & {
+  // And the providers, which have routes of their own for the same reason:
+  // every folder and binary they name is checked there, by name.
+  const {
+    aiModels: _models,
+    aiProviders: _providers,
+    paymentLimits: limitsInput,
+    ...changes
+  } = input as AppSettingsUpdate & {
     aiModels?: unknown;
+    aiProviders?: unknown;
   };
   const paymentLimits = limitsInput === undefined ? current.paymentLimits : parsePaymentLimitsInput(limitsInput);
   const next = normalizeSettings(
@@ -2499,6 +2563,7 @@ export async function getAIModelSettings(): Promise<AIModelSettings> {
   const settings = await readSettings();
   return {
     providersEnabled: { ...settings.providersEnabled },
+    aiProviders: settings.aiProviders.map((entry) => ({ ...entry })),
   };
 }
 
@@ -2535,7 +2600,22 @@ export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'out
  * check somewhere.
  */
 export function isProviderEnabled(provider: AIProvider, settings: AIModelSettings): boolean {
-  return settings.providersEnabled[provider] === true && !isProviderLocked(provider);
+  return (
+    settings.providersEnabled[provider] === true &&
+    !isProviderLocked(provider) &&
+    hasEnabledProviderOfType(provider, settings)
+  );
+}
+
+/**
+ * Whether any provider of the type is switched on (config/aiProviders.ts). A
+ * type whose every provider an administrator switched off cannot run anything,
+ * exactly as if its own switch were off - so its models drop out of the
+ * runnable list rather than being offered and then waiting for ever.
+ */
+function hasEnabledProviderOfType(type: AIProvider, settings: AIModelSettings): boolean {
+  if (!settings.aiProviders) return true;
+  return settings.aiProviders.some((entry) => entry.type === type && entry.enabled);
 }
 
 /**
@@ -2566,4 +2646,124 @@ export function getDefaultEnabledProvider(settings: AIModelSettings): AIProvider
     AI_PROVIDER_IDS.find((id) => settings.providersEnabled[id]) ??
     AI_PROVIDER_IDS[0]
   );
+}
+
+/* ============================================================= providers */
+
+/**
+ * This app's own directories, which no provider's folder or binary may be
+ * inside (config/aiProviders.ts): the checkout, the database directory, the
+ * shipped and saved assets, the output tree, and the seats' fixed working and
+ * state directories when they are configured somewhere else. A sign-in folder
+ * in there would sit where the app writes, serves or deletes files.
+ */
+export function listAppDirectories(settings: Pick<AppSettings, 'outputBaseDir'>, env: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = ['AI_CLI_WORKDIR', 'AI_CODEX_WORKDIR']
+    .map((name) => (env[name] ?? '').trim())
+    .filter(Boolean)
+    .map((value) => nodePath.resolve(value));
+  return [
+    // dist/config -> backend/dist -> backend -> the checkout.
+    nodePath.resolve(__dirname, '..', '..', '..'),
+    nodePath.dirname(getDatabasePath()),
+    getStaticDir(),
+    settings.outputBaseDir ? nodePath.resolve(settings.outputBaseDir) : '',
+    ...configured,
+    geminiCliWorkdir(env),
+    geminiCliStateDir(env),
+  ].filter(Boolean);
+}
+
+export type ProviderMutationResult = {
+  /** The provider the call was about; absent after a removal. */
+  provider?: AdminAIProvider;
+  providers: AdminAIProvider[];
+};
+
+function providersView(settings: AppSettings): AdminAIProvider[] {
+  return resolveProviders(settings.aiProviders).map(toAdminProvider);
+}
+
+/** The resolved providers in effect now, for the queue and the routes. */
+export async function listResolvedProviders(): Promise<ResolvedAIProvider[]> {
+  return resolveProviders((await readSettings()).aiProviders);
+}
+
+export async function listAdminAIProviders(): Promise<AdminAIProvider[]> {
+  return providersView(await readSettings());
+}
+
+/**
+ * Writes a provider list, refusing - by name, as a conflict - one that would
+ * leave nothing runnable: every provider of every type with a model switched
+ * off is the same as switching every seat off, which a settings save refuses.
+ */
+async function saveProviders(current: AppSettings, aiProviders: StoredAIProvider[]): Promise<AppSettings> {
+  const next = normalizeSettings({ ...current, aiProviders }, current);
+  if (getRunnableModels(next).length === 0) {
+    throw new AIProviderInputError(
+      'nothing-left',
+      'That would leave no enabled model with an enabled provider to run on. Enable another provider first.',
+      'enabled',
+      409
+    );
+  }
+  return writeSettings(next);
+}
+
+function findStoredProvider(settings: AppSettings, id: string): StoredAIProvider {
+  const found = settings.aiProviders.find((entry) => entry.id === id);
+  if (!found) throw new AIProviderInputError('not-found', 'That provider does not exist.', undefined, 404);
+  return found;
+}
+
+/** Adds a provider (owner decision P1): `{ type, label, homeDir, binaryPath?, concurrency_max_requests?, enabled? }`. */
+export async function createAIProvider(input: unknown): Promise<ProviderMutationResult> {
+  const current = await readSettings();
+  const created = buildNewProvider(input, {
+    providers: resolveProviders(current.aiProviders),
+    appDirectories: listAppDirectories(current),
+  });
+  const saved = await saveProviders(current, [...current.aiProviders, created]);
+  const providers = providersView(saved);
+  return { provider: providers.find((entry) => entry.id === created.id), providers };
+}
+
+/** Edits one: any of `label`, `homeDir`, `binaryPath`, `concurrency_max_requests`, `enabled`. */
+export async function updateAIProvider(id: string, input: unknown): Promise<ProviderMutationResult> {
+  const current = await readSettings();
+  const existing = findStoredProvider(current, id);
+  const edited = applyProviderEdit(existing, input, {
+    providers: resolveProviders(current.aiProviders),
+    appDirectories: listAppDirectories(current),
+  });
+  const saved = await saveProviders(
+    current,
+    current.aiProviders.map((entry) => (entry.id === id ? edited : entry))
+  );
+  const providers = providersView(saved);
+  return { provider: providers.find((entry) => entry.id === id), providers };
+}
+
+/**
+ * Removes an added provider. A built-in one is part of what every stored model
+ * and queued task names, so it is switched off instead (409 `built-in`). The
+ * caller - the route - has already refused a provider with work running.
+ */
+export async function deleteAIProvider(id: string): Promise<ProviderMutationResult> {
+  const current = await readSettings();
+  findStoredProvider(current, id);
+  if (isBuiltInProviderId(id)) {
+    throw new AIProviderInputError(
+      'built-in',
+      "The built-in provider of a type cannot be removed; switch it off instead, and its type's other providers carry on.",
+      undefined,
+      409
+    );
+  }
+  const saved = await saveProviders(
+    current,
+    current.aiProviders.filter((entry) => entry.id !== id)
+  );
+  return { providers: providersView(saved) };
 }

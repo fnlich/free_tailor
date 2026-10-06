@@ -15,8 +15,11 @@ import type {
   HealthOptions,
   ProviderCapabilities,
   ProviderHealth,
+  ProviderInstanceSpec,
+  ProviderReadiness,
 } from '../../types';
 import { createSpawnRunner, type CliRunner } from '../cli/runner';
+import { describeInstance, instanceWorkdir } from '../cli/instance';
 import {
   buildGeminiArgv,
   escapeAtReferences,
@@ -72,6 +75,13 @@ export type GeminiCliAdapterOptions = {
   now?: () => number;
   /** Injected in tests so `gemini --version` is never executed. */
   healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv }) => Promise<GeminiCliHealth>;
+  /**
+   * Which Gemini PROVIDER this adapter is (config/aiProviders.ts): its
+   * GEMINI_CLI_HOME, binary and limit, and - for one an administrator added -
+   * a workspace and state directory of its own. Absent, it is the built-in
+   * one as `.env` configures it. `config` still wins over it, for the tests.
+   */
+  instance?: ProviderInstanceSpec;
 };
 
 export type GeminiCliAdapter = AIProviderAdapter & {
@@ -99,11 +109,37 @@ export type GeminiCliAdapter = AIProviderAdapter & {
  *     directory, which is deleted when the turn ends.
  */
 export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): GeminiCliAdapter {
-  const config: GeminiCliConfig = { ...readGeminiCliConfig(), ...options.config };
+  const instance = options.instance;
+  const base = readGeminiCliConfig();
+  const config: GeminiCliConfig = {
+    ...base,
+    ...(instance
+      ? {
+          binary: instance.binaryPath,
+          concurrency: instance.concurrency,
+          // The provider's own sign-in home - or, for the built-in left unset,
+          // AI_GEMINI_HOME as this seat always read it (null inherits).
+          home: instance.homeDir ?? base.home,
+          // One workspace and one state directory per provider: the CLI
+          // registers its workspace in the HOME's projects.json and keeps the
+          // turn's transcript there, so two homes never share one.
+          workdir: instanceWorkdir(base.workdir, instance),
+          stateDir: instanceWorkdir(base.stateDir, instance),
+        }
+      : {}),
+    ...options.config,
+  };
+  const providerId = instance?.id ?? PROVIDER_ID;
   const now = options.now ?? Date.now;
   const runner = options.runner ?? createSpawnRunner();
-  const outages = new GeminiOutageTable(now);
-  const semaphore = getProviderSemaphore(PROVIDER_ID, config.concurrency);
+  const seatName = instance && !instance.builtIn ? `the Gemini provider "${instance.label}"` : 'the Gemini seat';
+  const outages = new GeminiOutageTable(now, seatName);
+  // Keyed by PROVIDER: two Gemini providers are two limits (owner decision P2).
+  const semaphore = getProviderSemaphore(providerId, config.concurrency);
+  const signInAction = instance && !instance.builtIn && config.home
+    ? `Run \`GEMINI_CLI_HOME=${config.home} NO_BROWSER=true gemini\` once, interactively, as the user this ` +
+      'server runs as: choose "Sign in with Google", open the URL it prints in any browser and paste the code back.'
+    : GEMINI_SIGN_IN_ACTION;
 
   let workspace: GeminiWorkspace | null = null;
   let cachedHealth: { value: GeminiCliHealth; at: number } | null = null;
@@ -129,7 +165,7 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     detail: string,
     extra: Partial<{ retryAfterSeconds: number; adminAction: string }> = {}
   ): AIProviderError {
-    return new AIProviderError({ provider: PROVIDER_ID, kind, detail, ...extra });
+    return new AIProviderError({ provider: PROVIDER_ID, kind, detail: describeInstance(instance, detail), ...extra });
   }
 
   /** The child's environment, minus what only a turn has. */
@@ -200,7 +236,7 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     const seconds = Math.ceil(held.waitMs / 1000);
     throw fail(held.kind ?? 'rateLimited', `${held.reason}; holding off for about ${seconds}s`, {
       retryAfterSeconds: seconds,
-      ...(held.kind === 'auth' ? { adminAction: GEMINI_SIGN_IN_ACTION } : {}),
+      ...(held.kind === 'auth' ? { adminAction: signInAction } : {}),
     });
   }
 
@@ -369,15 +405,15 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
           const signedOut = outages.noteSignInUnverified(failure.detail);
           throw fail(signedOut ? 'auth' : 'unavailable', failure.detail, {
             adminAction: signedOut
-              ? GEMINI_SIGN_IN_ACTION
+              ? signInAction
               : 'Check that this server can reach oauth2.googleapis.com (a proxy, a firewall, DNS). If it keeps ' +
                 'happening, the token may have been revoked - then sign in again: ' +
-                GEMINI_SIGN_IN_ACTION,
+                signInAction,
           });
         }
         if (failure.kind === 'auth') {
           outages.noteAuth(failure.detail);
-          throw fail('auth', failure.detail, { adminAction: GEMINI_SIGN_IN_ACTION });
+          throw fail('auth', failure.detail, { adminAction: signInAction });
         }
         if (failure.kind === 'rateLimited') {
           outages.noteLimit(failure.retryAfterSeconds ?? null, failure.detail);
@@ -430,6 +466,7 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
         text,
         resolvedModel: state.resolvedModel ?? model,
         providerId: PROVIDER_ID,
+        providerInstanceId: providerId,
         ...(state.usage
           ? {
               usage: {
@@ -458,8 +495,19 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
     }
   }
 
+  function readiness(): ProviderReadiness {
+    const held = outages.seatHold();
+    return {
+      // A sign-in kept in encrypted storage reads as ok with loggedIn null:
+      // the check cannot see it, and "cannot tell" must not bench a provider.
+      ready: cachedHealth ? cachedHealth.value.ok : null,
+      held: held ? { kind: held.kind, reason: held.reason, until: new Date(held.until).toISOString() } : null,
+    };
+  }
+
   return {
     id: PROVIDER_ID,
+    instanceId: providerId,
     capabilities,
     defaultModelName: () => config.model,
     health,
@@ -467,6 +515,7 @@ export function createGeminiCliAdapter(options: GeminiCliAdapterOptions = {}): G
       complete(request).catch((error) => {
         throw asAIProviderError(error, PROVIDER_ID);
       }),
+    readiness,
     outages: () => outages.snapshot(),
   };
 }

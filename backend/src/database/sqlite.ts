@@ -212,6 +212,7 @@ const SCHEMA = `
     error             TEXT,
     files             TEXT NOT NULL DEFAULT '[]',
     cost_milli        INTEGER,
+    provider_id       TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
   );
@@ -870,6 +871,32 @@ const SCHEMA = `
       VALUES (new.id, new.company, new.title, new.job_description);
   END;
 
+  /**
+   * Tailored content kept for reuse (owner decision P6; services/tailorCache.ts,
+   * database/tailorCacheRepository.ts its only reader and writer): the model's
+   * answer to a tailoring or a cover-letter call, under a key that is the
+   * SHA-256 of everything that answer was made from - the profile as it was
+   * (content, section switches, layout), the template, the posting's stored
+   * analysis, the model record and model name, and the prompt's text. A
+   * generation that would ask the same question again reads the answer here
+   * instead, and is charged as usual; any one of those changing is another
+   * key. cache_key is UNIQUE (the lookup is one seek on it, pinned by a test),
+   * and rows older than TAILOR_CACHE_DAYS are pruned on created_at.
+   *
+   * kind is 'resume' or 'cover-letter'. model_id, analysis_id and profile_id
+   * say what a row was for - an audit, never part of how it is found.
+   */
+  CREATE TABLE IF NOT EXISTS tailor_cache (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_key    TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    model_id     TEXT NOT NULL DEFAULT '',
+    analysis_id  TEXT,
+    profile_id   TEXT,
+    created_at   TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS schema_meta (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -1045,6 +1072,10 @@ function addMissingColumns(db: Database.Database): void {
     // CREATE TABLE too; here for a job_lake table made before it. NULL reads
     // as "no row": such a job found again is a duplicate, never `already`.
     { table: 'job_lake', column: 'report_ref', definition: 'TEXT' },
+    // The provider an order's resume was last built on (Phase 9: providers of
+    // one type at several sign-ins). NULL on every upgraded row, which reads
+    // as "not recorded" - they all ran on the one provider each type had.
+    { table: 'order_items', column: 'provider_id', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {
@@ -1175,6 +1206,18 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     table: 'job_lake_history',
     columns: ['lake_id'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_history_lake ON job_lake_history (lake_id)',
+  },
+  {
+    name: 'idx_tailor_cache_key',
+    table: 'tailor_cache',
+    columns: ['cache_key'],
+    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_tailor_cache_key ON tailor_cache (cache_key)',
+  },
+  {
+    name: 'idx_tailor_cache_created',
+    table: 'tailor_cache',
+    columns: ['created_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_tailor_cache_created ON tailor_cache (created_at)',
   },
 ];
 

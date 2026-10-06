@@ -22,7 +22,7 @@ export class AsyncSemaphore {
 
   private peakInFlight = 0;
 
-  constructor(private readonly limit: number) {
+  constructor(private limit: number) {
     if (!Number.isInteger(limit) || limit < 1) {
       throw new Error(`AsyncSemaphore limit must be a positive integer, got ${limit}`);
     }
@@ -106,16 +106,39 @@ export class AsyncSemaphore {
     return () => {
       if (released) return;
       released = true;
-      const next = this.waiters.shift();
-      if (next) {
-        // Hand the slot straight to the next waiter; `available` never rises,
-        // so a burst of releases cannot let more than `limit` run at once.
-        this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
-        next.resolve();
-        return;
-      }
       this.available += 1;
+      this.drain();
     };
+  }
+
+  /**
+   * Hands free slots to waiters, head first. Every slot handed over is taken
+   * from `available` here and nowhere else, so a burst of releases cannot let
+   * more than `limit` run at once - and after a shrink, a release only pays
+   * back what the shrink overdrew before anybody new is let in.
+   */
+  private drain(): void {
+    while (this.available > 0) {
+      const next = this.waiters.shift();
+      if (!next) return;
+      this.take();
+      next.resolve();
+    }
+  }
+
+  /**
+   * A new limit, in place (an administrator edited a provider's
+   * `concurrency_max_requests`). What is running keeps running and keeps
+   * being counted: growing lets waiters in at once, shrinking lets nobody new
+   * in until enough of the running calls have finished.
+   */
+  resize(limit: number): void {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error(`AsyncSemaphore limit must be a positive integer, got ${limit}`);
+    }
+    this.available += limit - this.limit;
+    this.limit = limit;
+    this.drain();
   }
 
   resetPeak(): void {
@@ -156,7 +179,11 @@ const semaphores = new Map<string, AsyncSemaphore>();
  */
 export function getProviderSemaphore(provider: string, limit: number): AsyncSemaphore {
   const existing = semaphores.get(provider);
-  if (existing && existing.size === limit) {
+  if (existing) {
+    // Resized in place rather than replaced: a replacement forgot every call
+    // in flight on the old one, so for as long as they ran the lane could hold
+    // its old count AND its new one at once.
+    if (existing.size !== limit) existing.resize(limit);
     return existing;
   }
   const created = new AsyncSemaphore(limit);

@@ -295,13 +295,13 @@ function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
  * happened to come first.
  */
 export function routeFor(choice: { provider: string }): { queue: QueueName } {
-  // Each seat has its own lane because each has its own semaphore, sized by
-  // its own variable. Sharing the Claude seat's lane meant the dispatcher
-  // offered `AI_CLI_CONCURRENCY` slots into an `AI_CODEX_CONCURRENCY` pool, so
-  // one of the two was always wrong. The Claude seat's lane is also the lane of
-  // last resort: a provider id this build has no seat for - a retired one on a
-  // choice stored before the upgrade - lands there, and the restore resolves
-  // such a choice again before it runs. The same rule the restore places by.
+  // The POOL of the model's type (owner decision P4): the queue places each
+  // task with whichever provider of that type has the most room, each provider
+  // being a lane of its own with its own semaphore and limit. The Claude pool
+  // is also the pool of last resort: a provider id this build has no seat for
+  // - a retired one on a choice stored before the upgrade - lands there, and
+  // the restore resolves such a choice again before it runs. The same rule
+  // the restore places by.
   return { queue: laneFor(choice.provider) };
 }
 
@@ -538,15 +538,16 @@ function decorate(snapshot: BatchSnapshot): PageSnapshot {
 }
 
 /**
- * A snapshot as this reader may see it. Which lane and seat a task is running on
- * (`runningOn`) is an administrator's business, and so is a raw stored error.
+ * A snapshot as this reader may see it. Which provider a task is running on or
+ * ran on (`runningOn`, `ranOn`) is an administrator's business, and so is a
+ * raw stored error.
  */
 function readerSnapshot(snapshot: BatchSnapshot, admin: boolean): PageSnapshot {
   const decorated = decorate(snapshot);
   if (admin) return decorated;
   return {
     ...decorated,
-    tasks: decorated.tasks.map(({ runningOn: _lane, ...task }) =>
+    tasks: decorated.tasks.map(({ runningOn: _lane, ranOn: _ranOn, ...task }) =>
       task.error ? { ...task, error: readTaskError(task.error, false) } : task
     ),
   };

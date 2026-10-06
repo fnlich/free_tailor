@@ -12,6 +12,8 @@ import type {
   HealthOptions,
   ProviderCapabilities,
   ProviderHealth,
+  ProviderInstanceSpec,
+  ProviderReadiness,
 } from '../../types';
 import { buildClaudeArgv, resolveCliModel } from './argv';
 import { buildChildEnv } from './env';
@@ -21,6 +23,7 @@ import { checkClaudeCliHealth, type ClaudeCliHealth } from './health';
 import { interpretRateLimitEvent, OutageTable, type OutageKind } from './limits';
 import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './options';
 import { createSpawnRunner, ensureCliWorkdir, type CliRunner, type CliRunOutcome } from '../cli/runner';
+import { instanceWorkdir, describeInstance } from '../cli/instance';
 import { CLAUDE_CLI_BINARY_HINTS } from './hints';
 
 const PROVIDER_ID = 'claude-cli' as const;
@@ -37,6 +40,12 @@ export type ClaudeCliAdapterOptions = {
   now?: () => number;
   /** Injected in tests so `claude auth status` is never executed. */
   healthCheck?: (options: { binary: string; env: NodeJS.ProcessEnv }) => Promise<ClaudeCliHealth>;
+  /**
+   * Which Claude PROVIDER this adapter is (config/aiProviders.ts): its sign-in
+   * folder, binary and limit. Absent, it is the built-in one as `.env`
+   * configures it. `config` still wins over it, for the tests.
+   */
+  instance?: ProviderInstanceSpec;
 };
 
 export type ClaudeCliAdapter = AIProviderAdapter & {
@@ -56,12 +65,35 @@ export type ClaudeCliAdapter = AIProviderAdapter & {
  * and a strict rule that a partial answer is never returned as an answer.
  */
 export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): ClaudeCliAdapter {
-  const config: ClaudeCliConfig = { ...readClaudeCliConfig(), ...options.config };
+  const instance = options.instance;
+  const base = readClaudeCliConfig();
+  const config: ClaudeCliConfig = {
+    ...base,
+    // A provider's own binary and limit, and - for one an administrator added -
+    // a working directory of its own, so two accounts never share the
+    // per-project state the CLI keeps against it.
+    ...(instance
+      ? {
+          binary: instance.binaryPath,
+          concurrency: instance.concurrency,
+          workdir: instanceWorkdir(base.workdir, instance),
+        }
+      : {}),
+    ...options.config,
+  };
+  const providerId = instance?.id ?? PROVIDER_ID;
+  // The folder the child signs in from: the provider's own, or - for the
+  // built-in left unset - whatever CLAUDE_CONFIG_DIR the server already has.
+  const configDir = instance?.homeDir ?? null;
+  const childEnv = (): NodeJS.ProcessEnv => buildChildEnv(process.env, { configDir });
   const now = options.now ?? Date.now;
   const runner = options.runner ?? createSpawnRunner();
-  const outages = new OutageTable(now, config.recoverySeconds * 1000);
-  const semaphore = getProviderSemaphore(PROVIDER_ID, config.concurrency);
+  const seatName = instance && !instance.builtIn ? `the Claude provider "${instance.label}"` : 'the Claude subscription';
+  const outages = new OutageTable(now, config.recoverySeconds * 1000, seatName);
+  // Keyed by PROVIDER: two Claude providers are two limits (owner decision P2).
+  const semaphore = getProviderSemaphore(providerId, config.concurrency);
   const descriptor = getProviderDescriptor(PROVIDER_ID);
+  const signInCommand = configDir ? `CLAUDE_CONFIG_DIR=${configDir} claude auth login` : 'claude auth login';
 
   let workdirReady = false;
   let cachedHealth: { value: ClaudeCliHealth; at: number } | null = null;
@@ -85,7 +117,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
   };
 
   function fail(kind: AIErrorKind, detail: string, extra: Partial<{ retryAfterSeconds: number; adminAction: string }> = {}): AIProviderError {
-    return new AIProviderError({ provider: PROVIDER_ID, kind, detail, ...extra });
+    return new AIProviderError({ provider: PROVIDER_ID, kind, detail: describeInstance(instance, detail), ...extra });
   }
 
   async function health(healthOptions: HealthOptions = {}): Promise<ProviderHealth> {
@@ -99,7 +131,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     try {
       const value = await check({
         binary: config.binary,
-        env: buildChildEnv(process.env),
+        env: childEnv(),
       });
       cachedHealth = { value, at: now() };
       // The only thing that lifts a sign-in hold early. A success would clear
@@ -128,7 +160,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       return fail('auth', detail, {
         retryAfterSeconds,
         adminAction:
-          'Run `claude auth login` as the user this server runs as, then open admin Settings: its seat check ' +
+          `Run \`${signInCommand}\` as the user this server runs as, then open admin Settings: its seat check ` +
           'lifts the hold once it finds the subscription signed in.',
       });
     }
@@ -220,7 +252,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         outcome = await runner.run({
           binary: config.binary,
           argv: invocation.argv,
-          env: buildChildEnv(process.env),
+          env: childEnv(),
           cwd: config.workdir,
           stdin,
           deadlineMs: Math.max(1_000, Math.min(request.deadline.remainingMs(), resolveTimeoutMs(config, request.callSite))),
@@ -399,6 +431,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
         text,
         resolvedModel: state.model ?? model,
         providerId: PROVIDER_ID,
+        providerInstanceId: providerId,
         usage: state.usage,
         costUsd: state.costUsd,
         droppedParams,
@@ -409,8 +442,17 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
     }
   }
 
+  function readiness(): ProviderReadiness {
+    const held = outages.seatHold();
+    return {
+      ready: cachedHealth ? cachedHealth.value.ok : null,
+      held: held ? { kind: held.kind, reason: held.reason, until: new Date(held.until).toISOString() } : null,
+    };
+  }
+
   return {
     id: PROVIDER_ID,
+    instanceId: providerId,
     capabilities,
     defaultModelName: () => config.model,
     health,
@@ -418,6 +460,7 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       complete(request).catch((error) => {
         throw asAIProviderError(error, PROVIDER_ID);
       }),
+    readiness,
     outages: () => outages.snapshot(),
     seatUsage: () => ({ ...seat }),
   };

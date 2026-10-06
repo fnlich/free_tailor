@@ -253,22 +253,25 @@ test('cancelling reports what it dropped, and twice is not an error', async () =
 
 test('a task routes to a queue by the profile model, not by the request', async () => {
   const { routeFor } = loadFresh('../dist/routes/generation');
-  assert.deepEqual(routeFor({ provider: 'claude-cli' }), { queue: 'cli' });
-  // A retired provider - a choice stored before the upgrade - lands on the
-  // Claude seat's lane, the lane of last resort; the restore resolves such a
-  // choice again before it runs.
-  assert.deepEqual(routeFor({ provider: 'claude' }), { queue: 'cli' });
-  assert.deepEqual(routeFor({ provider: 'openai' }), { queue: 'cli' });
-  assert.deepEqual(routeFor({ provider: 'deepseek' }), { queue: 'cli' });
+  // The POOL of the model's type, named by the type id - which is also the
+  // built-in provider's lane. The queue then places each task with whichever
+  // provider of the type has the most room (test/providerQueues.test.js).
+  assert.deepEqual(routeFor({ provider: 'claude-cli' }), { queue: 'claude-cli' });
+  // A retired provider - a choice stored before the upgrade - lands in the
+  // Claude pool, the pool of last resort; the restore resolves such a choice
+  // again before it runs.
+  assert.deepEqual(routeFor({ provider: 'claude' }), { queue: 'claude-cli' });
+  assert.deepEqual(routeFor({ provider: 'openai' }), { queue: 'claude-cli' });
+  assert.deepEqual(routeFor({ provider: 'deepseek' }), { queue: 'claude-cli' });
 
-  // Codex does NOT. It holds its own semaphore, sized by its own variable, so
-  // sharing the Claude seat's lane meant the dispatcher offered
-  // AI_CLI_CONCURRENCY slots into an AI_CODEX_CONCURRENCY pool - either
-  // stranding the larger of the two, or letting tasks blocked on the smaller
-  // squat on slots the other provider's work needed.
-  assert.deepEqual(routeFor({ provider: 'codex-cli' }), { queue: 'codex' });
-  // Nor does Gemini, for the same reason: AI_GEMINI_CONCURRENCY sizes its own.
-  assert.deepEqual(routeFor({ provider: 'gemini-cli' }), { queue: 'gemini' });
+  // Codex does NOT. Its providers hold their own semaphores, sized by their
+  // own limits, so sharing the Claude pool meant the dispatcher offered
+  // Claude slots into a Codex pool - either stranding the larger of the two,
+  // or letting tasks blocked on the smaller squat on slots the other
+  // provider's work needed.
+  assert.deepEqual(routeFor({ provider: 'codex-cli' }), { queue: 'codex-cli' });
+  // Nor does Gemini, for the same reason.
+  assert.deepEqual(routeFor({ provider: 'gemini-cli' }), { queue: 'gemini-cli' });
 });
 
 test('a page loaded before the upgrade that still names the browser entry gets the default', async () => {
@@ -286,11 +289,15 @@ test('a page loaded before the upgrade that still names the browser entry gets t
     assert.equal(response.status, 202);
     const body = await response.json();
     assert.equal(body.total, 2);
-    assert.deepEqual(Object.keys(body.queues).sort(), ['cli', 'codex', 'gemini'], 'no lane for the removed providers');
-    assert.equal(body.queues.cli.queued + body.queues.cli.running, 2, 'both resumes are on the seat');
+    assert.ok(!Object.keys(body.queues).some((lane) => /web|openai|deepseek/.test(lane)), 'no lane for the removed providers');
+    const claude = body.queues['claude-cli'];
+    assert.equal(claude.queued + claude.running, 2, 'both resumes are on the seat');
 
+    // Once the providers are read, a lane per provider - the three built-in
+    // ones on an install with none added - and no other.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const stats = await (await server.call('/queues')).json();
-    assert.deepEqual(Object.keys(stats).sort(), ['cli', 'codex', 'gemini']);
+    assert.deepEqual(Object.keys(stats).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
   } finally {
     server.close();
   }

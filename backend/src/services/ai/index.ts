@@ -28,14 +28,25 @@ export { JSON_ONLY_SYSTEM_PROMPT } from './promptAssembly';
 
 export {
   checkProviderHealth,
+  getAdapter,
   getClaudeCliAdapter,
   getGeminiCliAdapter,
   listProviderCapabilities,
   preflightAllProviders,
+  providerReadiness,
+  providersNow,
   registerAdapter,
   resetRegistryForTests,
 } from './registry';
 export type { ProviderHealthReport } from './registry';
+
+export {
+  isProviderReady,
+  pickProvider,
+  pinnedProviderId,
+  providerLoad,
+  runPinnedToProvider,
+} from './providerPool';
 
 export { resolveBatchCapacity, cliConcurrency } from './batchCapacity';
 export type { BatchCapacity } from './batchCapacity';
@@ -56,4 +67,6 @@ export type {
   CompletionResult,
   ProviderCapabilities,
   ProviderHealth,
+  ProviderInstanceSpec,
+  ProviderReadiness,
 } from './types';

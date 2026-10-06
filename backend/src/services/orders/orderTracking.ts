@@ -63,9 +63,9 @@ type FinishedTask = {
   error?: string;
 };
 
-export function recordTaskStarted(task: { batchId: string; seq: number }): void {
+export function recordTaskStarted(task: { batchId: string; seq: number; runningOn?: string }): void {
   try {
-    markItemRunning(task.batchId, task.seq);
+    markItemRunning(task.batchId, task.seq, task.runningOn);
   } catch (error) {
     console.warn('[orders] Could not mark a resume as being built.', error);
   }

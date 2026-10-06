@@ -17,6 +17,7 @@ import {
   type OrderItemState,
 } from '@/lib/orders';
 import { formatDate, formatMoney } from '@/lib/format';
+import { describeRanOn } from '@/lib/providerDisplay';
 import { REFUND_STATE_LABELS, REFUND_STATE_TONES, refundActionFor, refundCellNote } from '@/lib/refundDisplay';
 import { refundRequestsApi, type RefundOption } from '@/lib/refunds';
 import {
@@ -372,6 +373,8 @@ function OrderItemRow({
           {item.role ? ` - ${item.role}` : ''}
           {typeof item.sourceRowNumber === 'number' ? ` - sheet row ${item.sourceRowNumber}` : ''}
         </span>
+        {/* An administrator's only: the server sends `ranOn` to nobody else. */}
+        {item.ranOn && <span className="mt-0.5 block text-xs text-muted">{describeRanOn(item.ranOn)}</span>}
         {item.error && (
           <span className="tl-status mt-1 block" data-tone="error">
             {item.error}

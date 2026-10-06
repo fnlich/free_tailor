@@ -26,6 +26,13 @@ import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { seatHolds } from '@/lib/seatHolds';
+import {
+  describeLane,
+  describeTypeHealth,
+  normalizeAdminProviders,
+  PROVIDER_TYPE_NAMES,
+  type AdminAIProvider,
+} from '@/lib/providerDisplay';
 import styles from './page.module.css';
 
 type SettingsFormState = {
@@ -56,6 +63,10 @@ function buildPathPreview(template: string): string {
     .replace(/\{\{\s*(job title|role)\s*\}\}/gi, 'senior_engineer');
 }
 
+/**
+ * A type's row: its one provider's own words, or - with several, each a
+ * sign-in of its own - how many of them can take work now.
+ */
 function describeProviderHealth(
   health: ProviderHealthReport | null,
   provider: AIProvider,
@@ -63,9 +74,7 @@ function describeProviderHealth(
 ): string {
   if (healthError) return `Could not read provider status: ${healthError}`;
   if (!health) return 'Checking the sign-in on the server...';
-  const entry = health.providers.find((item) => item.id === provider);
-  if (!entry) return 'No status reported.';
-  return entry.warning ? `${entry.detail} ${entry.warning}` : entry.detail;
+  return describeTypeHealth(health.providers, provider);
 }
 
 function formatPercent(value: number | null): string {
@@ -82,46 +91,53 @@ const AUTH_METHOD_LABELS: Record<string, string> = {
 };
 
 /**
- * Readiness of one subscription seat.
+ * Readiness of one PROVIDER - one sign-in of a seat's CLI.
  *
  * A seat fails in ways a settings form cannot see - the binary is not on PATH,
  * the sign-in expired, the five-hour window is spent - so each one gets a card
  * that says which.
  *
- * Takes the PROVIDER, one card per seat. Hard-coded to `claude-cli`, this card
- * once left the Codex seat with no readiness anywhere: the numbers were already
- * on the wire (`concurrency` and `usage.byProvider` are both keyed per
- * provider) and simply never read, so an operator whose `codex` was
- * unsigned-in or off PATH had nothing on the page saying so.
+ * One card per provider, not per type: two Claude providers are two sign-ins
+ * (Admin -> Models -> Providers), and one signed out says nothing about the
+ * other. Hard-coded to `claude-cli`, this card once left the Codex seat with
+ * no readiness anywhere: the numbers were already on the wire and simply never
+ * read, so an operator whose `codex` was unsigned-in or off PATH had nothing
+ * on the page saying so.
  *
  * `seatWindow` is opt-in for the same honest reason: `subscription` on the wire
- * is ONE object, the Claude adapter's, because only that CLI reports a usage
- * window - inventing the shape of one nobody has seen produces a confidently
- * wrong message at the worst moment. An absent window on the other cards is the
- * truth; an absent in-flight row was not.
+ * is ONE object, the built-in Claude provider's, because only that CLI reports
+ * a usage window - inventing the shape of one nobody has seen produces a
+ * confidently wrong message at the worst moment. An absent window on the other
+ * cards is the truth; an absent in-flight row was not.
  *
- * Holds are per seat - see `seatHolds`.
+ * Holds are per provider - see `seatHolds`.
  */
 function SubscriptionCard({
   health,
   healthError,
-  provider: providerId,
-  title,
+  provider: entry,
+  sharesType,
   seatWindow = false,
 }: {
   health: ProviderHealthReport | null;
   healthError: string;
-  provider: AIProvider;
-  title: string;
+  provider: AdminAIProvider;
+  /** Another provider of its type exists, so the type's call totals are not this one's alone. */
+  sharesType: boolean;
   seatWindow?: boolean;
 }) {
+  const providerId = entry.id;
   const provider = health?.providers.find((item) => item.id === providerId);
-  const seat = seatWindow ? health?.subscription.seat : undefined;
+  const seat = seatWindow ? health?.subscription.seat ?? undefined : undefined;
   const outages = seatHolds(health, providerId);
-  // This provider's own numbers. The process-wide totals include every seat,
-  // and reporting those here would credit the others' calls to this one.
-  const usage = health?.usage.byProvider[providerId];
+  // Calls are counted per TYPE (a model is a type's), so with two providers
+  // of one type the line says it is both of theirs rather than crediting one
+  // with the other's calls.
+  const usage = health?.usage.byProvider[entry.type];
+  // In flight is this provider's own: its own limit, its own semaphore.
   const concurrency = health?.concurrency[providerId];
+  const lane = describeLane(provider?.queue ?? null);
+  const title = entry.builtIn ? entry.label : `${entry.label} (${PROVIDER_TYPE_NAMES[entry.type]})`;
 
   // The seat's state as a coloured dot beside its name - the colours live in
   // page.module.css, stated for both themes.
@@ -129,11 +145,13 @@ function SubscriptionCard({
     ? 'error'
     : !health
     ? 'unknown'
-    : provider?.ok && !provider.warning
-      ? 'ok'
-      : provider?.ok
-        ? 'warn'
-        : 'error';
+    : !entry.enabled
+      ? 'unknown'
+      : provider?.ok && provider.ready && !provider.warning
+        ? 'ok'
+        : provider?.ok
+          ? 'warn'
+          : 'error';
 
   return (
     <Card
@@ -182,7 +200,13 @@ function SubscriptionCard({
             </dd>
           </div>
           <div className="flex gap-2">
-            <dt className="text-subtle">Calls this run</dt>
+            <dt className="text-subtle">Resumes</dt>
+            <dd className="text-ink">{lane || 'none waiting'}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-subtle">
+              {sharesType ? `Calls this run, all ${PROVIDER_TYPE_NAMES[entry.type]}` : 'Calls this run'}
+            </dt>
             <dd className="text-ink">
               {usage?.calls ?? 0}
               {usage?.failures ? `, ${usage.failures} failed` : ''}
@@ -491,11 +515,18 @@ function AdminSettingsPageBody() {
     : null;
   const analysisModelStale =
     Boolean(form.analysisModelId) && !availableDefaultModels.some((model) => model.id === form.analysisModelId);
-  /* One card per seat this installation could run. Keyed on the LOCK, not on
-     the enabled tick: a seat an admin has unticked is exactly the one whose
-     readiness they want to read while deciding whether to tick it back on,
-     and a locked seat cannot run here however it is ticked. */
-  const seatProviders = AI_PROVIDERS.filter((seatProvider) => !isProviderLocked(settings, seatProvider));
+  /* One card per PROVIDER of every type this installation could run - two
+     Claude sign-ins are two cards. Keyed on the LOCK, not on the enabled
+     tick: a seat an admin has unticked is exactly the one whose readiness
+     they want to read while deciding whether to tick it back on, and a locked
+     seat cannot run here however it is ticked. A server from before
+     providers sends none, so each type stands for its one built-in. */
+  const seatProviders: AdminAIProvider[] = (
+    settings.aiProviders.length > 0
+      ? settings.aiProviders
+      : normalizeAdminProviders(AI_PROVIDERS.map((type) => ({ id: type, type, label: getAIProviderLabel(type) })))
+  ).filter((entry) => !isProviderLocked(settings, entry.type));
+  const providersOfType = (type: AIProvider) => seatProviders.filter((entry) => entry.type === type).length;
 
   return (
     <div>
@@ -599,12 +630,12 @@ function AdminSettingsPageBody() {
           <div className="grid gap-4 lg:grid-cols-2">
             {seatProviders.map((seatProvider) => (
               <SubscriptionCard
-                key={seatProvider}
+                key={seatProvider.id}
                 health={health}
                 healthError={healthError}
                 provider={seatProvider}
-                title={getAIProviderLabel(seatProvider)}
-                seatWindow={seatProvider === 'claude-cli'}
+                sharesType={providersOfType(seatProvider.type) > 1}
+                seatWindow={seatProvider.id === 'claude-cli'}
               />
             ))}
           </div>
@@ -619,8 +650,10 @@ function AdminSettingsPageBody() {
             {LOCK_ICON} provider is one this installation cannot run at all, and its switch is
             fixed until that changes on the server. Every provider is a subscription seat: the{' '}
             <code className={styles.code}>claude</code>, <code className={styles.code}>codex</code> or{' '}
-            <code className={styles.code}>gemini</code> command-line tool, signed in on the server.
-            Each row below shows what the provider reports right now.
+            <code className={styles.code}>gemini</code> command-line tool, signed in on the server - more
+            than one sign-in of a type are added, changed and removed under Models, Providers, and a type
+            whose every provider is switched off there runs nothing. Each row below shows what the type
+            reports right now.
           </>
         }
       >

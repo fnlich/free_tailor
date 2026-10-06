@@ -271,7 +271,18 @@ export class GeminiOutageTable {
   /** When the latest sign-in the CLI could not validate was noted. */
   private lastUnverifiedAt = 0;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    /** How the log names the seat: one of several Gemini providers says which. */
+    private readonly seatName: string = 'the Gemini seat'
+  ) {}
+
+  /** The hold on the whole account, while it lasts - what moves a type's work to another provider. */
+  seatHold(): { until: number; reason: string; kind: GeminiHoldKind } | null {
+    const hold = this.holds.get('*');
+    if (!hold || hold.until <= this.now()) return null;
+    return { until: hold.until, reason: hold.reason, kind: hold.kind };
+  }
 
   /** How long `model` is known to be out, why, and as what kind. */
   check(model: string): { waitMs: number; reason: string; kind: GeminiHoldKind | null } {
@@ -305,7 +316,7 @@ export class GeminiOutageTable {
     if (isNew) {
       const seconds = Math.max(1, Math.round((until - this.now()) / 1000));
       const span = seconds >= 120 ? `${Math.round(seconds / 60)} minute(s)` : `${seconds} second(s)`;
-      const what = key === '*' ? 'the Gemini seat' : `Gemini model "${key}"`;
+      const what = key === '*' ? this.seatName : `Gemini model "${key}"`;
       console.warn(`[ai] Holding off ${what} for about ${span}: ${reason}`);
     }
   }
@@ -367,7 +378,7 @@ export class GeminiOutageTable {
     if (!hold || hold.kind !== 'auth' || signedInAt <= hold.since) return false;
     this.holds.delete('*');
     if (hold.until <= this.now()) return false;
-    console.warn('[ai] Lifting the hold on the Gemini seat: it was signed in again after the hold began');
+    console.warn(`[ai] Lifting the hold on ${this.seatName}: it was signed in again after the hold began`);
     return true;
   }
 

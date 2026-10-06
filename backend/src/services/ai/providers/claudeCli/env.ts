@@ -34,7 +34,18 @@
  * proxy variables are the operator's configuration and this module has no
  * business editing them.
  */
-export function buildChildEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildChildEnv(
+  parent: NodeJS.ProcessEnv = process.env,
+  options: {
+    /**
+     * The provider's own sign-in folder (config/aiProviders.ts), set AFTER the
+     * strip so it wins over whatever CLAUDE_CONFIG_DIR the server runs with.
+     * Null or absent keeps the inherited one: the built-in provider as `.env`
+     * left it, which is how this seat always ran.
+     */
+    configDir?: string | null;
+  } = {}
+): NodeJS.ProcessEnv {
   const child: NodeJS.ProcessEnv = {};
 
   for (const [name, value] of Object.entries(parent)) {
@@ -54,6 +65,10 @@ export function buildChildEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.P
       continue;
     }
     child[name] = value;
+  }
+
+  if (options.configDir) {
+    child.CLAUDE_CONFIG_DIR = options.configDir;
   }
 
   return child;

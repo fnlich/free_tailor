@@ -84,7 +84,7 @@ DB_DIR=/path/to/db node test/e2e/refunds.js
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js` and `report-run.js` use puppeteer, which the backend
+`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `report-run.js` and `providers.js` use puppeteer, which the backend
 already installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
@@ -246,6 +246,42 @@ Settings shows the stored rate, the window *60 (the default)* and the admin
 sheet with every job on it, *Retry now* has nothing to send, and $0.0505 is
 refused under the rate box; Merge has nothing to merge; Admin -> Accounts' rate
 boxes say *Global rate ($0.050)*.
+
+## Providers, with the seat stubbed
+
+`providers.js` drives Admin -> Models -> Providers, the per-provider cards on
+Settings -> General and the provider on an order's page. `stub-seat.js` is
+registered under the Claude TYPE, so it answers for every Claude provider the
+script adds; Codex and Gemini are whatever this machine has (usually *Not
+ready*, which is what their rows then say). The added provider's sign-in folder
+is made under `E2E_HOMES` (default: a fresh folder in the system temp dir),
+which must be outside the checkout, `DB_DIR` and the output folder - the server
+refuses a folder inside any of them. A stub delay of a few seconds gives the
+script time to try removing a provider while it builds.
+
+```bash
+cd backend && npm run build
+E2E_STUB_DELAY_MS=4000 DB_DIR=/tmp/e2e-db PORT=3001 node --require ./test/e2e/stub-seat.js dist/index.js
+# the frontend, built against that backend, in another terminal; then
+DB_DIR=/tmp/e2e-db node test/e2e/providers.js
+```
+
+`providers.js` — 31 claims. The table lists the three built-in providers in
+catalog order, each marked *Built-in* with no Remove, each value saying where
+it comes from, the stub Claude seat *Ready*. Add provider: a relative folder is
+refused under its box before anything is sent; a folder that does not exist is
+refused by the server and its sentence pinned under the same box; a real one
+adds *Team B* after the built-in Claude provider, its limit *Set here*, its
+binary the built-in's. Edit: a limit of 40 refused in the server's words, 3
+saved; the built-in's form starts empty (`.env` decides), a limit of 5 set
+there wins, and cleared it is `.env`'s again. Switch off and on; Check now
+checks afresh. Settings -> General draws a card for *Team B (Claude)* and the
+Claude row counts *1 of 2* providers that can take work (the built-in one
+switched off). An order then runs on Team B, Remove is refused while it builds
+- in the server's sentence, the row still there - and once the order is done
+its page says *Built on Team B (Claude)* to the administrator; idle, Team B is
+removed. No horizontal page scroll at 390px. An ordinary account's order page
+and API answer name no provider, and the provider and health routes refuse it.
 
 ## The shell, as every role
 

@@ -214,7 +214,9 @@ test('the admin health card lists the three seats, and the Gemini seat\'s holds'
       assert.equal(gemini.ok, false);
       assert.match(gemini.detail, /^Locked in this installation\. Needs the `gemini` CLI/);
       assert.equal(gemini.capabilities.id, 'gemini-cli');
-      assert.deepEqual(body.outagesByProvider, { 'claude-cli': [], 'gemini-cli': [] });
+      // Keyed by PROVIDER now, every one listed: a provider that keeps no
+      // holds (Codex) reads as none rather than being left out.
+      assert.deepEqual(body.outagesByProvider, { 'claude-cli': [], 'codex-cli': [], 'gemini-cli': [] });
     } finally {
       server.close();
       ai.resetRegistryForTests();

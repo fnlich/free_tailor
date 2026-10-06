@@ -16,6 +16,13 @@ import { moveCaseInsensitiveMatches, uniqueCaseInsensitive } from '../utils/arra
 import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { supplimentSoftSkills } from './utils/config';
+import { resolvePromptByExactId } from './promptService';
+import {
+  readTailorCache,
+  tailorCacheKey,
+  writeTailorCache,
+  type TailorCacheContext,
+} from './tailorCache';
 import {
   DEFAULT_COVER_LETTER_PROMPT_ID,
   DEFAULT_RESUME_PROMPT_ID,
@@ -2326,14 +2333,54 @@ function getProfileCoverLetterPromptId(profile: Profile): string {
   return profile.profileSettings?.coverLetterPromptId?.trim() || DEFAULT_COVER_LETTER_PROMPT_ID;
 }
 
+/**
+ * The tailoring cache's key for one call (services/tailorCache.ts), or null
+ * when there is nothing to key on: no context from the caller, or a prompt
+ * record that cannot be read - an answer cached against a prompt nobody can
+ * name could never be told apart from a later edit of it.
+ */
+async function cacheKeyFor(
+  kind: 'resume' | 'cover-letter',
+  profile: Profile,
+  choice: AiChoice,
+  promptId: string,
+  context: TailorCacheContext | undefined,
+  extra?: Record<string, string>
+): Promise<string | null> {
+  if (!context) return null;
+  const record = await resolvePromptByExactId(promptId).catch(() => null);
+  if (!record) return null;
+  return tailorCacheKey({ kind, profile, context, choice, promptId, promptText: record.content, extra });
+}
+
 export async function tailorResume(
   profile: Profile,
   jobAnalysis: JobAnalysis,
   choice: AiChoice,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /**
+   * The posting's stored analysis and the template, which with the profile,
+   * the model and the prompt key the tailoring cache (owner decision P6): the
+   * same question asked again is answered from the cache, with no model call.
+   * Without an analysis id nothing is cached.
+   */
+  cache?: TailorCacheContext
 ): Promise<TailoredContent> {
   const { provider, modelName } = choice;
   const promptId = getProfileResumePromptId(profile);
+  const cacheKey = cache?.analysisId ? await cacheKeyFor('resume', profile, choice, promptId, cache) : null;
+  if (cacheKey) {
+    const cached = readTailorCache(cacheKey);
+    if (cached !== null) {
+      try {
+        const reused = parseTailoredResumeContent(cached, profile, jobAnalysis);
+        console.log(`[Resume timing] Tailoring reused from the cache, no model call (${describeAiChoice(choice)})`);
+        return reused;
+      } catch {
+        // An answer this build cannot read any more is a miss, never a failure.
+      }
+    }
+  }
   const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
   const secondCallStartedAt = process.hrtime.bigint();
   console.log(`[Resume timing] Second LLM call started: tailor resume (${describeAiChoice(choice)})`);
@@ -2362,12 +2409,26 @@ export async function tailorResume(
   const secondCallEndedAt = process.hrtime.bigint();
   console.log(`[Resume timing] Second LLM call finished in ${formatDuration(secondCallStartedAt, secondCallEndedAt)}`);
 
+  let parsed: TailoredContent;
   try {
-    return parseTailoredResumeContent(content, profile, jobAnalysis);
+    parsed = parseTailoredResumeContent(content, profile, jobAnalysis);
   } catch {
     console.error('Failed to parse model response:', content);
     throw new Error('Failed to parse tailored resume response');
   }
+  // Kept only once it parsed: an answer that could not be read is never
+  // handed to the next generation as if it could.
+  if (cacheKey) {
+    writeTailorCache({
+      key: cacheKey,
+      kind: 'resume',
+      content,
+      modelId: choice.modelId,
+      analysisId: cache?.analysisId ?? null,
+      profileId: profile.id ?? null,
+    });
+  }
+  return parsed;
 }
 
 export function buildCoverLetterPromptValues(
@@ -2394,9 +2455,24 @@ export async function generateCoverLetter(
   companyName: string,
   role: string,
   choice: AiChoice,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /**
+   * The cover letter's own entry in the tailoring cache (owner decision P6),
+   * keyed apart from the resume's - on the profile, the company and the role it
+   * is written for, the posting's analysis when there is one, the model and the
+   * cover-letter prompt's text.
+   */
+  cache?: TailorCacheContext
 ): Promise<string> {
   const promptId = getProfileCoverLetterPromptId(profile);
+  const cacheKey = await cacheKeyFor('cover-letter', profile, choice, promptId, cache, { companyName, role });
+  if (cacheKey) {
+    const cached = readTailorCache(cacheKey);
+    if (cached !== null && cached.trim()) {
+      console.log(`[Resume timing] Cover letter reused from the cache, no model call (${describeAiChoice(choice)})`);
+      return cached.trim();
+    }
+  }
   const promptValues = buildCoverLetterPromptValues(profile, companyName, role);
   const content = await createPromptCompletion({
     promptId,
@@ -2414,7 +2490,18 @@ export async function generateCoverLetter(
     runChoiceWins: true,
     signal,
   });
-  return content.trim();
+  const letter = content.trim();
+  if (cacheKey && letter) {
+    writeTailorCache({
+      key: cacheKey,
+      kind: 'cover-letter',
+      content: letter,
+      modelId: choice.modelId,
+      analysisId: cache?.analysisId ?? null,
+      profileId: profile.id ?? null,
+    });
+  }
+  return letter;
 }
 
 export function buildExtractTemplatePromptValues(pdfText: string, templateName: string): Record<string, string> {

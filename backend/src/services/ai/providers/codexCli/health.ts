@@ -37,6 +37,13 @@ export type CodexCliHealth = ProviderHealth & {
    * failed check is NOT this, and never blocks a working seat.
    */
   apiKey?: boolean;
+  /**
+   * True when the check could not tell: `codex login status` said nothing.
+   * Never a reason to take a provider out of service - see readiness() in
+   * the adapter - because a check that says nothing must not block a seat
+   * that works.
+   */
+  unknown?: boolean;
 };
 
 const SIGNED_OUT = /not\s+logged\s+in|no\s+credentials|please\s+run\s+`?codex\s+login/i;
@@ -122,6 +129,7 @@ export async function checkCodexCliHealth(options: {
       loggedIn: false,
       binary: options.binary,
       detail: '`codex login status` said nothing at all, so its sign-in state is unknown.',
+      unknown: true,
       checkedAt,
     };
   }

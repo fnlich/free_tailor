@@ -27,48 +27,36 @@ import { publicTaskError } from '../../middleware/publicError';
  */
 
 /**
- * One lane per REAL resource, which is the whole rule here.
+ * One lane per REAL resource, which is the whole rule here - and the resource
+ * is a PROVIDER (owner decision P3): one CLI signed in at one location
+ * (config/aiProviders.ts), with its own semaphore sized by its own
+ * `concurrency_max_requests`. Two Claude providers are two lanes.
  *
- * `codex` and `gemini` are lanes of their own rather than sharing `cli`, and
- * that is not tidiness.
- * Each CLI provider holds its own semaphore, and Claude's happens to be the
- * same size as the lane it ran in, so sharing was invisible until a second
- * provider arrived with a limit set by a different variable. Sharing one lane
- * across two independently-sized pools breaks both ways: the dispatcher offers
- * at most the lane's width, so the larger pool is unreachable, and tasks for the
- * smaller one sit in lane slots BLOCKED on their own semaphore - for up to ten
- * minutes - while the other provider's work starves behind them.
- */
-export type QueueName = 'cli' | 'codex' | 'gemini';
-
-/** Every lane this build has, in the order the dispatcher fills them. */
-export const QUEUE_NAMES: readonly QueueName[] = ['cli', 'codex', 'gemini'];
-
-/**
- * The seat each lane's slots run on - what a running task reports as
- * `runningOn`. A map rather than a branch, so a lane added later cannot report
- * the Claude seat by falling through.
- */
-export const LANE_PROVIDER: Readonly<Record<QueueName, string>> = Object.freeze({
-  cli: 'claude-cli',
-  codex: 'codex-cli',
-  gemini: 'gemini-cli',
-});
-
-/**
- * Whether a stored lane name is one this build has.
+ * Why not one lane per type: each provider holds its own semaphore, and
+ * sharing one lane across independently-sized pools breaks both ways - the
+ * dispatcher offers at most the lane's width, so the larger pool is
+ * unreachable, and tasks for the smaller one sit in lane slots BLOCKED on
+ * their own semaphore while the other provider's work starves behind them.
+ * That was learned with Claude and Codex sharing a lane, and holds the same
+ * for two Claude accounts.
  *
- * A task's lane is written to disk and read back after a restart, possibly by
- * a build with different lanes - an earlier release had a third, for the
- * browser chat providers. Asked of the list rather than by indexing the queue
- * map, so a stored `constructor` is not mistaken for a lane either.
+ * A lane belongs to a POOL - its provider's type - and a task names its pool
+ * (the type its model runs on, owner decision P4). The queue puts each task in
+ * the lane of a SERVING provider of its pool - enabled, ready, not held - with
+ * the most free capacity: tasks running plus waiting, relative to the lane's
+ * width, ties to the reading's order (`place`). A lane that stops serving -
+ * held, signed out, switched off, removed - has its WAITING tasks moved to one
+ * that serves (`rebalance`); a slot left idle takes the head of a busier
+ * lane of its pool (`steal`). With no lane of a pool serving, its tasks wait.
+ *
+ * Lane names are whatever the capacity reading names: provider ids in the
+ * real queue (`claude-cli` for the built-in Claude provider, `prv-...` for an
+ * added one), anything at all in a test.
  */
-export function isQueueName(value: unknown): value is QueueName {
-  return typeof value === 'string' && (QUEUE_NAMES as readonly string[]).includes(value);
-}
+export type QueueName = string;
 
 /**
- * One unit of capacity: one process slot on a seat.
+ * One unit of capacity: one process slot on a provider.
  *
  * A list rather than a count so each slot has an identity the dispatcher can
  * mark busy, and the identity is stable across capacity readings - a slot id
@@ -80,15 +68,56 @@ export type Slot = {
   queue: QueueName;
 };
 
+/**
+ * A capacity reading in its plain form: lane -> slots, each lane its own pool,
+ * always serving. What the tests hand in.
+ */
 export type Capacity = Record<QueueName, Slot[]>;
 
-function emptyCapacity(): Capacity {
-  return { cli: [], codex: [], gemini: [] };
+/** One lane as the real queue reads it: its pool, whether it is switched on, and its slots. */
+export type LaneReading = {
+  id: QueueName;
+  /** The pool (provider type) it serves. */
+  pool: string;
+  /** Switched on, with its type switched on and not locked. A lane that is not takes nothing. */
+  enabled: boolean;
+  slots: Slot[];
+};
+
+/** What `readCapacity` may answer: the plain form, or every lane with its pool. */
+export type CapacityReading = Capacity | { lanes: LaneReading[] };
+
+/**
+ * What the dispatcher asks about a lane between readings, synchronously:
+ * whether its provider can take work NOW (no hold on the seat, not signed
+ * out), and which pool a lane the last reading did not name belongs to - a
+ * removed provider's, or one an older build wrote. Every method optional; the
+ * default is a lane that is always ready and a pool nobody knows.
+ */
+export type LanePolicy = {
+  ready?(lane: QueueName): boolean;
+  poolOf?(lane: QueueName): string | null;
+};
+
+function normalizeReading(reading: CapacityReading | null | undefined): LaneReading[] {
+  if (!reading) return [];
+  if (Array.isArray((reading as { lanes?: unknown }).lanes)) {
+    return (reading as { lanes: LaneReading[] }).lanes.map((lane) => ({ ...lane, slots: [...lane.slots] }));
+  }
+  return Object.entries(reading as Capacity).map(([id, slots]) => ({
+    id,
+    pool: id,
+    enabled: true,
+    slots: Array.isArray(slots) ? [...slots] : [],
+  }));
 }
+
+/** How often work that no lane can serve asks again whether one can - a hold ends by itself. */
+const BLOCKED_RECHECK_MS = 10_000;
 
 export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
-/** What a task is told when it starts: which lane is running it, and how to stop. */
+/** What a task is told when it starts: which lane - which provider - is running it, and how to stop. */
 export type Assignment = {
   queue: QueueName;
   signal: AbortSignal;
@@ -119,6 +148,11 @@ export function registerTaskRunner(kind: string, runner: TaskRunner): void {
 }
 
 export type TaskDescriptor<T> = {
+  /**
+   * Where it waits. Submitted as the POOL it runs in (its model's type, which
+   * is also the built-in provider's lane); the queue moves it to the lane of
+   * the provider it places it with, and records that here.
+   */
   queue: QueueName;
   label: TaskLabel;
   /** Which registered runner performs it. */
@@ -133,7 +167,20 @@ export type Task<T = unknown> = TaskDescriptor<T> & {
   /** Position in the submitted list, so results keep INPUT order. */
   seq: number;
   state: TaskState;
+  /** The lane - the provider - running it, while it runs. */
   runningOn?: string;
+  /**
+   * The lane - the provider - it last ran on, kept after it settles: an
+   * administrator's answer to "which account built this". Persisted, so it is
+   * named in `taskRow` and the restore mapper (services/queue/index.ts).
+   */
+  ranOn?: string;
+  /**
+   * The pool it belongs to, worked out the first time the queue could tell
+   * and kept, so a task left in the lane of a provider removed since still
+   * knows its type. Not persisted: the restore works it out again.
+   */
+  pool?: string;
   value?: T;
   error?: string;
   /**
@@ -211,6 +258,8 @@ export type BatchSnapshot = {
       /** Present only from the second go on, so "attempt 1" is never rendered. */
       attempts?: number;
       runningOn?: string;
+      /** The provider it last ran on. Administrators only, like `runningOn`. */
+      ranOn?: string;
       error?: string;
     }
   >;
@@ -306,12 +355,13 @@ function describeError(error: unknown, task: Task): string {
 
 export class TaskQueue {
   /**
-   * One array per queue, and THE ORDER IS THE CONTRACT. Within a tier, a task
-   * submitted later never runs before one submitted earlier that an idle slot
-   * could take; an urgent batch's tasks wait ahead of every non-urgent one in
-   * their lane (`enqueue`).
+   * One array per lane - per provider - and THE ORDER IS THE CONTRACT. Within
+   * a tier, a task placed in a lane later never runs before one placed there
+   * earlier that an idle slot could take; an urgent batch's tasks wait ahead
+   * of every non-urgent one in their lane (`place`). A lane exists here from
+   * the moment a task waits in it, whether or not a reading names it yet.
    */
-  private readonly queues: Record<QueueName, Task[]> = { cli: [], codex: [], gemini: [] };
+  private readonly queues = new Map<QueueName, Task[]>();
 
   private readonly batches = new Map<string, Batch>();
 
@@ -331,9 +381,14 @@ export class TaskQueue {
    * call, so it happens out here instead, and the loop only ever reads a plain
    * field.
    */
-  private capacity: Capacity = emptyCapacity();
+  private lanes: LaneReading[] = [];
+  private laneById = new Map<QueueName, LaneReading>();
   private capacityReadAt = 0;
   private refreshing: Promise<void> | null = null;
+  /** A pending re-check for work no lane can serve; see BLOCKED_RECHECK_MS. */
+  private blockedTimer: NodeJS.Timeout | null = null;
+  /** The pools whose work is waiting with no lane to serve it, as last said in the log. */
+  private blockedPools = new Set<string>();
 
   /**
    * Re-entrancy guard. `dispatch` can settle a task synchronously (a task that
@@ -343,7 +398,7 @@ export class TaskQueue {
   private dispatchAgain = false;
 
   constructor(
-    private readonly readCapacity: () => Promise<Capacity>,
+    private readonly readCapacity: () => Promise<CapacityReading>,
     private readonly store?: QueueStore,
     private readonly hooks?: QueueHooks,
     /**
@@ -354,7 +409,9 @@ export class TaskQueue {
      * without touching `process.env`, and so the one place that reads the
      * variable is the one place that builds the real queue.
      */
-    private readonly maxAttempts = 1
+    private readonly maxAttempts = 1,
+    /** Asked about a lane between readings: see LanePolicy. */
+    private readonly policy: LanePolicy = {}
   ) {}
 
   /**
@@ -386,15 +443,18 @@ export class TaskQueue {
   /**
    * Re-reads how wide each lane is, then dispatches.
    *
-   * Called on submit and whenever the reading goes stale. The reader is
-   * injected, so the dispatcher never assumes where the widths come from - the
-   * real one sizes the seats from the environment, a test however it likes.
+   * Called on submit, whenever the reading goes stale, while work waits that
+   * no lane can serve, and after an administrator changes a provider. The
+   * reader is injected, so the dispatcher never assumes where the widths come
+   * from - the real one reads every provider and its limit from the settings
+   * (services/queue/index.ts `readCapacity`), a test however it likes.
    */
   async refreshCapacity(): Promise<void> {
     if (this.refreshing) return this.refreshing;
     this.refreshing = (async () => {
       try {
-        this.capacity = await this.readCapacity();
+        this.lanes = normalizeReading(await this.readCapacity());
+        this.laneById = new Map(this.lanes.map((lane) => [lane.id, lane]));
         this.capacityReadAt = Date.now();
       } catch {
         // A settings read that fails must not stop a queue that is already
@@ -535,9 +595,9 @@ export class TaskQueue {
     };
     this.batches.set(meta.id, batch as Batch);
 
-    // Every task's lane is checked, finished ones included: the snapshot and
-    // the stats count by lane, and a finished task still names one.
-    for (const task of tasks) this.laneOf(task as Task);
+    // Only what will run again is placed: a lane - a provider - restored from
+    // disk may be one this process no longer has, and the placement is what
+    // moves it to a provider of its type (`place`, `rebalance`).
     this.enqueue((tasks as Task[]).filter((task) => task.state === 'queued'));
 
     // A batch whose every task had finished before the restart is finished, and
@@ -602,8 +662,8 @@ export class TaskQueue {
         aborted += 1;
       }
     }
-    for (const name of Object.keys(this.queues) as QueueName[]) {
-      this.queues[name] = this.queues[name].filter((task) => task.batchId !== batchId);
+    for (const [lane, waiting] of this.queues) {
+      this.queues.set(lane, waiting.filter((task) => task.batchId !== batchId));
     }
 
     batch.state = 'cancelled';
@@ -635,19 +695,33 @@ export class TaskQueue {
   }
 
   /**
-   * What the dispatcher is doing right now, for the admin page and the logs.
-   *
-   * Built by walking the lanes rather than naming them, like everything else
-   * here that has to cover every lane: a lane named by hand is a lane the next
-   * one added is missing from.
+   * What the dispatcher is doing right now, for the admin page and the logs:
+   * every lane the last reading named, in its order, and any other lane work
+   * is waiting in. Built by walking the lanes rather than naming them - a lane
+   * named by hand is a lane the next provider added is missing from.
    */
-  stats(): Record<QueueName, { queued: number; running: number; width: number }> {
-    const stats = {} as Record<QueueName, { queued: number; running: number; width: number }>;
-    for (const lane of QUEUE_NAMES) {
-      stats[lane] = { queued: this.queues[lane].length, running: 0, width: this.capacity[lane]?.length ?? 0 };
-    }
-    for (const task of this.busy.values()) {
-      if (stats[task.queue]) stats[task.queue].running += 1;
+  stats(): Record<
+    QueueName,
+    { queued: number; running: number; width: number; pool: string | null; serving: boolean }
+  > {
+    // Null-prototype, so a lane an older build named `constructor` is a lane
+    // like any other rather than something every object already has.
+    const stats: Record<
+      QueueName,
+      { queued: number; running: number; width: number; pool: string | null; serving: boolean }
+    > = Object.create(null);
+    const waitingElsewhere = [...this.queues.entries()]
+      .filter(([lane, waiting]) => waiting.length > 0 && !this.laneById.has(lane))
+      .map(([lane]) => lane);
+    for (const lane of [...this.lanes.map((entry) => entry.id), ...waitingElsewhere]) {
+      if (stats[lane]) continue;
+      stats[lane] = {
+        queued: this.waitingIn(lane).length,
+        running: this.runningIn(lane),
+        width: this.laneById.get(lane)?.slots.length ?? 0,
+        pool: this.laneById.get(lane)?.pool ?? this.policy.poolOf?.(lane) ?? null,
+        serving: this.isServing(lane),
+      };
     }
     return stats;
   }
@@ -655,66 +729,154 @@ export class TaskQueue {
   /** Tests share one process; a queue left running would leak into the next. */
   resetForTests(): void {
     for (const batch of this.batches.values()) batch.controller.abort();
-    // Every lane. This named two of them and left the Codex lane's backlog to
-    // the next test.
-    for (const lane of QUEUE_NAMES) this.queues[lane] = [];
+    this.queues.clear();
     this.batches.clear();
     this.busy.clear();
     this.listeners.clear();
-    this.capacity = emptyCapacity();
+    this.lanes = [];
+    this.laneById = new Map();
     this.capacityReadAt = 0;
     this.dispatching = false;
     this.dispatchAgain = false;
+    if (this.blockedTimer) clearTimeout(this.blockedTimer);
+    this.blockedTimer = null;
+    this.blockedPools = new Set();
+  }
+
+  private waitingIn(lane: QueueName): Task[] {
+    let list = this.queues.get(lane);
+    if (!list) {
+      list = [];
+      this.queues.set(lane, list);
+    }
+    return list;
+  }
+
+  private runningIn(lane: QueueName): number {
+    let count = 0;
+    for (const task of this.busy.values()) if (task.queue === lane) count += 1;
+    return count;
+  }
+
+  /** A lane that may take work now: in the reading, switched on, with slots, and ready. */
+  private isServing(lane: QueueName): boolean {
+    const reading = this.laneById.get(lane);
+    if (!reading || !reading.enabled || reading.slots.length === 0) return false;
+    return this.policy.ready ? this.policy.ready(lane) : true;
+  }
+
+  /** How full a lane is: running plus waiting, over its width. */
+  private load(lane: QueueName): number {
+    const width = Math.max(1, this.laneById.get(lane)?.slots.length ?? 0);
+    return (this.runningIn(lane) + this.waitingIn(lane).length) / width;
   }
 
   /**
-   * The lane a task belongs in, never one this build lacks.
+   * The pool a task runs in, worked out once and kept.
    *
-   * The restore mapper already turns a stored lane this build does not have
-   * into one it does; this is the last line behind it, for `submit` and
-   * `restore` alike. Pushing onto a lane that does not exist throws inside the
-   * caller, and in `restore` that throw would take the whole batch with it. So
-   * an unknown lane becomes `cli` - the lane that carries every provider without
-   * a seat of its own - and the task records it, so the stats and the retry path
-   * agree with where it actually waits.
+   * From its lane's reading, else the policy (a lane the reading no longer
+   * names - a removed provider's, an older build's), else - once there is a
+   * reading at all - the first lane's pool: a lane name nothing knows would
+   * otherwise be a lane no slot ever fills, and a task in it accepted,
+   * counted and never run. Before the first reading it is not known, and the
+   * task waits under the name it came with.
    */
-  private laneOf(task: Task): QueueName {
-    if (!isQueueName(task.queue)) task.queue = 'cli';
-    return task.queue;
+  private poolOf(task: Task): string | null {
+    if (task.pool) return task.pool;
+    const pool =
+      this.laneById.get(task.queue)?.pool ??
+      this.policy.poolOf?.(task.queue) ??
+      (this.capacityReadAt > 0 ? this.lanes[0]?.pool ?? null : null);
+    if (pool) task.pool = pool;
+    return pool;
   }
 
   /**
-   * Puts tasks in line: an urgent batch's after the urgent work already
-   * waiting in their lane and before everything else, any other batch's at the
-   * tail.
+   * The lane a task should wait in: of its pool's lanes that serve, the one
+   * with the most free capacity, ties to the reading's order. With none
+   * serving, it stays where it is if that lane is its pool's and still in the
+   * reading, else it goes to its pool's first lane - and waits there, because
+   * nothing of its type can take it now.
+   */
+  private chooseLane(task: Task): QueueName {
+    const pool = this.poolOf(task);
+    if (!pool) return task.queue;
+    const ofPool = this.lanes.filter((lane) => lane.pool === pool);
+    let best: QueueName | null = null;
+    let bestLoad = Infinity;
+    for (const lane of ofPool) {
+      if (!this.isServing(lane.id)) continue;
+      const load = this.load(lane.id);
+      if (load < bestLoad) {
+        best = lane.id;
+        bestLoad = load;
+      }
+    }
+    if (best) return best;
+    if (this.laneById.get(task.queue)?.pool === pool) return task.queue;
+    return ofPool[0]?.id ?? task.queue;
+  }
+
+  /**
+   * Puts tasks in line, each in the lane `chooseLane` picks: an urgent batch's
+   * after the urgent work already waiting in that lane and before everything
+   * else, any other batch's at the tail.
    *
-   * The ONE way into a lane - submit, restore and a retry all come through
-   * here - so the two tiers cannot be kept by one path and broken by another.
-   * A retry of an urgent task therefore goes to the back of the urgent work,
-   * not behind a three-hundred-row order, and a retried order task still goes
-   * to the very back. Dispatch stays "take the head" (`fill`): the order of the
-   * array is the whole policy.
+   * The ONE way into a lane - submit, restore, a retry and a move off a lane
+   * that stopped serving all come through here - so the two tiers cannot be
+   * kept by one path and broken by another. A retry of an urgent task
+   * therefore goes to the back of the urgent work, not behind a
+   * three-hundred-row order, and a retried order task still goes to the very
+   * back. Dispatch stays "take the head" (`fill`): the order of the arrays is
+   * the whole policy.
    *
-   * Grouped per lane and spliced in once, so an urgent batch of N into a lane
-   * holding M is one scan and one splice rather than N of each.
+   * One task at a time, so each placement sees the load the previous one
+   * added: six tasks for two providers of widths 1 and 2 land two and four.
    */
   private enqueue(tasks: Task[]): void {
-    const byLane = new Map<QueueName, Task[]>();
-    for (const task of tasks) {
-      const lane = this.laneOf(task);
-      const list = byLane.get(lane) ?? [];
-      list.push(task);
-      byLane.set(lane, list);
+    for (const task of tasks) this.place(task);
+  }
+
+  private place(task: Task): void {
+    const lane = this.chooseLane(task);
+    task.queue = lane;
+    const waiting = this.waitingIn(lane);
+    if (this.isUrgent(task)) {
+      const firstOrdinary = waiting.findIndex((entry) => !this.isUrgent(entry));
+      waiting.splice(firstOrdinary === -1 ? waiting.length : firstOrdinary, 0, task);
+    } else {
+      waiting.push(task);
     }
-    for (const [lane, list] of byLane) {
-      const waiting = this.queues[lane];
-      const urgent = list.filter((task) => this.isUrgent(task));
-      const rest = list.filter((task) => !this.isUrgent(task));
-      if (urgent.length > 0) {
-        const firstOrdinary = waiting.findIndex((task) => !this.isUrgent(task));
-        waiting.splice(firstOrdinary === -1 ? waiting.length : firstOrdinary, 0, ...urgent);
+  }
+
+  /**
+   * Moves the WAITING work off every lane that does not serve - its provider
+   * held, signed out, switched off or removed - to one of its pool that does.
+   * What is running there finishes or fails as it would have. Nothing moves
+   * while no lane of the pool serves: the work waits where it is.
+   *
+   * Written back when it moves, so a restart finds each task in the lane it
+   * was moved to.
+   */
+  private rebalance(): void {
+    for (const lane of [...this.queues.keys()]) {
+      const waiting = this.queues.get(lane)!;
+      if (waiting.length === 0 || this.isServing(lane)) continue;
+      const pools = new Set(waiting.map((task) => this.poolOf(task)));
+      const anyServing = [...pools].some(
+        (pool) => pool !== null && this.lanes.some((entry) => entry.pool === pool && this.isServing(entry.id))
+      );
+      const inReading = this.laneById.has(lane);
+      // Nothing serves and the lane still exists: leave the order as it is.
+      if (!anyServing && inReading) continue;
+      this.queues.set(lane, []);
+      for (const task of waiting) {
+        this.place(task);
+        if (task.queue !== lane) this.persist((store) => store.saveTask(task));
       }
-      waiting.push(...rest);
+      // A lane no reading names and nothing waits in is gone: forgotten, so
+      // the stats stop listing a provider removed or a name an older build had.
+      if (!inReading && this.queues.get(lane)?.length === 0) this.queues.delete(lane);
     }
   }
 
@@ -734,7 +896,7 @@ export class TaskQueue {
   /**
    * Hands every free slot the first task it is allowed to run.
    *
-   * SYNCHRONOUS, deliberately - see `capacity`. Nothing in here may await.
+   * SYNCHRONOUS, deliberately - see `lanes`. Nothing in here may await.
    */
   private dispatch(): void {
     if (this.dispatching) {
@@ -745,12 +907,16 @@ export class TaskQueue {
     try {
       do {
         this.dispatchAgain = false;
+        // Not before the first reading: until then no lane is known to serve,
+        // and moving work about on no information would only scramble it.
+        if (this.capacityReadAt > 0) this.rebalance();
         // Every lane, by iteration rather than by name. Naming them meant a lane
         // added later was sized, routed to, and then never filled - its tasks
         // sat queued for ever with nothing saying why.
-        for (const lane of QUEUE_NAMES) {
-          this.fill(this.capacity[lane] ?? []);
+        for (const lane of this.lanes) {
+          if (this.isServing(lane.id)) this.fill(lane);
         }
+        this.steal();
       } while (this.dispatchAgain);
     } finally {
       this.dispatching = false;
@@ -760,6 +926,44 @@ export class TaskQueue {
     if (Date.now() - this.capacityReadAt > CAPACITY_TTL_MS && this.pending() > 0) {
       void this.refreshCapacity();
     }
+    this.watchBlocked();
+  }
+
+  /**
+   * Work that no lane can take now - every provider of its type held, signed
+   * out or switched off - asks again in a little while. A hold ends by itself
+   * and nothing else would notice; the reading this triggers is also when the
+   * real queue asks a signed-out provider's health again.
+   */
+  private watchBlocked(): void {
+    if (this.capacityReadAt === 0) return;
+    // After `rebalance`, work still waiting on a lane that does not serve is
+    // work no lane of its pool can serve.
+    const blocked = new Set<string>();
+    for (const [lane, waiting] of this.queues) {
+      if (waiting.length > 0 && !this.isServing(lane)) blocked.add(this.poolOf(waiting[0]) ?? lane);
+    }
+    // Said once when it starts and once when it ends, not once per dispatch:
+    // an operator who finds resumes sitting queued needs to know why.
+    for (const pool of blocked) {
+      if (!this.blockedPools.has(pool)) {
+        console.warn(
+          `[queue] Work for ${pool} is waiting: no provider of that type can take work now - each is held, ` +
+            'signed out or switched off. It starts when one can; Admin -> Settings shows every provider\'s state.'
+        );
+      }
+    }
+    for (const pool of this.blockedPools) {
+      if (!blocked.has(pool)) console.log(`[queue] A ${pool} provider can take work again; what was waiting carries on.`);
+    }
+    this.blockedPools = blocked;
+    if (this.blockedTimer || blocked.size === 0) return;
+    this.blockedTimer = setTimeout(() => {
+      this.blockedTimer = null;
+      void this.refreshCapacity();
+    }, BLOCKED_RECHECK_MS);
+    // Housekeeping, never the reason the process stays alive.
+    this.blockedTimer.unref?.();
   }
 
   /**
@@ -770,19 +974,47 @@ export class TaskQueue {
    * backlog that was ALL Codex work never asked for a fresh capacity reading.
    */
   private pending(): number {
-    return QUEUE_NAMES.reduce((total, lane) => total + this.queues[lane].length, 0);
+    let total = 0;
+    for (const waiting of this.queues.values()) total += waiting.length;
+    return total;
   }
 
-  private fill(slots: Slot[]): void {
-    for (const slot of slots) {
+  private fill(lane: LaneReading): void {
+    const waiting = this.waitingIn(lane.id);
+    for (const slot of lane.slots) {
       if (this.busy.has(slot.id)) continue;
-      if (!isQueueName(slot.queue)) continue;
       // The head of the slot's own lane. Slots are interchangeable WITHIN a
       // lane, so the first task waiting is the one this slot may run; the lane
-      // is what keeps the two seats' pools apart.
-      const task = this.queues[slot.queue].shift();
-      if (!task) continue;
+      // is what keeps two providers' pools apart.
+      const task = waiting.shift();
+      if (!task) return;
       this.start(task, slot);
+    }
+  }
+
+  /**
+   * A free slot on a serving lane whose own line is empty takes the head of
+   * another lane OF ITS POOL - an urgent head first, then the busiest lane's.
+   * Placement guesses how long work will take; this is what keeps a provider
+   * that finished early from idling while its type's work waits elsewhere.
+   * Never across pools: a Claude slot never runs a Codex task.
+   */
+  private steal(): void {
+    for (const lane of this.lanes) {
+      if (!this.isServing(lane.id) || this.waitingIn(lane.id).length > 0) continue;
+      for (const slot of lane.slots) {
+        if (this.busy.has(slot.id)) continue;
+        const donor = this.lanes
+          .filter((other) => other.id !== lane.id && other.pool === lane.pool && this.waitingIn(other.id).length > 0)
+          .sort((a, b) => {
+            const urgent = Number(this.isUrgent(this.waitingIn(b.id)[0])) - Number(this.isUrgent(this.waitingIn(a.id)[0]));
+            return urgent || this.load(b.id) - this.load(a.id);
+          })[0];
+        if (!donor) return;
+        const task = this.waitingIn(donor.id).shift()!;
+        task.queue = lane.id;
+        this.start(task, slot);
+      }
     }
   }
 
@@ -797,9 +1029,11 @@ export class TaskQueue {
     // Counted on the way in, so a task that is running has always been started
     // at least once and the snapshot can say "attempt 2 of 3" honestly.
     task.attempts = task.attempts ?? 1;
-    // Each lane names the seat it runs on. Reading the lane rather than
-    // hard-coding one provider is what keeps this honest with three seats.
-    task.runningOn = LANE_PROVIDER[slot.queue];
+    // The lane IS the provider, and the slot's lane is where it runs - which,
+    // after a steal, is not the lane it waited in.
+    task.queue = slot.queue;
+    task.runningOn = slot.queue;
+    task.ranOn = slot.queue;
     this.busy.set(slot.id, task);
     this.persist((store) => store.saveTask(task));
     this.emitTask(task);
@@ -1010,6 +1244,7 @@ export class TaskQueue {
         // nothing, so a UI has no "attempt 1 of 3" noise to suppress.
         ...(task.attempts && task.attempts > 1 ? { attempts: task.attempts } : {}),
         ...(task.runningOn ? { runningOn: task.runningOn } : {}),
+        ...(task.ranOn ? { ranOn: task.ranOn } : {}),
         ...(task.error ? { error: task.error } : {}),
       })),
     };

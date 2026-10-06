@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~55s with the tsc step, 1499 tests)
+npm test                       # backend node:test suite (~55s with the tsc step, 1553 tests)
 npm run dev                    # backend watch + frontend dev server
 ```
 
@@ -80,7 +80,7 @@ A variable on the command line like that beats the same one in `.env`. Unset,
 `DB_DIR` defaults to `/data/db` on Linux/macOS (often not writable — the
 most common first-run failure) and `%LOCALAPPDATA%\free_tailor\db` on Windows.
 The backend prints the resolved path, the Chrome it will print with, and a
-readiness line per AI seat at startup; a CLI that is missing or signed out is
+readiness line per enabled AI provider at startup; a CLI that is missing or signed out is
 reported, not fatal, and so is any removed metered-provider variable
 (`OPENAI_API_KEY`, `AI_CLI_ALLOW_API_KEY`...) still set in `.env`.
 
@@ -121,8 +121,10 @@ backend/src/
                       #   as `#NAME=default` with its range, AND to the README's
                       #   Configuration table. The drift test
                       #   test/envExample.test.js fails until all three agree.
-                      #   providerCatalog.ts is the ONE list of seats and of
-                      #   retired ids; jobFields.ts the job fields a posting
+                      #   providerCatalog.ts is the ONE list of seats (TYPES)
+                      #   and of retired ids; aiProviders.ts the PROVIDERS -
+                      #   every place a type runs, see "Providers of one type"
+                      #   below; jobFields.ts the job fields a posting
                       #   is classified into (stable ids, never reused); providerModels.ts each seat's model-name
                       #   list; pricePerResume.ts the price field's rules
                       #   (thousandths of a dollar, see "Money" below);
@@ -257,6 +259,9 @@ backend/src/
                       #   name the remedy - because each diagnoses a failure whose
                       #   single error message covers several causes.
   services/ai/        # provider-agnostic transport; one directory per provider
+                      #   TYPE, one adapter per PROVIDER (registry.ts keyed by
+                      #   provider id), providerPool.ts which provider of a
+                      #   type a call runs on
   services/jobAnalysis/ # THE way to a job analysis: gate.ts's
                       #   `getOrCreateAnalysis` (the only caller of the analysis
                       #   prompt - test/analysisGate.test.js greps for any
@@ -265,14 +270,20 @@ backend/src/
                       #   analyses at submission, sheet first). See "Job
                       #   analysis runs once" below.
   services/queue/     # on-disk generation queue (survives a restart). One LANE
-                      #   per real resource - one per seat, `cli`, `codex` and
-                      #   `gemini` (`laneFor`) - each sized from its seat's own
-                      #   variable. A restored row naming a lane this build
-                      #   lacks is moved to one it has. A task row's `data` is a
+                      #   per PROVIDER (lane id = provider id: `claude-cli`,
+                      #   `codex-cli`, `gemini-cli` for the built-ins, `prv-...`
+                      #   for an added one), each as wide as its
+                      #   `concurrency_max_requests`, re-read live; a task names
+                      #   its POOL (`laneFor` = its model's type) and is placed
+                      #   with a serving provider of it - see "Providers of one
+                      #   type" below. A restored row naming a lane this process
+                      #   lacks (a removed provider, an older build's `cli`/
+                      #   `codex`/`gemini`) goes to its type's pool. A task row's `data` is a
                       #   hand-picked PROJECTION built by index.ts's `taskRow`,
                       #   not the Task serialized, so a new field must be named
                       #   there AND in the restore mapper or it silently does
-                      #   not persist. The payload persists whole, which is why
+                      #   not persist (`ranOn`, the provider it last ran on, is
+                      #   one such). The payload persists whole, which is why
                       #   a task's price lives on it (`payload.costMilli`), and
                       #   its job's stored analysis (`payload.analysisId`, set
                       #   at submit or stamped on every task of the job by the
@@ -327,6 +338,10 @@ backend/src/
                       #   routes/resume.ts uses too) - cover letter, path,
                       #   files and result alike; the builder has no
                       #   Fallback Role any more.
+  services/tailorCache.ts # the tailoring cache (owner decision P6): the model's
+                      #   answer to a tailoring or a cover-letter call, reused
+                      #   for the same unchanged profile, posting, model and
+                      #   prompt - see "The tailoring cache" below.
   services/templateChoice.ts # THE answer to "which template is this resume
                       #   drawn with" - resolveTemplateForProfile, for the live
                       #   preview, /resume/preview, /preview-all,
@@ -355,7 +370,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 127 files; fixtures/cli, codex and gemini
+  test/               # node:test, 132 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -860,9 +875,11 @@ re-checks every stored channel on read, so a hand-edited row cannot serve a
 
 ## The AI layer
 
-Every model call goes through `backend/src/services/ai`. A provider is one
-directory implementing `AIProviderAdapter`; the registry is keyed on the
-provider catalog, so a missing entry is a compile error. There are exactly three,
+Every model call goes through `backend/src/services/ai`. A provider TYPE is one
+directory implementing `AIProviderAdapter`; the registry builds an adapter per
+PROVIDER (a type at one sign-in location - "Providers of one type" below), and
+the catalog's `satisfies Record<AIProvider, ...>` makes a missing type a
+compile error. There are exactly three types,
 all **subscription seats** run through a local CLI, in catalog order:
 `claude-cli` (the default), `codex-cli` and `gemini-cli` - labelled "Claude
 (Subscription)", "Codex (Subscription)", "Gemini (Subscription)". All three work
@@ -873,7 +890,7 @@ pins them to ""), the Claude seat stops a turn the moment its `system/init`
 event names an `apiKeySource` other than `none` - before the answer, not after
 the bill - and holds itself as signed out, and Codex asks `codex login status`
 (cached a minute) before every turn and refuses, without spawning, a CLI signed
-in with a key (stored in CODEX_HOME, out of the environment strip's reach). `AI_LOCKED_PROVIDERS` marks a seat this machine
+in with a key (stored in CODEX_HOME, out of the environment strip's reach). `AI_LOCKED_PROVIDERS` marks a seat TYPE - every provider of it - this machine
 cannot run; nothing is locked out of the box, a fresh install defaults to the
 first seat not locked, and with all three locked a settings READ still succeeds
 with no runnable models (saves keep their asserts) while a run fails with
@@ -1060,11 +1077,12 @@ the file, so it says "signed in" for a revoked token too. The Claude seat's
 holds record their kind (`auth`, `rateLimited`, `unavailable`) - a held call
 reports that kind, never a guess from the reason's wording - and its sign-in
 hold is lifted by a fresh `claude auth status` on `oauth_token` that STARTED
-after the hold was set. The admin Settings page's seat check
-(`GET /api/admin/ai/health`) asks every seat with `health({ fresh: true })`,
-skipping the minute's cache, which is what makes it the place to lift a hold;
-Codex keeps no holds. Its health check sends no prompt: `gemini
---version`, then the sign-in files under the CLI's home.
+after the hold was set. Every hold, health reading and minute's status cache
+is the PROVIDER's (its adapter's), not the type's. The admin Settings page's
+seat check (`GET /api/admin/ai/health`) asks every enabled PROVIDER with
+`health({ fresh: true })`, one card each, skipping the minute's cache, which is
+what makes it the place to lift a hold; Codex keeps no holds. Its health check
+sends no prompt: `gemini --version`, then the sign-in files under the CLI's home.
 
 Tests never spawn a browser, a subprocess or a network call: each CLI provider
 replays recorded event streams from `test/fixtures/cli`, `test/fixtures/codex`
@@ -1072,6 +1090,150 @@ and `test/fixtures/gemini` through an injected runner, and storage tests point `
 `TAILOR_STATIC_DIR` at temp dirs. No real Google account has answered through
 the Gemini seat: its successful fixtures are the real 0.62.0 CLI's envelopes
 around fake answers, and the file names say so.
+
+## Providers of one type
+
+Owner decisions P1-P4. A PROVIDER is one place a type runs:
+`config/aiProviders.ts`, stored as `aiProviders` in the app-settings row next to
+`aiModels` (`{ id, type, label, homeDir, binaryPath, concurrency_max_requests,
+enabled, createdAt, updatedAt }`, only what an administrator set -
+`storableProviders`; an untouched built-in is not stored). The FIRST of each
+type is the BUILT-IN one, id = the type id, so every stored model, prompt
+override, profile and queued task (which all name a type) keeps working; its
+values come from `.env` as before (`AI_CLI_BIN` / `CLAUDE_CONFIG_DIR` /
+`AI_CLI_CONCURRENCY`, `AI_CODEX_BIN` / `CODEX_HOME` / `AI_CODEX_CONCURRENCY`,
+`AI_GEMINI_BIN` / `AI_GEMINI_HOME` / `AI_GEMINI_CONCURRENCY` -
+`builtInProviderDefaults`) unless an administrator sets one, which wins
+(`resolveProviders` says which, per field: `sources`). An added one is
+`prv-<8 hex>` (never a type or model id), and must name a sign-in folder.
+Every path an administrator gives is checked (`checkProviderHomeDir` /
+`checkProviderBinary`): absolute, existing, a directory / an executable file,
+not inside `listAppDirectories` (aiModelConfig.ts: the checkout, DB_DIR, the
+static dir, the output dir, the seats' work dirs), symlinks followed; a folder
+another provider of the type signs in at (a null folder = the CLI's default,
+`defaultProviderHome`) is refused 409 `home-in-use`; 1-32
+`concurrency_max_requests`. Refusals are `AIProviderInputError { code, field,
+status }`, answered by name (admin-only routes). A type runs only while a
+provider of it is enabled (`isProviderEnabled`); a change that leaves nothing
+runnable is 409 `nothing-left`; a built-in can only be switched off (409
+`built-in`). `noteStoredProviders` keeps the last-read list synchronously, keyed
+by DB path, for the dispatcher (`currentProviders`, memoised on the list and the
+env values it reads; `providerTypeOf` remembers every id seen, so a removed
+provider's waiting work still knows its type).
+
+**Adapters.** `services/ai/registry.ts` builds one per provider id from its
+`ProviderInstanceSpec` (types.ts): each seat's `create*Adapter({ instance })`
+takes the provider's binary and limit, gives an added one a work dir of its own
+(`<seat dir>-<id>`, providers/cli/instance.ts; Gemini's state dir too, so its
+workspace settings file and transcripts are per provider), keys its semaphore
+by the provider id, and sets the folder in the child env AFTER the usual strip
+(`buildChildEnv(parent, { configDir })`, `buildCodexChildEnv(parent, { home })`,
+Gemini's `home`) - a null folder (an unset built-in) keeps the inherited one.
+`claude auth status`, `codex login status` and Gemini's `clearAuth` read that
+env. A changed folder or binary rebuilds the adapter (holds and health go with
+the old one); a changed limit resizes its semaphore IN PLACE
+(`AsyncSemaphore.resize`, `getProviderSemaphore` never replaces one now). A
+stub `registerAdapter`ed under a TYPE id stands in for every provider of that
+type without one of its own, so a suite stubbing the three seats never reaches
+a real CLI. Every adapter has a synchronous `readiness()` - the last health
+verdict (`ready: null` until checked, and Codex's `unknown` status, never
+bench a provider) and any SEAT-wide hold (`seatHold()`); a stub without one is
+always ready. A failure's detail names an added provider.
+
+**Which provider a call runs on** (`services/ai/providerPool.ts`
+`pickProvider`, called by promptExecution's `runAssembled` after the type's
+enabled check): the provider a queued task is PINNED to (`runPinnedToProvider`,
+AsyncLocalStorage, wrapped around every resume task by `makeResumeRunner`) when
+it is of the call's type; else, among the type's enabled providers that are
+ready and not held, the least loaded (in flight + waiting at its semaphore,
+over its limit), ties to list order; with none ready, the first enabled one, so
+a direct call meets its hold and fails with the hold's error. The analysis
+model pools the same way.
+
+**The queue** (taskQueue.ts, generic over lane names): the capacity reading is
+either the plain `{ lane: slots }` (tests; each lane its own pool, always
+serving) or `{ lanes: [{ id, pool, enabled, slots }] }` (queue/index.ts
+`readCapacity`: every provider, switched off ones included, from the settings,
+re-read every 15 s while work waits and at once after an admin change - the
+provider routes call `refreshCapacity`). A lane SERVES when it is in the
+reading, enabled (its type too), has slots and `policy.ready(lane)` (adapter
+readiness). `place`: a task goes to the serving lane of its pool with the
+lowest (running + waiting) / width, ties to reading order, urgent tasks spliced
+before the first ordinary one IN THAT LANE (Phase 4's priority is per lane);
+with none serving it stays (or goes to its pool's first lane) and WAITS.
+`rebalance` (every dispatch) moves the waiting work of a lane that stopped
+serving to one that serves, persisted; `steal` lets an idle serving slot take
+the head (urgent first, then the busiest) of another lane OF ITS POOL, never
+across pools; `watchBlocked` logs a pool with no serving lane once (`[queue]
+Work for <type> is waiting ...`) and re-reads every 10 s until one serves.
+Before the first reading a task waits under its own name. `runningOn` and the
+persisted `ranOn` are the lane = provider id (stripped for non-admins by
+generation.ts's `readerSnapshot`); `taskStarted` logs it and
+`markItemRunning(batch, seq, provider)` puts it on `order_items.provider_id`
+(an added column), served on GET /api/orders/:id to an administrator only as
+`ranOn: { id, label, type }`.
+
+**Routes** (routes/aiHealth.ts, `/api/admin/ai`, requireAdmin): GET
+/providers, POST /providers (201), PUT /providers/:id (`{ ..., moved }`),
+DELETE /providers/:id (409 `provider-busy` while it runs a task; `{ moved }`),
+POST /providers/:id/check (a fresh card), GET /health (one card per provider).
+The admin settings payload carries `aiProviders` too; an ordinary account's
+never does.
+
+**The pages.** lib/providerDisplay.ts is everything the browser decides about
+providers, with no runtime import (test/frontendProviders.test.js runs it
+against the server): the shapes, read leniently (`normalizeAdminProvider`,
+`normalizeProviderCard` - the test reads every field the routes send through
+them and gets it back whole); copies of `PROVIDER_HOME_VARIABLE`,
+`BUILT_IN_PROVIDER_ENV`, the 1-32 range and the type list, drift-checked; the
+Add / Edit form's checks in the server's own sentences, on the server's own
+field names (`providerDraftProblems` - every one of them a refusal the server
+makes on the same field; a path is refused only when no platform would call it
+absolute, since the page cannot know the server's); what a save sends -
+`addProviderBody`, and `editProviderBody`, ONLY what changed, so a built-in's
+`.env` value stays `.env`'s until its box is touched and '' puts it back;
+`refusalField` (which box a server refusal is pinned under); `sourceNote`
+(set here / which `.env` line / default / the type's), `providerStatus`
+(locked, switched off, a hold by its kind - `HOLD_KIND_LABELS`, drift-checked
+against the seats' unions - then the fresh check), `describeTypeHealth`,
+`describeRanOn`; and `hasEnabledProviderOfType`, the third clause of
+lib/api.ts's `isProviderOffered`, so the admin pages offer a type exactly when
+`isProviderEnabled` would run it. lib/aiProviders.ts is the client for the
+routes; test/frontendProviders.test.js fails if a page outside app/admin/
+imports it or names the routes. **Admin -> Models -> Providers**
+(app/admin/models/ProvidersSection.tsx) is the table - type, label, folder and
+its variable, binary, limit and lane, each with its source, live status from
+GET /health (read after the list, so a slow CLI never holds the table up) - and
+Add provider / Edit (a kit Dialog), Switch off/on, Check now (POST .../check)
+and Remove (offered only for an added provider; a 409 `provider-busy` is shown
+in the server's sentence). **Settings -> General** draws one card per provider
+(lib/seatHolds.ts reads `outagesByProvider` by provider id; the call totals are
+per TYPE and say so when a type has two providers) and each type's row sums its
+providers. An order's page draws `ranOn` when it is sent - to an administrator
+only; the page never checks the role. test/e2e/providers.js drives all of it
+against stub-seat.js.
+
+## The tailoring cache
+
+Owner decision P6 (`services/tailorCache.ts`, `database/tailorCacheRepository.ts`,
+table `tailor_cache`, `idx_tailor_cache_key` UNIQUE on `cache_key` and
+`idx_tailor_cache_created`, both in INDEXES_AFTER_COLUMNS; the lookup's plan is
+pinned by test/tailorCache.test.js). `tailorResume` and `generateCoverLetter`
+take an optional `TailorCacheContext { analysisId, templateId }` and look the
+answer up BEFORE their model call; every caller that has the posting's stored
+analysis passes one (the queue task, /resume/preview, /preview-all,
+/resume/generate). `tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION`, the
+kind, the profile as the call sees it (after `profileForTemplate`) minus
+`createdAt`/`updatedAt`, canonical JSON, the template id, the analysis id, the
+provider type, model record id and model name, the prompt record's id and the
+SHA-256 of its text, and (cover letter) the company and role. No tailoring is
+cached without an analysis id. What is stored is the model's RAW answer, kept
+only once it parsed; a hit runs `parseTailoredResumeContent` against the
+profile again, and an answer that no longer parses is a miss. The charge never
+depends on it: a resume is priced at submission. Read and write failures are a
+miss, warned once. `TAILOR_CACHE_DAYS` (operational.ts, default 30, 1-3650)
+prunes on `created_at` at boot and daily (`startTailorCachePrune` from
+index.ts, unref'd).
 
 ## Job analysis runs once
 

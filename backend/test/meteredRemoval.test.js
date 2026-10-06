@@ -658,7 +658,7 @@ test('a queued choice naming a metered provider is resolved again from its profi
   assert.equal((await __currentChoiceForTests(queued, profile())).modelId, 'claude-cli-sonnet');
   assert.equal((await __currentChoiceForTests(queued, profile('claude-cli-opus'))).modelId, 'claude-cli-opus');
   const { routeFor } = loadFresh('../dist/routes/generation');
-  assert.equal(routeFor(queued).queue, 'cli', 'a retired provider lands on the lane of last resort');
+  assert.equal(routeFor(queued).queue, 'claude-cli', 'a retired provider lands in the pool of last resort');
 });
 
 test('a prompt pinned to a metered provider runs on the model chosen for the run', async () => {

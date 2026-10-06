@@ -8,21 +8,28 @@ import {
 } from '../../database/generationRepository';
 import { orderExistsForBatch } from '../../database/orderRepository';
 import { getProfile } from '../../database/profileRepository';
-import { cliConcurrency, codexConcurrency } from '../ai/batchCapacity';
-import { geminiCliConcurrency } from '../ai/providers/geminiCli/options';
+import { getAppSettings, isProviderEnabled } from '../../config/aiModelConfig';
+import {
+  currentProviders,
+  providerTypeOf,
+  resolveProviders,
+  type ResolvedAIProvider,
+} from '../../config/aiProviders';
+import { getDatabasePath } from '../../database/sqlite';
+import { checkProviderHealth, providerReadiness, providersNow } from '../ai';
 import { closeIfSettled, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
 import { immediateTabGraceMs } from '../../config/operational';
 import { TabLeases } from './tabLease';
 import {
-  isQueueName,
   registerTaskRunner,
   TaskQueue,
   type Batch,
-  type Capacity,
+  type CapacityReading,
+  type LanePolicy,
+  type LaneReading,
   type QueueName,
   type QueueStore,
-  type Slot,
   type Task,
   type TaskState,
 } from './taskQueue';
@@ -35,7 +42,7 @@ import {
   type ResumeJob,
 } from './resumeTask';
 
-export { TaskQueue, registerTaskRunner, newBatchId, isQueueName, QUEUE_NAMES, LANE_PROVIDER } from './taskQueue';
+export { TaskQueue, registerTaskRunner, newBatchId } from './taskQueue';
 export { TabLeases, type TabLeaseDeps, type TabLeaseState } from './tabLease';
 export type {
   Assignment,
@@ -44,6 +51,9 @@ export type {
   BatchSnapshot,
   BatchState,
   Capacity,
+  CapacityReading,
+  LanePolicy,
+  LaneReading,
   QueueName,
   QueueStore,
   Slot,
@@ -64,36 +74,90 @@ export {
 } from './resumeTask';
 
 /**
- * What the queue may run at once: one slot per real resource.
+ * What the queue may run at once: one lane per PROVIDER (owner decision P3),
+ * each as wide as that provider's `concurrency_max_requests`.
  *
- * A seat's slots are interchangeable WITHIN its lane, so they are just counted
- * out - but each CLI provider gets its OWN lane, sized from its own variable.
- * They hold separate semaphores, so one shared lane would either strand the
- * larger pool or let the smaller one's blocked tasks squat on slots the other
- * provider's work needs.
+ * A provider's slots are interchangeable WITHIN its lane, so they are just
+ * counted out; each lane names its pool - its provider's type - which is how a
+ * model's work is spread over every provider of its type (P4, `place` in
+ * taskQueue.ts). Every provider is read, switched off or not, so a lane that
+ * stops serving is still known for what it is and its waiting work can move.
  *
- * Read from the environment alone, with no settings read: nothing an
- * administrator saves changes how many processes a seat may run.
+ * Re-read on every refresh (fifteen seconds while work waits, and at once
+ * after an administrator edits a provider), which is what makes a limit live:
+ * a lane grows or shrinks at the next reading, and the provider's semaphore is
+ * resized in place by the registry.
  */
-async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capacity> {
-  // `cli` is the Claude seat's lane, sized like its semaphore.
-  const cli: Slot[] = Array.from({ length: cliConcurrency(env) }, (_, index) => ({
-    id: `cli:${index}`,
-    queue: 'cli' as const,
+async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<CapacityReading> {
+  let providers: ResolvedAIProvider[];
+  let typeRuns: (type: ResolvedAIProvider['type']) => boolean;
+  try {
+    const settings = await getAppSettings();
+    providers = resolveProviders(settings.aiProviders, env);
+    typeRuns = (type) => isProviderEnabled(type, settings);
+  } catch {
+    // A settings read that fails must not take every lane away: the last
+    // list read, with each type taken as switched on.
+    providers = currentProviders(getDatabasePath(), env);
+    typeRuns = () => true;
+  }
+
+  const lanes: LaneReading[] = providers.map((provider) => ({
+    id: provider.id,
+    pool: provider.type,
+    enabled: provider.enabled && typeRuns(provider.type),
+    slots: Array.from({ length: provider.concurrency_max_requests }, (_, index) => ({
+      id: `${provider.id}:${index}`,
+      queue: provider.id,
+    })),
   }));
 
-  const codex: Slot[] = Array.from({ length: codexConcurrency(env) }, (_, index) => ({
-    id: `codex:${index}`,
-    queue: 'codex' as const,
-  }));
+  // A provider the last health check found signed out takes no work until a
+  // check says otherwise; this is that check, at most once a minute each (the
+  // adapter's own cache), and only while it is switched on.
+  for (const provider of providers) {
+    if (provider.enabled && providerReadiness(provider.id).ready === false) {
+      void checkProviderHealth(provider.id).catch(() => undefined);
+    }
+  }
+  return { lanes };
+}
 
-  // The Gemini seat's, from the same reader its adapter sizes its semaphore with.
-  const gemini: Slot[] = Array.from({ length: geminiCliConcurrency(env) }, (_, index) => ({
-    id: `gemini:${index}`,
-    queue: 'gemini' as const,
-  }));
+/**
+ * Lane names an older build wrote, when every seat had one lane named for it.
+ * A task restored from one goes to its type's pool.
+ */
+const LEGACY_LANE_POOL: ReadonlyMap<string, string> = new Map([
+  ['cli', 'claude-cli'],
+  ['codex', 'codex-cli'],
+  ['gemini', 'gemini-cli'],
+]);
 
-  return { cli, codex, gemini };
+/**
+ * A lane name an older build wrote, as its pool - asked of a Map, so a stored
+ * `constructor` or `__proto__` is not mistaken for one by inheritance.
+ */
+function legacyLanePool(lane: unknown): string | null {
+  return typeof lane === 'string' ? LEGACY_LANE_POOL.get(lane) ?? null : null;
+}
+
+/**
+ * What the dispatcher asks between readings. A provider is ready when its
+ * adapter has no hold on the whole seat and its last health check was not
+ * against it - both synchronous, so the dispatch loop stays free of awaits.
+ */
+const lanePolicy: LanePolicy = {
+  ready: (lane) => {
+    const readiness = providerReadiness(lane);
+    return readiness.ready !== false && !readiness.held;
+  },
+  poolOf: (lane) => providerTypeOf(lane) ?? legacyLanePool(lane),
+};
+
+/** A provider's name for the log: the type id for a built-in, label and id for an added one. */
+function describeProvider(id: string): string {
+  const provider = providersNow().find((entry) => entry.id === id);
+  return provider && !provider.builtIn ? `"${provider.label}" (${id})` : id;
 }
 
 /** The batch's serializable half: everything but the tasks and the controller. */
@@ -128,6 +192,9 @@ function taskRow(task: Task) {
       payload: task.payload,
       ...(task.value !== undefined ? { value: task.value } : {}),
       ...(task.error ? { error: task.error } : {}),
+      // The provider it last ran on, for an administrator (P3/P4): named here
+      // and in the restore mapper, like every field of this projection.
+      ...(task.ranOn ? { ranOn: task.ranOn } : {}),
       /*
        * The attempt counter, and it has to be written EXPLICITLY.
        *
@@ -223,9 +290,15 @@ function readMaxAttempts(): number {
 export function getGenerationQueue(): TaskQueue {
   if (!queue) {
     queue = new TaskQueue(() => readCapacity(), store, {
-      /** Moves an order's item from "waiting" to "being built". A no-op for
-       *  every batch that was not placed as an order, which is most of them. */
-      taskStarted: (task) => recordTaskStarted(task),
+      /** Moves an order's item from "waiting" to "being built", and records
+       *  which provider builds it - an administrator's to read on the order. */
+      taskStarted: (task) => {
+        console.log(
+          `[queue] ${task.label.profileName} / ${task.label.companyName} (task ${task.id}) is running on ` +
+            `${describeProvider(task.queue)}${(task.attempts ?? 1) > 1 ? `, attempt ${task.attempts}` : ''}.`
+        );
+        recordTaskStarted(task);
+      },
       /**
        * Gives back what each unit that did not deliver was charged.
        *
@@ -280,7 +353,8 @@ export function getGenerationQueue(): TaskQueue {
         leases?.forget(batch.id);
       },
     },
-    readMaxAttempts()
+    readMaxAttempts(),
+    lanePolicy
     );
     registerTaskRunner(
       RESUME_TASK_KIND,
@@ -326,10 +400,11 @@ function recordJobAnalysis(batchId: string, jobIndex: number, analysisId: string
  * The capacity reading, exposed so the lane split can be asserted.
  *
  * Not a test seam for the dispatcher. It makes the reading callable with an
- * environment of the caller's choosing, which is the only way to pin that the
- * three CLI lanes are sized from three different variables.
+ * environment of the caller's choosing, which is the only way to pin that each
+ * built-in provider's lane is sized from its own variable - and an added
+ * provider's from its own `concurrency_max_requests`.
  */
-export function readCapacityForTests(env: NodeJS.ProcessEnv): Promise<Capacity> {
+export function readCapacityForTests(env: NodeJS.ProcessEnv): Promise<CapacityReading> {
   return readCapacity(env);
 }
 
@@ -401,27 +476,34 @@ export function batchKind(batch: { shared: Record<string, unknown> }): BatchKind
 }
 
 /**
- * The lane `routeFor` gives new work on `provider`: each seat's own, and `cli`
- * for anything else - a retired provider on a choice stored before the
- * upgrade, which the restore resolves again before it runs.
+ * Where `routeFor` sends new work on `provider`: the POOL of its type, named
+ * by the type id - which is also the built-in provider's lane, so the queue
+ * has somewhere to hold it before its first reading. The queue then places it
+ * with whichever provider of the type has the most room (taskQueue.ts
+ * `place`). Anything that is not a type - a retired provider on a choice
+ * stored before the upgrade, which the restore resolves again before it runs
+ * - goes to the Claude pool, the lane of last resort it always was.
  */
 export function laneFor(provider: unknown): QueueName {
-  if (provider === 'codex-cli') return 'codex';
-  if (provider === 'gemini-cli') return 'gemini';
-  return 'cli';
+  return providerTypeOf(provider) === provider ? (provider as QueueName) : 'claude-cli';
 }
 
 /**
  * The lane a restored task goes back in.
  *
- * Its stored lane, when this build has it. Otherwise - a lane from an earlier
- * build (the browser chat providers had one of their own), no lane at all, or
- * anything unrecognisable - the lane is worked out again from the provider the
- * task was resolved to, the way `routeFor` places new work.
+ * Its stored lane when that is a provider this process has. Otherwise - a
+ * provider removed since, a lane an older build wrote (`cli`, `codex`,
+ * `gemini`, or the browser chat providers' before them), no lane at all - the
+ * pool of the provider type the task was resolved to, the way `routeFor`
+ * places new work; the queue then moves it to a provider of that type.
  */
 function restoredLane(stored: unknown, payload: unknown): QueueName {
-  if (isQueueName(stored)) return stored;
-  return laneFor((payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider);
+  if (typeof stored === 'string' && providersNow().some((entry) => entry.id === stored)) return stored;
+  // An older build's lane says the type as surely as the choice does.
+  return (
+    legacyLanePool(stored) ??
+    laneFor((payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider)
+  );
 }
 
 /**
@@ -503,6 +585,10 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
     return report;
   }
 
+  // The providers as stored, before any lane is decided: a restored task stays
+  // with its provider only if this process has that provider.
+  await getAppSettings().catch(() => undefined);
+
   const resolvedChoices = new Map<string, Promise<AiChoice | null>>();
   for (const row of rows) {
     if (row.state !== 'running') continue;
@@ -534,6 +620,7 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           value?: unknown;
           error?: string;
           attempts?: number;
+          ranOn?: unknown;
         };
         if (task.state === 'running') requeued += 1;
         // Only work that will run again needs a model it can run on; a
@@ -564,6 +651,7 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           payload: refreshed ? refreshed.payload : taskData.payload,
           ...(taskData.value !== undefined ? { value: taskData.value } : {}),
           ...(taskData.error ? { error: taskData.error } : {}),
+          ...(typeof taskData.ranOn === 'string' && taskData.ranOn ? { ranOn: taskData.ranOn } : {}),
           // Carried across the restart, so the attempts already spent still
           // count against the cap. A task requeued here is on its NEXT go,
           // not its first.

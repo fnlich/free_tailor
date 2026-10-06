@@ -208,13 +208,18 @@ test("each profile is tailored by its own switches, on one analysis of the posti
   assert.deepEqual(bea.tailoredContent.unconfirmedSoftSkills, []);
 
   // The same posting again, for one profile at a time: the analysis comes
-  // from the cache whichever profile's switches ask.
+  // from the store whichever profile's switches ask, and - nothing about
+  // either profile, the model or the prompt having changed - so does each
+  // tailoring (owner decision P6), finished against its own switches again.
   for (const profileId of ['p-off', 'p-on']) {
     const again = await post('/resume/preview-all', { profileIds: [profileId], jobDescription: POSTING });
     assert.equal(again.status, 200, JSON.stringify(again.body));
+    const repeat = again.body.previews[0];
+    assert.deepEqual(repeat.tailoredContent.strengths, preview(profileId).tailoredContent.strengths);
+    assert.deepEqual(repeat.tailoredContent.softSkills, preview(profileId).tailoredContent.softSkills);
   }
   assert.equal(calls.filter((call) => call.callSite !== 'tailor-resume').length, 1, 'still one analysis');
-  assert.equal(calls.filter((call) => call.callSite === 'tailor-resume').length, 4);
+  assert.equal(calls.filter((call) => call.callSite === 'tailor-resume').length, 2, 'and no second tailoring');
 });
 
 test('a switch the template has no section for is off for the model and the summary too', async (t) => {

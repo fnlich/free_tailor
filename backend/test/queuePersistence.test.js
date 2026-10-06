@@ -565,19 +565,21 @@ test('a task queued on the removed browser lane is restored onto a live lane, an
   const byProfileAndLane = ran.map((entry) => `${entry.profileId}@${entry.lane}:${entry.model}`).sort();
   assert.deepEqual(byProfileAndLane, [
     // The hybrid task, on the app default.
-    'p-default@cli:claude-cli/claude-cli-sonnet',
-    // A Codex choice is not retired, so it runs as stored, on its own seat's lane.
-    'p-default@codex:codex-cli/codex-cli-default',
+    'p-default@claude-cli:claude-cli/claude-cli-sonnet',
+    // A Codex choice is not retired, so it runs as stored, on its own seat's
+    // lane - the built-in Codex provider's - even from a lane named
+    // `constructor`, which no build ever had.
+    'p-default@codex-cli:codex-cli/codex-cli-default',
     // The pinned task, on what its profile names today rather than on the app
     // default: the credit paid for a resume built the way a new one would be.
-    'p-own@cli:claude-cli/claude-cli-opus',
+    'p-own@claude-cli:claude-cli/claude-cli-opus',
   ]);
 
   // Written back without the old lane or the site list, so a second restart
   // reads rows this build wrote.
   const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
   for (const task of row.tasks) {
-    assert.ok(['cli', 'codex', 'gemini'].includes(task.data.queue), `${task.id} is on a lane this build has`);
+    assert.ok(['claude-cli', 'codex-cli', 'gemini-cli'].includes(task.data.queue), `${task.id} is on a lane this build has`);
     assert.equal('sites' in task.data, false, `${task.id} no longer carries chat sites`);
   }
 });
@@ -693,15 +695,15 @@ test('a restored task that named a browser site goes in the lane of the provider
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const stats = queue.stats();
-    assert.equal(stats.cli.queued + stats.cli.running, 0, 'nothing waits in the Claude seat\'s lane');
-    assert.equal(stats.codex.queued + stats.codex.running, 4, 'all four are Codex work, in the Codex lane');
-    assert.equal(stats.codex.running, 1, 'one at a time, as AI_CODEX_CONCURRENCY says');
-    assert.deepEqual(started, [{ lane: 'codex', provider: 'codex-cli' }]);
+    assert.equal(stats['claude-cli'].queued + stats['claude-cli'].running, 0, 'nothing waits in the Claude seat\'s lane');
+    assert.equal(stats['codex-cli'].queued + stats['codex-cli'].running, 4, 'all four are Codex work, in the Codex lane');
+    assert.equal(stats['codex-cli'].running, 1, 'one at a time, as AI_CODEX_CONCURRENCY says');
+    assert.deepEqual(started, [{ lane: 'codex-cli', provider: 'codex-cli' }]);
 
     // The fresh choice is written back, so a second restart reads it as stored.
     const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
     for (const task of row.tasks) {
-      assert.equal(task.data.queue, 'codex', `${task.id} is stored on the lane it runs on`);
+      assert.equal(task.data.queue, 'codex-cli', `${task.id} is stored on the lane it runs on`);
       assert.equal(task.data.payload.choice.provider, 'codex-cli');
       assert.equal('route' in task.data.payload.choice, false);
     }
@@ -756,17 +758,18 @@ test('Gemini work comes back on the Gemini lane: stored there, or placed there b
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const stats = queue.stats();
-    assert.equal(stats.gemini.running, 1, 'one at a time, as AI_GEMINI_CONCURRENCY says');
-    assert.equal(stats.gemini.queued, 1, 'the other waits for the Gemini seat');
-    assert.equal(stats.cli.queued + stats.cli.running, 0, 'and nothing waits in the Claude seat\'s lane');
-    assert.deepEqual(started, ['gemini']);
+    assert.equal(stats['gemini-cli'].running, 1, 'one at a time, as AI_GEMINI_CONCURRENCY says');
+    assert.equal(stats['gemini-cli'].queued, 1, 'the other waits for the Gemini seat');
+    assert.equal(stats['claude-cli'].queued + stats['claude-cli'].running, 0, 'and nothing waits in the Claude seat\'s lane');
+    // The lane IS the provider: the built-in Gemini one, whose id is its type's.
+    assert.deepEqual(started, ['gemini-cli']);
     const running = queue.snapshot('bat_gemini').tasks.find((task) => task.state === 'running');
     assert.equal(running.runningOn, 'gemini-cli');
 
     const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
     assert.deepEqual(
       row.tasks.map((task) => task.data.queue),
-      ['gemini', 'gemini'],
+      ['gemini-cli', 'gemini-cli'],
       'written back on the lane it waits in'
     );
 

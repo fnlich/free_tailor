@@ -42,6 +42,7 @@ import bidAssistantRoutes from './routes/bidAssistant';
 import aiHealthRoutes from './routes/aiHealth';
 import { publicErrorHandler } from './middleware/publicError';
 import { preflightAllProviders } from './services/ai';
+import { startTailorCachePrune } from './services/tailorCache';
 import { describeRetiredProviderVariables } from './config/providerCatalog';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
 import { applyProxyTrust } from './config/proxyTrust';
@@ -52,6 +53,7 @@ import {
   immediateFileRetentionMs,
   jsonBodyMaxMb,
   serverPort,
+  tailorCacheDays,
 } from './config/operational';
 import { normalizeOrigin, publicBaseUrl } from './config/publicUrl';
 import {
@@ -437,6 +439,10 @@ const server = app.listen(PORT, HOST, () => {
    * it never holds the process open.
    */
   startOrderRetention();
+  // Tailored answers older than TAILOR_CACHE_DAYS go now and once a day after
+  // (services/tailorCache.ts). Never fatal; unref'd like the sweep above.
+  startTailorCachePrune();
+  console.log(`[tailor-cache] Tailored resumes and cover letters are reused for ${tailorCacheDays()} day(s).`);
   console.log(
     `[orders] Ordered files are kept for ${orderRetentionDays()} day(s); a Generate Immediately ` +
       `run's for ${Math.round(immediateFileRetentionMs() / 60_000)} minute(s) after it ends.`

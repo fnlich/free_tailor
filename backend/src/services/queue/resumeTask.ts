@@ -11,7 +11,7 @@ import { profileForTemplate } from '../profileService';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../../generators/coverLetterGenerator';
 import { generateResumePDF } from '../../generators/pdfGenerator';
-import { getProviderSemaphore, warnOnce } from '../ai';
+import { getProviderSemaphore, runPinnedToProvider, warnOnce } from '../ai';
 import {
   generateCoverLetter,
   parseTailoredResumeContent,
@@ -163,7 +163,7 @@ export type ResumeTaskResult = {
  * matter of its RAM and CPU, one Chrome tab per render. Read ONCE, when this
  * module loads, and never again - `getProviderSemaphore` replaces a lane's
  * semaphore whenever it is asked for a different limit, so a value that changed
- * between two calls would forget the renders already in flight.
+ * between two calls would resize it under the renders already in flight.
  */
 const RENDER_CONCURRENCY = generationRenderConcurrency();
 
@@ -349,7 +349,12 @@ export async function runResumeTask(
   const template = await resolveTemplateForProfile(profile, input.templateId);
   if (!template) throw new Error('Default template not available');
 
-  const analysis = (await analysisFor(input, assignment.signal))?.analysis;
+  const stored = await analysisFor(input, assignment.signal);
+  const analysis = stored?.analysis;
+  // What, with the profile, the model and the prompt, keys this resume's
+  // tailoring and cover letter in the cache (services/tailorCache.ts): the
+  // same resume generated again reuses them, charged as usual.
+  const cacheContext = { analysisId: stored?.id ?? null, templateId: template.id ?? null };
 
   // Tailored for the template it is drawn with: a section switch that
   // template has no section for is off for the model too, as it is in the
@@ -360,7 +365,7 @@ export async function runResumeTask(
     tailoredContent = finaliseHeldContent(tailoredContent, sectionProfile, analysis);
   }
   if (!tailoredContent && analysis) {
-    tailoredContent = await tailorResume(sectionProfile, analysis, choice, assignment.signal);
+    tailoredContent = await tailorResume(sectionProfile, analysis, choice, assignment.signal, cacheContext);
   }
 
   // The role the sheet or the form gave, else the posting's own title as the
@@ -371,7 +376,7 @@ export async function runResumeTask(
 
   const coverLetterBody = tailoredContent?.coverLetter?.trim()
     ? tailoredContent.coverLetter.trim()
-    : await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal);
+    : await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal, cacheContext);
 
   const pathInfo = await getGeneratedOutputPath(profile, job.companyName, role, {
     sourceRowNumber: job.sourceRowNumber,
@@ -491,7 +496,11 @@ export function makeResumeRunner(
       throw new Error('The job this resume was queued for is no longer on the batch.');
     }
 
-    return runResumeTask(
+    // Every call this resume makes of its provider's type goes to the provider
+    // whose lane slot it holds (services/ai/providerPool.ts): the lane's width
+    // and that provider's semaphore are one number only if the work lands
+    // where the dispatcher put it.
+    return runPinnedToProvider(assignment.queue, () => runResumeTask(
       {
         profile,
         job,
@@ -510,6 +519,6 @@ export function makeResumeRunner(
         onAnalysis: (stored) => hooks.recorded?.(input.batchId, input.jobIndex, stored.id),
       },
       assignment
-    );
+    ));
   };
 }

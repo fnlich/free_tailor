@@ -448,6 +448,8 @@ function readAiOverrides(body: unknown): AiPreferences {
 async function tailorResumesForProfiles(
   profiles: Profile[],
   analysis: JobAnalysis,
+  /** The posting's stored analysis: with each profile and model, the tailoring cache's key. */
+  analysisId: string | null,
   requestChoice: AiChoice,
   overrides: AiPreferences,
   options: ModelRequestOptions,
@@ -489,7 +491,10 @@ async function tailorResumesForProfiles(
     // below resolves the same way: a section that template cannot print is
     // off for the model too (see `profileForTemplate`).
     const template = await resolveTemplateForProfile(profile, templateId);
-    return tailorResume(profileForTemplate(profile, template), analysis, choice, signal);
+    return tailorResume(profileForTemplate(profile, template), analysis, choice, signal, {
+      analysisId,
+      templateId: template?.id ?? null,
+    });
   });
 
   outcomes.forEach((outcome, index) => {
@@ -564,6 +569,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       ? await tailorResumesForProfiles(
           profiles,
           analysis,
+          storedAnalysis?.id ?? null,
           selectedModel,
           aiOverrides,
           requestOptions,
@@ -594,7 +600,10 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       const tailoredContent = analysis
         ? bulkTailoring
           ? bulkTailoring.tailoredByProfileId.get(profile.id)
-          : await tailorResume(profileForTemplate(profile, template), analysis, selectedModel, requestSignal(req, res))
+          : await tailorResume(profileForTemplate(profile, template), analysis, selectedModel, requestSignal(req, res), {
+              analysisId: storedAnalysis?.id ?? null,
+              templateId: template.id ?? null,
+            })
         : undefined;
       const writtenOn = tailoredContent
         ? bulkTailoring?.modelIdByProfileId.get(profile.id) ?? selectedModel.modelId
@@ -740,8 +749,12 @@ router.post('/generate', async (req: Request, res: Response) => {
     if (tailoredContent && analysis) {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), sectionProfile, analysis);
     }
+    // With the profile, the model and the prompt, what keys the tailoring and
+    // the cover letter in the cache: the same resume generated again reuses
+    // them, and is charged as usual (owner decision P6).
+    const cacheContext = { analysisId: storedAnalysis?.id ?? null, templateId: template.id ?? null };
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res));
+      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res), cacheContext);
     }
     const resolvedRole = resolveTaskRole(role, analysis);
     if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
@@ -765,7 +778,8 @@ router.post('/generate', async (req: Request, res: Response) => {
         companyName.trim(),
         resolvedRole,
         selectedModel,
-        requestSignal(req, res)
+        requestSignal(req, res),
+        cacheContext
       );
     });
 
@@ -906,7 +920,10 @@ router.post('/preview', async (req: Request, res: Response) => {
     // model's work be re-labelled as the one the request names.
     let previewToken: string | undefined;
     if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res));
+      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res), {
+        analysisId: storedAnalysis?.id ?? null,
+        templateId: template.id ?? null,
+      });
       previewToken = issuePreviewToken({ userId: req.user!.id, profileId: profile.id, modelId: selectedModel.modelId });
     }
 

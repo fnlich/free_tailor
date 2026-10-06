@@ -112,25 +112,28 @@ test('each CLI seat is sized from its own variable, and they do not share a lane
   const queueModule = require('../dist/services/queue/index');
 
   // Deliberately different numbers: a shared lane would have to pick one.
-  const capacity = await queueModule.readCapacityForTests({
+  const { lanes } = await queueModule.readCapacityForTests({
     AI_CLI_CONCURRENCY: '3',
     AI_CODEX_CONCURRENCY: '7',
     AI_GEMINI_CONCURRENCY: '5',
   });
+  const byId = Object.fromEntries(lanes.map((lane) => [lane.id, lane]));
 
-  assert.deepEqual(Object.keys(capacity).sort(), ['cli', 'codex', 'gemini'], 'one lane per seat, and no other');
-  assert.equal(capacity.cli.length, 3, 'the Claude seat, from AI_CLI_CONCURRENCY');
-  assert.equal(capacity.codex.length, 7, 'the Codex seat, from AI_CODEX_CONCURRENCY');
-  assert.equal(capacity.gemini.length, 5, 'the Gemini seat, from AI_GEMINI_CONCURRENCY');
+  // One lane per PROVIDER; on an install with none added, that is one per
+  // seat, each the built-in provider with its type's id and its type's pool.
+  assert.deepEqual(lanes.map((lane) => lane.id), ['claude-cli', 'codex-cli', 'gemini-cli'], 'one lane per seat, and no other');
+  assert.deepEqual(lanes.map((lane) => lane.pool), ['claude-cli', 'codex-cli', 'gemini-cli']);
+  assert.equal(byId['claude-cli'].slots.length, 3, 'the Claude seat, from AI_CLI_CONCURRENCY');
+  assert.equal(byId['codex-cli'].slots.length, 7, 'the Codex seat, from AI_CODEX_CONCURRENCY');
+  assert.equal(byId['gemini-cli'].slots.length, 5, 'the Gemini seat, from AI_GEMINI_CONCURRENCY');
   assert.ok(
-    capacity.cli.every((slot) => slot.queue === 'cli') &&
-      capacity.codex.every((slot) => slot.queue === 'codex') &&
-      capacity.gemini.every((slot) => slot.queue === 'gemini'),
+    lanes.every((lane) => lane.slots.every((slot) => slot.queue === lane.id)),
     'and the slots say which lane they belong to, which is what keeps the pools apart'
   );
   // Unset, the Gemini lane is its seat's default width, which is narrower than
   // the other two: a Google-account seat hits its per-minute limit sooner.
-  assert.equal((await queueModule.readCapacityForTests({})).gemini.length, 2);
+  const unset = await queueModule.readCapacityForTests({});
+  assert.equal(unset.lanes.find((lane) => lane.id === 'gemini-cli').slots.length, 2);
 });
 
 test('the Gemini seat runs at its own process limit, read by the one reader its adapter uses', async () => {

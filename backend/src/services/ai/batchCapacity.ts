@@ -1,22 +1,29 @@
+import { currentProviders, providerTypeOf } from '../../config/aiProviders';
+import { getProviderLabel } from '../../config/providerCatalog';
+import { getDatabasePath } from '../../database/sqlite';
 import type { AIProvider } from '../../types/template';
-import { geminiCliConcurrency } from './providers/geminiCli/options';
 
 /**
  * How many items of a batch may be in flight at once.
  *
- * The number is a property of the CHOSEN PROVIDER, not of the batch, and that
- * is the whole of this module. Each subscription seat spawns a process per call
- * behind a semaphore of its own - `AI_CLI_CONCURRENCY` for Claude,
- * `AI_CODEX_CONCURRENCY` for Codex, `AI_GEMINI_CONCURRENCY` for Gemini - so a
- * fixed fan-out is wrong for some of them whenever they are sized differently,
- * as they are by default: above a seat's ceiling the extra items
- * only wait in a queue nobody can see, and below it the seat sits partly idle.
- * Both look like the app being slow and neither is visible from the page.
+ * The number is a property of the CHOSEN TYPE'S PROVIDERS, not of the batch,
+ * and that is the whole of this module. Each provider spawns a process per
+ * call behind a semaphore of its own, sized by its `concurrency_max_requests`
+ * (config/aiProviders.ts - for a built-in one, `AI_CLI_CONCURRENCY`,
+ * `AI_CODEX_CONCURRENCY` or `AI_GEMINI_CONCURRENCY` unless an administrator
+ * set one), and a model's calls are spread over every enabled provider of its
+ * type (owner decision P4) - so the type can take the SUM of their limits.
+ * Above that the extra items only wait in a queue nobody can see, and below
+ * it a provider sits partly idle. Both look like the app being slow and
+ * neither is visible from the page.
  *
  * The queues themselves already exist and are not this module's business: each
- * seat's semaphore hands a free process slot to the head of its line as one is
- * released. This only decides how much work to offer them, and offering exactly
- * their capacity is what keeps every slot busy without piling up that queue.
+ * provider's semaphore hands a free process slot to the head of its line as one
+ * is released. This only decides how much work to offer them.
+ *
+ * Read from the providers as the settings were last read (held in memory by
+ * config/aiProviders.ts), never from the database itself: a settings read that
+ * fails must not slow a batch, let alone fail one.
  */
 
 /** An operator override. Set, it wins over everything worked out below. */
@@ -33,26 +40,18 @@ function configuredOverride(env: NodeJS.ProcessEnv): number | null {
  */
 const DEFAULT_BATCH_CONCURRENCY = 4;
 
-/** Mirrors `AI_CLI_CONCURRENCY` in claudeCli/options, bounds included. */
-export function cliConcurrency(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number.parseInt(env.AI_CLI_CONCURRENCY || '', 10);
-  if (!Number.isInteger(raw)) return 4;
-  return Math.min(32, Math.max(1, raw));
-}
-
 /**
- * Mirrors `AI_CODEX_CONCURRENCY` in codexCli/options, bounds included.
- *
- * A SECOND reader, not a shared one, because the two seats are sized separately
- * and conflating them is the bug this exists to prevent: Codex used to fall
- * through to the catch-all default below, which was right only by the
- * coincidence that both defaults are 4.
+ * The built-in providers' `.env` readers, where they have always been
+ * imported from. They live in config/aiProviders.ts now, beside the rest of
+ * what decides a provider's limit.
  */
-export function codexConcurrency(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number.parseInt(env.AI_CODEX_CONCURRENCY || '', 10);
-  if (!Number.isInteger(raw)) return 4;
-  return Math.min(32, Math.max(1, raw));
-}
+export { cliConcurrency, codexConcurrency } from '../../config/aiProviders';
+
+const SLOT_NOUN: Record<AIProvider, string> = {
+  'claude-cli': 'Claude CLI slot',
+  'codex-cli': 'Codex CLI slot',
+  'gemini-cli': 'Gemini CLI slot',
+};
 
 export type BatchCapacity = {
   /** How many batch items to run at once. */
@@ -69,7 +68,7 @@ export type BatchCapacity = {
  * not have to change all of them to get one.
  */
 export async function resolveBatchCapacity(
-  choice: { provider: AIProvider },
+  choice: { provider: AIProvider | string },
   env: NodeJS.ProcessEnv = process.env
 ): Promise<BatchCapacity> {
   const override = configuredOverride(env);
@@ -77,33 +76,28 @@ export async function resolveBatchCapacity(
     return { limit: override, reason: `AI_BATCH_CONCURRENCY=${override}` };
   }
 
-  if (choice.provider === 'claude-cli') {
-    // The same variable and the same default the CLI provider's own semaphore
-    // is built from, read here rather than imported because that reader takes
-    // no environment and these have to be testable. `batchCapacity.test.js`
-    // pins the two to the same answer.
-    const limit = cliConcurrency(env);
-    return { limit, reason: `${limit} Claude CLI slot${limit === 1 ? '' : 's'}` };
+  // A type id only: a retired id has no providers, and a provider id is not
+  // what a choice names.
+  const type = providerTypeOf(choice.provider);
+  if (!type || type !== choice.provider) {
+    return {
+      limit: DEFAULT_BATCH_CONCURRENCY,
+      reason: `${DEFAULT_BATCH_CONCURRENCY} by default for ${choice.provider}`,
+    };
   }
 
-  if (choice.provider === 'codex-cli') {
-    // Its own variable, for the same reason. Falling through to the default
-    // below offered 4 into a semaphore that might hold 1 or 12 - an invisible
-    // queue in one direction and an idle seat in the other.
-    const limit = codexConcurrency(env);
-    return { limit, reason: `${limit} Codex CLI slot${limit === 1 ? '' : 's'}` };
-  }
-
-  if (choice.provider === 'gemini-cli') {
-    // Imported rather than mirrored: the Gemini seat's reader is a leaf that
-    // takes an environment, so the lane, this and the semaphore all ask the
-    // one function and cannot disagree about a value.
-    const limit = geminiCliConcurrency(env);
-    return { limit, reason: `${limit} Gemini CLI slot${limit === 1 ? '' : 's'}` };
-  }
-
+  const providers = currentProviders(getDatabasePath(), env).filter((entry) => entry.type === type);
+  const enabled = providers.filter((entry) => entry.enabled);
+  // Every provider of the type switched off: nothing will run, and the
+  // run is refused where it resolves a model. The built-in's width is a
+  // number to offer meanwhile, not a promise.
+  const counted = enabled.length > 0 ? enabled : providers.slice(0, 1);
+  const limit = counted.reduce((total, entry) => total + entry.concurrency_max_requests, 0) || DEFAULT_BATCH_CONCURRENCY;
+  const noun = SLOT_NOUN[type] ?? `${getProviderLabel(type)} slot`;
   return {
-    limit: DEFAULT_BATCH_CONCURRENCY,
-    reason: `${DEFAULT_BATCH_CONCURRENCY} by default for ${choice.provider}`,
+    limit,
+    reason:
+      `${limit} ${noun}${limit === 1 ? '' : 's'}` +
+      (counted.length > 1 ? ` across ${counted.length} providers` : ''),
   };
 }

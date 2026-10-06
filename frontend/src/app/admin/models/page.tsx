@@ -21,6 +21,7 @@ import { ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components
 import { messageWithDetail } from '@/lib/userMessage';
 import { blankDraftChoice, displayNameOwner, firstModelName, isTaken, optionsFor } from './modelDraft';
 import { freeEnabledModels, readPriceDraft } from './modelPrice';
+import ProvidersSection from './ProvidersSection';
 
 type ModelDraft = {
   name: string;
@@ -273,7 +274,8 @@ function ModelsPageBody() {
         <h2 className="text-2xl font-bold tracking-tight text-ink">Models</h2>
         <p className="mt-1 text-sm text-muted">
           The models people choose from in the Resume Builder and on their profiles, by the display name
-          you give each one, and what one resume on it costs.
+          you give each one, and what one resume on it costs - and, under Providers, every place each type
+          of model runs.
         </p>
       </header>
 
@@ -625,6 +627,13 @@ function ModelsPageBody() {
           </table>
         </div>
       </Section>
+
+      <ProvidersSection
+        providers={settings.aiProviders}
+        // A provider switched on or off changes which models can run - the
+        // Status column above and Set Default follow the list it answers with.
+        onProvidersChange={(next) => setSettings((current) => (current ? { ...current, aiProviders: next } : current))}
+      />
     </div>
   );
 }

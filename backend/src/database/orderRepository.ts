@@ -100,6 +100,13 @@ export type OrderItem = {
    * was not charged at all, which the run's reservation says, not this.
    */
   costMilli: number | null;
+  /**
+   * The provider that last started building it (config/aiProviders.ts) - the
+   * type id for a built-in one, `prv-...` for one an administrator added; null
+   * before it started, or on an item from before this was recorded. An
+   * administrator's to read: routes/orders.ts strips it for everybody else.
+   */
+  ranOn: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -145,6 +152,7 @@ type OrderItemRow = {
   error: string | null;
   files: string;
   cost_milli: number | null;
+  provider_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -153,7 +161,7 @@ const ORDER_COLUMNS = `id, number, user_id, batch_id, label, total, state,
   created_at, updated_at, finished_at, expires_at, purged_at, kind`;
 
 const ITEM_COLUMNS = `id, order_id, seq, task_id, profile_id, profile_name, company_name,
-  role, source_row_number, state, error, files, cost_milli, created_at, updated_at`;
+  role, source_row_number, state, error, files, cost_milli, provider_id, created_at, updated_at`;
 
 function now(): string {
   return new Date().toISOString();
@@ -229,6 +237,7 @@ function toItem(row: OrderItemRow): OrderItem {
       typeof row.cost_milli === 'number' && Number.isSafeInteger(row.cost_milli) && row.cost_milli >= 0
         ? row.cost_milli
         : null,
+    ranOn: typeof row.provider_id === 'string' && row.provider_id ? row.provider_id : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -560,16 +569,23 @@ export function recordItemOutcome(batchId: string, seq: number, outcome: ItemOut
   return row.orderId;
 }
 
-export function markItemRunning(batchId: string, seq: number): void {
+/**
+ * An item's resume started building - or started AGAIN, on a retry, perhaps
+ * on another provider. `providerId` is the provider it runs on, recorded each
+ * start so the item names the one that last built it.
+ */
+export function markItemRunning(batchId: string, seq: number, providerId?: string): void {
   getDb()
     .prepare(
-      `UPDATE order_items SET state = 'running', updated_at = @updatedAt
-       WHERE state = 'queued' AND id IN (
+      `UPDATE order_items
+       SET state = 'running', updated_at = @updatedAt,
+           provider_id = COALESCE(@providerId, provider_id)
+       WHERE state IN ('queued', 'running') AND id IN (
          SELECT i.id FROM order_items i JOIN orders o ON o.id = i.order_id
          WHERE o.batch_id = @batchId AND i.seq = @seq
        )`
     )
-    .run({ batchId, seq, updatedAt: now() });
+    .run({ batchId, seq, updatedAt: now(), providerId: providerId ?? null });
 }
 
 /**

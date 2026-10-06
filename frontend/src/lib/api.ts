@@ -1,6 +1,14 @@
 import { readScraperCatalog, readScraperSettings } from './scraperForm';
 import { formatMoney } from './format';
 import type { JobFilterFacts, JobSalary } from './jobAnalysis';
+import {
+  hasEnabledProviderOfType,
+  normalizeAdminProviders,
+  normalizeProviderCards,
+  type AdminAIProvider,
+  type ProviderCard,
+  type ProviderOutage,
+} from './providerDisplay';
 
 const DEFAULT_LOCAL_API_BASE = 'http://localhost:3001/api';
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || DEFAULT_LOCAL_API_BASE;
@@ -864,6 +872,13 @@ export interface AdminAppSettings extends BuilderDefaults {
   googleSheetsSources: GoogleSheetSource[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
+  /**
+   * Every PROVIDER - each place a type runs, signed in at a folder of its own
+   * (lib/providerDisplay.ts) - built-ins first among their type. Folders and
+   * binaries on the server: the administrator's payload alone carries it.
+   * Empty from a server that predates providers.
+   */
+  aiProviders: AdminAIProvider[];
   /** Every seat in catalog order, locked ones included, with the model names it offers. */
   providerModelOptions: ProviderModelOptions[];
   outputBaseDir: string;
@@ -1162,8 +1177,9 @@ export function isProviderLocked(
  * decide for itself.
  *
  * The mirror of the backend's `isProviderEnabled`, clause for clause: a locked
- * provider is never offered however it is ticked, and otherwise its enable flag
- * decides. One helper rather than a copy per page, because a page's own copy
+ * provider is never offered however it is ticked; a type whose every provider
+ * (each place it runs - Admin -> Models -> Providers) is switched off runs
+ * nothing, so it is not offered either; and otherwise its enable flag decides. One helper rather than a copy per page, because a page's own copy
  * falls behind the server's rule and goes on offering providers the server
  * would refuse - so the next clause added to the backend has exactly one place
  * to be mirrored rather than three to be missed.
@@ -1174,11 +1190,12 @@ export function isProviderLocked(
  * offer rule themselves.
  */
 export function isProviderOffered(
-  settings: Pick<AdminAppSettings, 'providerLocks'>,
+  settings: Pick<AdminAppSettings, 'providerLocks'> & Partial<Pick<AdminAppSettings, 'aiProviders'>>,
   provider: AIProvider,
   providersEnabled?: Record<AIProvider, boolean>
 ): boolean {
   if (isProviderLocked(settings, provider)) return false;
+  if (!hasEnabledProviderOfType(settings.aiProviders ?? [], provider)) return false;
   // Optional, because two of the three callers ask "is this offered at all"
   // while the settings form also has an unsaved copy of the enable flags.
   return providersEnabled ? providersEnabled[provider] === true : true;
@@ -1231,6 +1248,7 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     aiModels: normalizeModelRecords(source.aiModels),
     googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
     providerLocks: normalizeProviderLocks(source.providerLocks),
+    aiProviders: normalizeAdminProviders(source.aiProviders),
     providerModelOptions: normalizeProviderModelOptions(source.providerModelOptions),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
@@ -1358,28 +1376,25 @@ export interface GoogleSheetsUpdateRangeResponse {
   updatedCells: number;
 }
 
-/** Shape of GET /api/admin/ai/health. */
+/**
+ * Shape of GET /api/admin/ai/health: ONE CARD PER PROVIDER - two Claude
+ * sign-ins are two cards, and one signed out says nothing about the other.
+ */
 export interface ProviderHealthReport {
-  providers: Array<{
-    id: AIProvider;
-    label: string;
-    summary: string;
-    ok: boolean;
-    detail: string;
-    warning: string | null;
-    authMethod: string | null;
-    checkedAt: string;
-  }>;
+  /** Built-ins first within each type, in catalog order (lib/providerDisplay.ts). */
+  providers: ProviderCard[];
   subscription: {
-    seat: { utilization: number | null; resetsAt: string | null; observedAt: string | null };
-    outages: Array<{ scope: string; reason: string; expiresAt: string }>;
+    /** The built-in Claude provider's usage window - the only CLI that reports one. */
+    seat: { utilization: number | null; resetsAt: string | null; observedAt: string | null } | null;
+    outages: ProviderOutage[];
   };
   /**
-   * Every seat's holds, keyed by provider: Claude's (the same list as
-   * `subscription.outages`) and Gemini's. Codex keeps none. Optional, so a
-   * card reading an older server falls back to `subscription.outages`.
+   * Every provider's holds, keyed by PROVIDER id (a type id is its built-in
+   * one). Codex keeps none. Optional, so a card reading an older server falls
+   * back to `subscription.outages`.
    */
-  outagesByProvider?: Partial<Record<AIProvider, Array<{ scope: string; reason: string; expiresAt: string }>>>;
+  outagesByProvider?: Partial<Record<string, ProviderOutage[]>>;
+  /** Each provider's calls, keyed by provider id. */
   concurrency: Record<string, { limit: number; inFlight: number; queued: number }>;
   usage: {
     totals: {
@@ -1391,7 +1406,10 @@ export interface ProviderHealthReport {
       cacheWriteTokens: number;
       costUsd: number;
     };
-    /** Per-provider totals, so a card can report only its own provider. */
+    /**
+     * Totals per TYPE - the unit a model and its usage are counted in - so a
+     * type with two providers has one total for both.
+     */
     byProvider: Record<
       string,
       { calls: number; failures: number; inputTokens: number; outputTokens: number; costUsd: number }
@@ -1400,7 +1418,10 @@ export interface ProviderHealthReport {
 }
 
 export const adminApi = {
-  getAiHealth: () => apiFetch<ProviderHealthReport>('/admin/ai/health'),
+  getAiHealth: async (): Promise<ProviderHealthReport> => {
+    const report = await apiFetch<ProviderHealthReport>('/admin/ai/health');
+    return { ...report, providers: normalizeProviderCards(report?.providers) };
+  },
 
   login: (password: string) =>
     apiFetch<{ token: string; message: string }>('/admin/login', {

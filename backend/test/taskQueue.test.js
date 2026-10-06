@@ -407,8 +407,9 @@ test('the two CLI lanes do not take each other\'s work', async () => {
  * will ever fill, so a task carrying one would be accepted, counted and never
  * run.
  */
-test('the stats name exactly the lanes this build has', () => {
+test('the stats name exactly the lanes the reading has', async () => {
   const harnessed = harness({ cli: cliSlots(2), codex: codexSlots(1), gemini: geminiSlots(1) });
+  await harnessed.queue.refreshCapacity();
   assert.deepEqual(Object.keys(harnessed.queue.stats()).sort(), ['cli', 'codex', 'gemini']);
 });
 
@@ -435,7 +436,9 @@ test('the Gemini lane drains on its own slots, and its tasks say they run on the
       .tasks.filter((task) => task.state === 'running')
       .map((task) => [task.profileName, task.runningOn])
   );
-  assert.deepEqual(runningOn, { 'gemini-0': 'gemini-cli', 'gemini-1': 'gemini-cli', 'cli-0': 'claude-cli' });
+  // The lane IS the provider: a task says it runs on its lane, which in the
+  // real queue is a provider id (test/providerQueues.test.js).
+  assert.deepEqual(runningOn, { 'gemini-0': 'gemini', 'gemini-1': 'gemini', 'cli-0': 'cli' });
   assert.equal(harnessed.queue.stats().gemini.queued, 1, 'the third waits for a Gemini slot, not a free Claude one');
 
   harnessed.finish('gemini-0');
@@ -536,6 +539,7 @@ test('resetting for tests empties every lane, the Codex one included', () => {
 
   harnessed.queue.resetForTests();
   const stats = harnessed.queue.stats();
-  assert.equal(stats.cli.queued, 0);
-  assert.equal(stats.codex.queued, 0, 'a Codex backlog must not leak into the next test');
+  assert.equal(stats.cli?.queued ?? 0, 0);
+  assert.equal(stats.codex?.queued ?? 0, 0, 'a Codex backlog must not leak into the next test');
+  assert.deepEqual(Object.keys(stats), [], 'and no lane is left behind at all');
 });

@@ -30,7 +30,17 @@
  * are the operator's configuration and this module has no business editing
  * them.
  */
-export function buildCodexChildEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildCodexChildEnv(
+  parent: NodeJS.ProcessEnv = process.env,
+  options: {
+    /**
+     * The provider's own CODEX_HOME (config/aiProviders.ts), set AFTER the
+     * strip. Null or absent keeps the inherited one - the built-in provider
+     * as `.env` left it.
+     */
+    home?: string | null;
+  } = {}
+): NodeJS.ProcessEnv {
   const child: NodeJS.ProcessEnv = {};
 
   const billingOverrides = new Set([
@@ -44,6 +54,10 @@ export function buildCodexChildEnv(parent: NodeJS.ProcessEnv = process.env): Nod
     if (value === undefined) continue;
     if (billingOverrides.has(name)) continue;
     child[name] = value;
+  }
+
+  if (options.home) {
+    child.CODEX_HOME = options.home;
   }
 
   return child;

@@ -83,6 +83,13 @@ export type OrderItem = {
    * item placed before items carried it, and 0 for one never charged.
    */
   costMilli: number | null;
+  /**
+   * Which provider built it - its id, the name it has now and its type - or
+   * null before it started. Sent to an ADMINISTRATOR only: which sign-in, at
+   * which folder, built a resume is nobody else's business, and the server
+   * leaves the field out for everybody else (the page draws what it is sent).
+   */
+  ranOn?: { id: string; label: string; type: string | null } | null;
 };
 
 export type OrderDetail = Order & { items: OrderItem[] };

@@ -17,6 +17,7 @@ import { resolvePromptByExactId, resolvePromptByRuntimeId } from '../promptServi
 import { assemblePrompt, assembleRawPrompt, JSON_ONLY_SYSTEM_PROMPT,
   JSON_SENTINEL_SYSTEM_PROMPT, type AssembledPrompt, type PromptRef } from './promptAssembly';
 import { getAdapter } from './registry';
+import { pickProvider } from './providerPool';
 import { recordCompletion, recordFailure, warnOnce } from './telemetry';
 import {
   createDeadline,
@@ -226,7 +227,10 @@ async function runAssembled(
     ? `${assembled.userBody}\n\n${input.appendToUserBody}`
     : assembled.userBody;
 
-  const adapter = getAdapter(provider);
+  // Which provider of the type answers (owner decision P4): the one a queued
+  // task holds a lane slot on, else the readiest with the most free capacity.
+  // The model and its price are the type's; only where it runs is chosen here.
+  const adapter = getAdapter(pickProvider(provider)?.id ?? provider);
   const modelName =
     (config.explicit && config.modelName) || reroutedModelName || adapter.defaultModelName();
 
